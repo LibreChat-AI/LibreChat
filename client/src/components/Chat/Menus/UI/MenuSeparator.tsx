@@ -4,7 +4,7 @@ const MenuSeparator: FC = () => (
   <div
     role="separator"
     aria-orientation="horizontal"
-    className="my-1.5 border-b bg-gray-200 dark:border-gray-700"
+    className="my-1.5 border-b border-border-light"
   />
 );
 

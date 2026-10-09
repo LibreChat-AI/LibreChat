@@ -5,12 +5,20 @@ import {
   SystemCapabilities,
   expandImplications,
 } from '@librechat/data-schemas';
-import type { ISystemGrant, SystemCapability } from '@librechat/data-schemas';
+import type {
+  AuditAction,
+  AuditContext,
+  ISystemGrant,
+  RecordAuditEntryInput,
+  RecordAuditEntryOptions,
+  SystemCapability,
+} from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { Types } from 'mongoose';
 import type { ResolvedPrincipal } from '~/types/principal';
 import type { ServerRequest } from '~/types/http';
 import { parsePagination } from './pagination';
+import { buildAuditContext } from './context';
 
 interface GrantRequestBody {
   principalType?: string;
@@ -44,13 +52,13 @@ export interface AdminGrantsDeps {
     capability: SystemCapability;
     tenantId?: string;
     grantedBy?: string | Types.ObjectId;
-  }) => Promise<ISystemGrant | null>;
+  }) => Promise<{ grant: ISystemGrant | null; created: boolean }>;
   revokeCapability: (params: {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
     capability: SystemCapability;
     tenantId?: string;
-  }) => Promise<void>;
+  }) => Promise<{ deletedCount: number }>;
   getUserPrincipals: (params: {
     userId: string;
     role?: string | null;
@@ -72,13 +80,32 @@ export interface AdminGrantsDeps {
     tenantId?: string;
   }) => ResolvedPrincipal[] | undefined;
   checkRoleExists?: (roleId: string) => Promise<boolean>;
+  /** Optional audit emission. Failure is logged but does not roll back the grant
+   * unless `auditFailClosed` is set. */
+  recordAuditEntry?: (
+    input: RecordAuditEntryInput,
+    options?: RecordAuditEntryOptions,
+  ) => Promise<void>;
+  /**
+   * When true, a failed audit write surfaces as a 5xx instead of being
+   * swallowed. The grant itself is already persisted (and grant writes are
+   * idempotent upserts), so a client retry is safe; an operator must reconcile
+   * the missing audit row. Defaults to fail-open.
+   */
+  auditFailClosed?: boolean;
 }
 
 /** Currently ROLE-only; Record/Set structure preserved for future principal-type expansion. */
 export type GrantPrincipalType = PrincipalType.ROLE;
 
 /** Creates admin grant handlers with dependency injection for the /api/admin/grants routes. */
-export function createAdminGrantsHandlers(deps: AdminGrantsDeps) {
+export function createAdminGrantsHandlers(deps: AdminGrantsDeps): {
+  listGrants: (req: ServerRequest, res: Response) => Promise<Response>;
+  getEffectiveCapabilities: (req: ServerRequest, res: Response) => Promise<Response>;
+  getPrincipalGrants: (req: ServerRequest, res: Response) => Promise<Response>;
+  assignGrant: (req: ServerRequest, res: Response) => Promise<Response>;
+  revokeGrant: (req: ServerRequest, res: Response) => Promise<Response>;
+} {
   const {
     listGrants,
     countGrants,
@@ -91,7 +118,45 @@ export function createAdminGrantsHandlers(deps: AdminGrantsDeps) {
     getHeldCapabilities,
     getCachedPrincipals,
     checkRoleExists,
+    recordAuditEntry,
+    auditFailClosed,
   } = deps;
+
+  async function emitAudit(args: {
+    action: AuditAction;
+    caller: { userId: string; actorName: string; role: string; tenantId?: string };
+    principalType: PrincipalType;
+    principalId: string;
+    capability: SystemCapability;
+    context?: AuditContext;
+  }): Promise<void> {
+    if (!recordAuditEntry) return;
+    /** The grants surface is ROLE-only today (see `MANAGE_CAPABILITY_BY_TYPE`),
+     * and SystemGrant stores the human-readable role name in `principalId` for
+     * ROLE principals, so the audit target's id and name are both `principalId`.
+     * When USER and GROUP grants are enabled, resolve the display name here. */
+    const input: RecordAuditEntryInput = {
+      action: args.action,
+      outcome: 'success',
+      severity: 'warning',
+      actor: { type: 'user', id: args.caller.userId, name: args.caller.actorName },
+      target: { type: args.principalType, id: args.principalId, name: args.principalId },
+      metadata: { capability: args.capability },
+      context: args.context,
+      tenantId: args.caller.tenantId,
+    };
+    if (auditFailClosed) {
+      /** Let the failure propagate to the handler (→ 5xx); see `auditFailClosed`. */
+      await recordAuditEntry(input, { failClosed: true });
+      return;
+    }
+    try {
+      await recordAuditEntry(input);
+    } catch (err) {
+      /** Fail-open: audit failure must not roll back the grant. */
+      logger.error('[adminGrants] audit write failed', err);
+    }
+  }
 
   const MANAGE_CAPABILITY_BY_TYPE: Record<GrantPrincipalType, SystemCapability> = {
     [PrincipalType.ROLE]: SystemCapabilities.MANAGE_ROLES,
@@ -107,7 +172,7 @@ export function createAdminGrantsHandlers(deps: AdminGrantsDeps) {
 
   function resolveUser(
     req: ServerRequest,
-  ): { userId: string; role: string; tenantId?: string } | null {
+  ): { userId: string; role: string; actorName: string; tenantId?: string } | null {
     const user = req.user;
     if (!user) {
       return null;
@@ -116,7 +181,10 @@ export function createAdminGrantsHandlers(deps: AdminGrantsDeps) {
     if (!userId || !user.role) {
       return null;
     }
-    return { userId, role: user.role, tenantId: user.tenantId };
+    /** JWT-loaded `req.user` already carries name/username/email, so the actor
+     * display name is available without a database round-trip. */
+    const actorName = user.name || user.username || user.email || userId;
+    return { userId, role: user.role, actorName, tenantId: user.tenantId };
   }
 
   async function resolvePrincipals(user: {
@@ -336,7 +404,11 @@ export function createAdminGrantsHandlers(deps: AdminGrantsDeps) {
         }
       }
 
-      const grant = await grantCapability({
+      /** `created` comes from the atomic upsert result, so a re-assert of a
+       * capability the role already holds (or a concurrent double-assign) is not
+       * audited as a new change — and a new tenant-scoped grant is correctly
+       * distinguished from an inherited platform-level one. */
+      const { grant, created } = await grantCapability({
         principalType,
         principalId,
         capability,
@@ -345,6 +417,29 @@ export function createAdminGrantsHandlers(deps: AdminGrantsDeps) {
       });
       if (!grant) {
         return res.status(500).json({ error: 'Grant operation returned no result' });
+      }
+      if (created) {
+        try {
+          await emitAudit({
+            action: 'grant.assigned',
+            caller,
+            principalType,
+            principalId,
+            capability,
+            context: buildAuditContext(req),
+          });
+        } catch (auditErr) {
+          /** Fail-closed only (emitAudit rethrows here): roll back the grant we
+           * just created so a 5xx never leaves an unaudited grant in place. */
+          await revokeCapability({ principalType, principalId, capability, tenantId }).catch((e) =>
+            logger.error('[adminGrants] compensating revoke after audit failure failed', e),
+          );
+          logger.error(
+            '[adminGrants] assignGrant audit failed (fail-closed) — rolled back grant',
+            auditErr,
+          );
+          return res.status(500).json({ error: 'Failed to record audit entry' });
+        }
       }
       return res.status(201).json({ grant });
     } catch (error) {
@@ -386,12 +481,46 @@ export function createAdminGrantsHandlers(deps: AdminGrantsDeps) {
         return res.status(403).json({ error: 'Insufficient permissions' });
       }
 
-      await revokeCapability({
+      const revokeResult = await revokeCapability({
         principalType: principalType as PrincipalType,
         principalId,
         capability: capability as SystemCapability,
         tenantId,
       });
+      // Only emit the audit entry when a grant document was actually deleted —
+      // a no-op revoke (the grant never existed) must not appear in the audit
+      // trail or the forensic record becomes misleading.
+      if (revokeResult.deletedCount > 0) {
+        try {
+          await emitAudit({
+            action: 'grant.removed',
+            caller,
+            principalType: principalType as PrincipalType,
+            principalId,
+            capability: capability as SystemCapability,
+            context: buildAuditContext(req),
+          });
+        } catch (auditErr) {
+          /** Fail-closed only (emitAudit rethrows here): restore the grant we
+           * just removed so a 5xx never leaves an unaudited revoke. The original
+           * `grantedBy`/`grantedAt` are not recoverable here; restoring access is
+           * the priority on this rare error path. */
+          await grantCapability({
+            principalType: principalType as PrincipalType,
+            principalId,
+            capability: capability as SystemCapability,
+            tenantId,
+            grantedBy: caller.userId,
+          }).catch((e) =>
+            logger.error('[adminGrants] compensating re-grant after audit failure failed', e),
+          );
+          logger.error(
+            '[adminGrants] revokeGrant audit failed (fail-closed) — restored grant',
+            auditErr,
+          );
+          return res.status(500).json({ error: 'Failed to record audit entry' });
+        }
+      }
       return res.status(200).json({ success: true });
     } catch (error) {
       logger.error('[adminGrants] revokeGrant error:', error);

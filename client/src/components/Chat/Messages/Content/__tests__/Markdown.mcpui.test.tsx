@@ -1,66 +1,46 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import Markdown from '../Markdown';
 import { RecoilRoot } from 'recoil';
+import { render, screen } from '@testing-library/react';
+import type { TStartupConfig } from 'librechat-data-provider';
+import { useConversationUIResources } from '~/hooks/Messages/useConversationUIResources';
+import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
 import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
-import {
-  useMessageContext,
-  useOptionalMessagesConversation,
-  useOptionalMessagesOperations,
-} from '~/Providers';
-import { useGetMessagesByConvoId } from '~/data-provider';
-import { useLocalize } from '~/hooks';
+import MarkdownLite from '../MarkdownLite';
+import Markdown from '../Markdown';
 
-// Mocks for hooks used by MCPUIResource when rendered inside Markdown.
-// Keep Provider components intact while mocking only the hooks we use.
-jest.mock('~/Providers', () => ({
-  ...jest.requireActual('~/Providers'),
-  useMessageContext: jest.fn(),
-  useOptionalMessagesConversation: jest.fn(),
-  useOptionalMessagesOperations: jest.fn(),
+// Mock specific leaf hook rather than barrel exports to avoid circular module evaluation in Jest
+jest.mock('~/hooks/Messages/useConversationUIResources', () => ({
+  useConversationUIResources: jest.fn(),
 }));
-jest.mock('~/data-provider');
-jest.mock('~/hooks');
 
-// Mock @mcp-ui/client to render identifiable elements for assertions
 jest.mock('@mcp-ui/client', () => ({
   UIResourceRenderer: ({ resource }: any) => (
-    <div data-testid="ui-resource-renderer" data-resource-uri={resource?.uri} />
+    <span data-testid="ui-resource-renderer" data-resource-uri={resource?.uri} />
   ),
 }));
 
-const mockUseMessageContext = useMessageContext as jest.MockedFunction<typeof useMessageContext>;
-const mockUseMessagesConversation = useOptionalMessagesConversation as jest.MockedFunction<
-  typeof useOptionalMessagesConversation
+const mockUseConversationUIResources = useConversationUIResources as jest.MockedFunction<
+  typeof useConversationUIResources
 >;
-const mockUseMessagesOperations = useOptionalMessagesOperations as jest.MockedFunction<
-  typeof useOptionalMessagesOperations
->;
-const mockUseGetMessagesByConvoId = useGetMessagesByConvoId as jest.MockedFunction<
-  typeof useGetMessagesByConvoId
->;
-const mockUseLocalize = useLocalize as jest.MockedFunction<typeof useLocalize>;
+
+const renderMarkdown = (content: string, legacyHtmlEnabled = true) =>
+  render(
+    <RecoilRoot>
+      <MCPAppsPolicyProvider
+        startupConfig={{ mcpApps: { enabled: false, legacyHtmlEnabled } } as TStartupConfig}
+        ready
+      >
+        <Markdown content={content} isLatestMessage={false} />
+      </MCPAppsPolicyProvider>
+    </RecoilRoot>,
+  );
 
 describe('Markdown with MCP UI markers (resource IDs)', () => {
-  let currentTestMessages: any[] = [];
-
   beforeEach(() => {
     jest.clearAllMocks();
-    currentTestMessages = [];
-
-    mockUseMessageContext.mockReturnValue({ messageId: 'msg-weather' } as any);
-    mockUseMessagesConversation.mockReturnValue({
-      conversation: { conversationId: 'conv1' },
-      conversationId: 'conv1',
-    } as any);
-    mockUseMessagesOperations.mockReturnValue({
-      ask: jest.fn(),
-      getMessages: () => currentTestMessages,
-    } as any);
-    mockUseLocalize.mockReturnValue(((key: string) => key) as any);
   });
 
-  it('renders two UIResourceRenderer components for markers with resource IDs across separate attachments', () => {
+  it('renders two legacy UI resources for markers with resource IDs across separate attachments', () => {
     // Two tool responses, each produced one ui_resources attachment
     const paris = {
       resourceId: 'abc123',
@@ -75,17 +55,11 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
       text: '<div>NYC Weather</div>',
     };
 
-    currentTestMessages = [
-      {
-        messageId: 'msg-weather',
-        attachments: [
-          { type: 'ui_resources', ui_resources: [paris] },
-          { type: 'ui_resources', ui_resources: [nyc] },
-        ],
-      },
-    ];
-
-    mockUseGetMessagesByConvoId.mockReturnValue({ data: currentTestMessages } as any);
+    const resourceMap = new Map<string, any>([
+      ['abc123', paris],
+      ['def456', nyc],
+    ]);
+    mockUseConversationUIResources.mockReturnValue(resourceMap as any);
 
     const content = [
       'Here are the current weather conditions for both Paris and New York:',
@@ -96,15 +70,89 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
       `Browse these weather cards for more details ${UI_RESOURCE_MARKER}{abc123} ${UI_RESOURCE_MARKER}{def456}`,
     ].join('\n');
 
-    render(
-      <RecoilRoot>
-        <Markdown content={content} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdown(content);
 
     const renderers = screen.getAllByTestId('ui-resource-renderer');
     expect(renderers).toHaveLength(2);
     expect(renderers[0]).toHaveAttribute('data-resource-uri', 'ui://weather/paris');
     expect(renderers[1]).toHaveAttribute('data-resource-uri', 'ui://weather/nyc');
+  });
+
+  it('does not mount an App View from a legacy Markdown marker', () => {
+    mockUseConversationUIResources.mockReturnValue(
+      new Map([
+        [
+          'app-resource',
+          {
+            resourceId: 'app-resource',
+            uri: 'ui://weather/app',
+            mimeType: 'text/html;profile=mcp-app',
+            text: '<div>App View</div>',
+            toolName: 'get_weather',
+            serverName: 'weather-server',
+          },
+        ],
+      ]) as any,
+    );
+
+    renderMarkdown(
+      `App resources are rendered with their tool call ${UI_RESOURCE_MARKER}{app-resource}`,
+    );
+
+    expect(screen.queryByTestId('ui-resource-renderer')).not.toBeInTheDocument();
+    expect(document.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
+  });
+
+  it('does not invoke the legacy renderer for a stored marker while disabled', () => {
+    mockUseConversationUIResources.mockReturnValue(
+      new Map([
+        [
+          'legacy-resource',
+          {
+            resourceId: 'legacy-resource',
+            uri: 'ui://weather/legacy',
+            mimeType: 'text/html',
+            text: '<div>Stored legacy view</div>',
+          },
+        ],
+      ]) as never,
+    );
+
+    renderMarkdown(`Stored result ${UI_RESOURCE_MARKER}{legacy-resource}`, false);
+
+    expect(screen.queryByTestId('ui-resource-renderer')).not.toBeInTheDocument();
+    expect(screen.getByText(/Stored result/)).toBeInTheDocument();
+  });
+});
+
+describe('Markdown table rendering', () => {
+  const tableMarkdown = [
+    '| Alpha | Bravo | Charlie | Delta | Echo | Foxtrot | Golf | Hotel |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| one | two | three | four | five | six | seven | eight |',
+  ].join('\n');
+
+  it('wraps GFM tables in a horizontally scrollable container', () => {
+    render(
+      <RecoilRoot>
+        <Markdown content={tableMarkdown} isLatestMessage={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('table').parentElement).toHaveClass(
+      'markdown-table-wrapper',
+      'w-full',
+      'max-w-full',
+    );
+  });
+
+  it('wraps lightweight Markdown tables in a horizontally scrollable container', () => {
+    render(<MarkdownLite content={tableMarkdown} />);
+
+    expect(screen.getByRole('table').parentElement).toHaveClass(
+      'markdown-table-wrapper',
+      'w-full',
+      'max-w-full',
+    );
   });
 });

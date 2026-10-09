@@ -1,8 +1,30 @@
 import '@testing-library/jest-dom';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { UIResource } from 'librechat-data-provider';
+import type { ComponentProps } from 'react';
 import UIResourceCarousel from '~/components/Chat/Messages/Content/UIResourceCarousel';
 import { handleUIAction } from '~/utils';
+
+jest.mock(
+  '@librechat/client',
+  () => ({
+    Button: ({
+      variant: _variant,
+      size: _size,
+      ...props
+    }: ComponentProps<'button'> & { variant?: string; size?: string }) => <button {...props} />,
+  }),
+  { virtual: true },
+);
+
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) =>
+    key === 'com_ui_scroll_left' ? 'Scroll left' : 'Scroll right',
+}));
+
+jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
+  useMCPAppsPolicy: () => ({ enabled: true, legacyHtmlEnabled: true }),
+}));
 
 // Mock the UIResourceRenderer component
 jest.mock('@mcp-ui/client', () => ({
@@ -24,6 +46,7 @@ jest.mock('~/Providers', () => ({
 // Mock handleUIAction utility
 jest.mock('~/utils', () => ({
   handleUIAction: jest.fn(),
+  cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }));
 
 // Mock scrollTo
@@ -35,11 +58,11 @@ Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
 
 describe('UIResourceCarousel', () => {
   const mockUIResources: UIResource[] = [
-    { uri: 'resource1', mimeType: 'text/html', text: 'Resource 1' },
-    { uri: 'resource2', mimeType: 'text/html', text: 'Resource 2' },
-    { uri: 'resource3', mimeType: 'text/html', text: 'Resource 3' },
-    { uri: 'resource4', mimeType: 'text/html', text: 'Resource 4' },
-    { uri: 'resource5', mimeType: 'text/html', text: 'Resource 5' },
+    { resourceId: 'resource1', uri: 'resource1', mimeType: 'text/html', text: 'Resource 1' },
+    { resourceId: 'resource2', uri: 'resource2', mimeType: 'text/html', text: 'Resource 2' },
+    { resourceId: 'resource3', uri: 'resource3', mimeType: 'text/html', text: 'Resource 3' },
+    { resourceId: 'resource4', uri: 'resource4', mimeType: 'text/html', text: 'Resource 4' },
+    { resourceId: 'resource5', uri: 'resource5', mimeType: 'text/html', text: 'Resource 5' },
   ];
 
   const mockHandleUIAction = handleUIAction as jest.MockedFunction<typeof handleUIAction>;
@@ -65,6 +88,43 @@ describe('UIResourceCarousel', () => {
 
   it('renders nothing when no resources provided', () => {
     const { container } = render(<UIResourceCarousel uiResources={[]} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('filters blocked resources before choosing a single-resource layout', () => {
+    const { container } = render(
+      <UIResourceCarousel
+        uiResources={[
+          {
+            resourceId: 'blocked-resource',
+            uri: 'ui://blocked',
+            mimeType: 'application/vnd.mcp-ui.remote-dom+javascript',
+            text: 'malicious script',
+          },
+          mockUIResources[0],
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByTestId('ui-resource-renderer')).toHaveLength(1);
+    expect(screen.getByText('Resource 1')).toBeInTheDocument();
+    expect(container.querySelector('.hide-scrollbar')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when every resource is blocked', () => {
+    const { container } = render(
+      <UIResourceCarousel
+        uiResources={[
+          {
+            resourceId: 'blocked-resource',
+            uri: 'ui://blocked',
+            mimeType: 'text/uri-list',
+            text: 'https://example.com',
+          },
+        ]}
+      />,
+    );
+
     expect(container.firstChild).toBeNull();
   });
 
@@ -137,6 +197,26 @@ describe('UIResourceCarousel', () => {
     expect(mockScrollTo).toHaveBeenCalledWith({
       left: -250, // 200 - (500 * 0.9)
       behavior: 'smooth',
+    });
+  });
+
+  it('binds scrolling when a singleton becomes a carousel', async () => {
+    const { container, rerender } = render(
+      <UIResourceCarousel uiResources={mockUIResources.slice(0, 1)} />,
+    );
+    expect(container.querySelector('.hide-scrollbar')).not.toBeInTheDocument();
+
+    rerender(<UIResourceCarousel uiResources={mockUIResources.slice(0, 2)} />);
+    const scrollContainer = container.querySelector('.hide-scrollbar');
+    Object.defineProperty(scrollContainer, 'scrollLeft', {
+      configurable: true,
+      value: 200,
+    });
+
+    fireEvent.scroll(scrollContainer!);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Scroll left')).toBeInTheDocument();
     });
   });
 

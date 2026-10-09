@@ -1,9 +1,69 @@
 import React, { useMemo } from 'react';
-import { getEndpointField } from 'librechat-data-provider';
+import { Feather } from 'lucide-react';
+import { ProviderId } from 'librechat-data-provider';
+import { Sparkles, AssistantIcon, ProviderIcon } from '@librechat/client';
 import type * as t from 'librechat-data-provider';
-import { getIconKey, getEntity, getIconEndpoint } from '~/utils';
 import ConvoIconURL from '~/components/Endpoints/ConvoIconURL';
-import { icons } from '~/hooks/Endpoint/Icons';
+import { cn, getEntity, getIconEndpoint } from '~/utils';
+import { useProviderIcon } from '~/hooks/Endpoint';
+import { isImageURL } from '~/utils/icons';
+
+/** Callers frame the mark at two thirds of the round container around it. */
+const artScale = 2 / 3;
+
+const entityAvatarClassName = 'bg-avatar-placeholder h-full w-full rounded-full object-cover';
+
+function AgentAvatar({
+  avatar,
+  agentName,
+  className,
+  size,
+}: {
+  avatar: string;
+  agentName: string;
+  className: string;
+  size?: number;
+}) {
+  if (agentName && avatar) {
+    return (
+      <img src={avatar} className={entityAvatarClassName} alt={agentName} width="80" height="80" />
+    );
+  }
+
+  return <Feather className={cn(agentName === '' ? 'icon-2xl' : '', className)} size={size} />;
+}
+
+function AssistantAvatar({
+  avatar,
+  assistantName,
+  className,
+  context,
+  size,
+}: {
+  avatar: string;
+  assistantName: string;
+  className: string;
+  context?: 'message' | 'nav' | 'landing' | 'menu-item';
+  size?: number;
+}) {
+  if (assistantName && avatar) {
+    return (
+      <img
+        src={avatar}
+        className={entityAvatarClassName}
+        alt={assistantName}
+        width="80"
+        height="80"
+      />
+    );
+  }
+
+  if (assistantName) {
+    return <AssistantIcon className={cn('text-text-secondary', className)} size={size} />;
+  }
+
+  return <Sparkles className={cn(context === 'landing' ? 'icon-2xl' : '', className)} />;
+}
 
 export default function ConvoIcon({
   conversation,
@@ -28,7 +88,7 @@ export default function ConvoIcon({
   let endpoint = conversation?.endpoint;
   endpoint = getIconEndpoint({ endpointsConfig, iconURL, endpoint });
 
-  const { entity, isAgent } = useMemo(
+  const { entity, isAgent, isAssistant } = useMemo(
     () =>
       getEntity({
         endpoint,
@@ -45,39 +105,55 @@ export default function ConvoIcon({
     ? (entity as t.Agent | undefined)?.avatar?.filepath
     : ((entity as t.Assistant | undefined)?.metadata?.avatar as string);
 
-  const endpointIconURL = getEndpointField(endpointsConfig, endpoint, 'iconURL');
-  const iconKey = getIconKey({ endpoint, endpointsConfig, endpointIconURL });
-  const Icon = icons[iconKey] ?? null;
+  const { provider, imageURL } = useProviderIcon({ endpoint, endpointsConfig, iconURL });
 
-  return (
-    <>
-      {iconURL && iconURL.includes('http') ? (
-        <ConvoIconURL
-          iconURL={iconURL}
-          modelLabel={conversation?.chatGptLabel ?? conversation?.modelLabel ?? ''}
-          endpointIconURL={endpointIconURL}
-          assistantAvatar={avatar}
+  if (isImageURL(iconURL)) {
+    return (
+      <ConvoIconURL
+        iconURL={iconURL}
+        modelLabel={conversation?.chatGptLabel ?? conversation?.modelLabel ?? ''}
+        provider={provider}
+        assistantAvatar={avatar}
+        assistantName={name}
+        agentAvatar={avatar}
+        agentName={name}
+        context={context}
+      />
+    );
+  }
+
+  const renderArt = () => {
+    if (isAgent) {
+      return (
+        <AgentAvatar avatar={avatar ?? ''} agentName={name} className={className} size={size} />
+      );
+    }
+
+    if (isAssistant) {
+      return (
+        <AssistantAvatar
+          avatar={avatar ?? ''}
           assistantName={name}
-          agentAvatar={avatar}
-          agentName={name}
+          className={className}
           context={context}
+          size={size}
         />
-      ) : (
-        <div className={containerClassName}>
-          {endpoint && Icon != null && (
-            <Icon
-              size={size}
-              context={context}
-              endpoint={endpoint}
-              className={className}
-              iconURL={endpointIconURL}
-              assistantName={name}
-              agentName={name}
-              avatar={avatar}
-            />
-          )}
-        </div>
-      )}
-    </>
-  );
+      );
+    }
+
+    if (imageURL != null) {
+      return <img src={imageURL} alt={`${endpoint} Icon`} className={className} />;
+    }
+
+    return (
+      <ProviderIcon
+        provider={provider}
+        model={conversation?.model}
+        size={size != null ? Math.round(size * artScale) : undefined}
+        className={cn(className, context === 'landing' && provider === ProviderId.cohere && 'p-2')}
+      />
+    );
+  };
+
+  return <div className={containerClassName}>{endpoint !== '' && renderArt()}</div>;
 }

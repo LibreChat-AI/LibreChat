@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function ChatIcon() {
+export default function ChatIcon(): JSX.Element {
   return (
     <svg
       stroke="currentColor"

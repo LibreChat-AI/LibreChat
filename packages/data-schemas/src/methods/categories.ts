@@ -14,7 +14,9 @@ const options = [
 
 export type CategoryOption = { label: string; value: string };
 
-export function createCategoriesMethods(_mongoose: typeof import('mongoose')) {
+export function createCategoriesMethods(_mongoose: typeof import('mongoose')): {
+  getCategories: () => Promise<CategoryOption[]>;
+} {
   /**
    * Retrieves the categories.
    */

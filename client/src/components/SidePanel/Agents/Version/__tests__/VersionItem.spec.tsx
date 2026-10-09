@@ -1,23 +1,49 @@
 import '@testing-library/jest-dom/extend-expect';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { VersionRecord } from '../types';
 import VersionItem from '../VersionItem';
-import { VersionRecord } from '../VersionPanel';
 
 jest.mock('~/hooks', () => ({
-  useLocalize: jest.fn().mockImplementation(() => (key, params) => {
-    const translations = {
-      com_ui_agent_version_title: params?.versionNumber
-        ? `Version ${params.versionNumber}`
-        : 'Version',
-      com_ui_agent_version_active: 'Active Version',
-      com_ui_agent_version_restore: 'Restore',
-      com_ui_agent_version_restore_confirm: 'Are you sure you want to restore this version?',
-      com_ui_agent_version_unknown_date: 'Unknown date',
-      com_ui_agent_version_no_date: 'No date',
-    };
-    return translations[key] || key;
-  }),
+  useClockFormat: () => true,
+  useLocalize: jest
+    .fn()
+    .mockImplementation(() => (key: string, params?: Record<string, unknown>) => {
+      const translations: Record<string, string> = {
+        com_ui_agent_version_title: params?.versionNumber
+          ? `Version ${params.versionNumber}`
+          : 'Version',
+        com_ui_agent_version_current: 'Current',
+        com_ui_agent_version_restore: 'Restore',
+        com_ui_agent_version_restore_confirm: 'Are you sure you want to restore this version?',
+        com_ui_agent_version_restore_description: 'This will replace your current configuration.',
+        com_ui_agent_version_unknown_date: 'Unknown date',
+        com_ui_agent_version_no_date: 'No date',
+        com_ui_latest: 'Latest',
+      };
+      return translations[key] || key;
+    }),
 }));
+
+jest.mock('@librechat/client', () => {
+  const React = jest.requireActual('react');
+  return {
+    Label: ({ children, ...rest }: any) => React.createElement('label', rest, children),
+    Button: ({ children, variant: _variant, size: _size, ...rest }: any) =>
+      React.createElement('button', rest, children),
+    TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
+    OGDialog: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    OGDialogTrigger: ({ children }: any) => children,
+    OGDialogTemplate: ({ selection }: any) =>
+      React.createElement(
+        'button',
+        {
+          'data-testid': 'restore-confirm-button',
+          onClick: selection?.selectHandler,
+        },
+        selection?.selectText ?? 'Confirm',
+      ),
+  };
+});
 
 describe('VersionItem', () => {
   const mockVersion: VersionRecord = {
@@ -37,51 +63,39 @@ describe('VersionItem', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    window.confirm = jest.fn().mockImplementation(() => true);
   });
 
-  test('renders version number and timestamp', () => {
+  test('renders version number', () => {
     render(<VersionItem {...defaultProps} />);
     expect(screen.getByText('Version 2')).toBeInTheDocument();
-    const date = new Date('2023-01-01T00:00:00Z').toLocaleString();
-    expect(screen.getByText(date)).toBeInTheDocument();
   });
 
-  test('active version badge and no restore button when active', () => {
+  test('active version shows current badge and no restore action', () => {
     render(<VersionItem {...defaultProps} isActive={true} />);
-    expect(screen.getByText('Active Version')).toBeInTheDocument();
-    expect(screen.queryByText('Restore')).not.toBeInTheDocument();
+    expect(screen.getByText('Current')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
   });
 
-  test('restore button and no active badge when not active', () => {
+  test('inactive version renders restore trigger and no current badge', () => {
     render(<VersionItem {...defaultProps} isActive={false} />);
-    expect(screen.queryByText('Active Version')).not.toBeInTheDocument();
-    expect(screen.getByText('Restore')).toBeInTheDocument();
+    expect(screen.queryByText('Current')).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText('Restore').length).toBeGreaterThan(0);
   });
 
-  test('restore confirmation flow - confirmed', () => {
+  test('restoring through dialog confirmation invokes onRestore with index', () => {
     render(<VersionItem {...defaultProps} />);
-    fireEvent.click(screen.getByText('Restore'));
-    expect(window.confirm).toHaveBeenCalledWith('Are you sure you want to restore this version?');
+    fireEvent.click(screen.getByTestId('restore-confirm-button'));
     expect(defaultProps.onRestore).toHaveBeenCalledWith(1);
   });
 
-  test('restore confirmation flow - canceled', () => {
-    window.confirm = jest.fn().mockImplementation(() => false);
-    render(<VersionItem {...defaultProps} />);
-    fireEvent.click(screen.getByText('Restore'));
-    expect(window.confirm).toHaveBeenCalled();
-    expect(defaultProps.onRestore).not.toHaveBeenCalled();
-  });
-
-  test('handles invalid timestamp', () => {
+  test('handles invalid timestamp gracefully', () => {
     render(
       <VersionItem {...defaultProps} version={{ ...mockVersion, updatedAt: 'invalid-date' }} />,
     );
     expect(screen.getByText('Unknown date')).toBeInTheDocument();
   });
 
-  test('handles missing timestamps', () => {
+  test('handles missing timestamps with no-date fallback', () => {
     render(
       <VersionItem
         {...defaultProps}
@@ -91,34 +105,13 @@ describe('VersionItem', () => {
     expect(screen.getByText('No date')).toBeInTheDocument();
   });
 
-  test('prefers updatedAt over createdAt when both exist', () => {
-    const versionWithBothDates = {
-      ...mockVersion,
-      updatedAt: '2023-01-02T00:00:00Z',
-      createdAt: '2023-01-01T00:00:00Z',
-    };
-    render(<VersionItem {...defaultProps} version={versionWithBothDates} />);
-    const updatedDate = new Date('2023-01-02T00:00:00Z').toLocaleString();
-    expect(screen.getByText(updatedDate)).toBeInTheDocument();
-  });
-
-  test('falls back to createdAt when updatedAt is missing', () => {
-    render(
-      <VersionItem
-        {...defaultProps}
-        version={{
-          ...mockVersion,
-          updatedAt: undefined,
-          createdAt: '2023-01-01T00:00:00Z',
-        }}
-      />,
-    );
-    const createdDate = new Date('2023-01-01T00:00:00Z').toLocaleString();
-    expect(screen.getByText(createdDate)).toBeInTheDocument();
-  });
-
   test('handles empty version object', () => {
     render(<VersionItem {...defaultProps} version={{}} />);
     expect(screen.getByText('No date')).toBeInTheDocument();
+  });
+
+  test('marks the most recent inactive version as latest', () => {
+    render(<VersionItem {...defaultProps} index={0} isActive={false} />);
+    expect(screen.getByText('Latest')).toBeInTheDocument();
   });
 });

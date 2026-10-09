@@ -4,11 +4,48 @@ Thank you to all the contributors who have helped make this project possible! We
 
 ## Contributing Guidelines
 
-If the feature you would like to contribute has not already received prior approval from the project maintainers (i.e., the feature is currently on the [roadmap](https://github.com/users/danny-avila/projects/2)), please submit a request in the [Feature Requests & Suggestions category](https://github.com/danny-avila/LibreChat/discussions/new?category=feature-requests-suggestions) of the discussions board before beginning work on it. The requests should include specific implementation details, including areas of the application that will be affected by the change (including designs if applicable), and any other relevant information that might be required for a speedy review. However, proposals are not required for small changes, bug fixes, or documentation improvements. Small changes and bug fixes should be tied to an [issue](https://github.com/danny-avila/LibreChat/issues) and included in the corresponding pull request for tracking purposes.
+If the feature you would like to contribute has not already received prior approval from the project maintainers (i.e., the feature is currently on the [roadmap](https://github.com/users/danny-avila/projects/2)), please submit a request in the [Feature Requests & Suggestions category](https://github.com/LibreChat-AI/LibreChat/discussions/new?category=feature-requests-suggestions) of the discussions board before beginning work on it. The requests should include specific implementation details, including areas of the application that will be affected by the change (including designs if applicable), and any other relevant information that might be required for a speedy review. However, proposals are not required for small changes, bug fixes, or documentation improvements. Small changes and bug fixes should be tied to an [issue](https://github.com/LibreChat-AI/LibreChat/issues) and included in the corresponding pull request for tracking purposes.
 
 Please note that a pull request involving a feature that has not been reviewed and approved by the project maintainers may be rejected. We appreciate your understanding and cooperation.
 
 If you would like to discuss the changes you wish to make, join our [Discord community](https://discord.librechat.ai), where you can engage with other contributors and seek guidance from the community.
+
+## AI-Assisted Contributions
+
+AI coding agents are welcome here. A good part of this project is written with them, and we do not judge a pull request by whether a model helped write it. What we do ask is that agent-assisted work arrives the same way human work always has: attached to an issue, claimed in the open, and expected by someone.
+
+An agent makes a patch cheap to produce, which moves the whole cost of it onto the person reviewing it. Maintainer review time is the scarce resource in this project, so the rules below are about protecting that, not about which tools you use.
+
+### Claim the work first
+
+1. Find an existing issue, or open one describing the problem.
+2. Say in the issue that you would like to take it, and wait to be assigned.
+3. Open one pull request, linked to that issue, after it is assigned to you.
+
+A pull request that appears unannounced, with no issue, no assignment and no prior conversation, may be closed without review no matter how good the patch is. Features need prior approval as described above; agent assistance does not exempt a feature from the roadmap or the discussions board.
+
+**The one exception is a novel P0/P1 defect**: data loss, a broken release, a crash, or a regression with no workaround, that nobody has reported yet. Open it, and put the impact and the reproduction in the first paragraph. Novel is the operative word. A patch for something already reported, already assigned, or already fixed on `dev` is not an exception, and neither is a cosmetic or speculative change dressed up as urgent.
+
+**Security is never an exception.** Do not open a pull request, an issue, or a public message that describes a vulnerability, even a critical one, and even with a fix attached. A pull request is a public disclosure that explains the attack and points at the affected code. Report it through LibreChat's [private vulnerability reporting form](https://github.com/LibreChat-AI/LibreChat/security/advisories/new) and we will open a private channel and coordinate the fix and its release there. See [SECURITY.md](./SECURITY.md).
+
+### Pull requests generated from issues
+
+A pull request produced by pointing an agent at our issue tracker will be rejected unless the issue it addresses was assigned to you. Sweeping open issues and emitting patches for them is not a contribution; it asks a maintainer to review work they never scoped, on an issue that may already belong to someone else. Being first to a patch does not claim an issue, and an issue assigned to another contributor is not available even if your fix is better.
+
+### What we close on sight
+
+These are patterns we actually receive, not hypotheticals:
+
+- **Batches.** Several unrelated pull requests opened minutes apart, or the same sweep run across many projects at once. One issue, one pull request, one conversation.
+- **Whole-file rewrites.** A one-line fix arriving as a thousand-line diff because the file was reformatted or its line endings were converted. Keep the diff to the lines you changed, and configure your tooling not to rewrite the rest (`git config core.autocrlf input` on Windows). An unreadable diff hides things, including reverts of recent commits your branch predates.
+- **Unverifiable claims.** A description asserting a bug, a root cause, or a passing test suite with nothing a reviewer can reproduce. Say what you ran and what you did not.
+- **A patch you cannot discuss.** You are the author of anything you submit. If you cannot explain in review why the change is correct, what it affects, and why the tests cover it, it is not ready.
+
+### If we continue your work
+
+A maintainer, or one of the agents working alongside us, may push commits to your branch and take a pull request the rest of the way instead of asking you for another round. That is the house style here, and it is meant as help rather than a takeover: the branch stays yours, and so does the authorship.
+
+If you would rather finish the work yourself, say so in the pull request description. One line is enough, and we will keep our suggestions in review instead.
 
 ## Our Standards
 
@@ -26,7 +63,7 @@ Project maintainers have the right and responsibility to remove, edit, or reject
 
 ## 1. Development Setup
 
-1. Use Node.js v20.19.0+ or ^22.12.0 or >= 23.0.0.
+1. Use Node.js v24.16.0.
 2. Run `npm run smart-reinstall` to install dependencies (uses Turborepo). Use `npm run reinstall` for a clean install, or `npm ci` for a fresh lockfile-based install.
 3. Build all compiled code: `npm run build`.
 4. Setup and run unit tests:
@@ -43,8 +80,16 @@ Project maintainers have the right and responsibility to remove, edit, or reject
 
 ## 2. Development Notes
 
-1. Before starting work, make sure your main branch has the latest commits with `npm run update`.
+1. Before starting work, sync `dev` from this repository. You are working in a fork, so `origin` is
+   your fork — add the canonical remote once and sync from it:
+    - `git remote add upstream https://github.com/LibreChat-AI/LibreChat.git`
+    - `git fetch upstream dev && git checkout -B dev upstream/dev`
+    - `npm run update` is the self-host deployment updater — it checks out `main` and rebuilds your
+      containers. Do not use it to refresh a development branch.
 2. Run linting command to find errors: `npm run lint`. Alternatively, ensure husky pre-commit checks are functioning.
+    - `npm install` sets the hooks up for you; set `HUSKY=0` to opt out.
+    - The pre-commit hook runs the Static Checks CI job locally, scoped to the files in the commit. Run it by hand with `npm run static-checks`, against a base ref with `npm run static-checks -- --against origin/dev`, or with the slow gates (TypeScript, config migration tests, unused i18n keys, unused npm packages) via `npm run static-checks:full`.
+    - Every commit gets ESLint, Prettier, import order and circular-dependency detection; the slower gates stay opt-in so commits stay fast.
 3. After your changes, reinstall packages in your current branch using `npm run reinstall` and ensure everything still works. 
     - Restart the ESLint server ("ESLint: Restart ESLint Server" in VS Code command bar) and your IDE after reinstalling or updating.
 4. Clear web app localStorage and cookies before and after changes.
@@ -57,11 +102,11 @@ Project maintainers have the right and responsibility to remove, edit, or reject
 
 We utilize a GitFlow workflow to manage changes to this project's codebase. Follow these general steps when contributing code:
 
-1. Fork the repository and create a new branch with a descriptive slash-based name (e.g., `new/feature/x`).
+1. Fork the repository and branch off `dev` with a descriptive slash-based name (e.g., `new/feature/x`). All contributions target `dev`; `main` only moves at release time, and pull requests opened against it are retargeted automatically.
 2. Implement your changes and ensure that all tests pass.
 3. Commit your changes using conventional commit messages with GitFlow flags. Begin the commit message with a tag indicating the change type, such as "feat" (new feature), "fix" (bug fix), "docs" (documentation), or "refactor" (code refactoring), followed by a brief summary of the changes (e.g., `feat: Add new feature X to the project`).
-4. Submit a pull request with a clear and concise description of your changes and the reasons behind them.
-5. We will review your pull request, provide feedback as needed, and eventually merge the approved changes into the main branch.
+4. Submit a pull request against `dev` with a clear and concise description of your changes and the reasons behind them.
+5. We will review your pull request, provide feedback as needed, and eventually merge the approved changes into the `dev` branch.
 
 ## 4. Commit Message Format
 

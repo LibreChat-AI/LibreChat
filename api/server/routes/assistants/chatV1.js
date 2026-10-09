@@ -1,17 +1,22 @@
 const express = require('express');
+const { createMessageFilterPii, reportLocatorTraversalFailure } = require('@librechat/api');
 
 const router = express.Router();
-const {
-  setHeaders,
-  handleAbort,
-  validateModel,
-  buildEndpointOption,
-} = require('~/server/middleware');
+const { handleAbort, validateModel, buildEndpointOption } = require('~/server/middleware');
 const validateConvoAccess = require('~/server/middleware/validate/convoAccess');
+const guardSubagentThreadTurn = require('~/server/middleware/validate/subagentThreadTurn');
 const validateAssistant = require('~/server/middleware/assistants/validate');
 const chatController = require('~/server/controllers/assistants/chatV1');
+const { getFiles } = require('~/models');
 
 router.post('/abort', handleAbort());
+
+const filterMessageContent = createMessageFilterPii({
+  onTraversalFailure: reportLocatorTraversalFailure,
+  getConfig: (req) => req.config?.messageFilter?.pii,
+  getFilters: (req) => req.config?.filters,
+  getFiles,
+});
 
 /**
  * @route POST /
@@ -23,11 +28,12 @@ router.post('/abort', handleAbort());
  */
 router.post(
   '/',
+  filterMessageContent,
   validateModel,
   buildEndpointOption,
   validateAssistant,
   validateConvoAccess,
-  setHeaders,
+  guardSubagentThreadTurn,
   chatController,
 );
 

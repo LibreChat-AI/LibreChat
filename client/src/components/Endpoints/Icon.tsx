@@ -1,10 +1,11 @@
 import React, { memo } from 'react';
-import { UserIcon, useAvatar } from '@librechat/client';
+import { useRecoilValue } from 'recoil';
+import { UserIcon, useAvatar, pxToRem } from '@librechat/client';
 import type { IconProps } from '~/common';
 import MessageEndpointIcon from './MessageEndpointIcon';
-import { useAuthContext } from '~/hooks/AuthContext';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+import store from '~/store';
 
 type ResolvedAvatar = { type: 'image'; src: string } | { type: 'fallback' };
 
@@ -70,7 +71,7 @@ const UserAvatar = memo(
     return (
       <div
         title={username}
-        style={{ width: size, height: size }}
+        style={{ width: pxToRem(size), height: pxToRem(size) }}
         className={cn('relative flex items-center justify-center', className ?? '')}
       >
         {resolved.type === 'image' ? (
@@ -83,12 +84,10 @@ const UserAvatar = memo(
         ) : (
           <div
             style={{
-              backgroundColor: 'rgb(121, 137, 255)',
-              width: '20px',
-              height: '20px',
-              boxShadow: 'rgba(240, 246, 252, 0.1) 0px 0px 0px 1px',
+              width: pxToRem(20),
+              height: pxToRem(20),
             }}
-            className="relative flex h-9 w-9 items-center justify-center rounded-sm p-1 text-white"
+            className="bg-avatar-fill text-avatar-text ring-avatar-edge/10 relative flex h-9 w-9 items-center justify-center rounded-sm p-1 ring-1"
           >
             <UserIcon />
           </div>
@@ -101,7 +100,9 @@ const UserAvatar = memo(
 UserAvatar.displayName = 'UserAvatar';
 
 const Icon: React.FC<IconProps> = memo((props) => {
-  const { user } = useAuthContext();
+  /** Same reason as SteerPart: this renders on the unauthenticated share route,
+   *  where `useAuthContext` throws. The atom is the same value in the app. */
+  const user = useRecoilValue(store.user);
   const { size = 30, isCreatedByUser } = props;
 
   const avatarSrc = useAvatar(user);

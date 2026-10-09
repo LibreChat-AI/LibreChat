@@ -1,5 +1,6 @@
 import {
   ResourceType,
+  SkillsScope,
   SKILL_NAME_MAX_LENGTH,
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_DESCRIPTION_SHORT_THRESHOLD as SKILL_DESCRIPTION_SHORT_THRESHOLD_SHARED,
@@ -7,6 +8,7 @@ import {
   SKILL_BODY_MAX_LENGTH,
   SKILL_NAME_PATTERN as SKILL_NAME_PATTERN_SHARED,
 } from 'librechat-data-provider';
+import type { CodeEnvRef } from 'librechat-data-provider';
 import type { Model, Types, FilterQuery } from 'mongoose';
 import type {
   ISkill,
@@ -15,8 +17,9 @@ import type {
   ISkillFileDocument,
   ISkillSummary,
 } from '~/types/skill';
-import { isValidObjectIdString } from '~/utils/objectId';
+import type { IAgent } from '~/types/agent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { isValidObjectIdString } from '~/utils/objectId';
 import { stripYamlTrailingComment } from '~/utils/yaml';
 import { escapeRegExp } from '~/utils/string';
 import logger from '~/config/winston';
@@ -26,7 +29,7 @@ import logger from '~/config/winston';
 /**
  * A single validation issue emitted by a skill validator. Most issues are
  * errors and block the mutation; some are warnings (e.g. "description is
- * awfully short, Claude may undertrigger the skill") that surface inline
+ * awfully short, the agent may undertrigger the skill") that surface inline
  * coaching without rejecting the request.
  */
 export type ValidationIssue = {
@@ -39,6 +42,25 @@ export type ValidationIssue = {
    * are surfaced on successful responses so the UI can show inline feedback.
    */
   severity?: 'error' | 'warning';
+};
+
+export type DeleteSkillCleanupStep = 'agent_allowlists' | 'skill_files' | 'permissions';
+
+export type DeleteSkillResult = {
+  /** Whether this call removed the Skill row. */
+  deleted: boolean;
+  /** Whether the Skill row is absent after this call, including an idempotent retry. */
+  skillAbsent: boolean;
+  /** Whether every dependent database cleanup step completed. */
+  cleanupComplete: boolean;
+  failedCleanupSteps: DeleteSkillCleanupStep[];
+};
+
+type SkillFileUpsertResult = {
+  value: (ISkillFile & { _id: Types.ObjectId }) | null;
+  lastErrorObject?: {
+    updatedExisting?: boolean;
+  };
 };
 
 /** Partition an issue list into blocking errors and non-blocking warnings. */
@@ -153,7 +175,7 @@ export function validateSkillDescription(description: unknown): ValidationIssue[
       code: 'TOO_SHORT',
       severity: 'warning',
       message:
-        'Short descriptions may cause Claude to miss triggering opportunities — aim for a concrete "when to use this skill" sentence.',
+        'Short descriptions may cause the agent to miss triggering opportunities — aim for a concrete "when to use this skill" sentence.',
     });
   }
   return issues;
@@ -227,10 +249,12 @@ export function validateAlwaysApply(alwaysApply: unknown): ValidationIssue[] {
 
 /**
  * Known fields allowed inside a skill's YAML frontmatter. Anything else is
- * rejected in strict mode. The list is derived from Anthropic's Agent Skills
- * spec plus the fields LibreChat needs to pass through (`name`/`description`
- * are duplicated from the top-level columns because real `SKILL.md` files
- * include them in their frontmatter block).
+ * reported as a warning (see `validateSkillFrontmatter`) rather than rejected:
+ * the frontmatter convention keeps growing, and a single unrecognized key in
+ * one `SKILL.md` used to fail its whole GitHub sync source. The list is derived
+ * from Anthropic's Agent Skills spec plus the fields LibreChat needs to pass
+ * through (`name`/`description` are duplicated from the top-level columns
+ * because real `SKILL.md` files include them in their frontmatter block).
  */
 const ALLOWED_FRONTMATTER_KEYS = new Set<string>([
   'name',
@@ -242,6 +266,7 @@ const ALLOWED_FRONTMATTER_KEYS = new Set<string>([
   'user-invocable',
   'disable-model-invocation',
   'always-apply',
+  'alwaysApply',
   'model',
   'effort',
   'context',
@@ -250,12 +275,45 @@ const ALLOWED_FRONTMATTER_KEYS = new Set<string>([
   'shell',
   'hooks',
   'version',
+  'license',
+  'compatibility',
   'metadata',
+  'references',
 ]);
+
+const CANONICAL_FRONTMATTER_KEYS = new Map(
+  Array.from(ALLOWED_FRONTMATTER_KEYS, (key) => [key.toLowerCase(), key]),
+);
+
+export function getCanonicalSkillFrontmatterKey(key: string): string | undefined {
+  return CANONICAL_FRONTMATTER_KEYS.get(key.toLowerCase());
+}
+
+export function normalizeSkillFrontmatterKeys(
+  frontmatter: Record<string, unknown>,
+): { frontmatter: Record<string, unknown> } | { error: string } {
+  const normalized = Object.create(null) as Record<string, unknown>;
+  const recognizedKeys = new Map<string, string>();
+  for (const [key, value] of Object.entries(frontmatter)) {
+    const canonicalKey = getCanonicalSkillFrontmatterKey(key);
+    if (canonicalKey) {
+      const previousKey = recognizedKeys.get(canonicalKey);
+      if (previousKey) {
+        return {
+          error: `Recognized frontmatter keys "${previousKey}" and "${key}" both resolve to "${canonicalKey}"`,
+        };
+      }
+      recognizedKeys.set(canonicalKey, key);
+    }
+    normalized[canonicalKey ?? key] = value;
+  }
+  return { frontmatter: normalized };
+}
 
 const FRONTMATTER_MAX_STRING = 2000;
 const FRONTMATTER_MAX_ARRAY = 100;
 const FRONTMATTER_MAX_DEPTH = 4;
+const NON_PERSISTABLE_FRONTMATTER_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 type FrontmatterKind = 'string' | 'number' | 'boolean' | 'stringArray';
 
@@ -269,6 +327,7 @@ const FRONTMATTER_KIND: Record<string, FrontmatterKind | FrontmatterKind[]> = {
   'user-invocable': 'boolean',
   'disable-model-invocation': 'boolean',
   'always-apply': 'boolean',
+  alwaysApply: 'boolean',
   model: 'string',
   effort: ['string', 'number'],
   context: 'string',
@@ -276,10 +335,36 @@ const FRONTMATTER_KIND: Record<string, FrontmatterKind | FrontmatterKind[]> = {
   paths: ['string', 'stringArray'],
   shell: 'string',
   version: 'string',
+  license: 'string',
+  compatibility: 'string',
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isValidFrontmatterKey(key: string): boolean {
+  return !key.includes('\u0000') && !NON_PERSISTABLE_FRONTMATTER_KEYS.has(key);
+}
+
+function containsInvalidFrontmatterKey(value: unknown, depth = 0): boolean {
+  if (depth > FRONTMATTER_MAX_DEPTH) {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((nestedValue) => containsInvalidFrontmatterKey(nestedValue, depth + 1));
+  }
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  return Object.entries(value).some(
+    ([key, nestedValue]) =>
+      !isValidFrontmatterKey(key) || containsInvalidFrontmatterKey(nestedValue, depth + 1),
+  );
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -323,17 +408,20 @@ function isJsonSafe(value: unknown, depth: number): boolean {
     return value.every((v) => isJsonSafe(v, depth + 1));
   }
   if (isPlainObject(value)) {
-    return Object.values(value).every((v) => isJsonSafe(v, depth + 1));
+    return Object.entries(value).every(
+      ([key, nestedValue]) => isValidFrontmatterKey(key) && isJsonSafe(nestedValue, depth + 1),
+    );
   }
   return false;
 }
 
 /**
- * Validate a skill's structured YAML frontmatter. Strict mode: unknown keys
- * are rejected so any expansion of the allowed set is an intentional code
- * change. Known keys are type-checked against `FRONTMATTER_KIND`; `hooks` and
- * `metadata` fall back to a shallow JSON-safety check because their full
- * schemas live outside this module.
+ * Validate a skill's structured YAML frontmatter. Known keys are type-checked
+ * against `FRONTMATTER_KIND`; `hooks`, `metadata` and `references` fall back to
+ * a shallow JSON-safety check because their full schemas live outside this
+ * module. Unknown keys are reported as warnings, not errors: authors regularly
+ * carry keys from other tooling, and failing the skill for one of them takes
+ * down every other skill in the same GitHub sync source.
  */
 export function validateSkillFrontmatter(frontmatter: unknown): ValidationIssue[] {
   if (frontmatter === undefined || frontmatter === null) {
@@ -349,14 +437,63 @@ export function validateSkillFrontmatter(frontmatter: unknown): ValidationIssue[
     ];
   }
 
+  const normalized = normalizeSkillFrontmatterKeys(frontmatter);
+  if ('error' in normalized) {
+    return [
+      {
+        field: 'frontmatter',
+        code: 'DUPLICATE_KEY',
+        message: normalized.error,
+      },
+    ];
+  }
+
   const issues: ValidationIssue[] = [];
-  for (const [key, value] of Object.entries(frontmatter)) {
+  for (const [key, value] of Object.entries(normalized.frontmatter)) {
+    if (!isValidFrontmatterKey(key)) {
+      issues.push({
+        field: 'frontmatter',
+        code: 'INVALID_KEY',
+        message: 'Frontmatter keys must be persistable object property names',
+      });
+      continue;
+    }
+    if (containsInvalidFrontmatterKey(value)) {
+      issues.push({
+        field: `frontmatter.${key}`,
+        code: 'INVALID_KEY',
+        message: `"${key}" contains a frontmatter key that cannot be persisted`,
+      });
+      continue;
+    }
     if (!ALLOWED_FRONTMATTER_KEYS.has(key)) {
       issues.push({
         field: `frontmatter.${key}`,
         code: 'UNKNOWN_KEY',
-        message: `"${key}" is not a recognized frontmatter key`,
+        severity: 'warning',
+        message: `"${key}" is not a recognized frontmatter key and is stored as-is`,
       });
+      /* The key is tolerated, its value still is not: an unrecognized key is
+         persisted, so it stays inside the same depth, array and string bounds
+         every structured key is held to. */
+      if (!isJsonSafe(value, 0)) {
+        issues.push({
+          field: `frontmatter.${key}`,
+          code: 'INVALID_SHAPE',
+          message: `"${key}" must be a JSON-safe value (max depth ${FRONTMATTER_MAX_DEPTH}, max string ${FRONTMATTER_MAX_STRING}, max array ${FRONTMATTER_MAX_ARRAY})`,
+        });
+      }
+      continue;
+    }
+
+    if (key === 'references') {
+      if (!isJsonSafe(value, 0)) {
+        issues.push({
+          field: 'frontmatter.references',
+          code: 'INVALID_SHAPE',
+          message: `"references" must be a JSON-safe value (max depth ${FRONTMATTER_MAX_DEPTH}, max string ${FRONTMATTER_MAX_STRING})`,
+        });
+      }
       continue;
     }
 
@@ -486,6 +623,14 @@ export type UpdateSkillInput = {
   frontmatter?: Record<string, unknown>;
   category?: string;
   alwaysApply?: boolean;
+  source?: 'inline' | 'github' | 'notion';
+  sourceMetadata?: Record<string, unknown>;
+};
+
+export type GetAuthorSkillByNameParams = {
+  name: string;
+  author: Types.ObjectId | string;
+  tenantId?: string | null;
 };
 
 /**
@@ -508,6 +653,11 @@ export function deriveStructuredFrontmatterFields(
   if (!frontmatter || typeof frontmatter !== 'object') {
     return {};
   }
+  const normalized = normalizeSkillFrontmatterKeys(frontmatter);
+  if ('error' in normalized) {
+    return {};
+  }
+  frontmatter = normalized.frontmatter;
   const derived: {
     disableModelInvocation?: boolean;
     userInvocable?: boolean;
@@ -581,21 +731,44 @@ export function backfillDerivedFromFrontmatter<
   return skill;
 }
 
+function getAlwaysApplyFrontmatterValue(
+  frontmatter: Record<string, unknown> | undefined,
+): boolean | undefined {
+  const canonical = frontmatter?.['always-apply'];
+  if (typeof canonical === 'boolean') {
+    return canonical;
+  }
+  const camelAlias = frontmatter?.alwaysApply;
+  if (typeof camelAlias === 'boolean') {
+    return camelAlias;
+  }
+  return undefined;
+}
+
 export type UpsertSkillFileInput = {
+  /** When supplied, replace only this stored revision; never recreate a deleted file. */
+  expectedFileId?: string;
+  /** Insert only when the path is absent, even if another writer creates it first. */
+  createOnly?: boolean;
   skillId: Types.ObjectId | string;
   relativePath: string;
   file_id: string;
   filename: string;
   filepath: string;
+  storageKey?: string;
+  storageRegion?: string;
   source: string;
+  sourceMetadata?: Record<string, unknown>;
   mimeType: string;
   bytes: number;
   isExecutable?: boolean;
-  author: Types.ObjectId;
+  author: Types.ObjectId | string;
   tenantId?: string;
 };
 
 export type ListSkillsByAccessParams = {
+  /** Trusted capability-authorized tenant scope; never accept directly from client input. */
+  manageTenantId?: string;
   accessibleIds: Types.ObjectId[];
   category?: string;
   search?: string;
@@ -633,7 +806,9 @@ export type ListAlwaysApplySkillsResult = {
     name: string;
     body: string;
     author: Types.ObjectId;
+    frontmatter?: Record<string, unknown>;
     allowedTools?: string[];
+    version: number;
   }>;
   /** `true` when another page exists beyond this one. */
   has_more: boolean;
@@ -661,14 +836,14 @@ type BodyAlwaysApplyResult =
   | { status: 'invalid' };
 
 /**
- * Extractor for the `always-apply` flag sitting inside a SKILL.md body's
+ * Extractor for the `always-apply` / `alwaysApply` flag sitting inside a SKILL.md body's
  * YAML frontmatter block. The REST edit flow lets users rewrite the full
  * SKILL.md text via `update.body` without a structured `frontmatter`
  * object, so this is the only signal we have for "user flipped
- * `always-apply:` inline in their editor".
+ * `always-apply:` or `alwaysApply:` inline in their editor".
  *
  * Returns a discriminated union so callers can tell:
- *  - `absent` — no `always-apply:` key (leave column alone; could be
+ *  - `absent` — no always-apply key (leave column alone; could be
  *    "user removed the flag" or "user hasn't written it yet" — both
  *    resolve to no-op). An empty value (`always-apply:` with nothing
  *    after the colon) is also treated as absent to allow mid-edit
@@ -679,7 +854,8 @@ type BodyAlwaysApplyResult =
  *    recognizable boolean (e.g. `tru`, `yes`, `1`). Validation rejects
  *    this rather than silently ignoring so `always-apply: tru` typos
  *    surface as 400s instead of drifting the column from what the
- *    saved SKILL.md text says.
+ *    saved SKILL.md text says. When both forms are present, the canonical
+ *    `always-apply` form wins because existing files may already rely on it.
  */
 function extractAlwaysApplyFromBody(body: string | undefined): BodyAlwaysApplyResult {
   if (typeof body !== 'string' || body.length === 0) {
@@ -695,13 +871,15 @@ function extractAlwaysApplyFromBody(body: string | undefined): BodyAlwaysApplyRe
     return { status: 'absent' };
   }
   const block = after.slice(0, closingIdx);
+  let aliasResult: BodyAlwaysApplyResult | undefined;
   for (const line of block.split('\n')) {
     const colon = line.indexOf(':');
     if (colon === -1) {
       continue;
     }
-    const key = line.slice(0, colon).trim().toLowerCase();
-    if (key !== 'always-apply') {
+    const key = line.slice(0, colon).trim();
+    const normalizedKey = key.toLowerCase();
+    if (normalizedKey !== 'always-apply' && normalizedKey !== 'alwaysapply') {
       continue;
     }
     // Strip the YAML inline comment BEFORE unquoting — a line like
@@ -710,7 +888,12 @@ function extractAlwaysApplyFromBody(body: string | undefined): BodyAlwaysApplyRe
     // the comment-strip would leave `"true"` which parses as invalid.
     let value = stripYamlTrailingComment(line.slice(colon + 1).trim()).trim();
     if (value === '') {
-      return { status: 'absent' };
+      const result: BodyAlwaysApplyResult = { status: 'absent' };
+      if (normalizedKey === 'always-apply') {
+        return result;
+      }
+      aliasResult = result;
+      continue;
     }
     if (
       value.length >= 2 &&
@@ -721,14 +904,28 @@ function extractAlwaysApplyFromBody(body: string | undefined): BodyAlwaysApplyRe
     }
     value = value.trim();
     if (value === '') {
-      return { status: 'absent' };
+      const result: BodyAlwaysApplyResult = { status: 'absent' };
+      if (normalizedKey === 'always-apply') {
+        return result;
+      }
+      aliasResult = result;
+      continue;
     }
     const lowered = value.toLowerCase();
-    if (lowered === 'true') return { status: 'valid', value: true };
-    if (lowered === 'false') return { status: 'valid', value: false };
-    return { status: 'invalid' };
+    let result: BodyAlwaysApplyResult;
+    if (lowered === 'true') {
+      result = { status: 'valid', value: true };
+    } else if (lowered === 'false') {
+      result = { status: 'valid', value: false };
+    } else {
+      result = { status: 'invalid' };
+    }
+    if (normalizedKey === 'always-apply') {
+      return result;
+    }
+    aliasResult = result;
   }
-  return { status: 'absent' };
+  return aliasResult ?? { status: 'absent' };
 }
 
 /**
@@ -742,9 +939,9 @@ function extractAlwaysApplyFromBody(body: string | undefined): BodyAlwaysApplyRe
  *
  * Precedence:
  *  1. An explicit top-level `alwaysApply` wins (caller overrides).
- *  2. Otherwise, derive from `frontmatter['always-apply']` when it is
- *     a strict boolean.
- *  3. Otherwise, parse `always-apply:` out of the SKILL.md body
+ *  2. Otherwise, derive from `frontmatter['always-apply']` or the accepted
+ *     alias `frontmatter.alwaysApply` when either is a strict boolean.
+ *  3. Otherwise, parse `always-apply:` / `alwaysApply:` out of the SKILL.md body
  *     frontmatter block (covers the UI edit flow that sends only
  *     `body` without a structured `frontmatter` object).
  *  4. Otherwise, return `fallback` (typically `false` on create, or the
@@ -764,7 +961,7 @@ function resolveAlwaysApplyFromInput(
   if (typeof explicit === 'boolean') {
     return explicit;
   }
-  const fromFrontmatter = frontmatter?.['always-apply'];
+  const fromFrontmatter = getAlwaysApplyFrontmatterValue(frontmatter);
   if (typeof fromFrontmatter === 'boolean') {
     return fromFrontmatter;
   }
@@ -773,6 +970,37 @@ function resolveAlwaysApplyFromInput(
     return fromBody.value;
   }
   return fallback;
+}
+
+/**
+ * Narrows candidate skill ids to those backed by an existing Skill doc or
+ * recognized by an injected external skill registry.
+ * Existence-only check (no ACL) so pruning an agent allowlist never drops
+ * skills the saving user merely can't view. Preserves input order, dedupes,
+ * and drops malformed ids — they can't reference anything. Candidates are
+ * lowercased before comparison: `isValidObjectIdString` accepts uppercase
+ * hex, but `_id.toString()` is always lowercase, and a casing mismatch
+ * would silently drop a valid id (and an emptied allowlist means the full
+ * catalog — the opposite of the configured scope).
+ */
+export async function filterExistingSkillIds(
+  mongoose: typeof import('mongoose'),
+  skillIds: string[],
+  isExternalSkillId?: (id: string) => boolean,
+): Promise<string[]> {
+  const candidates = [
+    ...new Set(skillIds.filter(isValidObjectIdString).map((id) => id.toLowerCase())),
+  ];
+  if (candidates.length === 0) {
+    return [];
+  }
+  const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+  const docs = await Skill.find(
+    { _id: { $in: candidates.map((id) => new mongoose.Types.ObjectId(id)) } },
+    { _id: 1 },
+  ).lean<Array<{ _id: Types.ObjectId }>>();
+  const existing = new Set(docs.map((doc) => doc._id.toString()));
+  return candidates.filter((id) => existing.has(id) || isExternalSkillId?.(id) === true);
 }
 
 /**
@@ -789,24 +1017,109 @@ export function validateAlwaysApplyInBody(body: string | undefined): ValidationI
   if (result.status === 'invalid') {
     return [
       {
-        field: 'body.frontmatter.always-apply',
+        field: 'body.frontmatter.alwaysApply',
         code: 'INVALID_TYPE',
-        message: '"always-apply" in SKILL.md frontmatter must be a boolean (true or false)',
+        message:
+          '"always-apply" or "alwaysApply" in SKILL.md frontmatter must be a boolean (true or false)',
       },
     ];
   }
   return [];
 }
 
-export function createSkillMethods(mongoose: typeof import('mongoose'), deps: SkillDeps) {
+export function createSkillMethods(
+  mongoose: typeof import('mongoose'),
+  deps: SkillDeps,
+): {
+  createSkill: (data: CreateSkillInput) => Promise<CreateSkillResult>;
+  getSkillById: (id: string | Types.ObjectId) => Promise<(ISkill & { _id: Types.ObjectId }) | null>;
+  getSkillByName: (
+    name: string,
+    accessibleIds: Types.ObjectId[],
+    options?: {
+      /**
+       * Manual paths (`$` popover, always-apply once Phase 5 lands) set
+       * this so a same-name newer `userInvocable: false` duplicate can't
+       * shadow the older user-invocable doc the popover surfaced.
+       * Disable-model-invocation status is irrelevant here — manually-
+       * primed disabled skills are explicitly supported (iter 4).
+       */
+      preferUserInvocable?: boolean;
+      /**
+       * Model paths (`skill` / `read_file` tool handlers) set this so a
+       * same-name newer `disable-model-invocation: true` duplicate can't
+       * shadow the cataloged model-invocable doc. User-invocability is
+       * irrelevant here — `userInvocable: false` skills are model-only
+       * and remain valid model-invocation targets.
+       *
+       * Both flags fall back to the newest match when no preferred doc
+       * exists, so handlers can still fire their explicit-rejection
+       * error paths (e.g. "cannot be invoked by the model" in the
+       * disabled-only case).
+       */
+      preferModelInvocable?: boolean;
+    },
+  ) => Promise<(ISkill & { _id: Types.ObjectId }) | null>;
+  getAuthorSkillByName: (
+    params: GetAuthorSkillByNameParams,
+  ) => Promise<(ISkill & { _id: Types.ObjectId }) | null>;
+  listSkillsByAccess: (params: ListSkillsByAccessParams) => Promise<ListSkillsByAccessResult>;
+  listAlwaysApplySkills: (
+    params: ListAlwaysApplySkillsParams,
+  ) => Promise<ListAlwaysApplySkillsResult>;
+  updateSkill: (params: {
+    id: string;
+    expectedVersion: number;
+    update: UpdateSkillInput;
+  }) => Promise<UpdateSkillResult>;
+  deleteSkill: (id: string) => Promise<DeleteSkillResult>;
+  deleteUserSkills: (userId: Types.ObjectId | string) => Promise<number>;
+  findSkillBySourceIdentity: (params: {
+    source: 'github' | 'notion';
+    upstreamId: string;
+    tenantId?: string;
+  }) => Promise<(ISkill & { _id: Types.ObjectId }) | null>;
+  listSkillsBySource: (params: {
+    source: 'github' | 'notion';
+    sourceId: string;
+  }) => Promise<Array<ISkill & { _id: Types.ObjectId }>>;
+  listSkillFiles: (
+    skillId: Types.ObjectId | string,
+  ) => Promise<Array<ISkillFile & { _id: Types.ObjectId }>>;
+  upsertSkillFile: (row: UpsertSkillFileInput) => Promise<ISkillFile & { _id: Types.ObjectId }>;
+  deleteSkillFile: (
+    skillId: Types.ObjectId | string,
+    relativePath: string,
+  ) => Promise<{ deleted: boolean }>;
+  getSkillFileByPath: (
+    skillId: Types.ObjectId | string,
+    relativePath: string,
+  ) => Promise<(ISkillFile & { _id: Types.ObjectId }) | null>;
+  updateSkillFileContent: (
+    skillId: Types.ObjectId | string,
+    relativePath: string,
+    update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
+  ) => Promise<void>;
+  updateSkillFileCodeEnvIds: (
+    updates: Array<{
+      skillId: Types.ObjectId | string;
+      relativePath: string;
+      codeEnvRef: CodeEnvRef;
+    }>,
+  ) => Promise<{ matchedCount: number; modifiedCount: number }>;
+} {
   const { ObjectId } = mongoose.Types;
 
   function buildSkillFilter(
-    params: Pick<ListSkillsByAccessParams, 'accessibleIds' | 'category' | 'search'>,
+    params: Pick<
+      ListSkillsByAccessParams,
+      'accessibleIds' | 'category' | 'search' | 'manageTenantId'
+    >,
   ): FilterQuery<ISkillDocument> {
-    const filter: FilterQuery<ISkillDocument> = {
-      _id: { $in: params.accessibleIds },
-    };
+    const filter: FilterQuery<ISkillDocument> = params.manageTenantId
+      ? { tenantId: params.manageTenantId }
+      : { _id: { $in: params.accessibleIds } };
     if (params.category && params.category.length > 0) {
       filter.category = params.category;
     }
@@ -850,35 +1163,46 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
   }
 
   async function createSkill(data: CreateSkillInput): Promise<CreateSkillResult> {
+    const normalizedFrontmatter = isPlainObject(data.frontmatter)
+      ? normalizeSkillFrontmatterKeys(data.frontmatter)
+      : undefined;
+    const frontmatter =
+      normalizedFrontmatter && 'frontmatter' in normalizedFrontmatter
+        ? normalizedFrontmatter.frontmatter
+        : data.frontmatter;
+    const bodyIssues = validateSkillBody(data.body);
     /* Parse body's always-apply status once — reused for validation
        (below) and derivation in `resolveAlwaysApplyFromInput`. Avoids
        parsing the same YAML frontmatter block twice per create. */
     const bodyAlwaysApply =
-      data.body !== undefined ? extractAlwaysApplyFromBody(data.body) : undefined;
+      bodyIssues.length === 0 && data.body !== undefined
+        ? extractAlwaysApplyFromBody(data.body)
+        : undefined;
     const issues: ValidationIssue[] = [
       ...validateSkillName(data.name),
       ...validateSkillDescription(data.description),
-      ...validateSkillBody(data.body),
+      ...bodyIssues,
       ...validateSkillDisplayTitle(data.displayTitle),
-      ...validateSkillFrontmatter(data.frontmatter),
+      ...validateSkillFrontmatter(frontmatter),
       ...validateAlwaysApply(data.alwaysApply),
     ];
     /* Body-level `always-apply:` only needs to be well-formed when a
        higher-precedence source won't override it (see
        `resolveAlwaysApplyFromInput` for the cascade). A caller sending
        an explicit top-level `alwaysApply` or a structured
-       `frontmatter['always-apply']` has the body value overridden at
+       an always-apply value in structured `frontmatter` has the body value overridden at
        derivation time, so rejecting them for a typo they aren't relying
        on would be user-hostile. */
     if (
       bodyAlwaysApply?.status === 'invalid' &&
       typeof data.alwaysApply !== 'boolean' &&
-      typeof data.frontmatter?.['always-apply'] !== 'boolean'
+      getAlwaysApplyFrontmatterValue(frontmatter) === undefined
     ) {
       issues.push({
-        field: 'body.frontmatter.always-apply',
+        field: 'body.frontmatter.alwaysApply',
         code: 'INVALID_TYPE',
-        message: '"always-apply" in SKILL.md frontmatter must be a boolean (true or false)',
+        message:
+          '"always-apply" or "alwaysApply" in SKILL.md frontmatter must be a boolean (true or false)',
       });
     }
     const { errors, warnings } = partitionIssues(issues);
@@ -908,13 +1232,13 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
       throw error;
     }
 
-    const derived = deriveStructuredFrontmatterFields(data.frontmatter);
+    const derived = deriveStructuredFrontmatterFields(frontmatter);
     const doc = await Skill.create({
       name: data.name,
       displayTitle: data.displayTitle,
       description: data.description,
       body: data.body ?? '',
-      frontmatter: data.frontmatter ?? {},
+      frontmatter: frontmatter ?? {},
       category: data.category ?? '',
       author: data.author,
       authorName: data.authorName,
@@ -924,7 +1248,7 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
       fileCount: 0,
       alwaysApply: resolveAlwaysApplyFromInput(
         data.alwaysApply,
-        data.frontmatter,
+        frontmatter,
         data.body,
         false,
         bodyAlwaysApply,
@@ -1012,6 +1336,22 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
       return true;
     });
     return preferred ?? docs[0];
+  }
+
+  async function getAuthorSkillByName(
+    params: GetAuthorSkillByNameParams,
+  ): Promise<(ISkill & { _id: Types.ObjectId }) | null> {
+    const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const doc = await Skill.findOne({
+      name: params.name,
+      author: params.author,
+      tenantId: params.tenantId ?? null,
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
+    return backfillDerivedFromFrontmatter(
+      (doc as unknown as (ISkill & { _id: Types.ObjectId }) | null) ?? null,
+    );
   }
 
   async function listSkillsByAccess(
@@ -1106,7 +1446,7 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     const rows = await Skill.find(filter)
       .sort({ updatedAt: -1, _id: 1 })
       .limit(limit + 1)
-      .select('name body author updatedAt allowedTools')
+      .select('name body author frontmatter updatedAt allowedTools version')
       .lean();
 
     const has_more = rows.length > limit;
@@ -1135,6 +1475,8 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
         name: row.name,
         body: row.body ?? '',
         author: row.author as Types.ObjectId,
+        version: row.version,
+        frontmatter: row.frontmatter,
       };
       if (row.allowedTools !== undefined) {
         result.allowedTools = row.allowedTools;
@@ -1154,22 +1496,31 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     if (!isValidObjectIdString(id)) {
       return { status: 'not_found' };
     }
+    const normalizedFrontmatter = isPlainObject(update.frontmatter)
+      ? normalizeSkillFrontmatterKeys(update.frontmatter)
+      : undefined;
+    const frontmatter =
+      normalizedFrontmatter && 'frontmatter' in normalizedFrontmatter
+        ? normalizedFrontmatter.frontmatter
+        : update.frontmatter;
 
+    const bodyIssues = update.body !== undefined ? validateSkillBody(update.body) : [];
     /* Parse body's always-apply status once — reused for validation
        (precedence-aware, below) and the derivation cascade further
        down. Avoids parsing the same YAML frontmatter block twice per
        update. */
     const bodyAlwaysApply =
-      update.body !== undefined ? extractAlwaysApplyFromBody(update.body) : undefined;
+      bodyIssues.length === 0 && update.body !== undefined
+        ? extractAlwaysApplyFromBody(update.body)
+        : undefined;
     const issues: ValidationIssue[] = [];
     if (update.name !== undefined) issues.push(...validateSkillName(update.name));
     if (update.description !== undefined)
       issues.push(...validateSkillDescription(update.description));
-    if (update.body !== undefined) issues.push(...validateSkillBody(update.body));
+    issues.push(...bodyIssues);
     if (update.displayTitle !== undefined)
       issues.push(...validateSkillDisplayTitle(update.displayTitle));
-    if (update.frontmatter !== undefined)
-      issues.push(...validateSkillFrontmatter(update.frontmatter));
+    if (update.frontmatter !== undefined) issues.push(...validateSkillFrontmatter(frontmatter));
     if (update.alwaysApply !== undefined) issues.push(...validateAlwaysApply(update.alwaysApply));
     /* Body-level `always-apply:` only needs to be well-formed when a
        higher-precedence source won't override it (see
@@ -1180,12 +1531,13 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     if (
       bodyAlwaysApply?.status === 'invalid' &&
       update.alwaysApply === undefined &&
-      typeof update.frontmatter?.['always-apply'] !== 'boolean'
+      getAlwaysApplyFrontmatterValue(frontmatter) === undefined
     ) {
       issues.push({
-        field: 'body.frontmatter.always-apply',
+        field: 'body.frontmatter.alwaysApply',
         code: 'INVALID_TYPE',
-        message: '"always-apply" in SKILL.md frontmatter must be a boolean (true or false)',
+        message:
+          '"always-apply" or "alwaysApply" in SKILL.md frontmatter must be a boolean (true or false)',
       });
     }
     const { errors, warnings } = partitionIssues(issues);
@@ -1203,15 +1555,17 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     if (update.displayTitle !== undefined) setPayload.displayTitle = update.displayTitle;
     if (update.description !== undefined) setPayload.description = update.description;
     if (update.body !== undefined) setPayload.body = update.body;
+    if (update.source !== undefined) setPayload.source = update.source;
+    if (update.sourceMetadata !== undefined) setPayload.sourceMetadata = update.sourceMetadata;
     if (update.frontmatter !== undefined) {
-      setPayload.frontmatter = update.frontmatter;
+      setPayload.frontmatter = frontmatter;
       /**
        * Derived columns track frontmatter — when frontmatter changes, the
        * derived view must follow. Fields the new frontmatter omits are
        * unset (back to schema default) so removing `disable-model-invocation`
        * from a SKILL.md re-enables model invocation on the next save.
        */
-      const derived = deriveStructuredFrontmatterFields(update.frontmatter);
+      const derived = deriveStructuredFrontmatterFields(frontmatter);
       for (const key of ['disableModelInvocation', 'userInvocable', 'allowedTools'] as const) {
         if (derived[key] !== undefined) {
           setPayload[key] = derived[key];
@@ -1224,11 +1578,11 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     /**
      * Keep the indexed `alwaysApply` column in sync with whatever the update
      * is carrying: an explicit top-level `alwaysApply` always wins; a
-     * structured `frontmatter` with `always-apply: true/false` is next; and
-     * a `body` update is scanned last for an inline `always-apply:` line
+     * structured `frontmatter` with `always-apply: true/false` or the
+     * accepted `alwaysApply` alias is next; and a `body` update is scanned last for an inline `always-apply:` line
      * inside the SKILL.md frontmatter block. The body path is load-bearing
      * for the REST edit flow — the current UI sends `body` without a
-     * parallel `frontmatter` object, so inline edits to `always-apply:`
+     * parallel `frontmatter` object, so inline edits to `always-apply:` / `alwaysApply:`
      * would otherwise leave the column stale and auto-priming / pin
      * badges would keep using the old value.
      *
@@ -1243,7 +1597,7 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
      * at each level, not the presence of the parent field. An API caller
      * that sends both `body` and an unrelated `frontmatter` bag (e.g.
      * editing category + rewriting SKILL.md in one PATCH) still gets the
-     * body-inline flag respected because `frontmatter['always-apply']`
+     * body-inline flag respected because no structured always-apply key
      * is absent in that payload.
      */
     let derivedAlwaysApply: boolean | undefined;
@@ -1251,7 +1605,7 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
       derivedAlwaysApply = update.alwaysApply;
     }
     if (derivedAlwaysApply === undefined && update.frontmatter !== undefined) {
-      const fromFrontmatter = update.frontmatter['always-apply'];
+      const fromFrontmatter = getAlwaysApplyFrontmatterValue(frontmatter);
       if (typeof fromFrontmatter === 'boolean') {
         derivedAlwaysApply = fromFrontmatter;
       }
@@ -1309,24 +1663,103 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     };
   }
 
-  async function deleteSkill(id: string): Promise<{ deleted: boolean }> {
+  /**
+   * Removes deleted skill ids from every agent's `skills` allowlist. A dangling
+   * id is invisible in the builder yet keeps the allowlist non-empty, so the
+   * runtime scopes the catalog to an empty intersection and the agent silently
+   * loses all skills. Direct `updateMany` on purpose: hygiene, not an authored
+   * edit — no version entry, timestamps untouched.
+   *
+   * Ids are lowercased first: allowlists store canonical `_id.toString()`
+   * values, and an uppercase-but-valid id would delete the Skill doc yet
+   * leave the dangling entry behind.
+   *
+   * Agents whose ENTIRE allowlist is being deleted fail closed instead:
+   * an emptied allowlist with `skills_enabled: true` means the full
+   * accessible catalog at runtime, so a plain `$pull` would silently widen
+   * a deliberately restricted agent. Disabling skills preserves the
+   * restriction until an author makes a new explicit choice.
+   *
+   * That inference only applies to agents with no explicit `skills_scope`.
+   * With a scope persisted, the field already says what an empty allowlist
+   * means -- `selected` resolves to no skills on its own, and `all` means the
+   * full catalog on purpose -- so disabling them would turn skills off behind
+   * the author's back.
+   */
+  async function removeSkillsFromAgentAllowlists(skillIds: string[]): Promise<boolean> {
+    if (skillIds.length === 0) {
+      return true;
+    }
+    const ids = skillIds.map((id) => id.toLowerCase());
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    try {
+      await Agent.updateMany(
+        {
+          skills: { $in: ids, $not: { $elemMatch: { $nin: ids } } },
+          /** Only `all` and `selected` opt out: each already defines what an
+           *  empty allowlist means. A missing field (matched here because
+           *  `$nin` also matches absent) is the legacy shape, and an explicit
+           *  `none` with the master flag still true is a contradictory shape
+           *  the API accepts, which `skillDeps` would otherwise keep reading
+           *  as permission to expose the skill-authoring tools. */
+          skills_scope: { $nin: [SkillsScope.all, SkillsScope.selected] },
+        },
+        { $set: { skills: [], skills_enabled: false } },
+        { timestamps: false },
+      );
+      await Agent.updateMany(
+        { skills: { $in: ids } },
+        { $pull: { skills: { $in: ids } } },
+        { timestamps: false },
+      );
+      return true;
+    } catch (error) {
+      logger.error(
+        '[removeSkillsFromAgentAllowlists] Error pruning agent skill allowlists:',
+        error,
+      );
+      return false;
+    }
+  }
+
+  async function deleteSkill(id: string): Promise<DeleteSkillResult> {
     if (!isValidObjectIdString(id)) {
-      return { deleted: false };
+      return {
+        deleted: false,
+        skillAbsent: false,
+        cleanupComplete: false,
+        failedCleanupSteps: [],
+      };
     }
     const Skill = mongoose.models.Skill as Model<ISkillDocument>;
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
     const objectId = new ObjectId(id);
     const res = await Skill.deleteOne({ _id: objectId });
-    if (!res.deletedCount) {
-      return { deleted: false };
+    const failedCleanupSteps: DeleteSkillCleanupStep[] = [];
+    const allowlistsRemoved = await removeSkillsFromAgentAllowlists([id]);
+    if (!allowlistsRemoved) {
+      failedCleanupSteps.push('agent_allowlists');
     }
-    await SkillFile.deleteMany({ skillId: objectId });
-    try {
-      await deps.removeAllPermissions({ resourceType: ResourceType.SKILL, resourceId: id });
-    } catch (error) {
-      logger.error(`[deleteSkill] Error removing permissions for ${id}:`, error);
+
+    const [filesResult, permissionsResult] = await Promise.allSettled([
+      SkillFile.deleteMany({ skillId: objectId }),
+      deps.removeAllPermissions({ resourceType: ResourceType.SKILL, resourceId: id }),
+    ]);
+    if (filesResult.status === 'rejected') {
+      failedCleanupSteps.push('skill_files');
+      logger.error(`[deleteSkill] Error removing files for ${id}:`, filesResult.reason);
     }
-    return { deleted: true };
+    if (permissionsResult.status === 'rejected') {
+      failedCleanupSteps.push('permissions');
+      logger.error(`[deleteSkill] Error removing permissions for ${id}:`, permissionsResult.reason);
+    }
+
+    return {
+      deleted: Boolean(res.deletedCount),
+      skillAbsent: true,
+      cleanupComplete: failedCleanupSteps.length === 0,
+      failedCleanupSteps,
+    };
   }
 
   async function deleteUserSkills(userId: Types.ObjectId | string): Promise<number> {
@@ -1339,6 +1772,7 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
     await SkillFile.deleteMany({ skillId: { $in: soleOwned } });
     const res = await Skill.deleteMany({ _id: { $in: soleOwned } });
+    await removeSkillsFromAgentAllowlists(soleOwned.map((rid) => rid.toString()));
     await Promise.allSettled(
       soleOwned.map((rid) =>
         deps
@@ -1352,6 +1786,35 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
       ),
     );
     return res.deletedCount ?? 0;
+  }
+
+  async function findSkillBySourceIdentity(params: {
+    source: 'github' | 'notion';
+    upstreamId: string;
+    tenantId?: string;
+  }): Promise<(ISkill & { _id: Types.ObjectId }) | null> {
+    const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const tenantFilter: FilterQuery<ISkillDocument> = params.tenantId
+      ? { tenantId: params.tenantId }
+      : { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] };
+    const doc = await Skill.findOne({
+      source: params.source,
+      'sourceMetadata.upstreamId': params.upstreamId,
+      ...tenantFilter,
+    }).lean();
+    return (doc as unknown as (ISkill & { _id: Types.ObjectId }) | null) ?? null;
+  }
+
+  async function listSkillsBySource(params: {
+    source: 'github' | 'notion';
+    sourceId: string;
+  }): Promise<Array<ISkill & { _id: Types.ObjectId }>> {
+    const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const rows = await Skill.find({
+      source: params.source,
+      'sourceMetadata.sourceId': params.sourceId,
+    }).lean();
+    return rows as unknown as Array<ISkill & { _id: Types.ObjectId }>;
   }
 
   /**
@@ -1409,48 +1872,67 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
       throw error;
     }
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    const category = inferSkillFileCategory(row.relativePath);
-    // Atomic new-vs-replace detection: with `new: false, upsert: true`,
-    // `findOneAndUpdate` returns the pre-update document (or null if the doc
-    // did not exist and was just inserted). Checking the return value replaces
-    // a non-atomic `findOne` + `upsert` pair that could double-count on
-    // concurrent uploads of the same (skillId, relativePath).
-    const previous = await SkillFile.findOneAndUpdate(
-      { skillId: row.skillId, relativePath: row.relativePath },
-      {
-        $set: {
-          skillId: row.skillId,
-          relativePath: row.relativePath,
-          file_id: row.file_id,
-          filename: row.filename,
-          filepath: row.filepath,
-          source: row.source,
-          mimeType: row.mimeType,
-          bytes: row.bytes,
-          category,
-          isExecutable: row.isExecutable ?? false,
-          author: row.author,
-          tenantId: row.tenantId,
-        },
-        $unset: { content: '', isBinary: '', codeEnvIdentifier: '' },
-      },
-      { new: false, upsert: true },
-    ).lean();
-    const delta = previous ? 0 : 1;
-    await bumpSkillVersionAndAdjustFileCount(row.skillId, delta);
-
-    // Fetch the current (post-upsert) document for the caller. This second
-    // round-trip is an intentional tradeoff for the TOCTOU-safe detection
-    // above: `new: false` is required to distinguish insert from replace
-    // atomically, which means `findOneAndUpdate` returns the pre-update
-    // document (null on insert). A separate `findOne` is the simplest way
-    // to return the authoritative post-upsert state. Performance impact is
-    // negligible compared to the file upload I/O this sits behind.
-    const current = await SkillFile.findOne({
+    const fields = {
       skillId: row.skillId,
       relativePath: row.relativePath,
-    }).lean();
-    return current as unknown as ISkillFile & { _id: Types.ObjectId };
+      file_id: row.file_id,
+      filename: row.filename,
+      filepath: row.filepath,
+      storageKey: row.storageKey,
+      storageRegion: row.storageRegion,
+      source: row.source,
+      sourceMetadata: row.sourceMetadata,
+      mimeType: row.mimeType,
+      bytes: row.bytes,
+      category: inferSkillFileCategory(row.relativePath),
+      isExecutable: row.isExecutable ?? false,
+      author: row.author,
+      tenantId: row.tenantId,
+    };
+    if (row.createOnly) {
+      if (row.expectedFileId != null) {
+        throw new Error('A file cannot require both an absent path and an existing revision');
+      }
+      let created: ISkillFileDocument;
+      try {
+        created = await SkillFile.create(fields);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 11000) {
+          throw Object.assign(new Error('Skill file was created by another writer'), {
+            code: 'SKILL_FILE_CONFLICT',
+          });
+        }
+        throw error;
+      }
+      await bumpSkillVersionAndAdjustFileCount(row.skillId, 1);
+      return created.toObject() as unknown as ISkillFile & { _id: Types.ObjectId };
+    }
+    const result = (await SkillFile.findOneAndUpdate(
+      {
+        skillId: row.skillId,
+        relativePath: row.relativePath,
+        ...(row.expectedFileId != null ? { file_id: row.expectedFileId } : {}),
+      },
+      {
+        $set: fields,
+        $unset: { content: '', isBinary: '', codeEnvRef: '', codeEnvRefs: '' },
+      },
+      { new: true, upsert: row.expectedFileId == null, includeResultMetadata: true },
+    ).lean()) as unknown as SkillFileUpsertResult;
+    const current = result.value;
+    if (!current && row.expectedFileId != null) {
+      throw Object.assign(new Error('Skill file changed since it was read'), {
+        code: 'SKILL_FILE_CONFLICT',
+      });
+    }
+    if (!current) {
+      const error = new Error('Skill file upsert failed to read the saved file row');
+      (error as Error & { code?: string }).code = 'SKILL_FILE_UPSERT_NOT_FOUND';
+      throw error;
+    }
+    const delta = result.lastErrorObject?.updatedExisting === false ? 1 : 0;
+    await bumpSkillVersionAndAdjustFileCount(row.skillId, delta);
+    return current;
   }
 
   async function deleteSkillFile(
@@ -1480,38 +1962,67 @@ export function createSkillMethods(mongoose: typeof import('mongoose'), deps: Sk
     skillId: Types.ObjectId | string,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ): Promise<void> {
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    await SkillFile.updateOne({ skillId, relativePath }, { $set: update });
+    await SkillFile.updateOne(
+      { skillId, relativePath, ...(expectedFileId != null ? { file_id: expectedFileId } : {}) },
+      { $set: update },
+    );
   }
 
   async function updateSkillFileCodeEnvIds(
     updates: Array<{
       skillId: Types.ObjectId | string;
       relativePath: string;
-      codeEnvIdentifier: string;
+      codeEnvRef: CodeEnvRef;
     }>,
-  ): Promise<void> {
-    if (updates.length === 0) return;
+  ): Promise<{ matchedCount: number; modifiedCount: number }> {
+    if (updates.length === 0) return { matchedCount: 0, modifiedCount: 0 };
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    const ops = updates.map((u) => ({
-      updateOne: {
-        filter: { skillId: u.skillId, relativePath: u.relativePath },
-        update: { $set: { codeEnvIdentifier: u.codeEnvIdentifier } },
-      },
-    }));
-    await tenantSafeBulkWrite(SkillFile, ops);
+    const ops = updates.map((u) => {
+      const routeKey = u.codeEnvRef.executionRouteKey ?? u.codeEnvRef.executionProfile ?? 'default';
+      return {
+        updateOne: {
+          filter: { skillId: u.skillId, relativePath: u.relativePath },
+          update: {
+            $set: {
+              codeEnvRef: u.codeEnvRef,
+              [`codeEnvRefs.${routeKey}`]: u.codeEnvRef,
+            },
+          },
+        },
+      };
+    });
+
+    /**
+     * The returned `{matchedCount, modifiedCount}` lets callers warn on
+     * partial writes — a silent miss here turns every subsequent prime
+     * into a fresh upload (massive egress at scale). If the wrapper's
+     * tenant injection ends up dropping rows, the warn log makes it
+     * visible instead of failing closed.
+     */
+    const result = await tenantSafeBulkWrite(SkillFile, ops);
+    if (result.modifiedCount < updates.length) {
+      logger.warn(
+        `[updateSkillFileCodeEnvIds] Persisted ${result.modifiedCount}/${updates.length} codeEnvRefs (matched ${result.matchedCount}). Subsequent primes for unmatched files will re-upload.`,
+      );
+    }
+    return { matchedCount: result.matchedCount, modifiedCount: result.modifiedCount };
   }
 
   return {
     createSkill,
     getSkillById,
     getSkillByName,
+    getAuthorSkillByName,
     listSkillsByAccess,
     listAlwaysApplySkills,
     updateSkill,
     deleteSkill,
     deleteUserSkills,
+    findSkillBySourceIdentity,
+    listSkillsBySource,
     listSkillFiles,
     upsertSkillFile,
     deleteSkillFile,

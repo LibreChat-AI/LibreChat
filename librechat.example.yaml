@@ -2,14 +2,86 @@
 # https://www.librechat.ai/docs/configuration/librechat_yaml
 
 # Configuration version (required)
-version: 1.3.9
+version: 1.3.17
 
 # Cache settings: Set to true to enable caching
 cache: true
 
+# Chat Projects: the ceilings a single project may reach. Every field is optional and
+# defaults to the value shown, which is the behavior when the block is absent.
+projects:
+  # Reference files that may be attached to one project (maximum 500).
+  maxFiles: 50
+  # Characters of project instructions stored and sent as guidance (maximum 200000).
+  maxInstructionsLength: 16000
+  # Characters of the project description shown in the workspace and sidebar (maximum 10000).
+  maxDescriptionLength: 1000
+
+# Tool-call previews: a long conversation's tool outputs, arguments and subagent transcripts
+# can run to megabytes, though their cards render collapsed. The web client asks for bounded
+# previews when it loads a conversation (the start and end of each long output, arguments
+# with their long strings shortened, no subagent transcripts) and loads a call in full when
+# the reader opens it. Clients that do not ask, exports and share links get full content.
+# Every field is optional and defaults to the value shown; enabled: false always sends the
+# full payload.
+# toolCallPreviews:
+#   enabled: true
+#   outputChars: 512   # characters of each output kept, half from the start and half from the end
+#   argsChars: 512     # characters of serialized arguments kept; JSON stays valid JSON
+
+# Langfuse connections are managed through Settings > Langfuse when available.
+# That flow verifies the credentials and stores the secret key encrypted; do not
+# place a plaintext langfuse.secretKey in this file. Environment-managed central
+# credentials and optional fanout routing are documented in .env.example.
+#
+# Self-hosted Langfuse behind an authenticating proxy or gateway can be given
+# custom request headers. They are sent on every outbound Langfuse request —
+# trace and media export, feedback scores, and credential verification.
+# Values support ${ENV_VAR} interpolation; a header whose variable is unset is
+# dropped with a warning rather than sent as a literal placeholder.
+#
+# These are deployment-level: trace export batches spans from every user through
+# a single exporter, so unlike endpoints.custom headers they cannot carry
+# per-user placeholders such as {{LIBRECHAT_USER_ID}}.
+#
+# Values are masked in admin config reads and in the startup config log, but
+# prefer ${ENV_VAR} references over literal credentials here regardless.
+#
+# Scope: these are sent only when the deployment configures exactly ONE Langfuse
+# origin (a self-hosted base URL, or a single tenant destination URL), and only
+# to that origin. The map has no way to say which endpoint it authenticates to,
+# so a deployment configuring several origins — e.g. a fanout collector plus a
+# separate central host — gets a warning and no headers, rather than having a
+# gateway credential sent somewhere it was not meant for.
+#
+# Fanout deployments additionally need collector support: the gateway forwards
+# only Authorization upstream, so a tenant Langfuse behind its own proxy is not
+# covered even when the collector receives these.
+#
+# Traces carry the internal user id as the Langfuse userId and no user or
+# request metadata unless langfuse.trace opts in. userIdField picks the user
+# field that becomes the trace userId (id, email, username, name, openidId,
+# samlId, ldapId, googleId, githubId, discordId, appleId, facebookId); a user
+# without a value for that field keeps the internal id. The two allowlists copy
+# fields into trace metadata as librechat.user.<field> (the userId fields plus
+# role and provider) and librechat.conversation.id, librechat.endpoint,
+# librechat.endpoint.type, librechat.provider, librechat.model,
+# librechat.model.label, librechat.spec.
+#
+# langfuse:
+#   headers:
+#     CF-Access-Client-Id: "${CF_ACCESS_CLIENT_ID}"
+#     CF-Access-Client-Secret: "${CF_ACCESS_CLIENT_SECRET}"
+#   trace:
+#     userIdField: email
+#     userMetadataFields: [email, username, role, provider]
+#     conversationMetadataFields: [conversationId, endpoint, model, modelLabel, spec]
+
 # File storage configuration
 # Single strategy for all file types (legacy format, still supported)
 # fileStrategy: "s3"
+# Maximum rows returned when GET /files receives an explicit `limit` query parameter.
+# fileListLimit: 100
 
 # Granular file storage strategies (new format - recommended)
 # Allows different storage strategies for different file types
@@ -18,16 +90,113 @@ cache: true
 #   image: "firebase"   # Storage for uploaded images in chats
 #   document: "local"   # Storage for document uploads (PDFs, text files, etc.)
 
-# Available strategies: "local", "s3", "firebase"
+# Available strategies: "local", "s3", "firebase", "azure_blob", "cloudfront"
 # If not specified, defaults to "local" for all file types
 # You can mix and match strategies based on your needs:
 # - Use S3 for avatars for fast global access
 # - Use Firebase for images with automatic optimization
 # - Use local storage for documents for privacy/compliance
+# - Use CloudFront for CDN-accelerated delivery (requires S3 + cloudfront config below)
+
+# CloudFront CDN Configuration (optional)
+# Use when fileStrategy: "cloudfront" or fileStrategies includes cloudfront
+# Requires: AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_BUCKET_NAME
+# For signed cookies and direct download URLs: CLOUDFRONT_KEY_PAIR_ID, CLOUDFRONT_PRIVATE_KEY
+# cloudfront:
+#   domain: "https://cdn.example.com"       # CloudFront domain (CNAME recommended for cookies)
+#   distributionId: "E1234ABCD"             # Required if invalidateOnDelete is true
+#   invalidateOnDelete: false               # Create cache invalidation on file delete
+#   imageSigning: "none"                    # "none" (public) | "cookies" (signed cookies)
+#   # When imageSigning: "cookies", API + CloudFront must share a parent domain.
+#   # Cookies are path-scoped to inline assets only:
+#   #   /i/... private uploaded/generated images, user-scoped
+#   #   /a/... tenant-visible avatars, tenant-scoped when tenantId is present
+#   # Downloads, documents, uploads, and code outputs stay outside /i and /a and
+#   # use backend-authorized signed URLs instead of signed cookies.
+#   #   API: api.example.com, CloudFront CNAME: cdn.example.com, cookieDomain: ".example.com"
+#   cookieDomain: ".example.com"            # Required for "cookies" - shared parent domain
+#   cookieExpiry: 1800                      # Cookie lifetime in seconds (max: 604800 / 7 days, default: 1800 / 30 min)
+#   urlExpiry: 3600                         # Signed CloudFront download URL lifetime in seconds
+#   # Optional multi-region S3/CloudFront layout. Default: false.
+#   # When enabled, new object keys include:
+#   #   /i/r/{storageRegion}/t/{tenantId}/images/{userId}/{file}   (private inline images)
+#   #   /a/r/{storageRegion}/t/{tenantId}/avatars/{userId}/{file}  (tenant-visible avatars)
+#   #   /r/{storageRegion}/t/{tenantId}/{basePath}/{userId}/{file} (non-inline files)
+#   # storageRegion defaults to AWS_REGION when omitted, but only affects new keys
+#   # when includeRegionInPath is true. Existing files are not moved automatically.
+#   # LibreChat does not configure CloudFront origins, Route53, or regional routing.
+#   storageRegion: "us-east-2"
+#   includeRegionInPath: false
+#   # Direct-download filename/content-type overrides require the CloudFront cache/origin
+#   # request policy to forward and cache on response-content-disposition and
+#   # response-content-type query strings to S3.
+#   # Recommended for download paths: attach a CloudFront response headers policy
+#   # with X-Content-Type-Options: nosniff and CSP default-src 'none'.
+
+# Skill sync configuration (optional)
+# GitHub tokens are referenced from environment variables. Put the token in
+# `.env`, then reference it here with `token: '${GITHUB_SKILLS_TOKEN}'`. Use a
+# GitHub fine-grained personal access token scoped to the selected repository
+# with read-only Contents and Metadata permissions.
+# skillSync:
+#   github:
+#     enabled: false
+#     intervalMinutes: 60
+#     runOnStartup: true
+#     sources:
+#       - id: librechat-skills
+#         owner: your-org
+#         repo: your-skills-repo
+#         ref: main
+#         paths:
+#           - skills
+#         # Number of directory levels below each configured path to scan for
+#         # `SKILL.md`. Use 2 for repos shaped like `skills/<category>/<skill>`.
+#         skillDiscoveryDepth: 2
+#         token: '${GITHUB_SKILLS_TOKEN}'
+#         # Optional. Owns the mirrored skills under the given tenant so they are
+#         # created and shared within that tenant. Required for visibility when
+#         # tenant isolation is enabled. Omit for single-tenant deployments.
+#         # Treat as immutable per source id: changing (or adding/removing) the
+#         # tenantId later leaves previously mirrored skills in the old tenant,
+#         # where this source's sync can no longer see or clean them up. To move a
+#         # source between tenants, delete its mirrored skills in the old tenant
+#         # first, or use a new source id for the new tenant.
+#         # tenantId: your-tenant-id
 
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # Allow renaming a running chat or one with a placeholder title (default: true).
+  # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
+  # title-generation jobs have drained. While false, rename is disabled for running chats
+  # and unowned placeholder titles; other actions stay available.
+  # runningChatRename: true
+  # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
+  # codeHighlightThrottleMs: 300
+  # How long a conversation's message history stays cached in the browser after leaving it (default: 60000 ms),
+  # and how many of the most recently left conversations keep that grace (default: 1). Older ones are refetched.
+  # historyCacheTtlMs: 60000
+  # historyCacheRecent: 1
+  # Deployment theme applied to every user, in both light and dark mode (default: unset).
+  # It is not saved to the browser, outranks REACT_APP_THEME_* colors and stored themes,
+  # and yields to the high-contrast modes. Either a bundled theme name (librechat, clickhouse):
+  # theme: clickhouse
+  # or an inline definition. Colors are space-separated RGB triplets keyed by rgb-* token:
+  # theme:
+  #   version: 1
+  #   name: acme
+  #   modes:
+  #     light:
+  #       colors:
+  #         rgb-surface-primary: '255 255 255'
+  #         rgb-surface-submit: '21 21 21'
+  #       appearance:
+  #         controlRadius: '0.25rem'
+  #     dark:
+  #       colors:
+  #         rgb-surface-primary: '31 31 28'
+  #         rgb-surface-submit: '250 255 105'
   # Enable/disable file search as a chatarea selection (default: true)
   # Note: This setting does not disable the Agents File Search Capability.
   # To disable the Agents Capability, see the Agents Endpoint configuration instead.
@@ -90,11 +259,44 @@ interface:
     public: false
   bookmarks: true
   multiConvo: true
+  # Allow the artifacts pane to be moved into its own browser window
+  # (desktop only; the mobile sheet is unaffected). Default: true.
+  artifactUndocking: true
   agents:
     use: true
     create: true
     share: false
     public: false
+  # Allow Lia, the welcome screen mascot. Users still opt in from Settings (default: true).
+  mascot: true
+  # Scheduled chats are experimental and disabled unless explicitly enabled.
+  # A deployment with Redis-backed resumable streams can run this on every replica.
+  # A single-process deployment without Redis must also set
+  # `SCHEDULES_SINGLE_PROCESS=true`; unsafe multi-replica writes fail closed.
+  # Scheduled agents that can pause require both `USE_REDIS_STREAMS=true` for
+  # shared action state and a durable shared checkpointer for graph continuation.
+  # MongoDB is currently the built-in durable checkpointer (and the default).
+  # schedules:
+  #   use: true
+  #   create: true
+  #   maxPerUser: 10
+  #   minIntervalMinutes: 60
+  #   autoDisableAfterFailures: 5
+  #   # Maximum occurrences concurrently passing readiness admission per replica (1-100).
+  #   admissionConcurrency: 20
+  #   fireConcurrency: 5
+  #   # Maximum MCP readiness connections opened at once by one schedule admission (1-10).
+  #   mcpPreflightConcurrency: 3
+  #   # Maximum wall-clock time for one MCP readiness admission (1000-600000 ms).
+  #   mcpPreflightTimeoutMs: 300000
+  #   # Require every schedule to be filed under a chat project. Enforced on
+  #   # create/update AND at each fire, so turning it on stops (auto-disables)
+  #   # schedules that predate it rather than letting their runs land loose.
+  #   requireProject: false
+  #   # Pin every scheduled run to ONE chat project, ignoring the user's choice.
+  #   # Implies `requireProject`. Chat projects are user-owned, so a value set here
+  #   # only makes sense as a per-user or per-role config override.
+  #   # projectId: '000000000000000000000000'
   peoplePicker:
     users: true
     groups: true
@@ -102,6 +304,60 @@ interface:
   marketplace:
     use: false
   fileCitations: true
+  # Show the thumbs up/thumbs down feedback buttons on responses (default: true)
+  feedback: true
+  # Unseen-reply alerts: what this deployment lets a reader turn on. Each field gates a
+  # capability; the preference itself stays per device, because notification permission and
+  # audio output belong to the machine the reader is sitting at. Sidebar unread dots and
+  # Mark as unread are not gated here, they are part of the conversation list.
+  # replyNotifications:
+  #   tabBadge: true # Allow the unseen count in the tab title and favicon (default: true)
+  #   desktop: true # Allow readers to turn on desktop notifications for replies (default: true)
+  #   sound: true # Allow readers to turn on the reply chime (default: true)
+  #   # How many conversations one background poll looks at (1-100, default: 100). The list's
+  #   # own maximum page is the ceiling, so covering a deployment whose replies outpace one
+  #   # page is not a matter of raising this.
+  #   pollLimit: 100
+  #   # Milliseconds between list checks while a tab is away (10000-600000, default: 30000).
+  #   pollIntervalMs: 30000
+  #   # Milliseconds between list refreshes while a tab is focused (60000-300000, default: 300000).
+  #   # It renews the snapshot the unread count reads, so it cannot be slower than five minutes.
+  #   focusedRefreshMs: 300000
+  # Conversation trace viewer: a waterfall of the model calls and tool spans behind
+  # each response, read from the deployment's Langfuse project. The control only
+  # appears on the requesting user's own conversations with a sampled trace, and
+  # needs a Langfuse release that serves the v2 Observations API.
+  # traceViewer:
+  #   enabled: false
+  #   # Traces are matched to users by the internal user id, so no trace is shown while
+  #   # langfuse.trace.userIdField exports another user field.
+  #   # Return observation input, output and metadata in the record inspector. Input
+  #   # carries system prompts, agent instructions and tool definitions, which a
+  #   # user chatting with a shared agent cannot otherwise see.
+  #   showInputOutput: false
+  #   # Name the tools of each tool round from the round's own record. This adds
+  #   # requests to Langfuse per listed page, and Langfuse returns each round's full
+  #   # input and output to serve them, though only the tool names are kept and sent
+  #   # on; arguments and results stay behind showInputOutput. When off, a round is
+  #   # named only where the conversation's messages can be matched to the trace.
+  #   showToolNames: false
+  #   # Observations read per request (1-10000); older records load on demand.
+  #   maxRecords: 1000
+  #   # Characters kept from each input, output and metadata value (1-1000000).
+  #   maxContentLength: 50000
+  #   # Trace reads one user may start per minute (1-1000).
+  #   requestsPerMinute: 30
+  #   # Budget for each request to Langfuse, in milliseconds (1000-300000).
+  #   requestTimeoutMs: 10000
+  # Tools pinned to the prompt bar by default for all users.
+  # Only seeds the initial state — once a user pins/unpins a tool, their choice is kept.
+  # Valid tool keys: artifacts, execute_code, web_search, file_search, skills.
+  # Use 'mcp' (or a specific MCP server name) to pin the MCP servers dropdown.
+  # When omitted, tools start unpinned and the MCP dropdown keeps its default (pinned).
+  # defaultPinnedTools:
+  #   - 'artifacts'
+  #   - 'execute_code'
+  #   - 'mcp'
   # Remote Agents configuration
   # Controls user permissions for remote agents with external API support
   # remoteAgents:
@@ -110,27 +366,55 @@ interface:
   #   share: false
   #   public: false
   # MCP Servers configuration example
+  # Shared Links configuration
+  # Controls user permissions for shared links (e.g. sharing conversations via link)
+  # sharedLinks:
+  #   create: false
+  #   share: true
+  #   public: true # Allows users to toggle "share with everyone" for their links. Whether anonymous access is permitted is controlled by ALLOW_SHARED_LINKS_PUBLIC.
+  #   snapshotFiles: true # Snapshot files referenced by a shared chat so viewers can preview/download them via the link. Enabled by default; the SHARED_LINKS_SNAPSHOT_FILES env var overrides this.
   # mcpServers:
-    # Controls user permissions for MCP (Model Context Protocol) server management
-    # - use: Allow users to use configured MCP servers
-    # - create: Allow users to create and manage new MCP servers
-    # - share: Allow users to share MCP servers with other users
-    # - public: Allow users to share MCP servers publicly (with everyone)
-     
-    # Creation / edit MCP server config Dialog config example
-    # trustCheckbox:
-    #   label:
-    #     en: 'I understand and I want to continue'
-    #     de: 'Ich verstehe und möchte fortfahren'
-    #     de-DE: 'Ich verstehe und möchte fortfahren' # You can narrow translation to regions like (de-DE or de-CH)
-    #   subLabel:
-    #     en: |
-    #       Librechat hasn't reviewed this MCP server. Attackers may attempt to steal your data or trick the model into taking unintended actions, including destroying data. <a href="https://google.de" target="_blank"><strong>Learn more.</strong></a>
-    #     de: |
-    #       LibreChat hat diesen MCP-Server nicht überprüft. Angreifer könnten versuchen, Ihre Daten zu stehlen oder das Modell zu unbeabsichtigten Aktionen zu verleiten, einschließlich der Zerstörung von Daten. <a href="https://google.de" target="_blank"><strong>Mehr erfahren.</strong></a>
+  #   # Poll only while MCP controls are visible, in milliseconds (0 disables polling).
+  #   toolsRefreshInterval: 300000
+  #   statusRefreshInterval: 30000
+  # Controls user permissions for MCP (Model Context Protocol) server management
+  # - use: Allow users to use configured MCP servers
+  # - create: Allow users to create and manage new MCP servers
+  # - share: Allow users to share MCP servers with other users
+  # - public: Allow users to share MCP servers publicly (with everyone)
+
+  # Creation / edit MCP server config Dialog config example
+  # trustCheckbox:
+  #   label:
+  #     en: 'I understand and I want to continue'
+  #     de: 'Ich verstehe und möchte fortfahren'
+  #     de-DE: 'Ich verstehe und möchte fortfahren' # You can narrow translation to regions like (de-DE or de-CH)
+  #   subLabel:
+  #     en: |
+  #       Librechat hasn't reviewed this MCP server. Attackers may attempt to steal your data or trick the model into taking unintended actions, including destroying data. <a href="https://google.de" target="_blank"><strong>Learn more.</strong></a>
+  #     de: |
+  #       LibreChat hat diesen MCP-Server nicht überprüft. Angreifer könnten versuchen, Ihre Daten zu stehlen oder das Modell zu unbeabsichtigten Aktionen zu verleiten, einschließlich der Zerstörung von Daten. <a href="https://google.de" target="_blank"><strong>Mehr erfahren.</strong></a>
 
   # Temporary chat retention period in hours (default: 720, min: 1, max: 8760)
   # temporaryChatRetention: 1
+  # Regular chat retention in hours under retentionMode: "all" (min: 1, max: 8760).
+  # Defaults to the temporary chat retention policy when omitted.
+  # generalChatRetention: 2160 # 90 days, independently of temporary chats
+  # Existing stored deadlines are not migrated when these settings change.
+  # Retention mode: "temporary" (default) applies expiry only to chats users mark temporary;
+  # "all" applies expiry to all data types while keeping chats visible in history;
+  # "ephemeral" forces every chat to be temporary (always on, not user-toggleable) and applies expiry to all data.
+  # Before switching from "all"/"ephemeral" back to "temporary", remove retention deadlines from non-temporary data
+  # that should stop expiring:
+  # db.conversations.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })
+  # db.messages.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })
+  # MongoDB does not drop superseded indexes automatically. After upgrading, old Meili indexes
+  # such as "_meiliIndex_1_expiredAt_1" can be dropped from conversations/messages once the new
+  # "_meiliIndex_1_isTemporary_1_expiredAt_1" indexes exist.
+  # retentionMode: "temporary"
+  # Set retainAgentFiles to true to keep persistent agent resource files from expiring under
+  # retentionMode: "all"; non-agent files still expire.
+  # retainAgentFiles: false
 
 # Example Cloudflare turnstile (optional)
 #turnstile:
@@ -140,19 +424,40 @@ interface:
 #    size: "normal"      # Options: "normal", "compact", "flexible", or "invisible"
 
 # Example Registration Object Structure (optional)
+# Changing the registered email address from Settings > Account.
+# Omitted, these fall back to ALLOW_EMAIL_CHANGE and a 15-minute link.
+# emailChange:
+#   enabled: true
+#   tokenTTLSeconds: 900
+
+# Passkey (WebAuthn) enrollment limits.
+# Omitted, perUserMax falls back to MAX_PASSKEYS_PER_USER, then 20.
+# passkeys:
+#   perUserMax: 20
+
 registration:
   socialLogins: ['github', 'google', 'discord', 'openid', 'facebook', 'apple', 'saml']
   # allowedDomains:
   # - "gmail.com"
+  # How long a started social login may take to return from the provider (ms, default 600000)
+  # oauthStateTtlMs: 600000
+  # OpenID discovery retries when the provider is unreachable (overrides OPENID_DISCOVERY_RETRY_* env vars)
+  # openidDiscovery:
+  #   startupAttempts: 1   # attempts before startup continues; 0 = background retries only
+  #   retryDelayMs: 5000   # delay between startup and background attempts
 
 # Example Balance settings
 # balance:
 #   enabled: false
 #   startBalance: 20000
 #   autoRefillEnabled: false
-#   refillIntervalValue: 30
+#   refillIntervalValue: 30 # Reset mode requires a positive integer
 #   refillIntervalUnit: 'days'
 #   refillAmount: 10000
+#   # Deploy reset-capable servers to every replica before selecting 'reset'.
+#   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
+#   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
+#   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
 # Example Transactions settings
 # Controls whether to save transaction records to the database
@@ -162,6 +467,20 @@ registration:
 # Note: If balance.enabled is true, transactions will always be enabled
 # regardless of this setting to ensure balance tracking works correctly
 
+# Speech (STT/TTS) outbound requests to operator-provided target URLs are SSRF-guarded
+# at connect time: private, loopback, link-local, and cloud-metadata targets are blocked
+# by default. To point STT/TTS at a private or self-hosted service (LocalAI, a self-hosted
+# Whisper server), add its host:port to `allowedAddresses` on the `stt` / `tts` section.
+# SECURITY: `allowedAddresses` entries are trusted before the private-IP check. A listed
+# host:port is permitted even when it resolves to a private IP, so list only hosts you fully
+# control and that cannot be repointed by an attacker. Do not list attacker-controllable or
+# DNS-rebindable hostnames, because doing so re-opens the private-address path this guard
+# closes. Prefer a private IP literal over a hostname when exempting a private target. Entries
+# must include a port (`host:port`, `private.ip:port`, or `[ipv6]:port`); do not use URLs, paths,
+# CIDR ranges, bare hosts/IPs, or public IP literals.
+# When a forward proxy is configured (PROXY / HTTP(S)_PROXY), it performs DNS and egress in its
+# own network context, so these requests are delegated to it and it must be SSRF-enforcing; the
+# connect-time guard only covers direct, non-proxied connections.
 # speech:
 #   tts:
 #     openai:
@@ -169,15 +488,47 @@ registration:
 #       apiKey: '${TTS_API_KEY}'
 #       model: ''
 #       voices: ['']
-
+#     allowedAddresses:
+#       - 'localhost:8020'
+#       - '127.0.0.1:8020'
 #
 #   stt:
 #     openai:
 #       url: ''
 #       apiKey: '${STT_API_KEY}'
 #       model: ''
+#     allowedAddresses:
+#       - 'localhost:8000'
+#       - '127.0.0.1:8000'
+
+# OCR (Mistral / Mistral-compatible) outbound requests to `ocr.baseURL` are SSRF-guarded at
+# connect time with the same default-deny for private targets. To point OCR at a private or
+# self-hosted Mistral-compatible service, add its host:port to `allowedAddresses`. The same
+# trust caveat as speech applies: a listed host:port is trusted before the private-IP check,
+# so list only hosts you fully control and that cannot be repointed by an attacker. Entries
+# must include a port and must not be URLs, paths, CIDR ranges, bare hosts/IPs, or public IP
+# literals.
+# ocr:
+#   baseURL: '${OCR_BASEURL}'
+#   apiKey: '${OCR_API_KEY}'
+#   allowedAddresses:
+#     - 'localhost:8080'
+#     - '127.0.0.1:8080'
 
 # rateLimits:
+#   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
+#   mcpApps:
+#     resourcesPerMinute: 120
+#     toolCallsPerMinute: 60
+#   # Shared account budget for all authenticated 2FA management operations.
+#   # Always active; successful and failed requests count. Uses Redis when enabled.
+#   # Minimum 3, so enable -> verify -> confirm can complete within one window.
+#   twoFactorManagement:
+#     requestsPerFiveMinutes: 7
+#   # Authenticated agent-event admission has its own API-key-principal bucket.
+#   agentEvents:
+#     userMax: 40
+#     userWindowInMinutes: 1
 #   fileUploads:
 #     ipMax: 100
 #     ipWindowInMinutes: 60  # Rate limit window for file uploads per IP
@@ -188,6 +539,17 @@ registration:
 #     ipWindowInMinutes: 60  # Rate limit window for conversation imports per IP
 #     userMax: 50
 #     userWindowInMinutes: 60  # Rate limit window for conversation imports per user
+#   # Asking for a change of the registered email, per authenticated user.
+#   emailChange:
+#     userMax: 3
+#     userWindowInMinutes: 2
+#   # Opening a verification link. The endpoint is unauthenticated, so the source
+#   # address is bounded as well as the account the link names.
+#   emailChangeConfirm:
+#     ipMax: 20
+#     ipWindowInMinutes: 2
+#     userMax: 2
+#     userWindowInMinutes: 2
 
 # Agent Actions domain restrictions (OpenAPI spec validation)
 # SECURITY: If not configured, SSRF targets are blocked (localhost, private IPs, .internal/.local TLDs).
@@ -202,38 +564,41 @@ actions:
     - 'google.com'
     # - 'http://10.225.26.25:7894'  # Internal IP with protocol/port (uncomment if needed)
   # `allowedAddresses` is an SSRF exemption list, NOT a strict whitelist.
-  # Hostnames or IPs listed here bypass the default-deny block on private/loopback/
-  # link-local destinations. Public domains continue to work normally — listing
-  # private targets here does not restrict access to anything else.
+  # Hostname/IP + port pairs listed here bypass the default-deny block for that
+  # one private/loopback/link-local service. Public domains continue to work
+  # normally — listing private targets here does not restrict access to anything else.
   #
-  # Entries must be bare hostnames or private IP literals only — no URLs, paths,
-  # CIDR ranges, ports, or public IPs. Public IP literals are rejected at config
-  # load (the field is scoped to private IP space; public IPs aren't SSRF targets).
+  # Entries must include a port: `host:port`, `private.ip:port`, or `[ipv6]:port`.
+  # Do not use URLs, paths, CIDR ranges, bare hosts/IPs, or public IP literals.
+  # Public IP literals are rejected at config load (the field is scoped to
+  # private IP space; public IPs aren't SSRF targets).
   #
-  # NOTE on hostnames: a hostname entry trusts whatever IP that name resolves to.
-  # If DNS for that name is hijacked or rotated to a different private IP, the
-  # exemption follows. Only list hostnames whose DNS you control. Prefer literal
-  # IPs when you can.
+  # NOTE on hostnames: a hostname entry trusts whatever IP that name resolves to
+  # on the listed port. If DNS for that name is hijacked or rotated to a different
+  # private IP, the exemption follows. Only list hostnames whose DNS you control.
+  # Prefer literal IPs when you can.
   # allowedAddresses:
-  #   - 'host.docker.internal'
-  #   - '127.0.0.1'
-  #   - '10.0.0.5'
+  #   - 'host.docker.internal:11434'
+  #   - '127.0.0.1:11434'
+  #   - '10.0.0.5:8080'
 
 # Custom endpoint baseURL exemption list
 # SECURITY: User-provided baseURLs (`baseURL: 'user_provided'`) are validated against
 # the same SSRF block as Actions and MCP. If your users legitimately point at private
-# services (self-hosted Ollama, internal LLM gateway, etc.), list those hostnames or
-# IPs here so the validator allows them through. Public destinations are unaffected.
+# services (self-hosted Ollama, internal LLM gateway, etc.), list those hostname/IP
+# + port pairs here so the validator allows them through. Public destinations are
+# unaffected.
 #
-# Entries must be bare hostnames or private IP literals (no URLs, paths, CIDR,
-# ports, or public IPs). Hostname entries trust whatever IP they resolve to —
-# only list names whose DNS you control.
+# Entries must include a port: `host:port`, `private.ip:port`, or `[ipv6]:port`.
+# Do not use URLs, paths, CIDR ranges, bare hosts/IPs, or public IP literals.
+# Hostname entries trust whatever IP they resolve to on the listed port — only
+# list names whose DNS you control.
 # endpoints:
 #   allowedAddresses:
-#     - 'localhost'
-#     - '127.0.0.1'
-#     - 'ollama'
-#     - '10.0.0.5'
+#     - 'localhost:11434'
+#     - '127.0.0.1:11434'
+#     - 'ollama:11434'
+#     - '10.0.0.5:8080'
 
 # MCP Server domain restrictions for remote transports (SSE, WebSocket, HTTP)
 # SECURITY: If not configured, SSRF targets are blocked (localhost, private IPs, .internal/.local TLDs).
@@ -243,6 +608,9 @@ actions:
 # Supports wildcards: '*.example.com' matches 'api.example.com', 'staging.example.com', etc.
 # Supports protocol/port restrictions: 'https://api.example.com:8443' restricts to specific protocol/port.
 # mcpSettings:
+#   # New MCP Apps require explicit opt-in. If omitted, legacy inline HTML remains enabled;
+#   # false disables both MCP Apps and legacy inline HTML.
+#   apps: true
 #   allowedDomains:
 #     - 'host.docker.internal'    # Docker host access (required for Docker setups)
 #     - 'localhost'               # Local development
@@ -250,21 +618,61 @@ actions:
 #     - 'https://secure.api.com'  # Protocol-restricted
 #     - 'http://internal:8080'    # Protocol and port restricted
 #   # allowedAddresses is an SSRF exemption list (private-IP-space only).
-#   # Hostnames/IPs listed here bypass the default-deny block; public destinations
-#   # remain reachable. Useful when you want default SSRF protection AND specific
-#   # internal MCP servers. Entries must be bare hostnames or private IP literals
-#   # (no URLs, paths, CIDR, ports, or public IPs). Hostname entries trust
-#   # whatever IP they resolve to — only list names whose DNS you control.
+#   # Hostname/IP + port pairs listed here bypass the default-deny block for that
+#   # one private service; public destinations remain reachable. Useful when you
+#   # want default SSRF protection AND specific internal MCP servers. Entries must
+#   # include a port (`host:port`, `private.ip:port`, or `[ipv6]:port`) and must
+#   # not be URLs, paths, CIDR ranges, bare hosts/IPs, or public IP literals.
+#   # Hostname entries trust whatever IP they resolve to on the listed port.
 #   allowedAddresses:
-#     - 'host.docker.internal'
-#     - '127.0.0.1'
+#     - 'host.docker.internal:8080'
+#     - '127.0.0.1:8080'
+
+# Deployment-owned MCP App sandbox settings. These cannot be overridden by role, group, or user
+# configuration. Set url to a dedicated origin routed to /api/mcp/sandbox. Defaults are shown.
+# mcpAppSandbox:
+#   url: https://mcp-sandbox.example.com/api/mcp/sandbox
+#   maxSourcesPerDirective: 32
+#   maxSerializedLength: 4096
+#   maxPersistedAppBytes: 1048576
+#   maxAdmissionRequestsPerMinute: 240
+#   maxActiveViews: 3  # simultaneous interactive App views per browser
+#   maxActionPreviewChars: 16384  # App tool arguments and chat message preview
 
 # Example MCP Servers Object Structure
 # mcpServers:
 #   everything:
 #     # type: sse # type can optionally be omitted
 #     url: http://localhost:3001/sse
+#     # proxy: "${MCP_PROXY_URL}"  # optional outbound proxy (http/https/socks/socks5)
 #     timeout: 60000  # 1 minute timeout for this server, this is the default timeout for MCP servers.
+#   coordinated-oauth:
+#     type: streamable-http
+#     url: https://mcp.example.com/mcp
+#     requiresOAuth: true
+#     # Stage rollout with coordination disabled (the default). Once EVERY replica is upgraded,
+#     # pause MCP traffic and drain active refreshes/callbacks on EVERY replica before changing
+#     # this flag. Apply the same value everywhere while paused, then resume. For rollback, drain,
+#     # disable everywhere, replace the replicas, then resume. Do not toggle during live traffic.
+#     # All coordinated replicas must use the same Redis cache.
+#     oauthRefreshCoordination: false
+#     # Peer refresh wait; capped at 30000 ms by the refresh execution budget.
+#     oauthRefreshWaitTimeout: 15000
+#     # Callback/adoption persistence wait; raise for longer publication budgets (max 840000 ms).
+#     oauthPersistenceWaitTimeout: 15000
+#   private-openid:
+#     type: streamable-http
+#     url: https://mcp.example.com/mcp
+#     headers:
+#       # Trusted operator configs automatically use the live session token and replace the
+#       # connection once after a 401/403. A rejected tools/call is never replayed automatically.
+#       # Enabled oauth or obo configuration takes precedence over this passthrough mode.
+#       Authorization: "Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}"
+#     # Sent only during a chat turn, merged over `headers` (these win on a duplicate name).
+#     # Tool discovery has no conversation to resolve them against, so it omits them entirely:
+#     # a `{{LIBRECHAT_BODY_*}}` placeholder here no longer hides the server's tool list.
+#     requestHeaders:
+#       X-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
 #   puppeteer:
 #     type: stdio
 #     command: npx
@@ -303,12 +711,70 @@ endpoints:
   #   # (optional) Assistant Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
   #   capabilities: ["code_interpreter", "retrieval", "actions", "tools", "image_vision"]
   # agents:
+  #   # Maximum provider response-body inactivity for Agent model calls. Defaults to 15 minutes;
+  #   # each received chunk resets the timer. Set to 0 to disable the idle timeout.
+  #   modelResponseBodyTimeoutMs: 900000
+  #   # Maximum wait for provider response headers. Defaults to 5 minutes; 0 disables.
+  #   modelResponseHeadersTimeoutMs: 300000
+  #   # Interval between keepalive comments on a chat stream that is quiet (for example while a
+  #   # long tool runs), so proxies with an idle timeout (Cloudflare 100 s, nginx 60 s) keep it
+  #   # open. Defaults to 25000 ms; 0 disables.
+  #   streamKeepaliveIntervalMs: 25000
   #   # (optional) Default recursion depth for agents, defaults to 25
   #   recursionLimit: 50
+  #   # Maximum provider error characters retained without content protection (0 hides detail).
+  #   maxProviderErrorChars: 2000
   #   # (optional) Max recursion depth for agents, defaults to 25
   #   maxRecursionLimit: 100
+  #   # (optional) Abort a run once a single streamed tool call's arguments exceed this many bytes.
+  #   # Guards against runaway malformed tool-call generation. Defaults to 65536 (64 KiB); 0 disables.
+  #   # Host-side skill/sandbox edits, not attached-worker edits. Over-budget calls write nothing.
+  #   hostFileEdits:
+  #     maxEdits: 100
+  #     maxWorkBytes: 67108864  # cumulative matching/reconstruction bytes
+  #     maxOccurrences: 100000 # cumulative occurrences across every edit/pass
+  #     timeoutMs: 2000       # terminate an overlong worker job
+  #     maxConcurrent: 2      # per API process; no waiting queue
+  #   maxToolCallArgBytes: 65536
+  #   # (optional) Abort a run once a single model generation emits more than this many stream events.
+  #   # Defense in depth against looping provider streams. Disabled by default.
+  #   maxDeltaEventsPerTurn: 100000
+  #   # (optional) Per-tool overrides for maxToolCallArgBytes, keyed by tool name; 0 disables that
+  #   # tool's guard. LibreChat ships { create_file: 131072 } so document-sized file writes are not
+  #   # cut off; entries here merge over (and can replace) that default.
+  #   maxToolCallArgBytesByTool:
+  #     create_file: 131072
   #   # (optional) Disable the builder interface for agents
   #   disableBuilder: false
+  #   # (optional) When conversation titles are generated:
+  #   #   immediate (default): generate as soon as the request is made, in parallel
+  #   #     with the response, from the user's first message (title appears within ~1-2s).
+  #   #   final: defer generation until the full response completes (legacy behavior).
+  #   # Set under `endpoints.all` instead to apply as the global default for all endpoints.
+  #   titleTiming: immediate
+  #   # (optional) Generate one-line headers for blocks of Agent reasoning and tool calls.
+  #   # Header generation is a separate model call whose usage and cost are recorded.
+  #   activityLabel: true
+  #   activityEndpoint: openAI
+  #   activityModel: gpt-4.1-nano
+  #   # activityPrompt: 'Write a short activity label...'
+  #   # activityMaxPerRun: 20
+  #   # activityCharLimit: 600
+  #   # (optional) Replace the generic Thinking/Thoughts heading with a live
+  #   # generated orientation as sufficiently long top-level reasoning evolves.
+  #   # Enabling this sends a bounded snapshot (up to 4,000 characters) of the
+  #   # visible reasoning to the resolved label endpoint, which may be a different provider.
+  #   # With Langfuse tracing enabled, that snapshot is also recorded as generation input
+  #   # unless the active redaction policy suppresses the label call.
+  #   # reasoningLabel: true
+  #   # reasoningLabelModel: gpt-4.1-nano # falls back to activity/title/run model
+  #   # reasoningLabelEndpoint: openAI    # falls back to activity/run endpoint
+  #   # reasoningLabelPrompt: 'Describe the current reasoning direction...'
+  #   # reasoningLabelMinChars: 500       # text required before the first label
+  #   # reasoningLabelUpdateChars: 400    # new text between streaming revisions
+  #   # reasoningLabelUpdateIntervalMs: 3000 # minimum time between streaming revisions
+  #   # A final rewrite may run immediately after a meaningful 120-character tail.
+  #   # reasoningLabelMaxPerRun: 8        # provider-call cap per response
   #   # (optional) Maximum total citations to include in agent responses, defaults to 30
   #   maxCitations: 30
   #   # (optional) Maximum citations per file to include in agent responses, defaults to 7
@@ -316,16 +782,269 @@ endpoints:
   #   # (optional) Minimum relevance score for sources to be included in responses, defaults to 0.45 (45% relevance threshold)
   #   # Set to 0.0 to show all sources (no filtering), or higher like 0.7 for stricter filtering
   #   minRelevanceScore: 0.45
+  #   # (optional) Maximum explicit subagents per agent, for both the flat list and
+  #   # graph definitions. Defaults to 10; hard cap 50.
+  #   maxSubagents: 20
+  #   # (optional) Shared files during an active agent run. Each delegating agent must
+  #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
+  #   # private until explicitly published. Published files remain downloadable.
+  #   # Live child activity, independent of the completed transcript.
+  #   subagentActivity:
+  #     replayTtlMs: 300000 # Increase for long silent tool calls.
+  #     publicationTimeoutMs: 1000
+  #     retryAttempts: 3
+  #     retryBaseDelayMs: 100
+  #     recoveryDelayMs: 1000
+  #     memoryMaxStreams: 1000 # Non-Redis replay cache.
+  #     memoryMaxBytes: 16777216
+  #   fileSharing:
+  #     enabled: false
+  #     allowSiblingSharing: false # permit explicitly named sibling/descendant recipients
+  #     maxFiles: 100 # manifest capacity, 1–1000
+  #     maxPrivateBytes: 268435456 # aggregate private output snapshots, 256 MiB
+  #     ttlMs: 3600000 # active manifest lifetime, at most 24 hours
+  #   # (optional) Maximum concurrent Code API uploads per route and user. Defaults to 3.
+  #   codeApiUploadConcurrency: 3
+  #   # (optional) Maximum total time spent waiting on Code API rate limits. Defaults to 20000 ms.
+  #   codeApiMaxRetryWaitMs: 20000
+  #   # (optional) Cap the number of active accessible skills shown in the model-visible catalog.
+  #   # Useful for large organizations where many department-specific skills may be available.
+  #   skills:
+  #     maxCatalogSkills: 20
   #   # (optional) Agent Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
-  #   capabilities: ["deferred_tools", "execute_code", "file_search", "actions", "tools"]
+  #   # web_search controls only LibreChat's external pipeline, not provider-native search.
+  #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
+  #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
+  #   # The following capabilities are opt-in and must be added explicitly:
+  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
+  #   # "stateful_code_sessions" is highly experimental and may change substantially.
+  #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
+  #   statefulCodeSessions:
+  #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
+  #     # On by default; only agents with a saved allowlist are affected. Set false to keep
+  #     # every agent on its fixed machine (for example while older API replicas still run).
+  #     allowEnvironmentSelection: true
+  #     # Maximum additional machines per agent; default 32, supported ceiling 128.
+  #     maxEnvironmentChoices: 32
+  #     # Keep move-only behavior unless attach/detach is explicitly enabled.
+  #     # Enable only after ALL API replicas run this build and advertise decision protocol 1
+  #     # (CODE_ENVIRONMENT_DECISION_VERSION=1), then refresh clients.
+  #     conversationMoves:
+  #       enabled: true
+  #       allowAttachDetach: false
+  #     allowedEnvironments: ["user", "agent-user", "conversation"]
+  #     # Personal BYOM enrollment. Requires allowPrincipalWorkers on a control plane.
+  #     # Omitted values default to enabled and five registered environments per user.
+  #     # Principal config overrides may tighten, but cannot raise, this ceiling.
+  #     # Lowering the limit, or disabling enrollment, does not revoke existing machines.
+  #     # This counts registered environments across control planes, not online workers.
+  #     principalWorkers:
+  #       enabled: true
+  #       maxPerUser: 25
+  #     # Route an agent to an operator-managed Code API or to a Code API whose
+  #     # `remote-bridge` backend leases work to an outbound @librechat/code worker.
+  #     environments:
+  #       - id: managed-default
+  #         name: Managed Code API
+  #         type: managed
+  #         baseURL: https://code.example.com/v1
+  #         default: true
+  #       - id: engineering-vm
+  #         name: Engineering VM
+  #         type: attached
+  #         baseURL: https://code-bridge.example.com/v1
+  #         # Pins an administrator-managed environment to one worker.
+  #         owner: deployment
+  #         pairing:
+  #           workerId: engineering-vm
+  #           tokenEnv: CODE_BRIDGE_ADMIN_TOKEN
+  #       - id: personal-workers
+  #         name: Personal Code Workers
+  #         type: attached
+  #         baseURL: https://code-bridge.example.com/v1
+  #         # Lets authenticated users create principal-bound environments and
+  #         # receive a one-time code for an outbound @librechat/code worker.
+  #         # The administrator secret stays in the named environment variable.
+  #         owner: deployment
+  #         # Optionally expose only these bounded preferences to environment owners.
+  #         configSchema:
+  #           limits:
+  #             # Maximum Bash execution budget the model may request per call.
+  #             # Omit to preserve the historical 30-second limit. Hard cap: 300000.
+  #             maxCommandTimeoutMs: 120000
+  #             # Foreground Bash default when timeoutMs is omitted. Omit to keep 30000.
+  #             # Clamped to the effective admin, worker, and verified HTTP ceilings.
+  #             # Background calls still default to the effective maximum.
+  #             # Programmatic Bash uses this only when timeout is omitted; explicit
+  #             # values keep the same negotiated ceiling. Its SDK has a 1000 ms floor
+  #             # and cannot run under a smaller ceiling; use bash_tool for those budgets.
+  #             # defaultCommandTimeoutMs: 60000
+  #             # Attached read_file window when max_lines is omitted. Omit to keep 200.
+  #             # Valid range: 1–500 lines; the existing byte budget still applies.
+  #             # defaultReadFileLines: 500
+  #             # New strict fields require all LibreChat API replicas to be updated first.
+  #             # Optional total HTTP budget per workspace tool call, including
+  #             # admission, retries, worst-case execution, settlement, and delivery.
+  #             # Do NOT enable until every LibreChat API replica recognizes this
+  #             # strict config field, Code API honors X-LibreChat-Workspace-Queue-Wait-Ms,
+  #             # and a non-mutating timed canary verifies the live CDN, load balancer,
+  #             # ingress, and caller can all outlast this value. The Nginx example
+  #             # (120s) cannot establish the live limit. Omission keeps 30s admission.
+  #             # With 125s total, a read can queue <=90s, a default command <=85s,
+  #             # a 90s command <=25s. With the default 10s admission reserve,
+  #             # commands >105s cannot fit; the 120s command ceiling above requires
+  #             # a VERIFIED total budget of at least 140s to be usable.
+  #             # maxRequestTimeoutMs: 125000
+  #             # Optional command admission allowance before local dispatch overhead.
+  #             # Omission reserves 10s; valid range: 1000–300000 ms. The HTTP budget
+  #             # must exceed this allowance plus 10s settlement/delivery grace;
+  #             # with the 10s default, a budget of 20s or less is rejected.
+  #             # Smaller allowances give a busy worker less time to accept the call.
+  #             # minCommandAdmissionMs: 10000
+  #           permissions:
+  #             fileWrite:
+  #               allowed: [allow, ask, deny]
+  #               default: ask
+  #             commandExecution:
+  #               # Add allow to offer Full access in the chat composer. Both
+  #               # permission categories must permit allow; defaults can stay ask.
+  #               # Full access skips routine code prompts within the worker sandbox.
+  #               # Explicit endpoint ask/deny rules and hooks still apply.
+  #               allowed: [ask, deny]
+  #               default: ask
+  #         pairing:
+  #           allowPrincipalWorkers: true
+  #           tokenEnv: CODE_BRIDGE_ADMIN_TOKEN
+  #   # (optional) Trusted origin for internal event delivery. By default, LibreChat
+  #   # uses its own bound listener; override only for an internal TLS/front-door route.
+  #   eventDriven:
+  #     # selfUrl: 'https://librechat.internal'
+  #   # (optional) Automatic conversational delivery for supported completed background tasks.
+  #   # Enabled by default; set false to keep background tools and subagents poll-only.
+  #   backgroundTasks:
+  #     completionWakeups: true
+  #     # Deliver a conversation's ready results together in one wake-up. On by default; set false
+  #     # during a rolling upgrade while replicas from releases without it still serve traffic.
+  #     completionReceiptBatching: true
+  #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
+  #     ordinaryToolCancellation: false
+  #   # (optional) Show a conversation's pull request in the chat header and the sidebar. It is on
+  #   # as soon as the server has a GitHub token and a repository scope, with no switch needed:
+  #   # the token is `token` below, else the first of GITHUB_PULL_REQUEST_TOKEN, GITHUB_TOKEN and
+  #   # GH_TOKEN that is set, and the scope is `allowedRepositories` or `allowAllRepositories`.
+  #   # Without either, every chat simply shows no pull request. It also needs a code worker built
+  #   # from LibreChat-AI/code-interpreter#311 or later that reports its branch, with
+  #   # CODEAPI_BRIDGE_LANE_GIT=true set on the Code API. Use a fine-grained token limited to the
+  #   # repositories involved, with read-only "Pull requests", "Checks" and "Contents" permissions.
+  #   # Without "Checks" every matched pull request fails to load, and without "Contents" a chat
+  #   # whose branch has moved on since its last command does.
+  #   pullRequests:
+  #     enabled: true # set false to turn the feature off
+  #     # Environment variable reference only, never the token itself. Optional, see above.
+  #     token: "${GITHUB_PULL_REQUEST_TOKEN}"
+  #     # Repositories the token may be used for, as owner/name or owner/*. A worker reports its
+  #     # own repository, and only these are ever looked up with the server's token.
+  #     allowedRepositories: ["LibreChat-AI/LibreChat"]
+  #     # Or look up every repository a worker reports, limited only by what the token can read.
+  #     # Off by default: any user could then point the server's token at any repository it can
+  #     # see, so use a read-only token scoped to the repositories you are willing to show.
+  #     allowAllRepositories: false
+  #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
+  #     cacheTtlSeconds: 30
+  #     # Results cached per credential before the oldest is evicted (10 to 100000). Raise it when many
+  #     # repositories and branches are active at once, or fresh results are evicted and GitHub is asked again.
+  #     cacheMaxEntries: 500
+  #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
+  #     # past it. When principals configure different values, the largest applies.
+  #     cacheMaxCredentials: 256
+  #     # Lookups one sidebar request runs at once (1 to 16); each is a few GitHub requests.
+  #     maxConcurrentLookups: 4
+  #     # Seconds one sidebar request may stay open in total (1 to 120); entries still waiting then
+  #     # answer with an upstream error and the row shows nothing until the next refresh.
+  #     batchTimeoutSeconds: 20
+  #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
+  #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
+  #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
+  #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
+  #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxCandidatePages: 1 # pages of those read per state, for branch names reused more often (1 to 10)
+  #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
+  #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
+  #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
+  #   # (optional) Require user approval before matching tool calls. Disabled by default.
+  #   toolApproval:
+  #     # Opt in after all replicas have been upgraded. Agent tool rows then expose
+  #     # Always ask, Always approve, Ask once per chat, and Ask once then always approve.
+  #     # Explicit administrator ask/deny rules and hooks remain authoritative.
+  #     agentModes: false
+  #     grantLookupTimeoutMs: 3000
+  #     enabled: true
+  #     mode: default # default, dontAsk, or bypass
+  #     allow: ["mcp:trusted-server:read_*"]
+  #     deny: ["mcp:*:delete_*"] # Deny rules always take precedence
+  #     ask: ["mcp:*:*"]
+  #     reason: "Review {tool} before it runs."
+  #     allowAlways: false # Offer "Always allow" to stop prompting for a tool for the rest of a conversation
+  #   # (optional) Persist Agent runs paused for approval or Ask User. MongoDB is the durable default.
+  #   checkpointer:
+  #     type: mongo # mongo (default) or memory (single-process development only)
+  #     ttl: 86400 # Approval window in seconds; defaults to 24 hours
+  #   # (optional) Keep the user's answers to Ask User questions in the model context verbatim,
+  #   # even after the messages that carried them were summarized or pruned. On by default.
+  #   askUserQuestion:
+  #     retainedAnswers:
+  #       enabled: true
+  #       maxTokens: 4096 # Older answers drop first past this budget; the newest is always kept
+  #   # (optional) Authenticate machine clients for the Agent Management API.
+  #   # Each verified OAuth client is bound server-side to one existing LibreChat
+  #   # user and tenant; that user's normal role and Agent ACLs still apply.
+  #   managementApi:
+  #     auth:
+  #       oidc:
+  #         enabled: true
+  #         issuer: 'https://identity.example.com/'
+  #         audience: 'https://librechat.example.com/agents'
+  #         # jwksUri: 'https://identity.example.com/.well-known/jwks.json'
+  #         # Cognito M2M access tokens use client_id instead of aud. For that
+  #         # profile, omit audience and require the access-token type and scope:
+  #         # tokenUse: access
+  #         # requiredScopes: ['agents-api/manage']
+  #       clients:
+  #         - clientId: 'machine-client-id'
+  #           # subject: 'provider-specific-service-principal-subject'
+  #           userId: '507f1f77bcf86cd799439011'
+  #           tenantId: 'tenant-id'
+
+  # (optional) Custom request headers for the built-in OpenAI / Google endpoints.
+  # Forwarded on every request to the provider (or an AI gateway / reverse proxy
+  # in front of it) while keeping provider-native request shaping intact. Values
+  # support env vars (${VAR}), user fields ({{LIBRECHAT_USER_*}}), and request-body
+  # fields ({{LIBRECHAT_BODY_CONVERSATIONID}}). Set the same `headers:` block under
+  # `endpoints.all` to apply globally across endpoints (endpoint values win on key
+  # collisions). NOTE: send metadata headers like these only behind a gateway that
+  # consumes them — native provider APIs ignore unknown headers.
+  # openAI:
+  #   headers:
+  #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+  # google:
+  #   headers:
+  #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
 
   # Anthropic endpoint configuration with Vertex AI support
   # Use this to run Anthropic Claude models through Google Cloud Vertex AI
   # anthropic:
-  #   # (optional) Stream rate limiting in milliseconds
+  #   # (optional) Override the adaptive stream-smoothing cadence in milliseconds.
+  #   # Agents SDK-backed providers smooth at 25ms by default; set 0 to disable
+  #   # smoothing. (Legacy Assistants/Ollama paths sleep this long per chunk instead.)
   #   streamRate: 20
   #   # (optional) Title model for conversation titles
   #   titleModel: claude-3.5-haiku  # Use the visible model name (key from models config)
+  #   # (optional) Custom request headers, same placeholder resolution as above.
+  #   # Useful for correlating reverse-proxied requests by conversation, since an
+  #   # unknown header is simply ignored by the native Anthropic API.
+  #   headers:
+  #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+  #     X-Conversation-Id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
   #
   #   # Vertex AI Configuration - enables running Claude models via Google Cloud
   #   # This is similar to Azure OpenAI but for Anthropic models on Google Cloud
@@ -333,6 +1052,10 @@ endpoints:
   #   vertex:
   #     # Vertex AI region (optional, defaults to 'us-east5')
   #     # Available regions: us-east5, us-central1, europe-west1, europe-west4, asia-southeast1
+  #     # Multi-region endpoints: us, eu, global
+  #     # IMPORTANT: specific regional endpoints only serve Claude Sonnet 4.6 and earlier. Newer
+  #     # models (Opus 4.7+, Opus 5, Sonnet 5, Fable 5/5.1) require "global" or a multi-region value
+  #     # ("us"/"eu") and will 404 on a specific region. "global" also avoids the 10% regional premium.
   #     region: "us-east5"
   #     # Path to Google service account key file (optional)
   #     # If not specified, uses GOOGLE_SERVICE_KEY_FILE env var or default path (api/data/auth.json)
@@ -350,6 +1073,10 @@ endpoints:
   #     # Option 1: Simple array (legacy format - model name = deployment name)
   #     # Use this if you want the technical model IDs to show in the UI
   #     # models:
+  #     #   - "claude-fable-5-1"
+  #     #   - "claude-fable-5"
+  #     #   - "claude-opus-5"
+  #     #   - "claude-opus-4-8"
   #     #   - "claude-sonnet-4-6"
   #     #   - "claude-3-7-sonnet-20250219"
   #     #   - "claude-3-5-sonnet-v2@20241022"
@@ -360,6 +1087,14 @@ endpoints:
   #     # The deploymentName is the actual Vertex AI model ID used for API calls
   #     # You can use friendly names (avoid spaces for cleaner YAML) or technical IDs as keys
   #     models:
+  #       claude-fable-5.1:
+  #         deploymentName: claude-fable-5-1
+  #       claude-fable-5:
+  #         deploymentName: claude-fable-5
+  #       claude-opus-5:
+  #         deploymentName: claude-opus-5
+  #       claude-opus-4.8:
+  #         deploymentName: claude-opus-4-8
   #       claude-opus-4.5:
   #         deploymentName: claude-opus-4-5@20251101
   #       claude-sonnet-4:
@@ -380,6 +1115,74 @@ endpoints:
   #     #     deploymentName: claude-3-5-haiku@20241022  # Override for this model
 
   custom:
+    # xAI: Grok 4.7 uses the existing OpenAI-compatible chat and agent paths.
+    # https://docs.x.ai/developers/grok-4-7
+    # Set XAI_API_KEY in your environment. No separate SpaceXAI provider is needed.
+    - name: 'xai'
+      # Optional: expose this endpoint only to users in the named tenant.
+      # tenantId: 'your-tenant-id'
+      apiKey: '${XAI_API_KEY}'
+      baseURL: 'https://api.x.ai/v1'
+      models:
+        default: ['grok-4.7']
+        fetch: true
+      titleConvo: true
+      titleModel: 'grok-4.7'
+      modelDisplayLabel: 'xAI'
+
+    # Anthropic-compatible Example (native `/v1/messages` API)
+    # Set `provider: anthropic` to use the native Anthropic client instead of the
+    # default OpenAI-compatible one — for Anthropic itself or Anthropic-compatible
+    # gateways (e.g. AI gateways, OpenCode Zen). The `baseURL` must be the API root
+    # the Anthropic SDK appends `/v1/messages` to. List models explicitly: model
+    # auto-fetch uses the OpenAI `/models` convention and is not used for this provider.
+    - name: 'Claude-Compatible'
+      provider: 'anthropic'
+      apiKey: '${ANTHROPIC_API_KEY}'
+      baseURL: 'https://api.anthropic.com'
+      # (optional) headers forwarded on every request (e.g. for a reverse proxy);
+      # values support the same placeholders as built-in endpoints.
+      headers:
+        anthropic-version: '2023-06-01'
+      models:
+        default:
+          - 'claude-sonnet-4-5'
+          - 'claude-opus-4-5'
+        fetch: false
+      titleConvo: true
+      titleModel: 'claude-sonnet-4-5'
+      # Agent activity groups: collapse each block of reasoning + tool calls
+      # under a generated one-line header. Same shape as the title options.
+      activityLabel: true
+      activityModel: 'claude-3-5-haiku'
+      # activityEndpoint: 'anthropic'   # run labels on another endpoint's credentials
+      # activityPrompt: 'Write a 5-9 word past-tense label...'
+      # activityMaxPerRun: 20           # cost cap per response
+      # activityCharLimit: 600          # per-entry prompt truncation
+      # Parent phase summaries are an independent opt-in. They collapse 2+
+      # logical activities before the answer into one run-level summary.
+      # activityPhaseLabel: true
+      # activityPhaseModel: 'claude-3-5-haiku' # falls back to activity/title/run model
+      # activityPhaseEndpoint: 'anthropic'     # falls back to activity/run endpoint
+      # activityPhasePrompt: 'Summarize the completed agent phase...'
+      # activityPhaseMaxPerRun: 5               # cost cap per response
+      # Live reasoning labels are also independent. They update one top-level
+      # THINK heading in place and never create or shift message content parts.
+      # Enabling this sends a bounded snapshot (up to 4,000 characters) of the
+      # visible reasoning to the resolved label endpoint, which may be a different provider.
+      # With Langfuse tracing enabled, that snapshot is also recorded as generation input
+      # unless the active redaction policy suppresses the label call.
+      # reasoningLabel: true
+      # reasoningLabelModel: 'claude-3-5-haiku' # falls back to activity/title/run model
+      # reasoningLabelEndpoint: 'anthropic'     # falls back to activity/run endpoint
+      # reasoningLabelPrompt: 'Describe the current reasoning direction...'
+      # reasoningLabelMinChars: 500
+      # reasoningLabelUpdateChars: 400
+      # reasoningLabelUpdateIntervalMs: 3000
+      # A final rewrite may run immediately after a meaningful 120-character tail.
+      # reasoningLabelMaxPerRun: 8
+      modelDisplayLabel: 'Claude (Compatible)'
+
     # Groq Example
     - name: 'groq'
       apiKey: '${GROQ_API_KEY}'
@@ -455,40 +1258,6 @@ endpoints:
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'
 
-    # Helicone Example
-    - name: 'Helicone'
-      # For `apiKey` and `baseURL`, you can use environment variables that you define.
-      # recommended environment variables:
-      apiKey: '${HELICONE_KEY}'
-      baseURL: 'https://ai-gateway.helicone.ai'
-      headers:
-        x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
-      models:
-        default:
-          ['gpt-4o-mini', 'claude-4.5-sonnet', 'llama-3.1-8b-instruct', 'gemini-2.5-flash-lite']
-        fetch: true
-      titleConvo: true
-      titleModel: 'gpt-4o-mini'
-      modelDisplayLabel: 'Helicone'
-      iconURL: https://marketing-assets-helicone.s3.us-west-2.amazonaws.com/helicone.png
-
-    # Portkey AI Example
-    - name: 'Portkey'
-      apiKey: 'dummy'
-      baseURL: 'https://api.portkey.ai/v1'
-      headers:
-        x-portkey-api-key: '${PORTKEY_API_KEY}'
-        x-portkey-virtual-key: '${PORTKEY_OPENAI_VIRTUAL_KEY}'
-      models:
-        default: ['gpt-4o-mini', 'gpt-4o', 'chatgpt-4o-latest']
-        fetch: true
-      titleConvo: true
-      titleModel: 'current_model'
-      summarize: false
-      summaryModel: 'current_model'
-      modelDisplayLabel: 'Portkey'
-      iconURL: https://images.crunchbase.com/image/upload/c_pad,f_auto,q_auto:eco,dpr_1/rjqy7ghvjoiu4cd1xjbf
-
   # AWS Bedrock Example
   # Note: Bedrock endpoint is configured via environment variables
   # bedrock:
@@ -533,10 +1302,23 @@ endpoints:
 #     - name: "gpt-4o"
 #       label: "GPT-4 Optimized"
 #       description: "Most capable GPT-4 model with multimodal support"
+#       # default: true      # Hard admin default; takes precedence over prior user choices
+#       # softDefault: true  # First-time default only; skipped after a user selects a model/spec/agent
+#       # showInMenu: false  # Hide from the model selector while keeping explicit `spec` access
 #       group: "openAI"  # String value matching the endpoint name
 #       preset:
 #         endpoint: "openAI"
 #         model: "gpt-4o"
+#       # Skills can be enabled per model spec. Use true for the user's active
+#       # accessible skill catalog, false to force skills off, or a name list as
+#       # a strict allowlist for catalog, manual, and always-apply resolution.
+#       # skills: ["brand-guidelines", "code-review"]
+#       # Subagents can be enabled per model spec. `allowSelf: true` lets the
+#       # ephemeral agent spawn a fresh isolated copy of itself for focused work.
+#       # subagents:
+#       #   enabled: true
+#       #   allowSelf: true
+#       #   agent_ids: []
 #
 #     # Example 2: Nested under a custom endpoint (grouped with groq endpoint)
 #     - name: "llama3-70b-8192"
@@ -583,12 +1365,36 @@ endpoints:
 #       label: "General Assistant"
 #       description: "General purpose assistant"
 #       # No 'group' field - appears as standalone item at top level (not nested)
+#       # hideBadgeRow: true  # Optional: hides the tool badge row for this spec
 #       preset:
 #         endpoint: "openAI"
 #         model: "gpt-4o-mini"
 
+# Automatic conversation summarization (optional)
+# summarization:
+#   enabled: true
+#   provider: "openAI"
+#   model: "gpt-4o-mini"
+#   retainRecent:
+#     turns: 2 # Keep the newest complete user/assistant turns outside the summary
+#     tokens: 2000 # Also preserve up to this many recent tokens
+
 # fileConfig:
+#   skills:
+#     # Bound parallel storage deletes after a failed archive import (default: 8).
+#     # Set to 1 for serial cleanup on storage backends that require it.
+#     importCleanupConcurrency: 8
+#   # Store best-effort text for inferred tool-routed message attachments. On each turn,
+#   # deliver it only if no available tool can read the type. Off by default; also configurable
+#   # under endpoints.default or a provider/custom endpoint name. Explicit destinations stand.
+#   # Existing files without extracted text are not backfilled. Paused runs retain encoded text
+#   # and conservatively count referenced fallback text against current limits on resume.
+#   textFallbackWithoutTools: false
+#   fileContextSizeLimit: 128  # Maximum aggregate model-bound attachment size in one agent turn (MB)
+#   fileContextCharLimit: 1000000  # Maximum aggregate extracted-text characters in one agent turn
 #   endpoints:
+#     agents:
+#       fileLimit: 10
 #     assistants:
 #       fileLimit: 5
 #       fileSizeLimit: 10  # Maximum size for an individual file in MB
@@ -609,6 +1415,8 @@ endpoints:
 #     percentage: 100
 #     px: 1024
 #   # Client-side image resizing to prevent upload errors
+#   # Users can toggle this in Settings > Chat. Setting `enabled` here overrides
+#   # that choice for everyone and locks the toggle; omit it to leave users in control.
 #   clientImageResize:
 #     enabled: false  # Enable/disable client-side image resizing (default: false)
 #     maxWidth: 1900  # Maximum width for resized images (default: 1900)
@@ -630,9 +1438,38 @@ endpoints:
 #   searxngApiKey: '${SEARXNG_API_KEY}'
 #   # Tavily (search provider and/or scraper)
 #   tavilyApiKey: '${TAVILY_API_KEY}'
+#   # Keenable (search provider; keyless by default, a key only lifts rate limits)
+#   keenableApiKey: '${KEENABLE_API_KEY}'
 #   # Content scrapers
 #   firecrawlApiKey: '${FIRECRAWL_API_KEY}'
 #   firecrawlApiUrl: '${FIRECRAWL_API_URL}'
+#   # Outbound search and scrape requests are validated at connect time against
+#   # their resolved IP and blocked from reaching private, loopback, link-local,
+#   # or cloud-metadata space. `allowedAddresses` is an SSRF exemption list, NOT a
+#   # strict whitelist: hostname/IP + port pairs listed here bypass that block for
+#   # one deliberately-private endpoint (for example a self-hosted SearXNG
+#   # instance); public destinations continue to work normally.
+#   #
+#   # Entries must include a port: `host:port`, `private.ip:port`, or `[ipv6]:port`.
+#   # Do not use URLs, paths, CIDR ranges, bare hosts/IPs, or public IP literals.
+#   # A hostname entry trusts whatever IP that name resolves to on the listed port,
+#   # so only list hosts you fully control and whose DNS cannot be repointed by an
+#   # attacker. Listing an attacker-controllable or DNS-rebindable host re-opens the
+#   # private-address path this guard closes. Prefer literal IPs where you can.
+#   #
+#   # Self-hosted endpoints need an entry. A private destination such as
+#   # `http://searxng:8080`, `http://firecrawl:3002`, or `http://127.0.0.1:8080` is
+#   # blocked once this guard is active, so list it here or those requests will fail.
+#   #
+#   # A proxy from `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` (either case) is
+#   # exempted automatically and needs no entry. That exemption is applied to the
+#   # whole tool rather than per destination, so a host `NO_PROXY` sends direct also
+#   # carries it. Note that when a proxy carries the request the proxy resolves the
+#   # destination, so destination egress policy is the proxy's to enforce, and for
+#   # https targets the proxy's own tunnel replaces this guard entirely.
+#   # allowedAddresses:
+#   #   - 'searxng:8080'
+#   #   - '127.0.0.1:8080'
 #
 # Tavily as both search and scraper provider example:
 # webSearch:
@@ -665,6 +1502,63 @@ endpoints:
 #     # includeFavicon: false   # Include favicon URL for each result
 #     # format: markdown        # 'markdown' (default) or 'text' (plain text, may increase latency)
 #     # timeout: 15000          # HTTP request timeout in milliseconds (max 120000); Tavily Extract receives seconds clamped to 1-60
+#
+# Keenable as both search provider and scraper example — a fully keyless web
+# search stack: no API key for any of the three categories. The public search and
+# fetch endpoints are rate-limited; a key only lifts the cap.
+# webSearch:
+#   searchProvider: keenable
+#   scraperProvider: keenable
+#   rerankerType: none          # Rerankers all require a key; 'none' skips reranking
+#   # keenableApiKey: '${KEENABLE_API_KEY}'   # Optional: a key only lifts rate limits (public endpoints used when unset)
+#   # keenableApiUrl: '${KEENABLE_API_URL}'   # Optional: search API URL override (fetch uses KEENABLE_FETCH_URL)
+#   keenableSearchOptions:
+#     maxResults: 5             # 1-20 results per search (default: 8)
+#     # site: example.com       # Restrict search to a single domain
+#     # attributionTitle: LibreChat  # X-Keenable-Title header sent with each request
+#     # timeout: 15000          # HTTP request timeout in milliseconds (max 120000)
+#   keenableScraperOptions:
+#     # attributionTitle: LibreChat  # X-Keenable-Title header sent with each fetch
+#     timeout: 15000            # HTTP request timeout in milliseconds (max 120000)
+#
+# Keenable search paired with another scraper (Firecrawl here) also works; each
+# category is configured independently:
+# webSearch:
+#   searchProvider: keenable
+#   scraperProvider: firecrawl
+#   firecrawlApiKey: '${FIRECRAWL_API_KEY}'
+#
+# The reverse (someone else's search, Keenable as the scraper) also works. Pin
+# the stack for every user as shown below, or leave the providers unpinned so
+# each user can save this same keyless combination in the API-key dialog:
+# webSearch:
+#   searchProvider: searxng
+#   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'
+#   scraperProvider: keenable
+#   rerankerType: none
+#
+# SearXNG as the search provider example:
+# webSearch:
+#   searchProvider: searxng
+#   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'
+#   # searxngApiKey: '${SEARXNG_API_KEY}'
+#   searxngSearchOptions:
+#     # Engines your instance should query. Accepts a comma-separated string or a list.
+#     # Defaults to 'google,bing,duckduckgo'; DuckDuckGo serves CAPTCHAs to most
+#     # self-hosted instances, so override it when results come back empty.
+#     #
+#     # Names must match engines enabled on your own instance. SearXNG ignores an
+#     # engine it does not know instead of reporting an error, so a typo or a
+#     # disabled engine shows up as fewer results rather than a failure. Check the
+#     # enabled list at https://your-instance/config before setting this.
+#     engines:
+#       - google
+#       - bing
+#       - startpage
+#       - qwant
+#     # language: en            # Result language code (default: 'all')
+#     # timeRange: month        # 'day', 'month', or 'year'
+#     # timeout: 10000          # HTTP request timeout in milliseconds (1-120000, default: 10000)
 
 # Memory configuration for user memories
 # memory:
@@ -672,8 +1566,10 @@ endpoints:
 #   disabled: false
 #   # (optional) Restrict memory keys to specific values to limit memory storage and improve consistency
 #   validKeys: ["preferences", "work_info", "personal_info", "skills", "interests", "context"]
-#   # (optional) Maximum token limit for memory storage (not yet implemented for token counting)
+#   # (optional) Maximum token limit for stored memory values
 #   tokenLimit: 10000
+#   # (optional) Maximum tokens from recent chat sent to the memory agent before truncation
+#   maxInputTokens: 12000
 #   # (optional) Enable personalization features (defaults to true if memory is configured)
 #   # When false, users will not see the Personalization tab in settings
 #   personalize: true
@@ -690,3 +1586,121 @@ endpoints:
 #     # instructions: "You are a memory management assistant. Store and manage user information accurately."
 #     # model_parameters:
 #     #   temperature: 0.1
+
+# Apply opt-in content filters to source-classified submitted and reusable content.
+# `filters` is base-config-only: database overrides and tombstones cannot add,
+# change, or remove this policy for individual users, groups, or roles.
+# In multi-replica deployments, use a coordinated deploy or restart and verify
+# every replica loaded the same base config before considering policy active;
+# local cache invalidation is not a rollout barrier.
+# Omit `filters` or a source to leave that scope disabled. Omitting a source's
+# `pii` block disables its source-aware detectors; for messages, `inspect` can
+# still change how an enabled legacy `messageFilter.pii` attributes old rows.
+# Omit `fields` to filter every supported field for an enabled source.
+# `starterPatterns` and `customPatterns` can be configured independently
+# under any source so each input surface can use a different policy. Starter
+# ids are closed to the catalog below. Custom regexes use bounded,
+# linear-time syntax; unsupported constructs are rejected at config load.
+# `action` defaults to `block`. Set it to `audit` for a shadow rollout that
+# records raw-free findings without rejecting or modifying content. Redaction
+# is intentionally not an action yet because safe replacement requires a
+# mutation-aware boundary and match spans; configuring an unsupported action
+# is rejected rather than silently treated as enforcement.
+# Omit `starterPatterns` to enable the full starter catalog; set it to `[]`
+# to disable starters while retaining any configured custom patterns.
+# Enabling or changing this policy does not rewrite or delete stored records.
+# Current policy rechecks protected fields when they are resubmitted and when
+# records are copied, shared, or become model-bound. Safe partial metadata edits
+# can succeed so records remain repairable, but persisted protected fields remain
+# unusable on those paths until repaired. Protected prompt or preset fields may
+# be blanked with `contentFilterBlocked: true` in management views. Prompt-group
+# metadata blocked by policy returns an explicit error on direct GET, while
+# collection and reuse responses omit that group.
+# Automatic memory maintenance may log and skip a rejected background update
+# while allowing the main chat response to continue.
+# Legacy assistant rows without provenance default to `model_output`, preserving
+# legacy behavior. Inventory or migrate those records before relying on retroactive
+# enforcement. Opting into `inspect` treats otherwise unattributed assistant content,
+# including selected attachment projections, as submitted; explicit model provenance
+# remains exempt.
+# Roll out strict file inspection deliberately: `uninspectable: block` can make
+# older opaque files unavailable for reuse until inspectable text is present.
+# filters:
+#   messages:
+#     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
+#     pii:
+#       action: audit # `block` (default), `audit`, or opt-in `redact`
+#       # `redact` transforms fresh, text-only interactive Agent chat submissions with a clientRequestId.
+#       # Edits, resumes, files, quotes, other endpoints, and other fields still use blocking checks.
+#       # Requires a valid CREDS_KEY. Preserve that key for owner-original recovery; changing it
+#       # makes existing originals unavailable. Text remains canonical/filtered in ordinary exports.
+#       # Originals are an encrypted, unindexed sidecar field, deleted/expired with the message.
+#       # maxCharacters: 65536 # bounded total inspected text per transformation session
+#       # maxMatches: 256 # bounded matches per transformation session
+#       # Custom patterns may set category: email, phone, name, credential, or custom.
+#       fields: [name, text, summary, quote, answer, decision_response, decision_reason, content_part, attachment_reference, assembled_context]
+#       starterPatterns: [sk_prefix, bearer_header, api_key_header]
+#       customPatterns:
+#         - id: organization_identifier
+#           label: Organization identifier
+#           regex: "ORG-[A-Z0-9]{12}"
+#   prompts:
+#     pii:
+#       fields: [name, description, oneliner, category, command, text, preset_text, system, context, instructions, additional_instructions, greeting, example_input, example_output]
+#   agentInstructions:
+#     pii:
+#       fields: [name, category, description, instructions, additional_instructions, edge_description, edge_prompt, edge_prompt_key, artifacts, support_contact_name, support_contact_email]
+#   conversationStarters:
+#     pii:
+#       fields: [text]
+#   conversationTitles:
+#     pii:
+#       fields: [title]
+#   feedback:
+#     pii:
+#       fields: [text]
+#   skills:
+#     pii:
+#       fields: [name, display_title, description, category, frontmatter, instructions, imported_text, file_name, file_text]
+#   memories:
+#     pii:
+#       fields: [key, value, summary]
+#   files:
+#     pii:
+#       fields: [name, content, extracted_text, transcript, uri]
+#       # `allow` is the compatibility default. `block` rejects opaque or
+#       # oversized selected file content before provider/storage side effects.
+#       uninspectable: block
+#   toolArguments:
+#     pii:
+#       fields: [name, arguments, output]
+#   modelParameters:
+#     pii:
+#       fields: [stop, request_fields, response_format, metadata]
+#   actionMetadata:
+#     pii:
+#       fields: [raw_spec, domain, privacy_policy_url, authorization_type, custom_auth_header, authorization_content_type, authorization_url, client_url, scope, token_exchange_method, api_key, oauth_client_id, oauth_client_secret]
+
+# Legacy message-only filter configuration. Existing deployments can continue
+# using this shape while migrating message policy into `filters.messages`.
+# When both shapes are configured, both policies apply. Prefer
+# `filters.messages` for centrally managed source-aware policy.
+# messageFilter:
+#   pii:
+#     # (optional) Pick a subset of the starter catalog by id; omit to
+#     # enable all starters (sk_prefix, bearer_header, api_key_header).
+#     starterPatterns: [sk_prefix, bearer_header, api_key_header]
+#     # (optional) Operator-defined patterns. Each entry needs id, label,
+#     # and a regex in RE2 syntax and semantics (RE2 is a linear-time engine
+#     # with no catastrophic backtracking; a few escapes such as \p, \A, and
+#     # \s differ from JavaScript). Backreferences and lookaround are not
+#     # supported; the regex is validated against the RE2 engine at config
+#     # load time and a pattern it cannot compile is rejected.
+#     customPatterns:
+#       - id: anthropic_api_key
+#         label: Anthropic API key
+#         regex: "sk-ant-[A-Za-z0-9_-]{20,}"
+
+# ACL writes retry only conflicts on an individual document.
+# permissions:
+#   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.

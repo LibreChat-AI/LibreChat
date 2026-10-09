@@ -1,15 +1,24 @@
 # Dockerfile.multi
-# v0.8.5
+# v0.8.8
 
 # Set configurable max-old-space-size with default
 ARG NODE_MAX_OLD_SPACE_SIZE=6144
 
+# Optional build metadata surfaced in Settings -> About for support triage.
+ARG BUILD_COMMIT=
+ARG BUILD_BRANCH=
+ARG BUILD_DATE=
+
 # Base for all builds
-FROM node:20-alpine AS base-min
+FROM node:24.16.0-alpine AS base-min
+ARG NPM_CI_TIMEOUT_SECONDS=1500
+ARG NPM_CI_ATTEMPTS=2
 RUN apk upgrade --no-cache
 RUN apk add --no-cache jemalloc
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+# Disable dependency installation analytics before any npm lifecycle scripts run.
+ENV SCARF_ANALYTICS=false
 
 WORKDIR /app
 RUN apk --no-cache add curl
@@ -26,8 +35,20 @@ COPY api/package*.json ./api/
 
 # Install all dependencies for every build
 FROM base-min AS base
+ARG NPM_CI_TIMEOUT_SECONDS=1500
+ARG NPM_CI_ATTEMPTS=2
 WORKDIR /app
-RUN npm ci
+RUN attempt=1; \
+    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci; do \
+      status=$?; \
+      if [ "$attempt" -ge "$NPM_CI_ATTEMPTS" ]; then \
+        exit "$status"; \
+      fi; \
+      echo "npm ci failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
+      attempt=$((attempt + 1)); \
+      npm cache clean --force || true; \
+      sleep 10; \
+    done
 
 # Build `data-provider` package
 FROM base AS data-provider-build
@@ -54,6 +75,7 @@ RUN npm run build
 FROM base AS client-package-build
 WORKDIR /app/packages/client
 COPY packages/client ./
+COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
 RUN npm run build
 
 # Client build
@@ -63,24 +85,51 @@ COPY client ./
 COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
 COPY --from=client-package-build /app/packages/client/dist /app/packages/client/dist
 COPY --from=client-package-build /app/packages/client/src /app/packages/client/src
+COPY --from=client-package-build /app/packages/client/tailwind.preset.cjs /app/packages/client/tailwind.preset.cjs
+COPY --from=client-package-build /app/packages/client/tailwind.compat.cjs /app/packages/client/tailwind.compat.cjs
+ARG VITE_MCP_SANDBOX_URL=
 ARG NODE_MAX_OLD_SPACE_SIZE
 ENV NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}"
 RUN npm run build
 
 # API setup (including client dist)
 FROM base-min AS api-build
+ARG NPM_CI_TIMEOUT_SECONDS=1500
+ARG NPM_CI_ATTEMPTS=2
+RUN mkdir -p /app/data && chmod 1777 /app/data
 # Add `uv` for extended MCP support
 COPY --from=ghcr.io/astral-sh/uv:0.6.13 /uv /uvx /bin/
 RUN uv --version
 WORKDIR /app
 # Install only production deps
-RUN npm ci --omit=dev
+RUN attempt=1; \
+    until timeout "$NPM_CI_TIMEOUT_SECONDS" npm ci --omit=dev; do \
+      status=$?; \
+      if [ "$attempt" -ge "$NPM_CI_ATTEMPTS" ]; then \
+        exit "$status"; \
+      fi; \
+      echo "npm ci --omit=dev failed with exit code $status; retrying attempt $((attempt + 1))/$NPM_CI_ATTEMPTS"; \
+      attempt=$((attempt + 1)); \
+      npm cache clean --force || true; \
+      sleep 10; \
+    done
 COPY api ./api
 COPY config ./config
+COPY skill ./skill
 COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data-provider/dist
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
 COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
 COPY --from=client-build /app/client/dist ./client/dist
+COPY --from=client-build /app/client/public/mcp-sandbox.html ./client/public/mcp-sandbox.html
+# Propagate build metadata into runtime env so /api/config can expose it.
+# Declared here (after the heavy install/copy steps) so that commit/date
+# changing on every CI run does not bust the cache for those layers.
+ARG BUILD_COMMIT
+ARG BUILD_BRANCH
+ARG BUILD_DATE
+ENV BUILD_COMMIT=${BUILD_COMMIT}
+ENV BUILD_BRANCH=${BUILD_BRANCH}
+ENV BUILD_DATE=${BUILD_DATE}
 WORKDIR /app/api
 EXPOSE 3080
 ENV HOST=0.0.0.0

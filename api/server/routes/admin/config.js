@@ -2,8 +2,11 @@ const express = require('express');
 const { createAdminConfigHandlers } = require('@librechat/api');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const {
-  hasConfigCapability,
+  hasCapability,
   requireCapability,
+  hasConfigCapability,
+  hasAnyConfigReadAccess,
+  getReadableConfigSections,
 } = require('~/server/middleware/roles/capabilities');
 const { getAppConfig, invalidateConfigCaches } = require('~/server/services/Config');
 const { requireJwtAuth } = require('~/server/middleware');
@@ -18,10 +21,14 @@ const handlers = createAdminConfigHandlers({
   findConfigByPrincipal: db.findConfigByPrincipal,
   upsertConfig: db.upsertConfig,
   patchConfigFields: db.patchConfigFields,
+  tombstoneConfigField: db.tombstoneConfigField,
   unsetConfigField: db.unsetConfigField,
   deleteConfig: db.deleteConfig,
   toggleConfigActive: db.toggleConfigActive,
+  hasAnyConfigReadAccess,
+  getReadableConfigSections,
   hasConfigCapability,
+  hasCapability,
   getAppConfig,
   invalidateConfigCaches,
 });
@@ -33,6 +40,7 @@ router.get('/base', handlers.getBaseConfig);
 router.get('/:principalType/:principalId', handlers.getConfig);
 router.put('/:principalType/:principalId', handlers.upsertConfigOverrides);
 router.patch('/:principalType/:principalId/fields', handlers.patchConfigField);
+router.post('/:principalType/:principalId/fields/tombstone', handlers.tombstoneConfigField);
 router.delete('/:principalType/:principalId/fields', handlers.deleteConfigField);
 router.delete('/:principalType/:principalId', handlers.deleteConfigOverrides);
 router.patch('/:principalType/:principalId/active', handlers.toggleConfig);

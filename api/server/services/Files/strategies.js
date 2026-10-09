@@ -1,15 +1,23 @@
 const { FileSources } = require('librechat-data-provider');
 const {
   getS3URL,
-  saveURLToS3,
+  saveURLToS3WithMetadata,
+  ImageService,
   parseDocument,
   uploadFileToS3,
-  S3ImageService,
   saveBufferToS3,
   getS3FileStream,
+  getS3DownloadURL,
   deleteFileFromS3,
+  getCloudFrontURL,
   uploadMistralOCR,
+  saveURLToCloudFrontWithMetadata,
   uploadAzureMistralOCR,
+  uploadFileToCloudFront,
+  saveBufferToCloudFront,
+  getCloudFrontFileStream,
+  getCloudFrontDownloadURL,
+  deleteFileFromCloudFront,
   uploadGoogleVertexMistralOCR,
 } = require('@librechat/api');
 const {
@@ -37,15 +45,21 @@ const {
 const { resizeImageBuffer } = require('./images/resize');
 const { updateUser, updateFile } = require('~/models');
 
-const s3ImageService = new S3ImageService({
+const imageServiceDeps = {
   resizeImageBuffer,
   updateUser,
   updateFile,
-});
+};
 
-const uploadImageToS3 = (params) => s3ImageService.uploadImageToS3(params);
+const s3ImageService = new ImageService(saveBufferToS3, imageServiceDeps);
+const uploadImageToS3 = (params) => s3ImageService.uploadImage(params);
 const prepareImageURLS3 = (_req, file) => s3ImageService.prepareImageURL(file);
 const processS3Avatar = (params) => s3ImageService.processAvatar(params);
+
+const cloudFrontImageService = new ImageService(saveBufferToCloudFront, imageServiceDeps);
+const uploadImageToCloudFront = (params) => cloudFrontImageService.uploadImage(params);
+const prepareCloudFrontImageURL = (_req, file) => cloudFrontImageService.prepareImageURL(file);
+const processCloudFrontAvatar = (params) => cloudFrontImageService.processAvatar(params);
 const {
   saveBufferToAzure,
   saveURLToAzure,
@@ -58,7 +72,7 @@ const {
   processAzureAvatar,
 } = require('./Azure');
 const { uploadOpenAIFile, deleteOpenAIFile, getOpenAIFileStream } = require('./OpenAI');
-const { getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./Code');
+const { deleteCodeEnvFile, getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./Code');
 const { uploadVectors, deleteVectors } = require('./VectorDB');
 
 /**
@@ -99,7 +113,7 @@ const localStrategy = () => ({
  * */
 const s3Strategy = () => ({
   handleFileUpload: uploadFileToS3,
-  saveURL: saveURLToS3,
+  saveURL: saveURLToS3WithMetadata,
   getFileURL: getS3URL,
   deleteFile: deleteFileFromS3,
   saveBuffer: saveBufferToS3,
@@ -107,6 +121,24 @@ const s3Strategy = () => ({
   processAvatar: processS3Avatar,
   handleImageUpload: uploadImageToS3,
   getDownloadStream: getS3FileStream,
+  getDownloadURL: getS3DownloadURL,
+});
+
+/**
+ * CloudFront CDN Strategy Functions
+ * Uses S3 for storage, CloudFront for URL delivery
+ */
+const cloudfrontStrategy = () => ({
+  handleFileUpload: uploadFileToCloudFront,
+  saveURL: saveURLToCloudFrontWithMetadata,
+  getFileURL: getCloudFrontURL,
+  deleteFile: deleteFileFromCloudFront,
+  saveBuffer: saveBufferToCloudFront,
+  prepareImagePayload: prepareCloudFrontImageURL,
+  processAvatar: processCloudFrontAvatar,
+  handleImageUpload: uploadImageToCloudFront,
+  getDownloadStream: getCloudFrontFileStream,
+  getDownloadURL: getCloudFrontDownloadURL,
 });
 
 /**
@@ -189,8 +221,7 @@ const codeOutputStrategy = () => ({
   handleImageUpload: null,
   /** @type {typeof prepareImagesLocal | null} */
   prepareImagePayload: null,
-  /** @type {typeof deleteLocalFile | null} */
-  deleteFile: null,
+  deleteFile: deleteCodeEnvFile,
   handleFileUpload: uploadCodeEnvFile,
   getDownloadStream: getCodeOutputDownloadStream,
 });
@@ -291,6 +322,8 @@ const getStrategyFunctions = (fileSource) => {
     return vectorStrategy();
   } else if (fileSource === FileSources.s3) {
     return s3Strategy();
+  } else if (fileSource === FileSources.cloudfront) {
+    return cloudfrontStrategy();
   } else if (fileSource === FileSources.execute_code) {
     return codeOutputStrategy();
   } else if (fileSource === FileSources.mistral_ocr) {

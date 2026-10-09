@@ -1,7 +1,7 @@
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
-const { Callback, ToolEndHandler, formatAgentMessages } = require('@librechat/agents');
+const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
   EModelEndpoint,
   ResourceType,
@@ -11,19 +11,54 @@ const {
 } = require('librechat-data-provider');
 const {
   createRun,
-  buildToolSet,
-  loadSkillStates,
-  resolveAgentScopedSkillIds,
+  applyContextToAgent,
+  buildInitialToolSessions,
+  buildRunToolSet,
+  AgentRunEnvelopeError,
+  createAgentRunEnvelope,
+  createAgentExecutionContext,
+  createMCPRuntimeRequestBody,
+  buildAgentScopedContext,
+  buildInlineMemoryContext,
+  buildAgentContextAttachmentsByAgentId,
   createSafeUser,
   initializeAgent,
+  loadSkillStates,
   getBalanceConfig,
-  recordCollectedUsage,
-  getTransactionsConfig,
-  extractManualSkills,
   injectSkillPrimes,
-  createToolExecuteHandler,
+  extractManualSkills,
+  recordCollectedUsage,
+  createSubagentUsageSink,
+  getTransactionsConfig,
+  resolveAgentTokenConfig,
+  resolveSubagentGraphs,
+  inspectContent,
+  extractAgentContent,
+  extractFileContent,
+  extractMessageContent,
+  extractModelParameterContent,
+  extractSkillContent,
+  extractToolArgumentContent,
+  contentFilterBlockResponse,
+  contentFilterUninspectableResponse,
   discoverConnectedAgents,
+  getBlockedOpaqueFileField,
+  getContentTraversalFragments,
+  isContentTraversalProtected,
+  isContentTraversalLimitError,
+  prependContentTraversalFragments,
+  assertModelBoundContent,
+  reportLocatorTraversalFailure,
+  hasModelBoundContentProtection,
+  isContentFilterError,
+  getSafeErrorMetadata,
+  getUserFacingProviderError,
+  getAgentErrorMetadata,
+  createToolExecuteHandler,
+  createOwnedToolEndHandler,
+  resolveRecursionLimit,
   getRemoteAgentPermissions,
+  resolveAgentScopedSkillIds,
   // Responses API
   writeDone,
   buildResponse,
@@ -37,48 +72,120 @@ const {
   convertInputToMessages,
   validateResponseRequest,
   buildAggregatedResponse,
+  buildResponsesUsage,
   createResponseAggregator,
   sendResponsesErrorResponse,
   createResponsesEventHandlers,
   createAggregatorEventHandlers,
+  createClientToolHandoff,
+  getLangfuseTraceMessageFields,
+  stripActivityLabelParts,
+  stripUnusableSummaryParts,
+  CHILD_THREAD_READ_ONLY_ERROR,
+  executeAgentRun,
+  waitForAgentExecutionWrites,
+  resolveToolRoleGrants,
+  resolveApiConversationProject,
+  resolveAdmittedCodeEnvironmentDecision,
+  resolvePersistableCodeEnvironmentDecision,
+  createTerminalRunErrorObserver,
+  announceReply,
+  getConversationWriteContext,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
   buildSummarizationHandlers,
-  markSummarizationUsage,
+  contextualizeModelUsage,
   createToolEndCallback,
   agentLogHandlerObj,
 } = require('~/server/controllers/agents/callbacks');
-const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
+const {
+  loadAgentTools,
+  loadToolsForExecution,
+  isFatalAgentInitializationError,
+} = require('~/server/services/ToolService');
 const {
   findAccessibleResources,
   getEffectivePermissions,
 } = require('~/server/services/PermissionService');
 const {
   getSkillToolDeps,
-  enrichWithSkillConfigurable,
-  buildSkillPrimedIdsByName,
+  getSkillDbMethods,
+  canAuthorSkillFiles,
+  withDeploymentSkillIds,
+  buildAgentToolContext,
+  resolveMemoryAvailability,
+  enrichLoadedToolsWithAgentContext,
 } = require('~/server/services/Endpoints/agents/skillDeps');
+const { createProvisionFilesCallback } = require('~/server/services/Files/provisionCallback');
+const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/provision');
+const {
+  getLinkedInstructionsResolver,
+} = require('~/server/services/Endpoints/agents/linkedInstructions');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
+const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
+const { resolveConversationTitle } = require('~/server/services/Endpoints/titlePolicy');
+const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
 
+const filterFilesByRemoteAgentAccess = (params) =>
+  filterFilesByAgentAccess({ ...params, resourceType: ResourceType.REMOTE_AGENT });
+
+function handleExecutionError({ error, res, appConfig }) {
+  const protectionEnabled = hasModelBoundContentProtection(
+    appConfig?.filters,
+    appConfig?.messageFilter?.pii,
+  );
+  const errorMessage = getUserFacingProviderError(error, protectionEnabled);
+
+  if (res.headersSent) {
+    writeDone(res);
+    res.end();
+    return;
+  }
+  if (isContentFilterError(error)) {
+    return sendResponsesErrorResponse(
+      res,
+      error.statusCode,
+      error.body.message,
+      'invalid_request',
+      error.body.error,
+    );
+  }
+  const errorMetadata = getAgentErrorMetadata(error);
+  const statusCode = errorMetadata?.status ?? 500;
+  const errorType = statusCode >= 400 && statusCode < 500 ? 'invalid_request' : 'server_error';
+  const errorCode = !protectionEnabled ? errorMetadata?.code : undefined;
+  if (errorCode === undefined) {
+    sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
+  } else {
+    sendResponsesErrorResponse(res, statusCode, errorMessage, errorType, errorCode);
+  }
+}
+
 /**
  * Creates a tool loader function for the agent.
- * @param {AbortSignal} signal - The abort signal
- * @param {boolean} [definitionsOnly=true] - When true, returns only serializable
+ * @param {Object} runtime - Request-backed tool adapter state
+ * @param {import('express').Request} runtime.req
+ * @param {import('express').Response} runtime.res
+ * @param {AbortSignal} runtime.signal - The abort signal
+ * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader(signal, definitionsOnly = true) {
+function createToolLoader({ req, res, signal, definitionsOnly = true }) {
   return async function loadTools({
-    req,
-    res,
     tools,
     model,
     agentId,
     provider,
     tool_options,
     tool_resources,
+    requestBody,
+    codeExecutionContext,
+    attachedEnvironmentOptOut,
+    accessibleMcpServerNames,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
     try {
@@ -87,12 +194,20 @@ function createToolLoader(signal, definitionsOnly = true) {
         res,
         agent,
         signal,
+        requestBody,
         tool_resources,
+        codeExecutionContext,
+        attachedEnvironmentOptOut,
+        agentResourceType: ResourceType.REMOTE_AGENT,
         definitionsOnly,
+        accessibleMcpServerNames,
         streamId: null,
       });
     } catch (error) {
-      logger.error('Error loading tools for agent ' + agentId, error);
+      if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
+        throw error;
+      }
+      logger.error('Error loading tools for agent ' + agentId, getSafeErrorMetadata(error));
     }
   };
 }
@@ -104,6 +219,108 @@ function createToolLoader(signal, definitionsOnly = true) {
  */
 function convertToInternalMessages(input) {
   return convertInputToMessages(input);
+}
+
+/**
+ * Collect file-derived context exactly as it will be exposed to the model.
+ * Dynamic tool context uses the same synthesis as packages/api/src/agents/run.ts.
+ * @param {Array} agents
+ * @returns {Array}
+ */
+function collectModelBoundAgentFiles(agents) {
+  const files = [];
+  const seenFiles = new Set();
+  for (const agent of agents) {
+    for (const attachment of [
+      ...(agent?.attachments ?? []),
+      ...(agent?.requestAttachments ?? []),
+      ...(agent?.agentContextAttachments ?? []),
+    ]) {
+      if (attachment == null || seenFiles.has(attachment)) {
+        continue;
+      }
+      seenFiles.add(attachment);
+      files.push(attachment);
+    }
+
+    const dynamicToolInstructions = Object.values(agent?.dynamicToolContextMap ?? {})
+      .filter((value) => typeof value === 'string' && value !== '')
+      .join('\n')
+      .trim();
+    if (dynamicToolInstructions !== '') {
+      files.push({ content: dynamicToolInstructions });
+    }
+  }
+  return files;
+}
+
+function extractResponseRequestContent(request, messageFragments) {
+  const fragments = [
+    ...extractAgentContent({ instructions: request.instructions }),
+    ...messageFragments,
+  ];
+
+  if (Array.isArray(request.input)) {
+    for (const item of request.input) {
+      if (item?.type !== 'message' || !Array.isArray(item.content)) {
+        continue;
+      }
+      for (const part of item.content) {
+        if (part?.type === 'input_file') {
+          fragments.push(...extractFileContent({ name: part.filename }));
+          continue;
+        }
+        if (
+          part?.type === 'input_image' &&
+          typeof part.image_url === 'string' &&
+          !part.image_url.startsWith('data:')
+        ) {
+          fragments.push(...extractFileContent({ uri: part.image_url }));
+        }
+      }
+    }
+  }
+
+  for (const tool of request.tools ?? []) {
+    if (tool?.type !== 'function') {
+      continue;
+    }
+    fragments.push(
+      ...extractAgentContent({
+        name: tool.name,
+        description: tool.description,
+      }),
+    );
+    try {
+      fragments.push(...extractToolArgumentContent({ arguments: tool.parameters }));
+    } catch (error) {
+      if (isContentTraversalLimitError(error)) {
+        prependContentTraversalFragments(error, fragments);
+      }
+      throw error;
+    }
+  }
+
+  try {
+    fragments.push(
+      ...extractModelParameterContent({
+        metadata: request.metadata,
+        response_format: request.text?.format,
+        additionalModelRequestFields: {
+          user: request.user,
+          tool_choice: request.tool_choice,
+          reasoning: request.reasoning,
+        },
+      }),
+    );
+  } catch (error) {
+    if (isContentTraversalLimitError(error)) {
+      prependContentTraversalFragments(error, fragments);
+    }
+    throw error;
+  }
+
+  return fragments;
 }
 
 /**
@@ -121,26 +338,33 @@ async function loadPreviousMessages(conversationId, userId) {
 
     // Convert stored messages to internal format
     return messages.map((msg) => {
+      let text;
+      if (typeof msg.text === 'string') {
+        text = msg.text;
+      } else if (msg.text != null) {
+        text = String(msg.text);
+      }
       const internalMsg = {
         role: msg.isCreatedByUser ? 'user' : 'assistant',
-        content: '',
+        content: Array.isArray(msg.content) ? msg.content : (text ?? ''),
         messageId: msg.messageId,
+        isCreatedByUser: msg.isCreatedByUser === true,
+        ...(text !== undefined && { text }),
+        ...(typeof msg.isUserSubmitted === 'boolean' && {
+          isUserSubmitted: msg.isUserSubmitted,
+        }),
+        ...(Array.isArray(msg.userSubmittedPaths) && {
+          userSubmittedPaths: msg.userSubmittedPaths,
+        }),
+        ...(Array.isArray(msg.userSubmittedMessageFieldPaths) && {
+          userSubmittedMessageFieldPaths: msg.userSubmittedMessageFieldPaths,
+        }),
       };
-
-      // Handle content - could be string or array
-      if (typeof msg.text === 'string') {
-        internalMsg.content = msg.text;
-      } else if (Array.isArray(msg.content)) {
-        // Handle content parts
-        internalMsg.content = msg.content;
-      } else if (msg.text) {
-        internalMsg.content = String(msg.text);
-      }
 
       return internalMsg;
     });
   } catch (error) {
-    logger.error('[Responses API] Error loading previous messages:', error);
+    logger.error('[Responses API] Error loading previous messages:', getSafeErrorMetadata(error));
     return [];
   }
 }
@@ -157,7 +381,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
   for (const msg of inputMessages) {
     if (msg.role === 'user') {
       await db.saveMessage(
-        req,
+        getConversationWriteContext(req),
         {
           messageId: msg.messageId || nanoid(),
           conversationId,
@@ -181,9 +405,17 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  * @param {string} responseId
  * @param {import('@librechat/api').Response} response
  * @param {string} agentId
+ * @param {number | undefined} visibleOutputTokens
  * @returns {Promise<void>}
  */
-async function saveResponseOutput(req, conversationId, responseId, response, agentId) {
+async function saveResponseOutput(
+  req,
+  conversationId,
+  responseId,
+  response,
+  agentId,
+  visibleOutputTokens,
+) {
   // Extract text content from output items
   let responseText = '';
   for (const item of response.output) {
@@ -196,20 +428,23 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
     }
   }
 
+  const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
+
   // Save the assistant message
-  await db.saveMessage(
-    req,
+  return db.saveMessage(
+    getConversationWriteContext(req),
     {
       messageId: responseId,
       conversationId,
       parentMessageId: null,
       isCreatedByUser: false,
+      ...langfuseTraceFields,
       text: responseText,
       sender: 'Agent',
       endpoint: EModelEndpoint.agents,
       model: agentId,
       finish_reason: response.status === 'completed' ? 'stop' : response.status,
-      tokenCount: response.usage?.output_tokens,
+      tokenCount: visibleOutputTokens ?? response.usage?.output_tokens,
     },
     { context: 'Responses API - save assistant response' },
   );
@@ -221,23 +456,29 @@ async function saveResponseOutput(req, conversationId, responseId, response, age
  * @param {string} conversationId
  * @param {string} agentId
  * @param {object} agent
+ * @param {import('@librechat/api').ConversationCodeEnvironmentDecision} codeEnvironmentDecision
  * @returns {Promise<void>}
  */
-async function saveConversation(req, conversationId, agentId, agent) {
+async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
+  const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
   await db.saveConvo(
-    {
-      userId: req?.user?.id,
-      isTemporary: req?.body?.isTemporary,
-      interfaceConfig: req?.config?.interfaceConfig,
-    },
+    getConversationWriteContext(req),
     {
       conversationId,
       endpoint: EModelEndpoint.agents,
-      agentId,
-      title: agent?.name || 'Open Responses Conversation',
+      agent_id: agentId,
+      ...resolvePersistableCodeEnvironmentDecision({
+        conversationId,
+        decision: codeEnvironmentDecision,
+        conversation: req.resolvedConversation,
+      }),
+      ...(title != null && { title }),
       model: agent?.model,
     },
-    { context: 'Responses API - save conversation' },
+    {
+      context: 'Responses API - save conversation',
+      initialAgentId: agent?.id === agentId ? agentId : null,
+    },
   );
 }
 
@@ -271,199 +512,457 @@ function convertMessagesToOutputItems(messages) {
 }
 
 /**
- * Create Response - POST /v1/responses
+ * Runs a validated Responses envelope in the current process.
+ * Express remains runtime-only state while the envelope is the portable run input.
  *
- * Creates a model response following the Open Responses API specification.
- * Supports both streaming and non-streaming responses.
- *
- * @param {import('express').Request} req
- * @param {import('express').Response} res
+ * @param {import('@librechat/api').ResponsesRunEnvelope} envelope
+ * @param {{req: import('express').Request, res: import('express').Response}} runtime
  */
-const createResponse = async (req, res) => {
+const executeResponse = async (envelope, { req, res }) => {
   const appConfig = req.config;
-  const requestStartTime = Date.now();
-
-  // Validate request
-  const validation = validateResponseRequest(req.body);
-  if (isValidationFailure(validation)) {
-    return sendResponsesErrorResponse(res, 400, validation.error);
+  const requestStartTime = envelope.receivedAt;
+  const request = envelope.payload;
+  const { principal } = envelope;
+  // Request-backed tool adapters still observe the validated envelope payload;
+  // shared initialization receives the transport-free runtime below.
+  req.body = request;
+  if (request.previous_response_id != null && typeof request.previous_response_id !== 'string') {
+    return sendResponsesErrorResponse(
+      res,
+      400,
+      'previous_response_id must be a string',
+      'invalid_request',
+    );
   }
-
-  const request = validation.request;
   const agentId = request.model;
+  const manualSkills = extractManualSkills(req.body);
   const isStreaming = request.stream === true;
   const summarizationConfig = appConfig?.summarization;
 
-  // Look up the agent
-  const agent = await db.getAgent({ id: agentId });
-  if (!agent) {
+  const uninspectableField = getBlockedOpaqueFileField(appConfig?.filters, request.input);
+  if (uninspectableField != null) {
+    const blockResponse = contentFilterUninspectableResponse(uninspectableField);
     return sendResponsesErrorResponse(
       res,
-      404,
-      `Agent not found: ${agentId}`,
-      'not_found',
-      'model_not_found',
+      400,
+      blockResponse.message,
+      'invalid_request',
+      blockResponse.error,
+    );
+  }
+
+  const inputMessages = convertToInternalMessages(
+    typeof request.input === 'string' ? request.input : request.input,
+  );
+  const messageFragments = [];
+  const traversalErrors = [];
+  try {
+    for (const fragment of extractMessageContent(inputMessages)) {
+      messageFragments.push(fragment);
+    }
+  } catch (error) {
+    if (!isContentTraversalLimitError(error)) {
+      throw error;
+    }
+    messageFragments.push(...getContentTraversalFragments(error));
+    traversalErrors.push(error);
+  }
+  let requestFragments;
+  try {
+    requestFragments = extractResponseRequestContent(request, messageFragments);
+  } catch (error) {
+    if (!isContentTraversalLimitError(error)) {
+      throw error;
+    }
+    requestFragments = getContentTraversalFragments(error);
+    traversalErrors.push(error);
+  }
+  const contentFinding = inspectContent(
+    [...requestFragments, ...(manualSkills ?? []).flatMap((name) => extractSkillContent({ name }))],
+    {
+      filters: appConfig?.filters,
+      legacyPii: appConfig?.messageFilter?.pii,
+    },
+  );
+  if (contentFinding != null) {
+    const isLegacyFilter = contentFinding.detectorId === 'legacy-pattern';
+    const blockResponse = contentFilterBlockResponse(contentFinding);
+    return sendResponsesErrorResponse(
+      res,
+      400,
+      isLegacyFilter
+        ? `Message contains a ${contentFinding.label}. Remove it and try again.`
+        : blockResponse.message,
+      'invalid_request',
+      isLegacyFilter ? 'message_filter_pii_block' : blockResponse.error,
+    );
+  }
+  const traversalError = traversalErrors.find((error) =>
+    isContentTraversalProtected({
+      error,
+      filters: appConfig?.filters,
+      legacyPii: appConfig?.messageFilter?.pii,
+      roles: inputMessages.map((message) => message?.role),
+    }),
+  );
+  if (traversalError != null) {
+    return sendResponsesErrorResponse(
+      res,
+      traversalError.statusCode,
+      traversalError.body.message,
+      'invalid_request',
+      traversalError.body.error,
     );
   }
 
   // Generate IDs
   const responseId = generateResponseId();
+  const terminalRunError = createTerminalRunErrorObserver({
+    maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
+    logger,
+    responseMessageId: responseId,
+    source: '[Responses API]',
+    protectionEnabled: hasModelBoundContentProtection(
+      appConfig?.filters,
+      appConfig?.messageFilter?.pii,
+    ),
+  });
   const context = createResponseContext(request, responseId);
 
   logger.debug(
     `[Responses API] Request ${responseId} started for agent ${agentId}, stream: ${isStreaming}`,
   );
 
-  // Set up abort controller
-  const abortController = new AbortController();
-
-  // Handle client disconnect
-  req.on('close', () => {
-    if (!abortController.signal.aborted) {
-      abortController.abort();
-      logger.debug('[Responses API] Client disconnected, aborting');
-    }
-  });
-
-  try {
-    if (request.previous_response_id != null) {
-      if (typeof request.previous_response_id !== 'string') {
-        return sendResponsesErrorResponse(
-          res,
-          400,
-          'previous_response_id must be a string',
-          'invalid_request',
+  const conversationId = request.previous_response_id ?? uuidv4();
+  /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
+  const artifactPromises = [];
+  let artifactWritesCovered = false;
+  return executeAgentRun({
+    envelope,
+    runId: responseId,
+    conversationId,
+    connection: {
+      isClosed: () => res.destroyed === true && res.writableEnded !== true,
+      onClose: (listener) => {
+        const abortOnResponseClose = () => {
+          if (res.writableEnded !== true) {
+            logger.debug('[Responses API] Client disconnected, aborting');
+            listener();
+          }
+        };
+        res.once('close', abortOnResponseClose);
+        return () => res.off('close', abortOnResponseClose);
+      },
+    },
+    /** Conversation delete-all uses the shared owner-admission fence. Remote
+     * execution must observe it after durable enrollment and before provider work. */
+    isPrincipalActive: db.isSubagentOwnerAdmissible,
+    beforeSettle: (execution) => {
+      if (!artifactWritesCovered && artifactPromises.length > 0) {
+        execution.track(
+          waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
+            logger.warn(
+              '[Responses API] Error processing artifacts:',
+              getSafeErrorMetadata(artifactError),
+            );
+          }),
         );
       }
-      if (!(await db.getConvo(req.user?.id, request.previous_response_id))) {
-        return sendResponsesErrorResponse(res, 404, 'Conversation not found', 'not_found');
+    },
+    onSettlementError: (error) => {
+      logger.error('[Responses API] Failed to settle execution:', getSafeErrorMetadata(error));
+    },
+    handleExecutionError: (error, signal) => {
+      terminalRunError.log(error, signal);
+      return handleExecutionError({ error, res, appConfig });
+    },
+    execute: async (execution) => {
+      const agentPromise = db.getAgent({ id: agentId });
+      // Validation may return before this promise is awaited; preserve the original
+      // promise for the later await while avoiding an unhandled speculative rejection.
+      agentPromise.catch(() => {});
+      if (request.previous_response_id != null) {
+        const project = await resolveApiConversationProject(
+          {
+            userId: principal.userId,
+            tenantId: principal.tenantId,
+            conversationId: request.previous_response_id,
+            rejectSubagentThread: true,
+          },
+          {
+            getConvo: db.getConvo,
+            getChatProject: db.getChatProject,
+            getProjectFiles: db.getProjectFiles,
+            logger,
+            logPrefix: '[Responses API]',
+          },
+        );
+        if (!project.ok && project.reason === 'read_only') {
+          return sendResponsesErrorResponse(
+            res,
+            409,
+            CHILD_THREAD_READ_ONLY_ERROR,
+            'invalid_request',
+            'conversation_read_only',
+          );
+        }
+        if (!project.ok) {
+          return sendResponsesErrorResponse(
+            res,
+            project.status,
+            project.message,
+            project.reason === 'server_error' ? 'server_error' : 'not_found',
+          );
+        }
+        req.resolvedConversation = project.conversation;
+        req.chatProjectContext = project.context;
       }
-    }
 
-    const conversationId = request.previous_response_id ?? uuidv4();
-    const parentMessageId = null;
+      const agent = await agentPromise;
+      if (!agent) {
+        return sendResponsesErrorResponse(
+          res,
+          404,
+          `Agent not found: ${agentId}`,
+          'not_found',
+          'model_not_found',
+        );
+      }
 
-    // Build allowed providers set
-    const allowedProviders = new Set(
-      appConfig?.endpoints?.[EModelEndpoint.agents]?.allowedProviders,
-    );
+      req.turnStartedAt = envelope.receivedAt;
+      const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
+        await resolveAdmittedCodeEnvironmentDecision({
+          appConfig,
+          conversation: req.resolvedConversation,
+          conversationId,
+          requestedMode: request.code_environment_mode,
+          requestedSelections: request.code_workspaces,
+          readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(principal.userId, id),
+        });
+      req.resolvedConversation = admittedConversation;
+      const agentRuntime = createAgentExecutionContext({
+        user: req.user,
+        appConfig,
+        requestBody: request,
+        turnStartedAt: envelope.receivedAt,
+        conversationCreatedAt: req.conversationCreatedAt,
+        resolvedConversation: req.resolvedConversation,
+        hasResolvedConversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation'),
+        chatProjectContext: req.chatProjectContext,
+      });
 
-    // Create tool loader
-    const loadTools = createToolLoader(abortController.signal);
-
-    // Initialize the agent first to check for disableStreaming
-    const endpointOption = {
-      endpoint: agent.provider,
-      model_parameters: agent.model_parameters ?? {},
-    };
-
-    // `filterFilesByAgentAccess` is intentionally omitted: it calls
-    // `checkPermission` with `resourceType: AGENT`, but this route
-    // authorizes callers through `REMOTE_AGENT` (via
-    // `getRemoteAgentPermissions`), so including it would silently drop
-    // owner-attached context files for any remote user who has
-    // `REMOTE_AGENT_VIEWER` but not direct `AGENT_VIEW`.
-    const dbMethods = {
-      getConvoFiles: db.getConvoFiles,
-      getFiles: db.getFiles,
-      getUserKey: db.getUserKey,
-      getMessages: db.getMessages,
-      updateFilesUsage: db.updateFilesUsage,
-      getUserKeyValues: db.getUserKeyValues,
-      getUserCodeFiles: db.getUserCodeFiles,
-      getToolFilesByIds: db.getToolFilesByIds,
-      getCodeGeneratedFiles: db.getCodeGeneratedFiles,
-      listSkillsByAccess: db.listSkillsByAccess,
-      listAlwaysApplySkills: db.listAlwaysApplySkills,
-      getSkillByName: db.getSkillByName,
-    };
-
-    const enabledCapabilities = new Set(
-      appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities,
-    );
-    const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
-    const ephemeralSkillsToggle = req.body?.ephemeralAgent?.skills === true;
-    const accessibleSkillIds = skillsCapabilityEnabled
-      ? await findAccessibleResources({
-          userId: req.user.id,
-          role: req.user.role,
-          resourceType: ResourceType.SKILL,
-          requiredPermissions: PermissionBits.VIEW,
-        })
-      : [];
-
-    const { skillStates, defaultActiveOnShare } = await loadSkillStates({
-      userId: req.user.id,
-      appConfig,
-      getUserById: db.getUserById,
-      accessibleSkillIds,
-    });
-
-    const manualSkills = extractManualSkills(req.body);
-
-    const primaryConfig = await initializeAgent(
-      {
-        req,
-        res,
-        loadTools,
-        requestFiles: [],
+      const parentMessageId = null;
+      const mcpRequestBody = createMCPRuntimeRequestBody({
+        messageId: responseId,
         conversationId,
-        parentMessageId,
+        codeEnvironmentMode: codeEnvironmentDecision.mode,
+        codeWorkspaces: codeEnvironmentDecision.codeWorkspaces,
+      });
+      const agentsEConfig = appConfig?.endpoints?.[EModelEndpoint.agents];
+      const ordinaryToolCancellationEnabled =
+        agentsEConfig?.backgroundTasks?.ordinaryToolCancellation === true;
+      const backgroundCompletionResultMaxChars =
+        agentsEConfig?.backgroundTasks?.completionResultMaxChars;
+      const previousMessages = request.previous_response_id
+        ? await loadPreviousMessages(request.previous_response_id, principal.userId)
+        : [];
+      if (request.previous_response_id) {
+        assertModelBoundContent({
+          onTraversalFailure: reportLocatorTraversalFailure,
+          filters: appConfig?.filters,
+          legacyPii: appConfig?.messageFilter?.pii,
+          storedMessages: previousMessages,
+        });
+      }
+
+      // Build allowed providers set
+      const allowedProviders = new Set(agentsEConfig?.allowedProviders);
+
+      // Create tool loader
+      const loadTools = createToolLoader({ req, res, signal: execution.signal });
+      const skillDbMethods = getSkillDbMethods();
+
+      // Initialize the agent first to check for disableStreaming
+      const endpointOption = {
+        endpoint: agent.provider,
+        model_parameters: agent.model_parameters ?? {},
+      };
+
+      const dbMethods = {
+        getProjectFiles: db.getProjectFiles,
+        getConvoFiles: db.getConvoFiles,
+        getFiles: db.getFiles,
+        filterFilesByAgentAccess: filterFilesByRemoteAgentAccess,
+        getUserKey: db.getUserKey,
+        getMessages: db.getMessages,
+        getAccessibleMcpServerNames,
+        updateFilesUsage: db.updateFilesUsage,
+        getUserKeyValues: db.getUserKeyValues,
+        getUserCodeFiles: db.getUserCodeFiles,
+        getDeferredProvisionFiles: db.getDeferredProvisionFiles,
+        checkSessionsAlive,
+        loadCodeApiKey,
+        getToolFilesByIds: db.getToolFilesByIds,
+        getCodeGeneratedFiles: db.getCodeGeneratedFiles,
+        listSkillsByAccess: skillDbMethods.listSkillsByAccess,
+        listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
+        getSkillByName: skillDbMethods.getSkillByName,
+        getRoleByName: db.getRoleByName,
+      };
+
+      const enabledCapabilities = new Set(agentsEConfig?.capabilities);
+      const codeCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.execute_code);
+      const fileSearchCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.file_search);
+      /** Started before the memory read rather than awaited on its own line, so
+       *  the role lookup overlaps that query instead of preceding it. Skipped
+       *  when the deployment has both capabilities off — both flags are false
+       *  either way, so the read would be pure load on every request. One
+       *  lookup answers both. */
+      const toolRoleGrants =
+        codeCapabilityEnabled || fileSearchCapabilityEnabled
+          ? resolveToolRoleGrants({ req, getRoleByName: db.getRoleByName })
+          : null;
+      const memoryAvailable = await resolveMemoryAvailability({
+        enabledCapabilities,
+        memoryConfig: appConfig?.memory,
+        user: req.user,
+        getRoleByName: db.getRoleByName,
+      });
+      /** The deployment switch AND the role grant: `initializeAgent` rebuilds
+       *  `bash_tool`, `read_file` and the workspace file tools from this flag,
+       *  and forwards the code-environment context to their handlers. */
+      const codeEnvAvailable = codeCapabilityEnabled && (await toolRoleGrants)?.runCode === true;
+      /** The same pairing for the other gated tool, read only by the resend-file
+       *  priming: `false` skips re-hydrating prior-turn `file_search` files for
+       *  a tool the loader is about to drop. */
+      const fileSearchAvailable =
+        fileSearchCapabilityEnabled && (await toolRoleGrants)?.fileSearch === true;
+      /** Called by `initializeAgent` only when an agent's built provider config
+       *  turns native web search on. It reaches the initializer with `runtime`
+       *  and no `req`, so this is what lets it join the grants memoized on this
+       *  request instead of issuing its own read. */
+      const resolveWebSearchGrant = async () =>
+        (await resolveToolRoleGrants({ req, getRoleByName: db.getRoleByName })).webSearch;
+      /** Resolves any agent's `instructionsPrompt` link this run encounters — primary
+       *  or handoff. No default resolution path, unlike `resolveWebSearchGrant`. */
+      const resolveLinkedInstructions = getLinkedInstructionsResolver();
+      const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
+      const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
+      const accessibleSkillIds = skillsCapabilityEnabled
+        ? withDeploymentSkillIds(
+            await findAccessibleResources({
+              userId: principal.userId,
+              role: principal.role,
+              resourceType: ResourceType.SKILL,
+              requiredPermissions: PermissionBits.VIEW,
+            }),
+          )
+        : [];
+      const editableSkillIds = skillsCapabilityEnabled
+        ? await findAccessibleResources({
+            userId: principal.userId,
+            role: principal.role,
+            resourceType: ResourceType.SKILL,
+            requiredPermissions: PermissionBits.EDIT,
+          })
+        : [];
+      const skillCreateAllowed = skillsCapabilityEnabled
+        ? await getSkillToolDeps().canCreateSkill({ req })
+        : false;
+
+      const { skillStates, defaultActiveOnShare } = await loadSkillStates({
+        userId: principal.userId,
+        appConfig,
+        getUserById: db.getUserById,
+        accessibleSkillIds,
+      });
+
+      const primaryScopedSkillIds = resolveAgentScopedSkillIds({
         agent,
-        endpointOption,
-        allowedProviders,
-        isInitialAgent: true,
-        accessibleSkillIds: resolveAgentScopedSkillIds({
-          agent,
-          accessibleSkillIds,
-          skillsCapabilityEnabled,
-          ephemeralSkillsToggle,
-        }),
-        codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
-        skillStates,
-        defaultActiveOnShare,
-        manualSkills,
-      },
-      dbMethods,
-    );
+        accessibleSkillIds,
+        skillsCapabilityEnabled,
+        ephemeralSkillsToggle,
+      });
+      const primaryScopedEditableSkillIds = resolveAgentScopedSkillIds({
+        agent,
+        accessibleSkillIds: editableSkillIds,
+        skillsCapabilityEnabled,
+        ephemeralSkillsToggle,
+      });
 
-    /**
-     * Per-agent tool-execution context map, keyed by agentId. Ensures the
-     * ON_TOOL_EXECUTE callback routes each sub-agent's tool calls to the
-     * correct toolRegistry / userMCPAuthMap / tool_resources.
-     * @type {Map<string, {
-     *   agent: object,
-     *   toolRegistry?: import('@librechat/agents').LCToolRegistry,
-     *   userMCPAuthMap?: Record<string, Record<string, string>>,
-     *   tool_resources?: object,
-     *   actionsEnabled?: boolean,
-     * }>}
-     */
-    const agentToolContexts = new Map();
-    agentToolContexts.set(primaryConfig.id, {
-      agent,
-      toolRegistry: primaryConfig.toolRegistry,
-      userMCPAuthMap: primaryConfig.userMCPAuthMap,
-      tool_resources: primaryConfig.tool_resources,
-      actionsEnabled: primaryConfig.actionsEnabled,
-      codeEnvAvailable: primaryConfig.codeEnvAvailable,
-    });
-
-    // Only run BFS discovery (and pay `getModelsConfig` upfront) when the
-    // primary has edges to follow — the common API case is single-agent.
-    let handoffAgentConfigs = new Map();
-    let discoveredEdges = [];
-    let discoveredMCPAuthMap;
-    if (primaryConfig.edges?.length) {
-      const modelsConfig = await getModelsConfig(req);
-      ({
-        agentConfigs: handoffAgentConfigs,
-        edges: discoveredEdges,
-        userMCPAuthMap: discoveredMCPAuthMap,
-      } = await discoverConnectedAgents(
+      const primaryConfig = await initializeAgent(
         {
+          runtime: agentRuntime,
+          loadTools,
+          requestFiles: [],
+          conversationId,
+          parentMessageId,
+          requestBody: mcpRequestBody,
+          agent,
+          endpointOption,
+          allowedProviders,
+          isInitialAgent: true,
+          useChatProjectContext: true,
+          accessibleSkillIds: primaryScopedSkillIds,
+          skillAuthoringAvailable: canAuthorSkillFiles({
+            agent,
+            scopedEditableSkillIds: primaryScopedEditableSkillIds,
+            skillCreateAllowed,
+            skillsCapabilityEnabled,
+            ephemeralSkillsToggle,
+          }),
+          codeEnvAvailable,
+          fileSearchAvailable,
+          resolveWebSearchGrant,
+          resolveLinkedInstructions,
+          backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
+          toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
+          statefulSessionsAvailable: enabledCapabilities.has(
+            AgentCapabilities.stateful_code_sessions,
+          ),
+          allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
+          memoryAvailable,
+          skillStates,
+          defaultActiveOnShare,
+          manualSkills,
+          signal: execution.signal,
+        },
+        dbMethods,
+      );
+
+      /**
+       * Per-agent tool-execution context map, keyed by agentId. Ensures the
+       * ON_TOOL_EXECUTE callback routes each sub-agent's tool calls to the
+       * correct toolRegistry / userMCPAuthMap / tool_resources.
+       * @type {Map<string, {
+       *   agent: object,
+       *   toolRegistry?: import('@librechat/agents').LCToolRegistry,
+       *   requestScopedConnections?: import('@librechat/api').RequestScopedMCPConnectionStore,
+       *   userMCPAuthMap?: Record<string, Record<string, string>>,
+       *   tool_resources?: object,
+       *   actionsEnabled?: boolean,
+       * }>}
+       */
+      const agentToolContexts = new Map();
+      agentToolContexts.set(
+        primaryConfig.id,
+        buildAgentToolContext({ agent, config: primaryConfig }),
+      );
+
+      let handoffAgentConfigs = new Map();
+      let discoveredEdges = [];
+      let discoveredMCPAuthMap;
+      const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+      const primaryHasGraphSubagents =
+        subagentsCapabilityEnabled &&
+        primaryConfig.subagents?.enabled === true &&
+        (primaryConfig.subagents.graphs?.length ?? 0) > 0;
+      if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
+        const modelsConfig = await getModelsConfig(req);
+        const discoveryParams = {
           req,
           res,
+          signal: execution.signal,
           primaryConfig,
           endpointOption,
           allowedProviders,
@@ -472,20 +971,45 @@ const createResponse = async (req, res) => {
           requestFiles: [],
           conversationId,
           parentMessageId,
-          // The route enforces REMOTE_AGENT on the primary; every discovered
-          // sub-agent must clear the same sharing boundary, not the looser
-          // in-app AGENT one.
+          useChatProjectContext: true,
+          requestBody: mcpRequestBody,
           resourceType: ResourceType.REMOTE_AGENT,
-          /** @see DiscoverConnectedAgentsParams.codeEnvAvailable */
-          codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
-        },
-        {
+          computeAccessibleSkillIds: (handoffAgent) =>
+            resolveAgentScopedSkillIds({
+              agent: handoffAgent,
+              accessibleSkillIds,
+              skillsCapabilityEnabled,
+              ephemeralSkillsToggle,
+            }),
+          computeSkillAuthoringAvailable: (handoffAgent) =>
+            canAuthorSkillFiles({
+              agent: handoffAgent,
+              scopedEditableSkillIds: resolveAgentScopedSkillIds({
+                agent: handoffAgent,
+                accessibleSkillIds: editableSkillIds,
+                skillsCapabilityEnabled,
+                ephemeralSkillsToggle,
+              }),
+              skillCreateAllowed,
+              skillsCapabilityEnabled,
+              ephemeralSkillsToggle,
+            }),
+          skillStates,
+          defaultActiveOnShare,
+          codeEnvAvailable,
+          fileSearchAvailable,
+          resolveWebSearchGrant,
+          resolveLinkedInstructions,
+          backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
+          toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
+          statefulSessionsAvailable: enabledCapabilities.has(
+            AgentCapabilities.stateful_code_sessions,
+          ),
+          allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
+          memoryAvailable,
+        };
+        const discoveryDeps = {
           getAgent: db.getAgent,
-          // Use `getRemoteAgentPermissions` so sub-agent authorization
-          // matches what the route's `createCheckRemoteAgentAccess`
-          // middleware does for the primary: AGENT owners with the SHARE
-          // bit are treated as remotely authorized even without an
-          // explicit REMOTE_AGENT grant.
           checkPermission: async ({ userId, role, resourceId, requiredPermission }) => {
             const permissions = await getRemoteAgentPermissions(
               { getEffectivePermissions },
@@ -497,490 +1021,741 @@ const createResponse = async (req, res) => {
           },
           logViolation,
           db: dbMethods,
-          onAgentInitialized: (agentId, handoffAgent, config) => {
-            agentToolContexts.set(agentId, {
-              agent: handoffAgent,
-              toolRegistry: config.toolRegistry,
-              userMCPAuthMap: config.userMCPAuthMap,
-              tool_resources: config.tool_resources,
-              actionsEnabled: config.actionsEnabled,
-              codeEnvAvailable: config.codeEnvAvailable,
-            });
+          onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
+            agentToolContexts.set(
+              loadedAgentId,
+              buildAgentToolContext({ agent: loadedAgent, config }),
+            );
           },
           initializeAgent,
-        },
-      ));
-    }
+        };
+        if (primaryConfig.edges?.length) {
+          ({
+            agentConfigs: handoffAgentConfigs,
+            edges: discoveredEdges,
+            userMCPAuthMap: discoveredMCPAuthMap,
+          } = await discoverConnectedAgents(discoveryParams, discoveryDeps));
+        }
+        if (subagentsCapabilityEnabled) {
+          discoveredMCPAuthMap = await resolveSubagentGraphs(
+            {
+              ...discoveryParams,
+              rootConfigs: [primaryConfig, ...handoffAgentConfigs.values()],
+            },
+            discoveryDeps,
+          );
+        }
+      }
 
-    primaryConfig.edges = discoveredEdges;
-    const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
-    const mergedMCPAuthMap = discoveredMCPAuthMap ?? primaryConfig.userMCPAuthMap;
-
-    // Determine if streaming is enabled (check both request and agent config)
-    const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
-    const actuallyStreaming = isStreaming && !streamingDisabled;
-
-    // Load previous messages if previous_response_id is provided
-    let previousMessages = [];
-    if (request.previous_response_id) {
-      const userId = req.user?.id ?? 'api-user';
-      previousMessages = await loadPreviousMessages(request.previous_response_id, userId);
-    }
-
-    // Convert input to internal messages
-    const inputMessages = convertToInternalMessages(
-      typeof request.input === 'string' ? request.input : request.input,
-    );
-
-    // Merge previous messages with new input
-    const allMessages = [...previousMessages, ...inputMessages];
-
-    const toolSet = buildToolSet(primaryConfig);
-    const formatted = formatAgentMessages(allMessages, {}, toolSet);
-    const formattedMessages = formatted.messages;
-    const initialSummary = formatted.summary;
-    let indexTokenCountMap = formatted.indexTokenCountMap;
-
-    /**
-     * Inject manual + always-apply skill primes so the model sees SKILL.md
-     * bodies for this turn — parity with AgentClient's chat path. The
-     * Responses API uses its own response-builder shape, so LibreChat-
-     * style card SSE events don't apply; only the message-context part
-     * carries over.
-     */
-    const manualSkillPrimes = primaryConfig.manualSkillPrimes;
-    const alwaysApplySkillPrimes = primaryConfig.alwaysApplySkillPrimes;
-    if (
-      (manualSkillPrimes && manualSkillPrimes.length > 0) ||
-      (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0)
-    ) {
-      const primeResult = injectSkillPrimes({
-        initialMessages: formattedMessages,
-        indexTokenCountMap,
-        manualSkillPrimes,
-        alwaysApplySkillPrimes,
+      primaryConfig.edges = discoveredEdges;
+      const endpointTokenConfigByAgentId = new Map();
+      for (const [agentId, context] of agentToolContexts) {
+        endpointTokenConfigByAgentId.set(agentId, context.endpointTokenConfig);
+      }
+      const resolveEndpointTokenConfig = (usage) =>
+        resolveAgentTokenConfig({
+          agentId: usage?.agentId,
+          byAgentId: endpointTokenConfigByAgentId,
+          fallback: primaryConfig.endpointTokenConfig,
+        });
+      const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
+      const initialSessions = buildInitialToolSessions({ agents: runAgents });
+      const modelBoundAgentsById = new Map();
+      const pendingModelBoundAgents = [...runAgents];
+      for (let index = 0; index < pendingModelBoundAgents.length; index++) {
+        const runAgent = pendingModelBoundAgents[index];
+        if (!runAgent?.id || modelBoundAgentsById.has(runAgent.id)) {
+          continue;
+        }
+        modelBoundAgentsById.set(runAgent.id, runAgent);
+        for (const subagent of runAgent.subagentAgentConfigs?.values?.() ?? []) {
+          pendingModelBoundAgents.push(subagent);
+        }
+        for (const graph of runAgent.subagentGraphConfigs ?? []) {
+          pendingModelBoundAgents.push(...graph.memberConfigs);
+        }
+      }
+      const modelBoundAgents = [...modelBoundAgentsById.values()];
+      const mergedMCPAuthMap = discoveredMCPAuthMap ?? primaryConfig.userMCPAuthMap;
+      assertModelBoundContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
+        filters: appConfig?.filters,
+        legacyPii: appConfig?.messageFilter?.pii,
+        agents: modelBoundAgents,
       });
-      indexTokenCountMap = primeResult.indexTokenCountMap;
-      /* Surface the cap-driven always-apply truncation at the controller
+
+      const agentContextAttachmentsByAgentId =
+        buildAgentContextAttachmentsByAgentId(modelBoundAgents);
+      const agentScopedContext = await buildAgentScopedContext({
+        agentIds: modelBoundAgents.map(({ id }) => id),
+        attachmentsByAgentId: agentContextAttachmentsByAgentId,
+        req,
+        endpoint: primaryConfig.endpoint,
+        endpointsByAgentId: new Map(
+          modelBoundAgents.map((runAgent) => [runAgent.id, { endpoint: runAgent.endpoint }]),
+        ),
+      });
+
+      const mcpManager = getMCPManager();
+      const configServers = await resolveConfigServers(req);
+
+      await Promise.all(
+        modelBoundAgents.map(async (runAgent) => {
+          const memoryContext = await buildInlineMemoryContext({
+            agent: runAgent,
+            req,
+            userId: principal.userId,
+            memoryAvailable,
+            getFormattedMemories: db.getFormattedMemories,
+          });
+          return applyContextToAgent({
+            agent: runAgent,
+            agentId: runAgent.id,
+            logger,
+            mcpManager,
+            configServers,
+            sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
+              .filter(Boolean)
+              .join('\n\n'),
+          });
+        }),
+      );
+
+      // Determine if streaming is enabled (check both request and agent config)
+      const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
+      const actuallyStreaming = isStreaming && !streamingDisabled;
+
+      // Merge previous messages with new input
+      const allMessages = [...previousMessages, ...inputMessages];
+
+      /** The caller's function tools: declared to the model with no server-side
+       *  executor, handed back when the model calls one, and reported on the
+       *  response as the subset that was actually applied.
+       *
+       *  Built once every agent of the run is known, because the interception
+       *  matches on tool name across the whole graph: a name a subagent owns
+       *  collides exactly as a primary one does. */
+      const clientTools = createClientToolHandoff({
+        tools: request.tools,
+        agentDefinitions: primaryConfig.toolDefinitions,
+        serverDefinitions: modelBoundAgents.flatMap((runAgent) => runAgent.toolDefinitions ?? []),
+        responseId,
+      });
+      if (clientTools.error != null) {
+        return sendResponsesErrorResponse(res, 400, clientTools.error, 'invalid_request');
+      }
+      primaryConfig.toolDefinitions = clientTools.toolDefinitions;
+      context.tools = clientTools.appliedTools;
+
+      const toolSet = buildRunToolSet(
+        primaryConfig,
+        handoffAgentConfigs.values(),
+        undefined,
+        allMessages,
+        true,
+      );
+      const formatted = formatAgentMessages(
+        stripUnusableSummaryParts(stripActivityLabelParts(allMessages)),
+        {},
+        toolSet,
+      );
+      const formattedMessages = formatted.messages;
+      const initialSummary = formatted.summary;
+      let indexTokenCountMap = formatted.indexTokenCountMap;
+
+      /**
+       * Inject manual + always-apply skill primes so the model sees SKILL.md
+       * bodies for this turn — parity with AgentClient's chat path. The
+       * Responses API uses its own response-builder shape, so LibreChat-
+       * style card SSE events don't apply; only the message-context part
+       * carries over.
+       */
+      const manualSkillPrimes = primaryConfig.manualSkillPrimes;
+      const alwaysApplySkillPrimes = primaryConfig.alwaysApplySkillPrimes;
+      if (
+        (manualSkillPrimes && manualSkillPrimes.length > 0) ||
+        (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0)
+      ) {
+        const primeResult = injectSkillPrimes({
+          initialMessages: formattedMessages,
+          indexTokenCountMap,
+          manualSkillPrimes,
+          alwaysApplySkillPrimes,
+        });
+        indexTokenCountMap = primeResult.indexTokenCountMap;
+        /* Surface the cap-driven always-apply truncation at the controller
          layer too — `injectSkillPrimes` already logs internally, but the
          controller-level warn includes endpoint context so operators can
          tell at a glance which path hit the cap. Mirrors AgentClient's
          warn in `client.js`. */
-      if (primeResult.alwaysApplyDropped > 0) {
-        logger.warn(
-          `[Responses API] Dropped ${primeResult.alwaysApplyDropped} always-apply prime(s) to stay within MAX_PRIMED_SKILLS_PER_TURN.`,
-        );
+        if (primeResult.alwaysApplyDropped > 0) {
+          logger.warn(
+            `[Responses API] Dropped ${primeResult.alwaysApplyDropped} always-apply prime(s) to stay within MAX_PRIMED_SKILLS_PER_TURN.`,
+          );
+        }
       }
-    }
 
-    /* Stable for the turn: the prime lists are fixed once
-       `initializeAgent` resolves. Hoisted here so both the streaming
-       and non-streaming `loadTools` closures below reuse it without
-       recomputing per tool execution. `codeEnvAvailable` is read
+      assertModelBoundContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
+        filters: appConfig?.filters,
+        legacyPii: appConfig?.messageFilter?.pii,
+        submittedMessages: inputMessages,
+        agents: modelBoundAgents,
+        skills: [...(manualSkillPrimes ?? []), ...(alwaysApplySkillPrimes ?? [])],
+        files: collectModelBoundAgentFiles(modelBoundAgents),
+      });
+
+      /* Stable for the turn: the primary prime list is fixed once
+       `initializeAgent` resolves and is used as the fallback when a
+       specific agent context is unavailable. `codeEnvAvailable` is read
        per-agent from the stored tool context (admin cap AND that
        agent's `tools` list includes `execute_code`) — a skills-only
        agent never gains sandbox access even if the admin enabled the
        capability globally. */
-    const skillPrimedIdsByName = buildSkillPrimedIdsByName(
-      manualSkillPrimes,
-      alwaysApplySkillPrimes,
-    );
+      // Create tracker for streaming or aggregator for non-streaming
+      const tracker = actuallyStreaming ? createResponseTracker() : null;
+      const aggregator = actuallyStreaming ? null : createResponseAggregator();
 
-    // Create tracker for streaming or aggregator for non-streaming
-    const tracker = actuallyStreaming ? createResponseTracker() : null;
-    const aggregator = actuallyStreaming ? null : createResponseAggregator();
+      // Set up response for streaming
+      if (actuallyStreaming) {
+        setupStreamingResponse(res);
 
-    // Set up response for streaming
-    if (actuallyStreaming) {
-      setupStreamingResponse(res);
+        // Create handler config
+        const handlerConfig = {
+          res,
+          context,
+          tracker,
+          /* The run terminates a caller-executed call's item itself: the server
+             never executes one, so `on_tool_end` cannot. */
+          clientToolNames: clientTools.clientToolNames,
+        };
 
-      // Create handler config
-      const handlerConfig = {
-        res,
-        context,
-        tracker,
-      };
+        // Emit response.created then response.in_progress per Open Responses spec
+        emitResponseCreated(handlerConfig);
+        emitResponseInProgress(handlerConfig);
 
-      // Emit response.created then response.in_progress per Open Responses spec
-      emitResponseCreated(handlerConfig);
-      emitResponseInProgress(handlerConfig);
+        // Create event handlers
+        const {
+          handlers: responsesHandlers,
+          finalizeStream,
+          emitClientToolDeferral,
+        } = createResponsesEventHandlers(handlerConfig);
 
-      // Create event handlers
-      const { handlers: responsesHandlers, finalizeStream } =
-        createResponsesEventHandlers(handlerConfig);
+        // Collect usage for balance tracking
+        const collectedUsage = [];
 
-      // Collect usage for balance tracking
-      const collectedUsage = [];
-
-      // Artifact promises for processing tool outputs
-      /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
-      const artifactPromises = [];
-      // Use Responses API-specific callback that emits librechat:attachment events
-      const toolEndCallback = createResponsesToolEndCallback({
-        req,
-        res,
-        tracker,
-        artifactPromises,
-      });
-
-      // Create tool execute options for event-driven tool execution
-      const toolExecuteOptions = {
-        loadTools: async (toolNames, agentId) => {
-          const ctx =
-            agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
-          const result = await loadToolsForExecution({
-            req,
-            res,
-            toolNames,
-            agent: ctx.agent ?? agent,
-            signal: abortController.signal,
-            toolRegistry: ctx.toolRegistry,
-            userMCPAuthMap: ctx.userMCPAuthMap,
-            tool_resources: ctx.tool_resources,
-            actionsEnabled: ctx.actionsEnabled,
-          });
-          return enrichWithSkillConfigurable(
-            result,
-            req,
-            primaryConfig.accessibleSkillIds,
-            ctx.codeEnvAvailable === true,
-            skillPrimedIdsByName,
-          );
-        },
-        toolEndCallback,
-        ...getSkillToolDeps(),
-      };
-
-      // Combine handlers
-      const handlers = {
-        on_message_delta: responsesHandlers.on_message_delta,
-        on_reasoning_delta: responsesHandlers.on_reasoning_delta,
-        on_run_step: responsesHandlers.on_run_step,
-        on_run_step_delta: responsesHandlers.on_run_step_delta,
-        on_chat_model_end: {
-          handle: (event, data, metadata) => {
-            responsesHandlers.on_chat_model_end.handle(event, data);
-            const usage = data?.output?.usage_metadata;
-            if (usage) {
-              const taggedUsage = markSummarizationUsage(usage, metadata);
-              collectedUsage.push(taggedUsage);
-            }
-          },
-        },
-        on_tool_end: new ToolEndHandler(toolEndCallback, logger),
-        on_run_step_completed: { handle: () => {} },
-        on_chain_stream: { handle: () => {} },
-        on_chain_end: { handle: () => {} },
-        on_agent_update: { handle: () => {} },
-        on_custom_event: { handle: () => {} },
-        on_tool_execute: createToolExecuteHandler(toolExecuteOptions),
-        on_agent_log: agentLogHandlerObj,
-        ...(summarizationConfig?.enabled !== false
-          ? buildSummarizationHandlers({ isStreaming: actuallyStreaming, res })
-          : {}),
-      };
-
-      // Create and run the agent
-      const userId = req.user?.id ?? 'api-user';
-      const userMCPAuthMap = mergedMCPAuthMap;
-
-      const run = await createRun({
-        agents: runAgents,
-        messages: formattedMessages,
-        indexTokenCountMap,
-        initialSummary,
-        runId: responseId,
-        summarizationConfig,
-        appConfig,
-        signal: abortController.signal,
-        customHandlers: handlers,
-        requestBody: {
-          messageId: responseId,
-          conversationId,
-        },
-        user: { id: userId },
-      });
-
-      if (!run) {
-        throw new Error('Failed to create agent run');
-      }
-
-      // Process the stream
-      const config = {
-        runName: 'AgentRun',
-        configurable: {
-          thread_id: conversationId,
-          user_id: userId,
-          user: createSafeUser(req.user),
-          requestBody: {
-            messageId: responseId,
-            conversationId,
-          },
-          ...(userMCPAuthMap != null && { userMCPAuthMap }),
-        },
-        signal: abortController.signal,
-        streamMode: 'values',
-        version: 'v2',
-      };
-
-      await run.processStream({ messages: formattedMessages }, config, {
-        callbacks: {
-          [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-            logger.error(`[Responses API] Tool Error "${toolId}"`, error);
-          },
-        },
-      });
-
-      // Record token usage against balance
-      const balanceConfig = getBalanceConfig(appConfig);
-      const transactionsConfig = getTransactionsConfig(appConfig);
-      recordCollectedUsage(
-        {
-          spendTokens: db.spendTokens,
-          spendStructuredTokens: db.spendStructuredTokens,
-          pricing: { getMultiplier: db.getMultiplier, getCacheMultiplier: db.getCacheMultiplier },
-          bulkWriteOps: { insertMany: db.bulkInsertTransactions, updateBalance: db.updateBalance },
-        },
-        {
-          user: userId,
-          conversationId,
-          collectedUsage,
-          context: 'message',
-          messageId: responseId,
-          balance: balanceConfig,
-          transactions: transactionsConfig,
-          model: primaryConfig.model || agent.model_parameters?.model,
-        },
-      ).catch((err) => {
-        logger.error('[Responses API] Error recording usage:', err);
-      });
-
-      // Finalize the stream
-      finalizeStream();
-      res.end();
-
-      const duration = Date.now() - requestStartTime;
-      logger.debug(`[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`);
-
-      // Save to database if store: true
-      if (request.store === true) {
-        try {
-          // Save conversation
-          await saveConversation(req, conversationId, agentId, agent);
-
-          // Save input messages
-          await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-          // Build response for saving (use tracker with buildResponse for streaming)
-          const finalResponse = buildResponse(context, tracker, 'completed');
-          await saveResponseOutput(req, conversationId, responseId, finalResponse, agentId);
-
-          logger.debug(
-            `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-          );
-        } catch (saveError) {
-          logger.error('[Responses API] Error saving response:', saveError);
-          // Don't fail the request if saving fails
-        }
-      }
-
-      // Wait for artifact processing after response ends (non-blocking)
-      if (artifactPromises.length > 0) {
-        Promise.all(artifactPromises).catch((artifactError) => {
-          logger.warn('[Responses API] Error processing artifacts:', artifactError);
+        // Artifact promises for processing tool outputs
+        // Use Responses API-specific callback that emits librechat:attachment events
+        const toolEndCallback = createResponsesToolEndCallback({
+          req,
+          res,
+          tracker,
+          artifactPromises,
         });
-      }
-    } else {
-      const aggregatorHandlers = createAggregatorEventHandlers(aggregator);
 
-      // Collect usage for balance tracking
-      const collectedUsage = [];
-
-      /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
-      const artifactPromises = [];
-      const toolEndCallback = createToolEndCallback({ req, res, artifactPromises, streamId: null });
-
-      const toolExecuteOptions = {
-        loadTools: async (toolNames, agentId) => {
-          const ctx =
-            agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
-          const result = await loadToolsForExecution({
+        // Create tool execute options for event-driven tool execution
+        const toolExecuteOptions = {
+          runSignal: execution.signal,
+          foregroundRunId: responseId,
+          ordinaryToolCancellation: ordinaryToolCancellationEnabled,
+          backgroundCompletionResultMaxChars,
+          provisionFiles: createProvisionFilesCallback({
             req,
-            res,
+            agentToolContexts,
+            resolvePrimaryAgentId: () => primaryConfig.id,
+          }),
+          loadTools: async (
             toolNames,
-            agent: ctx.agent ?? agent,
-            signal: abortController.signal,
-            toolRegistry: ctx.toolRegistry,
-            userMCPAuthMap: ctx.userMCPAuthMap,
-            tool_resources: ctx.tool_resources,
-            actionsEnabled: ctx.actionsEnabled,
-          });
-          return enrichWithSkillConfigurable(
-            result,
+            agentId,
+            _configurable,
+            callerCapabilityProjection,
+            runSignal,
+          ) => {
+            const ctx =
+              agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
+            const result = await loadToolsForExecution({
+              req,
+              res,
+              agentResourceType: ResourceType.REMOTE_AGENT,
+              conversationId,
+              requestBody: mcpRequestBody,
+              toolNames,
+              agent: ctx.agent ?? agent,
+              signal: runSignal,
+              toolRegistry: ctx.toolRegistry,
+              callerCapabilityProjection,
+              backgroundToolNames: ctx.backgroundToolNames,
+              intentToolNames: ctx.intentToolNames,
+              mcpAvailableTools: ctx.mcpAvailableTools,
+              requestScopedConnections: ctx.requestScopedConnections,
+              userMCPAuthMap: ctx.userMCPAuthMap,
+              tool_resources: ctx.tool_resources,
+              actionsEnabled: ctx.actionsEnabled,
+              accessibleMcpServerNames: ctx.accessibleMcpServerNames,
+            });
+            return enrichLoadedToolsWithAgentContext({
+              result,
+              req,
+              ctx,
+            });
+          },
+          toolEndCallback,
+          ...getSkillToolDeps(),
+        };
+
+        // Combine handlers
+        const handlers = {
+          on_message_delta: responsesHandlers.on_message_delta,
+          on_reasoning_delta: responsesHandlers.on_reasoning_delta,
+          on_run_step: clientTools.wrapRunStep(responsesHandlers.on_run_step),
+          on_run_step_delta: responsesHandlers.on_run_step_delta,
+          on_chat_model_end: {
+            handle: (event, data, metadata, graph) => {
+              responsesHandlers.on_chat_model_end.handle(event, data);
+              const usage = data?.output?.usage_metadata;
+              if (usage) {
+                const agentContext = graph?.getAgentContext?.(metadata);
+                const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
+                collectedUsage.push(taggedUsage);
+              }
+            },
+          },
+          on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
+          on_run_step_completed: { handle: () => {} },
+          on_chain_stream: { handle: () => {} },
+          on_chain_end: { handle: () => {} },
+          on_agent_update: { handle: () => {} },
+          on_custom_event: { handle: () => {} },
+          /** The deferral answer is emitted as the call's `function_call_output`,
+           *  so a caller can tell an answered call from one handed back to it. */
+          on_tool_execute: clientTools.wrapToolExecute(
+            createToolExecuteHandler(toolExecuteOptions),
+            emitClientToolDeferral,
+          ),
+          on_agent_log: agentLogHandlerObj,
+          ...(summarizationConfig?.enabled !== false
+            ? buildSummarizationHandlers({ isStreaming: actuallyStreaming, res })
+            : {}),
+        };
+
+        // Create and run the agent
+        const userId = principal.userId;
+        const userMCPAuthMap = mergedMCPAuthMap;
+
+        const run = await createRun({
+          agents: runAgents,
+          messages: formattedMessages,
+          indexTokenCountMap,
+          initialSummary,
+          runId: responseId,
+          summarizationConfig,
+          appConfig,
+          signal: execution.signal,
+          customHandlers: handlers,
+          initialSessions,
+          requestBody: mcpRequestBody,
+          user: { ...createSafeUser(req.user), id: userId },
+          traceContext: { endpoint: EModelEndpoint.agents },
+          tenantId: principal.tenantId,
+          modelCallbacks: [terminalRunError.modelCallback],
+          clientToolNames: clientTools.clientToolNames,
+          /** Bills subagent child-run model calls (reported outside the
+           *  streamEvents loop) into the same collectedUsage array. */
+          subagentUsageSink: createSubagentUsageSink(collectedUsage),
+        });
+
+        if (!run) {
+          throw new Error('Failed to create agent run');
+        }
+
+        // Process the stream
+        const config = {
+          runName: 'AgentRun',
+          configurable: {
+            thread_id: conversationId,
+            user_id: userId,
+            user: createSafeUser(req.user),
+            requestBody: mcpRequestBody,
+            ...(userMCPAuthMap != null && { userMCPAuthMap }),
+          },
+          recursionLimit: resolveRecursionLimit(agentsEConfig, agent),
+          signal: execution.signal,
+          streamMode: 'values',
+          version: 'v2',
+        };
+
+        await run.processStream({ messages: formattedMessages }, config, {
+          callbacks: {
+            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+              logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
+            },
+          },
+        });
+
+        // Record token usage against balance
+        const balanceConfig = getBalanceConfig(appConfig);
+        const transactionsConfig = getTransactionsConfig(appConfig);
+        execution.track(
+          recordCollectedUsage(
+            {
+              spendTokens: db.spendTokens,
+              spendStructuredTokens: db.spendStructuredTokens,
+              pricing: {
+                getMultiplier: db.getMultiplier,
+                getCacheMultiplier: db.getCacheMultiplier,
+              },
+              bulkWriteOps: {
+                insertMany: db.bulkInsertTransactions,
+                updateBalance: db.updateBalance,
+              },
+            },
+            {
+              user: userId,
+              conversationId,
+              collectedUsage,
+              context: 'message',
+              messageId: responseId,
+              balance: balanceConfig,
+              transactions: transactionsConfig,
+              model: primaryConfig.model || agent.model_parameters?.model,
+              endpointTokenConfig: primaryConfig.endpointTokenConfig,
+              resolveEndpointTokenConfig,
+            },
+          ).catch((err) => {
+            logger.error('[Responses API] Error recording usage:', getSafeErrorMetadata(err));
+          }),
+        );
+
+        const usage = buildResponsesUsage(collectedUsage);
+
+        // Finalize the stream
+        finalizeStream(usage);
+        res.end();
+
+        const duration = Date.now() - requestStartTime;
+        logger.debug(
+          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
+        );
+
+        // Save to database if store: true
+        if (request.store === true) {
+          try {
+            // Save conversation
+            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+
+            // Save input messages
+            await saveInputMessages(req, conversationId, inputMessages, agentId);
+
+            // Build response for saving (use tracker with buildResponse for streaming)
+            const finalResponse = buildResponse(context, tracker, 'completed');
+            const savedResponse = await saveResponseOutput(
+              req,
+              conversationId,
+              responseId,
+              finalResponse,
+              agentId,
+              tracker.usage.outputTokens,
+            );
+            await announceReply(db, {
+              userId: req?.user?.id,
+              conversationId,
+              reply: savedResponse,
+              context: 'Responses API - announce stored reply',
+            });
+
+            logger.debug(
+              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
+            );
+          } catch (saveError) {
+            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
+            // Don't fail the request if saving fails
+          }
+        }
+
+        // The HTTP response is complete, while destructive cleanup still waits for artifacts.
+        if (artifactPromises.length > 0) {
+          execution.track(
+            waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
+              logger.warn(
+                '[Responses API] Error processing artifacts:',
+                getSafeErrorMetadata(artifactError),
+              );
+            }),
+          );
+          artifactWritesCovered = true;
+        }
+      } else {
+        const aggregatorHandlers = createAggregatorEventHandlers(aggregator);
+
+        // Collect usage for balance tracking
+        const collectedUsage = [];
+
+        const toolEndCallback = createToolEndCallback({
+          req,
+          res,
+          artifactPromises,
+          streamId: null,
+        });
+
+        const toolExecuteOptions = {
+          runSignal: execution.signal,
+          foregroundRunId: responseId,
+          ordinaryToolCancellation: ordinaryToolCancellationEnabled,
+          backgroundCompletionResultMaxChars,
+          provisionFiles: createProvisionFilesCallback({
             req,
-            primaryConfig.accessibleSkillIds,
-            ctx.codeEnvAvailable === true,
-            skillPrimedIdsByName,
-          );
-        },
-        toolEndCallback,
-        ...getSkillToolDeps(),
-      };
-
-      const handlers = {
-        on_message_delta: aggregatorHandlers.on_message_delta,
-        on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
-        on_run_step: aggregatorHandlers.on_run_step,
-        on_run_step_delta: aggregatorHandlers.on_run_step_delta,
-        on_chat_model_end: {
-          handle: (event, data, metadata) => {
-            aggregatorHandlers.on_chat_model_end.handle(event, data);
-            const usage = data?.output?.usage_metadata;
-            if (usage) {
-              const taggedUsage = markSummarizationUsage(usage, metadata);
-              collectedUsage.push(taggedUsage);
-            }
+            agentToolContexts,
+            resolvePrimaryAgentId: () => primaryConfig.id,
+          }),
+          loadTools: async (
+            toolNames,
+            agentId,
+            _configurable,
+            callerCapabilityProjection,
+            runSignal,
+          ) => {
+            const ctx =
+              agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
+            const result = await loadToolsForExecution({
+              req,
+              res,
+              agentResourceType: ResourceType.REMOTE_AGENT,
+              conversationId,
+              requestBody: mcpRequestBody,
+              toolNames,
+              agent: ctx.agent ?? agent,
+              signal: runSignal,
+              toolRegistry: ctx.toolRegistry,
+              callerCapabilityProjection,
+              backgroundToolNames: ctx.backgroundToolNames,
+              intentToolNames: ctx.intentToolNames,
+              mcpAvailableTools: ctx.mcpAvailableTools,
+              requestScopedConnections: ctx.requestScopedConnections,
+              userMCPAuthMap: ctx.userMCPAuthMap,
+              tool_resources: ctx.tool_resources,
+              actionsEnabled: ctx.actionsEnabled,
+              accessibleMcpServerNames: ctx.accessibleMcpServerNames,
+            });
+            return enrichLoadedToolsWithAgentContext({
+              result,
+              req,
+              ctx,
+            });
           },
-        },
-        on_tool_end: new ToolEndHandler(toolEndCallback, logger),
-        on_run_step_completed: { handle: () => {} },
-        on_chain_stream: { handle: () => {} },
-        on_chain_end: { handle: () => {} },
-        on_agent_update: { handle: () => {} },
-        on_custom_event: { handle: () => {} },
-        on_tool_execute: createToolExecuteHandler(toolExecuteOptions),
-        on_agent_log: agentLogHandlerObj,
-        ...(summarizationConfig?.enabled !== false
-          ? buildSummarizationHandlers({ isStreaming: false, res })
-          : {}),
-      };
+          toolEndCallback,
+          ...getSkillToolDeps(),
+        };
 
-      const userId = req.user?.id ?? 'api-user';
-      const userMCPAuthMap = mergedMCPAuthMap;
-
-      const run = await createRun({
-        agents: runAgents,
-        messages: formattedMessages,
-        indexTokenCountMap,
-        initialSummary,
-        runId: responseId,
-        summarizationConfig,
-        appConfig,
-        signal: abortController.signal,
-        customHandlers: handlers,
-        requestBody: {
-          messageId: responseId,
-          conversationId,
-        },
-        user: { id: userId },
-      });
-
-      if (!run) {
-        throw new Error('Failed to create agent run');
-      }
-
-      const config = {
-        runName: 'AgentRun',
-        configurable: {
-          thread_id: conversationId,
-          user_id: userId,
-          user: createSafeUser(req.user),
-          requestBody: {
-            messageId: responseId,
-            conversationId,
+        const handlers = {
+          on_message_delta: aggregatorHandlers.on_message_delta,
+          on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
+          on_run_step: clientTools.wrapRunStep(aggregatorHandlers.on_run_step),
+          on_run_step_delta: aggregatorHandlers.on_run_step_delta,
+          on_chat_model_end: {
+            handle: (event, data, metadata, graph) => {
+              aggregatorHandlers.on_chat_model_end.handle(event, data);
+              const usage = data?.output?.usage_metadata;
+              if (usage) {
+                const agentContext = graph?.getAgentContext?.(metadata);
+                const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
+                collectedUsage.push(taggedUsage);
+              }
+            },
           },
-          ...(userMCPAuthMap != null && { userMCPAuthMap }),
-        },
-        signal: abortController.signal,
-        streamMode: 'values',
-        version: 'v2',
-      };
+          on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
+          on_run_step_completed: { handle: () => {} },
+          on_chain_stream: { handle: () => {} },
+          on_chain_end: { handle: () => {} },
+          on_agent_update: { handle: () => {} },
+          on_custom_event: { handle: () => {} },
+          on_tool_execute: clientTools.wrapToolExecute(
+            createToolExecuteHandler(toolExecuteOptions),
+            (callId, output) => aggregator.toolOutputs.set(callId, output),
+          ),
+          on_agent_log: agentLogHandlerObj,
+          ...(summarizationConfig?.enabled !== false
+            ? buildSummarizationHandlers({ isStreaming: false, res })
+            : {}),
+        };
 
-      await run.processStream({ messages: formattedMessages }, config, {
-        callbacks: {
-          [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-            logger.error(`[Responses API] Tool Error "${toolId}"`, error);
-          },
-        },
-      });
+        const userId = principal.userId;
+        const userMCPAuthMap = mergedMCPAuthMap;
 
-      // Record token usage against balance
-      const balanceConfig = getBalanceConfig(appConfig);
-      const transactionsConfig = getTransactionsConfig(appConfig);
-      recordCollectedUsage(
-        {
-          spendTokens: db.spendTokens,
-          spendStructuredTokens: db.spendStructuredTokens,
-          pricing: { getMultiplier: db.getMultiplier, getCacheMultiplier: db.getCacheMultiplier },
-          bulkWriteOps: { insertMany: db.bulkInsertTransactions, updateBalance: db.updateBalance },
-        },
-        {
-          user: userId,
-          conversationId,
-          collectedUsage,
-          context: 'message',
-          messageId: responseId,
-          balance: balanceConfig,
-          transactions: transactionsConfig,
-          model: primaryConfig.model || agent.model_parameters?.model,
-        },
-      ).catch((err) => {
-        logger.error('[Responses API] Error recording usage:', err);
-      });
+        const run = await createRun({
+          agents: runAgents,
+          messages: formattedMessages,
+          indexTokenCountMap,
+          initialSummary,
+          runId: responseId,
+          summarizationConfig,
+          appConfig,
+          signal: execution.signal,
+          customHandlers: handlers,
+          initialSessions,
+          requestBody: mcpRequestBody,
+          user: { ...createSafeUser(req.user), id: userId },
+          traceContext: { endpoint: EModelEndpoint.agents },
+          tenantId: principal.tenantId,
+          modelCallbacks: [terminalRunError.modelCallback],
+          clientToolNames: clientTools.clientToolNames,
+          /** Bills subagent child-run model calls (reported outside the
+           *  streamEvents loop) into the same collectedUsage array. */
+          subagentUsageSink: createSubagentUsageSink(collectedUsage),
+        });
 
-      if (artifactPromises.length > 0) {
-        try {
-          await Promise.all(artifactPromises);
-        } catch (artifactError) {
-          logger.warn('[Responses API] Error processing artifacts:', artifactError);
+        if (!run) {
+          throw new Error('Failed to create agent run');
         }
-      }
 
-      const response = buildAggregatedResponse(context, aggregator);
+        const config = {
+          runName: 'AgentRun',
+          configurable: {
+            thread_id: conversationId,
+            user_id: userId,
+            user: createSafeUser(req.user),
+            requestBody: mcpRequestBody,
+            ...(userMCPAuthMap != null && { userMCPAuthMap }),
+          },
+          recursionLimit: resolveRecursionLimit(agentsEConfig, agent),
+          signal: execution.signal,
+          streamMode: 'values',
+          version: 'v2',
+        };
 
-      if (request.store === true) {
-        try {
-          await saveConversation(req, conversationId, agentId, agent);
+        await run.processStream({ messages: formattedMessages }, config, {
+          callbacks: {
+            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+              logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
+            },
+          },
+        });
 
-          await saveInputMessages(req, conversationId, inputMessages, agentId);
+        // Record token usage against balance
+        const balanceConfig = getBalanceConfig(appConfig);
+        const transactionsConfig = getTransactionsConfig(appConfig);
+        execution.track(
+          recordCollectedUsage(
+            {
+              spendTokens: db.spendTokens,
+              spendStructuredTokens: db.spendStructuredTokens,
+              pricing: {
+                getMultiplier: db.getMultiplier,
+                getCacheMultiplier: db.getCacheMultiplier,
+              },
+              bulkWriteOps: {
+                insertMany: db.bulkInsertTransactions,
+                updateBalance: db.updateBalance,
+              },
+            },
+            {
+              user: userId,
+              conversationId,
+              collectedUsage,
+              context: 'message',
+              messageId: responseId,
+              balance: balanceConfig,
+              transactions: transactionsConfig,
+              model: primaryConfig.model || agent.model_parameters?.model,
+              endpointTokenConfig: primaryConfig.endpointTokenConfig,
+              resolveEndpointTokenConfig,
+            },
+          ).catch((err) => {
+            logger.error('[Responses API] Error recording usage:', getSafeErrorMetadata(err));
+          }),
+        );
 
-          await saveResponseOutput(req, conversationId, responseId, response, agentId);
-
-          logger.debug(
-            `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-          );
-        } catch (saveError) {
-          logger.error('[Responses API] Error saving response:', saveError);
-          // Don't fail the request if saving fails
+        if (artifactPromises.length > 0) {
+          try {
+            await waitForAgentExecutionWrites(artifactPromises);
+          } catch (artifactError) {
+            logger.warn(
+              '[Responses API] Error processing artifacts:',
+              getSafeErrorMetadata(artifactError),
+            );
+          }
+          artifactWritesCovered = true;
         }
+
+        const response = buildAggregatedResponse(
+          context,
+          aggregator,
+          buildResponsesUsage(collectedUsage),
+        );
+
+        if (request.store === true) {
+          try {
+            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+
+            await saveInputMessages(req, conversationId, inputMessages, agentId);
+
+            const savedResponse = await saveResponseOutput(
+              req,
+              conversationId,
+              responseId,
+              response,
+              agentId,
+              aggregator.usage.outputTokens,
+            );
+            await announceReply(db, {
+              userId: req?.user?.id,
+              conversationId,
+              reply: savedResponse,
+              context: 'Responses API - announce stored reply',
+            });
+
+            logger.debug(
+              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
+            );
+          } catch (saveError) {
+            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
+            // Don't fail the request if saving fails
+          }
+        }
+
+        res.json(response);
+
+        const duration = Date.now() - requestStartTime;
+        logger.debug(
+          `[Responses API] Request ${responseId} completed in ${duration}ms (non-streaming)`,
+        );
       }
+    },
+  });
+};
 
-      res.json(response);
-
-      const duration = Date.now() - requestStartTime;
-      logger.debug(
-        `[Responses API] Request ${responseId} completed in ${duration}ms (non-streaming)`,
-      );
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'An error occurred';
-    logger.error('[Responses API] Error:', error);
-
-    // Check if we already started streaming (headers sent)
-    if (res.headersSent) {
-      // Headers already sent, write error event and close
-      writeDone(res);
-      res.end();
-    } else {
-      // Forward upstream provider status codes (e.g., Anthropic 400s) instead of masking as 500
-      const statusCode =
-        typeof error?.status === 'number' && error.status >= 400 && error.status < 600
-          ? error.status
-          : 500;
-      const errorType = statusCode >= 400 && statusCode < 500 ? 'invalid_request' : 'server_error';
-      sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
-    }
+/**
+ * Open Responses ingress adapter for agents.
+ * Authentication and remote-agent authorization have already run in route middleware.
+ *
+ * POST /v1/responses
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ */
+const createResponse = async (req, res) => {
+  const receivedAt = Date.now();
+  const validation = validateResponseRequest(req.body);
+  if (isValidationFailure(validation)) {
+    return sendResponsesErrorResponse(res, 400, validation.error);
   }
+
+  let envelope;
+  try {
+    envelope = createAgentRunEnvelope({
+      protocol: 'responses',
+      requestId: req.requestId ?? req.id ?? `agent-run-${nanoid()}`,
+      receivedAt,
+      principal: req.tenantId == null ? req.user : { ...req.user, tenantId: req.tenantId },
+      payload: validation.request,
+    });
+  } catch (error) {
+    if (error instanceof AgentRunEnvelopeError) {
+      return sendResponsesErrorResponse(res, 400, error.message, 'invalid_request');
+    }
+    throw error;
+  }
+
+  return executeResponse(envelope, { req, res });
 };
 
 /**
@@ -1031,7 +1806,7 @@ const listModels = async (req, res) => {
       data: models,
     });
   } catch (error) {
-    logger.error('[Responses API] Error listing models:', error);
+    logger.error('[Responses API] Error listing models:', getSafeErrorMetadata(error));
     sendResponsesErrorResponse(
       res,
       500,
@@ -1136,7 +1911,7 @@ const getResponse = async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    logger.error('[Responses API] Error getting response:', error);
+    logger.error('[Responses API] Error getting response:', getSafeErrorMetadata(error));
     sendResponsesErrorResponse(
       res,
       500,

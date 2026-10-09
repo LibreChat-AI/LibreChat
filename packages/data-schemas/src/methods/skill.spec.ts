@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { logger, createModels } from '..';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   SystemRoles,
@@ -6,18 +7,22 @@ import {
   AccessRoleIds,
   PrincipalType,
   PermissionBits,
+  SKILL_BODY_MAX_LENGTH,
 } from 'librechat-data-provider';
-import { createAclEntryMethods } from './aclEntry';
 import {
+  partitionIssues,
   validateSkillName,
   validateSkillDescription,
   validateSkillFrontmatter,
+  getCanonicalSkillFrontmatterKey,
+  normalizeSkillFrontmatterKeys,
   validateAlwaysApply,
   validateRelativePath,
   inferSkillFileCategory,
+  filterExistingSkillIds,
   deriveStructuredFrontmatterFields,
 } from './skill';
-import { logger, createModels } from '..';
+import { createAclEntryMethods } from './aclEntry';
 import { createMethods } from './index';
 
 logger.silent = true;
@@ -107,7 +112,21 @@ afterEach(async () => {
   await Skill.deleteMany({});
   await SkillFile.deleteMany({});
   await AclEntry.deleteMany({});
+  await mongoose.models.Agent.deleteMany({});
 });
+
+function makeAgentDoc(skillIds: string[], overrides: Record<string, unknown> = {}) {
+  return {
+    id: `agent_${new mongoose.Types.ObjectId().toString()}`,
+    name: 'Allowlist Agent',
+    provider: 'openai',
+    model: 'gpt-4',
+    author: owner._id,
+    skills: skillIds,
+    skills_enabled: true,
+    ...overrides,
+  };
+}
 
 async function grantOwner(resourceId: mongoose.Types.ObjectId | string) {
   const role = (await AccessRole.findOne({ accessRoleId: AccessRoleIds.SKILL_OWNER }).lean()) as {
@@ -138,6 +157,23 @@ function makeSkillInput(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe('Skill schema indexes', () => {
+  it('supports GitHub sync source metadata lookups', () => {
+    const indexSpecs = Skill.schema.indexes().map(([fields]) => fields);
+
+    expect(indexSpecs).toContainEqual({
+      source: 1,
+      'sourceMetadata.upstreamId': 1,
+      tenantId: 1,
+    });
+    expect(indexSpecs).toContainEqual({
+      source: 1,
+      'sourceMetadata.sourceId': 1,
+      tenantId: 1,
+    });
+  });
+});
 
 describe('skill validation helpers', () => {
   it('rejects names starting with reserved brand prefixes', () => {
@@ -225,6 +261,38 @@ describe('skill validation helpers', () => {
   });
 
   describe('validateSkillFrontmatter', () => {
+    it('canonicalizes recognized keys without rewriting unknown keys', () => {
+      expect(getCanonicalSkillFrontmatterKey('Allowed-Tools')).toBe('allowed-tools');
+      expect(getCanonicalSkillFrontmatterKey('ALWAYSAPPLY')).toBe('alwaysApply');
+      expect(getCanonicalSkillFrontmatterKey('customConfig')).toBeUndefined();
+      expect(
+        normalizeSkillFrontmatterKeys({
+          'Allowed-Tools': ['execute_code'],
+          customConfig: { mode: 'strict' },
+        }),
+      ).toEqual({
+        frontmatter: {
+          'allowed-tools': ['execute_code'],
+          customConfig: { mode: 'strict' },
+        },
+      });
+    });
+
+    it('rejects case-colliding recognized keys', () => {
+      const frontmatter = {
+        'allowed-tools': ['read_file'],
+        'Allowed-Tools': ['execute_code'],
+      };
+
+      expect(normalizeSkillFrontmatterKeys(frontmatter)).toEqual({
+        error:
+          'Recognized frontmatter keys "allowed-tools" and "Allowed-Tools" both resolve to "allowed-tools"',
+      });
+      expect(validateSkillFrontmatter(frontmatter)).toEqual([
+        expect.objectContaining({ field: 'frontmatter', code: 'DUPLICATE_KEY' }),
+      ]);
+    });
+
     it('accepts an undefined or empty frontmatter', () => {
       expect(validateSkillFrontmatter(undefined)).toEqual([]);
       expect(validateSkillFrontmatter(null)).toEqual([]);
@@ -238,9 +306,91 @@ describe('skill validation helpers', () => {
       expect(validateSkillFrontmatter([]).some((i) => i.code === 'INVALID_TYPE')).toBe(true);
     });
 
-    it('rejects unknown keys in strict mode', () => {
+    it('warns about unknown keys instead of rejecting them', () => {
       const issues = validateSkillFrontmatter({ 'not-a-real-key': 'value' });
-      expect(issues.some((i) => i.code === 'UNKNOWN_KEY')).toBe(true);
+      expect(issues).toEqual([
+        expect.objectContaining({
+          field: 'frontmatter.not-a-real-key',
+          code: 'UNKNOWN_KEY',
+          severity: 'warning',
+        }),
+      ]);
+      expect(partitionIssues(issues).errors).toEqual([]);
+    });
+
+    it('still bounds the value of an unknown key', () => {
+      /* The key is tolerated, the payload is not: an unrecognized key is
+         persisted, so it stays inside the same limits as every other key. */
+      const deep = { a: { b: { c: { d: { e: { f: 'too deep' } } } } } };
+      const issues = validateSkillFrontmatter({ 'not-a-real-key': deep });
+
+      expect(issues.some((i) => i.code === 'UNKNOWN_KEY' && i.severity === 'warning')).toBe(true);
+      expect(
+        partitionIssues(issues).errors.some(
+          (i) => i.code === 'INVALID_SHAPE' && i.field === 'frontmatter.not-a-real-key',
+        ),
+      ).toBe(true);
+    });
+
+    it('rejects non-plain object values under unknown keys', () => {
+      const issues = validateSkillFrontmatter({ created: new Date('2026-08-11T00:00:00.000Z') });
+
+      expect(issues.some((i) => i.code === 'UNKNOWN_KEY' && i.severity === 'warning')).toBe(true);
+      expect(
+        partitionIssues(issues).errors.some(
+          (i) => i.code === 'INVALID_SHAPE' && i.field === 'frontmatter.created',
+        ),
+      ).toBe(true);
+    });
+
+    it('rejects NUL characters in unknown key names before persistence', () => {
+      const issues = validateSkillFrontmatter({ ['custom\u0000key']: 'value' });
+
+      expect(partitionIssues(issues).errors).toEqual([
+        expect.objectContaining({
+          field: 'frontmatter',
+          code: 'INVALID_KEY',
+        }),
+      ]);
+      expect(issues.some((i) => i.code === 'UNKNOWN_KEY')).toBe(false);
+    });
+
+    it('rejects object property names that Mongoose cannot persist at any depth', () => {
+      for (const key of ['__proto__', 'constructor', 'prototype']) {
+        const topLevel = validateSkillFrontmatter(Object.fromEntries([[key, 'value']]));
+        const nested = validateSkillFrontmatter({
+          metadata: Object.fromEntries([[key, 'value']]),
+        });
+
+        expect(partitionIssues(topLevel).errors).toEqual([
+          expect.objectContaining({ field: 'frontmatter', code: 'INVALID_KEY' }),
+        ]);
+        expect(partitionIssues(nested).errors).toEqual([
+          expect.objectContaining({ field: 'frontmatter.metadata', code: 'INVALID_KEY' }),
+        ]);
+      }
+    });
+
+    it('accepts the references key in every shape real SKILL.md files use', () => {
+      expect(validateSkillFrontmatter({ references: ['workers', 'pages', 'd1'] })).toEqual([]);
+      expect(validateSkillFrontmatter({ references: 'references/api.md' })).toEqual([]);
+      expect(
+        validateSkillFrontmatter({
+          references: [{ path: 'references/api.md', description: 'API surface' }],
+        }),
+      ).toEqual([]);
+      expect(
+        validateSkillFrontmatter({ references: { workers: 'references/workers.md' } }),
+      ).toEqual([]);
+    });
+
+    it('rejects a references value with excessive nesting', () => {
+      const deep = { a: { b: { c: { d: { e: { f: 'too deep' } } } } } };
+      expect(
+        validateSkillFrontmatter({ references: deep }).some(
+          (i) => i.code === 'INVALID_SHAPE' && i.field === 'frontmatter.references',
+        ),
+      ).toBe(true);
     });
 
     it('accepts known keys with correct types', () => {
@@ -253,9 +403,28 @@ describe('skill validation helpers', () => {
           'user-invocable': true,
           effort: 5,
           version: '1.0.0',
+          license: 'MIT',
+          compatibility: 'Requires GitHub MCP to access the repository content.',
           hooks: { 'pre-run': 'echo hi' },
+          metadata: { owner: 'data-team' },
         }),
       ).toEqual([]);
+    });
+
+    it('accepts the spec-defined compatibility field as a string', () => {
+      expect(
+        validateSkillFrontmatter({
+          compatibility: 'Designed for Claude Code (or similar products)',
+        }),
+      ).toEqual([]);
+    });
+
+    it('rejects a non-string compatibility field', () => {
+      expect(
+        validateSkillFrontmatter({ compatibility: ['a', 'b'] }).some(
+          (i) => i.code === 'INVALID_TYPE',
+        ),
+      ).toBe(true);
     });
 
     it('rejects known keys with wrong types', () => {
@@ -281,6 +450,8 @@ describe('skill validation helpers', () => {
     it('accepts always-apply as a boolean', () => {
       expect(validateSkillFrontmatter({ 'always-apply': true })).toEqual([]);
       expect(validateSkillFrontmatter({ 'always-apply': false })).toEqual([]);
+      expect(validateSkillFrontmatter({ alwaysApply: true })).toEqual([]);
+      expect(validateSkillFrontmatter({ alwaysApply: false })).toEqual([]);
     });
 
     it('rejects always-apply with non-boolean values', () => {
@@ -291,6 +462,11 @@ describe('skill validation helpers', () => {
       ).toBe(true);
       expect(
         validateSkillFrontmatter({ 'always-apply': 1 }).some((i) => i.code === 'INVALID_TYPE'),
+      ).toBe(true);
+      expect(
+        validateSkillFrontmatter({ alwaysApply: 'yes' }).some(
+          (i) => i.code === 'INVALID_TYPE' && i.field === 'frontmatter.alwaysApply',
+        ),
       ).toBe(true);
     });
   });
@@ -357,6 +533,9 @@ describe('skill validation helpers', () => {
       /* Empty string → not extracted; an explicit empty array is the
          author's way to say "no extras". */
       expect(deriveStructuredFrontmatterFields({ 'allowed-tools': '' })).toEqual({});
+      expect(deriveStructuredFrontmatterFields({ 'Allowed-Tools': 'execute_code' })).toEqual({
+        allowedTools: ['execute_code'],
+      });
     });
 
     it('passes through array allowed-tools, dropping non-string entries', () => {
@@ -387,6 +566,31 @@ describe('skill validation helpers', () => {
 });
 
 describe('Skill CRUD methods', () => {
+  it('rejects an oversized body before scanning its frontmatter on create', async () => {
+    const body = `---\nalways-apply: a${' '.repeat(SKILL_BODY_MAX_LENGTH)}b\n---`;
+
+    await expect(methods.createSkill(makeSkillInput({ body }))).rejects.toMatchObject({
+      code: 'SKILL_VALIDATION_FAILED',
+      issues: [expect.objectContaining({ field: 'body', code: 'TOO_LONG' })],
+    });
+  });
+
+  it('rejects an oversized body before scanning its frontmatter on update', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const body = `---\nalways-apply: a${' '.repeat(SKILL_BODY_MAX_LENGTH)}b\n---`;
+
+    await expect(
+      methods.updateSkill({
+        id: skill._id.toString(),
+        expectedVersion: 1,
+        update: { body },
+      }),
+    ).rejects.toMatchObject({
+      code: 'SKILL_VALIDATION_FAILED',
+      issues: [expect.objectContaining({ field: 'body', code: 'TOO_LONG' })],
+    });
+  });
+
   it('creates a skill with version 1 and default fileCount 0', async () => {
     const { skill, warnings } = await methods.createSkill(makeSkillInput());
     expect(skill.name).toBe('demo-skill');
@@ -411,12 +615,100 @@ describe('Skill CRUD methods', () => {
     ]);
   });
 
-  it('rejects frontmatter with unknown keys (strict mode)', async () => {
+  it('creates the skill and warns when frontmatter carries an unknown key', async () => {
+    /* One unrecognized key in one SKILL.md must not fail the skill: the GitHub
+       sync runner marks the whole source failed on a validation error, so a
+       stray key used to block every other skill in the repository. */
+    const { skill, warnings } = await methods.createSkill(
+      makeSkillInput({
+        name: 'unknown-key-frontmatter',
+        frontmatter: { name: 'unknown-key-frontmatter', 'bogus-key': 'nope' },
+      }),
+    );
+    expect(skill._id).toBeDefined();
+    expect(skill.frontmatter).toMatchObject({ 'bogus-key': 'nope' });
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        field: 'frontmatter.bogus-key',
+        code: 'UNKNOWN_KEY',
+        severity: 'warning',
+      }),
+    ]);
+  });
+
+  it('canonicalizes recognized frontmatter variants before persistence and derivation', async () => {
+    const { skill, warnings } = await methods.createSkill(
+      makeSkillInput({
+        name: 'case-variant-frontmatter',
+        frontmatter: {
+          name: 'case-variant-frontmatter',
+          'Allowed-Tools': ['execute_code'],
+          'User-Invocable': false,
+        },
+      }),
+    );
+
+    expect(skill.frontmatter).toMatchObject({
+      'allowed-tools': ['execute_code'],
+      'user-invocable': false,
+    });
+    expect(skill.frontmatter).not.toHaveProperty('Allowed-Tools');
+    expect(skill.allowedTools).toEqual(['execute_code']);
+    expect(skill.userInvocable).toBe(false);
+    expect(warnings).toEqual([]);
+  });
+
+  it('rejects case-colliding recognized frontmatter keys', async () => {
     await expect(
       methods.createSkill(
         makeSkillInput({
-          name: 'strict-frontmatter',
-          frontmatter: { 'bogus-key': 'nope' },
+          name: 'case-collision-frontmatter',
+          frontmatter: {
+            'allowed-tools': ['read_file'],
+            'Allowed-Tools': ['execute_code'],
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'SKILL_VALIDATION_FAILED' });
+  });
+
+  it('creates a skill whose frontmatter carries a references list', async () => {
+    const { skill, warnings } = await methods.createSkill(
+      makeSkillInput({
+        name: 'references-frontmatter',
+        frontmatter: {
+          name: 'references-frontmatter',
+          description: 'A small demo skill used in tests.',
+          references: ['workers', 'pages', 'd1'],
+        },
+      }),
+    );
+    expect(skill.frontmatter).toMatchObject({ references: ['workers', 'pages', 'd1'] });
+    expect(warnings).toEqual([]);
+  });
+
+  it('still rejects malformed frontmatter', async () => {
+    await expect(
+      methods.createSkill(
+        makeSkillInput({
+          name: 'malformed-frontmatter',
+          frontmatter: { 'user-invocable': 'yes' },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'SKILL_VALIDATION_FAILED' });
+    await expect(
+      methods.createSkill(
+        makeSkillInput({
+          name: 'non-object-frontmatter',
+          frontmatter: 'not an object',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'SKILL_VALIDATION_FAILED' });
+    await expect(
+      methods.createSkill(
+        makeSkillInput({
+          name: 'deep-hooks-frontmatter',
+          frontmatter: { hooks: { a: { b: { c: { d: { e: { f: 'too deep' } } } } } } },
         }),
       ),
     ).rejects.toMatchObject({ code: 'SKILL_VALIDATION_FAILED' });
@@ -505,6 +797,197 @@ describe('Skill CRUD methods', () => {
     expect(res.deleted).toBe(true);
     expect(await AclEntry.countDocuments({ resourceId: skill._id })).toBe(0);
     expect(await SkillFile.countDocuments({ skillId: skill._id })).toBe(0);
+  });
+
+  it('filterExistingSkillIds matches uppercase-hex candidates and returns canonical ids', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'case-skill' }));
+    const canonical = skill._id.toString();
+
+    const filtered = await filterExistingSkillIds(mongoose, [canonical.toUpperCase()]);
+    expect(filtered).toEqual([canonical]);
+  });
+
+  it('deleteSkill remains retryable after skill file cleanup fails', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'flaky-files' }));
+    const Agent = mongoose.models.Agent;
+    const agent = await Agent.create(makeAgentDoc([skill._id.toString()]));
+
+    const deleteManySpy = jest
+      .spyOn(SkillFile, 'deleteMany')
+      .mockRejectedValueOnce(new Error('transient storage failure'));
+    try {
+      const first = await methods.deleteSkill(skill._id.toString());
+      expect(first).toEqual({
+        deleted: true,
+        skillAbsent: true,
+        cleanupComplete: false,
+        failedCleanupSteps: ['skill_files'],
+      });
+
+      const retry = await methods.deleteSkill(skill._id.toString());
+      expect(retry).toEqual({
+        deleted: false,
+        skillAbsent: true,
+        cleanupComplete: true,
+        failedCleanupSteps: [],
+      });
+    } finally {
+      deleteManySpy.mockRestore();
+    }
+
+    const agentAfter = (await Agent.findById(agent._id).lean()) as {
+      skills?: string[];
+      skills_enabled?: boolean;
+    } | null;
+    expect(agentAfter?.skills).toEqual([]);
+    expect(agentAfter?.skills_enabled).toBe(false);
+  });
+
+  it('deleteSkill disables skills when the deleted id was the entire allowlist', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'only-skill' }));
+    const Agent = mongoose.models.Agent;
+    const agent = await Agent.create(makeAgentDoc([skill._id.toString()]));
+
+    const res = await methods.deleteSkill(skill._id.toString().toUpperCase());
+    expect(res.deleted).toBe(true);
+
+    const agentAfter = (await Agent.findById(agent._id).lean()) as {
+      skills?: string[];
+      skills_enabled?: boolean;
+    } | null;
+    expect(agentAfter?.skills).toEqual([]);
+    expect(agentAfter?.skills_enabled).toBe(false);
+  });
+
+  it('deleteSkill keeps skills enabled when the entire allowlist is deleted from an all-scoped agent', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'all-scoped-only-skill' }));
+    const Agent = mongoose.models.Agent;
+    const agent = await Agent.create(makeAgentDoc([skill._id.toString()], { skills_scope: 'all' }));
+
+    const res = await methods.deleteSkill(skill._id.toString());
+    expect(res.deleted).toBe(true);
+
+    const agentAfter = (await Agent.findById(agent._id).lean()) as {
+      skills?: string[];
+      skills_enabled?: boolean;
+      skills_scope?: string;
+    } | null;
+    expect(agentAfter?.skills).toEqual([]);
+    expect(agentAfter?.skills_enabled).toBe(true);
+    expect(agentAfter?.skills_scope).toBe('all');
+  });
+
+  it('deleteSkill keeps skills enabled when the entire allowlist is deleted from a selected-scoped agent', async () => {
+    const { skill } = await methods.createSkill(
+      makeSkillInput({ name: 'selected-scoped-only-skill' }),
+    );
+    const Agent = mongoose.models.Agent;
+    const agent = await Agent.create(
+      makeAgentDoc([skill._id.toString()], { skills_scope: 'selected' }),
+    );
+
+    const res = await methods.deleteSkill(skill._id.toString());
+    expect(res.deleted).toBe(true);
+
+    const agentAfter = (await Agent.findById(agent._id).lean()) as {
+      skills?: string[];
+      skills_enabled?: boolean;
+      skills_scope?: string;
+    } | null;
+    expect(agentAfter?.skills).toEqual([]);
+    expect(agentAfter?.skills_enabled).toBe(true);
+    expect(agentAfter?.skills_scope).toBe('selected');
+  });
+
+  it('deleteSkill disables skills when the entire allowlist is deleted from a none-scoped agent', async () => {
+    /** `skills_enabled: true` with `skills_scope: none` is a shape the API
+     *  accepts. It renders as Off, and `skillDeps` reads the master flag on
+     *  its own as permission to expose the authoring tools, so cleanup has to
+     *  clear it rather than treat the explicit scope as an opt-out. */
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'none-scoped-only-skill' }));
+    const Agent = mongoose.models.Agent;
+    const agent = await Agent.create(
+      makeAgentDoc([skill._id.toString()], { skills_scope: 'none' }),
+    );
+
+    const res = await methods.deleteSkill(skill._id.toString());
+    expect(res.deleted).toBe(true);
+
+    const agentAfter = (await Agent.findById(agent._id).lean()) as {
+      skills?: string[];
+      skills_enabled?: boolean;
+      skills_scope?: string;
+    } | null;
+    expect(agentAfter?.skills).toEqual([]);
+    expect(agentAfter?.skills_enabled).toBe(false);
+    expect(agentAfter?.skills_scope).toBe('none');
+  });
+
+  it('deleteSkill prunes the deleted id from agent skill allowlists', async () => {
+    const { skill: doomed } = await methods.createSkill(makeSkillInput({ name: 'doomed-skill' }));
+    const { skill: kept } = await methods.createSkill(makeSkillInput({ name: 'kept-skill' }));
+    const Agent = mongoose.models.Agent;
+    const scoped = await Agent.create(makeAgentDoc([doomed._id.toString(), kept._id.toString()]));
+    const untouched = await Agent.create(
+      makeAgentDoc([kept._id.toString()], { name: 'Untouched Agent' }),
+    );
+
+    const res = await methods.deleteSkill(doomed._id.toString());
+    expect(res.deleted).toBe(true);
+
+    const scopedAfter = (await Agent.findById(scoped._id).lean()) as {
+      skills?: string[];
+      skills_enabled?: boolean;
+    } | null;
+    expect(scopedAfter?.skills).toEqual([kept._id.toString()]);
+    expect(scopedAfter?.skills_enabled).toBe(true);
+
+    const untouchedAfter = (await Agent.findById(untouched._id).lean()) as {
+      skills?: string[];
+    } | null;
+    expect(untouchedAfter?.skills).toEqual([kept._id.toString()]);
+  });
+
+  it('findSkillBySourceIdentity searches only the requested tenant bucket', async () => {
+    const upstreamId = 'librechat-skills:skills/research';
+    const sourceMetadata = {
+      provider: 'github',
+      sourceId: 'librechat-skills',
+      upstreamId,
+    };
+    const author = new mongoose.Types.ObjectId();
+    const tenantSkill = await Skill.create({
+      name: 'research',
+      description: 'A tenant-scoped GitHub skill mirror.',
+      body: 'tenant body',
+      author,
+      authorName: 'GitHub Sync',
+      tenantId: 'tenant-a',
+      source: 'github',
+      sourceMetadata,
+    });
+    const ambientSkill = await Skill.create({
+      name: 'research',
+      description: 'An ambient GitHub skill mirror.',
+      body: 'ambient body',
+      author,
+      authorName: 'GitHub Sync',
+      source: 'github',
+      sourceMetadata,
+    });
+
+    const ambientResult = await methods.findSkillBySourceIdentity({
+      source: 'github',
+      upstreamId,
+    });
+    const tenantResult = await methods.findSkillBySourceIdentity({
+      source: 'github',
+      upstreamId,
+      tenantId: 'tenant-a',
+    });
+
+    expect(ambientResult?._id.toString()).toBe(ambientSkill._id.toString());
+    expect(tenantResult?._id.toString()).toBe(tenantSkill._id.toString());
   });
 
   it('listSkillsByAccess returns only accessible skills and paginates by cursor', async () => {
@@ -643,6 +1126,55 @@ describe('Skill CRUD methods', () => {
     expect(fetched?.disableModelInvocation).toBe(true);
     expect(fetched?.userInvocable).toBe(false);
     expect(fetched?.allowedTools).toEqual(['execute_code']);
+  });
+
+  it('getAuthorSkillByName resolves only the matching author and tenant', async () => {
+    const sharedName = 'author-owned-lookup';
+    const ownerSkill = await Skill.create({
+      name: sharedName,
+      description: 'Owner tenant skill.',
+      body: 'owner body',
+      frontmatter: {},
+      author: owner._id,
+      authorName: owner.name ?? 'Skill Owner',
+      tenantId: 'tenant-a',
+      version: 1,
+      source: 'inline',
+      fileCount: 0,
+    });
+    await Skill.create({
+      name: sharedName,
+      description: 'Other author skill.',
+      body: 'other body',
+      frontmatter: {},
+      author: other._id,
+      authorName: other.name ?? 'Other',
+      tenantId: 'tenant-a',
+      version: 1,
+      source: 'inline',
+      fileCount: 0,
+    });
+    await Skill.create({
+      name: sharedName,
+      description: 'Owner different tenant skill.',
+      body: 'tenant b body',
+      frontmatter: {},
+      author: owner._id,
+      authorName: owner.name ?? 'Skill Owner',
+      tenantId: 'tenant-b',
+      version: 1,
+      source: 'inline',
+      fileCount: 0,
+    });
+
+    const fetched = await methods.getAuthorSkillByName({
+      name: sharedName,
+      author: owner._id,
+      tenantId: 'tenant-a',
+    });
+
+    expect(fetched?._id.toString()).toBe(ownerSkill._id.toString());
+    expect(fetched?.body).toBe('owner body');
   });
 
   it('preferModelInvocable picks the model-invocable doc on same-name collision (does NOT filter on userInvocable)', async () => {
@@ -907,6 +1439,7 @@ describe('Skill CRUD methods', () => {
     });
     const names = result.skills.map((s) => s.name).sort();
     expect(names).toEqual(['always-a', 'always-b']);
+    expect(result.skills.map((skill) => skill.version)).toEqual([1, 1]);
   });
 
   it('listAlwaysApplySkills excludes rows outside accessibleIds', async () => {
@@ -1025,6 +1558,35 @@ describe('Skill CRUD methods', () => {
     expect(skill.alwaysApply).toBe(true);
   });
 
+  it('createSkill derives alwaysApply from the camel-case frontmatter alias', async () => {
+    const { skill } = await methods.createSkill(
+      makeSkillInput({
+        name: 'frontmatter-alias-on',
+        frontmatter: {
+          name: 'frontmatter-alias-on',
+          description: 'A small demo skill used in tests.',
+          alwaysApply: true,
+        },
+      }),
+    );
+    expect(skill.alwaysApply).toBe(true);
+  });
+
+  it('createSkill lets always-apply win when both frontmatter spellings are present', async () => {
+    const { skill } = await methods.createSkill(
+      makeSkillInput({
+        name: 'frontmatter-canonical-wins',
+        frontmatter: {
+          name: 'frontmatter-canonical-wins',
+          description: 'A small demo skill used in tests.',
+          'always-apply': false,
+          alwaysApply: true,
+        },
+      }),
+    );
+    expect(skill.alwaysApply).toBe(false);
+  });
+
   it('createSkill prefers explicit top-level alwaysApply over frontmatter', async () => {
     const { skill } = await methods.createSkill(
       makeSkillInput({
@@ -1051,6 +1613,26 @@ describe('Skill CRUD methods', () => {
           name: 'sync-test',
           description: 'A small demo skill used in tests.',
           'always-apply': true,
+        },
+      },
+    });
+    expect(result.status).toBe('updated');
+    if (result.status === 'updated') {
+      expect(result.skill.alwaysApply).toBe(true);
+    }
+  });
+
+  it('updateSkill syncs alwaysApply column from the camel-case frontmatter alias', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'sync-alias-test' }));
+    expect(skill.alwaysApply).toBe(false);
+    const result = await methods.updateSkill({
+      id: skill._id.toString(),
+      expectedVersion: skill.version,
+      update: {
+        frontmatter: {
+          name: 'sync-alias-test',
+          description: 'A small demo skill used in tests.',
+          alwaysApply: true,
         },
       },
     });
@@ -1118,6 +1700,21 @@ describe('Skill CRUD methods', () => {
     const { skill } = await methods.createSkill(makeSkillInput({ name: 'body-enable' }));
     expect(skill.alwaysApply).toBe(false);
     const newBody = `---\nname: body-enable\ndescription: now opting in.\nalways-apply: true\n---\n\n# Body`;
+    const result = await methods.updateSkill({
+      id: skill._id.toString(),
+      expectedVersion: skill.version,
+      update: { body: newBody },
+    });
+    expect(result.status).toBe('updated');
+    if (result.status === 'updated') {
+      expect(result.skill.alwaysApply).toBe(true);
+    }
+  });
+
+  it('updateSkill derives alwaysApply=true from a body edit that adds `alwaysApply: true` inline', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'body-enable-alias' }));
+    expect(skill.alwaysApply).toBe(false);
+    const newBody = `---\nname: body-enable-alias\ndescription: now opting in.\nalwaysApply: true\n---\n\n# Body`;
     const result = await methods.updateSkill({
       id: skill._id.toString(),
       expectedVersion: skill.version,
@@ -1264,6 +1861,141 @@ describe('Skill CRUD methods', () => {
 });
 
 describe('SkillFile methods', () => {
+  it('allows exactly one conditional writer and rejects a stale or deleted revision', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const input = {
+      skillId: skill._id,
+      relativePath: 'references/race.md',
+      file_id: 'original',
+      filename: 'race.md',
+      filepath: '/tmp/original',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 10,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(input);
+    const results = await Promise.allSettled(
+      ['a', 'b'].map((revision) =>
+        methods.upsertSkillFile({ ...input, expectedFileId: 'original', file_id: revision }),
+      ),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'SKILL_FILE_CONFLICT' },
+    });
+    const current = await methods.getSkillFileByPath(skill._id, input.relativePath);
+    expect(['a', 'b']).toContain(current?.file_id);
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 3, fileCount: 1 });
+
+    // An unconditional authoring/agent write also invalidates a captured editor revision.
+    await methods.upsertSkillFile({ ...input, file_id: 'agent' });
+    await expect(
+      methods.upsertSkillFile({
+        ...input,
+        expectedFileId: current!.file_id,
+        file_id: 'stale-editor',
+      }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    await methods.deleteSkillFile(skill._id, input.relativePath);
+    await expect(
+      methods.upsertSkillFile({
+        ...input,
+        expectedFileId: 'agent',
+        file_id: 'resurrected',
+      }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).toBeNull();
+  });
+
+  it('creates only absent skill files and leaves the winner intact when creation races', async () => {
+    await SkillFile.init();
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const original = {
+      skillId: skill._id,
+      relativePath: 'references/new.md',
+      file_id: 'browser',
+      filename: 'new.md',
+      filepath: '/tmp/browser',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 7,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(original);
+    await expect(
+      methods.upsertSkillFile({ ...original, createOnly: true, file_id: 'late-agent' }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    expect(await methods.getSkillFileByPath(skill._id, original.relativePath)).toMatchObject({
+      file_id: 'browser',
+      filepath: '/tmp/browser',
+    });
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 2, fileCount: 1 });
+
+    const results = await Promise.allSettled(
+      ['first', 'second'].map((id) =>
+        methods.upsertSkillFile({
+          ...original,
+          relativePath: 'references/concurrent.md',
+          filename: 'concurrent.md',
+          filepath: `/tmp/${id}`,
+          file_id: id,
+          createOnly: true,
+        }),
+      ),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'SKILL_FILE_CONFLICT' },
+    });
+    expect(['first', 'second']).toContain(
+      (await methods.getSkillFileByPath(skill._id, 'references/concurrent.md'))?.file_id,
+    );
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 3, fileCount: 2 });
+  });
+
+  it('does not let a delayed read cache old bytes on a replaced file', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const input = {
+      skillId: skill._id,
+      relativePath: 'references/cache.md',
+      file_id: 'before',
+      filename: 'cache.md',
+      filepath: '/tmp/before',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 10,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(input);
+    await methods.upsertSkillFile({ ...input, expectedFileId: 'before', file_id: 'after' });
+    await methods.updateSkillFileContent(
+      skill._id,
+      input.relativePath,
+      {
+        content: 'stale read',
+        isBinary: false,
+      },
+      'before',
+    );
+    expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).not.toHaveProperty(
+      'content',
+    );
+    await methods.updateSkillFileContent(
+      skill._id,
+      input.relativePath,
+      {
+        content: 'new bytes',
+        isBinary: false,
+      },
+      'after',
+    );
+    expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).toMatchObject({
+      file_id: 'after',
+      content: 'new bytes',
+    });
+  });
+
   it('upsertSkillFile bumps parent skill version and updates fileCount', async () => {
     const { skill } = await methods.createSkill(makeSkillInput());
     expect(skill.version).toBe(1);
@@ -1318,6 +2050,123 @@ describe('SkillFile methods', () => {
     expect(files[0].file_id).toBe('file-2');
   });
 
+  it('upsertSkillFile persists storage metadata', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    await methods.upsertSkillFile({
+      skillId: skill._id,
+      relativePath: 'scripts/parse.sh',
+      file_id: 'file-1',
+      filename: 'parse.sh',
+      filepath: '/tmp/v1',
+      storageKey: 'r/us-east-2/uploads/user123/parse.sh',
+      storageRegion: 'us-east-2',
+      source: 's3',
+      mimeType: 'text/plain',
+      bytes: 10,
+      author: owner._id,
+    });
+
+    const files = await methods.listSkillFiles(skill._id);
+    expect(files[0].storageKey).toBe('r/us-east-2/uploads/user123/parse.sh');
+    expect(files[0].storageRegion).toBe('us-east-2');
+  });
+
+  it('throws an explicit error when the upsert returns no saved file row', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const missingUpsert = {
+      lean: jest.fn().mockResolvedValue({
+        value: null,
+        lastErrorObject: { updatedExisting: false },
+      }),
+    } as unknown as ReturnType<typeof SkillFile.findOneAndUpdate>;
+    const findOneAndUpdateSpy = jest
+      .spyOn(SkillFile, 'findOneAndUpdate')
+      .mockReturnValueOnce(missingUpsert);
+    const bumpSpy = jest.spyOn(Skill, 'findByIdAndUpdate');
+
+    try {
+      await expect(
+        methods.upsertSkillFile({
+          skillId: skill._id,
+          relativePath: 'scripts/parse.sh',
+          file_id: 'file-1',
+          filename: 'parse.sh',
+          filepath: '/tmp/v1',
+          source: 'local',
+          mimeType: 'text/plain',
+          bytes: 10,
+          author: owner._id,
+        }),
+      ).rejects.toMatchObject({ code: 'SKILL_FILE_UPSERT_NOT_FOUND' });
+      expect(bumpSpy).not.toHaveBeenCalled();
+    } finally {
+      findOneAndUpdateSpy.mockRestore();
+      bumpSpy.mockRestore();
+    }
+  });
+
+  it('clears all code environment refs when a skill file is upserted (replacement)', async () => {
+    /* A re-upload of a skill file replaces the row's contents — but the
+     * cached `codeEnvRef` refers to the OLD bytes living in codeapi.
+     * Leaving it populated would make the next prime resolve a stale
+     * pointer. The upsert MUST $unset codeEnvRef. */
+    const { skill } = await methods.createSkill(makeSkillInput());
+    await methods.upsertSkillFile({
+      skillId: skill._id,
+      relativePath: 'scripts/parse.sh',
+      file_id: 'file-1',
+      filename: 'parse.sh',
+      filepath: '/tmp/v1',
+      source: 'local',
+      mimeType: 'text/plain',
+      bytes: 10,
+      author: owner._id,
+    });
+
+    const entityId = skill._id.toString();
+    await methods.updateSkillFileCodeEnvIds([
+      {
+        skillId: skill._id,
+        relativePath: 'scripts/parse.sh',
+        codeEnvRef: {
+          kind: 'skill',
+          id: entityId,
+          storage_session_id: 'sess-old',
+          file_id: 'file-old',
+          version: 1,
+        },
+      },
+    ]);
+
+    /* Sanity: ref is persisted before the replacement. */
+    const before = await methods.listSkillFiles(skill._id);
+    expect(before[0].codeEnvRef).toMatchObject({
+      kind: 'skill',
+      storage_session_id: 'sess-old',
+      file_id: 'file-old',
+      version: 1,
+    });
+
+    /* Replace the row with new bytes. */
+    await methods.upsertSkillFile({
+      skillId: skill._id,
+      relativePath: 'scripts/parse.sh',
+      file_id: 'file-2',
+      filename: 'parse.sh',
+      filepath: '/tmp/v2',
+      source: 'local',
+      mimeType: 'text/plain',
+      bytes: 20,
+      author: owner._id,
+    });
+
+    const after = await methods.listSkillFiles(skill._id);
+    expect(after).toHaveLength(1);
+    expect(after[0].file_id).toBe('file-2');
+    expect(after[0].codeEnvRef).toBeUndefined();
+    expect(after[0].codeEnvRefs).toBeUndefined();
+  });
+
   it('deleteSkillFile recounts and bumps version', async () => {
     const { skill } = await methods.createSkill(makeSkillInput());
     await methods.upsertSkillFile({
@@ -1364,6 +2213,174 @@ describe('SkillFile methods', () => {
         author: owner._id,
       }),
     ).rejects.toMatchObject({ code: 'SKILL_FILE_VALIDATION_FAILED' });
+  });
+
+  describe('updateSkillFileCodeEnvIds (skill-bundle cache pointer)', () => {
+    /**
+     * The returned `{matchedCount, modifiedCount}` shape is the diagnostic
+     * contract `primeSkillFiles` relies on — a silently-dropped write
+     * turns every subsequent prime into a fresh codeapi upload (N×M
+     * egress per chat load). Pinning the contract here so the caller
+     * can warn-log on partial writes instead of failing closed.
+     */
+    it('persists codeEnvRef and reports matched/modified counts', async () => {
+      const { skill } = await methods.createSkill(makeSkillInput());
+      await methods.upsertSkillFile({
+        skillId: skill._id,
+        relativePath: 'scripts/a.sh',
+        file_id: 'f1',
+        filename: 'a.sh',
+        filepath: '/a',
+        source: 'local',
+        mimeType: 'text/plain',
+        bytes: 1,
+        author: owner._id,
+      });
+
+      const entityId = skill._id.toString();
+      const result = await methods.updateSkillFileCodeEnvIds([
+        {
+          skillId: skill._id,
+          relativePath: 'scripts/a.sh',
+          codeEnvRef: {
+            kind: 'skill',
+            id: entityId,
+            storage_session_id: 'session-1',
+            file_id: 'file-1',
+            version: 1,
+          },
+        },
+      ]);
+
+      expect(result.matchedCount).toBe(1);
+      expect(result.modifiedCount).toBe(1);
+
+      const files = await methods.listSkillFiles(skill._id);
+      expect(files[0].codeEnvRef).toMatchObject({
+        kind: 'skill',
+        id: entityId,
+        storage_session_id: 'session-1',
+        file_id: 'file-1',
+        version: 1,
+      });
+      expect(files[0].codeEnvRefs?.default).toMatchObject({
+        kind: 'skill',
+        id: entityId,
+        storage_session_id: 'session-1',
+        file_id: 'file-1',
+        version: 1,
+      });
+    });
+
+    it('retains pointers for both execution profiles', async () => {
+      const { skill } = await methods.createSkill(makeSkillInput());
+      await methods.upsertSkillFile({
+        skillId: skill._id,
+        relativePath: 'scripts/a.sh',
+        file_id: 'f1',
+        filename: 'a.sh',
+        filepath: '/a',
+        source: 'local',
+        mimeType: 'text/plain',
+        bytes: 1,
+        author: owner._id,
+      });
+      const base = {
+        kind: 'skill' as const,
+        id: skill._id.toString(),
+        version: 1,
+      };
+
+      await methods.updateSkillFileCodeEnvIds([
+        {
+          skillId: skill._id,
+          relativePath: 'scripts/a.sh',
+          codeEnvRef: {
+            ...base,
+            storage_session_id: 'default-session',
+            file_id: 'default-file',
+            executionProfile: 'default',
+          },
+        },
+        {
+          skillId: skill._id,
+          relativePath: 'scripts/a.sh',
+          codeEnvRef: {
+            ...base,
+            storage_session_id: 'stateful-session',
+            file_id: 'stateful-file',
+            executionProfile: 'stateful',
+          },
+        },
+      ]);
+
+      const [file] = await methods.listSkillFiles(skill._id);
+      expect(file.codeEnvRefs?.default?.file_id).toBe('default-file');
+      expect(file.codeEnvRefs?.stateful?.file_id).toBe('stateful-file');
+    });
+
+    it('persists deployment-specific route keys and their reference metadata', async () => {
+      const { skill } = await methods.createSkill(makeSkillInput());
+      await methods.upsertSkillFile({
+        skillId: skill._id,
+        relativePath: 'scripts/a.sh',
+        file_id: 'f1',
+        filename: 'a.sh',
+        filepath: '/a',
+        source: 'local',
+        mimeType: 'text/plain',
+        bytes: 1,
+        author: owner._id,
+      });
+      const executionRouteKey = 'stateful:0123456789abcdef0123456789abcdef';
+
+      await methods.updateSkillFileCodeEnvIds([
+        {
+          skillId: skill._id,
+          relativePath: 'scripts/a.sh',
+          codeEnvRef: {
+            kind: 'skill',
+            id: skill._id.toString(),
+            version: 1,
+            storage_session_id: 'route-session',
+            file_id: 'route-file',
+            executionProfile: 'stateful',
+            executionRouteKey,
+          },
+        },
+      ]);
+
+      const [file] = await methods.listSkillFiles(skill._id);
+      expect(file.codeEnvRefs?.[executionRouteKey]).toMatchObject({
+        file_id: 'route-file',
+        executionProfile: 'stateful',
+        executionRouteKey,
+      });
+    });
+
+    it('reports modifiedCount=0 when no SkillFile rows match the (skillId, relativePath) filter', async () => {
+      const { skill } = await methods.createSkill(makeSkillInput());
+      const result = await methods.updateSkillFileCodeEnvIds([
+        {
+          skillId: skill._id,
+          relativePath: 'does/not/exist.sh',
+          codeEnvRef: {
+            kind: 'skill',
+            id: 'x',
+            storage_session_id: 'sid',
+            file_id: 'fid',
+            version: 1,
+          },
+        },
+      ]);
+      expect(result.modifiedCount).toBe(0);
+      expect(result.matchedCount).toBe(0);
+    });
+
+    it('returns zero counts when called with an empty update list', async () => {
+      const result = await methods.updateSkillFileCodeEnvIds([]);
+      expect(result).toEqual({ matchedCount: 0, modifiedCount: 0 });
+    });
   });
 });
 
@@ -1419,5 +2436,22 @@ describe('deleteUserSkills', () => {
     expect(deleted).toBe(1);
     expect(await Skill.countDocuments()).toBe(1);
     expect(await Skill.countDocuments({ _id: sharedId })).toBe(1);
+  });
+
+  it('prunes deleted sole-owned skill ids from agent allowlists', async () => {
+    const { skill: mine } = await methods.createSkill(makeSkillInput({ name: 'mine' }));
+    await grantOwner(mine._id);
+    const Agent = mongoose.models.Agent;
+    const agent = await Agent.create(makeAgentDoc([mine._id.toString()]));
+
+    const deleted = await methods.deleteUserSkills(owner._id as mongoose.Types.ObjectId);
+    expect(deleted).toBe(1);
+
+    const agentAfter = (await Agent.findById(agent._id).lean()) as {
+      skills?: string[];
+      skills_enabled?: boolean;
+    } | null;
+    expect(agentAfter?.skills).toEqual([]);
+    expect(agentAfter?.skills_enabled).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function MoonshotIcon({ className = '' }: { className?: string }) {
+export default function MoonshotIcon({ className = '' }: { className?: string }): JSX.Element {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"

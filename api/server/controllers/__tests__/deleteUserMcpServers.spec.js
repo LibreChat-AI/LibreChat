@@ -130,6 +130,42 @@ describe('deleteUserMcpServers', () => {
     });
   });
 
+  test('should delete owned servers when cache invalidation fails', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const server = await MCPServer.create({
+      serverName: 'cache-failure-server',
+      config: { title: 'Cache Failure Server' },
+      author: userId,
+    });
+
+    await permissionService.grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: userId,
+      resourceType: ResourceType.MCPSERVER,
+      resourceId: server._id,
+      accessRoleId: AccessRoleIds.MCPSERVER_OWNER,
+      grantedBy: userId,
+    });
+
+    const disconnectUserConnection = jest.fn().mockResolvedValue(undefined);
+    mockGetMCPManager.mockReturnValue({ disconnectUserConnection });
+    mockInvalidateCachedTools.mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    await deleteUserMcpServers(userId.toString());
+
+    expect(disconnectUserConnection).toHaveBeenCalledWith(
+      userId.toString(),
+      'cache-failure-server',
+    );
+    expect(await MCPServer.findById(server._id)).toBeNull();
+    await expect(
+      AclEntry.countDocuments({
+        resourceType: ResourceType.MCPSERVER,
+        resourceId: server._id,
+      }),
+    ).resolves.toBe(0);
+  });
+
   test('should preserve multi-owned MCP servers', async () => {
     const deletingUserId = new mongoose.Types.ObjectId();
     const otherOwnerId = new mongoose.Types.ObjectId();
@@ -263,6 +299,10 @@ describe('deleteUserMcpServers', () => {
     await deleteUserMcpServers(userId.toString());
 
     expect(await MCPServer.findById(server._id)).toBeNull();
+    expect(mockInvalidateCachedTools).toHaveBeenCalledWith({
+      userId: userId.toString(),
+      serverName: 'no-manager-server',
+    });
   });
 
   test('should delete legacy MCP servers that have author but no ACL entries', async () => {

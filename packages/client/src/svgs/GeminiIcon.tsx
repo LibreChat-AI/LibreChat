@@ -1,10 +1,12 @@
+import { JSX } from 'react/jsx-runtime';
+
 export default function GeminiIcon({
   size = 25,
   className = '',
 }: {
   size?: number;
   className?: string;
-}) {
+}): JSX.Element {
   return (
     <svg
       width={size}

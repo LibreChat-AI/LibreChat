@@ -11,3 +11,8 @@ export function setTokenHeader(token: string | undefined) {
     axios.defaults.headers.common['Authorization'] = 'Bearer ' + token;
   }
 }
+
+export function getTokenHeader(): string | undefined {
+  const authorization = axios.defaults.headers.common['Authorization'];
+  return typeof authorization === 'string' ? authorization : undefined;
+}

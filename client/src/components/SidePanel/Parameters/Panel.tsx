@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import keyBy from 'lodash/keyBy';
 import { RotateCcw } from 'lucide-react';
+import { Button } from '@librechat/client';
 import {
   excludedKeys,
   paramSettings,
@@ -8,26 +9,37 @@ import {
   getEndpointField,
   SettingDefinition,
   tConvoUpdateSchema,
+  applyModelAwareDefaults,
+  normalizeEndpointName,
+  resolveDropParamsUIKeys,
 } from 'librechat-data-provider';
 import type { TPreset } from 'librechat-data-provider';
+import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
+import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import { SaveAsPresetDialog } from '~/components/Endpoints';
 import { useSetIndexOptions, useLocalize } from '~/hooks';
-import { useGetEndpointsQuery } from '~/data-provider';
+import { groupParameters, hasControl } from './groups';
 import { componentMapping } from './components';
-import { useChatContext } from '~/Providers';
-import { logger } from '~/utils';
+import { logger, cn } from '~/utils';
+import Sections from './Sections';
 
 export default function Parameters() {
   const localize = useLocalize();
+  const { data: startupConfig } = useGetStartupConfig();
   const { conversation, setConversation } = useChatContext();
+  const { announcePolite } = useLiveAnnouncer();
   const { setOption } = useSetIndexOptions();
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [preset, setPreset] = useState<TPreset | null>(null);
+  /** Bumped on every reset; used as a key so the spin animation replays */
+  const [resetCount, setResetCount] = useState(0);
 
   const { data: endpointsConfig = {} } = useGetEndpointsQuery();
   const provider = conversation?.endpoint ?? '';
   const model = conversation?.model ?? '';
+  const { modelReasoning } = useModelReasoning(endpointsConfig, provider, model);
 
   const bedrockRegions = useMemo(() => {
     return endpointsConfig?.[conversation?.endpoint ?? '']?.availableRegions ?? [];
@@ -38,17 +50,37 @@ export default function Parameters() {
     [conversation?.endpoint, endpointsConfig],
   );
 
-  const parameters = useMemo((): SettingDefinition[] => {
+  const { parameters, visibleParameters } = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     const [combinedKey, endpointKey] = getSettingsKeys(endpointType ?? provider, model);
     const overriddenEndpointKey = customParams.defaultParamsEndpoint ?? endpointKey;
+    const dropParamsMap = startupConfig?.endpointsDropParamsMap;
+    const dropParamsEntry =
+      dropParamsMap?.[provider] ?? dropParamsMap?.[normalizeEndpointName(provider)];
+    const resolvedDropParams = Array.isArray(dropParamsEntry)
+      ? dropParamsEntry
+      : dropParamsEntry?.[model];
+    const dropParamsSet = resolveDropParamsUIKeys(
+      Array.isArray(resolvedDropParams) ? resolvedDropParams : undefined,
+      overriddenEndpointKey,
+    );
     const defaultParams = paramSettings[combinedKey] ?? paramSettings[overriddenEndpointKey] ?? [];
     const overriddenParams = endpointsConfig[provider]?.customParams?.paramDefinitions ?? [];
     const overriddenParamsMap = keyBy(overriddenParams, 'key');
-    return defaultParams
-      .filter((param) => param != null)
-      .map((param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param);
-  }, [endpointType, endpointsConfig, model, provider]);
+    /** Model visibility must not determine which stored settings survive pruning.
+     * Explicit administrator drops still remove a key from both sets. */
+    const parameters = defaultParams.filter(
+      (param) => param != null && !dropParamsSet.has(param.key),
+    );
+    const visibleParameters = applyModelAwareDefaults(
+      parameters,
+      overriddenEndpointKey,
+      model,
+      endpointsConfig?.[provider ?? '']?.responsesApiRouting,
+      modelReasoning,
+    ).map((param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param);
+    return { parameters, visibleParameters };
+  }, [endpointType, endpointsConfig, model, modelReasoning, provider, startupConfig]);
 
   useEffect(() => {
     if (!parameters) {
@@ -98,6 +130,10 @@ export default function Parameters() {
         }
       });
 
+      if (updatedKeys.length === 0) {
+        return prev;
+      }
+
       logger.log('parameters', 'parameters effect, updated keys:', updatedKeys);
 
       return updatedConversation;
@@ -127,7 +163,28 @@ export default function Parameters() {
       logger.log('parameters', 'parameters reset, affected keys:', resetKeys);
       return updatedConversation;
     });
-  }, [setConversation]);
+
+    announcePolite({ message: localize('com_ui_model_parameters_reset'), isStatus: true });
+
+    setResetCount((count) => count + 1);
+  }, [setConversation, announcePolite, localize]);
+
+  /** Region choices come from the deployment, so they are filled in before grouping,
+   *  and a control left with nothing to render is dropped there too: a section is
+   *  built only from controls that show something. */
+  const sections = useMemo(
+    () =>
+      groupParameters(
+        visibleParameters
+          .map((setting) =>
+            setting.key === 'region' && bedrockRegions.length > 0
+              ? { ...setting, options: bedrockRegions }
+              : setting,
+          )
+          .filter((setting) => componentMapping[setting.component] != null && hasControl(setting)),
+      ),
+    [visibleParameters, bedrockRegions],
+  );
 
   const openDialog = useCallback(() => {
     const newPreset = tConvoUpdateSchema.parse({
@@ -142,52 +199,36 @@ export default function Parameters() {
   }
 
   return (
-    <div className="h-auto max-w-full px-3 pb-3 pt-2">
-      <div className="grid grid-cols-2 gap-4">
-        {' '}
-        {/* This is the parent element containing all settings */}
-        {/* Below is an example of an applied dynamic setting, each be contained by a div with the column span specified */}
-        {parameters.map((setting) => {
-          const Component = componentMapping[setting.component];
-          if (!Component) {
-            return null;
-          }
-          const { key, default: defaultValue, ...rest } = setting;
-
-          if (key === 'region' && bedrockRegions.length) {
-            rest.options = bedrockRegions;
-          }
-
-          return (
-            <Component
-              key={key}
-              settingKey={key}
-              defaultValue={defaultValue}
-              {...rest}
-              setOption={setOption}
-              conversation={conversation}
-            />
-          );
-        })}
-      </div>
-      <div className="mt-4 flex justify-center">
-        <button
+    <div className="h-auto max-w-full px-3 pt-1 pb-3">
+      <Sections sections={sections} setOption={setOption} conversation={conversation} />
+      {/* The two share a row while their labels fit, stack when a translation is too
+          long for the panel, and a label longer than the panel itself wraps. */}
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Button
+          variant="outline"
           type="button"
           onClick={resetParameters}
-          className="btn btn-neutral flex w-full items-center justify-center gap-2 px-4 py-2 text-sm"
+          aria-label={localize('com_ui_reset_var', { 0: localize('com_ui_model_parameters') })}
+          className="flex h-auto min-h-9 flex-auto items-center justify-center whitespace-normal active:scale-[0.98] motion-reduce:transform-none"
         >
-          <RotateCcw className="h-4 w-4" aria-hidden="true" />
-          {localize('com_ui_reset_var', { 0: localize('com_ui_model_parameters') })}
-        </button>
-      </div>
-      <div className="mt-2 flex justify-center">
-        <button
+          <RotateCcw
+            key={resetCount}
+            className={cn(
+              'h-4 w-4 shrink-0 motion-reduce:animate-none',
+              resetCount > 0 && 'animate-reset-spin',
+            )}
+            aria-hidden="true"
+          />
+          {localize('com_ui_reset')}
+        </Button>
+        <Button
+          variant="default"
           onClick={openDialog}
-          className="btn btn-primary focus:shadow-outline flex w-full items-center justify-center px-4 py-2 font-semibold text-white hover:bg-green-600 focus:border-green-500"
+          className="flex h-auto min-h-9 flex-auto items-center justify-center font-semibold whitespace-normal"
           type="button"
         >
           {localize('com_endpoint_save_as_preset')}
-        </button>
+        </Button>
       </div>
       {preset && (
         <SaveAsPresetDialog open={isDialogOpen} onOpenChange={setIsDialogOpen} preset={preset} />

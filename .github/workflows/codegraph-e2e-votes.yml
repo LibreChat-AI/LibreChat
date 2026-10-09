@@ -1,0 +1,207 @@
+# Codegraph e2e VOTES — observe-only, post-merge, time-boxed.
+#
+# Playwright never runs on pushes to dev, so evidence for the e2e skip election would
+# otherwise wait on rare organic PR spec failures. This workflow runs the FULL mock suite on
+# every merge: each run is one graduation trial for every spec it executes, and doubles as
+# the post-merge safety net the jest workflows already have via their dev-push triggers.
+#
+# It previously ran only the merged PR's skippable tier, passing the tier as CLI path
+# filters. playwright.config.mock.ts scopes discovery to testDir specs/mock/, so tier
+# entries outside that directory matched nothing — and the covered-list log line still
+# claimed them, minting graduation trials for specs that never executed (run 32701691037:
+# a11y/keys/messages in the covered list, zero of their tests run). The covered list below
+# is therefore derived from the run's EXECUTED results — discovery is not enough either,
+# since env-gated suites self-skip under this job's default env — and the run takes no
+# path filters at all.
+#
+# It cannot fail the branch: the test step is continue-on-error. The newest merge cancels
+# older vote runs. The whole campaign switches off by setting repo variable
+# CODEGRAPH_E2E_VOTES=off once the election passes.
+name: Codegraph E2E Votes
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/workflows/**'
+      - '.github/workflows/codegraph-e2e-votes.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codegraph-e2e-votes
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: '--max-old-space-size=6144'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  vote:
+    name: vote (full suite)
+    if: vars.CODEGRAPH_E2E_VOTES != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      E2E_CHROMIUM_CHANNEL: chrome
+      E2E_STREAM_STORE: memory
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Restore data-provider build cache
+        id: cache-data-provider
+        uses: actions/cache@v5
+        with:
+          path: packages/data-provider/dist
+          key: build-data-provider-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-provider
+        if: steps.cache-data-provider.outputs.cache-hit != 'true'
+        run: npm run build:data-provider
+
+      - name: Restore data-schemas build cache
+        id: cache-data-schemas
+        uses: actions/cache@v5
+        with:
+          path: packages/data-schemas/dist
+          key: build-data-schemas-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-schemas
+        if: steps.cache-data-schemas.outputs.cache-hit != 'true'
+        run: npm run build:data-schemas
+
+      - name: Restore api build cache
+        id: cache-api
+        uses: actions/cache@v5
+        with:
+          path: packages/api/dist
+          key: build-api-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/api/src/**', 'packages/api/tsconfig*.json', 'packages/api/tsdown.config.mjs', 'packages/api/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json') }}
+
+      - name: Build api
+        if: steps.cache-api.outputs.cache-hit != 'true'
+        run: npm run build:api
+
+      - name: Restore client-package build cache
+        id: cache-client-package
+        uses: actions/cache@v5
+        with:
+          path: packages/client/dist
+          key: build-client-package-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/client/src/**', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build client-package
+        if: steps.cache-client-package.outputs.cache-hit != 'true'
+        run: npm run build:client-package
+
+      - name: Restore client app build cache
+        id: cache-client-app
+        uses: actions/cache@v5
+        with:
+          path: client/dist
+          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build client app
+        if: steps.cache-client-app.outputs.cache-hit != 'true'
+        run: npm run build:client
+
+      - name: Verify Chrome is present
+        run: google-chrome --version
+
+      # ffmpeg for retry video — see the note in playwright-mock.yml.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright ffmpeg cache
+        id: cache-ffmpeg
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ffmpeg-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright ffmpeg (best effort)
+        id: install-ffmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          timeout -k 10 60 npx playwright install ffmpeg
+          .github/scripts/verify-playwright-ffmpeg.sh
+
+      - name: Save Playwright ffmpeg cache
+        if: steps.install-ffmpeg.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ffmpeg-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      # Optional fonts only — see the note in playwright-mock.yml.
+      - name: Install optional Playwright font dependencies (best effort)
+        timeout-minutes: 4
+        continue-on-error: true
+        run: .github/scripts/install-playwright-fonts.sh
+
+      - name: Vote — run the full mock suite (cannot fail the branch)
+        continue-on-error: true
+        env:
+          # Absolute on purpose: Playwright resolves a relative PLAYWRIGHT_JSON_OUTPUT_NAME
+          # against the CONFIG directory (e2e/), not the working directory — the first live run
+          # wrote e2e/pw-results.json while the ledger looked in the repo root and logged zero
+          # trials (fail-safe, but a silent no-op).
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/pw-results.json
+        run: npx playwright test --config=e2e/playwright.config.mock.ts --reporter=line,json
+
+      - name: Ledger — log the specs that actually executed
+        run: |
+          set +e
+          # The shadow's per-spec graduation ledger counts a clean trial for every spec a green
+          # run covered, so the covered list must come from EXECUTED tests, not from discovery:
+          # env-gated suites (mcp-tool-list-changed needs E2E_MCP_LIST_CHANGED, enforced-model-
+          # specs needs E2E_MODEL_SPECS_ENFORCE) are discovered by --list yet skip every test
+          # under this job's default env — counting them as covered would mint phantom trials,
+          # the exact bug this workflow revision exists to kill (Codex P1 on #15162). A spec is
+          # covered iff at least one of its tests reached a non-skipped outcome.
+          if jq -e '.suites' "$GITHUB_WORKSPACE/pw-results.json" >/dev/null 2>&1; then
+            jq -r '[.suites[] | recurse(.suites[]?) | .specs[]? | select([.tests[]?.status] | any(. != "skipped")) | .file] | unique | .[]' "$GITHUB_WORKSPACE/pw-results.json" \
+              | sed 's|^|specs/mock/|' > covered.txt
+            N=$(wc -l < covered.txt | tr -d ' ')
+            echo "codegraph-votes: running $N specs (executed, full suite)"
+            if [ "$N" != "0" ]; then echo "codegraph-votes-specs: $(tr '\n' ' ' < covered.txt)"; fi
+          else
+            echo "codegraph-votes: no results json — run crashed before reporting; no trials logged"
+          fi
+          exit 0
+
+      - name: Done
+        if: always()
+        run: 'echo "codegraph-votes: complete"'

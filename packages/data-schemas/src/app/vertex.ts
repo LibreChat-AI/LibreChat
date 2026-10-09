@@ -1,4 +1,3 @@
-import logger from '~/config/winston';
 import {
   EModelEndpoint,
   extractEnvVariable,
@@ -12,12 +11,20 @@ import type {
   TAnthropicEndpoint,
   TVertexModelConfig,
 } from 'librechat-data-provider';
+import logger from '~/config/winston';
 
 /**
  * Default Vertex AI models available through Google Cloud
  * These are the standard Anthropic model names as served by Vertex AI
  */
-export const defaultVertexModels = [
+export const defaultVertexModels: string[] = [
+  'claude-opus-5',
+  'claude-opus-5-5',
+  'claude-sonnet-5-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-3-7-sonnet-20250219',
   'claude-3-5-sonnet-v2@20241022',
@@ -27,23 +34,49 @@ export const defaultVertexModels = [
   'claude-3-haiku@20240307',
 ];
 
+/** Locations that serve every model: `global` plus the `us`/`eu` multi-region endpoints. */
+const MULTI_REGION_LOCATIONS = new Set(['global', 'us', 'eu']);
+
+/**
+ * Models Vertex serves only from `global` or a multi-region location. Specific
+ * regional endpoints (us-east5, europe-west1, ...) carry Sonnet 4.6 and earlier
+ * and return 404 for anything newer.
+ */
+const REQUIRES_MULTI_REGION =
+  /^claude-(?:opus-(?:4-[7-9]|[5-9])|sonnet-[5-9]|fable-[5-9]|mythos-[5-9])/;
+
+/**
+ * Whether the configured location can serve models that require `global` or a
+ * multi-region endpoint.
+ */
+function servesModernModels(region: string): boolean {
+  return MULTI_REGION_LOCATIONS.has(region.trim().toLowerCase());
+}
+
 /**
  * Processes models configuration and creates deployment name mapping
  * Similar to Azure's model mapping logic
  * @param models - The models configuration (can be array or object)
  * @param defaultDeploymentName - Optional default deployment name
+ * @param region - Configured Vertex location, used to filter the built-in defaults
  * @returns Object containing modelNames array and modelDeploymentMap
  */
 function processVertexModels(
   models: string[] | Record<string, TVertexModelConfig> | undefined,
   defaultDeploymentName?: string,
+  region?: string,
 ): { modelNames: string[]; modelDeploymentMap: TVertexModelMap } {
   const modelNames: string[] = [];
   const modelDeploymentMap: TVertexModelMap = {};
 
   if (!models) {
-    // No models specified, use defaults
+    /** Only filter the built-in defaults — an explicit list is the operator's
+     * choice and is never silently pruned. */
+    const canServeModern = region == null || servesModernModels(region);
     for (const model of defaultVertexModels) {
+      if (!canServeModern && REQUIRES_MULTI_REGION.test(model)) {
+        continue;
+      }
       modelNames.push(model);
       modelDeploymentMap[model] = model; // Default: model name = deployment name
     }
@@ -131,6 +164,7 @@ export function validateVertexConfig(
   const { modelNames, modelDeploymentMap } = processVertexModels(
     vertexConfig.models,
     defaultDeploymentName,
+    region,
   );
 
   // Note: projectId is optional - if not provided, it will be auto-detected from the service key file

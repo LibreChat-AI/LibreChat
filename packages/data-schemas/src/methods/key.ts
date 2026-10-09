@@ -4,7 +4,21 @@ import { encrypt, decrypt } from '~/crypto';
 import logger from '~/config/winston';
 
 /** Factory function that takes mongoose instance and returns the key methods */
-export function createKeyMethods(mongoose: typeof import('mongoose')) {
+export function createKeyMethods(mongoose: typeof import('mongoose')): {
+  getUserKey: (params: { userId: string; name: string }) => Promise<string>;
+  updateUserKey: (params: {
+    userId: string;
+    name: string;
+    value: string;
+    expiresAt?: Date | null;
+  }) => Promise<unknown>;
+  deleteUserKey: (params: { userId: string; name?: string; all?: boolean }) => Promise<unknown>;
+  getUserKeyValues: (params: { userId: string; name: string }) => Promise<Record<string, string>>;
+  getUserKeyExpiry: (params: {
+    userId: string;
+    name: string;
+  }) => Promise<{ expiresAt: Date | 'never' | null }>;
+} {
   /**
    * Retrieves and decrypts the key value for a given user identified by userId and identifier name.
    * @param params - The parameters object

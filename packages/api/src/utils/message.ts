@@ -4,11 +4,21 @@ import type { TFile, TMessage } from 'librechat-data-provider';
 /** Minimal shape for request file entries (from `req.body.files`) */
 type RequestFile = { file_id?: string };
 
+type GetMessagesByParentId = (
+  filter: { user: string; messageId: string; conversationId?: string },
+  select: '_id',
+) => Promise<unknown[]>;
+
 /** Fields to strip from files before client transmission */
 const FILE_STRIP_FIELDS = ['text', '_id', '__v'] as const;
 
-/** Fields to strip from messages before client transmission */
-const MESSAGE_STRIP_FIELDS = ['fileContext'] as const;
+/** Fields to strip from messages before client transmission.
+ * Both are prompt-building inputs: `fileContext` is text extracted from
+ * attachments and `image_urls` holds base64 image inputs. Terminal events are
+ * additionally projected centrally by `projectTerminalEvent`; this stays as
+ * defense in depth for the non-terminal senders (`error.js`,
+ * `abortMiddleware.js`). */
+const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
 
 /**
  * Strips large/unnecessary fields from a file object before transmitting to client.
@@ -58,7 +68,8 @@ export function buildMessageFiles<T extends Partial<TFile>>(
 
 /**
  * Sanitizes a message object before transmitting to client.
- * Removes large fields like `fileContext` and strips `text` from embedded files.
+ * Removes prompt-building fields (`fileContext`, `image_urls`) and strips
+ * `text` from embedded files.
  *
  * @param message - The message object to sanitize
  * @returns A new message object safe for client transmission
@@ -92,11 +103,52 @@ export function sanitizeMessageForTransmit<T extends Partial<TMessage>>(
   return sanitized;
 }
 
-/** Minimal message shape for thread traversal */
+export function isPreliminaryMessageId(messageId: unknown): messageId is string {
+  return typeof messageId === 'string' && messageId.endsWith('_');
+}
+
+export async function isUnpersistedPreliminaryParent({
+  userId,
+  conversationId,
+  parentMessageId,
+  getMessages,
+}: {
+  userId: string;
+  conversationId?: string | null;
+  parentMessageId?: string | null;
+  getMessages: GetMessagesByParentId;
+}): Promise<boolean> {
+  if (!isPreliminaryMessageId(parentMessageId)) {
+    return false;
+  }
+
+  const filter: { user: string; messageId: string; conversationId?: string } = {
+    user: userId,
+    messageId: parentMessageId,
+  };
+  if (conversationId && conversationId !== Constants.NEW_CONVO) {
+    filter.conversationId = conversationId;
+  }
+
+  const messages = await getMessages(filter, '_id');
+  return messages.length === 0;
+}
+
+/** Minimal message shape for thread traversal.
+ *
+ * Both `files` and `attachments` carry `file_id` references, but they
+ * land on different roles by convention: user-uploaded files live on
+ * `messages.files` (set when the user attaches a file in chat), while
+ * code-execution outputs live on `messages.attachments` (set by
+ * `processCodeOutput` when a tool call produces a file). The thread
+ * walk must visit both so the next turn's `tool_resources.execute_code.file_ids`
+ * picks up files the assistant generated, not just files the user
+ * uploaded. */
 type ThreadMessage = {
   messageId: string;
   parentMessageId?: string | null;
   files?: Array<{ file_id?: string }>;
+  attachments?: Array<{ file_id?: string }>;
 };
 
 /** Result of thread data extraction */
@@ -147,11 +199,21 @@ export function getThreadData(
 
     result.messageIds.push(message.messageId);
 
-    /** Collect file IDs from this message */
+    /** Collect file IDs from BOTH `files` (user uploads) and
+     *  `attachments` (code-execution outputs from `processCodeOutput`).
+     *  Walking only one half drops half the relevant refs — see
+     *  the type doc on `ThreadMessage` for the role split. */
     if (message.files) {
       for (const file of message.files) {
         if (file.file_id) {
           fileIdSet.add(file.file_id);
+        }
+      }
+    }
+    if (message.attachments) {
+      for (const attachment of message.attachments) {
+        if (attachment.file_id) {
+          fileIdSet.add(attachment.file_id);
         }
       }
     }

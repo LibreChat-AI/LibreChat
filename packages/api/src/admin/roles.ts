@@ -1,10 +1,19 @@
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import { logger, isValidObjectIdString, RoleConflictError } from '@librechat/data-schemas';
-import type { IRole, IUser, IConfig, AdminMember } from '@librechat/data-schemas';
+import type {
+  IRole,
+  IUser,
+  IConfig,
+  AdminMember,
+  ISystemGrant,
+  RecordAuditEntryInput,
+  RecordAuditEntryOptions,
+} from '@librechat/data-schemas';
 import type { FilterQuery, Types } from 'mongoose';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
 import { parsePagination } from './pagination';
+import { buildAuditContext } from './context';
 
 const systemRoleValues = new Set<string>(Object.values(SystemRoles));
 
@@ -115,15 +124,34 @@ export interface AdminRolesDeps {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
   }) => Promise<void>;
-  /** Removes all system capability grants held by this principal. */
+  /** Drops cached prompt group access IDs; role deletion can remove PROMPTGROUP grants. */
+  invalidatePromptGroupAccessContext?: () => Promise<void>;
+  /** Removes all system capability grants held by this principal and returns
+   * the removed grants so each can be audited. */
   deleteGrantsForPrincipal: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
     options?: { tenantId?: string },
+  ) => Promise<ISystemGrant[]>;
+  /** Optional audit emission for grants removed by the role-deletion cascade.
+   * Failure is logged but never blocks the deletion (which has already happened). */
+  recordAuditEntry?: (
+    input: RecordAuditEntryInput,
+    options?: RecordAuditEntryOptions,
   ) => Promise<void>;
 }
 
-export function createAdminRolesHandlers(deps: AdminRolesDeps) {
+export function createAdminRolesHandlers(deps: AdminRolesDeps): {
+  listRoles: (req: ServerRequest, res: Response) => Promise<Response>;
+  getRole: (req: ServerRequest, res: Response) => Promise<Response>;
+  createRole: (req: ServerRequest, res: Response) => Promise<Response>;
+  updateRole: (req: ServerRequest, res: Response) => Promise<Response>;
+  updateRolePermissions: (req: ServerRequest, res: Response) => Promise<Response>;
+  deleteRole: (req: ServerRequest, res: Response) => Promise<Response>;
+  getRoleMembers: (req: ServerRequest, res: Response) => Promise<Response>;
+  addRoleMember: (req: ServerRequest, res: Response) => Promise<Response>;
+  removeRoleMember: (req: ServerRequest, res: Response) => Promise<Response>;
+} {
   const {
     listRoles,
     countRoles,
@@ -142,7 +170,45 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps) {
     deleteConfig,
     deleteAclEntries,
     deleteGrantsForPrincipal,
+    recordAuditEntry,
+    invalidatePromptGroupAccessContext,
   } = deps;
+
+  /** Emits a `grant.removed` audit entry for each grant the role-deletion cascade
+   * removed, so the cascade leaves the same forensic trail as an explicit revoke.
+   * Fail-open: the role is already deleted, so a failed audit is logged, not
+   * propagated. Sequential to keep the per-tenant hash chain ordered. */
+  async function emitGrantRemovals(
+    req: ServerRequest,
+    roleName: string,
+    grants: ISystemGrant[],
+  ): Promise<void> {
+    if (!recordAuditEntry || grants.length === 0) return;
+    const user = req.user;
+    const userId = user?._id?.toString() ?? user?.id;
+    if (!user || !userId) return;
+    const actorName = user.name || user.username || user.email || userId;
+    const context = buildAuditContext(req);
+    for (const grant of grants) {
+      try {
+        await recordAuditEntry({
+          action: 'grant.removed',
+          outcome: 'success',
+          severity: 'warning',
+          actor: { type: 'user', id: userId, name: actorName },
+          target: { type: PrincipalType.ROLE, id: roleName, name: roleName },
+          metadata: { capability: grant.capability },
+          context,
+          /** Scope each entry to the removed grant's own tenant — a platform
+           * admin's role deletion can remove tenant-scoped grants, and those
+           * removals must land in the affected tenant's chain, not the caller's. */
+          tenantId: grant.tenantId,
+        });
+      } catch (err) {
+        logger.error('[adminRoles] grant.removed audit failed during role deletion', err);
+      }
+    }
+  }
 
   async function listRolesHandler(req: ServerRequest, res: Response) {
     try {
@@ -388,15 +454,22 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps) {
       }
 
       const tenantId = req.user?.tenantId;
-      const cleanupResults = await Promise.allSettled([
+      const [configResult, aclResult, grantsResult] = await Promise.allSettled([
         deleteConfig(PrincipalType.ROLE, name),
         deleteAclEntries({ principalType: PrincipalType.ROLE, principalId: name }),
         deleteGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId }),
       ]);
-      for (const result of cleanupResults) {
+      for (const result of [configResult, aclResult, grantsResult]) {
         if (result.status === 'rejected') {
           logger.error('[adminRoles] cascade cleanup failed for role:', name, result.reason);
         }
+      }
+      if (aclResult.status === 'fulfilled') {
+        /** The removed entries can include PROMPTGROUP grants feeding the access cache */
+        await invalidatePromptGroupAccessContext?.();
+      }
+      if (grantsResult.status === 'fulfilled') {
+        await emitGrantRemovals(req, name, grantsResult.value);
       }
 
       return res.status(200).json({ success: true });

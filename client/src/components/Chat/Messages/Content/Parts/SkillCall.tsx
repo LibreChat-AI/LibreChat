@@ -1,69 +1,100 @@
 import { useMemo } from 'react';
 import { ScrollText } from 'lucide-react';
-import type { TAttachment } from 'librechat-data-provider';
+import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
 import parseJsonField from './parseJsonField';
+import { useToolCallIntent } from './intent';
+import { TOOL_ROW_CLASSES } from '../rows';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import Stdout from './Stdout';
 import { cn } from '~/utils';
 
 export default function SkillCall({
   isSubmitting,
+  runStepStatus,
+  runStepDurationMs,
   initialProgress = 0.1,
   args,
   output = '',
   attachments,
+  hideAttachments = false,
+  onExpand,
 }: {
   initialProgress: number;
   isSubmitting: boolean;
+  runStepStatus?: PartMetadata['runStepStatus'];
+  runStepDurationMs?: PartMetadata['runStepDurationMs'];
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
+  hideAttachments?: boolean;
+  onExpand?: () => void;
 }) {
   const localize = useLocalize();
-  const skillName = useMemo(() => parseJsonField(args, 'skillName'), [args]);
+  const parsedSkillName = useMemo(() => parseJsonField(args, 'skillName'), [args]);
+  const skillName = parsedSkillName || localize('com_ui_skill').toLowerCase();
+  const intent = useToolCallIntent(args);
 
-  const { showCode, toggleCode, expandStyle, expandRef, progress, cancelled, hasError, hasOutput } =
-    useToolCallState(initialProgress, isSubmitting, output, !!skillName);
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!parsedSkillName,
+      /** The row is the only place that names the skill that ran. */
+      keepRow: true,
+      onExpand,
+      runStepStatus,
+    });
+
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize('com_ui_skill_finished', { 0: skillName }));
 
   return (
     <>
-      <div className="relative my-1.5 flex size-5 shrink-0 items-center gap-2.5">
-        <ProgressText
-          progress={progress}
-          onClick={toggleCode}
-          inProgressText={localize('com_ui_skill_running', { 0: skillName })}
-          finishedText={
-            cancelled
-              ? localize('com_ui_cancelled')
-              : localize('com_ui_skill_finished', { 0: skillName })
-          }
-          errorSuffix={hasError && !cancelled ? localize('com_ui_tool_failed') : undefined}
-          icon={
-            <ScrollText
-              className={cn(
-                'size-4 shrink-0 text-text-secondary',
-                progress < 1 && !cancelled && !hasError && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!skillName || hasOutput}
-          isExpanded={showCode}
-          error={cancelled}
-        />
-      </div>
+      <BareStatus active={bare} text={finishedText} />
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={intent ?? localize('com_ui_skill_running', { 0: skillName })}
+            finishedText={finishedText}
+            durationMs={runStepDurationMs}
+            icon={
+              <ScrollText
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!parsedSkillName || hasOutput}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {hasOutput && (
-            <div className="my-2 overflow-hidden rounded-lg border border-border-light bg-surface-secondary">
-              <div className="bg-surface-primary-alt p-4 text-xs dark:bg-transparent">
-                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+            <div
+              className={cn(
+                toolPanelSpacingClassName,
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
+              )}
+            >
+              <div className="p-4 text-xs">
+                <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
-                <div className="max-h-[200px] overflow-auto text-text-primary">
+                <div className="text-text-primary max-h-[12.5rem] overflow-auto">
                   <Stdout output={output} />
                 </div>
               </div>
@@ -71,7 +102,9 @@ export default function SkillCall({
           )}
         </div>
       </div>
-      {attachments && attachments.length > 0 && <AttachmentGroup attachments={attachments} />}
+      {!hideAttachments && attachments && attachments.length > 0 && (
+        <AttachmentGroup attachments={attachments} />
+      )}
     </>
   );
 }

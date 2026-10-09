@@ -1,7 +1,7 @@
-import { useDragHelpers } from '~/hooks';
 import DragDropOverlay from '~/components/Chat/Input/Files/DragDropOverlay';
 import DragDropModal from '~/components/Chat/Input/Files/DragDropModal';
-import { DragDropProvider } from '~/Providers';
+import { DragDropProvider, UploadModalProvider } from '~/Providers';
+import { useDragHelpers } from '~/hooks';
 import { cn } from '~/utils';
 
 interface DragDropWrapperProps {
@@ -9,10 +9,8 @@ interface DragDropWrapperProps {
   className?: string;
 }
 
-export default function DragDropWrapper({ children, className }: DragDropWrapperProps) {
-  const { isOver, canDrop, drop, showModal, setShowModal, draggedFiles, handleOptionSelect } =
-    useDragHelpers();
-
+function DragDropArea({ children, className }: DragDropWrapperProps) {
+  const { isOver, canDrop, drop } = useDragHelpers();
   const isActive = canDrop && isOver;
 
   return (
@@ -20,14 +18,17 @@ export default function DragDropWrapper({ children, className }: DragDropWrapper
       {children}
       {/** Always render overlay to avoid mount/unmount overhead */}
       <DragDropOverlay isActive={isActive} />
-      <DragDropProvider>
-        <DragDropModal
-          files={draggedFiles}
-          isVisible={showModal}
-          setShowModal={setShowModal}
-          onOptionSelect={handleOptionSelect}
-        />
-      </DragDropProvider>
+      <DragDropModal />
     </div>
+  );
+}
+
+export default function DragDropWrapper({ children, className }: DragDropWrapperProps) {
+  return (
+    <DragDropProvider>
+      <UploadModalProvider>
+        <DragDropArea className={className}>{children}</DragDropArea>
+      </UploadModalProvider>
+    </DragDropProvider>
   );
 }

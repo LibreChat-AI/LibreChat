@@ -38,9 +38,9 @@ Artifacts are for substantial, self-contained content that users might modify or
   1. Create the artifact using the following format:
 
      :::artifact{identifier="unique-identifier" type="mime-type" title="Artifact Title"}
-     \`\`\`
+     \`\`\`\`
      Your artifact content here
-     \`\`\`
+     \`\`\`\`
      :::
 
   2. Assign an identifier to the \`identifier\` attribute. For updates, reuse the prior identifier. For new artifacts, the identifier should be descriptive and relevant to the content, using kebab-case (e.g., "example-code-snippet"). This identifier will be used consistently throughout the artifact's lifecycle, even when updating or iterating on the artifact.
@@ -77,7 +77,7 @@ Artifacts are for substantial, self-contained content that users might modify or
       - If you are unable to follow the above requirements for any reason, don't use artifacts and use regular code blocks instead, which will not attempt to render the component.
   5. Include the complete and updated content of the artifact, without any truncation or minimization. Don't use "// rest of the code remains the same...".
   6. If unsure whether the content qualifies as an artifact, if an artifact should be updated, or which type to assign to an artifact, err on the side of not creating an artifact.
-  7. Always use triple backticks (\`\`\`) to enclose the content within the artifact, regardless of the content type.
+  7. Use a backtick fence longer than any backtick fence in the artifact content. Use a 4-backtick fence by default; if the artifact content contains a 4-backtick fence, use 5 backticks, and so on.
 </artifact_instructions>
 
 Here are some examples of correct usage of artifacts:
@@ -94,7 +94,7 @@ Here are some examples of correct usage of artifacts:
       Sure! Here's a simple flow chart depicting the process of making tea using Mermaid syntax:
 
       :::artifact{identifier="tea-making-flowchart" type="application/vnd.mermaid" title="Flow chart: Making Tea"}
-      \`\`\`mermaid
+      \`\`\`\`mermaid
       graph TD
           A[Start] --> B{Water boiled?}
           B -->|Yes| C[Add tea leaves to cup]
@@ -106,7 +106,7 @@ Here are some examples of correct usage of artifacts:
           G --> H[Add milk or sugar, if desired]
           H --> I[Enjoy your tea!]
           I --> J[End]
-      \`\`\`
+      \`\`\`\`
       :::
 
       This flow chart uses Mermaid syntax to visualize the steps involved in making a cup of tea. Here's a brief explanation of the process:
@@ -132,7 +132,7 @@ Here are some examples of correct usage of artifacts:
       Here's a simple React counter component:
 
       :::artifact{identifier="react-counter" type="application/vnd.react" title="React Counter"}
-      \`\`\`
+      \`\`\`\`
       import { useState } from 'react';
 
       export default function Counter() {
@@ -146,7 +146,7 @@ Here are some examples of correct usage of artifacts:
           </div>
         );
       }
-      \`\`\`
+      \`\`\`\`
       :::
 
       This component creates a simple counter with an increment button.
@@ -159,7 +159,7 @@ Here are some examples of correct usage of artifacts:
       Here's a basic HTML structure for a blog post:
 
       :::artifact{identifier="blog-post-html" type="text/html" title="Blog Post HTML"}
-      \`\`\`
+      \`\`\`\`
       <!DOCTYPE html>
       <html lang="en">
       <head>
@@ -186,7 +186,7 @@ Here are some examples of correct usage of artifacts:
         </footer>
       </body>
       </html>
-      \`\`\`
+      \`\`\`\`
       :::
 
       This HTML structure provides a simple layout for a blog post.
@@ -229,18 +229,18 @@ Artifacts are for substantial, self-contained content that users might modify or
   1. Create the artifact using the following remark-directive markdown format:
 
       :::artifact{identifier="unique-identifier" type="mime-type" title="Artifact Title"}
-      \`\`\`
+      \`\`\`\`
       Your artifact content here
-      \`\`\`
+      \`\`\`\`
       :::
 
   a. Example of correct format:
 
       :::artifact{identifier="example-artifact" type="text/plain" title="Example Artifact"}
-      \`\`\`
+      \`\`\`\`
       This is the content of the artifact.
       It can span multiple lines.
-      \`\`\`
+      \`\`\`\`
       :::
 
   b. Common mistakes to avoid:
@@ -282,7 +282,7 @@ Artifacts are for substantial, self-contained content that users might modify or
       - If you are unable to follow the above requirements for any reason, don't use artifacts and use regular code blocks instead, which will not attempt to render the component.
   5. Include the complete and updated content of the artifact, without any truncation or minimization. Don't use "// rest of the code remains the same...".
   6. If unsure whether the content qualifies as an artifact, if an artifact should be updated, or which type to assign to an artifact, err on the side of not creating an artifact.
-  7. NEVER use triple backticks to enclose the artifact, ONLY the content within the artifact.
+  7. Use a backtick fence longer than any backtick fence in the artifact content. Use a 4-backtick fence by default; if the artifact content contains a 4-backtick fence, use 5 backticks, and so on.
 
 Here are some examples of correct usage of artifacts:
 
@@ -297,7 +297,7 @@ Here are some examples of correct usage of artifacts:
     Assistant: Sure! Here's a simple flow chart depicting the process of making tea using Mermaid syntax:
 
       :::artifact{identifier="tea-making-flowchart" type="application/vnd.mermaid" title="Flow chart: Making Tea"}
-      \`\`\`mermaid
+      \`\`\`\`mermaid
       graph TD
           A[Start] --> B{Water boiled?}
           B -->|Yes| C[Add tea leaves to cup]
@@ -309,7 +309,7 @@ Here are some examples of correct usage of artifacts:
           G --> H[Add milk or sugar, if desired]
           H --> I[Enjoy your tea!]
           I --> J[End]
-      \`\`\`
+      \`\`\`\`
       :::
 
       This flow chart uses Mermaid syntax to visualize the steps involved in making a cup of tea. Here's a brief explanation of the process:
@@ -336,7 +336,7 @@ Here are some examples of correct usage of artifacts:
     Assistant: Here's a simple React counter component:
 
       :::artifact{identifier="react-counter" type="application/vnd.react" title="React Counter"}
-      \`\`\`
+      \`\`\`\`
       import { useState } from 'react';
 
       export default function Counter() {
@@ -350,7 +350,7 @@ Here are some examples of correct usage of artifacts:
           </div>
         );
       }
-      \`\`\`
+      \`\`\`\`
       :::
 
       This component creates a simple counter with an increment button.
@@ -362,7 +362,7 @@ Here are some examples of correct usage of artifacts:
     Assistant: Here's a basic HTML structure for a blog post:
 
       :::artifact{identifier="blog-post-html" type="text/html" title="Blog Post HTML"}
-      \`\`\`
+      \`\`\`\`
       <!DOCTYPE html>
       <html lang="en">
       <head>
@@ -389,7 +389,7 @@ Here are some examples of correct usage of artifacts:
         </footer>
       </body>
       </html>
-      \`\`\`
+      \`\`\`\`
       :::
 
       This HTML structure provides a simple layout for a blog post.

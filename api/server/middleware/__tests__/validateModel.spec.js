@@ -1,4 +1,4 @@
-const { ViolationTypes } = require('librechat-data-provider');
+const { EModelEndpoint, Providers, ViolationTypes } = require('librechat-data-provider');
 
 jest.mock('@librechat/api', () => ({
   handleError: jest.fn(),
@@ -157,6 +157,42 @@ describe('validateModel', () => {
 
       expect(next).toHaveBeenCalled();
       expect(handleError).not.toHaveBeenCalled();
+    });
+
+    it('accepts a Vertex model from the shared Google catalog', async () => {
+      req.body = { model: 'gemini-3.7-flash', endpoint: Providers.VERTEXAI };
+      getEndpointsConfig.mockResolvedValue({ [Providers.VERTEXAI]: { userProvide: false } });
+      getModelsConfig.mockResolvedValue({ [EModelEndpoint.google]: ['gemini-3.7-flash'] });
+
+      await validateModel(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      expect(handleError).not.toHaveBeenCalled();
+    });
+
+    it('accepts a model from an exact Vertex AI catalog', async () => {
+      req.body = { model: 'custom-vertex-model', endpoint: Providers.VERTEXAI };
+      getEndpointsConfig.mockResolvedValue({ [Providers.VERTEXAI]: { userProvide: false } });
+      getModelsConfig.mockResolvedValue({
+        [EModelEndpoint.google]: ['gemini-3.7-flash'],
+        [Providers.VERTEXAI]: ['custom-vertex-model'],
+      });
+
+      await validateModel(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      expect(handleError).not.toHaveBeenCalled();
+    });
+
+    it('rejects a Vertex model absent from the shared Google catalog', async () => {
+      req.body = { model: 'gemini-not-available', endpoint: Providers.VERTEXAI };
+      getEndpointsConfig.mockResolvedValue({ [Providers.VERTEXAI]: { userProvide: false } });
+      getModelsConfig.mockResolvedValue({ [EModelEndpoint.google]: ['gemini-3.7-flash'] });
+
+      await validateModel(req, res, next);
+
+      expect(handleError).toHaveBeenCalledWith(res, { text: 'Illegal model request' });
+      expect(next).not.toHaveBeenCalled();
     });
 
     it('rejects when endpoint has no models loaded', async () => {

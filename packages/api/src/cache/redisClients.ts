@@ -1,22 +1,51 @@
 import IoRedis from 'ioredis';
-import type { Redis, Cluster } from 'ioredis';
+import calculateSlot from 'cluster-key-slot';
 import { logger } from '@librechat/data-schemas';
 import { createClient, createCluster } from '@keyv/redis';
+import type { ScanOptions } from '@redis/client/dist/lib/commands/SCAN';
 import type { RedisClientType, RedisClusterType } from '@redis/client';
-import type { ScanCommandOptions } from '@redis/client/dist/lib/commands/SCAN';
+import type { Redis, Cluster } from 'ioredis';
+import type { ReadonlyRecoveryHandler } from './recovery';
+import { createReadonlyRecovery, isReadonlyReplicaError } from './recovery';
+import { startRedisHeartbeat } from './heartbeat';
 import { cacheConfig } from './cacheConfig';
 
 const urls = cacheConfig.REDIS_URI?.split(',').map((uri) => new URL(uri)) || [];
 const username = urls?.[0]?.username || cacheConfig.REDIS_USERNAME;
 const password = urls?.[0]?.password || cacheConfig.REDIS_PASSWORD;
 const ca = cacheConfig.REDIS_CA;
+const protocols = new Set(urls.map((url) => url.protocol));
+const useTls = urls[0]?.protocol === 'rediss:';
+const isRedisCluster = urls.length !== 1 || cacheConfig.USE_REDIS_CLUSTER;
+
+if (cacheConfig.USE_REDIS && protocols.size > 1) {
+  throw new Error('All REDIS_URI entries must use the same protocol');
+}
+
+if (cacheConfig.USE_REDIS && ca && !useTls) {
+  throw new Error('REDIS_CA requires REDIS_URI to use rediss://');
+}
+
+let resolveKeyvRedisClientReady: (() => void) | undefined;
+let rejectKeyvRedisClientReady: ((reason?: unknown) => void) | undefined;
+const keyvRedisClientReady: Promise<void> | null = cacheConfig.USE_REDIS
+  ? new Promise<void>((resolve, reject) => {
+      resolveKeyvRedisClientReady = resolve;
+      rejectKeyvRedisClientReady = reject;
+    })
+  : null;
+
+/** Waits for the stable shared Keyv Redis readiness gate. */
+async function waitForKeyvRedisClient(): Promise<void> {
+  await keyvRedisClientReady;
+}
 
 let ioredisClient: Redis | Cluster | null = null;
 if (cacheConfig.USE_REDIS) {
   const redisOptions: Record<string, unknown> = {
     username: username,
     password: password,
-    tls: ca ? { ca } : undefined,
+    tls: useTls ? { ca: ca ?? undefined } : undefined,
     keyPrefix: `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`,
     maxListeners: cacheConfig.REDIS_MAX_LISTENERS,
     retryStrategy: (times: number) => {
@@ -36,8 +65,7 @@ if (cacheConfig.USE_REDIS) {
       return delay;
     },
     reconnectOnError: (err: Error) => {
-      const targetError = 'READONLY';
-      if (err.message.includes(targetError)) {
+      if (isReadonlyReplicaError(err)) {
         logger.warn('ioredis reconnecting due to READONLY error');
         return 2; // Return retry delay instead of boolean
       }
@@ -46,42 +74,42 @@ if (cacheConfig.USE_REDIS) {
     enableOfflineQueue: cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
     connectTimeout: cacheConfig.REDIS_CONNECT_TIMEOUT,
     maxRetriesPerRequest: 3,
+    keepAlive: cacheConfig.REDIS_KEEP_ALIVE,
   };
 
-  ioredisClient =
-    urls.length === 1 && !cacheConfig.USE_REDIS_CLUSTER
-      ? new IoRedis(cacheConfig.REDIS_URI!, redisOptions)
-      : new IoRedis.Cluster(
-          urls.map((url) => ({ host: url.hostname, port: parseInt(url.port, 10) || 6379 })),
-          {
-            ...(cacheConfig.REDIS_USE_ALTERNATIVE_DNS_LOOKUP
-              ? {
-                  dnsLookup: (
-                    address: string,
-                    callback: (err: Error | null, address: string) => void,
-                  ) => callback(null, address),
-                }
-              : {}),
-            redisOptions,
-            clusterRetryStrategy: (times: number) => {
-              if (
-                cacheConfig.REDIS_RETRY_MAX_ATTEMPTS > 0 &&
-                times > cacheConfig.REDIS_RETRY_MAX_ATTEMPTS
-              ) {
-                logger.error(
-                  `ioredis cluster giving up after ${cacheConfig.REDIS_RETRY_MAX_ATTEMPTS} reconnection attempts`,
-                );
-                return null;
+  ioredisClient = !isRedisCluster
+    ? new IoRedis(cacheConfig.REDIS_URI!, redisOptions)
+    : new IoRedis.Cluster(
+        urls.map((url) => ({ host: url.hostname, port: parseInt(url.port, 10) || 6379 })),
+        {
+          ...(cacheConfig.REDIS_USE_ALTERNATIVE_DNS_LOOKUP
+            ? {
+                dnsLookup: (
+                  address: string,
+                  callback: (err: Error | null, address: string) => void,
+                ) => callback(null, address),
               }
-              const base = Math.min(Math.pow(2, times) * 100, cacheConfig.REDIS_RETRY_MAX_DELAY);
-              const jitter = Math.floor(Math.random() * Math.min(base, 1000));
-              const delay = Math.min(base + jitter, cacheConfig.REDIS_RETRY_MAX_DELAY);
-              logger.info(`ioredis cluster reconnecting... attempt ${times}, delay ${delay}ms`);
-              return delay;
-            },
-            enableOfflineQueue: cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
+            : {}),
+          redisOptions,
+          clusterRetryStrategy: (times: number) => {
+            if (
+              cacheConfig.REDIS_RETRY_MAX_ATTEMPTS > 0 &&
+              times > cacheConfig.REDIS_RETRY_MAX_ATTEMPTS
+            ) {
+              logger.error(
+                `ioredis cluster giving up after ${cacheConfig.REDIS_RETRY_MAX_ATTEMPTS} reconnection attempts`,
+              );
+              return null;
+            }
+            const base = Math.min(Math.pow(2, times) * 100, cacheConfig.REDIS_RETRY_MAX_DELAY);
+            const jitter = Math.floor(Math.random() * Math.min(base, 1000));
+            const delay = Math.min(base + jitter, cacheConfig.REDIS_RETRY_MAX_DELAY);
+            logger.info(`ioredis cluster reconnecting... attempt ${times}, delay ${delay}ms`);
+            return delay;
           },
-        );
+          enableOfflineQueue: cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
+        },
+      );
 
   ioredisClient.on('error', (err) => {
     logger.error('ioredis client error:', err);
@@ -103,33 +131,70 @@ if (cacheConfig.USE_REDIS) {
     logger.warn('ioredis client connection closed');
   });
 
-  /** Ping Interval to keep the Redis server connection alive (if enabled) */
-  let pingInterval: NodeJS.Timeout | null = null;
-  const clearPingInterval = () => {
-    if (pingInterval) {
-      clearInterval(pingInterval);
-      pingInterval = null;
-    }
-  };
-
+  /** Deadline-bounded keepalive PINGs; an unanswered probe forces a reconnect. */
   if (cacheConfig.REDIS_PING_INTERVAL > 0) {
-    pingInterval = setInterval(() => {
-      if (ioredisClient && ioredisClient.status === 'ready') {
-        ioredisClient.ping().catch((err) => {
-          logger.error('ioredis ping failed:', err);
-        });
-      }
-    }, cacheConfig.REDIS_PING_INTERVAL * 1000);
-    ioredisClient.on('close', clearPingInterval);
-    ioredisClient.on('end', clearPingInterval);
+    startRedisHeartbeat({
+      client: ioredisClient,
+      intervalMs: cacheConfig.REDIS_PING_INTERVAL * 1000,
+      timeoutMs: cacheConfig.REDIS_PING_TIMEOUT,
+      label: 'ioredis client',
+    });
   }
 }
 
 let keyvRedisClient: RedisClientType | RedisClusterType | null = null;
-let keyvRedisClientReady:
-  | Promise<void>
-  | Promise<RedisClientType<Record<string, never>, Record<string, never>, Record<string, never>>>
-  | null = null;
+let recoverKeyvRedisClient: ReadonlyRecoveryHandler | undefined;
+
+/**
+ * Routes a Keyv Redis client error through READONLY failover recovery.
+ * Cluster clients follow MOVED to the owning master on their own, so the hook
+ * only exists for the standalone client. Returns whether a reconnect was started.
+ */
+function handleKeyvRedisError(error: unknown): boolean {
+  return recoverKeyvRedisClient?.(error) ?? false;
+}
+
+type RedisEvalOptions = { keys: string[]; arguments: string[] };
+
+async function runKeyvRedisScript(
+  client: RedisClientType | RedisClusterType,
+  script: string,
+  options: RedisEvalOptions,
+): Promise<unknown> {
+  if (!('masters' in client) || options.keys.length === 0) {
+    return client.eval(script, options);
+  }
+
+  const slot = calculateSlot(options.keys[0]);
+  if (options.keys.some((key) => calculateSlot(key) !== slot)) {
+    throw new Error('Redis catalog script keys must share one cluster slot');
+  }
+  const master = client.getSlotMaster(slot);
+  const nodeClient = await client.nodeClient(master);
+  return nodeClient.eval(script, options);
+}
+
+/**
+ * Runs a Lua script on the master that owns its keys. Node Redis can execute a
+ * cluster EVAL through an arbitrary node while the slot map is settling, which
+ * leaks a MOVED reply instead of following it. Catalog scripts are deliberately
+ * single-slot, so selecting the owning master also makes that invariant explicit.
+ *
+ * Script failures reject straight to the caller without passing through any
+ * client error event, so READONLY replies are routed to failover recovery here.
+ */
+async function evalKeyvRedisScript(script: string, options: RedisEvalOptions): Promise<unknown> {
+  await waitForKeyvRedisClient();
+  if (!keyvRedisClient) {
+    throw new Error('Keyv Redis client is not configured');
+  }
+  try {
+    return await runKeyvRedisScript(keyvRedisClient, script, options);
+  } catch (error) {
+    handleKeyvRedisError(error);
+    throw error;
+  }
+}
 
 if (cacheConfig.USE_REDIS) {
   /**
@@ -140,8 +205,8 @@ if (cacheConfig.USE_REDIS) {
     username,
     password,
     socket: {
-      tls: ca != null,
-      ca,
+      ...(isRedisCluster ? { tls: useTls } : {}),
+      ...(ca ? { ca } : {}),
       connectTimeout: cacheConfig.REDIS_CONNECT_TIMEOUT,
       reconnectStrategy: (retries: number) => {
         if (
@@ -166,31 +231,37 @@ if (cacheConfig.USE_REDIS) {
       : {}),
   };
 
-  keyvRedisClient =
-    urls.length === 1 && !cacheConfig.USE_REDIS_CLUSTER
-      ? createClient({ url: cacheConfig.REDIS_URI, ...redisOptions })
-      : createCluster({
-          rootNodes: urls.map((url) => ({ url: url.href })),
-          defaults: redisOptions,
-        });
+  keyvRedisClient = !isRedisCluster
+    ? createClient({ url: cacheConfig.REDIS_URI, ...redisOptions })
+    : createCluster({
+        rootNodes: urls.map((url) => ({ url: url.href })),
+        defaults: redisOptions,
+      });
 
   // Add scanIterator method to cluster client for API consistency with standalone client
   if (!('scanIterator' in keyvRedisClient)) {
     const clusterClient = keyvRedisClient as RedisClusterType;
     (keyvRedisClient as unknown as RedisClientType).scanIterator = async function* (
-      options?: ScanCommandOptions,
+      options?: ScanOptions,
     ) {
       const masters = clusterClient.masters;
       for (const master of masters) {
         const nodeClient = await clusterClient.nodeClient(master);
-        for await (const key of nodeClient.scanIterator(options)) {
-          yield key;
+        for await (const page of nodeClient.scanIterator(options)) {
+          yield page;
         }
       }
     };
   }
 
   keyvRedisClient.setMaxListeners(cacheConfig.REDIS_MAX_LISTENERS);
+
+  if (!isRedisCluster) {
+    recoverKeyvRedisClient = createReadonlyRecovery({
+      client: keyvRedisClient as RedisClientType,
+      minIntervalMs: cacheConfig.REDIS_READONLY_RECOVERY_INTERVAL,
+    });
+  }
 
   keyvRedisClient.on('error', (err) => {
     logger.error('@keyv/redis client error:', err);
@@ -212,13 +283,19 @@ if (cacheConfig.USE_REDIS) {
     logger.warn('@keyv/redis client disconnected');
   });
 
-  // Start connection immediately
-  keyvRedisClientReady = keyvRedisClient.connect();
+  // Start connection immediately and settle the gate created before client initialization.
+  void keyvRedisClient.connect().then(resolveKeyvRedisClientReady, rejectKeyvRedisClientReady);
 
-  keyvRedisClientReady.catch((err): void => {
+  void keyvRedisClientReady?.catch((err): void => {
     logger.error('@keyv/redis initial connection failed:', err);
-    throw err;
   });
 }
 
-export { ioredisClient, keyvRedisClient, keyvRedisClientReady };
+export {
+  ioredisClient,
+  keyvRedisClient,
+  keyvRedisClientReady,
+  waitForKeyvRedisClient,
+  evalKeyvRedisScript,
+  handleKeyvRedisError,
+};

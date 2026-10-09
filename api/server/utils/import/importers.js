@@ -1,10 +1,90 @@
 const { v4: uuidv4 } = require('uuid');
-const { logger, getTenantId } = require('@librechat/data-schemas');
-const { EModelEndpoint, Constants, openAISettings } = require('librechat-data-provider');
+const mongoose = require('mongoose');
+const {
+  logger,
+  getTenantId,
+  sanitizeUIResourceContent,
+  stripMessageUIResourceMarkers,
+} = require('@librechat/data-schemas');
+const { EModelEndpoint, Constants, Tools, openAISettings } = require('librechat-data-provider');
+const {
+  withoutTraceRefs,
+  orderMessageLineage,
+  createChatGptLineage,
+  linkChatGptCitations,
+} = require('@librechat/api');
 const { getEndpointsConfig } = require('~/server/services/Config');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const { resolveImportDefaultModel } = require('./defaults');
 const { cloneMessagesWithTimestamps } = require('./fork');
+
+const castImportedBoolean = mongoose.Schema.Types.Boolean.cast();
+const castImportedString = mongoose.Schema.Types.String.cast();
+
+function isImportedAssistantMessage(isCreatedByUser) {
+  if (isCreatedByUser === null) {
+    return false;
+  }
+  if (isCreatedByUser === undefined) {
+    return true;
+  }
+  try {
+    return castImportedBoolean(isCreatedByUser) !== true;
+  } catch {
+    return true;
+  }
+}
+
+function isImportedAssistantContent(isCreatedByUser) {
+  try {
+    return castImportedBoolean(isCreatedByUser) !== true;
+  } catch {
+    return true;
+  }
+}
+
+function castPersistedImportedText(text) {
+  try {
+    return castImportedString(text);
+  } catch {
+    return text;
+  }
+}
+
+function normalizeImportedArray(value) {
+  if (value == null) {
+    return null;
+  }
+  return Array.isArray(value) ? value : [value];
+}
+
+/** Removes executable legacy MCP-UI payloads from untrusted conversation imports. */
+function sanitizeImportedMessage(message) {
+  const sanitizeTextMarkers = isImportedAssistantMessage(message.isCreatedByUser);
+  const sanitizeContentMarkers = isImportedAssistantContent(message.isCreatedByUser);
+  const text = castPersistedImportedText(message.text);
+  const content = normalizeImportedArray(message.content);
+  const attachments = normalizeImportedArray(message.attachments);
+  /** Server-private run state and trace sampling records never come from an import. */
+  const importable = withoutTraceRefs({ ...message });
+  delete importable.contextMeta;
+  delete importable.privateText;
+  delete importable.privacyRevision;
+  delete importable.privateTextTokens;
+  return {
+    ...importable,
+    isUserSubmitted: true,
+    ...(text !== message.text && { text }),
+    ...(sanitizeTextMarkers &&
+      typeof text === 'string' && { text: stripMessageUIResourceMarkers(text, false) }),
+    ...(content && {
+      content: sanitizeUIResourceContent(content, sanitizeContentMarkers),
+    }),
+    ...(attachments && {
+      attachments: attachments.filter((attachment) => attachment?.type !== Tools.ui_resources),
+    }),
+  };
+}
 
 /**
  * Returns the appropriate importer function based on the provided JSON data.
@@ -22,8 +102,11 @@ function getImporter(jsonData) {
       return importClaudeConvo;
     }
     // ChatGPT format has mapping object in each conversation
-    logger.info('Importing ChatGPT conversation');
-    return importChatGptConvo;
+    if (jsonData.length === 0 || jsonData[0]?.mapping) {
+      logger.info('Importing ChatGPT conversation');
+      return importChatGptConvo;
+    }
+    throw new Error('Unsupported import type');
   }
 
   // For ChatbotUI
@@ -81,6 +164,7 @@ async function importChatBotUiConvo(
     logger.info(`user: ${requestUserId} | ChatbotUI conversation imported`);
   } catch (error) {
     logger.error(`user: ${requestUserId} | Error creating conversation from ChatbotUI file`, error);
+    throw error;
   }
 }
 
@@ -167,6 +251,7 @@ async function importClaudeConvo(
           text: textContent,
           sender: isCreatedByUser ? 'user' : 'Claude',
           isCreatedByUser,
+          isUserSubmitted: true,
           user: requestUserId,
           endpoint: EModelEndpoint.anthropic,
           createdAt,
@@ -197,6 +282,7 @@ async function importClaudeConvo(
     logger.info(`user: ${requestUserId} | Claude conversation imported`);
   } catch (error) {
     logger.error(`user: ${requestUserId} | Error creating conversation from Claude file`, error);
+    throw error;
   }
 }
 
@@ -263,6 +349,7 @@ async function importLibreChatConvo(
           const flatMessage = {
             ...message,
             parentMessageId: parentMessageId,
+            isUserSubmitted: true,
             children: undefined, // Remove children from flat structure
           };
           flatMessages.push(flatMessage);
@@ -278,10 +365,13 @@ async function importLibreChatConvo(
         return flatMessages;
       };
 
-      const flatMessages = flattenMessages(messagesToImport);
+      const flatMessages = flattenMessages(messagesToImport).map(sanitizeImportedMessage);
       cloneMessagesWithTimestamps(flatMessages, importBatchBuilder);
     } else if (messagesToImport) {
-      cloneMessagesWithTimestamps(messagesToImport, importBatchBuilder);
+      cloneMessagesWithTimestamps(
+        messagesToImport.map(sanitizeImportedMessage),
+        importBatchBuilder,
+      );
       for (const message of messagesToImport) {
         if (!firstMessageDate && message.createdAt) {
           firstMessageDate = new Date(message.createdAt);
@@ -305,6 +395,7 @@ async function importLibreChatConvo(
     logger.debug(`user: ${requestUserId} | Conversation "${jsonData.title}" imported`);
   } catch (error) {
     logger.error(`user: ${requestUserId} | Error creating conversation from LibreChat file`, error);
+    throw error;
   }
 }
 
@@ -336,6 +427,7 @@ async function importChatGptConvo(
     await importBatchBuilder.saveBatch();
   } catch (error) {
     logger.error(`user: ${requestUserId} | Error creating conversation from imported file`, error);
+    throw error;
   }
 }
 
@@ -355,92 +447,13 @@ function processConversation(conv, importBatchBuilder, requestUserId, defaultMod
   // Map all message IDs to new UUIDs
   const messageMap = new Map();
   for (const [id, mapping] of Object.entries(conv.mapping)) {
-    if (mapping.message && mapping.message.content.content_type) {
+    if (mapping.message?.content?.content_type) {
       const newMessageId = uuidv4();
       messageMap.set(id, newMessageId);
     }
   }
 
-  /**
-   * Finds the nearest valid parent by traversing up through skippable messages
-   * (system, reasoning_recap, thoughts). Uses iterative traversal to avoid
-   * stack overflow on deep chains of skippable messages.
-   *
-   * @param {string} startId - The ID of the starting parent message.
-   * @returns {string} The ID of the nearest valid parent message.
-   */
-  const findValidParent = (startId) => {
-    const visited = new Set();
-    let parentId = startId;
-
-    while (parentId) {
-      if (!messageMap.has(parentId) || visited.has(parentId)) {
-        return Constants.NO_PARENT;
-      }
-      visited.add(parentId);
-
-      const parentMapping = conv.mapping[parentId];
-      if (!parentMapping?.message) {
-        return Constants.NO_PARENT;
-      }
-
-      const contentType = parentMapping.message.content?.content_type;
-      const shouldSkip =
-        parentMapping.message.author?.role === 'system' ||
-        contentType === 'reasoning_recap' ||
-        contentType === 'thoughts';
-
-      if (!shouldSkip) {
-        return messageMap.get(parentId);
-      }
-
-      parentId = parentMapping.parent;
-    }
-
-    return Constants.NO_PARENT;
-  };
-
-  /**
-   * Helper function to find thinking content from parent chain (thoughts messages)
-   * @param {string} parentId - The ID of the parent message.
-   * @param {Set} visited - Set of already-visited IDs to prevent cycles.
-   * @returns {Array} The thinking content array (empty if not found).
-   */
-  const findThinkingContent = (parentId, visited = new Set()) => {
-    // Guard against circular references in malformed imports
-    if (!parentId || visited.has(parentId)) {
-      return [];
-    }
-    visited.add(parentId);
-
-    const parentMapping = conv.mapping[parentId];
-    if (!parentMapping?.message) {
-      return [];
-    }
-
-    const contentType = parentMapping.message.content?.content_type;
-
-    // If this is a thoughts message, extract the thinking content
-    if (contentType === 'thoughts') {
-      const thoughts = parentMapping.message.content.thoughts || [];
-      const thinkingText = thoughts
-        .map((t) => t.content || t.summary || '')
-        .filter(Boolean)
-        .join('\n\n');
-
-      if (thinkingText) {
-        return [{ type: 'think', think: thinkingText }];
-      }
-      return [];
-    }
-
-    // If this is reasoning_recap, look at its parent for thoughts
-    if (contentType === 'reasoning_recap') {
-      return findThinkingContent(parentMapping.parent, visited);
-    }
-
-    return [];
-  };
+  const lineage = createChatGptLineage(conv.mapping, messageMap);
 
   // Create and save messages using the mapped IDs
   const messages = [];
@@ -467,14 +480,17 @@ function processConversation(conv, importBatchBuilder, requestUserId, defaultMod
     }
 
     const newMessageId = messageMap.get(id);
-    const parentMessageId = findValidParent(mapping.parent);
+    if (!newMessageId) {
+      continue;
+    }
+    const parentMessageId = lineage.findValidParent(mapping.parent);
 
     const messageText = formatMessageText(mapping.message);
 
     const isCreatedByUser = role === 'user';
     let sender = isCreatedByUser ? 'user' : 'assistant';
     const model =
-      mapping.message.metadata.model_slug || defaultModel || openAISettings.model.default;
+      mapping.message.metadata?.model_slug || defaultModel || openAISettings.model.default;
 
     if (!isCreatedByUser) {
       /** Extracted model name from model slug */
@@ -497,6 +513,7 @@ function processConversation(conv, importBatchBuilder, requestUserId, defaultMod
       text: messageText,
       sender,
       isCreatedByUser,
+      isUserSubmitted: true,
       model,
       user: requestUserId,
       endpoint: EModelEndpoint.openAI,
@@ -505,7 +522,7 @@ function processConversation(conv, importBatchBuilder, requestUserId, defaultMod
 
     // For assistant messages, check if there's thinking content in the parent chain
     if (!isCreatedByUser) {
-      const thinkingContent = findThinkingContent(mapping.parent);
+      const thinkingContent = lineage.findThinkingContent(mapping.parent);
       if (thinkingContent.length > 0) {
         // Combine thinking content with the text response
         message.content = [...thinkingContent, { type: 'text', text: messageText }];
@@ -515,10 +532,7 @@ function processConversation(conv, importBatchBuilder, requestUserId, defaultMod
     messages.push(message);
   }
 
-  const cycleDetected = adjustTimestampsForOrdering(messages);
-  if (cycleDetected) {
-    breakParentCycles(messages);
-  }
+  orderMessageLineage(messages);
 
   for (const message of messages) {
     importBatchBuilder.saveMessage(message);
@@ -545,28 +559,7 @@ function processAssistantMessage(messageData, messageText) {
     return messageText;
   }
 
-  const citations = messageData.metadata?.citations ?? [];
-
-  const sortedCitations = [...citations].sort((a, b) => b.start_ix - a.start_ix);
-
-  let result = messageText;
-  for (const citation of sortedCitations) {
-    if (
-      !citation.metadata?.type ||
-      citation.metadata.type !== 'webpage' ||
-      typeof citation.start_ix !== 'number' ||
-      typeof citation.end_ix !== 'number' ||
-      citation.start_ix >= citation.end_ix
-    ) {
-      continue;
-    }
-
-    const replacement = ` ([${citation.metadata.title}](${citation.metadata.url}))`;
-
-    result = result.slice(0, citation.start_ix) + replacement + result.slice(citation.end_ix);
-  }
-
-  return result;
+  return linkChatGptCitations(messageText, messageData.metadata?.citations);
 }
 
 /**
@@ -598,92 +591,11 @@ function formatMessageText(messageData) {
     messageText = `\`\`\`json\n${JSON.stringify(messageData.content, null, 2)}\n\`\`\``;
   }
 
-  if (isText && messageData.author.role !== 'user') {
+  if (isText && messageData.author?.role !== 'user') {
     messageText = processAssistantMessage(messageData, messageText);
   }
 
   return messageText;
-}
-
-/**
- * Adjusts message timestamps to ensure children always come after parents.
- * Messages are sorted by createdAt and buildTree expects parents to appear before children.
- * ChatGPT exports can have slight timestamp inversions (e.g., tool call results
- * arriving a few ms before their parent). Uses multiple passes to handle cascading adjustments.
- * Capped at N passes (where N = message count) to guarantee termination on cyclic graphs.
- *
- * @param {Array} messages - Array of message objects with messageId, parentMessageId, and createdAt.
- * @returns {boolean} True if cyclic parent relationships were detected.
- */
-function adjustTimestampsForOrdering(messages) {
-  if (messages.length === 0) {
-    return false;
-  }
-
-  const timestampMap = new Map();
-  for (const msg of messages) {
-    timestampMap.set(msg.messageId, msg.createdAt);
-  }
-
-  let hasChanges = true;
-  let remainingPasses = messages.length;
-  while (hasChanges && remainingPasses > 0) {
-    hasChanges = false;
-    remainingPasses--;
-    for (const message of messages) {
-      if (message.parentMessageId && message.parentMessageId !== Constants.NO_PARENT) {
-        const parentTimestamp = timestampMap.get(message.parentMessageId);
-        if (parentTimestamp && message.createdAt <= parentTimestamp) {
-          message.createdAt = new Date(parentTimestamp.getTime() + 1);
-          timestampMap.set(message.messageId, message.createdAt);
-          hasChanges = true;
-        }
-      }
-    }
-  }
-
-  const cycleDetected = remainingPasses === 0 && hasChanges;
-  if (cycleDetected) {
-    logger.warn(
-      '[importers] Detected cyclic parent relationships while adjusting import timestamps',
-    );
-  }
-  return cycleDetected;
-}
-
-/**
- * Severs cyclic parentMessageId back-edges so saved messages form a valid tree.
- * Walks each message's parent chain; if a message is visited twice, its parentMessageId
- * is set to NO_PARENT to break the cycle.
- *
- * @param {Array} messages - Array of message objects with messageId and parentMessageId.
- */
-function breakParentCycles(messages) {
-  const parentLookup = new Map();
-  for (const msg of messages) {
-    parentLookup.set(msg.messageId, msg);
-  }
-
-  const settled = new Set();
-  for (const message of messages) {
-    const chain = new Set();
-    let current = message;
-    while (current && !settled.has(current.messageId)) {
-      if (chain.has(current.messageId)) {
-        current.parentMessageId = Constants.NO_PARENT;
-        break;
-      }
-      chain.add(current.messageId);
-      const parentId = current.parentMessageId;
-      if (!parentId || parentId === Constants.NO_PARENT) {
-        break;
-      }
-      current = parentLookup.get(parentId);
-    }
-    for (const id of chain) {
-      settled.add(id);
-    }
-  }
 }
 
 module.exports = { getImporter, processAssistantMessage };

@@ -1,18 +1,23 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
 import filenamify from 'filenamify';
 import exportFromJSON from 'export-from-json';
 import { useToastContext } from '@librechat/client';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRecoilState, useSetRecoilState, useRecoilValue } from 'recoil';
 import { useCreatePresetMutation, useGetModelsQuery } from 'librechat-data-provider/react-query';
 import type { TPreset, TEndpointsConfig } from 'librechat-data-provider';
+import {
+  normalizeExportFilename,
+  removeUnavailableTools,
+  getConvoSwitchLogic,
+  cleanupPreset,
+} from '~/utils';
 import {
   useUpdatePresetMutation,
   useDeletePresetMutation,
   useGetPresetsQuery,
 } from '~/data-provider';
-import { cleanupPreset, removeUnavailableTools, getConvoSwitchLogic } from '~/utils';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDefaultConvo from '~/hooks/Conversations/useDefaultConvo';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -218,7 +223,6 @@ export default function usePresets(index = 0) {
       newConversation({
         template: currentConvo,
         preset: currentConvo,
-        keepLatestMessage: true,
         keepAddedConvos: true,
         disableParams,
       });
@@ -265,7 +269,7 @@ export default function usePresets(index = 0) {
     if (!preset) {
       return;
     }
-    const fileName = filenamify(preset.title || 'preset');
+    const fileName = normalizeExportFilename(filenamify(preset.title || 'preset'));
     exportFromJSON({
       data: cleanupPreset({ preset }),
       fileName,

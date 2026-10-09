@@ -1,6 +1,8 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
+import { JSX } from 'react/jsx-runtime';
+import { Inbox, SearchX } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ArrowUp, ArrowDown, ArrowDownUp } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowDownUp } from 'lucide';
 import {
   useReactTable,
   getCoreRowModel,
@@ -12,18 +14,29 @@ import {
   type Table as TTable,
 } from '@tanstack/react-table';
 import type { DataTableProps, ProcessedDataRow } from './DataTable.types';
+import { useDebounced, useTableRowHeight, useOptimizedRowSelection } from './DataTable.hooks';
 import { SelectionCheckbox, MemoizedTableRow, SkeletonRows } from './DataTableComponents';
 import { Table, TableBody, TableHead, TableHeader, TableCell, TableRow } from '../Table';
-import { useDebounced, useOptimizedRowSelection } from './DataTable.hooks';
 import { useMediaQuery, useLocalize } from '~/hooks';
 import { DataTableSearch } from './DataTableSearch';
+import useRemScale from '~/hooks/useRemScale';
+import { MorphIcon } from '../MorphIcon';
 import { cn, logger } from '~/utils';
+import { Button } from '../Button';
 import { Label } from '../Label';
 import { Spinner } from '~/svgs';
+
+const MAX_AUTO_FILL_ATTEMPTS = 3;
+
+const isFailedFetchResult = (result: unknown): result is { isError: true; error?: unknown } =>
+  typeof result === 'object' &&
+  result !== null &&
+  (result as { isError?: unknown }).isError === true;
 
 function DataTable<TData extends Record<string, unknown>, TValue>({
   columns,
   data,
+  getRowId: getRowIdProp,
   className = '',
   isLoading = false,
   isFetching = false,
@@ -37,9 +50,10 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
   sorting,
   onSortingChange,
   customActionsRenderer,
-}: DataTableProps<TData, TValue>) {
+}: DataTableProps<TData, TValue>): JSX.Element {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const remScale = useRemScale();
+  const isSmallScreen = useMediaQuery(`(max-width: ${768 * remScale}px)`);
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollTimeoutRef = useRef<number | null>(null);
@@ -52,10 +66,15 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     virtualization: {
       overscan = 10,
       minRows = 50,
-      rowHeight = 56,
+      rowHeight: configuredRowHeight,
       fastOverscanMultiplier = 4,
     } = {},
   } = config || {};
+
+  /** A dense row follows the theme's cell space and row rule, 40px by default; a caller that
+   *  sizes its own rows still wins. */
+  const denseRowHeight = useTableRowHeight('dense');
+  const rowHeight = configuredRowHeight ?? denseRowHeight;
 
   const virtualizationActive = data.length >= minRows;
 
@@ -64,6 +83,17 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
   const lastScrollTopRef = useRef(0);
   const lastScrollTimeRef = useRef(performance.now());
   const fastScrollTimeoutRef = useRef<number | null>(null);
+  const autoFillRowCountRef = useRef(-1);
+  /* Column defs are rebuilt when a consumer's row actions change state (a pending
+     restore, say). Memoized rows compare row data, which has not moved, so they need
+     this marker to know their cells were redefined. */
+  const cellsVersionRef = useRef(0);
+  const renderedColumnsRef = useRef(columns);
+  if (renderedColumnsRef.current !== columns) {
+    renderedColumnsRef.current = columns;
+    cellsVersionRef.current += 1;
+  }
+  const [autoFillAttempt, setAutoFillAttempt] = useState(0);
 
   useEffect(() => {
     setDynamicOverscan(overscan);
@@ -90,8 +120,9 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
   const isIndeterminate = selectedCount > 0 && !isAllSelected;
 
   const getRowId = useCallback(
-    (row: TData, index?: number) => String(row.id ?? `row-${index ?? 0}`),
-    [],
+    (row: TData, index?: number) =>
+      getRowIdProp?.(row, index ?? 0) ?? String(row.id ?? row._id ?? `row-${index ?? 0}`),
+    [getRowIdProp],
   );
 
   const selectedRows = useMemo(() => {
@@ -116,6 +147,10 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
 
   const debouncedTerm = useDebounced(searchTerm, debounceDelay);
   const finalSorting = sorting ?? internalSorting;
+  const sortKey = useMemo(
+    () => finalSorting.map((sort) => `${sort.id}:${sort.desc ? 'desc' : 'asc'}`).join(','),
+    [finalSorting],
+  );
 
   // Mobile column visibility: columns with desktopOnly meta are hidden via CSS on mobile
   // but remain in DOM for accessibility. CSS classes handle visual hiding.
@@ -140,6 +175,10 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
       }
     });
     return newVisibility;
+    /* isSmallScreen is intentionally a dependency: it forces a fresh result
+       reference when the viewport crosses the mobile breakpoint so the effect
+       below re-applies column visibility, even though the body doesn't read it. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSmallScreen, columns]);
 
   useEffect(() => {
@@ -150,8 +189,12 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
   const hasWarnedAboutMissingIds = useRef(false);
 
   useEffect(() => {
-    if (data.length > 0 && !hasWarnedAboutMissingIds.current) {
-      const missing = data.filter((item) => item.id === null || item.id === undefined);
+    if (data.length > 0 && !getRowIdProp && !hasWarnedAboutMissingIds.current) {
+      const missing = data.filter(
+        (item) =>
+          (item.id === null || item.id === undefined) &&
+          (item._id === null || item._id === undefined),
+      );
       if (missing.length > 0) {
         logger.warn(
           `DataTable Warning: ${missing.length} data rows are missing a unique "id" property. Using index as a fallback. This can lead to unexpected behavior with selection and sorting.`,
@@ -160,7 +203,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
         hasWarnedAboutMissingIds.current = true;
       }
     }
-  }, [data]);
+  }, [data, getRowIdProp]);
 
   const tableColumns = useMemo((): ColumnDef<TData, TValue>[] => {
     if (!enableRowSelection || !showCheckboxes) {
@@ -204,12 +247,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           ? `named ${row.original.name}`
           : `at position ${row.index + 1}`;
         return (
-          <div
-            className="flex h-full items-center justify-center"
-            role="button"
-            tabIndex={0}
-            aria-label={localize(`com_ui_select_row`, { 0: rowDescription })}
-          >
+          <div className="flex h-full items-center justify-center">
             <SelectionCheckbox
               checked={row.getIsSelected()}
               onChange={(value) => row.toggleSelected(value)}
@@ -219,7 +257,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
         );
       },
       meta: {
-        className: 'max-w-[20px] flex-1',
+        className: 'max-w-[1.25rem] flex-1',
       },
     };
 
@@ -247,6 +285,10 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     enableMultiRowSelection: true,
     manualSorting: true,
     manualFiltering: true,
+    /* Header clicks toggle direction instead of cycling through "unsorted". A
+       server-paginated table always sorts by something, so the removal step
+       reads as a dead click and leaves one direction unreachable. */
+    enableSortingRemoval: false,
     state: {
       sorting: finalSorting,
       columnVisibility,
@@ -257,17 +299,37 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     onRowSelectionChange: setOptimizedRowSelection,
   });
 
+  /* The virtualizer rebuilds its measurement options whenever one of them changes
+     identity, and that notify re-renders this component. Both options below are
+     read during render, so defining them inline would notify on every render and
+     loop until React aborts with "Too many re-renders". */
+  const getItemKey = useCallback(
+    (index: number) => getRowId(data[index] as TData, index),
+    [data, getRowId],
+  );
+  /** Rows are laid out in rem, so the virtualizer must measure in the same units. */
+  const scaledRowHeight = rowHeight * remScale;
+  const estimateSize = useCallback(() => scaledRowHeight, [scaledRowHeight]);
+
   const rowVirtualizer = useVirtualizer({
     enabled: virtualizationActive,
     count: data.length,
     getScrollElement: () => tableContainerRef.current,
-    getItemKey: (index) => getRowId(data[index] as TData, index),
-    estimateSize: useCallback(() => rowHeight, [rowHeight]),
+    getItemKey,
+    estimateSize,
     overscan: dynamicOverscan,
   });
 
-  const virtualRows = rowVirtualizer.getVirtualItems();
-  const totalSize = rowVirtualizer.getTotalSize();
+  /** The virtualizer caches every row's size, so a theme that changes the row height after mount
+   *  has to drop those sizes, or offsets and the total height keep the old one. */
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [rowHeight, rowVirtualizer]);
+
+  // Only read the virtualizer when active; the non-virtualized branch renders rows directly,
+  // so engaging it for small tables is wasted render-phase work.
+  const virtualRows = virtualizationActive ? rowVirtualizer.getVirtualItems() : [];
+  const totalSize = virtualizationActive ? rowVirtualizer.getTotalSize() : 0;
   const paddingTop = virtualRows[0]?.start ?? 0;
   const paddingBottom =
     virtualRows.length > 0 ? totalSize - (virtualRows[virtualRows.length - 1]?.end ?? 0) : 0;
@@ -277,6 +339,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
 
   const showSkeletons = isLoading || (isFetching && !isFetchingNextPage);
   const shouldShowSearch = enableSearch && onFilterChange;
+  const showToolbar = Boolean(shouldShowSearch || customActionsRenderer);
 
   // Render table body based on loading state and virtualization
   let tableBodyContent: React.ReactNode;
@@ -284,6 +347,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     tableBodyContent = (
       <SkeletonRows
         count={skeletonCount}
+        rowHeight={scaledRowHeight}
         columns={tableColumns as ColumnDef<Record<string, unknown>>[]}
       />
     );
@@ -294,7 +358,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           <TableRow aria-hidden="true">
             <TableCell
               colSpan={tableColumns.length}
-              style={{ height: paddingTop, padding: 0, border: 0 }}
+              className="border-0 p-0"
+              style={{ height: paddingTop }}
             />
           </TableRow>
         )}
@@ -308,7 +373,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
               row={row as unknown as Row<Record<string, unknown>>}
               virtualIndex={virtualRow.index}
               selected={row.getIsSelected()}
-              style={{ height: rowHeight }}
+              cellsVersion={cellsVersionRef.current}
+              style={{ height: scaledRowHeight }}
             />
           );
         })}
@@ -316,7 +382,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           <TableRow aria-hidden="true">
             <TableCell
               colSpan={tableColumns.length}
-              style={{ height: paddingBottom, padding: 0, border: 0 }}
+              className="border-0 p-0"
+              style={{ height: paddingBottom }}
             />
           </TableRow>
         )}
@@ -329,7 +396,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
         row={row as unknown as Row<Record<string, unknown>>}
         virtualIndex={row.index}
         selected={row.getIsSelected()}
-        style={{ height: rowHeight }}
+        cellsVersion={cellsVersionRef.current}
+        style={{ height: scaledRowHeight }}
       />
     ));
   }
@@ -338,12 +406,37 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     setSearchTerm(filterValue);
   }, [filterValue]);
 
+  /* A new search or sort replaces the rows with a fresh first page, which can
+     land on the same count the auto-fill guard already recorded. Clear it so a
+     still-unscrollable page keeps paging, and send the viewport back to the top:
+     the query keeps the previous rows while it refetches, so the container would
+     otherwise stay parked mid-list over an unrelated result set. */
+  useEffect(() => {
+    autoFillRowCountRef.current = -1;
+    setAutoFillAttempt(0);
+    if (tableContainerRef.current) {
+      tableContainerRef.current.scrollTop = 0;
+    }
+  }, [filterValue, sortKey]);
+
   useEffect(() => {
     if (debouncedTerm !== filterValue && onFilterChange) {
       onFilterChange(debouncedTerm);
       setOptimizedRowSelection({});
     }
   }, [debouncedTerm, filterValue, onFilterChange, setOptimizedRowSelection]);
+
+  /** TanStack Virtual memoizes its measurements on the item-size cache, not on
+   *  estimateSize, so a new estimate on its own leaves the previous scale's row
+   *  offsets in place. measure() drops that cache and forces a recompute. */
+  const measuredScaleRef = useRef(remScale);
+  useEffect(() => {
+    if (!virtualizationActive || measuredScaleRef.current === remScale) {
+      return;
+    }
+    measuredScaleRef.current = remScale;
+    rowVirtualizer.measure();
+  }, [remScale, virtualizationActive, rowVirtualizer]);
 
   // Recalculate virtual range when data or state changes
   useEffect(() => {
@@ -363,53 +456,64 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     return () => ro.disconnect();
   }, [virtualizationActive, rowVirtualizer]);
 
-  const handleScroll = useMemo(() => {
-    let rafId: number | null = null;
-    let timeoutId: number | null = null;
+  const handleScroll = useCallback(() => {
+    if (scrollRAFRef.current) cancelAnimationFrame(scrollRAFRef.current);
 
-    return () => {
-      if (rafId) cancelAnimationFrame(rafId);
-
-      rafId = requestAnimationFrame(() => {
-        const container = tableContainerRef.current;
-        if (container) {
-          const now = performance.now();
-          const delta = Math.abs(container.scrollTop - lastScrollTopRef.current);
-          const dt = now - lastScrollTimeRef.current;
-          if (dt > 0) {
-            const velocity = delta / dt;
-            // Increase overscan during fast scrolling for smoother experience
-            if (velocity > 2 && virtualizationActive && dynamicOverscan === overscan) {
-              if (fastScrollTimeoutRef.current) {
-                window.clearTimeout(fastScrollTimeoutRef.current);
-              }
-              setDynamicOverscan(Math.min(overscan * fastOverscanMultiplier, overscan * 8));
-              fastScrollTimeoutRef.current = window.setTimeout(() => {
-                setDynamicOverscan((current) => (current !== overscan ? overscan : current));
-              }, 160);
+    scrollRAFRef.current = requestAnimationFrame(() => {
+      const container = tableContainerRef.current;
+      if (container) {
+        const now = performance.now();
+        const delta = Math.abs(container.scrollTop - lastScrollTopRef.current);
+        const dt = now - lastScrollTimeRef.current;
+        if (dt > 0) {
+          const velocity = delta / dt;
+          // Increase overscan during fast scrolling for smoother experience
+          if (velocity > 2 && virtualizationActive && dynamicOverscan === overscan) {
+            if (fastScrollTimeoutRef.current) {
+              window.clearTimeout(fastScrollTimeoutRef.current);
             }
+            setDynamicOverscan(Math.min(overscan * fastOverscanMultiplier, overscan * 8));
+            fastScrollTimeoutRef.current = window.setTimeout(() => {
+              setDynamicOverscan((current) => (current !== overscan ? overscan : current));
+            }, 160);
           }
-          lastScrollTopRef.current = container.scrollTop;
-          lastScrollTimeRef.current = now;
         }
+        lastScrollTopRef.current = container.scrollTop;
+        lastScrollTimeRef.current = now;
+      }
 
-        if (timeoutId) clearTimeout(timeoutId);
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
 
-        // Trigger infinite scroll pagination
-        timeoutId = window.setTimeout(() => {
-          const loaderContainer = tableContainerRef.current;
-          if (!loaderContainer || !fetchNextPage || !hasNextPage || isFetchingNextPage) return;
+      // Trigger infinite scroll pagination
+      scrollTimeoutRef.current = window.setTimeout(() => {
+        const loaderContainer = tableContainerRef.current;
+        // `isFetching`: a search or sort swap scrolls the viewport back to the top while
+        // the replacement page is still loading, and this handler must not answer that
+        // programmatic scroll with a competing fetch on the same infinite query.
+        if (!loaderContainer || !fetchNextPage || !hasNextPage || isFetchingNextPage || isFetching)
+          return;
 
-          const { scrollTop, scrollHeight, clientHeight } = loaderContainer;
-          if (scrollTop + clientHeight >= scrollHeight - 200) {
-            fetchNextPage().finally();
-          }
-        }, 100);
-      });
-    };
+        const { scrollTop, scrollHeight, clientHeight } = loaderContainer;
+        if (scrollTop + clientHeight >= scrollHeight - 200) {
+          // Resolves with a failed result rather than rejecting, so both shapes count.
+          void fetchNextPage()
+            .then((result) => {
+              if (isFailedFetchResult(result)) {
+                logger.error('DataTable: Unable to fetch the next page', result.error);
+              }
+            })
+            .catch((error) => {
+              logger.error('DataTable: Unable to fetch the next page', error);
+            });
+        }
+      }, 100);
+
+      scrollRAFRef.current = null;
+    });
   }, [
     fetchNextPage,
     hasNextPage,
+    isFetching,
     isFetchingNextPage,
     overscan,
     fastOverscanMultiplier,
@@ -428,32 +532,91 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     };
   }, [handleScroll, cleanupTimers]);
 
+  /**
+   * Pagination is driven by the scroll handler, so a first page too short to
+   * overflow a tall container would strand the table on page one. Keep pulling
+   * pages until the rows overflow or the source runs dry; the row-count guard
+   * stops the loop when a page adds nothing. A rejected fetch is retried, since
+   * an unscrollable table offers no other way back, but only a bounded number of
+   * times so a failing endpoint can't be hammered.
+   */
+  useEffect(() => {
+    const container = tableContainerRef.current;
+    if (!container || !fetchNextPage || !hasNextPage || isFetchingNextPage || isLoading) {
+      return;
+    }
+    /* A search or sort swap keeps the previous rows on screen while the replacement
+       first page is in flight, and an infinite query runs one fetch at a time, so
+       asking for page two now would fight the request that is already out. */
+    if (isFetching) {
+      return;
+    }
+    if (autoFillAttempt >= MAX_AUTO_FILL_ATTEMPTS) {
+      return;
+    }
+    if (container.clientHeight === 0 || container.scrollHeight > container.clientHeight) {
+      return;
+    }
+    if (autoFillRowCountRef.current === data.length) {
+      return;
+    }
+
+    autoFillRowCountRef.current = data.length;
+    const rearmAfterFailure = (error?: unknown) => {
+      logger.error('DataTable: Unable to fetch the next page', error);
+      autoFillRowCountRef.current = -1;
+      setAutoFillAttempt((attempt) => attempt + 1);
+    };
+
+    /* React Query resolves `fetchNextPage` with a failed result rather than rejecting,
+       so a rejection handler alone would leave the guard armed on the unchanged row
+       count and strand the table on this page. */
+    void fetchNextPage()
+      .then((result) => {
+        if (isFailedFetchResult(result)) {
+          rearmAfterFailure(result.error);
+        }
+      })
+      .catch(rearmAfterFailure);
+  }, [
+    data.length,
+    sortKey,
+    autoFillAttempt,
+    fetchNextPage,
+    hasNextPage,
+    isFetching,
+    isFetchingNextPage,
+    isLoading,
+  ]);
+
   return (
     <div
-      className={cn(
-        'relative flex w-full flex-col overflow-hidden rounded-lg border border-border-light bg-background',
-        'h-[calc(100vh-8rem)] max-h-[80vh]',
-        className,
-      )}
+      /* Transparent so the rows read as a list on whatever surface hosts them, and
+         the height follows the rows up to the cap so a short list doesn't leave a
+         tall empty box below it. */
+      className={cn('relative flex w-full flex-col overflow-hidden', 'max-h-[80vh]', className)}
       role="region"
       aria-label={localize('com_ui_data_table')}
     >
-      <div className="flex w-full shrink-0 items-center gap-2 border-b border-border-light md:gap-3">
-        {shouldShowSearch && <DataTableSearch value={searchTerm} onChange={setSearchTerm} />}
-        {customActionsRenderer &&
-          customActionsRenderer({
-            selectedCount,
-            selectedRows,
-            table: table as unknown as TTable<ProcessedDataRow<TData>>,
-          })}
-      </div>
+      {showToolbar && (
+        <div className="border-border-light flex w-full shrink-0 items-center gap-2 border-b pr-2 md:gap-3">
+          {shouldShowSearch && <DataTableSearch value={searchTerm} onChange={setSearchTerm} />}
+          {customActionsRenderer &&
+            customActionsRenderer({
+              selectedCount,
+              selectedRows,
+              table: table as unknown as TTable<ProcessedDataRow<TData>>,
+            })}
+        </div>
+      )}
       <div
         ref={tableContainerRef}
-        className="overflow-anchor-none relative min-h-0 flex-1 overflow-auto will-change-scroll"
+        className="relative flex min-h-0 flex-1 flex-col overflow-auto overscroll-contain will-change-scroll"
         style={
           {
-            WebkitOverflowScrolling: 'touch',
-            overscrollBehavior: 'contain',
+            /** Inherited by memoized cells and skeletons so one scaled breakpoint
+             * controls every table column without rebuilding the row model. */
+            '--data-table-desktop-display': isSmallScreen ? 'none' : 'table-cell',
           } as React.CSSProperties
         }
         role="region"
@@ -464,12 +627,15 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           role="table"
           aria-label={localize('com_ui_data_table')}
           aria-rowcount={data.length}
-          className="table-auto"
+          /* Separated borders let the row cells carry a rounded hover highlight;
+             collapsed borders drop `border-radius` on table cells entirely. */
+          className="shrink-0 table-auto border-separate border-spacing-0"
           unwrapped={true}
         >
-          <TableHeader className="sticky top-0 z-10 bg-surface-secondary">
+          {/* Each header cell carries its own opaque fill (see below). */}
+          <TableHeader filled={false}>
             {headerGroups.map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
+              <TableRow key={headerGroup.id} className="border-0 hover:bg-transparent">
                 {headerGroup.headers.map((header) => {
                   const isDesktopOnly =
                     (header.column.columnDef.meta as { desktopOnly?: boolean } | undefined)
@@ -483,85 +649,92 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                   const meta = header.column.columnDef.meta as { className?: string } | undefined;
                   const canSort = header.column.getCanSort();
 
-                  let sortAriaLabel: string | undefined;
-                  if (canSort) {
-                    const sortState = header.column.getIsSorted();
-                    let sortStateLabel = 'sortable';
-                    if (sortState === 'asc') {
-                      sortStateLabel = 'ascending';
-                    } else if (sortState === 'desc') {
-                      sortStateLabel = 'descending';
-                    }
-
-                    const headerLabel =
-                      typeof header.column.columnDef.header === 'string'
-                        ? header.column.columnDef.header
-                        : header.column.id;
-
-                    sortAriaLabel = `${headerLabel ?? ''} column, ${sortStateLabel}`;
-                  }
-
-                  const handleSortingKeyDown = (e: React.KeyboardEvent) => {
-                    if (canSort && (e.key === 'Enter' || e.key === ' ')) {
-                      e.preventDefault();
-                      header.column.toggleSorting();
-                    }
-                  };
-
                   const metaWidth = (header.column.columnDef.meta as { width?: number } | undefined)
                     ?.width;
-                  const widthStyle = isSelectHeader
-                    ? { width: '32px', maxWidth: '32px', minWidth: '32px' }
-                    : metaWidth && metaWidth >= 1 && metaWidth <= 100
-                      ? {
-                          width: `${metaWidth}%`,
-                          maxWidth: `${metaWidth}%`,
-                          minWidth: `${metaWidth}%`,
-                        }
-                      : {};
+                  let widthStyle: React.CSSProperties = {};
+                  if (isSelectHeader) {
+                    widthStyle = { width: '2rem', maxWidth: '2rem', minWidth: '2rem' };
+                  } else if (metaWidth != null && metaWidth >= 1 && metaWidth <= 100) {
+                    widthStyle = {
+                      width: `${metaWidth}%`,
+                      maxWidth: `${metaWidth}%`,
+                      minWidth: `${metaWidth}%`,
+                    };
+                  }
+
+                  const sortDirection = header.column.getIsSorted();
+                  let ariaSort: 'ascending' | 'descending' | 'none' | undefined;
+                  if (sortDirection === 'asc') {
+                    ariaSort = 'ascending';
+                  } else if (sortDirection === 'desc') {
+                    ariaSort = 'descending';
+                  } else if (canSort) {
+                    ariaSort = 'none';
+                  }
+
+                  const renderedHeader = header.isPlaceholder
+                    ? null
+                    : flexRender(header.column.columnDef.header, header.getContext());
+                  let headerContent: React.ReactNode;
+                  if (isSelectHeader) {
+                    headerContent = renderedHeader;
+                  } else if (canSort) {
+                    headerContent = (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="group text-table-header-text hover:text-text-primary h-auto w-full justify-start gap-1 px-0 py-0 text-xs font-medium tracking-wide uppercase hover:bg-transparent md:gap-1.5"
+                        onClick={header.column.getToggleSortingHandler()}
+                      >
+                        {renderedHeader}
+                        <span aria-hidden="true">
+                          <MorphIcon
+                            icon={
+                              {
+                                asc: ArrowUp,
+                                desc: ArrowDown,
+                              }[header.column.getIsSorted() as string] ?? ArrowDownUp
+                            }
+                            className={cn(
+                              'size-3.5',
+                              /* The neutral marker is noise on every unsorted column, so it
+                                 only surfaces once the header is a pointer or keyboard target. */
+                              !sortDirection &&
+                                'opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100',
+                            )}
+                          />
+                        </span>
+                      </Button>
+                    );
+                  } else {
+                    headerContent = (
+                      <div className="text-table-header-text flex items-center text-xs font-medium tracking-wide uppercase">
+                        {renderedHeader}
+                      </div>
+                    );
+                  }
+
                   return (
                     <TableHead
                       key={header.id}
                       scope="col"
+                      size="compact"
                       className={cn(
-                        'border-b border-border-light px-2 py-2 md:px-3 md:py-2',
+                        /* Stuck per cell rather than on <thead>, which does not stay
+                           put once the table uses separated borders. The fill has to
+                           be opaque or virtualized rows show through it, so it is its
+                           own role, the dialog surface by default. */
+                        'border-border-light bg-table-header-fill sticky top-0 z-10 border-b px-3 md:px-4',
                         isSelectHeader && 'px-0 text-center',
-                        canSort && 'cursor-pointer hover:bg-surface-tertiary',
+                        canSort && 'cursor-pointer',
                         meta?.className,
                         header.column.getIsResizing() && 'bg-surface-tertiary/60',
-                        isDesktopOnly && 'hidden md:table-cell',
+                        isDesktopOnly && '[display:var(--data-table-desktop-display,table-cell)]',
                       )}
                       style={widthStyle}
-                      onClick={header.column.getToggleSortingHandler()}
-                      onKeyDown={handleSortingKeyDown}
-                      role={canSort ? 'button' : undefined}
-                      tabIndex={canSort ? 0 : undefined}
-                      aria-label={sortAriaLabel}
-                      aria-sort={
-                        header.column.getIsSorted() === 'asc'
-                          ? 'ascending'
-                          : header.column.getIsSorted() === 'desc'
-                            ? 'descending'
-                            : undefined
-                      }
+                      aria-sort={ariaSort}
                     >
-                      {isSelectHeader ? (
-                        flexRender(header.column.columnDef.header, header.getContext())
-                      ) : (
-                        <div className="flex items-center gap-1 md:gap-2">
-                          {flexRender(header.column.columnDef.header, header.getContext())}
-                          {canSort && (
-                            <span className="text-text-primary" aria-hidden="true">
-                              {{
-                                asc: <ArrowUp className="size-4 text-text-primary" />,
-                                desc: <ArrowDown className="size-4 text-text-primary" />,
-                              }[header.column.getIsSorted() as string] ?? (
-                                <ArrowDownUp className="size-4 text-text-primary" />
-                              )}
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      {headerContent}
                     </TableHead>
                   );
                 })}
@@ -592,11 +765,18 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
 
         {!isLoading && !showSkeletons && rows.length === 0 && (
           <div
-            className="flex flex-col items-center justify-center py-12"
+            className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12"
             role="status"
             aria-live="polite"
           >
-            <Label className="text-center text-text-secondary">
+            <span className="bg-surface-tertiary text-text-tertiary flex size-11 items-center justify-center rounded-full">
+              {searchTerm ? (
+                <SearchX className="size-5" aria-hidden="true" />
+              ) : (
+                <Inbox className="size-5" aria-hidden="true" />
+              )}
+            </span>
+            <Label className="text-text-secondary text-center text-sm">
               {searchTerm ? localize('com_ui_no_search_results') : localize('com_ui_no_data')}
             </Label>
           </div>

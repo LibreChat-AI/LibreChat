@@ -26,6 +26,22 @@ export interface OAuthMetadata {
   revocation_endpoint_auth_methods_supported?: string[];
 }
 
+/** How the OAuth client credentials associated with stored tokens were obtained. */
+export type OAuthClientSource = 'configured' | 'dynamic';
+
+export interface OAuthStoredClientMetadata extends OAuthMetadata {
+  /** Random identifier shared by the access, refresh, and client records from one authorization. */
+  credential_set_id?: string;
+  /** Internal upstream rejection marker, valid only while it matches this credential generation. */
+  rejected_credential_set_id?: string;
+  /** Canonical MCP server URL the tokens and client registration are bound to. */
+  server_url: string;
+  /** Whether the client came from server configuration or dynamic client registration. */
+  client_source: OAuthClientSource;
+  /** Canonical OAuth resource indicator used when the authorization code was exchanged. */
+  resource?: string;
+}
+
 export interface OAuthProtectedResourceMetadata {
   /** Resource identifier */
   resource: string;
@@ -83,25 +99,51 @@ export interface MCPOAuthFlowMetadata extends FlowMetadata {
   serverName: string;
   userId: string;
   serverUrl: string;
+  /** Identity of the effective server definition that admitted this authorization attempt. */
+  serverGeneration?: string;
+  /** Persistence wait admitted with the server configuration; preserved across the OAuth redirect. */
+  oauthPersistenceWaitTimeout?: number;
   state: string;
   codeVerifier?: string;
   clientInfo?: OAuthClientInformation;
+  /** Whether this flow uses a configured client or a dynamically registered client. */
+  clientSource?: OAuthClientSource;
   metadata?: OAuthMetadata;
   resourceMetadata?: OAuthProtectedResourceMetadata;
   authorizationUrl?: string;
   /** Custom headers for OAuth token exchange, persisted at flow initiation for the callback. */
   oauthHeaders?: Record<string, string>;
+  /** Domain allowlist captured at flow initiation for callback-time SSRF enforcement. */
+  allowedDomains?: string[] | null;
+  /** Address exemptions captured at flow initiation for callback-time SSRF enforcement. */
+  allowedAddresses?: string[] | null;
   /** True when the flow reused a stored client registration from a prior successful OAuth flow */
   reusedStoredClient?: boolean;
+  /** Credential generation of the reused client, used to scope stale-registration cleanup. */
+  reusedClientCredentialSetId?: string;
   /** Tenant context captured at flow initiation for callback replay (SameSite cookies unavailable on cross-origin redirects) */
   tenantId?: string;
+  /**
+   * False when `oauth.send_resource_parameter` opted this server out of RFC 8707
+   * `resource`. Captured at flow initiation so the token exchange sends the same
+   * parameters as the authorization request that produced the code.
+   */
+  sendResourceParameter?: boolean;
 }
 
 export interface MCPOAuthTokens extends OAuthTokens {
+  /** Internal identifier for the persisted credential set; never sent to the OAuth provider. */
+  credential_set_id?: string;
   /** When the tokens were obtained */
   obtained_at: number;
   /** Calculated expiry time */
   expires_at?: number;
+  /**
+   * Tool-cache publication generation written when these tokens were persisted. Carried only by
+   * tokens handed to the waiters of the authorization or refresh that stored them, never by a
+   * stored row, so a connection built on them can lease under that generation.
+   */
+  publication_generation?: string;
 }
 
 /** Extended OAuth tokens that may include refresh token expiry */

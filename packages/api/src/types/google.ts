@@ -27,4 +27,8 @@ export interface GoogleConfigOptions {
   streamRate?: number;
   /** Model to use for title generation */
   titleModel?: string;
+  /** Force Vertex AI auth semantics even when a Google API key is configured */
+  forceVertex?: boolean;
+  /** GCP project id for Vertex AI ADC/service-account authentication */
+  projectId?: string;
 }

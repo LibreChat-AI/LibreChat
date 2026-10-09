@@ -5,7 +5,7 @@ import type { TUser } from 'librechat-data-provider';
 
 const avatarCache: Record<string, string> = {};
 
-const useAvatar = (user: TUser | undefined) => {
+const useAvatar = (user: TUser | undefined): string => {
   return useMemo(() => {
     const { username, name } = user ?? {};
     const seed = name || username;

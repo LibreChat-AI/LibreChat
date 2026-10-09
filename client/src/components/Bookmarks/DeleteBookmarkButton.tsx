@@ -56,7 +56,7 @@ const DeleteBookmarkButton: FC<{
                 onFocus={onFocus}
                 onBlur={onBlur}
                 onClick={() => setOpen(!open)}
-                className="h-8 w-8 p-0"
+                size="icon-sm"
               >
                 <TrashIcon />
               </Button>
@@ -75,7 +75,7 @@ const DeleteBookmarkButton: FC<{
           selection={{
             selectHandler: confirmDelete,
             selectClasses:
-              'bg-red-700 dark:bg-red-600 hover:bg-red-800 dark:hover:bg-red-800 text-white',
+              'bg-surface-destructive hover:bg-surface-destructive-hover text-text-on-status',
             selectText: localize('com_ui_delete'),
           }}
         />

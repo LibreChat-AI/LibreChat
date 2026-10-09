@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import { DEFAULT_MEMORY_MAX_INPUT_TOKENS } from 'librechat-data-provider';
 
 import type { TCustomConfig } from 'librechat-data-provider';
 
@@ -14,6 +15,7 @@ describe('memory config', () => {
 
     expect(isMemoryEnabled(loaded)).toBe(true);
     expect(isMemoryAgentEnabled(loaded)).toBe(false);
+    expect(loaded?.maxInputTokens).toBe(DEFAULT_MEMORY_MAX_INPUT_TOKENS);
   });
 
   it('requires explicit memory agent enablement before enabling the automatic agent flow', () => {

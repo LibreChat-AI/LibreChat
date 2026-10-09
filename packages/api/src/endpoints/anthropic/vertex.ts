@@ -183,7 +183,15 @@ export function createAnthropicVertexClient(
     throw new Error('Google service account key is required for Vertex AI');
   }
 
-  // Priority: vertexOptions > env vars > service key project_id
+  /**
+   * Priority: vertexOptions > env vars > service key project_id.
+   *
+   * The `us-east5` fallback only serves Sonnet 4.6 and earlier — specific
+   * regional endpoints 404 on newer models (Opus 4.7+, Opus 5, Sonnet 5,
+   * Fable 5), which need `global` or a multi-region (`us`/`eu`) location.
+   * Kept for backwards compatibility; deployments using modern models must
+   * set the region explicitly.
+   */
   const region = vertexOptions?.region || process.env.ANTHROPIC_VERTEX_REGION || 'us-east5';
   const projectId =
     vertexOptions?.projectId || process.env.VERTEX_PROJECT_ID || serviceKey.project_id;

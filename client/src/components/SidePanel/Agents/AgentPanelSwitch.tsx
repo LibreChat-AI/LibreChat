@@ -3,21 +3,23 @@ import { useRecoilValue } from 'recoil';
 import { AgentPanelProvider, useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { Panel, isEphemeralAgent } from '~/common';
 import VersionPanel from './Version/VersionPanel';
-import ActionsPanel from './ActionsPanel';
 import AgentPanel from './AgentPanel';
 import store from '~/store';
 
 export default function AgentPanelSwitch() {
+  const conversation = useRecoilValue(store.conversationByIndex(0));
+  const agentId = conversation?.agent_id ?? null;
   return (
-    <AgentPanelProvider>
-      <AgentPanelSwitchWithContext />
+    <AgentPanelProvider
+      observeToolAuthorization={conversation != null && !isEphemeralAgent(agentId)}
+    >
+      <AgentPanelSwitchWithContext agentId={agentId} />
     </AgentPanelProvider>
   );
 }
 
-function AgentPanelSwitchWithContext() {
+function AgentPanelSwitchWithContext({ agentId }: { agentId?: string | null }) {
   const { activePanel, setCurrentAgentId } = useAgentPanelContext();
-  const agentId = useRecoilValue(store.conversationAgentIdByIndex(0));
 
   useEffect(() => {
     const agent_id = agentId ?? '';
@@ -26,9 +28,6 @@ function AgentPanelSwitchWithContext() {
     }
   }, [setCurrentAgentId, agentId]);
 
-  if (activePanel === Panel.actions) {
-    return <ActionsPanel />;
-  }
   if (activePanel === Panel.version) {
     return <VersionPanel />;
   }

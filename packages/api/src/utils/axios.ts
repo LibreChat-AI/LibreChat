@@ -1,6 +1,36 @@
 import axios from 'axios';
+import { Buffer } from 'buffer';
 import { logger } from '@librechat/data-schemas';
 import type { AxiosInstance, AxiosProxyConfig, AxiosError } from 'axios';
+
+/**
+ * Render `error.response.data` as a small, log-safe value. Axios surfaces
+ * the response body in whichever native shape the request asked for, so
+ * `responseType: 'arraybuffer'` yields a `Buffer` (raw bytes — JSON-
+ * serializes as `{type: 'Buffer', data: [123, 34, ...]}`, ~4 chars per
+ * byte) and `responseType: 'stream'` yields a `Readable` (whose internal
+ * state JSON-serializes the full readableState ring buffer + socket
+ * fields, easily megabytes per error). Both are useless for diagnostics
+ * and drown the log line. Decode small buffers as UTF-8 (truncated) and
+ * stub streams entirely.
+ */
+const renderResponseData = (data: unknown): unknown => {
+  if (data == null) return data;
+  if (Buffer.isBuffer(data)) {
+    const MAX = 2048;
+    const text = data.subarray(0, MAX).toString('utf8');
+    return data.length > MAX ? `${text}…[+${data.length - MAX} bytes]` : text;
+  }
+  // Readable streams (responseType: 'stream') and other piped sources.
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    typeof (data as { pipe?: unknown }).pipe === 'function'
+  ) {
+    return '[stream]';
+  }
+  return data;
+};
 
 /**
  * Logs Axios errors based on the error object and a custom message.
@@ -15,7 +45,7 @@ export const logAxiosError = ({
 }: {
   message: string;
   error: AxiosError | Error | unknown;
-}) => {
+}): string => {
   let logMessage = message;
   try {
     const stack =
@@ -33,7 +63,7 @@ export const logAxiosError = ({
       logger.error(logMessage, {
         status,
         headers,
-        data,
+        data: renderResponseData(data),
         stack,
       });
     } else if (axios.isAxiosError(error) && error.request) {
@@ -56,6 +86,19 @@ export const logAxiosError = ({
   }
   return logMessage;
 };
+
+/** Adds upload context without discarding the Axios response metadata used by
+ * Code API recovery. Transport-specific branching remains in this typed module. */
+export function wrapCodeApiUploadError(error: unknown, message: string): Error {
+  const wrapped = new Error(logAxiosError({ message, error }), { cause: error });
+  if (axios.isAxiosError(error)) {
+    Object.assign(wrapped, {
+      isAxiosError: true,
+      response: error.response,
+    });
+  }
+  return wrapped;
+}
 
 /**
  * Creates and configures an Axios instance with optional proxy settings.

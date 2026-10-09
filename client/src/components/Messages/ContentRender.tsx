@@ -1,18 +1,39 @@
 import { useCallback, useMemo, memo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
+import { Constants } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
-import { useAttachments, useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
-import { cn, getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
+import {
+  cn,
+  isSameTailRelation,
+  getMessageAriaLabel,
+  areMessageFieldsEqual,
+  getHeaderPrefixForScreenReader,
+} from '~/utils';
+import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
+import { useLocalize, useAttachments, useMessageActions, useContentMetadata } from '~/hooks';
+import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
+import ToolCallLimitNotice from '~/components/Chat/Messages/Content/ToolCallLimitNotice';
+import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
+import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
+import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
-import PlaceholderRow from '~/components/Chat/Messages/ui/PlaceholderRow';
+import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
+import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
+import { showThinkingAtom } from '~/store/showThinking';
 import SubRow from '~/components/Chat/Messages/SubRow';
-import { fontSizeAtom } from '~/store/fontSize';
+import { AuthorContext } from '~/Providers';
 import store from '~/store';
+
+/**
+ * The one header every assistant message hands its parts. It reads the author from
+ * `AuthorContext`, so the author resolving after paint cannot break the parts' memo.
+ */
+const RESUME_AUTHOR_HEADER = <ResumeAuthorHeader />;
 
 type ContentRenderProps = {
   message?: TMessage;
@@ -24,6 +45,9 @@ type ContentRenderProps = {
   isSubmitting?: boolean;
   /** Stable context object from wrapper — avoids ChatContext subscription inside memo */
   chatContext: TMessageChatContext;
+  /** The thread's tail; the comparator re-renders only when this row's relation to it changes */
+  latestMessageId?: string;
+  latestMessageDepth?: number;
 } & Pick<
   TMessageProps,
   'currentEditId' | 'setCurrentEditId' | 'siblingIdx' | 'setSiblingIdx' | 'siblingCount'
@@ -56,32 +80,7 @@ function areContentRenderPropsEqual(prev: ContentRenderProps, next: ContentRende
     return false;
   }
 
-  const prevMsg = prev.message;
-  const nextMsg = next.message;
-  if (prevMsg === nextMsg) {
-    return true;
-  }
-  if (!prevMsg || !nextMsg) {
-    return prevMsg === nextMsg;
-  }
-
-  return (
-    prevMsg.messageId === nextMsg.messageId &&
-    prevMsg.text === nextMsg.text &&
-    prevMsg.error === nextMsg.error &&
-    prevMsg.unfinished === nextMsg.unfinished &&
-    prevMsg.depth === nextMsg.depth &&
-    prevMsg.isCreatedByUser === nextMsg.isCreatedByUser &&
-    (prevMsg.children?.length ?? 0) === (nextMsg.children?.length ?? 0) &&
-    prevMsg.content === nextMsg.content &&
-    prevMsg.model === nextMsg.model &&
-    prevMsg.endpoint === nextMsg.endpoint &&
-    prevMsg.iconURL === nextMsg.iconURL &&
-    prevMsg.feedback?.rating === nextMsg.feedback?.rating &&
-    (prevMsg.attachments?.length ?? 0) === (nextMsg.attachments?.length ?? 0) &&
-    (prevMsg.manualSkills?.length ?? 0) === (nextMsg.manualSkills?.length ?? 0) &&
-    (prevMsg.alwaysAppliedSkills?.length ?? 0) === (nextMsg.alwaysAppliedSkills?.length ?? 0)
-  );
+  return areMessageFieldsEqual(prev.message, next.message) && isSameTailRelation(prev, next);
 }
 
 const ContentRender = memo(function ContentRender({
@@ -93,6 +92,8 @@ const ContentRender = memo(function ContentRender({
   setCurrentEditId,
   isSubmitting = false,
   chatContext,
+  latestMessageId,
+  latestMessageDepth,
 }: ContentRenderProps) {
   const localize = useLocalize();
   const { attachments, searchResults } = useAttachments({
@@ -109,10 +110,10 @@ const ContentRender = memo(function ContentRender({
     messageLabel,
     handleContinue,
     handleFeedback,
-    latestMessageId,
     copyToClipboard,
+    getCanCopy,
     regenerateMessage,
-    latestMessageDepth,
+    hasConfiguredSender,
   } = useMessageActions({
     message: msg,
     searchResults,
@@ -120,15 +121,16 @@ const ContentRender = memo(function ContentRender({
     setCurrentEditId,
     chatContext,
   });
-  const fontSize = useAtomValue(fontSizeAtom);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
+  const autoExpandTools = useRecoilValue(store.autoExpandTools);
+  const showThinking = useAtomValue(showThinkingAtom);
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
+  const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
   const isLast = useMemo(
     () => !(msg?.children?.length ?? 0) && (msg?.depth === latestMessageDepth || msg?.depth === -1),
     [msg?.children, msg?.depth, latestMessageDepth],
   );
-  const hasNoChildren = !(msg?.children?.length ?? 0);
   const isLatestMessage = msg?.messageId === latestMessageId;
 
   const iconData: TMessageIcon = useMemo(
@@ -150,66 +152,84 @@ const ContentRender = memo(function ContentRender({
     ],
   );
 
+  const author = useMemo(
+    () => ({
+      icon: <MessageIcon iconData={iconData} assistant={assistant} agent={agent} />,
+      label: messageLabel ?? '',
+    }),
+    [iconData, assistant, agent, messageLabel],
+  );
+
   const { hasParallelContent } = useContentMetadata(msg);
 
   if (!msg) {
     return null;
   }
 
-  const getChatWidthClass = () => {
-    if (maximizeChatSpace) {
-      return 'w-full max-w-full md:px-5 lg:px-1 xl:px-5';
-    }
-    if (hasParallelContent) {
-      return 'md:max-w-[58rem] xl:max-w-[70rem]';
-    }
-    return 'md:max-w-[47rem] xl:max-w-[55rem]';
-  };
-
-  const baseClasses = {
-    common: 'group mx-auto flex flex-1 gap-3 transition-all duration-300 transform-gpu ',
-    chat: getChatWidthClass(),
-  };
-
-  const conditionalClasses = {
-    focus: 'focus:outline-none focus:ring-2 focus:ring-border-xheavy',
-  };
-
   return (
-    <div
+    <MessageRow
       id={msg.messageId}
-      aria-label={getMessageAriaLabel(msg, localize)}
-      className={cn(
-        baseClasses.common,
-        baseClasses.chat,
-        conditionalClasses.focus,
-        'message-render',
+      icon={author.icon}
+      label={author.label}
+      hoverLabel={getHeaderHoverLabel(
+        hasConfiguredSender,
+        agent?.model,
+        assistant?.model,
+        msg.model,
+        conversation?.model,
       )}
+      timestamp={msg.createdAt ?? msg.clientTimestamp}
+      ariaLabel={getMessageAriaLabel(msg, localize)}
+      headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
+      isCreatedByUser={msg.isCreatedByUser === true}
+      hasParallelContent={hasParallelContent}
+      fullWidth={maximizeChatSpace}
+      isEditing={edit}
+      footer={
+        <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
+          {/* The reading holds the column start: it takes over the slot the streaming
+              dot vacates, so the retry navigation beside it — whose width the footer
+              reserves whether or not hover has revealed it — must never push the
+              timer inboard of that column. */}
+          {shouldShowElapsed({
+            isSubmitting,
+            isLatestMessage,
+            isCreatedByUser: msg.isCreatedByUser,
+            siblingIdx,
+            siblingCount,
+          }) && <Elapsed index={index} />}
+          {/* While the answer is generating every other action is withheld, which
+              would otherwise leave this counter sitting alone under a half-written
+              response. It reveals on hover there, like the actions it sits with. */}
+          <SiblingSwitch
+            siblingIdx={siblingIdx}
+            siblingCount={siblingCount}
+            setSiblingIdx={setSiblingIdx}
+            className={cn(isSubmitting && isLatestMessage && revealOnRowHoverClasses)}
+          />
+          <HoverButtons
+            index={index}
+            message={msg}
+            isEditing={edit}
+            enterEdit={enterEdit}
+            conversation={conversation ?? null}
+            regenerate={handleRegenerateMessage}
+            copyToClipboard={copyToClipboard}
+            getCanCopy={getCanCopy}
+            handleContinue={handleContinue}
+            latestMessageId={latestMessageId}
+            getLatestMessageId={getLatestMessageId}
+            handleFeedback={handleFeedback}
+            isLast={isLast}
+          />
+        </SubRow>
+      }
     >
-      {!hasParallelContent && (
-        <div className="relative flex flex-shrink-0 flex-col items-center">
-          <div className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
-            <MessageIcon iconData={iconData} assistant={assistant} agent={agent} />
-          </div>
-        </div>
-      )}
-
-      <div
-        className={cn(
-          'relative flex flex-col',
-          hasParallelContent ? 'w-full' : 'w-11/12',
-          msg.isCreatedByUser ? 'user-turn' : 'agent-turn',
-        )}
-      >
-        {!hasParallelContent && (
-          <h2 className={cn('select-none font-semibold', fontSize)}>
-            <span className="sr-only">{getHeaderPrefixForScreenReader(msg, localize)}</span>
-            {messageLabel}
-          </h2>
-        )}
-
-        <div className="flex flex-col gap-1">
-          <div className="flex min-h-[20px] max-w-full flex-grow flex-col gap-0">
+      <AuthorContext.Provider value={author}>
+        <ErrorSourceProvider message={msg}>
+          {!edit && msg.isCreatedByUser && msg.privacyRevision ? (
+            <PrivateText message={msg} />
+          ) : (
             <ContentParts
               edit={edit}
               isLast={isLast}
@@ -219,42 +239,30 @@ const ContentRender = memo(function ContentRender({
               attachments={attachments}
               searchResults={searchResults}
               manualSkills={msg.manualSkills}
+              authorHeader={msg.isCreatedByUser === true ? undefined : RESUME_AUTHOR_HEADER}
               setSiblingIdx={setSiblingIdx}
               isLatestMessage={isLatestMessage}
               isSubmitting={isSubmitting}
               isCreatedByUser={msg.isCreatedByUser}
+              createdAt={msg.createdAt ?? msg.clientTimestamp}
+              foldLiveActivity={!autoExpandTools}
+              showThinking={showThinking}
               conversationId={conversation?.conversationId}
               content={msg.content as Array<TMessageContentParts | undefined>}
             />
-          </div>
-          {hasNoChildren && isSubmitting ? (
-            <PlaceholderRow />
-          ) : (
-            <SubRow classes="text-xs">
-              <SiblingSwitch
-                siblingIdx={siblingIdx}
-                siblingCount={siblingCount}
-                setSiblingIdx={setSiblingIdx}
-              />
-              <HoverButtons
-                index={index}
-                message={msg}
-                isEditing={edit}
-                enterEdit={enterEdit}
-                isSubmitting={chatContext.isSubmitting}
-                conversation={conversation ?? null}
-                regenerate={handleRegenerateMessage}
-                copyToClipboard={copyToClipboard}
-                handleContinue={handleContinue}
-                latestMessageId={latestMessageId}
-                handleFeedback={handleFeedback}
-                isLast={isLast}
-              />
-            </SubRow>
           )}
-        </div>
-      </div>
-    </div>
+        </ErrorSourceProvider>
+      </AuthorContext.Provider>
+      {/** A turn that ran out of agent steps is incomplete, not broken. Rendered
+       *   here rather than inside `ContentParts` because it is a message-level
+       *   outcome, and `ContentParts` also serves surfaces (subagent panels,
+       *   search) that have no message row behind them. */}
+      {msg.unfinished === true &&
+        !isSubmitting &&
+        msg.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON && (
+          <ToolCallLimitNotice message={msg} />
+        )}
+    </MessageRow>
   );
 }, areContentRenderPropsEqual);
 ContentRender.displayName = 'ContentRender';

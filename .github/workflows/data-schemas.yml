@@ -14,31 +14,27 @@ on:
         default: 'Manual publish requested'
 
 permissions:
-  id-token: write  # Required for OIDC trusted publishing
   contents: read
 
 jobs:
-  build-and-publish:
+  pack:
     runs-on: ubuntu-latest
-    environment: publish  # Must match npm trusted publisher config
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
-      
+      - uses: actions/checkout@v5
+
       - name: Use Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20.x'
-          registry-url: 'https://registry.npmjs.org'
-      
-      - name: Update npm for OIDC support
-        run: npm install -g npm@latest  # Must be 11.5.1+ for provenance
-          
+          node-version: '24.16.0'
+
       - name: Install dependencies
         run: cd packages/data-schemas && npm ci
-        
+
       - name: Build
         run: cd packages/data-schemas && npm run build
-        
+
       - name: Check version change
         id: check
         working-directory: packages/data-schemas
@@ -52,13 +48,47 @@ jobs:
             echo "Version changed, proceeding with publish"
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
-            
+
       - name: Pack package
         if: steps.check.outputs.skip != 'true'
         working-directory: packages/data-schemas
-        run: npm pack
-        
-      - name: Publish
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/npm-package"
+          npm pack --pack-destination "$GITHUB_WORKSPACE/npm-package"
+
+      - name: Upload package
         if: steps.check.outputs.skip != 'true'
-        working-directory: packages/data-schemas
+        uses: actions/upload-artifact@v6
+        with:
+          name: librechat-data-schemas-package
+          path: npm-package/*.tgz
+          if-no-files-found: error
+          retention-days: 2
+
+  publish-npm:
+    needs: pack
+    if: github.ref == 'refs/heads/main' && needs.pack.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    environment: publish  # Must match npm trusted publisher config
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC trusted publishing
+    steps:
+      - name: Use Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install npm with OIDC support
+        run: npm install -g npm@11.14.1 --ignore-scripts
+
+      - name: Download package
+        uses: actions/download-artifact@v7
+        with:
+          name: librechat-data-schemas-package
+          path: npm-package
+
+      - name: Publish
+        working-directory: npm-package
         run: npm publish *.tgz --access public --provenance

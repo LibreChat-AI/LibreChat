@@ -1,8 +1,10 @@
-import type React from 'react';
-import { X, Plus } from 'lucide-react';
+import { X, Plus } from 'lucide';
 import { motion } from 'framer-motion';
+import { JSX } from 'react/jsx-runtime';
 import type { ButtonHTMLAttributes } from 'react';
 import type { LucideIcon } from 'lucide-react';
+import type React from 'react';
+import { MorphIcon } from './MorphIcon';
 import { cn } from '~/utils';
 
 interface BadgeProps
@@ -35,11 +37,11 @@ export default function Badge({
   onToggle,
   className,
   ...props
-}: BadgeProps) {
+}: BadgeProps): JSX.Element {
   const isMoveable = isEditing && isAvailable;
   const isDisabled = id === '1' && isInChat;
 
-  const handleClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+  const handleClick: React.MouseEventHandler<HTMLElement> = (e) => {
     if (isDisabled) {
       e.preventDefault();
       e.stopPropagation();
@@ -63,43 +65,37 @@ export default function Badge({
     return 0.97;
   };
 
-  return (
-    <motion.button
-      onClick={handleClick}
-      className={cn(
-        'group relative inline-flex items-center gap-1.5 rounded-full px-4 py-1.5',
-        'border border-border-medium text-sm font-medium transition-shadow',
-        '@container-[600px]:w-full size-9 p-2',
-        isActive
-          ? 'bg-surface-active shadow-md'
-          : 'bg-surface-chat shadow-sm hover:bg-surface-hover hover:shadow-md',
-        'active:scale-95 active:shadow-inner',
-        isMoveable && 'cursor-move',
-        isDisabled && 'cursor-not-allowed opacity-50 hover:shadow-sm',
-        className,
-      )}
-      animate={{
-        scale: isDragging ? 1.1 : 1,
-        boxShadow: isDragging ? '0 10px 25px rgba(0,0,0,0.1)' : undefined,
-      }}
-      whileTap={{ scale: getWhileTapScale() }}
-      transition={{ type: 'tween', duration: 0.1, ease: 'easeOut' }}
-      {...(props as React.ComponentProps<typeof motion.button>)}
-    >
-      {Icon && (
-        <Icon
-          className={cn(
-            '@container-[600px]:h-4 @container-[600px]:w-4 relative h-5 w-5',
-            !label && 'mx-auto',
-          )}
-          aria-hidden="true"
-        />
-      )}
-      <span className="@container-[600px]:inline relative hidden">{label}</span>
+  const { type: buttonType, onClick: customOnClick, ...buttonProps } = props;
+  const handleRootClick: React.MouseEventHandler<HTMLElement> = customOnClick
+    ? (event) => customOnClick(event as React.MouseEvent<HTMLButtonElement>)
+    : handleClick;
+  const badgeClassName = cn(
+    'group relative inline-flex items-center gap-1.5 rounded-full px-4 py-1.5',
+    'border border-border-medium text-sm font-medium transition-shadow',
+    'size-9 p-2',
+    /** A resting badge takes the badge label ink; a hovered or selected one moves to the primary
+     *  ink, which holds AA on the hover and active fills where a muted label may not. */
+    isActive
+      ? 'bg-surface-active text-text-primary shadow-md'
+      : 'bg-surface-chat text-badge-label shadow-xs hover:bg-surface-hover hover:text-text-primary hover:shadow-md',
+    'active:scale-95 active:shadow-inner',
+    isMoveable && 'cursor-move',
+    isDisabled && 'cursor-not-allowed opacity-50 hover:shadow-xs',
+    /** A disabled badge keeps its resting ink on hover; a selected one already rests in the
+     *  primary ink. */
+    isDisabled && !isActive && 'hover:text-badge-label',
+    className,
+  );
+  const badgeContent = (
+    <>
+      {Icon && <Icon className={cn('relative h-5 w-5', !label && 'mx-auto')} aria-hidden="true" />}
+      <span className="relative hidden">{label}</span>
 
       {isEditing && !isDragging && (
         <motion.button
-          className="@container-[600px]:h-5 @container-[600px]:w-5 absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-surface-secondary-alt text-text-primary shadow-sm"
+          type="button"
+          className="bg-surface-secondary-alt text-text-primary absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full shadow-xs"
+          aria-label={isAvailable ? `Remove ${label}` : `Restore ${label}`}
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.8 }}
@@ -110,9 +106,44 @@ export default function Badge({
             onBadgeAction?.();
           }}
         >
-          {isAvailable ? <X className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+          <MorphIcon icon={isAvailable ? X : Plus} className="h-3 w-3" />
         </motion.button>
       )}
+    </>
+  );
+
+  if (isEditing) {
+    return (
+      <motion.div
+        {...(buttonProps as React.ComponentProps<typeof motion.div>)}
+        onClick={handleRootClick}
+        className={badgeClassName}
+        animate={{
+          scale: isDragging ? 1.1 : 1,
+          boxShadow: isDragging ? 'var(--theme-elevation-drag)' : undefined,
+        }}
+        whileTap={{ scale: getWhileTapScale() }}
+        transition={{ type: 'tween', duration: 0.1, ease: 'easeOut' }}
+      >
+        {badgeContent}
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.button
+      type={buttonType ?? 'button'}
+      onClick={handleRootClick}
+      className={badgeClassName}
+      animate={{
+        scale: isDragging ? 1.1 : 1,
+        boxShadow: isDragging ? 'var(--theme-elevation-drag)' : undefined,
+      }}
+      whileTap={{ scale: getWhileTapScale() }}
+      transition={{ type: 'tween', duration: 0.1, ease: 'easeOut' }}
+      {...(buttonProps as React.ComponentProps<typeof motion.button>)}
+    >
+      {badgeContent}
     </motion.button>
   );
 }

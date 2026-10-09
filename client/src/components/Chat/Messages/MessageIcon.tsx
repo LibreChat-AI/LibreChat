@@ -3,9 +3,11 @@ import { getEndpointField } from 'librechat-data-provider';
 import type { Assistant, Agent } from 'librechat-data-provider';
 import type { TMessageIcon } from '~/common';
 import ConvoIconURL from '~/components/Endpoints/ConvoIconURL';
+import { useShareContext } from '~/Providers/ShareContext';
 import { useGetEndpointsQuery } from '~/data-provider';
-import { getIconEndpoint } from '~/utils';
 import Icon from '~/components/Endpoints/Icon';
+import { isImageURL } from '~/utils/icons';
+import { getIconEndpoint } from '~/utils';
 
 type MessageIconProps = {
   iconData?: TMessageIcon;
@@ -40,7 +42,8 @@ export function arePropsEqual(prev: MessageIconProps, next: MessageIconProps): b
 }
 
 const MessageIcon = memo(({ iconData, assistant, agent }: MessageIconProps) => {
-  const { data: endpointsConfig } = useGetEndpointsQuery();
+  const { isSharedConvo } = useShareContext();
+  const { data: endpointsConfig } = useGetEndpointsQuery({ enabled: isSharedConvo !== true });
 
   const agentName = agent?.name ?? '';
   const agentAvatar = agent?.avatar?.filepath ?? '';
@@ -64,7 +67,7 @@ const MessageIcon = memo(({ iconData, assistant, agent }: MessageIconProps) => {
     [endpointsConfig, endpoint],
   );
 
-  if (iconData?.isCreatedByUser !== true && iconURL != null && iconURL.includes('http')) {
+  if (iconData?.isCreatedByUser !== true && isImageURL(iconURL)) {
     return (
       <ConvoIconURL
         iconURL={iconURL}
@@ -72,7 +75,6 @@ const MessageIcon = memo(({ iconData, assistant, agent }: MessageIconProps) => {
         context="message"
         assistantAvatar={assistantAvatar}
         agentAvatar={agentAvatar}
-        endpointIconURL={endpointIconURL}
         assistantName={assistantName}
         agentName={agentName}
       />
@@ -84,6 +86,7 @@ const MessageIcon = memo(({ iconData, assistant, agent }: MessageIconProps) => {
       isCreatedByUser={iconData?.isCreatedByUser ?? false}
       endpoint={endpoint}
       iconURL={avatarURL || endpointIconURL}
+      endpointsConfig={endpointsConfig}
       model={iconData?.model}
       assistantName={assistantName}
       agentName={agentName}

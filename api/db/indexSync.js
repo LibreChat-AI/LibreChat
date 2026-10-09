@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const { MeiliSearch } = require('meilisearch');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
-const { isEnabled, FlowStateManager } = require('@librechat/api');
+const { isEnabled, FlowStateManager, evalKeyvRedisScript } = require('@librechat/api');
 const { getLogStores } = require('~/cache');
 const { batchResetMeiliFlags } = require('./utils');
 
@@ -230,34 +230,60 @@ async function performSync(flowManager, flowId, flowType) {
       await batchResetMeiliFlags(Conversation.collection);
     }
 
-    // Check if we need to sync messages
-    logger.info('[indexSync] Requesting message sync progress...');
-    const messageProgress = await Message.getSyncProgress();
-    if (!messageProgress.isComplete || settingsUpdated) {
-      logger.info(
-        `[indexSync] Messages need syncing: ${messageProgress.totalProcessed}/${messageProgress.totalDocuments} indexed`,
-      );
-
-      const messageCount = messageProgress.totalDocuments;
-      const messagesIndexed = messageProgress.totalProcessed;
-      const unindexedMessages = messageCount - messagesIndexed;
-      const noneIndexed = messagesIndexed === 0 && unindexedMessages > 0;
-
-      if (settingsUpdated || noneIndexed || unindexedMessages > syncThreshold) {
-        if (noneIndexed && !settingsUpdated) {
-          logger.info('[indexSync] No messages marked as indexed, forcing full sync');
-        }
-        logger.info(`[indexSync] Starting message sync (${unindexedMessages} unindexed)`);
-        await Message.syncWithMeili();
-        messagesSync = true;
-      } else if (unindexedMessages > 0) {
+    let messageSyncError;
+    try {
+      // Check if we need to sync messages
+      logger.info('[indexSync] Requesting message sync progress...');
+      const messageProgress = await Message.getSyncProgress();
+      if (!messageProgress.isComplete || settingsUpdated) {
         logger.info(
-          `[indexSync] ${unindexedMessages} messages unindexed (below threshold: ${syncThreshold}, skipping)`,
+          `[indexSync] Messages need syncing: ${messageProgress.totalProcessed}/${messageProgress.totalDocuments} indexed`,
+        );
+
+        const messageCount = messageProgress.totalDocuments;
+        const messagesIndexed = messageProgress.totalProcessed;
+        const unindexedMessages = messageCount - messagesIndexed;
+        const messagesPendingIndexing = messageProgress.pendingIndexing ?? 0;
+        const messagesPendingCleanup = messageProgress.pendingCleanup ?? 0;
+        const noneIndexed = messagesIndexed === 0 && unindexedMessages > 0;
+
+        if (
+          settingsUpdated ||
+          noneIndexed ||
+          messagesPendingIndexing > 0 ||
+          unindexedMessages > syncThreshold
+        ) {
+          if (noneIndexed && !settingsUpdated) {
+            logger.info('[indexSync] No messages marked as indexed, forcing full sync');
+          }
+          logger.info(
+            messagesPendingCleanup > 0
+              ? `[indexSync] Starting message sync (${unindexedMessages} unindexed, ${messagesPendingCleanup} pending cleanup)`
+              : `[indexSync] Starting message sync (${unindexedMessages} unindexed)`,
+          );
+          await Message.syncWithMeili();
+          messagesSync = true;
+        } else if (messagesPendingCleanup > 0) {
+          logger.info(
+            `[indexSync] Cleaning ${messagesPendingCleanup} excluded messages from search`,
+          );
+          await Message.cleanupExcludedMeiliIndex();
+          messagesSync = true;
+        } else if (unindexedMessages > 0) {
+          logger.info(
+            `[indexSync] ${unindexedMessages} messages unindexed (below threshold: ${syncThreshold}, skipping)`,
+          );
+        }
+      } else {
+        logger.info(
+          `[indexSync] Messages are fully synced: ${messageProgress.totalProcessed}/${messageProgress.totalDocuments}`,
         );
       }
-    } else {
-      logger.info(
-        `[indexSync] Messages are fully synced: ${messageProgress.totalProcessed}/${messageProgress.totalDocuments}`,
+    } catch (error) {
+      messageSyncError = error;
+      logger.error(
+        '[indexSync] Message reconciliation failed; continuing with conversations:',
+        error,
       );
     }
 
@@ -271,14 +297,31 @@ async function performSync(flowManager, flowId, flowType) {
       const convoCount = convoProgress.totalDocuments;
       const convosIndexed = convoProgress.totalProcessed;
       const unindexedConvos = convoCount - convosIndexed;
+      const convosPendingIndexing = convoProgress.pendingIndexing ?? 0;
+      const convosPendingCleanup = convoProgress.pendingCleanup ?? 0;
       const noneConvosIndexed = convosIndexed === 0 && unindexedConvos > 0;
 
-      if (settingsUpdated || noneConvosIndexed || unindexedConvos > syncThreshold) {
+      if (
+        settingsUpdated ||
+        noneConvosIndexed ||
+        convosPendingIndexing > 0 ||
+        unindexedConvos > syncThreshold
+      ) {
         if (noneConvosIndexed && !settingsUpdated) {
           logger.info('[indexSync] No conversations marked as indexed, forcing full sync');
         }
-        logger.info(`[indexSync] Starting convos sync (${unindexedConvos} unindexed)`);
+        logger.info(
+          convosPendingCleanup > 0
+            ? `[indexSync] Starting convos sync (${unindexedConvos} unindexed, ${convosPendingCleanup} pending cleanup)`
+            : `[indexSync] Starting convos sync (${unindexedConvos} unindexed)`,
+        );
         await Conversation.syncWithMeili();
+        convosSync = true;
+      } else if (convosPendingCleanup > 0) {
+        logger.info(
+          `[indexSync] Cleaning ${convosPendingCleanup} excluded conversations from search`,
+        );
+        await Conversation.cleanupExcludedMeiliIndex();
         convosSync = true;
       } else if (unindexedConvos > 0) {
         logger.info(
@@ -289,6 +332,10 @@ async function performSync(flowManager, flowId, flowType) {
       logger.info(
         `[indexSync] Conversations are fully synced: ${convoProgress.totalProcessed}/${convoProgress.totalDocuments}`,
       );
+    }
+
+    if (messageSyncError) {
+      throw messageSyncError;
     }
 
     return { messagesSync, convosSync };
@@ -325,6 +372,7 @@ async function indexSync() {
 
   const flowManager = new FlowStateManager(flowsCache, {
     ttl: 60000 * 10, // 10 minutes TTL for sync operations
+    redisScriptExecutor: evalKeyvRedisScript,
   });
 
   // Use a unique flow ID for the sync operation

@@ -145,7 +145,7 @@ export default function VariableForm({
   return (
     <div className="mx-auto p-1 md:container">
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <div className="mb-6 max-h-screen max-w-[80vw] overflow-auto rounded-md bg-surface-tertiary p-4 text-text-secondary dark:bg-surface-primary sm:max-w-full md:max-h-96">
+        <div className="bg-surface-tertiary text-text-secondary mb-6 max-h-screen max-w-[80vw] overflow-auto rounded-md p-4 sm:max-w-full md:max-h-96">
           <ReactMarkdown
             /** @ts-ignore */
             remarkPlugins={[supersub, remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
@@ -157,7 +157,7 @@ export default function VariableForm({
             ]}
             /** @ts-ignore */
             components={{ code: codeNoExecution, p: PromptVariableGfm }}
-            className="markdown prose dark:prose-invert light my-1 max-h-[50vh] max-w-full break-words dark:text-text-secondary"
+            className="markdown prose light my-1 max-h-[50vh] max-w-full break-words"
           >
             {generateHighlightedMarkdown()}
           </ReactMarkdown>
@@ -176,7 +176,7 @@ export default function VariableForm({
                         placeholder={field.config.variable}
                         className={cn(
                           defaultTextProps,
-                          'mb-1 rounded px-3 py-2 focus:bg-surface-tertiary',
+                          'focus:bg-surface-tertiary mb-1 rounded px-3 py-2',
                         )}
                         value={value}
                         onChange={onChange}
@@ -196,7 +196,7 @@ export default function VariableForm({
                         id={`fields.${index}.value`}
                         className={cn(
                           defaultTextProps,
-                          'peer rounded px-3 py-2 focus:bg-surface-tertiary',
+                          'peer focus:bg-surface-tertiary rounded px-3 py-2',
                         )}
                         placeholder=""
                         maxRows={8}
@@ -204,7 +204,7 @@ export default function VariableForm({
                       />
                       <label
                         htmlFor={`fields.${index}.value`}
-                        className="absolute left-3 top-0 text-sm text-text-secondary transition-all duration-200 peer-focus:-top-6 peer-focus:left-1 peer-focus:text-xs peer-focus:text-text-primary peer-[:not(:placeholder-shown)]:-top-6 peer-[:not(:placeholder-shown)]:left-1 peer-[:not(:placeholder-shown)]:text-xs"
+                        className="text-text-secondary peer-focus:text-text-primary absolute top-0 left-3 text-sm transition-all duration-200 peer-focus:-top-6 peer-focus:left-1 peer-focus:text-xs peer-[:not(:placeholder-shown)]:-top-6 peer-[:not(:placeholder-shown)]:left-1 peer-[:not(:placeholder-shown)]:text-xs"
                       >
                         {field.config.variable}
                       </label>

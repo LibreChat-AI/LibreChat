@@ -1,5 +1,5 @@
 {
-  "$schema": "https://turbo.build/schema.json",
+  "$schema": "https://v2-10-5.turborepo.dev/schema.json",
   "globalDependencies": ["package-lock.json"],
   "tasks": {
     "build": {
@@ -11,8 +11,7 @@
         "!src/**/*.test.*",
         "!src/**/*.spec.*",
         "scripts/**",
-        "rollup.config.js",
-        "server-rollup.config.js",
+        "tsdown.config.mjs",
         "tsconfig.json",
         "tsconfig.build.json",
         "vite.config.ts",
@@ -23,11 +22,54 @@
       ],
       "outputs": ["dist/**"]
     },
+    "test:ci": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "passThroughEnv": ["*"]
+    },
+    "@librechat/data-schemas#test:ci": {
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "cache": false,
+      "passThroughEnv": ["*"]
+    },
+    "@librechat/api#test:ci": {
+      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"],
+      "cache": false,
+      "passThroughEnv": ["*"]
+    },
     "@librechat/data-schemas#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/__tests__/**",
+        "!**/__mocks__/**",
+        "!**/*.test.*",
+        "!**/*.spec.*"
+      ],
+      "outputs": ["dist/**"]
     },
     "@librechat/api#build": {
-      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"]
+      "dependsOn": ["^build", "librechat-data-provider#build", "@librechat/data-schemas#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/__tests__/**",
+        "!**/__mocks__/**",
+        "!**/*.test.*",
+        "!**/*.spec.*"
+      ],
+      "outputs": ["dist/**"]
+    },
+    "@librechat/client#build": {
+      "dependsOn": ["^build", "librechat-data-provider#build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/__tests__/**",
+        "!**/__mocks__/**",
+        "!**/*.test.*",
+        "!**/*.spec.*"
+      ],
+      "outputs": ["dist/**"],
+      "env": ["NODE_ENV", "VITE_ENABLE_LOGGER", "VITE_LOGGER_FILTER"]
     }
   }
 }

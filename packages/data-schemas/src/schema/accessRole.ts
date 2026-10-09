@@ -1,7 +1,7 @@
 import { Schema } from 'mongoose';
 import type { IAccessRole } from '~/types';
 
-const accessRoleSchema = new Schema<IAccessRole>(
+const accessRoleSchema: Schema<IAccessRole> = new Schema<IAccessRole>(
   {
     accessRoleId: {
       type: String,
@@ -15,7 +15,17 @@ const accessRoleSchema = new Schema<IAccessRole>(
     description: String,
     resourceType: {
       type: String,
-      enum: ['agent', 'project', 'file', 'promptGroup', 'mcpServer', 'remoteAgent', 'skill'],
+      enum: [
+        'agent',
+        'codeEnvironment',
+        'project',
+        'file',
+        'promptGroup',
+        'mcpServer',
+        'remoteAgent',
+        'skill',
+        'sharedLink',
+      ],
       required: true,
       default: 'agent',
     },

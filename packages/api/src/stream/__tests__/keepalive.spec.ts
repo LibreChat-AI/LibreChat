@@ -1,0 +1,243 @@
+import v8 from 'v8';
+import vm from 'vm';
+import { EventEmitter } from 'events';
+import { logger } from '@librechat/data-schemas';
+import { DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS } from 'librechat-data-provider';
+import type { SseKeepaliveResponse } from '../keepalive';
+import {
+  SSE_KEEPALIVE_FRAME,
+  startSseKeepalive,
+  loadStreamKeepaliveMs,
+  resolveStreamKeepaliveMs,
+  createStreamKeepaliveLoader,
+} from '../keepalive';
+
+class FakeResponse extends EventEmitter implements SseKeepaliveResponse {
+  writableEnded = false;
+  writes: string[] = [];
+  flush = jest.fn();
+  write(chunk: string): boolean {
+    this.writes.push(chunk);
+    return true;
+  }
+}
+
+describe('startSseKeepalive', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('writes an SSE comment frame on every interval while the response is open', () => {
+    const res = new FakeResponse();
+    startSseKeepalive(res, 1_000);
+
+    jest.advanceTimersByTime(2_500);
+
+    expect(res.writes).toEqual([SSE_KEEPALIVE_FRAME, SSE_KEEPALIVE_FRAME]);
+    expect(res.flush).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops when the response closes', () => {
+    const res = new FakeResponse();
+    startSseKeepalive(res, 1_000);
+
+    res.emit('close');
+    jest.advanceTimersByTime(5_000);
+
+    expect(res.writes).toEqual([]);
+  });
+
+  it('stops when the returned handle is called', () => {
+    const res = new FakeResponse();
+    const stop = startSseKeepalive(res, 1_000);
+
+    stop();
+    jest.advanceTimersByTime(5_000);
+
+    expect(res.writes).toEqual([]);
+  });
+
+  it('never writes after the response has ended', () => {
+    const res = new FakeResponse();
+    startSseKeepalive(res, 1_000);
+
+    res.writableEnded = true;
+    jest.advanceTimersByTime(5_000);
+
+    expect(res.writes).toEqual([]);
+  });
+
+  it('does nothing when the interval is 0', () => {
+    const res = new FakeResponse();
+    startSseKeepalive(res, 0);
+
+    jest.advanceTimersByTime(60_000);
+
+    expect(res.writes).toEqual([]);
+  });
+});
+
+describe('resolveStreamKeepaliveMs', () => {
+  it('defaults below the shortest common proxy idle timeout', () => {
+    expect(resolveStreamKeepaliveMs(undefined)).toBe(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS);
+    expect(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS).toBeLessThan(60_000);
+  });
+
+  it('honors a configured interval, including 0 to disable', () => {
+    expect(resolveStreamKeepaliveMs({ streamKeepaliveIntervalMs: 10_000 })).toBe(10_000);
+    expect(resolveStreamKeepaliveMs({ streamKeepaliveIntervalMs: 0 })).toBe(0);
+  });
+});
+
+describe('loadStreamKeepaliveMs', () => {
+  it('reuses a config already on the request without loading', async () => {
+    const load = jest.fn();
+    const config = { endpoints: { agents: { streamKeepaliveIntervalMs: 5_000 } } };
+
+    await expect(loadStreamKeepaliveMs(config, load)).resolves.toBe(5_000);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('loads the config when the request has none', async () => {
+    const load = jest
+      .fn()
+      .mockResolvedValue({ endpoints: { agents: { streamKeepaliveIntervalMs: 0 } } });
+
+    await expect(loadStreamKeepaliveMs(undefined, load)).resolves.toBe(0);
+  });
+
+  it('falls back to the default when loading fails', async () => {
+    const load = jest.fn().mockRejectedValue(new Error('config unavailable'));
+
+    await expect(loadStreamKeepaliveMs(undefined, load)).resolves.toBe(
+      DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS,
+    );
+  });
+
+  it('logs only safe metadata when loading fails', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const error = Object.assign(new Error('mongodb://admin:secret@db/config failed'), {
+      query: { secret: 'value' },
+    });
+
+    await loadStreamKeepaliveMs(undefined, () => Promise.reject(error));
+
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
+    warn.mockRestore();
+  });
+});
+
+describe('createStreamKeepaliveLoader', () => {
+  it('reads the principal config without runtime augmentation', async () => {
+    const getAppConfig = jest
+      .fn()
+      .mockResolvedValue({ endpoints: { agents: { streamKeepaliveIntervalMs: 4_000 } } });
+    const load = createStreamKeepaliveLoader(getAppConfig);
+
+    await expect(load({ user: { id: 'user-1', role: 'USER' } })).resolves.toBe(4_000);
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1', role: 'USER', skipRuntimeAugmentation: true }),
+    );
+  });
+
+  it('asks the config service to reject failures so they are logged safely', async () => {
+    const getAppConfig = jest.fn().mockResolvedValue({});
+    const load = createStreamKeepaliveLoader(getAppConfig);
+
+    await load({ user: { id: 'user-1', role: 'USER' } });
+
+    expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ failClosed: true }));
+  });
+
+  it('uses a config already on the request', async () => {
+    const getAppConfig = jest.fn();
+    const load = createStreamKeepaliveLoader(getAppConfig);
+
+    await expect(
+      load({ config: { endpoints: { agents: { streamKeepaliveIntervalMs: 0 } } } }),
+    ).resolves.toBe(0);
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('startSseKeepalive with a pending interval', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('keeps the stream alive at the default interval while the interval is unresolved', () => {
+    const res = new FakeResponse();
+    startSseKeepalive(res, new Promise<number>(() => undefined));
+
+    jest.advanceTimersByTime(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS);
+
+    expect(res.writes).toEqual([SSE_KEEPALIVE_FRAME]);
+  });
+
+  it('switches to the resolved interval once it is known', async () => {
+    const res = new FakeResponse();
+    startSseKeepalive(res, Promise.resolve(1_000));
+    await Promise.resolve();
+
+    jest.advanceTimersByTime(3_500);
+
+    expect(res.writes).toHaveLength(3);
+  });
+
+  it('counts the time already waited when a longer interval resolves', async () => {
+    const res = new FakeResponse();
+    let resolveInterval: (ms: number) => void = () => undefined;
+    startSseKeepalive(
+      res,
+      new Promise<number>((resolve) => {
+        resolveInterval = resolve;
+      }),
+    );
+
+    jest.advanceTimersByTime(20_000);
+    resolveInterval(50_000);
+    await Promise.resolve();
+    jest.advanceTimersByTime(30_000);
+
+    expect(res.writes).toEqual([SSE_KEEPALIVE_FRAME]);
+  });
+
+  it('releases a closed response while its interval is still pending', async () => {
+    jest.useRealTimers();
+    v8.setFlagsFromString('--expose-gc');
+    const gc = vm.runInNewContext('gc') as () => void;
+    const pending = new Promise<number>(() => undefined);
+    const attach = (): WeakRef<FakeResponse> => {
+      const res = new FakeResponse();
+      startSseKeepalive(res, pending);
+      res.emit('close');
+      return new WeakRef(res);
+    };
+    const ref = attach();
+
+    for (let i = 0; i < 5 && ref.deref() != null; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      gc();
+    }
+
+    expect(ref.deref()).toBeUndefined();
+  });
+
+  it('stops when the resolved interval disables the keepalive', async () => {
+    const res = new FakeResponse();
+    startSseKeepalive(res, Promise.resolve(0));
+    await Promise.resolve();
+
+    jest.advanceTimersByTime(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS * 3);
+
+    expect(res.writes).toEqual([]);
+  });
+});

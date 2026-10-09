@@ -75,7 +75,7 @@ function createDeps(overrides: Partial<AdminRolesDeps> = {}): AdminRolesDeps {
     countUsersByRole: jest.fn().mockResolvedValue(0),
     deleteConfig: jest.fn().mockResolvedValue(null),
     deleteAclEntries: jest.fn().mockResolvedValue(undefined),
-    deleteGrantsForPrincipal: jest.fn().mockResolvedValue(undefined),
+    deleteGrantsForPrincipal: jest.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -988,6 +988,84 @@ describe('createAdminRolesHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(200);
       expect(json).toHaveBeenCalledWith({ success: true });
+    });
+
+    it('emits a grant.removed audit entry for each grant removed by the cascade', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({
+        deleteGrantsForPrincipal: jest.fn().mockResolvedValue([
+          { capability: 'manage:users', tenantId: 'tenant-1' },
+          { capability: 'read:users', tenantId: 'tenant-1' },
+        ]),
+        recordAuditEntry,
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const userId = new Types.ObjectId();
+      const { req, res, status } = createReqRes({
+        params: { name: 'editor' },
+        user: { _id: userId, role: 'admin', tenantId: 'tenant-1' },
+      });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(200);
+      expect(recordAuditEntry).toHaveBeenCalledTimes(2);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'grant.removed',
+          actor: expect.objectContaining({ type: 'user', id: userId.toString() }),
+          target: { type: PrincipalType.ROLE, id: 'editor', name: 'editor' },
+          metadata: { capability: 'manage:users' },
+          tenantId: 'tenant-1',
+        }),
+      );
+    });
+
+    it('scopes each cascade audit entry to the removed grant’s own tenant', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({
+        // a platform admin (no tenantId) deletes a role holding both a
+        // platform-level grant and a tenant-scoped one
+        deleteGrantsForPrincipal: jest
+          .fn()
+          .mockResolvedValue([
+            { capability: 'read:users' },
+            { capability: 'manage:users', tenantId: 'tenant-x' },
+          ]),
+        recordAuditEntry,
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({
+        params: { name: 'editor' },
+        user: { _id: new Types.ObjectId(), role: 'admin' },
+      });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(200);
+      // platform grant → platform chain (tenantId undefined)
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: { capability: 'read:users' }, tenantId: undefined }),
+      );
+      // tenant grant → that tenant's chain, not the caller's (undefined) scope
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: { capability: 'manage:users' }, tenantId: 'tenant-x' }),
+      );
+    });
+
+    it('does not audit when the deleted role had no grants', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({ recordAuditEntry });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({
+        params: { name: 'editor' },
+        user: { _id: new Types.ObjectId(), role: 'admin' },
+      });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(200);
+      expect(recordAuditEntry).not.toHaveBeenCalled();
     });
 
     it('succeeds even when all cascade operations fail', async () => {

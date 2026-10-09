@@ -52,12 +52,17 @@ __blobstorage__/**/*
 # Deployed apps should consider commenting these lines out:
 # see https://npmjs.org/doc/faq.html#Should-I-check-my-node_modules-folder-into-git
 node_modules/
+.node_modules-*
 meili_data/
 api/node_modules/
 client/node_modules/
 bower_components/
 *.d.ts
 !vite-env.d.ts
+
+# api/ is JS and resolves the `~` alias through api/jsconfig.json; a tsconfig.json
+# here shadows it (tooling sometimes creates an empty one) and breaks e2e resolution
+api/tsconfig.json
 
 # AI
 .clineignore
@@ -76,7 +81,6 @@ librechat.yaml
 librechat.yml
 
 # Environment
-.npmrc
 .env*
 my.secrets
 !**/.env.example
@@ -88,7 +92,11 @@ archive
 .vscode/settings.json
 src/style - official.css
 /e2e/specs/.test-results/
+/e2e/benchmarks/.test-results/
+/e2e/benchmarks-tree/.test-results/
+/e2e/.generated/
 /e2e/playwright-report/
+/e2e/playwright-report-bombadil/
 /playwright/.cache/
 .DS_Store
 *.code-workspace
@@ -144,6 +152,7 @@ helm/**/.values.yaml
 /.openai/
 /.tabnine/
 /.codeium
+/.pi/
 *.local.md
 
 # Removed Windows wrapper files per user request
@@ -178,3 +187,12 @@ claude-flow
 hive-mind-prompt-*.txt
 CLAUDE.md
 .gsd
+codedb.snapshot
+scripts/activity-labels/results/
+
+!e2e/lighthouse/librechat.yaml
+/.lighthouse/
+/e2e/lighthouse/.test-results/
+# Chrome user-data directories a Lighthouse run leaves in the repository root when the browser
+# is handed a Windows profile path from WSL: the whole path arrives as one directory name.
+/*lighthouse.[0-9]*/

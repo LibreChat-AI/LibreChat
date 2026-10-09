@@ -5,6 +5,7 @@ import type { TMessageProps } from '~/common';
 import MessageEndpointIcon from '../Endpoints/MessageEndpointIcon';
 import ConvoIconURL from '~/components/Endpoints/ConvoIconURL';
 import { getIconEndpoint, logger } from '~/utils';
+import { isImageURL } from '~/utils/icons';
 
 export default function MessageIcon(
   props: Pick<TMessageProps, 'message' | 'conversation'> & {
@@ -49,7 +50,7 @@ export default function MessageIcon(
     agentName,
     agentAvatar,
   });
-  if (message?.isCreatedByUser !== true && iconURL && iconURL.includes('http')) {
+  if (message?.isCreatedByUser !== true && isImageURL(iconURL)) {
     return (
       <ConvoIconURL
         iconURL={iconURL}
@@ -67,12 +68,10 @@ export default function MessageIcon(
     return (
       <div
         style={{
-          backgroundColor: 'rgb(121, 137, 255)',
           width: '20px',
           height: '20px',
-          boxShadow: 'rgba(240, 246, 252, 0.1) 0px 0px 0px 1px',
         }}
-        className="relative flex h-9 w-9 items-center justify-center rounded-sm p-1 text-white"
+        className="bg-avatar-fill text-avatar-text ring-avatar-edge/10 relative flex h-9 w-9 items-center justify-center rounded-sm p-1 ring-1"
       >
         <UserIcon />
       </div>

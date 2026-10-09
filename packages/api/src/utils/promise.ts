@@ -40,3 +40,69 @@ export async function withTimeout<T>(
     clearTimeout(timeoutId!);
   }
 }
+
+/**
+ * Create an in-process concurrency limiter. Returns a `run` function that
+ * wraps async tasks: at most `concurrency` invocations may execute at once;
+ * additional calls queue and dequeue in FIFO order as slots free.
+ *
+ * Use to bound the parallelism of expensive CPU-or-IO work that fans out
+ * from a single producer (e.g. an agent emitting many office artifacts in
+ * one tool result), so the work doesn't compete with the still-running
+ * agent inference for event-loop time. Tasks remain queued — they are
+ * never dropped or rejected by the limiter itself — so the overall workload
+ * still completes; only peak concurrency is capped.
+ *
+ * Each task is wrapped in a thunk so timeouts and other side effects do
+ * not start until the limiter actually invokes it.
+ *
+ * @example
+ * ```typescript
+ * const limit = createConcurrencyLimiter(2);
+ * const results = await Promise.all(files.map((f) => limit(() => parse(f))));
+ * ```
+ */
+export function createConcurrencyLimiter(
+  concurrency: number,
+): <T>(task: () => Promise<T>) => Promise<T> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(
+      `createConcurrencyLimiter: concurrency must be a positive integer (got ${concurrency})`,
+    );
+  }
+
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const release = (): void => {
+    active--;
+    const next = queue.shift();
+    if (next) {
+      next();
+    }
+  };
+
+  return <T>(task: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const run = (): void => {
+        active++;
+        Promise.resolve()
+          .then(task)
+          .then(
+            (value) => {
+              release();
+              resolve(value);
+            },
+            (error) => {
+              release();
+              reject(error);
+            },
+          );
+      };
+      if (active < concurrency) {
+        run();
+      } else {
+        queue.push(run);
+      }
+    });
+}

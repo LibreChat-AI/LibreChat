@@ -10,7 +10,7 @@ function PluginTooltip({ content, position }: TPluginTooltipProps) {
     <HoverCardPortal>
       <HoverCardContent side={position} className="w-80">
         <div className="space-y-2">
-          <div className="text-sm text-gray-600 dark:text-gray-300">{content}</div>
+          <div className="text-sm text-text-secondary">{content}</div>
         </div>
       </HoverCardContent>
     </HoverCardPortal>

@@ -1,69 +1,92 @@
-import { getEndpointField, isAssistantsEndpoint } from 'librechat-data-provider';
+import {
+  getEndpointField,
+  isAssistantsEndpoint,
+  isAgentsEndpoint,
+  ProviderId,
+} from 'librechat-data-provider';
 import type {
   TPreset,
   TConversation,
+  TAgentsMap,
   TAssistantsMap,
   TEndpointsConfig,
 } from 'librechat-data-provider';
+import { getAgentAvatarUrl, getIconEndpoint, cn } from '~/utils';
 import ConvoIconURL from '~/components/Endpoints/ConvoIconURL';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
-import { getIconEndpoint } from '~/utils';
+import { resolveProviderIcon } from '~/hooks/Endpoint';
+import { isImageURL } from '~/utils/icons';
+
+const emptyEndpointsConfig = {} as TEndpointsConfig;
 
 export default function EndpointIcon({
   conversation,
-  endpointsConfig,
+  endpointsConfig = emptyEndpointsConfig,
   className = 'mr-0',
   assistantMap,
+  agentsMap,
   context,
+  size = 20,
 }: {
   conversation: TConversation | TPreset | null;
   endpointsConfig: TEndpointsConfig;
   containerClassName?: string;
   context?: 'message' | 'nav' | 'landing' | 'menu-item';
   assistantMap?: TAssistantsMap;
+  agentsMap?: TAgentsMap;
   className?: string;
   size?: number;
 }) {
   const convoIconURL = conversation?.iconURL ?? '';
-  let endpoint = conversation?.endpoint;
+  const originalEndpoint = conversation?.endpoint;
+  let endpoint = originalEndpoint;
   endpoint = getIconEndpoint({ endpointsConfig, iconURL: convoIconURL, endpoint });
 
-  const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
   const endpointIconURL = getEndpointField(endpointsConfig, endpoint, 'iconURL');
+  const { provider } = resolveProviderIcon({ endpoint, endpointsConfig });
 
+  const agent = isAgentsEndpoint(endpoint) ? agentsMap?.[conversation?.agent_id ?? ''] : null;
   const assistant = isAssistantsEndpoint(endpoint)
     ? assistantMap?.[endpoint]?.[conversation?.assistant_id ?? '']
     : null;
+  const agentAvatar = getAgentAvatarUrl(agent) ?? '';
+  const agentName = agent?.name ?? '';
   const assistantAvatar = (assistant && (assistant.metadata?.avatar as string)) || '';
   const assistantName = assistant && (assistant.name ?? '');
+  const entityAvatar = agentAvatar || assistantAvatar;
+  const entityName = agentName || assistantName || '';
+  const hasCustomIcon =
+    isImageURL(convoIconURL) || (convoIconURL !== '' && convoIconURL !== originalEndpoint);
 
-  const iconURL = assistantAvatar || convoIconURL;
+  const iconURL = hasCustomIcon ? convoIconURL : entityAvatar || convoIconURL;
 
-  if (iconURL && (iconURL.includes('http') || iconURL.startsWith('/images/'))) {
+  if (isImageURL(iconURL)) {
     return (
       <ConvoIconURL
         iconURL={iconURL}
-        modelLabel={conversation?.chatGptLabel ?? conversation?.modelLabel ?? ''}
+        modelLabel={entityName || conversation?.chatGptLabel || conversation?.modelLabel || ''}
+        provider={provider}
         context={context}
-        endpointIconURL={endpointIconURL}
         assistantAvatar={assistantAvatar}
         assistantName={assistantName ?? ''}
-      />
-    );
-  } else {
-    return (
-      <MinimalIcon
-        size={20}
-        iconURL={endpointIconURL}
-        endpoint={endpoint}
-        endpointType={endpointType}
-        model={conversation?.model}
-        error={false}
-        className={className}
-        isCreatedByUser={false}
-        chatGptLabel={undefined}
-        modelLabel={undefined}
+        agentAvatar={agentAvatar}
+        agentName={agentName}
       />
     );
   }
+
+  return (
+    <MinimalIcon
+      iconURL={endpointIconURL}
+      endpoint={endpoint}
+      endpointsConfig={endpointsConfig}
+      model={conversation?.model}
+      error={false}
+      className={cn(className, context === 'landing' && provider === ProviderId.cohere && 'p-2')}
+      size={size}
+      isCreatedByUser={false}
+      chatGptLabel={undefined}
+      modelLabel={undefined}
+    />
+  );
 }

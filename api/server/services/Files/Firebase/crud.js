@@ -3,7 +3,15 @@ const path = require('path');
 const axios = require('axios');
 const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
-const { getFirebaseStorage, deleteRagFile } = require('@librechat/api');
+const {
+  deleteRagFile,
+  getFirebaseStorage,
+  assertRemoteFileURL,
+  getSafeErrorMetadata,
+  getRemoteFileFetchMaxBytes,
+  getRemoteFileFetchTimeoutMs,
+  assertRemoteFileContentLength,
+} = require('@librechat/api');
 const { ref, uploadBytes, getDownloadURL, deleteObject } = require('firebase/storage');
 const { getBufferMetadata } = require('~/server/utils');
 
@@ -57,8 +65,19 @@ async function saveURLToFirebase({ userId, URL, fileName, basePath = 'images' })
   }
 
   const storageRef = ref(storage, `${basePath}/${userId.toString()}/${fileName}`);
-  const response = await fetch(URL);
+  const maxBytes = getRemoteFileFetchMaxBytes();
+  const response = await fetch(assertRemoteFileURL(URL), {
+    timeout: getRemoteFileFetchTimeoutMs(),
+    size: maxBytes,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
+  }
+  assertRemoteFileContentLength(response.headers, maxBytes);
   const buffer = await response.buffer();
+  if (buffer.length > maxBytes) {
+    throw new Error(`Remote file response too large: ${buffer.length} bytes`);
+  }
 
   try {
     await uploadBytes(storageRef, buffer);
@@ -231,7 +250,7 @@ async function uploadFileToFirebase({ req, file, file_id }) {
  * @param {string} filepath - The filepath.
  * @returns {Promise<ReadableStream>} A readable stream of the file.
  */
-async function getFirebaseFileStream(_req, filepath) {
+async function getFirebaseFileStream(_req, filepath, { signal } = {}) {
   try {
     const storage = getFirebaseStorage();
     if (!storage) {
@@ -242,11 +261,12 @@ async function getFirebaseFileStream(_req, filepath) {
       method: 'get',
       url: filepath,
       responseType: 'stream',
+      signal,
     });
 
     return response.data;
   } catch (error) {
-    logger.error('Error getting Firebase file stream:', error);
+    logger.error('Error getting Firebase file stream:', getSafeErrorMetadata(error));
     throw error;
   }
 }

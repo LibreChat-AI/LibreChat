@@ -39,6 +39,11 @@ export interface MCPServerInitState {
   isCancellable: boolean;
   oauthUrl: string | null;
   oauthStartTime: number | null;
+  /** Last initialize attempt reported a request-scoped server whose connection
+   * is deferred to the next chat turn (runtime body placeholders) — its tools
+   * cannot be enumerated up front. Consumers attach such servers wholesale via
+   * the `mcp_all` wildcard instead of waiting for a tool list. */
+  connectionDeferred: boolean;
 }
 
 const defaultServerInitState: MCPServerInitState = {
@@ -46,6 +51,7 @@ const defaultServerInitState: MCPServerInitState = {
   isCancellable: false,
   oauthUrl: null,
   oauthStartTime: null,
+  connectionDeferred: false,
 };
 
 /**

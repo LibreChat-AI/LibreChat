@@ -1,8 +1,14 @@
 import { defineConfig, devices } from '@playwright/test';
 import path from 'path';
-const absolutePath = path.resolve(process.cwd(), 'api/server/index.js');
+import { getBaseE2EEnv, getE2EBaseURL } from './setup/env';
+const rootPath = path.resolve(__dirname, '..');
+const serverPath = path.resolve(rootPath, 'e2e/setup/start-server.js');
 import dotenv from 'dotenv';
 dotenv.config();
+
+const baseURL = getE2EBaseURL();
+const e2eEnv = getBaseE2EEnv();
+Object.assign(process.env, e2eEnv);
 
 export default defineConfig({
   globalSetup: require.resolve('./setup/global-setup'),
@@ -21,9 +27,10 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
   reporter: [['html', { outputFolder: 'playwright-report' }]],
+  testIgnore: ['**/mock/**'],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
-    baseURL: 'http://localhost:3080',
+    baseURL,
     video: 'on-first-retry',
     trace: 'retain-on-failure',
     ignoreHTTPSErrors: true,
@@ -53,21 +60,12 @@ export default defineConfig({
 
   /* Run your local dev server before starting the tests */
   webServer: {
-    command: `node ${absolutePath}`,
-    port: 3080,
+    command: `node ${serverPath}`,
+    cwd: rootPath,
+    url: baseURL,
     stdout: 'pipe',
     ignoreHTTPSErrors: true,
-    // url: 'http://localhost:3080',
-    timeout: 30_000,
+    timeout: 120_000,
     reuseExistingServer: true,
-    env: {
-      ...process.env,
-      NODE_ENV: 'CI',
-      EMAIL_HOST: '',
-      SEARCH: 'false',
-      SESSION_EXPIRY: '60000',
-      ALLOW_REGISTRATION: 'true',
-      REFRESH_TOKEN_EXPIRY: '300000',
-    },
   },
 });

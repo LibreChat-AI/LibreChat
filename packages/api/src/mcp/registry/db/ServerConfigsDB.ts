@@ -1,15 +1,20 @@
 import { Types } from 'mongoose';
+import { logger, encryptV2, decryptV2, createMethods } from '@librechat/data-schemas';
 import {
   ResourceType,
   AccessRoleIds,
   PrincipalType,
   PermissionBits,
 } from 'librechat-data-provider';
-import { logger, encryptV2, decryptV2, createMethods } from '@librechat/data-schemas';
-import type { AllMethods, MCPServerDocument } from '@librechat/data-schemas';
+import type { AllMethods, MCPServerDocument, IAgent } from '@librechat/data-schemas';
 import type { IServerConfigsRepositoryInterface } from '~/mcp/registry/ServerConfigsRepositoryInterface';
 import type { ParsedServerConfig, AddServerResult } from '~/mcp/types';
+import type { ResolvedPrincipal } from '~/types/principal';
+import { getUserApiKeyVariable, requireApiKeyReentryForRebinding } from '~/mcp/registry/binding';
+import { normalizeLegacyHeaderMaps } from '~/mcp/registry/compat';
+import { MCPOAuthSecretReentryRequiredError } from '~/mcp/errors';
 import { AccessControlService } from '~/acl/accessControlService';
+import { isGeneratedUserApiKeyVariable } from '~/mcp/headers';
 
 /**
  * Regex patterns for credential/env placeholders that should not be allowed in user-provided configs.
@@ -25,6 +30,10 @@ const DANGEROUS_CREDENTIAL_PATTERNS = [
   /\{\{LIBRECHAT_GRAPH_[^}]+\}\}/g,
   /\{\{LIBRECHAT_BODY_[^}]+\}\}/g,
 ];
+
+const BLOCKED_USER_OAUTH_ENDPOINT_PARAMS = ['audience', 'resource'] as const;
+
+type OAuthConfig = NonNullable<ParsedServerConfig['oauth']>;
 
 /**
  * Sanitizes headers by removing dangerous credential placeholders.
@@ -52,6 +61,180 @@ function sanitizeCredentialPlaceholders(
 }
 
 /**
+ * Sanitizes every header map a shared config carries. `requestHeaders` is
+ * included because it reaches the upstream server exactly like `headers` does:
+ * left unsanitized, a user-managed config could name a privileged placeholder
+ * there and have the runtime resolve it at chat time. Absent maps stay omitted
+ * because BSON can serialize explicit undefined properties as null.
+ */
+function sanitizeConfigHeaderMaps(config: ParsedServerConfig): ParsedServerConfig {
+  const { headers, requestHeaders, ...rest } = config as ParsedServerConfig & {
+    headers?: Record<string, string>;
+    requestHeaders?: Record<string, string>;
+  };
+  return {
+    ...rest,
+    ...(headers != null && { headers: sanitizeCredentialPlaceholders(headers) }),
+    ...(requestHeaders != null && {
+      requestHeaders: sanitizeCredentialPlaceholders(requestHeaders),
+    }),
+  } as ParsedServerConfig;
+}
+
+function stripBlockedOAuthEndpointParams(url?: string): string | undefined {
+  if (!url) {
+    return url;
+  }
+
+  try {
+    const parsed = new URL(url);
+    BLOCKED_USER_OAUTH_ENDPOINT_PARAMS.forEach((param) => parsed.searchParams.delete(param));
+    return parsed.href;
+  } catch {
+    return url;
+  }
+}
+
+function sanitizeUserManagedOAuthConfig(config: ParsedServerConfig): ParsedServerConfig {
+  if (!config.oauth) {
+    return config;
+  }
+
+  const {
+    audience: _audience,
+    forward_audience_on_refresh: _forwardAudienceOnRefresh,
+    send_resource_parameter: _sendResourceParameter,
+    ...oauth
+  } = config.oauth;
+  return {
+    ...config,
+    oauth: {
+      ...oauth,
+      ...(config.oauth.authorization_url && {
+        authorization_url: stripBlockedOAuthEndpointParams(config.oauth.authorization_url),
+      }),
+      ...(config.oauth.token_url && {
+        token_url: stripBlockedOAuthEndpointParams(config.oauth.token_url),
+      }),
+    },
+  };
+}
+
+function normalizeOAuthUrl(value?: string): string | undefined {
+  if (!value) {
+    return value;
+  }
+
+  try {
+    return new URL(value).href;
+  } catch {
+    return value;
+  }
+}
+
+function normalizeOAuthMethods(values?: readonly string[]): string | undefined {
+  if (!values?.length) {
+    return undefined;
+  }
+  return JSON.stringify([...new Set(values)].sort());
+}
+
+function preserveOmittedOAuthBindingFields(
+  existingOAuth: OAuthConfig,
+  updatedOAuth: OAuthConfig,
+): OAuthConfig {
+  return {
+    ...updatedOAuth,
+    ...(updatedOAuth.token_endpoint_auth_methods_supported === undefined &&
+      existingOAuth.token_endpoint_auth_methods_supported !== undefined && {
+        token_endpoint_auth_methods_supported: existingOAuth.token_endpoint_auth_methods_supported,
+      }),
+    ...(updatedOAuth.revocation_endpoint === undefined &&
+      existingOAuth.revocation_endpoint !== undefined && {
+        revocation_endpoint: existingOAuth.revocation_endpoint,
+      }),
+    ...(updatedOAuth.revocation_endpoint_auth_methods_supported === undefined &&
+      existingOAuth.revocation_endpoint_auth_methods_supported !== undefined && {
+        revocation_endpoint_auth_methods_supported:
+          existingOAuth.revocation_endpoint_auth_methods_supported,
+      }),
+  };
+}
+
+function getChangedOAuthSecretBindingFields(
+  existingConfig: MCPServerDocument['config'],
+  updatedConfig: ParsedServerConfig,
+): string[] {
+  const existingOAuth = existingConfig.oauth;
+  const updatedOAuth = updatedConfig.oauth;
+  if (!existingOAuth || !updatedOAuth) {
+    return [];
+  }
+
+  const fields = [
+    [
+      'url',
+      normalizeOAuthUrl('url' in existingConfig ? existingConfig.url : undefined),
+      normalizeOAuthUrl(updatedConfig.url),
+    ],
+    [
+      'oauth.authorization_url',
+      normalizeOAuthUrl(existingOAuth.authorization_url),
+      normalizeOAuthUrl(updatedOAuth.authorization_url),
+    ],
+    [
+      'oauth.token_url',
+      normalizeOAuthUrl(existingOAuth.token_url),
+      normalizeOAuthUrl(updatedOAuth.token_url),
+    ],
+    ['oauth.client_id', existingOAuth.client_id, updatedOAuth.client_id],
+    [
+      'oauth.token_exchange_method',
+      existingOAuth.token_exchange_method,
+      updatedOAuth.token_exchange_method,
+    ],
+    [
+      'oauth.token_endpoint_auth_methods_supported',
+      normalizeOAuthMethods(existingOAuth.token_endpoint_auth_methods_supported),
+      normalizeOAuthMethods(updatedOAuth.token_endpoint_auth_methods_supported),
+    ],
+    [
+      'oauth.revocation_endpoint',
+      normalizeOAuthUrl(existingOAuth.revocation_endpoint),
+      normalizeOAuthUrl(updatedOAuth.revocation_endpoint),
+    ],
+    [
+      'oauth.revocation_endpoint_auth_methods_supported',
+      normalizeOAuthMethods(existingOAuth.revocation_endpoint_auth_methods_supported),
+      normalizeOAuthMethods(updatedOAuth.revocation_endpoint_auth_methods_supported),
+    ],
+  ] as const;
+
+  return fields.filter(([, existing, updated]) => existing !== updated).map(([field]) => field);
+}
+
+/** Unions `mcpServerNames` over the candidate agents the caller can access. */
+function unionMCPServerNames(
+  candidates: Array<Pick<IAgent, '_id' | 'mcpServerNames'>>,
+  accessibleAgentIds: Types.ObjectId[],
+): string[] {
+  if (accessibleAgentIds.length === 0) {
+    return [];
+  }
+  const accessible = new Set(accessibleAgentIds.map((id) => id.toString()));
+  const serverNames = new Set<string>();
+  for (const agent of candidates) {
+    if (!accessible.has(agent._id.toString())) {
+      continue;
+    }
+    for (const serverName of agent.mcpServerNames ?? []) {
+      serverNames.add(serverName);
+    }
+  }
+  return Array.from(serverNames);
+}
+
+/**
  * DB backed config storage
  * Handles CRUD Methods of dynamic mcp servers
  * Will handle Permission ACL
@@ -59,57 +242,49 @@ function sanitizeCredentialPlaceholders(
 export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
   private _dbMethods: AllMethods;
   private _aclService: AccessControlService;
-  private _mongoose: typeof import('mongoose');
 
   constructor(mongoose: typeof import('mongoose')) {
     if (!mongoose) {
       throw new Error('ServerConfigsDB requires mongoose instance');
     }
-    this._mongoose = mongoose;
     this._dbMethods = createMethods(mongoose);
     this._aclService = new AccessControlService(mongoose);
   }
 
   /**
    * Checks if user has access to an MCP server via an agent they can VIEW.
+   * Starts from the agents that reference `serverName` (typically few, and an
+   * index-covered lookup) and bounds the ACL query to those ids, instead of
+   * materializing every accessible agent and scanning it (#14016).
    * @param serverName - The MCP server name to check
    * @param userId - The user ID (optional - if not provided, checks publicly accessible agents)
    * @returns true if user has VIEW access to at least one agent that has this MCP server
    */
   private async hasAccessViaAgent(serverName: string, userId?: string): Promise<boolean> {
-    let accessibleAgentIds: Types.ObjectId[];
-
-    if (!userId) {
-      /** Publicly accessible agents */
-      accessibleAgentIds = await this._aclService.findPubliclyAccessibleResources({
-        resourceType: ResourceType.AGENT,
-        requiredPermissions: PermissionBits.VIEW,
-      });
-    } else {
-      /** User-accessible agents */
-      accessibleAgentIds = await this._aclService.findAccessibleResources({
-        userId,
-        requiredPermissions: PermissionBits.VIEW,
-        resourceType: ResourceType.AGENT,
-      });
-    }
-
-    if (accessibleAgentIds.length === 0) {
+    const candidateIds = await this._dbMethods.getAgentIdsByMCPServerName(serverName);
+    if (candidateIds.length === 0) {
       return false;
     }
 
-    const Agent = this._mongoose.model('Agent');
-    const exists = await Agent.exists({
-      _id: { $in: accessibleAgentIds },
-      mcpServerNames: serverName,
-    });
+    const accessibleAgentIds = userId
+      ? await this._aclService.findAccessibleResources({
+          userId,
+          requiredPermissions: PermissionBits.VIEW,
+          resourceType: ResourceType.AGENT,
+          resourceIds: candidateIds,
+        })
+      : await this._aclService.findPubliclyAccessibleResources({
+          resourceType: ResourceType.AGENT,
+          requiredPermissions: PermissionBits.VIEW,
+          resourceIds: candidateIds,
+        });
 
-    return exists !== null;
+    return accessibleAgentIds.length > 0;
   }
 
   /**
    * Creates a new MCP server and grants owner permissions to the user.
-   * @param serverName - Temporary server name (not persisted) will be replaced by the nano id generated by the db method
+   * @param serverName - Placeholder name kept for repository compatibility; final serverName comes from config.title
    * @param config - Server configuration to store
    * @param userId - ID of the user creating the server (required)
    * @returns The created server result with serverName and config (including dbId)
@@ -119,9 +294,10 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
     serverName: string,
     config: ParsedServerConfig,
     userId?: string,
+    reservedServerNames?: Iterable<string>,
   ): Promise<AddServerResult> {
     logger.debug(
-      `[ServerConfigsDB.add] Starting Creating server with temp servername: ${serverName} for the user with the ID ${userId}`,
+      `[ServerConfigsDB.add] Creating DB-backed server from config title. Placeholder: ${serverName}; userId: ${userId}`,
     );
     if (!userId) {
       throw new Error(
@@ -129,12 +305,7 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
       );
     }
 
-    const sanitizedConfig = {
-      ...config,
-      headers: sanitizeCredentialPlaceholders(
-        (config as ParsedServerConfig & { headers?: Record<string, string> }).headers,
-      ),
-    } as ParsedServerConfig;
+    const sanitizedConfig = sanitizeUserManagedOAuthConfig(sanitizeConfigHeaderMaps(config));
 
     /** Transformed user-provided API key config (adds customUserVars and headers) */
     const transformedConfig = this.transformUserApiKeyConfig(sanitizedConfig);
@@ -143,6 +314,7 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
     const createdServer = await this._dbMethods.createMCPServer({
       config: encryptedConfig,
       author: userId,
+      reservedServerNames,
     });
     await this._aclService.grantPermission({
       principalType: PrincipalType.USER,
@@ -177,25 +349,41 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
 
     const existingServer = await this._dbMethods.findMCPServerByServerName(serverName);
 
-    let configToSave: ParsedServerConfig = {
-      ...config,
-      headers: sanitizeCredentialPlaceholders(
-        (config as ParsedServerConfig & { headers?: Record<string, string> }).headers,
-      ),
-    } as ParsedServerConfig;
+    if (existingServer) {
+      requireApiKeyReentryForRebinding(existingServer.config, config);
+    }
+
+    let configToSave: ParsedServerConfig = sanitizeUserManagedOAuthConfig(
+      sanitizeConfigHeaderMaps(config),
+    );
+
+    const existingOAuth = existingServer?.config?.oauth;
+    const existingOAuthSecret = existingOAuth?.client_secret;
+    const preservesOAuthSecret =
+      !config.oauth?.client_secret && !!existingOAuthSecret && !!configToSave.oauth;
+    if (preservesOAuthSecret && existingServer && existingOAuth && configToSave.oauth) {
+      configToSave = {
+        ...configToSave,
+        oauth: preserveOmittedOAuthBindingFields(existingOAuth, configToSave.oauth),
+      };
+      const changedFields = getChangedOAuthSecretBindingFields(existingServer.config, configToSave);
+      if (changedFields.length > 0) {
+        throw new MCPOAuthSecretReentryRequiredError(changedFields);
+      }
+    }
 
     /** Transformed user-provided API key config (adds customUserVars and headers) */
-    configToSave = this.transformUserApiKeyConfig(configToSave);
+    configToSave = this.transformUserApiKeyConfig(configToSave, existingServer?.config);
 
     /** Encrypted config before storing in database */
     configToSave = await this.encryptConfig(configToSave);
 
-    if (!config.oauth?.client_secret && existingServer?.config?.oauth?.client_secret) {
+    if (preservesOAuthSecret && existingOAuthSecret && configToSave.oauth) {
       configToSave = {
         ...configToSave,
         oauth: {
           ...configToSave.oauth,
-          client_secret: existingServer.config.oauth.client_secret,
+          client_secret: existingOAuthSecret,
         },
       };
     }
@@ -323,66 +511,86 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
   }
 
   /**
+   * Agent-side access resolution bounded to the MCP-referencing candidate ids,
+   * so the ACL query cost scales with agents that use MCP servers instead of
+   * every accessible agent (#14016).
+   */
+  private findAccessibleAgentIds(
+    candidateIds: Types.ObjectId[],
+    userId?: string,
+    principalsList: ResolvedPrincipal[] = [],
+  ): Promise<Types.ObjectId[]> {
+    if (candidateIds.length === 0) {
+      return Promise.resolve([]);
+    }
+    if (userId) {
+      return this._aclService.findAccessibleResourcesForPrincipals({
+        principalsList,
+        requiredPermissions: PermissionBits.VIEW,
+        resourceType: ResourceType.AGENT,
+        resourceIds: candidateIds,
+      });
+    }
+    return this._aclService.findPubliclyAccessibleResources({
+      resourceType: ResourceType.AGENT,
+      requiredPermissions: PermissionBits.VIEW,
+      resourceIds: candidateIds,
+    });
+  }
+
+  /**
    * Return all DB stored configs (scoped by user Id if provided)
    * @param userId optional user id. if not provided only publicly shared mcp configs will be returned
    * @returns record of parsed configs
    */
-  public async getAll(userId?: string): Promise<Record<string, ParsedServerConfig>> {
-    let directlyAccessibleMCPIds: Types.ObjectId[] = [];
-    if (!userId) {
-      logger.debug(`[ServerConfigsDB.getAll] fetching all publicly shared mcp servers`);
-      directlyAccessibleMCPIds = await this._aclService.findPubliclyAccessibleResources({
-        resourceType: ResourceType.MCPSERVER,
-        requiredPermissions: PermissionBits.VIEW,
-      });
-    } else {
-      logger.debug(
-        `[ServerConfigsDB.getAll] fetching mcp servers directly shared with the user with ID: ${userId}`,
-      );
-      directlyAccessibleMCPIds = await this._aclService.findAccessibleResources({
-        userId,
-        requiredPermissions: PermissionBits.VIEW,
-        resourceType: ResourceType.MCPSERVER,
-      });
-    }
+  public async getAll(userId?: string, role?: string): Promise<Record<string, ParsedServerConfig>> {
+    const candidatesPromise = this._dbMethods.getAgentsWithMCPServerNames();
+    const principalsPromise: Promise<ResolvedPrincipal[]> | undefined = userId
+      ? this._aclService.getUserPrincipals({ userId, role })
+      : undefined;
+    const principalsResolved = principalsPromise ?? Promise.resolve([] as ResolvedPrincipal[]);
 
-    let agentMCPServerNames: string[] = [];
-    let accessibleAgentIds: Types.ObjectId[] = [];
+    /** Direct-server ids depend on principals only for the user path; chaining
+     *  attaches a rejection handler at creation for both branches, and the
+     *  direct-server fetch follows the ids immediately. */
+    const directResultsPromise = (
+      principalsPromise
+        ? principalsPromise.then((principalsList) =>
+            this._aclService.findAccessibleResourcesForPrincipals({
+              principalsList,
+              requiredPermissions: PermissionBits.VIEW,
+              resourceType: ResourceType.MCPSERVER,
+            }),
+          )
+        : this._aclService.findPubliclyAccessibleResources({
+            resourceType: ResourceType.MCPSERVER,
+            requiredPermissions: PermissionBits.VIEW,
+          })
+    ).then((ids) => this._dbMethods.getListMCPServersByIds({ ids }));
 
-    if (!userId) {
-      accessibleAgentIds = await this._aclService.findPubliclyAccessibleResources({
-        resourceType: ResourceType.AGENT,
-        requiredPermissions: PermissionBits.VIEW,
-      });
-    } else {
-      accessibleAgentIds = await this._aclService.findAccessibleResources({
-        userId,
-        requiredPermissions: PermissionBits.VIEW,
-        resourceType: ResourceType.AGENT,
-      });
-    }
-
-    if (accessibleAgentIds.length > 0) {
-      const Agent = this._mongoose.model('Agent');
-      const agentsWithMCP = await Agent.find(
-        {
-          _id: { $in: accessibleAgentIds },
-          mcpServerNames: { $exists: true, $not: { $size: 0 } },
-        },
-        { mcpServerNames: 1 },
-      ).lean();
-
-      agentMCPServerNames = [
-        ...new Set(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          agentsWithMCP.flatMap((a: any) => a.mcpServerNames || []),
+    /** The agent-side ACL needs only candidates and principals; chaining it
+     *  from those keeps the independent direct-server path off its critical
+     *  path, and the outer settlement attaches handlers to everything else. */
+    const agentAccessPromise = Promise.all([candidatesPromise, principalsResolved]).then(
+      ([agentCandidates, principalsList]) =>
+        this.findAccessibleAgentIds(
+          agentCandidates.map((agent) => agent._id),
+          userId,
+          principalsList,
         ),
-      ];
-    }
+    );
 
-    const directResults = await this._dbMethods.getListMCPServersByIds({
-      ids: directlyAccessibleMCPIds,
-    });
+    const [agentCandidates, accessibleAgentIds, directResults] = await Promise.all([
+      candidatesPromise,
+      agentAccessPromise,
+      directResultsPromise,
+    ]);
+
+    logger.debug(
+      `[ServerConfigsDB.getAll] resolving access for ${userId ?? 'public'}; ${agentCandidates.length} agent candidate(s) reference MCP servers`,
+    );
+
+    const agentMCPServerNames = unionMCPServerNames(agentCandidates, accessibleAgentIds);
 
     const parsedConfigs: Record<string, ParsedServerConfig> = {};
     const directData = directResults.data || [];
@@ -427,13 +635,20 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
   private async mapDBServerToParsedConfig(
     serverDBDoc: MCPServerDocument,
   ): Promise<ParsedServerConfig> {
+    const authorId =
+      serverDBDoc.author != null
+        ? (serverDBDoc.author as unknown as Types.ObjectId | string).toString()
+        : undefined;
     const config: ParsedServerConfig = {
       ...serverDBDoc.config,
       dbId: (serverDBDoc._id as Types.ObjectId).toString(),
       source: 'user',
       updatedAt: serverDBDoc.updatedAt?.getTime(),
+      ...(authorId ? { author: authorId } : {}),
     };
-    return await this.decryptConfig(config);
+    return sanitizeUserManagedOAuthConfig(
+      await this.decryptConfig(normalizeLegacyHeaderMaps(config)),
+    );
   }
 
   /**
@@ -442,7 +657,10 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
    * @param config - The server config to transform
    * @returns The transformed config with customUserVars and headers set up
    */
-  private transformUserApiKeyConfig(config: ParsedServerConfig): ParsedServerConfig {
+  private transformUserApiKeyConfig(
+    config: ParsedServerConfig,
+    existingConfig?: ParsedServerConfig,
+  ): ParsedServerConfig {
     if (!config.apiKey || config.apiKey.source !== 'user') {
       return config;
     }
@@ -453,18 +671,28 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
         ? result.apiKey!.custom_header || 'X-Api-Key'
         : 'Authorization';
 
+    const variable = getUserApiKeyVariable(config, existingConfig);
+    const placeholder = `{{${variable}}}`;
     let headerValue: string;
     if (result.apiKey!.authorization_type === 'basic') {
-      headerValue = 'Basic {{MCP_API_KEY}}';
+      headerValue = `Basic ${placeholder}`;
     } else if (result.apiKey!.authorization_type === 'bearer') {
-      headerValue = 'Bearer {{MCP_API_KEY}}';
+      headerValue = `Bearer ${placeholder}`;
     } else {
-      headerValue = '{{MCP_API_KEY}}';
+      headerValue = placeholder;
     }
 
-    result.customUserVars = {
+    const customUserVars: NonNullable<ParsedServerConfig['customUserVars']> = {
       ...result.customUserVars,
-      MCP_API_KEY: {
+    };
+    for (const name of Object.keys(customUserVars)) {
+      if (isGeneratedUserApiKeyVariable(name)) {
+        delete customUserVars[name];
+      }
+    }
+    result.customUserVars = {
+      ...customUserVars,
+      [variable]: {
         title: 'API Key',
         description: 'Your API key for this MCP server',
       },

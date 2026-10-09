@@ -23,11 +23,13 @@ const baseCapabilityValues = new Set<string>(Object.values(SystemCapabilities));
 
 /**
  * For a section/assignment capability like `manage:configs:endpoints` or
- * `assign:configs:user`, returns all base capabilities that subsume it:
- * the direct parent (`manage:configs`) plus any that imply the parent
- * via `reverseImplications` (`manage:configs` has no reverse, but
- * `read:configs` is implied by `manage:configs`—so `read:configs:endpoints`
- * is satisfied by holding `manage:configs`).
+ * `assign:configs:user`, returns all capabilities that subsume it:
+ * the direct parent (`manage:configs`), any base capability that implies
+ * the parent via `reverseImplications` (`read:configs` is implied by
+ * `manage:configs`, so `read:configs:endpoints` is satisfied by holding
+ * `manage:configs`), and, for a `read:configs:<section>` capability, the
+ * same-section `manage:configs:<section>` grant (manage implies read at
+ * the section level too, mirroring the broad-level implication).
  */
 function getParentCapabilities(capability: string): string[] {
   const lastColon = capability.lastIndexOf(':');
@@ -35,22 +37,162 @@ function getParentCapabilities(capability: string): string[] {
     return [];
   }
   const parent = capability.slice(0, lastColon);
-  if (!baseCapabilityValues.has(parent)) {
-    return [];
+  const parents: string[] = [];
+  if (baseCapabilityValues.has(parent)) {
+    parents.push(parent);
+    const implied = reverseImplications[parent as keyof typeof reverseImplications];
+    if (implied) {
+      parents.push(...implied);
+    }
   }
-  const parents = [parent];
-  const implied = reverseImplications[parent as keyof typeof reverseImplications];
-  if (implied) {
-    parents.push(...implied);
+  if (parent === SystemCapabilities.READ_CONFIGS) {
+    parents.push(`manage:configs:${capability.slice(lastColon + 1)}`);
   }
   return parents;
 }
 
-export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
+export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
+  grantCapability: (
+    {
+      principalType,
+      principalId,
+      capability,
+      tenantId,
+      grantedBy,
+    }: {
+      principalType: PrincipalType;
+      principalId: string | Types.ObjectId;
+      capability: SystemCapability;
+      tenantId?: string;
+      grantedBy?: string | Types.ObjectId;
+    },
+    session?: ClientSession,
+  ) => Promise<{ grant: ISystemGrant | null; created: boolean }>;
+  seedSystemGrants: () => Promise<void>;
+  revokeCapability: (
+    {
+      principalType,
+      principalId,
+      capability,
+      tenantId,
+    }: {
+      principalType: PrincipalType;
+      principalId: string | Types.ObjectId;
+      capability: SystemCapability;
+      tenantId?: string;
+    },
+    session?: ClientSession,
+  ) => Promise<{ deletedCount: number }>;
+  hasCapabilityForPrincipals: ({
+    principals,
+    capability,
+    tenantId,
+  }: {
+    principals: Array<{ principalType: PrincipalType; principalId?: string | Types.ObjectId }>;
+    capability: SystemCapability;
+    tenantId?: string;
+  }) => Promise<boolean>;
+  hasAnyConfigReadAccess: ({
+    principals,
+    tenantId,
+  }: {
+    principals: Array<{ principalType: PrincipalType; principalId?: string | Types.ObjectId }>;
+    tenantId?: string;
+  }) => Promise<boolean>;
+  getHeldCapabilities: ({
+    principals,
+    capabilities,
+    tenantId,
+  }: {
+    principals: Array<{ principalType: PrincipalType; principalId?: string | Types.ObjectId }>;
+    capabilities: SystemCapability[];
+    tenantId?: string;
+  }) => Promise<Set<SystemCapability>>;
+  listGrants: (options?: {
+    tenantId?: string;
+    principalTypes?: PrincipalType[];
+    limit?: number;
+    offset?: number;
+  }) => Promise<ISystemGrant[]>;
+  countGrants: (options?: {
+    tenantId?: string;
+    principalTypes?: PrincipalType[];
+  }) => Promise<number>;
+  getCapabilitiesForPrincipal: ({
+    principalType,
+    principalId,
+    tenantId,
+  }: {
+    principalType: PrincipalType;
+    principalId: string | Types.ObjectId;
+    tenantId?: string;
+  }) => Promise<ISystemGrant[]>;
+  getCapabilitiesForPrincipals: ({
+    principals,
+    tenantId,
+  }: {
+    principals: Array<{ principalType: PrincipalType; principalId: string | Types.ObjectId }>;
+    tenantId?: string;
+  }) => Promise<ISystemGrant[]>;
+  deleteGrantsForPrincipal: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    options?: { tenantId?: string; session?: ClientSession },
+  ) => Promise<ISystemGrant[]>;
+} {
   function tenantCondition(tenantId?: string): FilterQuery<ISystemGrant> {
     return tenantId != null
       ? { $and: [{ $or: [{ tenantId }, { tenantId: { $exists: false } }] }] }
       : { tenantId: { $exists: false } };
+  }
+
+  const CONFIG_READ_ACCESS_PATTERN = /^(?:read|manage):configs(?::\w+)?$/;
+
+  /**
+   * Whether any of the given principals holds *some* config-read
+   * capability: the broad `read:configs`/`manage:configs` (manage implies
+   * read) or any `read:configs:<section>`/`manage:configs:<section>`,
+   * without needing to know which sections in advance. Used to gate a
+   * cheap pre-flight 403 before fetching a config document, so a caller
+   * with zero read access never triggers a DB lookup, while a
+   * section-scoped-only caller still passes through to have the response
+   * filtered to what they actually hold.
+   *
+   * @param principals - Resolved principal list from getUserPrincipals
+   * @param tenantId - If present, checks tenant-scoped grant; if absent, checks platform-level
+   */
+  async function hasAnyConfigReadAccess({
+    principals,
+    tenantId,
+  }: {
+    principals: Array<{ principalType: PrincipalType; principalId?: string | Types.ObjectId }>;
+    tenantId?: string;
+  }): Promise<boolean> {
+    const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
+    const principalsQuery = principals
+      .filter(
+        (p): p is typeof p & { principalId: string | Types.ObjectId } =>
+          p.principalType !== PrincipalType.PUBLIC && p.principalId != null,
+      )
+      .map((p) => ({
+        principalType: p.principalType,
+        principalId: normalizePrincipalId(p.principalId, p.principalType),
+      }));
+
+    if (!principalsQuery.length) {
+      return false;
+    }
+
+    const query: FilterQuery<ISystemGrant> = {
+      $and: [
+        { $or: principalsQuery },
+        { capability: CONFIG_READ_ACCESS_PATTERN },
+        tenantCondition(tenantId),
+      ],
+    };
+
+    const doc = await SystemGrant.exists(query);
+    return doc != null;
   }
 
   /**
@@ -184,7 +326,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       grantedBy?: string | Types.ObjectId;
     },
     session?: ClientSession,
-  ): Promise<ISystemGrant | null> {
+  ): Promise<{ grant: ISystemGrant | null; created: boolean }> {
     const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
 
     const normalizedPrincipalId = normalizePrincipalId(principalId, principalType);
@@ -196,37 +338,50 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       tenantId: tenantId != null ? tenantId : { $exists: false },
     };
 
+    /**
+     * Insert-only: re-asserting an existing grant is a true no-op (no field is
+     * mutated), so `created === false` reliably means "nothing changed" and the
+     * caller can safely skip audit emission. `grantedAt`/`grantedBy` therefore
+     * record the original grant, not the last re-assert.
+     */
     const update = {
-      $set: {
-        grantedAt: new Date(),
-        ...(grantedBy != null && { grantedBy }),
-      },
       $setOnInsert: {
         principalType,
         principalId: normalizedPrincipalId,
         capability,
+        grantedAt: new Date(),
+        ...(grantedBy != null && { grantedBy }),
         ...(tenantId != null && { tenantId }),
       },
     };
 
-    const options = {
-      upsert: true,
-      new: true,
-      ...(session ? { session } : {}),
-    };
-
     try {
-      return await SystemGrant.findOneAndUpdate(filter, update, options);
+      /** `includeResultMetadata` surfaces `lastErrorObject.upserted` so callers
+       * (audit emission) can tell a brand-new grant from an idempotent re-assert
+       * atomically, without a racy pre-read. Passed inline so the metadata
+       * overload is selected. */
+      const result = await SystemGrant.findOneAndUpdate(filter, update, {
+        upsert: true,
+        new: true,
+        includeResultMetadata: true,
+        session,
+      });
+      return { grant: result.value, created: result.lastErrorObject?.upserted != null };
     } catch (err) {
       if ((err as { code?: number }).code === 11000) {
-        return (await SystemGrant.findOne(filter).lean()) as ISystemGrant | null;
+        /** A concurrent insert won the race: the row exists and we did not create
+         * it, so this is not an auditable change. */
+        const grant = (await SystemGrant.findOne(filter).lean()) as ISystemGrant | null;
+        return { grant, created: false };
       }
       throw err;
     }
   }
 
   /**
-   * Revoke a capability from a principal.
+   * Revoke a capability from a principal. Returns the deletion result so
+   * callers (e.g. audit emission) can distinguish a real revoke from a
+   * no-op against a grant that didn't exist.
    */
   async function revokeCapability(
     {
@@ -241,7 +396,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       tenantId?: string;
     },
     session?: ClientSession,
-  ): Promise<void> {
+  ): Promise<{ deletedCount: number }> {
     const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
 
     const normalizedPrincipalId = normalizePrincipalId(principalId, principalType);
@@ -254,7 +409,8 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
     };
 
     const options = session ? { session } : {};
-    await SystemGrant.deleteOne(filter, options);
+    const result = await SystemGrant.deleteOne(filter, options);
+    return { deletedCount: result.deletedCount ?? 0 };
   }
 
   /**
@@ -278,7 +434,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       ...tenantCondition(tenantId),
     };
 
-    return await SystemGrant.find(filter).lean();
+    return await SystemGrant.find(filter).lean<ISystemGrant[]>();
   }
 
   const GRANTS_DEFAULT_LIMIT = 50;
@@ -302,7 +458,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       .sort({ principalType: 1, capability: 1 })
       .skip(offset)
       .limit(limit)
-      .lean();
+      .lean<ISystemGrant[]>();
   }
 
   async function countGrants(options?: {
@@ -346,7 +502,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       ...tenantCondition(tenantId),
     };
 
-    return await SystemGrant.find(filter).lean();
+    return await SystemGrant.find(filter).lean<ISystemGrant[]>();
   }
 
   /**
@@ -417,7 +573,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
     options?: { tenantId?: string; session?: ClientSession },
-  ): Promise<void> {
+  ): Promise<ISystemGrant[]> {
     const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
     const normalizedPrincipalId = normalizePrincipalId(principalId, principalType);
 
@@ -427,7 +583,11 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
       ...(options?.tenantId != null && { tenantId: options.tenantId }),
     };
     const queryOptions = options?.session ? { session: options.session } : {};
+    /** Read the matching grants before deleting so cascade callers (e.g. role
+     * deletion) can emit a `grant.removed` audit entry for each one. */
+    const removed = await SystemGrant.find(filter, null, queryOptions).lean<ISystemGrant[]>();
     await SystemGrant.deleteMany(filter, queryOptions);
+    return removed;
   }
 
   return {
@@ -435,6 +595,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')) {
     seedSystemGrants,
     revokeCapability,
     hasCapabilityForPrincipals,
+    hasAnyConfigReadAccess,
     getHeldCapabilities,
     listGrants,
     countGrants,

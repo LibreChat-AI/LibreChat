@@ -1,10 +1,10 @@
 import { useCallback } from 'react';
 import { isAssistantsEndpoint } from 'librechat-data-provider';
 import type { AssistantsEndpoint, TConversation, TPreset } from 'librechat-data-provider';
+import { mapAssistants, logger, specDisplayFieldReset } from '~/utils';
 import useDefaultConvo from '~/hooks/Conversations/useDefaultConvo';
 import { useChatContext } from '~/Providers/ChatContext';
 import useAssistantListMap from './useAssistantListMap';
-import { mapAssistants, logger } from '~/utils';
 
 export default function useSelectAssistant(endpoint: AssistantsEndpoint) {
   const getDefaultConversation = useDefaultConvo();
@@ -22,18 +22,18 @@ export default function useSelectAssistant(endpoint: AssistantsEndpoint) {
         assistant_id: assistant.id,
         model: assistant.model,
         conversationId: 'new',
+        ...specDisplayFieldReset,
       };
 
       logger.log('conversation', 'Updating conversation with assistant', assistant);
       if (isAssistantsEndpoint(conversation?.endpoint)) {
         const currentConvo = getDefaultConversation({
-          conversation: { ...(conversation ?? {}) },
+          conversation: { ...(conversation ?? {}), ...specDisplayFieldReset },
           preset: template,
         });
         newConversation({
           template: currentConvo,
           preset: template as Partial<TPreset>,
-          keepLatestMessage: true,
         });
         return;
       }

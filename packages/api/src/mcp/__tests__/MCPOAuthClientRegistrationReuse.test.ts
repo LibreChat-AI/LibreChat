@@ -45,7 +45,7 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('~/auth', () => ({
   createSSRFSafeUndiciConnect: jest.fn(() => undefined),
   resolveHostnameSSRF: jest.fn(async () => false),
-  isSSRFTarget: jest.fn(async () => false),
+  isSSRFTarget: jest.fn(() => false),
   isOAuthUrlAllowed: jest.fn(() => true),
 }));
 
@@ -124,7 +124,7 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
       expect(server.registeredClients.size).toBe(1);
       const firstClientId = firstResult.flowMetadata.clientInfo?.client_id;
 
-      await MCPTokenStorage.storeTokens({
+      const storedTokens = await MCPTokenStorage.storeTokens({
         userId: 'user-1',
         serverName: 'test-server',
         tokens: { access_token: 'test-token', token_type: 'Bearer' },
@@ -132,7 +132,12 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
         updateToken: tokenStore.updateToken,
         findToken: tokenStore.findToken,
         clientInfo: firstResult.flowMetadata.clientInfo,
-        metadata: firstResult.flowMetadata.metadata,
+        metadata: MCPOAuthHandler.buildStoredClientMetadata(
+          firstResult.flowMetadata.metadata,
+          firstResult.flowMetadata.resourceMetadata,
+          firstResult.flowMetadata.serverUrl,
+          firstResult.flowMetadata.clientSource,
+        ),
       });
 
       const secondResult = await MCPOAuthHandler.initiateOAuthFlow(
@@ -148,6 +153,51 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
       expect(server.registeredClients.size).toBe(1);
       expect(secondResult.flowMetadata.clientInfo?.client_id).toBe(firstClientId);
       expect(secondResult.flowMetadata.reusedStoredClient).toBe(true);
+      expect(secondResult.flowMetadata.reusedClientCredentialSetId).toBe(
+        storedTokens.credential_set_id,
+      );
+    });
+
+    it('should re-register a legacy stored client without a credential generation', async () => {
+      server = await createOAuthMCPServer({ tokenTTLMs: 60000 });
+      const tokenStore = new InMemoryTokenStore();
+      const initialResult = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+      );
+      const legacyClientInfo = initialResult.flowMetadata.clientInfo;
+      const binding = MCPOAuthHandler.buildStoredClientMetadata(
+        initialResult.flowMetadata.metadata,
+        initialResult.flowMetadata.resourceMetadata,
+        initialResult.flowMetadata.serverUrl,
+        initialResult.flowMetadata.clientSource,
+      );
+
+      await tokenStore.createToken({
+        userId: 'user-1',
+        type: 'mcp_oauth_client',
+        identifier: 'mcp:test-server:client',
+        token: `enc:${JSON.stringify(legacyClientInfo)}`,
+        expiresIn: 86400,
+        metadata: binding ? { ...binding } : undefined,
+      });
+
+      const result = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+        undefined,
+        undefined,
+        tokenStore.findToken,
+      );
+
+      expect(server.registeredClients.size).toBe(2);
+      expect(result.flowMetadata.clientInfo?.client_id).not.toBe(legacyClientInfo?.client_id);
+      expect(result.flowMetadata.reusedStoredClient).toBeUndefined();
+      expect(result.flowMetadata.reusedClientCredentialSetId).toBeUndefined();
     });
 
     it('should reuse the same client when two reconnections fire concurrently with pre-seeded token', async () => {
@@ -173,7 +223,12 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
         updateToken: tokenStore.updateToken,
         findToken: tokenStore.findToken,
         clientInfo: initialResult.flowMetadata.clientInfo,
-        metadata: initialResult.flowMetadata.metadata,
+        metadata: MCPOAuthHandler.buildStoredClientMetadata(
+          initialResult.flowMetadata.metadata,
+          initialResult.flowMetadata.resourceMetadata,
+          initialResult.flowMetadata.serverUrl,
+          initialResult.flowMetadata.clientSource,
+        ),
       });
 
       const [resultA, resultB] = await Promise.all([
@@ -201,6 +256,55 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
       expect(server.registeredClients.size).toBe(1);
       expect(resultA.flowMetadata.clientInfo?.client_id).toBe(storedClientId);
       expect(resultB.flowMetadata.clientInfo?.client_id).toBe(storedClientId);
+    });
+
+    it.each([
+      ['server URL', 'server_url', 'https://different-resource.example.com/mcp'],
+      ['token endpoint', 'token_endpoint', 'https://different-auth.example.com/token'],
+      ['resource indicator', 'resource', 'https://different-resource.example.com/'],
+      ['client provenance', 'client_source', 'configured'],
+    ] as const)('should re-register for a stored %s mismatch', async (_label, field, badValue) => {
+      server = await createOAuthMCPServer({ tokenTTLMs: 60000 });
+      const tokenStore = new InMemoryTokenStore();
+      const initialResult = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+      );
+      const initialClientId = initialResult.flowMetadata.clientInfo?.client_id;
+      const completeBinding = MCPOAuthHandler.buildStoredClientMetadata(
+        initialResult.flowMetadata.metadata,
+        initialResult.flowMetadata.resourceMetadata,
+        initialResult.flowMetadata.serverUrl,
+        initialResult.flowMetadata.clientSource,
+      );
+      expect(completeBinding).toBeDefined();
+
+      await MCPTokenStorage.storeTokens({
+        userId: 'user-1',
+        serverName: 'test-server',
+        tokens: { access_token: 'old-token', token_type: 'Bearer' },
+        createToken: tokenStore.createToken,
+        updateToken: tokenStore.updateToken,
+        findToken: tokenStore.findToken,
+        clientInfo: initialResult.flowMetadata.clientInfo,
+        metadata: { ...completeBinding, [field]: badValue },
+      });
+
+      const result = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+        undefined,
+        undefined,
+        tokenStore.findToken,
+      );
+
+      expect(server.registeredClients.size).toBe(2);
+      expect(result.flowMetadata.clientInfo?.client_id).not.toBe(initialClientId);
+      expect(result.flowMetadata.reusedStoredClient).toBeUndefined();
     });
 
     it('should re-register when stored redirect_uri differs from current', async () => {
@@ -293,7 +397,7 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
       // Seed a stored client with a client_id that the OAuth server doesn't recognize,
       // but with matching issuer and redirect_uri so reuse logic accepts it
       const serverIssuer = `http://127.0.0.1:${server.port}`;
-      await MCPTokenStorage.storeTokens({
+      const storedTokens = await MCPTokenStorage.storeTokens({
         userId: 'user-1',
         serverName: 'test-server',
         tokens: { access_token: 'old-token', token_type: 'Bearer' },
@@ -309,6 +413,9 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
           issuer: serverIssuer,
           authorization_endpoint: `${serverIssuer}/authorize`,
           token_endpoint: `${serverIssuer}/token`,
+          server_url: server.url,
+          client_source: 'dynamic',
+          resource: server.resourceUrl,
         },
       });
 
@@ -326,6 +433,9 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
         'stale-client-that-oauth-server-deleted',
       );
       expect(firstResult.flowMetadata.reusedStoredClient).toBe(true);
+      expect(firstResult.flowMetadata.reusedClientCredentialSetId).toBe(
+        storedTokens.credential_set_id,
+      );
       expect(server.registeredClients.size).toBe(0);
 
       // Simulate what MCPConnectionFactory does on failure when reusedStoredClient is set:
@@ -334,6 +444,7 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
         userId: 'user-1',
         serverName: 'test-server',
         deleteTokens: tokenStore.deleteTokens,
+        credentialSetId: firstResult.flowMetadata.reusedClientCredentialSetId,
       });
 
       // Second attempt (retry after failure): should do a fresh DCR
@@ -354,9 +465,101 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
       expect(secondResult.flowMetadata.reusedStoredClient).toBeUndefined();
     });
 
+    it('should not let a stale rejected flow delete a newer client generation', async () => {
+      server = await createOAuthMCPServer({ tokenTTLMs: 60000 });
+      const tokenStore = new InMemoryTokenStore();
+
+      const registeredA = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+      );
+      const storedA = await MCPTokenStorage.storeTokens({
+        userId: 'user-1',
+        serverName: 'test-server',
+        tokens: { access_token: 'access-a', token_type: 'Bearer' },
+        createToken: tokenStore.createToken,
+        updateToken: tokenStore.updateToken,
+        findToken: tokenStore.findToken,
+        clientInfo: registeredA.flowMetadata.clientInfo,
+        metadata: MCPOAuthHandler.buildStoredClientMetadata(
+          registeredA.flowMetadata.metadata,
+          registeredA.flowMetadata.resourceMetadata,
+          registeredA.flowMetadata.serverUrl,
+          registeredA.flowMetadata.clientSource,
+        ),
+      });
+      const staleFlowA = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+        undefined,
+        undefined,
+        tokenStore.findToken,
+      );
+      expect(staleFlowA.flowMetadata.reusedClientCredentialSetId).toBe(storedA.credential_set_id);
+
+      const registeredB = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+      );
+      const storedB = await MCPTokenStorage.storeTokens({
+        userId: 'user-1',
+        serverName: 'test-server',
+        tokens: { access_token: 'access-b', token_type: 'Bearer' },
+        createToken: tokenStore.createToken,
+        updateToken: tokenStore.updateToken,
+        findToken: tokenStore.findToken,
+        clientInfo: registeredB.flowMetadata.clientInfo,
+        metadata: MCPOAuthHandler.buildStoredClientMetadata(
+          registeredB.flowMetadata.metadata,
+          registeredB.flowMetadata.resourceMetadata,
+          registeredB.flowMetadata.serverUrl,
+          registeredB.flowMetadata.clientSource,
+        ),
+      });
+
+      await MCPTokenStorage.deleteClientRegistration({
+        userId: 'user-1',
+        serverName: 'test-server',
+        deleteTokens: tokenStore.deleteTokens,
+        credentialSetId: staleFlowA.flowMetadata.reusedClientCredentialSetId,
+      });
+
+      const currentClient = await MCPTokenStorage.getClientInfoAndMetadata({
+        userId: 'user-1',
+        serverName: 'test-server',
+        findToken: tokenStore.findToken,
+      });
+      expect(currentClient?.clientInfo.client_id).toBe(
+        registeredB.flowMetadata.clientInfo?.client_id,
+      );
+      expect(currentClient?.clientMetadata?.credential_set_id).toBe(storedB.credential_set_id);
+
+      const nextFlow = await MCPOAuthHandler.initiateOAuthFlow(
+        'test-server',
+        server.url,
+        'user-1',
+        {},
+        undefined,
+        undefined,
+        tokenStore.findToken,
+      );
+      expect(server.registeredClients.size).toBe(2);
+      expect(nextFlow.flowMetadata.clientInfo?.client_id).toBe(
+        registeredB.flowMetadata.clientInfo?.client_id,
+      );
+      expect(nextFlow.flowMetadata.reusedClientCredentialSetId).toBe(storedB.credential_set_id);
+    });
+
     it('should re-register when stored client was issued by a different authorization server', async () => {
       server = await createOAuthMCPServer({ tokenTTLMs: 60000 });
       const tokenStore = new InMemoryTokenStore();
+      const currentIssuer = `http://127.0.0.1:${server.port}`;
 
       // Seed a stored client that was registered with a different issuer
       await MCPTokenStorage.storeTokens({
@@ -373,8 +576,11 @@ describe('MCPOAuthHandler - client registration reuse on reconnection', () => {
         } as OAuthClientInformation & { redirect_uris: string[] },
         metadata: {
           issuer: 'https://old-auth-server.example.com',
-          authorization_endpoint: 'https://old-auth-server.example.com/authorize',
-          token_endpoint: 'https://old-auth-server.example.com/token',
+          authorization_endpoint: `${currentIssuer}/authorize`,
+          token_endpoint: `${currentIssuer}/token`,
+          server_url: server.url,
+          client_source: 'dynamic',
+          resource: server.resourceUrl,
         },
       });
 

@@ -1,33 +1,14 @@
-import { WebSearchToolDefinition, CalculatorToolDefinition } from '@librechat/agents';
+import {
+  WebSearchToolDefinition,
+  CalculatorToolDefinition,
+  GitHubCompareToolDefinition,
+} from '@librechat/agents';
+import type { ExtendedJsonSchema } from './schema';
+import { AskUserQuestionToolDefinition } from '~/agents/hitl/askUserQuestionTool';
 import { geminiToolkit } from '~/tools/toolkits/gemini';
 import { oaiToolkit } from '~/tools/toolkits/oai';
 
-/** Extended JSON Schema type that includes standard validation keywords */
-export type ExtendedJsonSchema = {
-  type?: 'string' | 'number' | 'integer' | 'float' | 'boolean' | 'array' | 'object' | 'null';
-  enum?: (string | number | boolean | null)[];
-  items?: ExtendedJsonSchema;
-  properties?: Record<string, ExtendedJsonSchema>;
-  required?: string[];
-  description?: string;
-  additionalProperties?: boolean | ExtendedJsonSchema;
-  minLength?: number;
-  maxLength?: number;
-  minimum?: number;
-  maximum?: number;
-  minItems?: number;
-  maxItems?: number;
-  pattern?: string;
-  format?: string;
-  default?: unknown;
-  const?: unknown;
-  oneOf?: ExtendedJsonSchema[];
-  anyOf?: ExtendedJsonSchema[];
-  allOf?: ExtendedJsonSchema[];
-  $ref?: string;
-  $defs?: Record<string, ExtendedJsonSchema>;
-  definitions?: Record<string, ExtendedJsonSchema>;
-};
+export type { ExtendedJsonSchema } from './schema';
 
 export interface ToolRegistryDefinition {
   name: string;
@@ -459,6 +440,15 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
  * registers the tool pair on match.
  */
 const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
+  github_compare: {
+    name: GitHubCompareToolDefinition.name,
+    description: GitHubCompareToolDefinition.description,
+    schema: {
+      ...GitHubCompareToolDefinition.parameters,
+      required: [...GitHubCompareToolDefinition.parameters.required],
+    },
+    toolType: 'builtin',
+  },
   [CalculatorToolDefinition.name]: {
     name: CalculatorToolDefinition.name,
     description: CalculatorToolDefinition.description,
@@ -469,6 +459,12 @@ const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
     name: WebSearchToolDefinition.name,
     description: WebSearchToolDefinition.description,
     schema: WebSearchToolDefinition.schema as unknown as ExtendedJsonSchema,
+    toolType: 'builtin',
+  },
+  [AskUserQuestionToolDefinition.name]: {
+    name: AskUserQuestionToolDefinition.name,
+    description: AskUserQuestionToolDefinition.description,
+    schema: AskUserQuestionToolDefinition.schema as ExtendedJsonSchema,
     toolType: 'builtin',
   },
 };

@@ -64,4 +64,32 @@ const cleanFileName = (fileName) => {
   return cleaned;
 };
 
-module.exports = { determineFileType, getBufferMetadata, cleanFileName };
+const encodeRFC5987ValueChars = (value) =>
+  encodeURIComponent(value).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+
+const getAsciiFilenameFallback = (fileName) => {
+  const fallback = fileName
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7e]/g, '_')
+    .replace(/["\\\r\n]/g, '_');
+
+  return fallback || 'download';
+};
+
+const getContentDisposition = (fileName, disposition = 'attachment') => {
+  const cleanedFilename = cleanFileName(fileName) || 'download';
+  const asciiFallback = getAsciiFilenameFallback(cleanedFilename);
+  const encodedFilename = encodeRFC5987ValueChars(cleanedFilename);
+
+  return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`;
+};
+
+module.exports = {
+  determineFileType,
+  getBufferMetadata,
+  cleanFileName,
+  getContentDisposition,
+};

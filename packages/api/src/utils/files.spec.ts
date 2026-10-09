@@ -4,6 +4,7 @@ import {
   flattenArtifactPath,
   resolveUploadErrorMessage,
 } from './files';
+import { UnsupportedProviderAudioError } from '~/files/upload/errors';
 
 jest.mock('node:crypto', () => {
   const actualModule = jest.requireActual('node:crypto');
@@ -22,6 +23,10 @@ function expectedHexSuffix(input: string): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 6);
 }
 
+function utf8ByteLength(input: string): number {
+  return Buffer.byteLength(input, 'utf8');
+}
+
 describe('sanitizeFilename', () => {
   test('removes directory components (1/2)', () => {
     expect(sanitizeFilename('/path/to/file.txt')).toBe('file.txt');
@@ -33,6 +38,17 @@ describe('sanitizeFilename', () => {
 
   test('replaces non-alphanumeric characters', () => {
     expect(sanitizeFilename('file name@#$.txt')).toBe('file_name___.txt');
+  });
+
+  test('preserves Unicode filenames', () => {
+    expect(sanitizeFilename('日本語レポート.xlsx')).toBe('日本語レポート.xlsx');
+    expect(sanitizeFilename('résumé-данные-تقرير-보고서📊.csv')).toBe(
+      'résumé-данные-تقرير-보고서📊.csv',
+    );
+  });
+
+  test('normalizes decomposed Unicode marks before sanitizing', () => {
+    expect(sanitizeFilename('Cafe\u0301.txt')).toBe('Café.txt');
   });
 
   test('preserves dots and hyphens', () => {
@@ -48,6 +64,13 @@ describe('sanitizeFilename', () => {
     const result = sanitizeFilename(longName);
     expect(result.length).toBe(255);
     expect(result).toMatch(/^a+-abc123\.txt$/);
+  });
+
+  test('truncates Unicode filenames by UTF-8 bytes, preserving the extension', () => {
+    const longName = '界'.repeat(100) + '.txt';
+    const result = sanitizeFilename(longName);
+    expect(utf8ByteLength(result)).toBeLessThanOrEqual(255);
+    expect(result.endsWith('-abc123.txt')).toBe(true);
   });
 
   test('handles filenames with no extension', () => {
@@ -73,6 +96,10 @@ describe('sanitizeArtifactPath', () => {
 
   test('preserves multiple nested directory components', () => {
     expect(sanitizeArtifactPath('a/b/c/file.txt')).toBe('a/b/c/file.txt');
+  });
+
+  test('preserves Unicode path segments', () => {
+    expect(sanitizeArtifactPath('分析/結果📊.csv')).toBe('分析/結果📊.csv');
   });
 
   test('replaces non-alphanumeric characters per segment + adds raw-input disambiguator', () => {
@@ -146,6 +173,13 @@ describe('sanitizeArtifactPath', () => {
     expect(result).toMatch(new RegExp(`^a+-${expectedHexSuffix(longName)}\\.txt$`));
   });
 
+  test('caps Unicode leaf segments at 255 UTF-8 bytes with extension-preserving truncation', () => {
+    const longName = '界'.repeat(100) + '.txt';
+    const result = sanitizeArtifactPath(longName);
+    expect(utf8ByteLength(result)).toBeLessThanOrEqual(255);
+    expect(result.endsWith(`-${expectedHexSuffix(longName)}.txt`)).toBe(true);
+  });
+
   test('caps the leaf when nested under a directory, preserving the directory verbatim', () => {
     const longLeaf = 'b'.repeat(300) + '.csv';
     const result = sanitizeArtifactPath(`reports/${longLeaf}`);
@@ -164,6 +198,15 @@ describe('sanitizeArtifactPath', () => {
     const [dir, leaf] = result.split('/');
     expect(dir.length).toBe(255);
     expect(dir).toMatch(new RegExp(`^d+-${expectedHexSuffix(longDir)}$`));
+    expect(leaf).toBe('notes.txt');
+  });
+
+  test('caps Unicode non-leaf directory segments at 255 UTF-8 bytes', () => {
+    const longDir = '界'.repeat(100);
+    const result = sanitizeArtifactPath(`${longDir}/notes.txt`);
+    const [dir, leaf] = result.split('/');
+    expect(utf8ByteLength(dir)).toBeLessThanOrEqual(255);
+    expect(dir.endsWith(`-${expectedHexSuffix(longDir)}`)).toBe(true);
     expect(leaf).toBe('notes.txt');
   });
 
@@ -221,6 +264,14 @@ describe('sanitizeArtifactPath', () => {
     expect(result).toBe('file.txt');
   });
 
+  test('falls back to leaf-only when Unicode path bytes exceed the DB-index cap', () => {
+    const segA = '界'.repeat(80);
+    const segB = '分'.repeat(80);
+    const segC = '析'.repeat(80);
+    const result = sanitizeArtifactPath(`${segA}/${segB}/${segC}/file.txt`);
+    expect(result).toBe('file.txt');
+  });
+
   test('keeps the nested path when total length is within the DB-index cap', () => {
     /* The cap doesn't fire for realistic outputs — typical artifact
      * depth is ≤ 3 segments × short names. */
@@ -274,6 +325,16 @@ describe('sanitizeArtifactPath', () => {
       expect(b).toBe('_.hidden');
       expect(a).not.toBe(b);
       expect(a).toBe(`_.hidden-${expectedHexSuffix('.hidden')}`);
+    });
+
+    test('normalization-only collisions get distinct safe forms', () => {
+      const composed = 'reports/Café.csv';
+      const decomposed = 'reports/Cafe\u0301.csv';
+      const normalizedDecomposed = `reports/Café-${expectedHexSuffix(decomposed)}.csv`;
+
+      expect(sanitizeArtifactPath(composed)).toBe(composed);
+      expect(sanitizeArtifactPath(decomposed)).toBe(normalizedDecomposed);
+      expect(normalizedDecomposed).not.toBe(composed);
     });
 
     test('idempotent: same raw input always produces the same safe form', () => {
@@ -372,6 +433,14 @@ describe('flattenArtifactPath', () => {
     expect(result).toMatch(new RegExp(`-${expectedHexSuffix(safePath)}\\.txt$`));
   });
 
+  test('truncates Unicode flat forms by UTF-8 bytes', () => {
+    const safePath = `${'界'.repeat(80)}/結果.csv`;
+    const result = flattenArtifactPath(safePath, 100);
+    expect(utf8ByteLength(result)).toBeLessThanOrEqual(100);
+    expect(result.endsWith('.csv')).toBe(true);
+    expect(result).toMatch(new RegExp(`-${expectedHexSuffix(safePath)}\\.csv$`));
+  });
+
   test('preserves the extension even when only the leaf overflows', () => {
     const longLeaf = 'L'.repeat(300);
     const result = flattenArtifactPath(`${longLeaf}.json`, 200);
@@ -435,6 +504,14 @@ describe('flattenArtifactPath', () => {
 });
 
 describe('resolveUploadErrorMessage', () => {
+  it.each([false, true])(
+    'preserves the localized audio preflight error (redaction=%s)',
+    (redact) => {
+      expect(
+        resolveUploadErrorMessage(new UnsupportedProviderAudioError(), undefined, redact),
+      ).toBe('com_error_files_provider_audio_format');
+    },
+  );
   test('returns default message for null error', () => {
     expect(resolveUploadErrorMessage(null)).toBe('Error processing file');
   });
@@ -453,36 +530,89 @@ describe('resolveUploadErrorMessage', () => {
     );
   });
 
-  test('prepends default message for file_ids errors', () => {
+  test('preserves legacy file_ids error details by default', () => {
     expect(resolveUploadErrorMessage({ message: 'max file_ids reached' })).toBe(
       'Error processing file: max file_ids reached',
     );
   });
 
-  test('surfaces "Invalid file format" errors', () => {
+  test('maps file_ids errors to a fixed message when redaction is enabled', () => {
+    const rawMessage = 'max file_ids reached for PRIVATE-UPLOAD';
+    const result = resolveUploadErrorMessage({ message: rawMessage }, undefined, true);
+
+    expect(result).toBe('Error processing file: File limit reached');
+    expect(result).not.toContain('PRIVATE-UPLOAD');
+  });
+
+  test('preserves legacy "Invalid file format" details by default', () => {
     expect(resolveUploadErrorMessage({ message: 'Invalid file format: .xyz' })).toBe(
       'Invalid file format: .xyz',
     );
   });
 
-  test('surfaces "exceeds token limit" errors', () => {
+  test('maps "Invalid file format" errors to a fixed message when redaction is enabled', () => {
+    const result = resolveUploadErrorMessage(
+      {
+        message: 'Invalid file format: PRIVATE-UPLOAD.xyz',
+      },
+      undefined,
+      true,
+    );
+
+    expect(result).toBe('Invalid file format');
+    expect(result).not.toContain('PRIVATE-UPLOAD');
+  });
+
+  test('preserves legacy "exceeds token limit" details by default', () => {
     expect(resolveUploadErrorMessage({ message: 'Content exceeds token limit' })).toBe(
       'Content exceeds token limit',
     );
   });
 
-  test('surfaces "Unable to extract text from" errors', () => {
+  test('maps "exceeds token limit" errors to a fixed message when redaction is enabled', () => {
+    const result = resolveUploadErrorMessage(
+      {
+        message: 'PRIVATE-UPLOAD content exceeds token limit',
+      },
+      undefined,
+      true,
+    );
+
+    expect(result).toBe('File content exceeds token limit');
+    expect(result).not.toContain('PRIVATE-UPLOAD');
+  });
+
+  test('preserves legacy "Unable to extract text from" details by default', () => {
     const msg = 'Unable to extract text from "doc.pdf". The document may be image-based.';
     expect(resolveUploadErrorMessage({ message: msg })).toBe(msg);
+  });
+
+  test('maps "Unable to extract text from" errors to a fixed message when redaction is enabled', () => {
+    const result = resolveUploadErrorMessage(
+      {
+        message: 'Unable to extract text from "PRIVATE-UPLOAD.pdf". Provider response followed.',
+      },
+      undefined,
+      true,
+    );
+
+    expect(result).toBe('Unable to extract text from file');
+    expect(result).not.toContain('PRIVATE-UPLOAD');
   });
 
   test('accepts a custom default message', () => {
     expect(resolveUploadErrorMessage(null, 'Custom default')).toBe('Custom default');
   });
 
-  test('uses custom default in file_ids prepend', () => {
+  test('uses custom default in the legacy file_ids message', () => {
     expect(resolveUploadErrorMessage({ message: 'file_ids limit' }, 'Upload failed')).toBe(
       'Upload failed: file_ids limit',
+    );
+  });
+
+  test('uses custom default in the redacted file_ids message', () => {
+    expect(resolveUploadErrorMessage({ message: 'file_ids limit' }, 'Upload failed', true)).toBe(
+      'Upload failed: File limit reached',
     );
   });
 });

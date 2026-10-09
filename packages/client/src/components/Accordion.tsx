@@ -1,19 +1,28 @@
 import * as React from 'react';
-import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { ChevronDownIcon } from '@radix-ui/react-icons';
+import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { cn } from '~/utils';
 
-const Accordion = AccordionPrimitive.Root;
+const Accordion: React.ForwardRefExoticComponent<
+  (AccordionPrimitive.AccordionSingleProps | AccordionPrimitive.AccordionMultipleProps) &
+    React.RefAttributes<HTMLDivElement>
+> = AccordionPrimitive.Root;
 
-const AccordionItem = React.forwardRef<
+const AccordionItem: React.ForwardRefExoticComponent<
+  Omit<AccordionPrimitive.AccordionItemProps & React.RefAttributes<HTMLDivElement>, 'ref'> &
+    React.RefAttributes<HTMLDivElement>
+> = React.forwardRef<
   React.ElementRef<typeof AccordionPrimitive.Item>,
   React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Item>
 >(({ className = '', ...props }, ref) => (
-  <AccordionPrimitive.Item ref={ref} className={cn('border-b', className)} {...props} />
+  <AccordionPrimitive.Item ref={ref} className={cn(className)} {...props} />
 ));
 AccordionItem.displayName = 'AccordionItem';
 
-const AccordionTrigger = React.forwardRef<
+const AccordionTrigger: React.ForwardRefExoticComponent<
+  Omit<AccordionPrimitive.AccordionTriggerProps & React.RefAttributes<HTMLButtonElement>, 'ref'> &
+    React.RefAttributes<HTMLButtonElement>
+> = React.forwardRef<
   React.ElementRef<typeof AccordionPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Trigger>
 >(({ className = '', children, ...props }, ref) => (
@@ -27,22 +36,25 @@ const AccordionTrigger = React.forwardRef<
       {...props}
     >
       {children}
-      <ChevronDownIcon className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200" />
+      <ChevronDownIcon className="text-text-secondary h-4 w-4 shrink-0 transition-transform duration-200" />
     </AccordionPrimitive.Trigger>
   </AccordionPrimitive.Header>
 ));
 AccordionTrigger.displayName = AccordionPrimitive.Trigger.displayName;
 
-const AccordionContent = React.forwardRef<
+const AccordionContent: React.ForwardRefExoticComponent<
+  Omit<AccordionPrimitive.AccordionContentProps & React.RefAttributes<HTMLDivElement>, 'ref'> &
+    React.RefAttributes<HTMLDivElement>
+> = React.forwardRef<
   React.ElementRef<typeof AccordionPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Content>
 >(({ className = '', children, ...props }, ref) => (
   <AccordionPrimitive.Content
     ref={ref}
-    className="overflow-y-hidden overflow-x-visible text-sm transition-opacity data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down data-[state=closed]:opacity-0 data-[state=open]:opacity-100"
+    className="data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down overflow-x-visible overflow-y-hidden text-sm transition-opacity data-[state=closed]:opacity-0 data-[state=open]:opacity-100"
     {...props}
   >
-    <div className={cn('pb-4 pt-0', className)}>{children}</div>
+    <div className={cn('pt-0 pb-4', className)}>{children}</div>
   </AccordionPrimitive.Content>
 ));
 AccordionContent.displayName = AccordionPrimitive.Content.displayName;

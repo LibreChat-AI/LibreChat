@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { useForm } from 'react-hook-form';
 import { Turnstile } from '@marsidev/react-turnstile';
-import { ThemeContext, Spinner, Button, isDark } from '@librechat/client';
+import {
+  ThemeContext,
+  SecretInput,
+  Spinner,
+  Button,
+  Input,
+  isDark,
+  floatingLabel,
+} from '@librechat/client';
 import type { TLoginUser, TStartupConfig } from 'librechat-data-provider';
 import type { TAuthContext } from '~/common';
 import { useResendVerificationEmail, useGetStartupConfig } from '~/data-provider';
@@ -31,6 +39,11 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
   const useUsernameLogin = config?.ldap?.username;
   const validTheme = isDark(theme) ? 'dark' : 'light';
   const requireCaptcha = Boolean(startupConfig.turnstile?.siteKey);
+  /** The `webauthn` token lets the browser offer a passkey inline in this field's autofill. */
+  const baseAutoComplete = useUsernameLogin ? 'username' : 'email';
+  const emailAutoComplete = startupConfig.passkeyLoginEnabled
+    ? `${baseAutoComplete} webauthn`
+    : baseAutoComplete;
 
   useEffect(() => {
     if (error && error.includes('422') && !showResendLink) {
@@ -52,7 +65,7 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
   const renderError = (fieldName: string) => {
     const errorMessage = errors[fieldName]?.message;
     return errorMessage ? (
-      <span role="alert" className="mt-1 text-sm text-red-600 dark:text-red-500">
+      <span role="alert" className="text-text-destructive mt-1 text-sm">
         {String(errorMessage)}
       </span>
     ) : null;
@@ -69,11 +82,11 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
   return (
     <>
       {showResendLink && (
-        <div className="mt-2 rounded-md border border-green-500 bg-green-500/10 px-3 py-2 text-sm text-gray-600 dark:text-gray-200">
+        <div className="border-status-success-border bg-status-success-subtle text-text-secondary mt-2 rounded-md border px-3 py-2 text-sm">
           {localize('com_auth_email_verification_resend_prompt')}
           <button
             type="button"
-            className="ml-2 text-blue-600 hover:underline"
+            className="text-link ml-2 hover:underline"
             onClick={handleResendEmail}
             disabled={resendLinkMutation.isLoading}
           >
@@ -89,10 +102,11 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
       >
         <div className="mb-4">
           <div className="relative">
-            <input
+            <Input
+              colorTransition
               type="text"
               id="email"
-              autoComplete={useUsernameLogin ? 'username' : 'email'}
+              autoComplete={emailAutoComplete}
               aria-label={localize('com_auth_email')}
               {...register('email', {
                 required: localize('com_auth_email_required'),
@@ -102,13 +116,10 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
                   : (value) => validateEmail(value, localize('com_auth_email_pattern')),
               })}
               aria-invalid={!!errors.email}
-              className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+              variant="floating"
               placeholder=" "
             />
-            <label
-              htmlFor="email"
-              className="absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-green-600 dark:peer-focus:text-green-500 rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4"
-            >
+            <label htmlFor="email" className={floatingLabel}>
               {useUsernameLogin
                 ? localize('com_auth_username').replace(/ \(.*$/, '')
                 : localize('com_auth_email_address')}
@@ -118,8 +129,8 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
         </div>
         <div className="mb-2">
           <div className="relative">
-            <input
-              type="password"
+            <SecretInput
+              colorTransition
               id="password"
               autoComplete="current-password"
               aria-label={localize('com_auth_password')}
@@ -132,22 +143,17 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
                 maxLength: { value: 128, message: localize('com_auth_password_max_length') },
               })}
               aria-invalid={!!errors.password}
-              className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+              variant="floating"
               placeholder=" "
+              label={localize('com_auth_password')}
             />
-            <label
-              htmlFor="password"
-              className="absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-green-600 dark:peer-focus:text-green-500 rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4"
-            >
-              {localize('com_auth_password')}
-            </label>
           </div>
           {renderError('password')}
         </div>
         {startupConfig.passwordResetEnabled && (
           <a
             href="/forgot-password"
-            className="inline-flex p-1 text-sm font-medium text-green-600 underline decoration-transparent transition-all duration-200 hover:text-green-700 hover:decoration-green-700 focus:text-green-700 focus:decoration-green-700 dark:text-green-500 dark:hover:text-green-400 dark:hover:decoration-green-400 dark:focus:text-green-400 dark:focus:decoration-green-400"
+            className="text-accent-primary hover:text-accent-primary-hover hover:decoration-accent-primary-hover focus:text-accent-primary-hover focus:decoration-accent-primary-hover inline-flex p-1 text-sm font-medium underline decoration-transparent transition-all duration-200"
           >
             {localize('com_auth_password_forgot')}
           </a>
@@ -175,7 +181,8 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
             type="submit"
             disabled={(requireCaptcha && !turnstileToken) || isSubmitting}
             variant="submit"
-            className="h-12 w-full rounded-2xl"
+            shape="soft"
+            className="h-12 w-full"
           >
             {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
           </Button>

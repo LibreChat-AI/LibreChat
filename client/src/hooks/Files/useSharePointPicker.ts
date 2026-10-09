@@ -285,6 +285,10 @@ export default function useSharePointPicker({
         },
         selection: {
           mode: 'multiple',
+          /** Without this the picker drops the current selection every time the user
+           * opens another folder or switches pivot, so a selection can only ever be
+           * assembled from one location. */
+          enablePersistence: true,
           maximumCount: maxSelectionCount,
         },
         title: localize('com_files_sharepoint_picker_title'),

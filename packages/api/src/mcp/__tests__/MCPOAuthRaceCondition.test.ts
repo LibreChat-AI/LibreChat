@@ -14,6 +14,7 @@ import type { OAuthTestServer } from './helpers/oauthTestServer';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { MCPTokenStorage, MCPOAuthHandler, ReauthenticationRequiredError } from '~/mcp/oauth';
 import { MockKeyv, createOAuthMCPServer } from './helpers/oauthTestServer';
+import { OAuthLifecycleRelay } from '~/mcp/oauth/pending';
 import { FlowStateManager } from '~/flow/manager';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -31,7 +32,13 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('~/auth', () => ({
   createSSRFSafeUndiciConnect: jest.fn(() => undefined),
+  isOAuthUrlAllowed: jest.fn(() => false),
+  isSSRFTarget: jest.fn(() => false),
   resolveHostnameSSRF: jest.fn(async () => false),
+}));
+
+jest.mock('~/auth/domain', () => ({
+  isMCPDomainAllowed: jest.fn().mockResolvedValue(true),
 }));
 
 jest.mock('~/mcp/mcpConfig', () => ({
@@ -43,9 +50,48 @@ const mockLogger = logger as jest.Mocked<typeof logger>;
 describe('MCP OAuth Race Condition Fixes', () => {
   afterEach(() => {
     jest.clearAllMocks();
+    jest.restoreAllMocks();
   });
 
   describe('Fix 1: Connection mutex coalesces concurrent attempts', () => {
+    it('does not overwrite a newer prompt while inspecting stored flow state', async () => {
+      const ownerOAuthStart = jest.fn().mockResolvedValue(undefined);
+      const waiterOAuthStart = jest.fn().mockResolvedValue(undefined);
+      let resolveFlow: ((flow: object) => void) | undefined;
+      const flowManager = {
+        getFlowState: jest.fn(
+          () =>
+            new Promise<object>((resolve) => {
+              resolveFlow = resolve;
+            }),
+        ),
+      };
+      const relay = new OAuthLifecycleRelay({
+        oauthStart: ownerOAuthStart,
+        logPrefix: '[MCP][test]',
+      });
+
+      await relay.start('https://auth.example.com/old');
+      const addWaiter = relay.add({
+        oauthStart: waiterOAuthStart,
+        flowManager: flowManager as never,
+        userId: 'user-1',
+        serverName: 'test-server',
+      });
+
+      expect(flowManager.getFlowState).toHaveBeenCalledTimes(1);
+      await relay.start('https://auth.example.com/new');
+      resolveFlow?.({
+        createdAt: Date.now(),
+        metadata: { authorizationUrl: 'https://auth.example.com/old' },
+        status: 'PENDING',
+      });
+      await addWaiter;
+
+      expect(waiterOAuthStart).toHaveBeenCalledTimes(1);
+      expect(waiterOAuthStart).toHaveBeenCalledWith('https://auth.example.com/new', undefined);
+    });
+
     it('should return the same pending promise for concurrent getUserConnection calls', async () => {
       const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
 
@@ -60,7 +106,9 @@ describe('MCP OAuth Race Condition Fixes', () => {
       const manager = new TestManager();
 
       const mockConnection = {
+        on: jest.fn(),
         isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue(undefined),
         disconnect: jest.fn().mockResolvedValue(undefined),
         isStale: jest.fn().mockReturnValue(false),
       };
@@ -75,7 +123,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
         dbId: undefined,
       };
 
-      jest
+      const registrySpy = jest
         .spyOn(
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
@@ -86,6 +134,14 @@ describe('MCP OAuth Race Condition Fixes', () => {
           shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
           getAllowedDomains: jest.fn().mockReturnValue(null),
           getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
+          }),
         });
 
       const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
@@ -95,27 +151,353 @@ describe('MCP OAuth Race Condition Fixes', () => {
         return mockConnection as never;
       });
 
-      const store = new MockKeyv();
-      const flowManager = new FlowStateManager(store as unknown as Keyv, { ttl: 30000, ci: true });
-      const user = { id: 'user-1' };
-      const opts = {
+      try {
+        const store = new MockKeyv();
+        const flowManager = new FlowStateManager(store as unknown as Keyv, {
+          ttl: 30000,
+          ci: true,
+        });
+        const user = { id: 'user-1' };
+        const opts = {
+          serverName: 'test-server',
+          user: user as never,
+          flowManager: flowManager as never,
+        };
+
+        const [conn1, conn2, conn3] = await Promise.all([
+          manager.getUserConnection(opts),
+          manager.getUserConnection(opts),
+          manager.getUserConnection(opts),
+        ]);
+
+        expect(conn1).toBe(conn2);
+        expect(conn2).toBe(conn3);
+        expect(createSpy).toHaveBeenCalledTimes(1);
+        expect(manager.createCallCount).toBe(1);
+      } finally {
+        createSpy.mockRestore();
+        registrySpy.mockRestore();
+      }
+    });
+
+    it('cancels after asynchronous lookup without starting connection creation', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      const { MCPServersRegistry } = await import('~/mcp/registry/MCPServersRegistry');
+      class TestManager extends UserConnectionManager {}
+      const manager = new TestManager();
+      let resolveConfig!: (config: object) => void;
+      const config = new Promise<object>((resolve) => {
+        resolveConfig = resolve;
+      });
+      const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+        getServerConfig: jest.fn().mockReturnValue(config),
+      } as never);
+      const createSpy = jest.spyOn(MCPConnectionFactory, 'create');
+      const controller = new AbortController();
+
+      const creation = manager.getUserConnection({
         serverName: 'test-server',
-        user: user as never,
-        flowManager: flowManager as never,
+        user: { id: 'user-cancelled' } as never,
+        signal: controller.signal,
+      });
+      controller.abort(new Error('request cancelled'));
+      resolveConfig({ type: 'sse', url: 'https://mcp.example.com' });
+
+      await expect(creation).rejects.toThrow('request cancelled');
+      expect(createSpy).not.toHaveBeenCalled();
+      registrySpy.mockRestore();
+      createSpy.mockRestore();
+    });
+
+    it('waits for a different config generation and then creates its own connection', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      class TestManager extends UserConnectionManager {}
+      const manager = new TestManager();
+      manager.appConnections = {} as never;
+      const connection = (name: string) =>
+        ({
+          name,
+          on: jest.fn(),
+          isConnected: jest.fn().mockResolvedValue(true),
+          refreshToolList: jest.fn().mockResolvedValue(undefined),
+          removeAllListeners: jest.fn(),
+          dispose: jest.fn().mockResolvedValue(undefined),
+          isStale: jest.fn().mockReturnValue(false),
+        }) as never;
+      const secondConnection = connection('second');
+      const firstFailure = new Error('first target unavailable');
+      let releaseFirst!: () => void;
+      const firstHeld = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const createSpy = jest
+        .spyOn(MCPConnectionFactory, 'create')
+        .mockImplementation(async (options) => {
+          if (
+            'url' in options.serverConfig &&
+            options.serverConfig.url === 'https://first.example.com'
+          ) {
+            await firstHeld;
+            throw firstFailure;
+          }
+          return secondConnection;
+        });
+      const registrySpy = jest
+        .spyOn(
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
+          'getInstance',
+        )
+        .mockReturnValue({
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+          }),
+        });
+      const user = { id: 'user-generation' } as never;
+      const first = manager.getUserConnection({
+        serverName: 'test-server',
+        user,
+        connectionTarget: {
+          connectionOwner: 'principal',
+          serverConfig: { type: 'sse', url: 'https://first.example.com' },
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const waiterOAuthStart = jest.fn();
+      const second = manager.getUserConnection({
+        serverName: 'test-server',
+        user,
+        oauthStart: waiterOAuthStart,
+        connectionTarget: {
+          connectionOwner: 'principal',
+          serverConfig: { type: 'sse', url: 'https://second.example.com' },
+        },
+      });
+      releaseFirst();
+
+      await expect(first).rejects.toBe(firstFailure);
+      await expect(second).resolves.toBe(secondConnection);
+      expect(createSpy).toHaveBeenCalledTimes(2);
+      expect(waiterOAuthStart).not.toHaveBeenCalled();
+      registrySpy.mockRestore();
+      createSpy.mockRestore();
+    });
+
+    it('should re-issue the pending OAuth URL when joining an in-flight connection', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+
+      class TestManager extends UserConnectionManager {}
+
+      const manager = new TestManager();
+
+      const mockConnection = {
+        on: jest.fn(),
+        isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        isStale: jest.fn().mockReturnValue(false),
       };
 
-      const [conn1, conn2, conn3] = await Promise.all([
-        manager.getUserConnection(opts),
-        manager.getUserConnection(opts),
-        manager.getUserConnection(opts),
-      ]);
+      const mockAppConnections = { has: jest.fn().mockResolvedValue(false) };
+      manager.appConnections = mockAppConnections as never;
 
-      expect(conn1).toBe(conn2);
-      expect(conn2).toBe(conn3);
-      expect(createSpy).toHaveBeenCalledTimes(1);
-      expect(manager.createCallCount).toBe(1);
+      const mockConfig = {
+        type: 'streamable-http',
+        url: 'http://localhost:9999/',
+        updatedAt: undefined,
+        dbId: undefined,
+      };
 
-      createSpy.mockRestore();
+      const registrySpy = jest
+        .spyOn(
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
+          'getInstance',
+        )
+        .mockReturnValue({
+          getServerConfig: jest.fn().mockResolvedValue(mockConfig),
+          shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
+          getAllowedDomains: jest.fn().mockReturnValue(null),
+          getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
+          }),
+        });
+
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      const createSpy = jest.spyOn(MCPConnectionFactory, 'create').mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+        return mockConnection as never;
+      });
+
+      try {
+        const store = new MockKeyv();
+        const flowManager = new FlowStateManager(store as unknown as Keyv, {
+          ttl: 30000,
+          ci: true,
+        });
+        const user = { id: 'user-oauth' };
+        const serverName = 'test-server';
+        const authorizationUrl = 'https://auth.example.com/existing';
+        await flowManager.initFlow(`${user.id}:${serverName}`, 'mcp_oauth', { authorizationUrl });
+
+        const firstConnection = manager.getUserConnection({
+          serverName,
+          user: user as never,
+          flowManager: flowManager as never,
+        });
+        const oauthStart = jest.fn().mockResolvedValue(undefined);
+        const joinedConnection = manager.getUserConnection({
+          serverName,
+          user: user as never,
+          flowManager: flowManager as never,
+          oauthStart,
+        });
+
+        const [conn1, conn2] = await Promise.all([firstConnection, joinedConnection]);
+
+        expect(conn1).toBe(conn2);
+        expect(oauthStart).toHaveBeenCalledWith(
+          authorizationUrl,
+          expect.objectContaining({ expiresAt: expect.any(Number) }),
+        );
+        expect(createSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        createSpy.mockRestore();
+        registrySpy.mockRestore();
+      }
+    });
+
+    it('should preserve pending OAuth expiry when joining after the prompt was emitted', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+
+      class TestManager extends UserConnectionManager {}
+
+      const manager = new TestManager();
+
+      const mockConnection = {
+        on: jest.fn(),
+        isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        isStale: jest.fn().mockReturnValue(false),
+      };
+
+      const mockAppConnections = { has: jest.fn().mockResolvedValue(false) };
+      manager.appConnections = mockAppConnections as never;
+
+      const mockConfig = {
+        type: 'streamable-http',
+        url: 'http://localhost:9999/',
+        requiresOAuth: true,
+        updatedAt: undefined,
+        dbId: undefined,
+      };
+
+      const registrySpy = jest
+        .spyOn(
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
+          'getInstance',
+        )
+        .mockReturnValue({
+          getServerConfig: jest.fn().mockResolvedValue(mockConfig),
+          shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
+          getAllowedDomains: jest.fn().mockReturnValue(null),
+          getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
+          }),
+        });
+
+      let releaseConnection: () => void = () => undefined;
+      const connectionReleased = new Promise<void>((resolve) => {
+        releaseConnection = resolve;
+      });
+
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      const authorizationUrl = 'https://auth.example.com/current';
+      const createSpy = jest
+        .spyOn(MCPConnectionFactory, 'create')
+        .mockImplementation(async (_basicOptions, oauthOptions) => {
+          if (oauthOptions && 'oauthStart' in oauthOptions) {
+            await oauthOptions.oauthStart?.(authorizationUrl);
+          }
+          await connectionReleased;
+          if (oauthOptions && 'oauthEnd' in oauthOptions) {
+            await oauthOptions.oauthEnd?.();
+          }
+          return mockConnection as never;
+        });
+
+      try {
+        const store = new MockKeyv();
+        const flowManager = new FlowStateManager(store as unknown as Keyv, {
+          ttl: 30000,
+          ci: true,
+        });
+        const user = { id: 'user-oauth-emitted' };
+        const serverName = 'test-server';
+        await flowManager.initFlow(`${user.id}:${serverName}`, 'mcp_oauth', { authorizationUrl });
+
+        const firstOAuthStart = jest.fn().mockResolvedValue(undefined);
+        const firstOAuthEnd = jest.fn().mockRejectedValue(new Error('owner response is stale'));
+        const firstConnection = manager.getUserConnection({
+          serverName,
+          user: user as never,
+          flowManager: flowManager as never,
+          oauthStart: firstOAuthStart,
+          oauthEnd: firstOAuthEnd,
+        });
+        for (let i = 0; i < 20 && firstOAuthStart.mock.calls.length === 0; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(firstOAuthStart).toHaveBeenCalledWith(authorizationUrl, undefined);
+
+        const joinedOAuthStart = jest.fn().mockResolvedValue(undefined);
+        const joinedOAuthEnd = jest.fn().mockResolvedValue(undefined);
+        const joinedConnection = manager.getUserConnection({
+          serverName,
+          user: user as never,
+          flowManager: flowManager as never,
+          oauthStart: joinedOAuthStart,
+          oauthEnd: joinedOAuthEnd,
+        });
+
+        for (let i = 0; i < 20 && joinedOAuthStart.mock.calls.length === 0; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(joinedOAuthStart).toHaveBeenCalledWith(
+          authorizationUrl,
+          expect.objectContaining({ expiresAt: expect.any(Number) }),
+        );
+
+        releaseConnection();
+        const [conn1, conn2] = await Promise.all([firstConnection, joinedConnection]);
+
+        expect(conn1).toBe(conn2);
+        expect(firstOAuthEnd).toHaveBeenCalledTimes(1);
+        expect(joinedOAuthEnd).toHaveBeenCalledTimes(1);
+        expect(createSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseConnection();
+        createSpy.mockRestore();
+        registrySpy.mockRestore();
+      }
     });
 
     it('should not coalesce when forceNew is true', async () => {
@@ -127,8 +509,12 @@ describe('MCP OAuth Race Condition Fixes', () => {
 
       let callCount = 0;
       const makeConnection = () => ({
+        on: jest.fn(),
         isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue(undefined),
         disconnect: jest.fn().mockResolvedValue(undefined),
+        removeAllListeners: jest.fn(),
+        dispose: jest.fn().mockResolvedValue(undefined),
         isStale: jest.fn().mockReturnValue(false),
       });
 
@@ -142,7 +528,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
         dbId: undefined,
       };
 
-      jest
+      const registrySpy = jest
         .spyOn(
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
@@ -153,36 +539,215 @@ describe('MCP OAuth Race Condition Fixes', () => {
           shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
           getAllowedDomains: jest.fn().mockReturnValue(null),
           getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
+          }),
         });
 
       const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
-      jest.spyOn(MCPConnectionFactory, 'create').mockImplementation(async () => {
+      const createSpy = jest.spyOn(MCPConnectionFactory, 'create').mockImplementation(async () => {
         callCount++;
         await new Promise((r) => setTimeout(r, 50));
         return makeConnection() as never;
       });
 
-      const store = new MockKeyv();
-      const flowManager = new FlowStateManager(store as unknown as Keyv, { ttl: 30000, ci: true });
-      const user = { id: 'user-2' };
+      try {
+        const store = new MockKeyv();
+        const flowManager = new FlowStateManager(store as unknown as Keyv, {
+          ttl: 30000,
+          ci: true,
+        });
+        const user = { id: 'user-2' };
 
-      const [conn1, conn2] = await Promise.all([
-        manager.getUserConnection({
+        const [conn1, conn2] = await Promise.all([
+          manager.getUserConnection({
+            serverName: 'test-server',
+            forceNew: true,
+            user: user as never,
+            flowManager: flowManager as never,
+          }),
+          manager.getUserConnection({
+            serverName: 'test-server',
+            forceNew: true,
+            user: user as never,
+            flowManager: flowManager as never,
+          }),
+        ]);
+
+        expect(callCount).toBe(2);
+        expect(conn1).not.toBe(conn2);
+        expect(conn1.removeAllListeners).toHaveBeenCalledWith('toolsChanged');
+        expect(conn1.dispose).toHaveBeenCalledTimes(1);
+      } finally {
+        createSpy.mockRestore();
+        registrySpy.mockRestore();
+      }
+    });
+
+    it('waits for an ordinary pending connection before forcing its replacement', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+
+      class TestManager extends UserConnectionManager {}
+
+      const manager = new TestManager();
+      const makeConnection = () => ({
+        on: jest.fn(),
+        isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        removeAllListeners: jest.fn(),
+        dispose: jest.fn().mockResolvedValue(undefined),
+        isStale: jest.fn().mockReturnValue(false),
+      });
+      const firstConnection = makeConnection();
+      const secondConnection = makeConnection();
+      manager.appConnections = { has: jest.fn().mockResolvedValue(false) } as never;
+
+      const registrySpy = jest
+        .spyOn(
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
+          'getInstance',
+        )
+        .mockReturnValue({
+          getServerConfig: jest.fn().mockResolvedValue({
+            type: 'streamable-http',
+            url: 'http://localhost:9999/',
+          }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+          }),
+        });
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      let releaseFirstCreation: () => void = () => undefined;
+      const firstCreation = new Promise<void>((resolve) => {
+        releaseFirstCreation = resolve;
+      });
+      const createSpy = jest
+        .spyOn(MCPConnectionFactory, 'create')
+        .mockImplementationOnce(async () => {
+          await firstCreation;
+          return firstConnection as never;
+        })
+        .mockResolvedValueOnce(secondConnection as never);
+      const user = { id: 'ordinary-and-force-new-user' };
+
+      try {
+        const ordinary = manager.getUserConnection({
+          serverName: 'test-server',
+          user: user as never,
+        });
+        for (let attempt = 0; attempt < 20 && createSpy.mock.calls.length === 0; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(createSpy).toHaveBeenCalledTimes(1);
+
+        const forced = manager.getUserConnection({
           serverName: 'test-server',
           forceNew: true,
           user: user as never,
-          flowManager: flowManager as never,
-        }),
-        manager.getUserConnection({
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(createSpy).toHaveBeenCalledTimes(1);
+
+        releaseFirstCreation();
+        const [ordinaryConnection, forcedConnection] = await Promise.all([ordinary, forced]);
+
+        expect(ordinaryConnection).toBe(firstConnection);
+        expect(forcedConnection).toBe(secondConnection);
+        expect(createSpy).toHaveBeenCalledTimes(2);
+        expect(firstConnection.removeAllListeners).toHaveBeenCalledWith('toolsChanged');
+        expect(firstConnection.dispose).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseFirstCreation();
+        createSpy.mockRestore();
+        registrySpy.mockRestore();
+      }
+    });
+
+    it('waits for an in-flight forced replacement before creating an ordinary connection', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+
+      class TestManager extends UserConnectionManager {}
+
+      const manager = new TestManager();
+      const replacementConnection = {
+        on: jest.fn(),
+        isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        removeAllListeners: jest.fn(),
+        dispose: jest.fn().mockResolvedValue(undefined),
+        isStale: jest.fn().mockReturnValue(false),
+      };
+      manager.appConnections = { has: jest.fn().mockResolvedValue(false) } as never;
+
+      const registrySpy = jest
+        .spyOn(
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
+          'getInstance',
+        )
+        .mockReturnValue({
+          getServerConfig: jest.fn().mockResolvedValue({
+            type: 'streamable-http',
+            url: 'http://localhost:9999/',
+          }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+          }),
+        });
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      let releaseReplacement: () => void = () => undefined;
+      const replacementStarted = new Promise<void>((resolve) => {
+        releaseReplacement = resolve;
+      });
+      const createSpy = jest.spyOn(MCPConnectionFactory, 'create').mockImplementation(async () => {
+        await replacementStarted;
+        return replacementConnection as never;
+      });
+      const user = { id: 'force-new-before-ordinary-user' };
+
+      try {
+        const forced = manager.getUserConnection({
           serverName: 'test-server',
           forceNew: true,
           user: user as never,
-          flowManager: flowManager as never,
-        }),
-      ]);
+        });
+        for (let attempt = 0; attempt < 20 && createSpy.mock.calls.length === 0; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(createSpy).toHaveBeenCalledTimes(1);
 
-      expect(callCount).toBe(2);
-      expect(conn1).not.toBe(conn2);
+        const ordinary = manager.getUserConnection({
+          serverName: 'test-server',
+          user: user as never,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(createSpy).toHaveBeenCalledTimes(1);
+
+        releaseReplacement();
+        const [forcedConnection, ordinaryConnection] = await Promise.all([forced, ordinary]);
+
+        expect(forcedConnection).toBe(replacementConnection);
+        expect(ordinaryConnection).toBe(replacementConnection);
+        expect(createSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseReplacement();
+        createSpy.mockRestore();
+        registrySpy.mockRestore();
+      }
     });
   });
 
@@ -321,6 +886,157 @@ describe('MCP OAuth Race Condition Fixes', () => {
     });
   });
 
+  describe('deleteFlowAndStateMapping (uninstall teardown)', () => {
+    const createFlowManager = () => {
+      const store = new MockKeyv();
+      return new FlowStateManager<MCPOAuthTokens | null>(store as unknown as Keyv, {
+        ttl: 30000,
+        ci: true,
+      });
+    };
+
+    it('deletes both the flow and its state mapping', async () => {
+      const flowManager = createFlowManager();
+      const flowId = 'user1:test-server';
+      const state = 'random-state-abc123';
+
+      await flowManager.initFlow(flowId, 'mcp_oauth', { state });
+      await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
+
+      await MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager);
+
+      expect(await MCPOAuthHandler.resolveStateToFlowId(state, flowManager)).toBeNull();
+      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeFalsy();
+    });
+
+    it('handles tenant-prefixed flow ids', async () => {
+      const flowManager = createFlowManager();
+      const flowId = 'tenant:acme:user1:test-server';
+      const state = 'tenant-state-xyz789';
+
+      await flowManager.initFlow(flowId, 'mcp_oauth', { state });
+      await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
+
+      await MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager);
+
+      expect(await MCPOAuthHandler.resolveStateToFlowId(state, flowManager)).toBeNull();
+      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeFalsy();
+    });
+
+    it('is a no-op when the flow is absent and leaves unrelated mappings intact', async () => {
+      const flowManager = createFlowManager();
+      const otherFlowId = 'user2:other-server';
+      const otherState = 'other-state-def456';
+
+      await flowManager.initFlow(otherFlowId, 'mcp_oauth', { state: otherState });
+      await MCPOAuthHandler.storeStateMapping(otherState, otherFlowId, flowManager);
+
+      await expect(
+        MCPOAuthHandler.deleteFlowAndStateMapping('user1:missing-server', flowManager),
+      ).resolves.toBeUndefined();
+
+      expect(await MCPOAuthHandler.resolveStateToFlowId(otherState, flowManager)).toBe(otherFlowId);
+    });
+
+    it('deletes the flow before the state mapping', async () => {
+      const flowManager = createFlowManager();
+      const flowId = 'user1:test-server';
+      const state = 'ordered-state-ghi789';
+
+      await flowManager.initFlow(flowId, 'mcp_oauth', { state });
+      await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
+
+      const calls: string[] = [];
+      const guardedDeleteSpy = jest.spyOn(flowManager, 'deleteFlowIfCurrent');
+      guardedDeleteSpy.mockImplementation(async (id, type) => {
+        calls.push(`${type}:${id}`);
+        return 'updated';
+      });
+      const deleteFlowSpy = jest.spyOn(flowManager, 'deleteFlow');
+      deleteFlowSpy.mockImplementation(async (id, type) => {
+        calls.push(`${type}:${id}`);
+        return true;
+      });
+
+      await MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager);
+
+      expect(calls).toEqual([`mcp_oauth:${flowId}`, `mcp_oauth_state:${state}`]);
+    });
+
+    it('still deletes the flow and rejects when the mapping delete hits a storage error', async () => {
+      const flowManager = createFlowManager();
+      const flowId = 'user1:test-server';
+      const state = 'failing-state-jkl012';
+
+      await flowManager.initFlow(flowId, 'mcp_oauth', { state });
+      await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
+
+      const realDeleteFlow = flowManager.deleteFlow.bind(flowManager);
+      jest.spyOn(flowManager, 'deleteFlow').mockImplementation(async (id, type) => {
+        if (type === 'mcp_oauth_state') {
+          return false;
+        }
+        return realDeleteFlow(id, type);
+      });
+
+      await expect(MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager)).rejects.toThrow(
+        'Failed to fully delete OAuth flow',
+      );
+
+      /** The callback-capable flow must not survive token deletion */
+      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeFalsy();
+    });
+
+    it('still deletes the mapping and rejects when the flow delete hits a storage error', async () => {
+      const flowManager = createFlowManager();
+      const flowId = 'user1:test-server';
+      const state = 'restore-state-mno345';
+
+      await flowManager.initFlow(flowId, 'mcp_oauth', { state });
+      await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
+
+      jest.spyOn(flowManager, 'deleteFlowIfCurrent').mockResolvedValue('missing');
+
+      await expect(MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager)).rejects.toThrow(
+        'Failed to fully delete OAuth flow',
+      );
+
+      /** The surviving flow must not stay callback-capable: its state no longer resolves */
+      expect(await MCPOAuthHandler.resolveStateToFlowId(state, flowManager)).toBeNull();
+      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeTruthy();
+    });
+
+    it('does not blindly delete the flow when the metadata read hits a storage error', async () => {
+      const flowManager = createFlowManager();
+      const flowId = 'user1:test-server';
+      const state = 'unreadable-state-pqr678';
+
+      await flowManager.initFlow(flowId, 'mcp_oauth', { state });
+      await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
+
+      jest
+        .spyOn(flowManager, 'getFlowState')
+        .mockRejectedValueOnce(new Error('read connection lost'));
+
+      await expect(MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager)).rejects.toThrow(
+        'read connection lost',
+      );
+
+      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeTruthy();
+    });
+
+    it('still deletes the flow when metadata carries no state', async () => {
+      const flowManager = createFlowManager();
+      const flowId = 'user1:stateless-server';
+
+      await flowManager.initFlow(flowId, 'mcp_oauth', { serverName: 'stateless-server' });
+
+      await MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager);
+
+      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeFalsy();
+    });
+  });
+
   describe('Fix 4: ReauthenticationRequiredError for no-refresh-token', () => {
     it('should throw ReauthenticationRequiredError when access token expired and no refresh token', async () => {
       const expiredDate = new Date(Date.now() - 60000);
@@ -370,6 +1086,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
 
     it('should not throw when access token is valid', async () => {
       const futureDate = new Date(Date.now() + 3600000);
+      const credentialSetId = 'valid-access-credential-set';
 
       const findToken = jest.fn().mockImplementation(async (filter: { type?: string }) => {
         if (filter.type === 'mcp_oauth') {
@@ -377,10 +1094,23 @@ describe('MCP OAuth Race Condition Fixes', () => {
             token: 'enc:valid-access-token',
             expiresAt: futureDate,
             createdAt: new Date(),
+            metadata: { credential_set_id: credentialSetId },
           };
         }
         if (filter.type === 'mcp_oauth_refresh') {
           return null;
+        }
+        if (filter.type === 'mcp_oauth_client') {
+          return {
+            token: 'enc:{"client_id":"test-client"}',
+            metadata: {
+              credential_set_id: credentialSetId,
+              authorization_endpoint: 'https://auth.example.com/authorize',
+              token_endpoint: 'https://auth.example.com/token',
+              server_url: 'https://mcp.example.com/',
+              client_source: 'dynamic',
+            },
+          };
         }
         return null;
       });

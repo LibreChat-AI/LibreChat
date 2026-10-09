@@ -35,6 +35,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
+  updateUser: jest.fn(),
 }));
 
 jest.mock('~/server/services/Config', () => ({
@@ -176,6 +177,140 @@ describe('socialLogin', () => {
       expect(callback).toHaveBeenCalledWith(null, existingUser);
     });
 
+    it('does not migrate the provider id on the chat path (only admin path migrates)', async () => {
+      const { updateUser } = require('~/models');
+      const provider = 'google';
+      const googleId = 'google-user-chat';
+      const email = 'chat@example.com';
+
+      const existingUser = {
+        _id: 'chatUser',
+        email: email,
+        provider: 'google',
+      };
+
+      findUser.mockResolvedValueOnce(null).mockResolvedValueOnce(existingUser);
+
+      const mockProfile = {
+        id: googleId,
+        emails: [{ value: email, verified: true }],
+        photos: [{ value: 'https://example.com/avatar.png' }],
+        name: { givenName: 'Chat', familyName: 'User' },
+      };
+
+      const loginFn = socialLogin(provider, mockGetProfileDetails);
+      const callback = jest.fn();
+
+      await loginFn(null, null, null, mockProfile, callback);
+
+      expect(updateUser).not.toHaveBeenCalled();
+      expect(handleExistingUser).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(null, existingUser);
+    });
+
+    it('migrates the missing provider id when finding by email fallback (admin path)', async () => {
+      const { updateUser } = require('~/models');
+      const provider = 'google';
+      const googleId = 'google-user-789';
+      const email = 'admin@example.com';
+
+      const existingUser = {
+        _id: 'admin789',
+        email: email,
+        provider: 'google',
+      };
+
+      findUser.mockResolvedValueOnce(null).mockResolvedValueOnce(existingUser);
+
+      const mockProfile = {
+        id: googleId,
+        emails: [{ value: email, verified: true }],
+        photos: [{ value: 'https://example.com/avatar.png' }],
+        name: { givenName: 'Admin', familyName: 'User' },
+      };
+
+      const loginFn = socialLogin(provider, mockGetProfileDetails, { existingUsersOnly: true });
+      const callback = jest.fn();
+
+      await loginFn(null, null, null, mockProfile, callback);
+
+      expect(updateUser).toHaveBeenCalledWith('admin789', { googleId });
+      expect(existingUser.googleId).toBe(googleId);
+      expect(handleExistingUser).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(null, existingUser);
+    });
+
+    it('blocks migration via email fallback for a tenanted user (no tenant scope in OAuth callback)', async () => {
+      const { updateUser } = require('~/models');
+      const provider = 'google';
+      const googleId = 'google-user-cross';
+      const email = 'admin@tenantb.example.com';
+
+      const tenantedUser = {
+        _id: 'tenant-b-user',
+        email: email,
+        provider: 'google',
+        tenantId: 'tenant-b',
+      };
+
+      findUser.mockResolvedValueOnce(null).mockResolvedValueOnce(tenantedUser);
+
+      const mockProfile = {
+        id: googleId,
+        emails: [{ value: email, verified: true }],
+        photos: [{ value: 'https://example.com/avatar.png' }],
+        name: { givenName: 'Admin', familyName: 'User' },
+      };
+
+      const loginFn = socialLogin(provider, mockGetProfileDetails, { existingUsersOnly: true });
+      const callback = jest.fn();
+
+      await loginFn(null, null, null, mockProfile, callback);
+
+      expect(updateUser).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ code: ErrorTypes.AUTH_FAILED }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Admin migrate blocked for tenanted user'),
+      );
+    });
+
+    it('rejects the admin email fallback when stored provider id differs from the current sub', async () => {
+      const provider = 'google';
+      const googleId = 'google-user-new';
+      const email = 'admin@example.com';
+
+      const existingUser = {
+        _id: 'admin789',
+        email: email,
+        provider: 'google',
+        googleId: 'google-user-old',
+      };
+
+      findUser.mockResolvedValueOnce(null).mockResolvedValueOnce(existingUser);
+
+      const mockProfile = {
+        id: googleId,
+        emails: [{ value: email, verified: true }],
+        photos: [{ value: 'https://example.com/avatar.png' }],
+        name: { givenName: 'Admin', familyName: 'User' },
+      };
+
+      const loginFn = socialLogin(provider, mockGetProfileDetails, { existingUsersOnly: true });
+      const callback = jest.fn();
+
+      await loginFn(null, null, null, mockProfile, callback);
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        `[${provider}Login] Rejected admin email fallback for ${email}: stored ${provider}Id does not match`,
+      );
+      expect(handleExistingUser).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ code: ErrorTypes.AUTH_FAILED }),
+      );
+    });
+
     it('should create new user if not found by provider ID or email', async () => {
       const provider = 'google';
       const googleId = 'google-new-user';
@@ -215,6 +350,7 @@ describe('socialLogin', () => {
         name: 'New User',
         emailVerified: true,
         appConfig: expect.any(Object),
+        lookup: { findUser, provider, providerId: googleId, email },
       });
 
       expect(callback).toHaveBeenCalledWith(null, newUser);
@@ -357,6 +493,68 @@ describe('socialLogin', () => {
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({ message: 'Email domain not allowed' }),
       );
+    });
+
+    it('does not forward the refresh token as authInfo for non-google providers', async () => {
+      const provider = 'github';
+      const githubId = 'gh-user-123';
+      const email = 'user@example.com';
+
+      const existingUser = {
+        _id: 'ghUser',
+        email,
+        provider: 'github',
+        githubId,
+      };
+
+      findUser.mockResolvedValue(existingUser);
+
+      const mockProfile = {
+        id: githubId,
+        emails: [{ value: email, verified: true }],
+        photos: [{ value: 'https://example.com/avatar.png' }],
+        name: { givenName: 'GitHub', familyName: 'User' },
+      };
+
+      const loginFn = socialLogin(provider, mockGetProfileDetails);
+      const callback = jest.fn();
+
+      await loginFn(null, 'github-refresh-token', null, mockProfile, callback);
+
+      expect(callback).toHaveBeenCalledWith(null, existingUser);
+      expect(callback).not.toHaveBeenCalledWith(null, existingUser, expect.anything());
+    });
+
+    it('passes the IdP refresh token through as authInfo when present', async () => {
+      const provider = 'google';
+      const googleId = 'google-with-refresh';
+      const email = 'admin@example.com';
+
+      const existingUser = {
+        _id: 'userRefresh',
+        email,
+        provider: 'google',
+        googleId,
+        role: 'ADMIN',
+      };
+
+      findUser.mockResolvedValue(existingUser);
+
+      const mockProfile = {
+        id: googleId,
+        emails: [{ value: email, verified: true }],
+        photos: [{ value: 'https://example.com/avatar.png' }],
+        name: { givenName: 'Admin', familyName: 'User' },
+      };
+
+      const loginFn = socialLogin(provider, mockGetProfileDetails);
+      const callback = jest.fn();
+
+      await loginFn(null, 'idp-refresh-token', null, mockProfile, callback);
+
+      expect(callback).toHaveBeenCalledWith(null, existingUser, {
+        refreshToken: 'idp-refresh-token',
+      });
     });
   });
 });

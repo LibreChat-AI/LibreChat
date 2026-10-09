@@ -1,13 +1,9 @@
 import cleanupUser from './cleanupUser';
+import { getE2EUser } from './user';
 
 async function globalTeardown() {
-  const user = {
-    email: String(process.env.E2E_USER_EMAIL),
-    password: String(process.env.E2E_USER_PASSWORD),
-  };
-
   try {
-    await cleanupUser(user);
+    await cleanupUser(getE2EUser());
   } catch (error) {
     console.error('Error:', error);
   }

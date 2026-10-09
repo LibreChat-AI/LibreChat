@@ -1,7 +1,7 @@
 import { Schema } from 'mongoose';
 import type { IAssistant } from '~/types';
 
-const assistantSchema = new Schema<IAssistant>(
+const assistantSchema: Schema<IAssistant> = new Schema<IAssistant>(
   {
     user: {
       type: Schema.Types.ObjectId,
@@ -12,6 +12,9 @@ const assistantSchema = new Schema<IAssistant>(
       type: String,
       index: true,
       required: true,
+    },
+    endpoint: {
+      type: String,
     },
     avatar: {
       type: Schema.Types.Mixed,
@@ -39,5 +42,7 @@ const assistantSchema = new Schema<IAssistant>(
     timestamps: true,
   },
 );
+
+assistantSchema.index({ tenantId: 1, 'avatar.filepath': 1 });
 
 export default assistantSchema;

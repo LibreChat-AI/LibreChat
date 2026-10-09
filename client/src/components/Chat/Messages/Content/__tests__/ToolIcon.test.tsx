@@ -1,6 +1,10 @@
 import { Constants, actionDelimiter } from 'librechat-data-provider';
 import { getToolIconType } from '../ToolOutput/ToolIcon';
 
+jest.mock('~/utils', () => ({
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
+}));
+
 describe('getToolIconType - ACTN-01: Action delimiter detection', () => {
   it('returns "action" for tool name containing actionDelimiter', () => {
     const toolName = `get_weather${actionDelimiter}weather---api---com`;
@@ -20,6 +24,20 @@ describe('getToolIconType - ACTN-01: Action delimiter detection', () => {
 
   it('returns "generic" for plain tool name without delimiters', () => {
     expect(getToolIconType('some_plain_tool')).toBe('generic');
+  });
+
+  it('gives native file authoring tools their row glyphs without changing MCP identity', () => {
+    expect(getToolIconType('create_file')).toBe('create_file');
+    expect(getToolIconType('edit_file')).toBe('edit_file');
+    expect(getToolIconType(`create_file${Constants.mcp_delimiter}remote`)).toBe('mcp');
+    expect(getToolIconType(`edit_file${Constants.mcp_delimiter}remote`)).toBe('mcp');
+  });
+
+  it('gives the native background-task tool its own icon while preserving MCP identity', () => {
+    expect(getToolIconType(Constants.CHECK_BACKGROUND_TASK)).toBe('background_tasks');
+    expect(
+      getToolIconType(`${Constants.CHECK_BACKGROUND_TASK}${Constants.mcp_delimiter}remote`),
+    ).toBe('mcp');
   });
 
   it('returns correct types for existing tool names', () => {
@@ -46,15 +64,21 @@ describe('getToolIconType - SKILL-01: Skill tool icon types', () => {
     expect(getToolIconType('bash_tool')).toBe('bash_tool');
   });
 
+  it('returns "bash_tool" for bash PTC tool calls', () => {
+    expect(getToolIconType(Constants.BASH_PROGRAMMATIC_TOOL_CALLING)).toBe('bash_tool');
+  });
+
   it('skill types take priority over the "generic" fallback', () => {
     expect(getToolIconType('skill')).not.toBe('generic');
     expect(getToolIconType('read_file')).not.toBe('generic');
     expect(getToolIconType('bash_tool')).not.toBe('generic');
+    expect(getToolIconType(Constants.BASH_PROGRAMMATIC_TOOL_CALLING)).not.toBe('generic');
   });
 
   it('skill types take priority over the "action" fallback', () => {
     expect(getToolIconType('skill')).not.toBe('action');
     expect(getToolIconType('read_file')).not.toBe('action');
     expect(getToolIconType('bash_tool')).not.toBe('action');
+    expect(getToolIconType(Constants.BASH_PROGRAMMATIC_TOOL_CALLING)).not.toBe('action');
   });
 });

@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import type { TMessage } from 'librechat-data-provider';
-import { MessagesViewContext } from '~/Providers/MessagesViewContext';
-import type { MessagesViewContextValue } from '~/Providers/MessagesViewContext';
+import type { MessagesViewContextValue, MessagesOperations } from '~/Providers/MessagesViewContext';
+import { MessagesViewContext, MessagesOperationsContext } from '~/Providers/MessagesViewContext';
 
 interface ShareMessagesProviderProps {
   messages: TMessage[];
@@ -21,8 +21,10 @@ export function ShareMessagesProvider({ messages, children }: ShareMessagesProvi
     () => ({
       conversation: null,
       conversationId: undefined,
+      // Read-only so app bridges never proxy auth-bearing calls against the viewer's MCP servers.
+      readOnly: true,
       // These are required by the context but not used in share view
-      ask: () => Promise.resolve(),
+      ask: () => {},
       regenerate: () => {},
       handleContinue: () => {},
       latestMessageId: messages[messages.length - 1]?.messageId,
@@ -31,14 +33,26 @@ export function ShareMessagesProvider({ messages, children }: ShareMessagesProvi
       abortScroll: false,
       setAbortScroll: () => {},
       index: 0,
-      setLatestMessage: () => {},
       getMessages: () => messages,
       setMessages: () => {},
     }),
     [messages],
   );
 
+  const operations = useMemo<MessagesOperations>(
+    () => ({
+      ask: contextValue.ask,
+      regenerate: contextValue.regenerate,
+      handleContinue: contextValue.handleContinue,
+      getMessages: contextValue.getMessages,
+      setMessages: contextValue.setMessages,
+    }),
+    [contextValue],
+  );
+
   return (
-    <MessagesViewContext.Provider value={contextValue}>{children}</MessagesViewContext.Provider>
+    <MessagesOperationsContext.Provider value={operations}>
+      <MessagesViewContext.Provider value={contextValue}>{children}</MessagesViewContext.Provider>
+    </MessagesOperationsContext.Provider>
   );
 }

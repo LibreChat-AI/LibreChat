@@ -62,6 +62,14 @@ describe('initializeS3', () => {
     );
   });
 
+  it('should only calculate request checksums when S3 requires them', async () => {
+    const { MockS3Client, initializeS3 } = await load();
+    initializeS3();
+    expect(MockS3Client).toHaveBeenCalledWith(
+      expect.objectContaining({ requestChecksumCalculation: 'WHEN_REQUIRED' }),
+    );
+  });
+
   it('should not include endpoint when AWS_ENDPOINT_URL is not set', async () => {
     const { MockS3Client, initializeS3 } = await load();
     initializeS3();

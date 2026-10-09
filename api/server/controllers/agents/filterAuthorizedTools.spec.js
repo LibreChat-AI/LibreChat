@@ -1,12 +1,13 @@
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
-const { Constants } = require('librechat-data-provider');
+const { Constants, actionDelimiter } = require('librechat-data-provider');
 const { agentSchema } = require('@librechat/data-schemas');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const d = Constants.mcp_delimiter;
 
 const mockGetAllServerConfigs = jest.fn();
+const mockUserCanUseMCPServers = jest.fn();
 
 jest.mock('~/server/services/Config', () => ({
   getCachedTools: jest.fn().mockResolvedValue({
@@ -24,6 +25,10 @@ jest.mock('~/config', () => ({
 
 jest.mock('~/server/services/MCP', () => ({
   resolveConfigServers: jest.fn().mockResolvedValue({}),
+  createMCPPermissionContext: jest.fn((req) => ({
+    canUseServers: (user) => mockUserCanUseMCPServers(user, req),
+  })),
+  userCanUseMCPServers: (...args) => mockUserCanUseMCPServers(...args),
 }));
 
 jest.mock('~/server/services/Files/strategies', () => ({
@@ -106,6 +111,7 @@ describe('MCP Tool Authorization', () => {
       authorizedServer: { type: 'sse', url: 'https://authorized.example.com' },
       anotherServer: { type: 'sse', url: 'https://another.example.com' },
     });
+    mockUserCanUseMCPServers.mockResolvedValue(true);
 
     mockReq = {
       user: {
@@ -127,11 +133,13 @@ describe('MCP Tool Authorization', () => {
   describe('filterAuthorizedTools', () => {
     const availableTools = { web_search: true, custom_tool: true };
     const userId = 'test-user-123';
+    const testUser = { id: userId, role: 'USER' };
 
     test('should keep authorized MCP tools and strip unauthorized ones', async () => {
       const result = await filterAuthorizedTools({
         tools: [`toolA${d}authorizedServer`, `toolB${d}forbiddenServer`, 'web_search'],
         userId,
+        user: testUser,
         availableTools,
       });
 
@@ -140,14 +148,47 @@ describe('MCP Tool Authorization', () => {
       expect(result).not.toContain(`toolB${d}forbiddenServer`);
     });
 
+    test('should strip MCP tools when user lacks MCP server use permission', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+
+      const result = await filterAuthorizedTools({
+        tools: [
+          `toolA${d}authorizedServer`,
+          `${Constants.mcp_all}${d}authorizedServer`,
+          'web_search',
+        ],
+        userId,
+        user: testUser,
+        availableTools,
+      });
+
+      expect(result).toEqual(['web_search']);
+      expect(mockUserCanUseMCPServers).toHaveBeenCalledWith({ id: userId, role: 'USER' });
+      expect(mockGetAllServerConfigs).not.toHaveBeenCalled();
+    });
+
+    test('should strip MCP tools when user context is missing', async () => {
+      mockUserCanUseMCPServers.mockResolvedValueOnce(false);
+
+      const result = await filterAuthorizedTools({
+        tools: [`toolA${d}authorizedServer`, 'web_search'],
+        userId,
+        availableTools,
+      });
+
+      expect(result).toEqual(['web_search']);
+      expect(mockUserCanUseMCPServers).toHaveBeenCalledWith(undefined);
+      expect(mockGetAllServerConfigs).not.toHaveBeenCalled();
+    });
+
     test('should keep system tools without querying MCP registry', async () => {
       const result = await filterAuthorizedTools({
-        tools: ['execute_code', 'file_search', 'web_search'],
+        tools: ['execute_code', 'file_search', 'web_search', 'memory'],
         userId,
         availableTools: {},
       });
 
-      expect(result).toEqual(['execute_code', 'file_search', 'web_search']);
+      expect(result).toEqual(['execute_code', 'file_search', 'web_search', 'memory']);
       expect(mockGetAllServerConfigs).not.toHaveBeenCalled();
     });
 
@@ -170,6 +211,7 @@ describe('MCP Tool Authorization', () => {
       const result = await filterAuthorizedTools({
         tools: [`toolA${d}someServer`, 'web_search'],
         userId,
+        user: testUser,
         availableTools,
       });
 
@@ -188,6 +230,7 @@ describe('MCP Tool Authorization', () => {
           `steal${d}nonexistent`,
         ],
         userId,
+        user: testUser,
         availableTools,
       });
 
@@ -224,6 +267,7 @@ describe('MCP Tool Authorization', () => {
       await filterAuthorizedTools({
         tools: [`tool${d}authorizedServer`],
         userId: 'specific-user-id',
+        user: { id: 'specific-user-id', role: 'USER' },
         availableTools,
       });
 
@@ -241,6 +285,7 @@ describe('MCP Tool Authorization', () => {
       const result = await filterAuthorizedTools({
         tools: [`tool${d}config-override-server`, `tool${d}unauthorizedServer`],
         userId,
+        user: testUser,
         availableTools,
         configServers,
       });
@@ -254,6 +299,7 @@ describe('MCP Tool Authorization', () => {
       await filterAuthorizedTools({
         tools: [`tool1${d}authorizedServer`, `tool2${d}anotherServer`, `tool3${d}unknownServer`],
         userId,
+        user: testUser,
         availableTools,
       });
 
@@ -270,6 +316,7 @@ describe('MCP Tool Authorization', () => {
       const result = await filterAuthorizedTools({
         tools: [...existingTools, `newTool${d}unknownServer`, 'web_search'],
         userId,
+        user: testUser,
         availableTools,
         existingTools,
       });
@@ -288,45 +335,142 @@ describe('MCP Tool Authorization', () => {
       const result = await filterAuthorizedTools({
         tools: [`toolA${d}serverA`, 'web_search'],
         userId,
+        user: testUser,
         availableTools,
       });
 
       expect(result).toEqual(['web_search']);
     });
 
-    test('should not preserve malformed existing tools when registry is unavailable', async () => {
+    test('should not preserve a tool key with no delimiter at all when registry is unavailable', async () => {
+      // A key that isn't a real MCP tool key (no delimiter, so it has no
+      // resolvable server) is rejected regardless of the existing-tools
+      // fallback - unlike a key with multiple delimiters, which does have a
+      // resolvable server (the segment after the last delimiter) and is
+      // covered separately below.
       getMCPServersRegistry.mockImplementation(() => {
         throw new Error('MCPServersRegistry has not been initialized.');
       });
 
-      const malformedTool = `a${d}b${d}c`;
+      // Deliberately not named anything containing "_mcp_" - that would
+      // ironically make it an MCP tool key itself, exactly the class of
+      // naming collision this whole regression is about. (Confirmed
+      // programmatically, not just by eye - it's an easy mistake to repeat.)
+      const noDelimiterTool = 'regular_web_tool';
       const result = await filterAuthorizedTools({
-        tools: [malformedTool, `legit${d}serverA`, 'web_search'],
+        tools: [noDelimiterTool, `legit${d}serverA`, 'web_search'],
         userId,
+        user: testUser,
         availableTools,
-        existingTools: [malformedTool, `legit${d}serverA`],
+        existingTools: [noDelimiterTool, `legit${d}serverA`],
       });
 
       expect(result).toContain(`legit${d}serverA`);
       expect(result).toContain('web_search');
-      expect(result).not.toContain(malformedTool);
+      expect(result).not.toContain(noDelimiterTool);
     });
 
-    test('should reject malformed MCP tool keys with multiple delimiters', async () => {
+    test('should preserve an existing MCP tool key with multiple delimiters when registry is unavailable', async () => {
+      // Regression test for https://github.com/LibreChat-AI/LibreChat/issues/14440:
+      // a tool key with more than one delimiter occurrence is not inherently
+      // malformed - it just means the raw tool-name half (everything before
+      // the *last* delimiter) itself contains the delimiter substring, which
+      // legitimately happens with some upstream MCP tool names. The
+      // registry-unavailable fallback should treat it like any other
+      // previously-persisted tool, not single it out as broken.
+      getMCPServersRegistry.mockImplementation(() => {
+        throw new Error('MCPServersRegistry has not been initialized.');
+      });
+
+      const multiDelimiterTool = `a${d}b${d}c`;
+      const result = await filterAuthorizedTools({
+        tools: [multiDelimiterTool, `legit${d}serverA`, 'web_search'],
+        userId,
+        user: testUser,
+        availableTools,
+        existingTools: [multiDelimiterTool, `legit${d}serverA`],
+      });
+
+      expect(result).toContain(multiDelimiterTool);
+      expect(result).toContain(`legit${d}serverA`);
+      expect(result).toContain('web_search');
+    });
+
+    test('should gate app-level MCP tools present in the global tool cache', async () => {
+      const appMcpTool = `appTool${d}authorizedServer`;
+      const forbiddenAppMcpTool = `appTool${d}forbiddenServer`;
+      const cacheWithMCPTools = {
+        ...availableTools,
+        [appMcpTool]: true,
+        [forbiddenAppMcpTool]: true,
+      };
+
+      const result = await filterAuthorizedTools({
+        tools: [appMcpTool, forbiddenAppMcpTool, 'web_search'],
+        userId,
+        user: testUser,
+        availableTools: cacheWithMCPTools,
+      });
+
+      expect(result).toContain(appMcpTool);
+      expect(result).toContain('web_search');
+      expect(result).not.toContain(forbiddenAppMcpTool);
+    });
+
+    test('should strip app-level MCP tools from the cache when user lacks MCP server use permission', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      const appMcpTool = `appTool${d}authorizedServer`;
+      const cacheWithMCPTools = { ...availableTools, [appMcpTool]: true };
+
+      const result = await filterAuthorizedTools({
+        tools: [appMcpTool, 'web_search'],
+        userId,
+        user: testUser,
+        availableTools: cacheWithMCPTools,
+      });
+
+      expect(result).toEqual(['web_search']);
+      expect(mockGetAllServerConfigs).not.toHaveBeenCalled();
+    });
+
+    test('should resolve MCP tool keys with multiple delimiters using the last segment as the server name', async () => {
+      // Regression test for https://github.com/LibreChat-AI/LibreChat/issues/14440.
+      // A tool key with more than one delimiter occurrence is not inherently
+      // malformed - it means the raw tool-name half (the part before the
+      // *last* delimiter, which is always the segment LibreChat itself
+      // appends) legitimately contains the delimiter substring. Previously
+      // any key with >2 segments was rejected outright; now the server name
+      // is always the last segment, matching how the key is actually built.
+      //
+      // `multiSegmentTool` below has an unrelated string ("victimServer")
+      // embedded in its raw-tool-name half purely to prove there's no way to
+      // spoof a *different* server via that embedded text - only the real
+      // last segment ("authorizedServer") is ever consulted for
+      // authorization, so this does not grant access to anything the user
+      // isn't already allowed to use.
+      const multiSegmentTool = `attack${d}victimServer${d}authorizedServer`;
+      const unauthorizedMultiSegmentTool = `a${d}b${d}c${d}forbiddenServer`;
+
       const result = await filterAuthorizedTools({
         tools: [
-          `attack${d}victimServer${d}authorizedServer`,
+          multiSegmentTool,
           `legit${d}authorizedServer`,
-          `a${d}b${d}c${d}d`,
+          unauthorizedMultiSegmentTool,
           'web_search',
         ],
         userId,
+        user: testUser,
         availableTools,
       });
 
-      expect(result).toEqual([`legit${d}authorizedServer`, 'web_search']);
-      expect(result).not.toContainEqual(expect.stringContaining('victimServer'));
-      expect(result).not.toContainEqual(expect.stringContaining(`a${d}b`));
+      expect(result).toContain(multiSegmentTool);
+      expect(result).toContain(`legit${d}authorizedServer`);
+      expect(result).toContain('web_search');
+      // The unrelated embedded text does not let the key resolve to a
+      // different, unauthorized server: only the true last segment
+      // ("forbiddenServer", not in the mocked server configs) is checked,
+      // and it's correctly rejected.
+      expect(result).not.toContain(unauthorizedMultiSegmentTool);
     });
   });
 
@@ -346,6 +490,27 @@ describe('MCP Tool Authorization', () => {
       expect(agent.tools).toContain('web_search');
       expect(agent.tools).toContain(`validTool${d}authorizedServer`);
       expect(agent.tools).not.toContain(`attack${d}forbiddenServer`);
+    });
+
+    test('should strip all MCP tools on create when user lacks MCP server use permission', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.body = {
+        provider: 'openai',
+        model: 'gpt-4',
+        name: 'MCP Denied Test Agent',
+        tools: [
+          'web_search',
+          `validTool${d}authorizedServer`,
+          `${Constants.mcp_all}${d}authorizedServer`,
+        ],
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const agent = mockRes.json.mock.calls[0][0];
+      expect(agent.tools).toEqual(['web_search']);
+      expect(agent.mcpServerNames).toEqual([]);
     });
 
     test('should not 500 when MCP registry is uninitialized', async () => {
@@ -446,6 +611,129 @@ describe('MCP Tool Authorization', () => {
       expect(updatedAgent.tools).not.toContain(`attack${d}forbiddenServer`);
     });
 
+    test('should strip all MCP tools, including retained ones, when user lacks MCP server use permission', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = {
+        tools: ['web_search', `existingTool${d}authorizedServer`, `newTool${d}anotherServer`],
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.json).toHaveBeenCalled();
+      const updatedAgent = mockRes.json.mock.calls[0][0];
+      // Permission revoked: update must not preserve stale MCP bindings, matching
+      // the create/duplicate/revert paths.
+      expect(updatedAgent.tools).toEqual(['web_search']);
+      expect(mockGetAllServerConfigs).not.toHaveBeenCalled();
+    });
+
+    test('should strip retained MCP tools on an unrelated owner edit after permission revocation', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = {
+        name: 'Renamed After Revocation',
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.json).toHaveBeenCalled();
+      const updatedAgent = mockRes.json.mock.calls[0][0];
+      expect(updatedAgent.tools).toEqual(['web_search']);
+      expect(updatedAgent.name).toBe('Renamed After Revocation');
+    });
+
+    test('should not strip shared agent MCP tools on unrelated editor changes after revocation', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.user.id = new mongoose.Types.ObjectId().toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = {
+        name: 'Shared Rename After Revocation',
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.json).toHaveBeenCalled();
+      const updatedAgent = mockRes.json.mock.calls[0][0];
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(updatedAgent.tools).toContain(`existingTool${d}authorizedServer`);
+      expect(updatedAgent.name).toBe('Shared Rename After Revocation');
+      expect(agentInDb.tools).toContain(`existingTool${d}authorizedServer`);
+      expect(agentInDb.mcpServerNames).toEqual(['authorizedServer']);
+    });
+
+    test('should not strip shared agent MCP tools on frontend-style full tools save after revocation', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.user.id = new mongoose.Types.ObjectId().toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = {
+        name: 'Shared Full Save After Revocation',
+        tools: ['web_search', `existingTool${d}authorizedServer`],
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.json).toHaveBeenCalled();
+      const updatedAgent = mockRes.json.mock.calls[0][0];
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(updatedAgent.tools).toContain(`existingTool${d}authorizedServer`);
+      expect(updatedAgent.name).toBe('Shared Full Save After Revocation');
+      expect(agentInDb.tools).toContain(`existingTool${d}authorizedServer`);
+      expect(agentInDb.mcpServerNames).toEqual(['authorizedServer']);
+      expect(mockGetAllServerConfigs).not.toHaveBeenCalled();
+    });
+
+    test('should reject new shared-agent MCP tools after revocation while retaining existing MCP tools', async () => {
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.user.id = new mongoose.Types.ObjectId().toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = {
+        tools: ['web_search', `existingTool${d}authorizedServer`, `newTool${d}anotherServer`],
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.json).toHaveBeenCalled();
+      const updatedAgent = mockRes.json.mock.calls[0][0];
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(updatedAgent.tools).toContain(`existingTool${d}authorizedServer`);
+      expect(updatedAgent.tools).not.toContain(`newTool${d}anotherServer`);
+      expect(agentInDb.tools).toContain(`existingTool${d}authorizedServer`);
+      expect(agentInDb.tools).not.toContain(`newTool${d}anotherServer`);
+      expect(agentInDb.mcpServerNames).toEqual(['authorizedServer']);
+      expect(mockGetAllServerConfigs).not.toHaveBeenCalled();
+    });
+
+    test('should not strip action tools whose operationId contains the MCP delimiter on revocation', async () => {
+      // `sync_mcp_state_action_...` contains the `_mcp_` substring but is a
+      // genuine OpenAPI action tool (isActionTool === true). Losing
+      // MCP_SERVERS.USE must not drop it — action use is unrelated to MCP.
+      const actionTool = `sync_mcp_state${actionDelimiter}api---example---com`;
+      await Agent.updateOne(
+        { id: existingAgentId },
+        { $set: { tools: ['web_search', actionTool] } },
+      );
+
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = {
+        name: 'Edited Without MCP Permission',
+        tools: ['web_search', actionTool],
+      };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.json).toHaveBeenCalled();
+      const updatedAgent = mockRes.json.mock.calls[0][0];
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(updatedAgent.tools).toContain(actionTool);
+      expect(updatedAgent.tools).toContain('web_search');
+      expect(agentInDb.mcpServerNames).toEqual([]);
+    });
+
     test('should allow adding authorized MCP tools', async () => {
       mockReq.user.id = existingAgentAuthorId.toString();
       mockReq.params.id = existingAgentId;
@@ -458,6 +746,62 @@ describe('MCP Tool Authorization', () => {
       expect(mockRes.json).toHaveBeenCalled();
       const updatedAgent = mockRes.json.mock.calls[0][0];
       expect(updatedAgent.tools).toContain(`newTool${d}anotherServer`);
+    });
+
+    test('should drop mcpServerNames for a server detached in the same edit that adds another', async () => {
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      /** Swapping servers in one edit: authorizedServer loses its only tool while
+       *  anotherServer gains one. Carrying the prior names forward wholesale would
+       *  leave authorizedServer indexed, so its viewers would keep agent-scoped
+       *  access to a server the agent no longer references. */
+      mockReq.body = { tools: ['web_search', `newTool${d}anotherServer`] };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.tools).not.toContain(`existingTool${d}authorizedServer`);
+      expect(agentInDb.tools).toContain(`newTool${d}anotherServer`);
+      expect(agentInDb.mcpServerNames).toEqual(['anotherServer']);
+    });
+
+    test('should preserve resolved mcpServerNames when a non-owner retains MCP tools', async () => {
+      /** The shared-agent path keeps the existing MCP tools verbatim; re-deriving the
+       *  index from their keys would turn a delimiter-bearing configured server into
+       *  its trailing segment, which `ServerConfigsDB` then treats as a DB server. */
+      await Agent.updateOne(
+        { id: existingAgentId },
+        {
+          tools: ['web_search', `existingTool${d}Google${d}Workspace`],
+          mcpServerNames: [`Google${d}Workspace`],
+        },
+      );
+      mockUserCanUseMCPServers.mockResolvedValue(false);
+      mockReq.user.id = new mongoose.Types.ObjectId().toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = { tools: ['web_search', `existingTool${d}Google${d}Workspace`] };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.mcpServerNames).toEqual([`Google${d}Workspace`]);
+      expect(agentInDb.mcpServerNames).not.toContain('Workspace');
+    });
+
+    test('should let persistence derive when an unindexed agent retains MCP tools', async () => {
+      /** A legacy or partially migrated agent can hold MCP tools with no stored
+       *  mcpServerNames. Pinning the index to [] here would suppress the derivation
+       *  in updateAgent and strip agent-scoped access to its DB-backed server. */
+      await Agent.updateOne({ id: existingAgentId }, { $unset: { mcpServerNames: 1 } });
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = { tools: ['web_search', `existingTool${d}authorizedServer`] };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.tools).toContain(`existingTool${d}authorizedServer`);
+      expect(agentInDb.mcpServerNames).toEqual(['authorizedServer']);
     });
 
     test('should not query MCP registry when no new MCP tools added', async () => {

@@ -1,7 +1,7 @@
 import { memo } from 'react';
-import AddedConvo from './AddedConvo';
 import type { TConversation } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
+import AddedConvo from './AddedConvo';
 
 export default memo(function TextareaHeader({
   addedConvo,

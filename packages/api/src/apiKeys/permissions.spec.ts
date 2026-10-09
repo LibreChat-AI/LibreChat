@@ -5,7 +5,7 @@ import {
   PermissionBits,
   AccessRoleIds,
 } from 'librechat-data-provider';
-import { permissionBitSupersets } from '@librechat/data-schemas';
+import { permissionBitSupersets, tenantStorage } from '@librechat/data-schemas';
 import { enrichRemoteAgentPrincipals } from './permissions';
 import type { EnricherDependencies, Principal } from './permissions';
 
@@ -57,8 +57,8 @@ describe('enrichRemoteAgentPrincipals', () => {
 
       await enrichRemoteAgentPrincipals(deps, resourceId, []);
 
-      const pipeline = aggregateAclEntries.mock.calls[0][0];
-      const matchStage = pipeline[0].$match;
+      const pipeline = aggregateAclEntries.mock.calls[0][0] as Record<string, unknown>[];
+      const matchStage = pipeline[0].$match as Record<string, unknown>;
       expect(matchStage.resourceType).toBe(ResourceType.AGENT);
       expect(matchStage.principalType).toBe(PrincipalType.USER);
       expect(matchStage.resourceId).toBeInstanceOf(Types.ObjectId);
@@ -100,6 +100,33 @@ describe('enrichRemoteAgentPrincipals', () => {
       expect(matchStage.resourceId).toBeInstanceOf(Types.ObjectId);
       expect((matchStage.resourceId as Types.ObjectId).toString()).toBe(hexId);
     });
+
+    test('keeps the user lookup in simple localField/foreignField form', async () => {
+      const aggregateAclEntries = jest.fn().mockResolvedValue([]);
+      const deps: EnricherDependencies = {
+        aggregateAclEntries,
+        bulkWriteAclEntries: jest.fn(),
+        findRoleByIdentifier: jest.fn(),
+        logger: { error: jest.fn() },
+      };
+
+      await enrichRemoteAgentPrincipals(deps, resourceId, []);
+
+      const pipeline = aggregateAclEntries.mock.calls[0][0] as Record<string, unknown>[];
+      const lookupStage = pipeline.find((stage) => '$lookup' in stage) as
+        | { $lookup: Record<string, unknown> }
+        | undefined;
+      expect(lookupStage).toMatchObject({
+        $lookup: {
+          from: 'users',
+          localField: 'principalId',
+          foreignField: '_id',
+          as: 'userInfo',
+        },
+      });
+      expect(lookupStage?.$lookup).not.toHaveProperty('let');
+      expect(lookupStage?.$lookup).not.toHaveProperty('pipeline');
+    });
   });
 
   describe('enrichment behavior', () => {
@@ -131,6 +158,25 @@ describe('enrichRemoteAgentPrincipals', () => {
       ]);
 
       const result = await enrichRemoteAgentPrincipals(deps, resourceId, []);
+
+      expect(result.principals).toHaveLength(0);
+      expect(result.entriesToBackfill).toHaveLength(0);
+    });
+
+    test('skips joined userInfo outside the current request context', async () => {
+      const deps = makeDeps([
+        {
+          principalId: ownerUserId,
+          userInfo: makeUserInfo(ownerUserId, {
+            tenantId: 'tenant-b',
+            email: 'outside-user@example.com',
+          }),
+        },
+      ]);
+
+      const result = await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        enrichRemoteAgentPrincipals(deps, resourceId, []),
+      );
 
       expect(result.principals).toHaveLength(0);
       expect(result.entriesToBackfill).toHaveLength(0);

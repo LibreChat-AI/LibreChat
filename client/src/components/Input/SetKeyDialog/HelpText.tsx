@@ -15,7 +15,7 @@ function HelpText({ endpoint }: { endpoint: string }) {
             target="_blank"
             href="https://console.cloud.google.com/vertex-ai"
             rel="noreferrer"
-            className="text-blue-700 underline dark:text-blue-400"
+            className="text-link underline"
           >
             {localize('com_endpoint_config_key_google_vertex_ai')}
           </a>{' '}
@@ -24,7 +24,7 @@ function HelpText({ endpoint }: { endpoint: string }) {
             target="_blank"
             href="https://console.cloud.google.com/projectselector/iam-admin/serviceaccounts/create?walkthrough_id=iam--create-service-account#step_index=1"
             rel="noreferrer"
-            className="text-blue-700 underline dark:text-blue-400"
+            className="text-link underline"
           >
             {localize('com_endpoint_config_key_google_service_account')}
           </a>
@@ -39,7 +39,7 @@ function HelpText({ endpoint }: { endpoint: string }) {
             target="_blank"
             href="https://makersuite.google.com/app/apikey"
             rel="noreferrer"
-            className="text-blue-700 underline dark:text-blue-400"
+            className="text-link underline"
           >
             {localize('com_endpoint_config_click_here')}
           </a>{' '}

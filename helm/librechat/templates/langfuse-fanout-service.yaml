@@ -1,0 +1,23 @@
+{{- if .Values.langfuseFanout.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "librechat.langfuseFanout.fullname" . }}
+  labels:
+    {{- include "librechat.langfuseFanout.labels" . | nindent 4 }}
+  {{- with .Values.langfuseFanout.service.annotations }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.langfuseFanout.service.type }}
+  ports:
+    - name: otlp-http
+      port: {{ .Values.langfuseFanout.service.port }}
+      targetPort: otlp-http
+      protocol: TCP
+  selector:
+    {{- include "librechat.langfuseFanout.selectorLabels" . | nindent 4 }}
+{{- end }}

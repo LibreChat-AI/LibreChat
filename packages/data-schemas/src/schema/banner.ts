@@ -11,7 +11,7 @@ export interface IBanner extends Document {
   tenantId?: string;
 }
 
-const bannerSchema = new Schema<IBanner>(
+const bannerSchema: Schema<IBanner> = new Schema<IBanner>(
   {
     bannerId: {
       type: String,

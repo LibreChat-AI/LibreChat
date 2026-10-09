@@ -71,7 +71,7 @@ export default function ActionsPanel({
     },
   });
 
-  const { reset, watch } = methods;
+  const { reset } = methods;
 
   useEffect(() => {
     if (action?.metadata?.auth) {
@@ -95,72 +95,72 @@ export default function ActionsPanel({
     <FormProvider {...methods}>
       <form className="h-full grow overflow-hidden">
         <div className="h-full overflow-auto px-2 pb-12 text-sm">
-          <div className="relative flex flex-col items-center px-16 py-6 text-center">
-            <div className="absolute left-0 top-6">
+          <div className="flex flex-col py-3">
+            <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 pt-1">
               <button
                 type="button"
-                className="btn btn-neutral relative"
                 onClick={() => {
                   setActivePanel(Panel.builder);
                   setAction(undefined);
                 }}
+                aria-label={localize('com_ui_back_to_builder')}
+                className="border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary rounded-theme-control inline-flex h-10 w-10 shrink-0 items-center justify-center border transition-colors focus:outline-hidden focus-visible:ring-2"
               >
-                <div className="flex w-full items-center justify-center gap-2">
-                  <ChevronLeft />
-                </div>
+                <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
               </button>
-            </div>
-
-            {!!action && (
-              <OGDialog>
-                <OGDialogTrigger asChild>
-                  <div className="absolute right-0 top-6">
+              <h2 className="text-text-primary text-center text-base font-semibold">
+                {localize(action ? 'com_assistants_edit_actions' : 'com_assistants_add_actions')}
+              </h2>
+              {action ? (
+                <OGDialog>
+                  <OGDialogTrigger asChild>
                     <button
                       type="button"
                       disabled={!(assistant_id ?? '') || !action.action_id}
-                      className="btn btn-neutral border-token-border-light relative h-9 rounded-lg font-medium"
+                      aria-label={localize('com_ui_delete_action')}
+                      className="border-border-light hover:bg-surface-secondary focus-visible:ring-ring-primary text-text-destructive rounded-theme-control inline-flex h-10 w-10 shrink-0 items-center justify-center border transition-colors focus:outline-hidden focus-visible:ring-2 disabled:opacity-50"
                     >
-                      <TrashIcon className="text-red-500" />
+                      <TrashIcon className="h-4 w-4" />
                     </button>
-                  </div>
-                </OGDialogTrigger>
-                <OGDialogTemplate
-                  showCloseButton={false}
-                  title={localize('com_ui_delete_action')}
-                  className="max-w-[450px]"
-                  main={
-                    <Label className="text-left text-sm font-medium">
-                      {localize('com_ui_delete_action_confirm')}
-                    </Label>
-                  }
-                  selection={{
-                    selectHandler: () => {
-                      const currentId = assistant_id ?? '';
-                      if (!currentId) {
-                        return showToast({
-                          message: 'No assistant_id found, is the assistant created?',
-                          status: 'error',
+                  </OGDialogTrigger>
+                  <OGDialogTemplate
+                    showCloseButton={false}
+                    title={localize('com_ui_delete_action')}
+                    className="max-w-[28.125rem]"
+                    main={
+                      <Label className="text-left text-sm font-medium">
+                        {localize('com_ui_delete_action_confirm')}
+                      </Label>
+                    }
+                    selection={{
+                      selectHandler: () => {
+                        const currentId = assistant_id ?? '';
+                        if (!currentId) {
+                          return showToast({
+                            message: 'No assistant_id found, is the assistant created?',
+                            status: 'error',
+                          });
+                        }
+                        deleteAction.mutate({
+                          model: assistantMap?.[endpoint][currentId].model ?? '',
+                          action_id: action.action_id,
+                          assistant_id: currentId,
+                          endpoint,
                         });
-                      }
-                      deleteAction.mutate({
-                        model: assistantMap?.[endpoint][currentId].model ?? '',
-                        action_id: action.action_id,
-                        assistant_id: currentId,
-                        endpoint,
-                      });
-                    },
-                    selectClasses:
-                      'bg-red-700 dark:bg-red-600 hover:bg-red-800 dark:hover:bg-red-800 transition-color duration-200 text-white',
-                    selectText: localize('com_ui_delete'),
-                  }}
-                />
-              </OGDialog>
-            )}
-
-            <div className="text-xl font-medium">{(action ? 'Edit' : 'Add') + ' ' + 'actions'}</div>
-            <div className="text-xs text-text-secondary">
+                      },
+                      selectClasses:
+                        'bg-surface-destructive hover:bg-surface-destructive-hover transition-colors duration-200 text-text-on-status',
+                      selectText: localize('com_ui_delete'),
+                    }}
+                  />
+                </OGDialog>
+              ) : (
+                <span aria-hidden="true" className="h-10 w-10" />
+              )}
+            </header>
+            <p className="text-text-secondary mt-1 text-center text-xs">
               {localize('com_assistants_actions_info')}
-            </div>
+            </p>
             {/* <div className="text-sm text-text-secondary">
             <a href="https://help.openai.com/en/articles/8554397-creating-a-gpt" target="_blank" rel="noreferrer" className="font-medium">Learn more.</a>
           </div> */}

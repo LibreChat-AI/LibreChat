@@ -1,20 +1,29 @@
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
+import { getOAuthCallbackUrl } from './url';
+import { isEnabled } from '~/utils/common';
 
 export const OAUTH_CSRF_COOKIE = 'oauth_csrf';
-export const OAUTH_CSRF_MAX_AGE = 10 * 60 * 1000;
+export const OAUTH_CSRF_MAX_AGE: number = 10 * 60 * 1000;
 
 export const OAUTH_SESSION_COOKIE = 'oauth_session';
-export const OAUTH_SESSION_MAX_AGE = 24 * 60 * 60 * 1000;
+export const OAUTH_SESSION_MAX_AGE: number = 24 * 60 * 60 * 1000;
 export const OAUTH_SESSION_COOKIE_PATH = '/api';
 
 /**
  * Determines if secure cookies should be used.
- * Returns `true` in production unless the server is running on localhost (HTTP).
- * This allows cookies to work on `http://localhost` during local development
+ * SESSION_COOKIE_SECURE=true/false explicitly overrides the environment heuristic.
+ * Returns `true` in production unless DOMAIN_SERVER uses a localhost-style hostname.
+ * This allows cookies to work on localhost during local development
  * even when `NODE_ENV=production` (common in Docker Compose setups).
  */
 export function shouldUseSecureCookie(): boolean {
+  const secureOverride = process.env.SESSION_COOKIE_SECURE?.trim().toLowerCase();
+  if (secureOverride === 'true' || secureOverride === 'false') {
+    return isEnabled(secureOverride);
+  }
+
   const isProduction = process.env.NODE_ENV === 'production';
   const domainServer = process.env.DOMAIN_SERVER || '';
 
@@ -40,6 +49,83 @@ export function shouldUseSecureCookie(): boolean {
   return isProduction && !isLocalhost;
 }
 
+export const REFRESH_TOKEN_COOKIE = 'refreshToken';
+export const TOKEN_PROVIDER_COOKIE = 'token_provider';
+export const OPENID_USER_ID_COOKIE = 'openid_user_id';
+
+/**
+ * Writes the IdP refresh token to the `refreshToken` cookie. Single source of
+ * truth for the cookie's options so the login/refresh path
+ * (`setOpenIDAuthTokens`) and the inline OBO refresh path (`performIdpRefresh`)
+ * stay byte-for-byte in sync. The cookie outlives the (shorter) express-session
+ * cookie and is the fallback `refreshController` reads when the session copy is
+ * gone, so a rotated refresh token must land here too — otherwise a later
+ * session loss replays an invalidated token and signs the user out.
+ */
+export function setRefreshTokenCookie(res: Response, refreshToken: string, expires: Date): void {
+  res.cookie(REFRESH_TOKEN_COOKIE, refreshToken, {
+    expires,
+    httpOnly: true,
+    secure: shouldUseSecureCookie(),
+    sameSite: 'strict',
+  });
+}
+
+export interface OpenIDMarkerCookieOptions {
+  userId?: string | null;
+  expires: Date;
+  refreshExpiryMs: number;
+  reuseTokens?: boolean;
+  /** Binds the marker to the refresh token it was issued alongside. */
+  refreshToken?: string | null;
+}
+
+export function setOpenIDMarkerCookies(
+  res: Response,
+  {
+    userId,
+    expires,
+    refreshExpiryMs,
+    reuseTokens = isEnabled(process.env.OPENID_REUSE_TOKENS),
+    refreshToken,
+  }: OpenIDMarkerCookieOptions,
+): void {
+  const cookieOptions = {
+    expires,
+    httpOnly: true,
+    secure: shouldUseSecureCookie(),
+    sameSite: 'strict' as const,
+  };
+
+  res.cookie(TOKEN_PROVIDER_COOKIE, 'openid', cookieOptions);
+
+  if (!userId || !reuseTokens) {
+    return;
+  }
+
+  const secret = process.env.JWT_REFRESH_SECRET;
+  if (!secret) {
+    throw new Error('JWT_REFRESH_SECRET is required for OpenID marker cookies');
+  }
+
+  const refreshExpirySeconds = Math.floor(refreshExpiryMs / 1000);
+  if (!Number.isFinite(refreshExpirySeconds) || refreshExpirySeconds <= 0) {
+    throw new Error('refreshExpiryMs must be a positive duration for OpenID marker cookies');
+  }
+
+  /** Bind the marker to the durable refresh-token session it was issued with, so a
+   *  marker lifted from one session cannot stand in for another's. */
+  const refreshTokenHash = refreshToken
+    ? crypto.createHash('sha256').update(refreshToken).digest('base64url')
+    : undefined;
+  const signedUserId = jwt.sign(
+    { id: userId, issuedAtMs: Date.now(), ...(refreshTokenHash ? { refreshTokenHash } : {}) },
+    secret,
+    { expiresIn: refreshExpirySeconds },
+  );
+  res.cookie(OPENID_USER_ID_COOKIE, signedUserId, cookieOptions);
+}
+
 /** Generates an HMAC-based token for OAuth CSRF protection */
 export function generateOAuthCsrfToken(flowId: string, secret?: string): string {
   const key = secret || process.env.JWT_SECRET;
@@ -49,6 +135,19 @@ export function generateOAuthCsrfToken(flowId: string, secret?: string): string 
   return crypto.createHmac('sha256', key).update(flowId).digest('hex').slice(0, 32);
 }
 
+/** Cookie paths must match the public callback URL, not a proxy-stripped request path. */
+function getOAuthCookiePath(cookiePath: string): string {
+  const domainServer = process.env.DOMAIN_SERVER;
+  if (!domainServer) {
+    return cookiePath;
+  }
+  try {
+    return new URL(getOAuthCallbackUrl(domainServer, cookiePath)).pathname;
+  } catch {
+    return cookiePath;
+  }
+}
+
 /** Sets a SameSite=Lax CSRF cookie bound to a specific OAuth flow */
 export function setOAuthCsrfCookie(res: Response, flowId: string, cookiePath: string): void {
   res.cookie(OAUTH_CSRF_COOKIE, generateOAuthCsrfToken(flowId), {
@@ -56,7 +155,7 @@ export function setOAuthCsrfCookie(res: Response, flowId: string, cookiePath: st
     secure: shouldUseSecureCookie(),
     sameSite: 'lax',
     maxAge: OAUTH_CSRF_MAX_AGE,
-    path: cookiePath,
+    path: getOAuthCookiePath(cookiePath),
   });
 }
 
@@ -71,15 +170,20 @@ export function validateOAuthCsrf(
   cookiePath: string,
 ): boolean {
   const cookie = (req.cookies as Record<string, string> | undefined)?.[OAUTH_CSRF_COOKIE];
-  res.clearCookie(OAUTH_CSRF_COOKIE, { path: cookiePath });
-  if (!cookie) {
+  res.clearCookie(OAUTH_CSRF_COOKIE, { path: getOAuthCookiePath(cookiePath) });
+  if (typeof cookie !== 'string' || !cookie) {
     return false;
   }
   const expected = generateOAuthCsrfToken(flowId);
   if (cookie.length !== expected.length) {
     return false;
   }
-  return crypto.timingSafeEqual(Buffer.from(cookie), Buffer.from(expected));
+  const cookieBuffer = Buffer.from(cookie);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    cookieBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(cookieBuffer, expectedBuffer)
+  );
 }
 
 /**
@@ -88,7 +192,7 @@ export function validateOAuthCsrf(
  */
 export function setOAuthSession(req: Request, res: Response, next: NextFunction): void {
   const user = (req as Request & { user?: { id?: string } }).user;
-  if (user?.id && !(req.cookies as Record<string, string> | undefined)?.[OAUTH_SESSION_COOKIE]) {
+  if (user?.id && !validateOAuthSession(req, user.id)) {
     setOAuthSessionCookie(res, user.id);
   }
   next();
@@ -101,19 +205,24 @@ export function setOAuthSessionCookie(res: Response, userId: string): void {
     secure: shouldUseSecureCookie(),
     sameSite: 'lax',
     maxAge: OAUTH_SESSION_MAX_AGE,
-    path: OAUTH_SESSION_COOKIE_PATH,
+    path: getOAuthCookiePath(OAUTH_SESSION_COOKIE_PATH),
   });
 }
 
 /** Validates the session cookie against the expected userId using timing-safe comparison */
 export function validateOAuthSession(req: Request, userId: string): boolean {
   const cookie = (req.cookies as Record<string, string> | undefined)?.[OAUTH_SESSION_COOKIE];
-  if (!cookie) {
+  if (typeof cookie !== 'string' || !cookie) {
     return false;
   }
   const expected = generateOAuthCsrfToken(userId);
   if (cookie.length !== expected.length) {
     return false;
   }
-  return crypto.timingSafeEqual(Buffer.from(cookie), Buffer.from(expected));
+  const cookieBuffer = Buffer.from(cookie);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    cookieBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(cookieBuffer, expectedBuffer)
+  );
 }

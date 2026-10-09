@@ -1,0 +1,108 @@
+{{- if .Values.langfuseFanout.enabled }}
+{{- include "librechat.langfuseFanout.validateDestinationKeys" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "librechat.langfuseFanout.fullname" . }}-config
+  labels:
+    {{- include "librechat.langfuseFanout.labels" . | nindent 4 }}
+data:
+  otelcol.yaml: |
+    extensions:
+      headers_setter/tenant_passthrough:
+        headers:
+          - action: upsert
+            key: Authorization
+            from_context: authorization
+
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: ${env:LANGFUSE_FANOUT_OTEL_RECEIVER_ENDPOINT}
+            include_metadata: true
+            traces_url_path: /api/public/otel/v1/traces
+
+    connectors:
+      routing/langfuse_tenant_destination:
+        error_mode: ignore
+        table:
+          {{- range $name, $_destination := .Values.langfuseFanout.tenant.destinations }}
+          {{- include "librechat.langfuseFanout.validateDestinationKey" $name }}
+          - context: span
+            condition: attributes["librechat.langfuse.destination"] == {{ $name | quote }}
+            pipelines: [traces/tenant_{{ $name }}]
+          {{- end }}
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: ${env:LANGFUSE_FANOUT_MEMORY_LIMIT_MIB}
+        spike_limit_mib: ${env:LANGFUSE_FANOUT_MEMORY_SPIKE_LIMIT_MIB}
+      filter/tenant_export:
+        error_mode: ignore
+        traces:
+          span:
+            - attributes["librechat.langfuse.tenant_export.enabled"] != "true"
+      filter/central_export:
+        error_mode: ignore
+        traces:
+          span:
+            - attributes["librechat.langfuse.central_export.enabled"] == "false"
+      attributes/drop_librechat_routing:
+        actions:
+          - key: librechat.langfuse.central_export.enabled
+            action: delete
+          - key: librechat.langfuse.tenant_export.enabled
+            action: delete
+          - key: librechat.langfuse.destination
+            action: delete
+      batch/central:
+        timeout: ${env:LANGFUSE_FANOUT_BATCH_TIMEOUT}
+        send_batch_size: ${env:LANGFUSE_FANOUT_BATCH_SEND_SIZE}
+      {{- range $name, $_destination := .Values.langfuseFanout.tenant.destinations }}
+      {{- include "librechat.langfuseFanout.validateDestinationKey" $name }}
+      batch/by_auth_{{ $name }}:
+        timeout: ${env:LANGFUSE_FANOUT_BATCH_TIMEOUT}
+        send_batch_size: ${env:LANGFUSE_FANOUT_BATCH_SEND_SIZE}
+        metadata_keys: [authorization]
+        metadata_cardinality_limit: ${env:LANGFUSE_FANOUT_METADATA_CARDINALITY_LIMIT}
+      {{- end }}
+
+    exporters:
+      otlphttp/central:
+        # Langfuse Cloud base URL options: https://cloud.langfuse.com (EU),
+        # https://us.cloud.langfuse.com (US), https://jp.cloud.langfuse.com (JP).
+        endpoint: "${env:LANGFUSE_FANOUT_CENTRAL_BASE_URL}/api/public/otel"
+        headers:
+          Authorization: "${env:LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER}"
+          x-langfuse-ingestion-version: "4"
+      {{- range $name, $_destination := .Values.langfuseFanout.tenant.destinations }}
+      {{- include "librechat.langfuseFanout.validateDestinationKey" $name }}
+      otlphttp/tenant_{{ $name }}:
+        endpoint: "${env:{{ include "librechat.langfuseFanout.destinationBaseUrlEnvName" $name }}}/api/public/otel"
+        auth:
+          authenticator: headers_setter/tenant_passthrough
+        headers:
+          x-langfuse-ingestion-version: "4"
+      {{- end }}
+
+    service:
+      extensions: [headers_setter/tenant_passthrough]
+      pipelines:
+        traces/central:
+          receivers: [otlp]
+          processors: [memory_limiter, filter/central_export, attributes/drop_librechat_routing, batch/central]
+          exporters: [otlphttp/central]
+        traces/tenant:
+          receivers: [otlp]
+          processors: [memory_limiter, filter/tenant_export]
+          exporters: [routing/langfuse_tenant_destination]
+        {{- range $name, $_destination := .Values.langfuseFanout.tenant.destinations }}
+        {{- include "librechat.langfuseFanout.validateDestinationKey" $name }}
+        traces/tenant_{{ $name }}:
+          receivers: [routing/langfuse_tenant_destination]
+          processors: [attributes/drop_librechat_routing, batch/by_auth_{{ $name }}]
+          exporters: [otlphttp/tenant_{{ $name }}]
+        {{- end }}
+{{- end }}

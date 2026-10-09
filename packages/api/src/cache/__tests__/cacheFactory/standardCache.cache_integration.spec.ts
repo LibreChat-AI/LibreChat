@@ -1,4 +1,5 @@
 import type { Keyv } from 'keyv';
+import { closeRedisClients } from '../redisClients.helper';
 
 // Mock GLOBAL_PREFIX_SEPARATOR from cacheConfig
 jest.mock('../../cacheConfig', () => {
@@ -79,6 +80,7 @@ describe('standardCache', () => {
       testCache = null;
     }
 
+    await closeRedisClients();
     process.env = originalEnv;
     jest.resetModules();
   });
@@ -185,6 +187,21 @@ describe('standardCache', () => {
       const cacheWithOpts = testCache as Keyv & { opts: { namespace: string; ttl: number } };
       expect(cacheWithOpts.opts.namespace).toBe('ROLES');
       expect(cacheWithOpts.opts.ttl).toBe(5000);
+    });
+
+    test('rejects failed operations only for a cache created with throwOnErrors', async () => {
+      const cacheFactory = await import('../../cacheFactory');
+      const { ioredisClient } = await import('../../redisClients');
+      if (!ioredisClient) throw new Error('ioredisClient is null');
+      const strict = cacheFactory.standardCache('strict-namespace', undefined, undefined, {
+        throwOnErrors: true,
+      });
+      const lenient = cacheFactory.standardCache('lenient-namespace');
+      await ioredisClient.hset('strict-namespace:wrong-type', 'f', 'v');
+      await ioredisClient.hset('lenient-namespace:wrong-type', 'f', 'v');
+
+      await expect(strict.get('wrong-type')).rejects.toThrow(/WRONGTYPE/);
+      await expect(lenient.get('wrong-type')).resolves.toBeUndefined();
     });
 
     test('should handle TTL correctly', async () => {

@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function DislikeIcon() {
+export default function DislikeIcon(): JSX.Element {
   return (
     <svg
       stroke="currentColor"

@@ -26,14 +26,23 @@ jest.mock('~/components/Chat/Menus/Endpoints/CustomMenu', () => {
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
-  useFavorites: () => ({
-    isFavoriteModel: () => false,
-    toggleFavoriteModel: jest.fn(),
-    isFavoriteAgent: () => false,
-    toggleFavoriteAgent: jest.fn(),
-  }),
-  useIsActiveItem: () => ({ ref: { current: null }, isActive: false }),
 }));
+
+jest.mock('~/components/Chat/Menus/Endpoints/useActiveItem', () => ({
+  __esModule: true,
+  default: () => ({ ref: { current: null }, isActive: false }),
+}));
+
+const renderItem = (props: Partial<React.ComponentProps<typeof EndpointModelItem>> = {}) =>
+  render(
+    <EndpointModelItem
+      modelId="claude-opus-4-6"
+      endpoint={baseEndpoint}
+      isFavorite={false}
+      onToggleFavorite={jest.fn()}
+      {...props}
+    />,
+  );
 
 const baseEndpoint: Endpoint = {
   value: 'anthropic',
@@ -50,7 +59,7 @@ describe('EndpointModelItem', () => {
 
   it('renders checkmark when model and endpoint match with no active spec', () => {
     mockSelectedValues = { endpoint: 'anthropic', model: 'claude-opus-4-6', modelSpec: '' };
-    render(<EndpointModelItem modelId="claude-opus-4-6" endpoint={baseEndpoint} />);
+    renderItem();
 
     const menuItem = screen.getByRole('menuitem');
     expect(menuItem).toHaveAttribute('aria-selected', 'true');
@@ -62,7 +71,7 @@ describe('EndpointModelItem', () => {
       model: 'claude-opus-4-6',
       modelSpec: 'my-anthropic-spec',
     };
-    render(<EndpointModelItem modelId="claude-opus-4-6" endpoint={baseEndpoint} />);
+    renderItem();
 
     const menuItem = screen.getByRole('menuitem');
     expect(menuItem).not.toHaveAttribute('aria-selected');
@@ -70,7 +79,7 @@ describe('EndpointModelItem', () => {
 
   it('does NOT render checkmark when model matches but endpoint differs', () => {
     mockSelectedValues = { endpoint: 'openai', model: 'claude-opus-4-6', modelSpec: '' };
-    render(<EndpointModelItem modelId="claude-opus-4-6" endpoint={baseEndpoint} />);
+    renderItem();
 
     const menuItem = screen.getByRole('menuitem');
     expect(menuItem).not.toHaveAttribute('aria-selected');
@@ -78,7 +87,7 @@ describe('EndpointModelItem', () => {
 
   it('does NOT render checkmark when endpoint matches but model differs', () => {
     mockSelectedValues = { endpoint: 'anthropic', model: 'claude-sonnet-4-5', modelSpec: '' };
-    render(<EndpointModelItem modelId="claude-opus-4-6" endpoint={baseEndpoint} />);
+    renderItem();
 
     const menuItem = screen.getByRole('menuitem');
     expect(menuItem).not.toHaveAttribute('aria-selected');

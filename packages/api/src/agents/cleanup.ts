@@ -3,8 +3,8 @@
  * tool output before LibreChat re-injects it into the assistant's
  * conversation history.
  *
- * The bash executor in `@librechat/agents` appends two kinds of noise
- * to every successful run:
+ * Older bash executor output from `@librechat/agents` appended two
+ * kinds of noise to successful runs:
  *
  * 1. **Trailing "Note:" paragraphs** — long behavioral hints repeating
  *    rules the agent already has via its system prompt
@@ -21,12 +21,14 @@
  *    per-file annotations are redundant *and* phrased inconsistently
  *    ("downloaded" vs. "displayed" vs. "known to the user").
  *
- * Stripping happens in LibreChat (this file), not upstream, so the
- * cleaning is reversible — pin to a specific upstream version and the
- * patterns adjust here without releasing a new agents build. The
- * patterns are anchored conservatively: only the documented forms are
- * matched, so a future upstream string change leaves user-authored
- * `Note:` lines (or legitimate `|`-delimited filenames) untouched.
+ * Newer compact summaries under `Generated files:` intentionally do
+ * not list `- /...` paths and pass through unchanged. Stripping happens
+ * in LibreChat (this file), not upstream, so the cleaning is reversible
+ * — pin to a specific upstream version and the patterns adjust here
+ * without releasing a new agents build. The patterns are anchored
+ * conservatively: only the documented forms are matched, so a future
+ * upstream string change leaves user-authored `Note:` lines (or
+ * legitimate `|`-delimited filenames) untouched.
  */
 
 /**

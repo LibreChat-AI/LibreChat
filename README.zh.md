@@ -1,4 +1,4 @@
-<!-- Last synced with README.md: 2026-03-28 (cae3888) -->
+<!-- Last synced with README.md: 2026-05-12 (947bfa4c40) -->
 
 <p align="center">
   <a href="https://librechat.ai">
@@ -76,6 +76,8 @@
     - 智能体市场：发现并部署社区构建的智能体。
     - 协作共享：与特定用户和群组共享智能体。
     - 灵活且可扩展：支持 MCP 服务器、工具、文件搜索、代码执行等。
+    - [Skills](https://www.librechat.ai/docs/features/skills)：创建可复用的 `SKILL.md` 指令包，用于手动、自动或始终启用的智能体工作流。
+    - [Subagents](https://www.librechat.ai/docs/features/subagents)：将专门任务委派给拥有独立上下文窗口的隔离子智能体运行。
     - 兼容自定义端点、OpenAI, Azure, Anthropic, AWS Bedrock, Google, Vertex AI, Responses API 等。
     - [支持模型上下文协议 (MCP)](https://modelcontextprotocol.io/clients#librechat) 用于工具调用。
 
@@ -139,6 +141,7 @@
 
 - ⚙️ **配置与部署**：  
   - 支持代理、反向代理、Docker 及多种部署选项。  
+  - 使用 [S3 与 CloudFront](https://www.librechat.ai/docs/configuration/cdn/cloudfront) 获得稳定的媒体链接、边缘分发、签名 Cookie 和安全下载。
   - 可完全本地运行或部署在云端。
 
 - 📖 **开源与社区**：  
@@ -160,7 +163,7 @@ LibreChat 是一个自托管的 AI 对话平台，在一个注重隐私的统一
 ## 🌐 资源
 
 **GitHub 仓库：**
-  - **RAG API:** [github.com/danny-avila/rag_api](https://github.com/danny-avila/rag_api)
+  - **RAG API:** [github.com/LibreChat-AI/rag-api](https://github.com/LibreChat-AI/rag-api)
   - **网站:** [github.com/LibreChat-AI/librechat.ai](https://github.com/LibreChat-AI/librechat.ai)
 
 **其他：**
@@ -173,7 +176,7 @@ LibreChat 是一个自托管的 AI 对话平台，在一个注重隐私的统一
 ## 📝 更新日志
 
 访问发布页面和更新日志以了解最新动态：
-- [发布页面 (Releases)](https://github.com/danny-avila/LibreChat/releases)
+- [发布页面 (Releases)](https://github.com/LibreChat-AI/LibreChat/releases)
 - [更新日志 (Changelog)](https://www.librechat.ai/changelog)
 
 **⚠️ 在更新前请务必查看[更新日志](https://www.librechat.ai/changelog)以了解破坏性更改。**
@@ -183,13 +186,13 @@ LibreChat 是一个自托管的 AI 对话平台，在一个注重隐私的统一
 ## ⭐ Star 历史
 
 <p align="center">
-  <a href="https://star-history.com/#danny-avila/LibreChat&Date">
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=danny-avila/LibreChat&type=Date&theme=dark" onerror="this.src='https://api.star-history.com/svg?repos=danny-avila/LibreChat&type=Date'" />
+  <a href="https://star-history.com/#LibreChat-AI/LibreChat&Date">
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=LibreChat-AI/LibreChat&type=Date&theme=dark" onerror="this.src='https://api.star-history.com/svg?repos=LibreChat-AI/LibreChat&type=Date'" />
   </a>
 </p>
 <p align="center">
   <a href="https://trendshift.io/repositories/4685" target="_blank" style="padding: 10px;">
-    <img src="https://trendshift.io/api/badge/repositories/4685" alt="danny-avila%2FLibreChat | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+    <img src="https://trendshift.io/api/badge/repositories/4685" alt="LibreChat-AI%2FLibreChat | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
   <a href="https://runacap.com/ross-index/q1-24/" target="_blank" rel="noopener" style="margin-left: 20px;">
     <img style="width: 260px; height: 56px" src="https://runacap.com/wp-content/uploads/2024/04/ROSS_badge_white_Q1_2024.svg" alt="ROSS Index - 2024年第一季度增长最快的开源初创公司 | Runa Capital" width="260" height="56"/>
@@ -210,8 +213,8 @@ LibreChat 是一个自托管的 AI 对话平台，在一个注重隐私的统一
 
 ## 💖 感谢所有贡献者
 
-<a href="https://github.com/danny-avila/LibreChat/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=danny-avila/LibreChat" />
+<a href="https://github.com/LibreChat-AI/LibreChat/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=LibreChat-AI/LibreChat" />
 </a>
 
 ---

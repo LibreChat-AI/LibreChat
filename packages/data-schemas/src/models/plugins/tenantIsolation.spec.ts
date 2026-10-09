@@ -154,6 +154,35 @@ describe('applyTenantIsolation', () => {
       const tenantADoc = await TestModel.findOne({ tenantId: 'tenant-a' }).lean();
       expect(tenantADoc!.name).toBe('updated');
     });
+
+    it('injects tenantId filter into distinct', async () => {
+      const names = await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        TestModel.distinct('name'),
+      );
+
+      expect(names).toEqual(['tenant-a-doc']);
+    });
+
+    it('injects tenantId filter into find().distinct() (op switches to distinct)', async () => {
+      const names = await tenantStorage.run({ tenantId: 'tenant-b' }, async () =>
+        TestModel.find().distinct('name'),
+      );
+
+      expect(names).toEqual(['tenant-b-doc']);
+    });
+
+    it('does not scope distinct when context is absent (non-strict)', async () => {
+      const names = await TestModel.distinct('name');
+      expect(names.sort()).toEqual(['no-tenant-doc', 'tenant-a-doc', 'tenant-b-doc']);
+    });
+
+    it('bypasses distinct filter for SYSTEM_TENANT_ID', async () => {
+      const names = await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, async () =>
+        TestModel.distinct('name'),
+      );
+
+      expect(names).toHaveLength(3);
+    });
   });
 
   describe('aggregate filtering', () => {

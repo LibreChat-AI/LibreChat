@@ -124,6 +124,25 @@ describe('DragDropModal - Provider Detection', () => {
           isDocumentSupportedProvider(scenario.currentProvider),
       ).toBe(true);
     });
+
+    it('should handle Azure OpenAI endpointType when Responses API is enabled', () => {
+      const scenario = {
+        currentProvider: EModelEndpoint.agents,
+        endpointType: EModelEndpoint.azureOpenAI,
+        useResponsesApi: true,
+      };
+
+      const isAzureWithResponsesApi =
+        (scenario.currentProvider === EModelEndpoint.azureOpenAI ||
+          scenario.endpointType === EModelEndpoint.azureOpenAI) &&
+        scenario.useResponsesApi === true;
+
+      expect(
+        isDocumentSupportedProvider(scenario.endpointType) ||
+          isDocumentSupportedProvider(scenario.currentProvider) ||
+          isAzureWithResponsesApi,
+      ).toBe(true);
+    });
   });
 
   describe('HEIC/HEIF file type inference', () => {

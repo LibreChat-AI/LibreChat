@@ -1,0 +1,56 @@
+[
+  {
+    "id": "sandbox-python-version",
+    "traceId": "eeab6f47000fe2a6aac76cde6bbc67fd",
+    "prompt": "Reasoning excerpts:\n- I'll work through each check methodically, running them one at a time and documenting what I find.\n\nTool calls:\n- run_tools_with_bash({\"code\":\"python3 --version\"}) → stdout:\nPython 3.14.4\n\nLabel:",
+    "productionLabel": "Confirmed Python 3.14.4 is installed"
+  },
+  {
+    "id": "mnt-data-write-test",
+    "traceId": "8ee41468850d42e5477af07759519e84",
+    "prompt": "Intent (assistant's last message): **Python version: 3.14.4**\n\nNow let's check if files in /mnt/data survive between calls.\n\nTool calls:\n- bash_tool({\"command\":\"echo \\\"hello from probe 1, written at $(date)\\\" > /mnt/data/persist_test.txt; cat /mnt/data/persist_test.txt\"}) → stdout:\nhello from probe 1, written at Wed Jul 29 11:30:09 AM UTC 2026\n\nLabel:",
+    "productionLabel": "Wrote test file to /mnt/data, confirmed persistence"
+  },
+  {
+    "id": "mnt-data-persistence",
+    "traceId": "64b318bd7251b66baccd75009d947682",
+    "prompt": "Intent (assistant's last message): **Python version: 3.14.4**\n\nNow let's check if files in /mnt/data survive between calls.\n\nReasoning excerpts:\n- I should make a second request to verify the behavior persists across multiple calls.\n\nTool calls:\n- bash_tool({\"command\":\"ls -la /mnt/data/persist_test.txt && cat /mnt/data/persist_test.txt\"}) → stdout:\n-rw------- 1 65534 65534 63 Jul 29 11:30 /mnt/data/persist_test.txt\nhello from probe 1, written at Wed Jul 29 11:30:09 AM UTC 2026\n\nLabel:",
+    "productionLabel": "Confirmed /mnt/data persists between tool calls"
+  },
+  {
+    "id": "mnt-data-tmpfs",
+    "traceId": "bff7f9766cc2916230403a04c47c92af",
+    "prompt": "Intent (assistant's last message): **Files in /mnt/data DO survive between calls** — the file I wrote in the previous, separate sandbox invocation is still there with its original content intact.\n\nNow let's check RAM and disk.\n\nTool calls:\n- bash_tool({\"command\":\"echo \\\"=== MEMORY ===\\\"; free -h; echo; echo \\\"=== DISK ===\\\"; df -h /mnt/data / /tmp 2>/dev/null\"}) → stdout:\n=== MEMORY ===\n\n=== DISK ===\nFilesystem      Size  Used Avail Use% Mounted on\ntmpfs           1.0G   32K  1.0G   1% /mnt/data\nnone             16M     0   16M   0% /\nnone             20M     0   20M   0% /tmp\n\nstderr:\nfree: Unable to create meminfo structure\nNote: /tmp files are same-call scratch only and were not persisted; use /mnt/data for files needed later.\n\nLabel:",
+    "productionLabel": "Confirmed /mnt/data is tmpfs with 1GB capacity"
+  },
+  {
+    "id": "cpu-meminfo-disk",
+    "traceId": "6faf26136e125c29fe0bae7ddd87c59e",
+    "prompt": "Intent (assistant's last message): `free` failed, let me try /proc/meminfo directly — and note disk is quite constrained (tmpfs-based, tiny root/tmp).\n\nTool calls:\n- bash_tool({\"command\":\"echo \\\"=== /proc/meminfo ===\\\"; cat /proc/meminfo 2>/dev/null | head -5\\necho\\necho \\\"=== nproc ===\\\"; nproc\\necho\\necho \\\"=== /proc/cpuinfo count ===\\\"; grep -c ^processor /proc/cpuinfo 2>/dev/null\\necho\\necho \\\"=== disk full df ===\\\"; df -h 2>/dev/null\"}) → stdout:\n=== /proc/meminfo ===\n\n=== nproc ===\n1\n\n=== /proc/cpuinfo count ===\n0\n\n=== disk full df ===\nFilesystem      Size  Used Avail Use% Mounted on\nnone             16M     0   16M   0% /\n/dev/vdc         16G  4.4G   11G  30% /usr\nnone             16M  4.0K   16M   1% /etc/hosts\ntmpfs            64M     0   64M   0% /dev/null\nnone             20M     0   20M   0% /tmp\ntmpfs           1.0G   32K  1.0G   1% /mnt/data\n\nLabel:",
+    "productionLabel": "Confirmed single CPU, /proc/meminfo empty, disk constrained with 16M root and 20M tmp"
+  },
+  {
+    "id": "rlimit-cgroup",
+    "traceId": "2797232991aa7e841081a6b6175bd62b",
+    "prompt": "Intent (assistant's last message): `/proc/meminfo` is empty/restricted, but I can check cgroup limits for a real memory figure.\n\nTool calls:\n- bash_tool({\"command\":\"echo \\\"=== cgroup memory limit ===\\\"\\nfor f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do\\n  [ -f \\\"$f\\\" ] && echo \\\"$f: $(cat $f)\\\"\\ndone\\necho\\necho \\\"=== cgroup cpu ===\\\"\\nfor f in /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu/cpu.cfs_quota_us; do\\n  [ -f \\\"$f\\\" ] && echo \\\"$f: $(cat $f)\\\"\\ndone\\necho\\npython3 -c \\\"import resource; print('soft/hard RLIMIT_AS:', resource.getrlimit(resource.RLIMIT_AS))\\\" 2>/dev/null\"}) → stdout:\n=== cgroup memory limit ===\n\n=== cgroup cpu ===\n\nsoft/hard RLIMIT_AS: (17179869184, 17179869184)\n\nLabel:",
+    "productionLabel": "Found RLIMIT_AS ceiling at 16GB, cgroup limits unavailable"
+  },
+  {
+    "id": "network-tools",
+    "traceId": "e813a6ee932da05d573ced56424265b8",
+    "prompt": "Intent (assistant's last message): No cgroup files readable, but RLIMIT_AS shows a **16 GiB address-space limit** — likely the effective memory ceiling. Now let's check network access.\n\nTool calls:\n- bash_tool({\"command\":\"echo \\\"=== ping ===\\\"; timeout 3 ping -c1 8.8.8.8 2>&1\\necho\\necho \\\"=== curl ===\\\"; timeout 5 curl -sS -o /dev/null -w \\\"HTTP_CODE:%{http_code}\\\\n\\\" https://www.google.com 2>&1\\necho\\necho \\\"=== curl example.com ===\\\"; timeout 5 curl -sS -o /dev/null -w \\\"HTTP_CODE:%{http_code}\\\\n\\\" http://example.com 2>&1\\necho\\necho \\\"=== DNS resolution ===\\\"; timeout 3 getent hosts google.com 2>&1\"}) → stdout:\n=== ping ===\ntimeout: failed to run command ‘ping’: No such file or directory\n\n=== curl ===\ntimeout: failed to run command ‘curl’: No such file or directory\n\n=== curl example.com ===\ntimeout: failed to run command ‘curl’: No such file or directory\n\n=== DNS resolution ===\n\nLabel:",
+    "productionLabel": "Network tools unavailable, DNS resolution failed"
+  },
+  {
+    "id": "dns-tcp",
+    "traceId": "d96b49502c4a0ecb4c9325c2e74b43bf",
+    "prompt": "Intent (assistant's last message): No curl/ping binaries — let me test connectivity directly via Python sockets/urllib instead.\n\nTool calls:\n- bash_tool({\"command\":\"python3 - <<'EOF'\\nimport socket, urllib.request, time\\n\\n# DNS test\\ntry:\\n    ip = socket.gethostbyname(\\\"example.com\\\")\\n    print(\\\"DNS resolution OK:\\\", ip)\\nexcept Exception as e:\\n    print(\\\"DNS resolution FAILED:\\\", repr(e))\\n\\n# raw TCP connect test\\ntry:\\n    s = socket.create_connection((\\\"8.8.8.8\\\", 53), timeout=4)\\n    print(\\\"TCP connect to 8.8.8.8:53 OK\\\")\\n    s.close()\\nexcept Exception as e:\\n    print(\\\"TCP connect FAILED:\\\", repr(e))\\n\\n# HTTP fetch test\\ntry:\\n    t0 = time.time()\\n    r = urllib.request.urlopen(\\\"http://example.com\\\", timeout=5)\\n    print(\\…) → stdout:\nDNS resolution FAILED: gaierror(-2, 'Name or service not known')\nTCP connect FAILED: PermissionError(1, 'Operation not permitted')\nHTTP fetch FAILED: URLError(gaierror(-3, 'Temporary failure in name resolution'))\n\nLabel:",
+    "productionLabel": "DNS and TCP connectivity both blocked or unavailable"
+  },
+  {
+    "id": "python-packages",
+    "traceId": "a6fcd0fd40b490285ced22c236023e2c",
+    "prompt": "Intent (assistant's last message): **No network access** — DNS resolution fails and raw TCP connections are blocked with a permission error. This sandbox is fully network-isolated.\n\nNow let's check for numpy/pandas/scipy/torch.\n\nTool calls:\n- bash_tool({\"command\":\"python3 - <<'EOF'\\nmods = [\\\"numpy\\\", \\\"pandas\\\", \\\"scipy\\\", \\\"torch\\\"]\\nfor m in mods:\\n    try:\\n        mod = __import__(m)\\n        ver = getattr(mod, \\\"__version__\\\", \\\"unknown\\\")\\n        print(f\\\"{m}: INSTALLED, version {ver}\\\")\\n    except ImportError as e:\\n        print(f\\\"{m}: NOT INSTALLED ({e})\\\")\\nEOF\"}) → stdout:\nnumpy: INSTALLED, version 2.4.6\npandas: INSTALLED, version 2.3.3\nscipy: INSTALLED, version 1.18.0\ntorch: NOT INSTALLED (No module named 'torch')\n\nLabel:",
+    "productionLabel": "Confirmed numpy, pandas, scipy installed; torch unavailable"
+  }
+]

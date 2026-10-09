@@ -1443,30 +1443,42 @@ describe('isAddressAllowed', () => {
   });
 
   it('matches literal IPv4 entries', () => {
-    expect(isAddressAllowed('127.0.0.1', ['127.0.0.1'])).toBe(true);
-    expect(isAddressAllowed('10.0.0.5', ['127.0.0.1', '10.0.0.5'])).toBe(true);
-    expect(isAddressAllowed('192.168.1.1', ['10.0.0.5'])).toBe(false);
+    expect(isAddressAllowed('127.0.0.1', ['127.0.0.1:11434'], '11434')).toBe(true);
+    expect(isAddressAllowed('10.0.0.5', ['127.0.0.1:11434', '10.0.0.5:8080'], 8080)).toBe(true);
+    expect(isAddressAllowed('192.168.1.1', ['10.0.0.5:8080'], '8080')).toBe(false);
   });
 
   it('matches literal hostnames case-insensitively', () => {
-    expect(isAddressAllowed('localhost', ['localhost'])).toBe(true);
-    expect(isAddressAllowed('LOCALHOST', ['localhost'])).toBe(true);
-    expect(isAddressAllowed('host.docker.internal', ['HOST.DOCKER.INTERNAL'])).toBe(true);
+    expect(isAddressAllowed('localhost', ['localhost:11434'], '11434')).toBe(true);
+    expect(isAddressAllowed('LOCALHOST', ['localhost:11434'], '11434')).toBe(true);
+    expect(isAddressAllowed('host.docker.internal', ['HOST.DOCKER.INTERNAL:8080'], 8080)).toBe(
+      true,
+    );
   });
 
   it('strips IPv6 brackets when matching', () => {
-    expect(isAddressAllowed('[::1]', ['::1'])).toBe(true);
-    expect(isAddressAllowed('::1', ['[::1]'])).toBe(true);
+    expect(isAddressAllowed('[::1]', ['[::1]:11434'], '11434')).toBe(true);
+    expect(isAddressAllowed('::1', ['[::1]:11434'], '11434')).toBe(true);
+  });
+
+  it('does not match a different port on the same address', () => {
+    expect(isAddressAllowed('localhost', ['localhost:11434'], '8080')).toBe(false);
+    expect(isAddressAllowed('127.0.0.1', ['127.0.0.1:11434'], '8080')).toBe(false);
+  });
+
+  it('does not match bare allowedAddresses entries', () => {
+    expect(isAddressAllowed('localhost', ['localhost'], '11434')).toBe(false);
+    expect(isAddressAllowed('127.0.0.1', ['127.0.0.1'], '11434')).toBe(false);
   });
 
   it('does not partial-match hostnames', () => {
-    expect(isAddressAllowed('evil.localhost', ['localhost'])).toBe(false);
-    expect(isAddressAllowed('host', ['host.docker.internal'])).toBe(false);
+    expect(isAddressAllowed('evil.localhost', ['localhost:11434'], '11434')).toBe(false);
+    expect(isAddressAllowed('host', ['host.docker.internal:11434'], '11434')).toBe(false);
   });
 
   it('ignores empty entries', () => {
-    expect(isAddressAllowed('localhost', ['', '   ', 'localhost'])).toBe(true);
-    expect(isAddressAllowed('localhost', ['', '   '])).toBe(false);
+    expect(isAddressAllowed('localhost', ['', '   ', 'localhost:11434'], '11434')).toBe(true);
+    expect(isAddressAllowed('localhost', ['', '   '], '11434')).toBe(false);
   });
 });
 
@@ -1478,37 +1490,53 @@ describe('SSRF allowedAddresses exemption', () => {
   describe('isSSRFTarget', () => {
     it('exempts a hostname listed in allowedAddresses', () => {
       expect(isSSRFTarget('localhost')).toBe(true);
-      expect(isSSRFTarget('localhost', ['localhost'])).toBe(false);
+      expect(isSSRFTarget('localhost', ['localhost:11434'], '11434')).toBe(false);
     });
 
     it('exempts a private IP listed in allowedAddresses', () => {
       expect(isSSRFTarget('10.0.0.5')).toBe(true);
-      expect(isSSRFTarget('10.0.0.5', ['10.0.0.5'])).toBe(false);
+      expect(isSSRFTarget('10.0.0.5', ['10.0.0.5:11434'], '11434')).toBe(false);
+    });
+
+    it('does not exempt a different port on an allowed private target', () => {
+      expect(isSSRFTarget('localhost', ['localhost:11434'], '22')).toBe(true);
+      expect(isSSRFTarget('10.0.0.5', ['10.0.0.5:11434'], '22')).toBe(true);
     });
 
     it('does not exempt an unlisted private target', () => {
-      expect(isSSRFTarget('192.168.1.1', ['10.0.0.5'])).toBe(true);
+      expect(isSSRFTarget('192.168.1.1', ['10.0.0.5:11434'], '11434')).toBe(true);
     });
 
     it('leaves public destinations unaffected when allowedAddresses is set', () => {
-      expect(isSSRFTarget('api.openai.com', ['localhost'])).toBe(false);
+      expect(isSSRFTarget('api.openai.com', ['localhost:11434'], '11434')).toBe(false);
     });
   });
 
   describe('resolveHostnameSSRF', () => {
     it('exempts when the hostname itself matches allowedAddresses', async () => {
       // No lookup mock needed: a hostname-literal match short-circuits before DNS.
-      expect(await resolveHostnameSSRF('ollama.internal', ['ollama.internal'])).toBe(false);
+      expect(await resolveHostnameSSRF('ollama.internal', ['ollama.internal:11434'], '11434')).toBe(
+        false,
+      );
     });
 
     it('exempts when a resolved IP matches allowedAddresses', async () => {
       mockedLookup.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }] as never);
-      expect(await resolveHostnameSSRF('private.example.com', ['10.0.0.5'])).toBe(false);
+      expect(await resolveHostnameSSRF('private.example.com', ['10.0.0.5:11434'], '11434')).toBe(
+        false,
+      );
+    });
+
+    it('blocks when the host matches but the port does not', async () => {
+      mockedLookup.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }] as never);
+      expect(await resolveHostnameSSRF('private.example.com', ['10.0.0.5:11434'], '22')).toBe(true);
     });
 
     it('still blocks when no entry matches', async () => {
       mockedLookup.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }] as never);
-      expect(await resolveHostnameSSRF('private.example.com', ['127.0.0.1'])).toBe(true);
+      expect(await resolveHostnameSSRF('private.example.com', ['127.0.0.1:11434'], '11434')).toBe(
+        true,
+      );
     });
 
     it('blocks when one of multiple resolved IPs is private and unlisted', async () => {
@@ -1516,7 +1544,9 @@ describe('SSRF allowedAddresses exemption', () => {
         { address: '8.8.8.8', family: 4 },
         { address: '10.0.0.5', family: 4 },
       ] as never);
-      expect(await resolveHostnameSSRF('mixed.example.com', ['127.0.0.1'])).toBe(true);
+      expect(await resolveHostnameSSRF('mixed.example.com', ['127.0.0.1:11434'], '11434')).toBe(
+        true,
+      );
     });
 
     it('passes when all resolved private IPs are listed', async () => {
@@ -1524,80 +1554,108 @@ describe('SSRF allowedAddresses exemption', () => {
         { address: '10.0.0.5', family: 4 },
         { address: '10.0.0.6', family: 4 },
       ] as never);
-      expect(await resolveHostnameSSRF('cluster.example.com', ['10.0.0.5', '10.0.0.6'])).toBe(
-        false,
-      );
+      expect(
+        await resolveHostnameSSRF(
+          'cluster.example.com',
+          ['10.0.0.5:11434', '10.0.0.6:11434'],
+          '11434',
+        ),
+      ).toBe(false);
     });
   });
 
   describe('validateEndpointURL', () => {
     it('passes a private-IP URL when its IP is in allowedAddresses', async () => {
       await expect(
-        validateEndpointURL('http://10.0.0.5/v1', 'ollama', ['10.0.0.5']),
+        validateEndpointURL('http://10.0.0.5/v1', 'ollama', ['10.0.0.5:80']),
       ).resolves.toBeUndefined();
     });
 
     it('passes a localhost URL when localhost is in allowedAddresses', async () => {
       await expect(
-        validateEndpointURL('http://localhost:11434/v1', 'ollama', ['localhost']),
+        validateEndpointURL('http://localhost:11434/v1', 'ollama', ['localhost:11434']),
       ).resolves.toBeUndefined();
     });
 
     it('passes a hostname URL when DNS resolves to an exempted IP', async () => {
       mockedLookup.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }] as never);
       await expect(
-        validateEndpointURL('https://ollama.example.com/v1', 'ollama', ['10.0.0.5']),
+        validateEndpointURL('https://ollama.example.com/v1', 'ollama', ['10.0.0.5:443']),
       ).resolves.toBeUndefined();
+    });
+
+    it('rejects a different port on the same allowed private address', async () => {
+      await expect(
+        validateEndpointURL('http://localhost:22/v1', 'ollama', ['localhost:11434']),
+      ).rejects.toThrow('targets a restricted address');
     });
 
     it('still rejects unlisted private IPs when allowedAddresses is set', async () => {
       await expect(
-        validateEndpointURL('http://192.168.1.1/v1', 'test-ep', ['10.0.0.5']),
+        validateEndpointURL('http://192.168.1.1/v1', 'test-ep', ['10.0.0.5:80']),
       ).rejects.toThrow('targets a restricted address');
     });
 
     it('still rejects non-http schemes regardless of allowedAddresses', async () => {
       await expect(
-        validateEndpointURL('file:///etc/passwd', 'test-ep', ['localhost']),
+        validateEndpointURL('file:///etc/passwd', 'test-ep', ['localhost:11434']),
       ).rejects.toThrow('only HTTP and HTTPS are permitted');
     });
   });
 
   describe('isActionDomainAllowed', () => {
     it('exempts a private IP when listed in allowedAddresses (no allowedDomains)', async () => {
-      expect(await isActionDomainAllowed('http://10.0.0.5:8080/api', null, ['10.0.0.5'])).toBe(
+      expect(await isActionDomainAllowed('http://10.0.0.5:8080/api', null, ['10.0.0.5:8080'])).toBe(
         true,
       );
     });
 
+    it('does not exempt a different port on an allowed private IP', async () => {
+      expect(await isActionDomainAllowed('http://10.0.0.5:8081/api', null, ['10.0.0.5:8080'])).toBe(
+        false,
+      );
+    });
+
     it('still blocks unlisted private IPs', async () => {
-      expect(await isActionDomainAllowed('http://192.168.1.1/api', null, ['10.0.0.5'])).toBe(false);
+      expect(await isActionDomainAllowed('http://192.168.1.1/api', null, ['10.0.0.5:80'])).toBe(
+        false,
+      );
     });
   });
 
   describe('isMCPDomainAllowed', () => {
     it('exempts a private-IP MCP server when its IP is in allowedAddresses', async () => {
       expect(
-        await isMCPDomainAllowed({ url: 'https://10.0.0.5:8443/mcp' }, null, ['10.0.0.5']),
+        await isMCPDomainAllowed({ url: 'https://10.0.0.5:8443/mcp' }, null, ['10.0.0.5:8443']),
       ).toBe(true);
     });
 
     it('still blocks an unlisted private MCP target', async () => {
-      expect(await isMCPDomainAllowed({ url: 'https://192.168.1.1/mcp' }, null, ['10.0.0.5'])).toBe(
-        false,
-      );
+      expect(
+        await isMCPDomainAllowed({ url: 'https://192.168.1.1/mcp' }, null, ['10.0.0.5:443']),
+      ).toBe(false);
     });
   });
 
   describe('isOAuthUrlAllowed', () => {
-    it('returns true when the URL hostname is in allowedAddresses (no allowedDomains)', () => {
-      expect(isOAuthUrlAllowed('https://10.0.0.5/oauth', null, ['10.0.0.5'])).toBe(true);
+    it('returns true when the URL host:port is in allowedAddresses (no allowedDomains)', () => {
+      expect(isOAuthUrlAllowed('https://10.0.0.5/oauth', null, ['10.0.0.5:443'])).toBe(true);
+    });
+
+    it('returns false when the OAuth URL uses a different port than allowedAddresses', () => {
+      expect(isOAuthUrlAllowed('https://10.0.0.5:8443/oauth', null, ['10.0.0.5:443'])).toBe(false);
     });
 
     it('still requires allowedDomains match for non-exempted URLs', () => {
-      expect(isOAuthUrlAllowed('https://other.example.com/oauth', null, ['10.0.0.5'])).toBe(false);
+      expect(isOAuthUrlAllowed('https://other.example.com/oauth', null, ['10.0.0.5:443'])).toBe(
+        false,
+      );
       expect(
-        isOAuthUrlAllowed('https://other.example.com/oauth', ['other.example.com'], ['10.0.0.5']),
+        isOAuthUrlAllowed(
+          'https://other.example.com/oauth',
+          ['other.example.com'],
+          ['10.0.0.5:443'],
+        ),
       ).toBe(true);
     });
 
@@ -1606,22 +1664,22 @@ describe('SSRF allowedAddresses exemption', () => {
       // hosts. An unrelated `allowedAddresses` entry (e.g. for self-hosted Ollama) must NOT
       // broaden that bound — otherwise a malicious MCP server could advertise OAuth at any
       // exempted private address and pass validation.
-      expect(isOAuthUrlAllowed('http://10.0.0.5/oauth', ['oauth.trusted.com'], ['10.0.0.5'])).toBe(
-        false,
-      );
       expect(
-        isOAuthUrlAllowed('http://127.0.0.1/oauth', ['oauth.trusted.com'], ['127.0.0.1']),
+        isOAuthUrlAllowed('http://10.0.0.5/oauth', ['oauth.trusted.com'], ['10.0.0.5:80']),
+      ).toBe(false);
+      expect(
+        isOAuthUrlAllowed('http://127.0.0.1/oauth', ['oauth.trusted.com'], ['127.0.0.1:80']),
       ).toBe(false);
     });
 
-    it('rejects schemeless inputs even when the bare host is in allowedAddresses', () => {
+    it('rejects schemeless inputs even when the host:port is in allowedAddresses', () => {
       // `parseDomainSpec` quietly prepends `https://` to schemeless inputs.
       // Without a strict `new URL(url)` gate, a value like `10.0.0.5/oauth`
       // would short-circuit the trust-bypass and skip `validateOAuthUrl`'s
       // own parse-or-throw. The check must require an absolute URL.
-      expect(isOAuthUrlAllowed('10.0.0.5/oauth', null, ['10.0.0.5'])).toBe(false);
-      expect(isOAuthUrlAllowed('127.0.0.1', null, ['127.0.0.1'])).toBe(false);
-      expect(isOAuthUrlAllowed('//10.0.0.5/oauth', null, ['10.0.0.5'])).toBe(false);
+      expect(isOAuthUrlAllowed('10.0.0.5/oauth', null, ['10.0.0.5:443'])).toBe(false);
+      expect(isOAuthUrlAllowed('127.0.0.1', null, ['127.0.0.1:443'])).toBe(false);
+      expect(isOAuthUrlAllowed('//10.0.0.5/oauth', null, ['10.0.0.5:443'])).toBe(false);
     });
   });
 });

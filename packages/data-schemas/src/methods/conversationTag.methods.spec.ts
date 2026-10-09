@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createConversationTagMethods } from './conversationTag';
-import { createModels } from '~/models';
-import type { IConversationTag } from '~/schema/conversationTag';
 import type { IConversation } from '..';
+import type { IConversationTag } from '~/schema/conversationTag';
+import { createConversationTagMethods, decrementTagCounts } from './conversationTag';
+import { createModels } from '~/models';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -135,5 +135,86 @@ describe('ConversationTag model - $pullAll operations', () => {
       const updated = await Conversation.findById(conv._id).lean();
       expect(updated?.tags).toEqual(['other']);
     });
+  });
+});
+
+describe('decrementTagCounts', () => {
+  const userId = new mongoose.Types.ObjectId().toString();
+
+  const readCount = async (tag: string, user: string = userId) =>
+    (await ConversationTag.findOne({ user, tag }).lean())?.count;
+
+  it('decrements once per tag occurrence', async () => {
+    await ConversationTag.create({ tag: 'work', user: userId, position: 1, count: 5 });
+
+    await decrementTagCounts(mongoose, userId, ['work', 'work']);
+
+    expect(await readCount('work')).toBe(3);
+  });
+
+  it('decrements an exact count down to zero', async () => {
+    await ConversationTag.create({ tag: 'work', user: userId, position: 1, count: 2 });
+
+    await decrementTagCounts(mongoose, userId, ['work', 'work']);
+
+    expect(await readCount('work')).toBe(0);
+  });
+
+  it('clamps at zero when the decrement exceeds the current count', async () => {
+    await ConversationTag.create({ tag: 'work', user: userId, position: 1, count: 1 });
+
+    await decrementTagCounts(mongoose, userId, ['work', 'work', 'work']);
+
+    expect(await readCount('work')).toBe(0);
+  });
+
+  it('leaves a zero count at zero', async () => {
+    await ConversationTag.create({ tag: 'empty', user: userId, position: 1, count: 0 });
+
+    await decrementTagCounts(mongoose, userId, ['empty']);
+
+    expect(await readCount('empty')).toBe(0);
+  });
+
+  it('clamps pre-existing negative drift to zero', async () => {
+    await ConversationTag.create({ tag: 'drift', user: userId, position: 1, count: -3 });
+
+    await decrementTagCounts(mongoose, userId, ['drift']);
+
+    expect(await readCount('drift')).toBe(0);
+  });
+
+  it('treats a missing count as zero', async () => {
+    await ConversationTag.collection.insertOne({ tag: 'legacy', user: userId, position: 1 });
+
+    await decrementTagCounts(mongoose, userId, ['legacy']);
+
+    expect(await readCount('legacy')).toBe(0);
+  });
+
+  it('converges to zero under concurrent decrements exceeding the count', async () => {
+    await ConversationTag.create({ tag: 'race', user: userId, position: 1, count: 3 });
+
+    await Promise.all([
+      decrementTagCounts(mongoose, userId, ['race', 'race']),
+      decrementTagCounts(mongoose, userId, ['race', 'race']),
+    ]);
+
+    expect(await readCount('race')).toBe(0);
+  });
+
+  it("leaves other users' tags untouched", async () => {
+    const otherUserId = new mongoose.Types.ObjectId().toString();
+    await ConversationTag.create({ tag: 'work', user: userId, position: 1, count: 4 });
+    await ConversationTag.create({ tag: 'work', user: otherUserId, position: 1, count: 4 });
+
+    await decrementTagCounts(mongoose, userId, ['work']);
+
+    expect(await readCount('work')).toBe(3);
+    expect(await readCount('work', otherUserId)).toBe(4);
+  });
+
+  it('ignores empty and unknown tags without throwing', async () => {
+    await expect(decrementTagCounts(mongoose, userId, ['', 'nonexistent'])).resolves.not.toThrow();
   });
 });

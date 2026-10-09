@@ -1,6 +1,7 @@
 import React from 'react';
+import { JSX } from 'react/jsx-runtime';
 
-export default function ChatGPTMinimalIcon() {
+export default function ChatGPTMinimalIcon(): JSX.Element {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"

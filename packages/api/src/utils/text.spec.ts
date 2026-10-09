@@ -1,4 +1,4 @@
-import { processTextWithTokenLimit, TokenCountFn } from './text';
+import { normalizeString, processTextWithTokenLimit, TokenCountFn } from './text';
 import Tokenizer, { countTokens } from './tokenizer';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -8,6 +8,15 @@ jest.mock('@librechat/data-schemas', () => ({
     error: jest.fn(),
   },
 }));
+
+describe('normalizeString', () => {
+  it('trims non-empty strings and treats blank or non-string values as undefined', () => {
+    expect(normalizeString('  value  ')).toBe('value');
+    expect(normalizeString('   ')).toBeUndefined();
+    expect(normalizeString(null)).toBeUndefined();
+    expect(normalizeString(123)).toBeUndefined();
+  });
+});
 
 /**
  * OLD IMPLEMENTATION (Binary Search) - kept for comparison testing
@@ -221,6 +230,24 @@ describe('processTextWithTokenLimit', () => {
       expect(syncResult.tokenCount).toBe(asyncResult.tokenCount);
       expect(syncResult.wasTruncated).toBe(asyncResult.wasTruncated);
       expect(syncResult.text.length).toBe(asyncResult.text.length);
+    });
+
+    it('should preserve the end of text when requested', async () => {
+      const { tokenCountFn } = createMockTokenCounter();
+      const text = `${'a'.repeat(200)}LATEST_MEMORY_REQUEST`;
+      const tokenLimit = 10;
+
+      const result = await processTextWithTokenLimit({
+        text,
+        tokenLimit,
+        tokenCountFn,
+        preserve: 'end',
+      });
+
+      expect(result.wasTruncated).toBe(true);
+      expect(result.tokenCount).toBeLessThanOrEqual(tokenLimit);
+      expect(result.text).toContain('LATEST_MEMORY_REQUEST');
+      expect(result.text).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     });
   });
 

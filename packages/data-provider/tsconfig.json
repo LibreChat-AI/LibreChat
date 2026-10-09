@@ -6,7 +6,7 @@
     "noImplicitAny": true,
     "outDir": "./types",
     "target": "es5",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "lib": ["es2017", "dom", "ES2021.String"],
     "allowJs": true,

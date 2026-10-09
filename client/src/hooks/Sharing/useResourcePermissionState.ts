@@ -26,7 +26,9 @@ export const useResourcePermissionState = (
   const {
     data: permissionsData,
     isLoading: isLoadingPermissions,
+    isFetching: isFetchingPermissions,
     error: permissionsError,
+    refetch: refetchPermissions,
   } = useGetResourcePermissionsQuery(resourceType, resourceDbId || '', {
     enabled: isValidResourceId,
   });
@@ -45,6 +47,7 @@ export const useResourcePermissionState = (
       description: principal.description,
       accessRoleId: principal.accessRoleId,
       idOnTheSource: principal.idOnTheSource,
+      viewInsights: principal.viewInsights,
     })) || [];
 
   const currentIsPublic = permissionsData?.public ?? false;
@@ -68,7 +71,9 @@ export const useResourcePermissionState = (
     config,
     permissionsData,
     isLoadingPermissions,
+    isFetchingPermissions,
     permissionsError,
+    refetchPermissions,
     updatePermissionsMutation,
     currentShares,
     currentIsPublic,

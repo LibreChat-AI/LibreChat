@@ -8,12 +8,8 @@ jest.mock('@librechat/agents', () => ({
     }
     return null;
   }),
-  estimateAnthropicImageTokens: jest.fn(
-    (w: number, h: number) => Math.ceil((w * h) / 750),
-  ),
-  estimateOpenAIImageTokens: jest.fn(
-    (w: number, h: number) => Math.ceil((w * h) / 512) + 85,
-  ),
+  estimateAnthropicImageTokens: jest.fn((w: number, h: number) => Math.ceil((w * h) / 750)),
+  estimateOpenAIImageTokens: jest.fn((w: number, h: number) => Math.ceil((w * h) / 512) + 85),
 }));
 
 const fakeTokenCount = (text: string) => Math.ceil(text.length / 4);
@@ -72,14 +68,18 @@ describe('estimateMediaTokensForMessage', () => {
     });
 
     it('estimates tokens from decoded dimensions (OpenAI path)', () => {
-      const content = [{ type: 'image_url', image_url: 'data:image/png;base64,VALID_PNG_LONG_DATA' }];
+      const content = [
+        { type: 'image_url', image_url: 'data:image/png;base64,VALID_PNG_LONG_DATA' },
+      ];
       const result = estimateMediaTokensForMessage(content, false);
       expect(result).toBeGreaterThan(0);
       expect(result).not.toBe(1024);
     });
 
     it('estimates tokens from decoded dimensions (Claude path)', () => {
-      const content = [{ type: 'image_url', image_url: { url: 'data:image/png;base64,VALID_PNG_LONG_DATA' } }];
+      const content = [
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,VALID_PNG_LONG_DATA' } },
+      ];
       const result = estimateMediaTokensForMessage(content, true);
       expect(result).toBeGreaterThan(0);
       expect(result).not.toBe(1024);
@@ -114,78 +114,92 @@ describe('estimateMediaTokensForMessage', () => {
 
   describe('document blocks - LangChain format (source_type)', () => {
     it('counts tokens for text source_type with getTokenCount', () => {
-      const content = [{
-        type: 'document',
-        source_type: 'text',
-        text: 'a'.repeat(400),
-      }];
+      const content = [
+        {
+          type: 'document',
+          source_type: 'text',
+          text: 'a'.repeat(400),
+        },
+      ];
       expect(estimateMediaTokensForMessage(content, false, fakeTokenCount)).toBe(100);
     });
 
     it('falls back to length/4 without getTokenCount', () => {
-      const content = [{
-        type: 'document',
-        source_type: 'text',
-        text: 'a'.repeat(400),
-      }];
+      const content = [
+        {
+          type: 'document',
+          source_type: 'text',
+          text: 'a'.repeat(400),
+        },
+      ];
       expect(estimateMediaTokensForMessage(content, false)).toBe(100);
     });
 
     it('estimates PDF pages for base64 source_type with application/pdf mime', () => {
       const pdfData = 'x'.repeat(150_000);
-      const content = [{
-        type: 'document',
-        source_type: 'base64',
-        data: pdfData,
-        mime_type: 'application/pdf',
-      }];
+      const content = [
+        {
+          type: 'document',
+          source_type: 'base64',
+          data: pdfData,
+          mime_type: 'application/pdf',
+        },
+      ];
       const result = estimateMediaTokensForMessage(content, false);
       expect(result).toBe(2 * 1500);
     });
 
     it('uses Claude PDF rate when isClaude is true', () => {
       const pdfData = 'x'.repeat(150_000);
-      const content = [{
-        type: 'document',
-        source_type: 'base64',
-        data: pdfData,
-        mime_type: 'application/pdf',
-      }];
+      const content = [
+        {
+          type: 'document',
+          source_type: 'base64',
+          data: pdfData,
+          mime_type: 'application/pdf',
+        },
+      ];
       const result = estimateMediaTokensForMessage(content, true);
       expect(result).toBe(2 * 2000);
     });
 
     it('defaults to PDF estimation for empty mime_type', () => {
       const pdfData = 'x'.repeat(10);
-      const content = [{
-        type: 'document',
-        source_type: 'base64',
-        data: pdfData,
-        mime_type: '',
-      }];
+      const content = [
+        {
+          type: 'document',
+          source_type: 'base64',
+          data: pdfData,
+          mime_type: '',
+        },
+      ];
       const result = estimateMediaTokensForMessage(content, false);
       expect(result).toBe(1 * 1500);
     });
 
     it('handles image/* mime inside base64 source_type', () => {
-      const content = [{
-        type: 'document',
-        source_type: 'base64',
-        data: 'VALID_PNG',
-        mime_type: 'image/png',
-      }];
+      const content = [
+        {
+          type: 'document',
+          source_type: 'base64',
+          data: 'VALID_PNG',
+          mime_type: 'image/png',
+        },
+      ];
       const result = estimateMediaTokensForMessage(content, true);
       expect(result).toBeGreaterThan(0);
       expect(result).not.toBe(1024);
     });
 
     it('falls back to 1024 for undecodable image in base64 source_type', () => {
-      const content = [{
-        type: 'document',
-        source_type: 'base64',
-        data: 'BAD_DATA',
-        mime_type: 'image/jpeg',
-      }];
+      const content = [
+        {
+          type: 'document',
+          source_type: 'base64',
+          data: 'BAD_DATA',
+          mime_type: 'image/jpeg',
+        },
+      ];
       expect(estimateMediaTokensForMessage(content, false)).toBe(1024);
     });
 
@@ -197,50 +211,60 @@ describe('estimateMediaTokensForMessage', () => {
 
   describe('document blocks - Anthropic format (source object)', () => {
     it('counts tokens for text source type with getTokenCount', () => {
-      const content = [{
-        type: 'document',
-        source: { type: 'text', data: 'a'.repeat(800) },
-      }];
+      const content = [
+        {
+          type: 'document',
+          source: { type: 'text', data: 'a'.repeat(800) },
+        },
+      ];
       expect(estimateMediaTokensForMessage(content, true, fakeTokenCount)).toBe(200);
     });
 
     it('falls back to length/4 for text source without getTokenCount', () => {
-      const content = [{
-        type: 'document',
-        source: { type: 'text', data: 'a'.repeat(800) },
-      }];
+      const content = [
+        {
+          type: 'document',
+          source: { type: 'text', data: 'a'.repeat(800) },
+        },
+      ];
       expect(estimateMediaTokensForMessage(content, true)).toBe(200);
     });
 
     it('estimates PDF pages for base64 source with application/pdf', () => {
       const pdfData = 'x'.repeat(225_000);
-      const content = [{
-        type: 'document',
-        source: { type: 'base64', data: pdfData, media_type: 'application/pdf' },
-      }];
+      const content = [
+        {
+          type: 'document',
+          source: { type: 'base64', data: pdfData, media_type: 'application/pdf' },
+        },
+      ];
       const result = estimateMediaTokensForMessage(content, true);
       expect(result).toBe(3 * 2000);
     });
 
     it('returns URL fallback for url source type', () => {
-      const content = [{
-        type: 'document',
-        source: { type: 'url' },
-      }];
+      const content = [
+        {
+          type: 'document',
+          source: { type: 'url' },
+        },
+      ];
       expect(estimateMediaTokensForMessage(content, false)).toBe(2000);
     });
 
     it('handles content source type with nested images', () => {
-      const content = [{
-        type: 'document',
-        source: {
-          type: 'content',
-          content: [
-            { type: 'image', source: { type: 'base64', data: 'VALID_PNG' } },
-            { type: 'image', source: { type: 'base64', data: 'UNDECODABLE' } },
-          ],
+      const content = [
+        {
+          type: 'document',
+          source: {
+            type: 'content',
+            content: [
+              { type: 'image', source: { type: 'base64', data: 'VALID_PNG' } },
+              { type: 'image', source: { type: 'base64', data: 'UNDECODABLE' } },
+            ],
+          },
         },
-      }];
+      ];
       const result = estimateMediaTokensForMessage(content, true);
       expect(result).toBeGreaterThan(1024);
     });
@@ -253,11 +277,13 @@ describe('estimateMediaTokensForMessage', () => {
 
   describe('file blocks', () => {
     it('uses same logic as document for file type blocks', () => {
-      const content = [{
-        type: 'file',
-        source_type: 'text',
-        text: 'a'.repeat(120),
-      }];
+      const content = [
+        {
+          type: 'file',
+          source_type: 'text',
+          text: 'a'.repeat(120),
+        },
+      ];
       expect(estimateMediaTokensForMessage(content, false, fakeTokenCount)).toBe(30);
     });
 

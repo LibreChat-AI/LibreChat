@@ -1,16 +1,44 @@
 const multer = require('multer');
 const express = require('express');
+const {
+  inspectContent,
+  extractStoredMessageContent,
+  contentFilterBlockResponse,
+  restoreTenantContextFromReq,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
-const { CacheKeys } = require('librechat-data-provider');
+const { CacheKeys, hasActivePiiFields } = require('librechat-data-provider');
 const { getVoices, streamAudio, textToSpeech } = require('~/server/services/Files/Audio');
 const { getLogStores } = require('~/cache');
 
 const router = express.Router();
 const upload = multer();
 
-router.post('/manual', upload.none(), async (req, res) => {
-  await textToSpeech(req, res);
-});
+router.post(
+  '/manual',
+  upload.none(),
+  restoreTenantContextFromReq,
+  (req, res, next) => {
+    const filters = req.config?.filters;
+    if (!hasActivePiiFields(filters?.messages?.pii, ['text'])) {
+      next();
+      return;
+    }
+
+    const finding = inspectContent(extractStoredMessageContent({ text: req.body?.input }), {
+      filters,
+    });
+    if (finding == null) {
+      next();
+      return;
+    }
+
+    res.status(400).json(contentFilterBlockResponse(finding));
+  },
+  async (req, res) => {
+    await textToSpeech(req, res);
+  },
+);
 
 const logDebugMessage = (req, message) =>
   logger.debug(`[streamAudio] user: ${req?.user?.id ?? 'UNDEFINED_USER'} | ${message}`);

@@ -1,10 +1,16 @@
 const path = require('path');
 const OpenAI = require('openai');
 const { v4: uuidv4 } = require('uuid');
-const { ProxyAgent, fetch } = require('undici');
+const { fetch } = require('undici');
 const { logger } = require('@librechat/data-schemas');
 const { Tool } = require('@librechat/agents/langchain/tools');
-const { getImageBasename, extractBaseURL } = require('@librechat/api');
+const {
+  getImageBasename,
+  extractBaseURL,
+  getProxyDispatcher,
+  getEnvProxyDispatcher,
+  createMinimalRetentionRequest,
+} = require('@librechat/api');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
 
 const dalle3JsonSchema = {
@@ -48,6 +54,8 @@ class DALLE3 extends Tool {
     this.returnMetadata = fields.returnMetadata ?? false;
 
     this.userId = fields.userId;
+    this.tenantId = fields.req?.user?.tenantId;
+    this.retentionRequest = createMinimalRetentionRequest(fields.req);
     this.fileStrategy = fields.fileStrategy;
     /** @type {boolean} */
     this.isAgent = fields.isAgent;
@@ -76,10 +84,10 @@ class DALLE3 extends Tool {
       config.apiKey = process.env.DALLE3_API_KEY;
     }
 
-    if (process.env.PROXY) {
-      const proxyAgent = new ProxyAgent(process.env.PROXY);
+    const proxyDispatcher = getProxyDispatcher();
+    if (proxyDispatcher) {
       config.fetchOptions = {
-        dispatcher: proxyAgent,
+        dispatcher: proxyDispatcher,
       };
     }
 
@@ -180,9 +188,9 @@ Error Message: ${error.message}`);
 
     if (this.isAgent) {
       let fetchOptions = {};
-      if (process.env.PROXY) {
-        const proxyAgent = new ProxyAgent(process.env.PROXY);
-        fetchOptions.dispatcher = proxyAgent;
+      const dispatcher = getEnvProxyDispatcher();
+      if (dispatcher) {
+        fetchOptions.dispatcher = dispatcher;
       }
       const imageResponse = await fetch(theImageUrl, fetchOptions);
       const arrayBuffer = await imageResponse.arrayBuffer();
@@ -228,6 +236,8 @@ Error Message: ${error.message}`);
         fileName: imageName,
         fileStrategy: this.fileStrategy,
         context: FileContext.image_generation,
+        tenantId: this.tenantId,
+        req: this.retentionRequest,
       });
 
       if (this.returnMetadata) {

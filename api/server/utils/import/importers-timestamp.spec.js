@@ -7,6 +7,7 @@ const { getImporter } = require('./importers');
 jest.mock('~/models', () => ({
   bulkSaveConvos: jest.fn(),
   bulkSaveMessages: jest.fn(),
+  bulkIncrementTagCounts: jest.fn(),
 }));
 
 const mockGetEndpointsConfig = jest.fn().mockResolvedValue(null);
@@ -526,6 +527,121 @@ describe('Import Timestamp Ordering', () => {
       // Fork functionality DOES correct the timestamps
       expect(new Date(child.createdAt).getTime()).toBeGreaterThan(
         new Date(parent.createdAt).getTime(),
+      );
+    });
+  });
+
+  describe('Large exports', () => {
+    const baseTime = 1700000000;
+    const chatGptNode = (parent, role) => ({
+      parent,
+      children: [],
+      message: {
+        author: { role },
+        create_time: baseTime,
+        content: { content_type: 'text', parts: [role] },
+        metadata: {},
+      },
+    });
+
+    /** These sizes import in a few hundred milliseconds; a per-message scan takes ten seconds or more. */
+    const importBudgetMs = 3000;
+
+    const importJson = async (jsonData) => {
+      const importBatchBuilder = new ImportBatchBuilder('user-123');
+      const startedAt = performance.now();
+      await getImporter(jsonData)(jsonData, 'user-123', () => importBatchBuilder);
+      return { messages: importBatchBuilder.messages, elapsedMs: performance.now() - startedAt };
+    };
+
+    test('imports a flat LibreChat export whose messages all name an absent parent', async () => {
+      const count = 60000;
+      const { messages, elapsedMs } = await importJson({
+        conversationId: 'large-flat',
+        title: 'Large flat export',
+        messages: Array.from({ length: count }, (_, index) => ({
+          messageId: `m${index}`,
+          parentMessageId: 'absent-root',
+          text: 'x',
+          sender: 'user',
+          isCreatedByUser: true,
+        })),
+      });
+
+      expect(elapsedMs).toBeLessThan(importBudgetMs);
+      expect(messages).toHaveLength(count);
+    });
+
+    test('orders a long LibreChat chain whose timestamps all collide', async () => {
+      const count = 60000;
+      const createdAt = '2024-01-01T00:00:00.000Z';
+      const { messages, elapsedMs } = await importJson({
+        conversationId: 'large-chain',
+        title: 'Large chain export',
+        messages: Array.from({ length: count }, (_, index) => ({
+          messageId: `m${index}`,
+          parentMessageId: index === 0 ? Constants.NO_PARENT : `m${index - 1}`,
+          text: 'x',
+          sender: 'user',
+          isCreatedByUser: true,
+          createdAt,
+        })),
+      });
+
+      expect(elapsedMs).toBeLessThan(importBudgetMs);
+      expect(messages).toHaveLength(count);
+      expect(messages[count - 1].parentMessageId).toBe(messages[count - 2].messageId);
+      expect(messages[count - 1].createdAt.getTime()).toBe(
+        new Date(createdAt).getTime() + count - 1,
+      );
+    });
+
+    test('orders a long ChatGPT branch listed deepest-first', async () => {
+      const count = 10000;
+      const mapping = {};
+      for (let depth = count - 1; depth >= 0; depth--) {
+        mapping[`n${depth}`] = chatGptNode(
+          depth === 0 ? null : `n${depth - 1}`,
+          depth % 2 ? 'assistant' : 'user',
+        );
+      }
+
+      const { messages, elapsedMs } = await importJson([
+        { title: 'Deep branch', create_time: baseTime, mapping },
+      ]);
+
+      const byId = new Map(messages.map((message) => [message.messageId, message]));
+      const root = messages.find((message) => message.parentMessageId === Constants.NO_PARENT);
+      const leaf = messages[0];
+      expect(elapsedMs).toBeLessThan(importBudgetMs);
+      expect(messages).toHaveLength(count);
+      expect(root.createdAt.getTime()).toBe(baseTime * 1000);
+      expect(leaf.createdAt.getTime()).toBe(baseTime * 1000 + count - 1);
+      expect(leaf.createdAt.getTime()).toBeGreaterThan(
+        byId.get(leaf.parentMessageId).createdAt.getTime(),
+      );
+    });
+
+    test('attaches many ChatGPT replies behind one long run of system messages', async () => {
+      const systemCount = 10000;
+      const replyCount = 10000;
+      const mapping = { root: chatGptNode(null, 'user') };
+      for (let index = 0; index < systemCount; index++) {
+        mapping[`s${index}`] = chatGptNode(index === 0 ? 'root' : `s${index - 1}`, 'system');
+      }
+      for (let index = 0; index < replyCount; index++) {
+        mapping[`r${index}`] = chatGptNode(`s${systemCount - 1}`, 'assistant');
+      }
+
+      const { messages, elapsedMs } = await importJson([
+        { title: 'System run', create_time: baseTime, mapping },
+      ]);
+
+      const root = messages.find((message) => message.parentMessageId === Constants.NO_PARENT);
+      expect(elapsedMs).toBeLessThan(importBudgetMs);
+      expect(messages).toHaveLength(replyCount + 1);
+      expect(messages.filter((message) => message.parentMessageId === root.messageId)).toHaveLength(
+        replyCount,
       );
     });
   });

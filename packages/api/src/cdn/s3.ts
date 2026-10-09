@@ -39,6 +39,7 @@ export const initializeS3 = (): S3Client | null => {
 
   const config = {
     region,
+    requestChecksumCalculation: 'WHEN_REQUIRED' as const,
     ...(endpoint ? { endpoint } : {}),
     ...(isEnabled(process.env.AWS_FORCE_PATH_STYLE) ? { forcePathStyle: true } : {}),
   };

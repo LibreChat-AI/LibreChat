@@ -1,5 +1,5 @@
-import { Check, PlugZap } from 'lucide-react';
 import { Spinner } from '@librechat/client';
+import { Check, KeyRound, Zap } from 'lucide-react';
 import type { MCPServerStatus } from 'librechat-data-provider';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -15,7 +15,7 @@ interface MCPStatusBadgeProps {
  *
  * Unified color system:
  * - Green: Connected/Active (success)
- * - Blue: Connecting/In-progress
+ * - Blue: Connecting/In-progress or request-scoped on-demand
  * - Amber: Needs user action (OAuth required)
  * - Gray: Disconnected/Inactive (neutral)
  * - Red: Error
@@ -38,10 +38,7 @@ export default function MCPStatusBadge({
       <div
         role="status"
         aria-live="polite"
-        className={cn(
-          badgeBaseClass,
-          'bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400',
-        )}
+        className={cn(badgeBaseClass, 'bg-status-info-subtle text-status-info')}
       >
         <Spinner className="size-3" />
         <span>{localize('com_nav_mcp_status_initializing')}</span>
@@ -61,13 +58,19 @@ export default function MCPStatusBadge({
       <div
         role="status"
         aria-live="polite"
-        className={cn(
-          badgeBaseClass,
-          'bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-400',
-        )}
+        className={cn(badgeBaseClass, 'bg-status-info-subtle text-status-info')}
       >
         <Spinner className="size-3" />
         <span>{localize('com_nav_mcp_status_connecting')}</span>
+      </div>
+    );
+  }
+
+  if (serverStatus.requestScoped) {
+    return (
+      <div role="status" className={cn(badgeBaseClass, 'bg-status-info-subtle text-status-info')}>
+        <Zap className="size-3" aria-hidden="true" />
+        <span>{localize('com_nav_mcp_status_on_demand')}</span>
       </div>
     );
   }
@@ -79,12 +82,12 @@ export default function MCPStatusBadge({
       return (
         <div
           role="status"
-          className={cn(
-            badgeBaseClass,
-            'bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400',
-          )}
+          className={cn(badgeBaseClass, 'bg-status-warning-subtle text-status-warning')}
         >
-          <PlugZap className="size-3" aria-hidden="true" />
+          {/* Credentials, the same glyph the config dialog puts on this state and
+              the row puts on the control that supplies them. A plug belongs to the
+              action that connects, not to the state of not being able to. */}
+          <KeyRound className="size-3" aria-hidden="true" />
           <span>{localize('com_nav_mcp_status_needs_auth')}</span>
         </div>
       );
@@ -93,10 +96,7 @@ export default function MCPStatusBadge({
     return (
       <div
         role="status"
-        className={cn(
-          badgeBaseClass,
-          'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
-        )}
+        className={cn(badgeBaseClass, 'bg-status-neutral-subtle text-status-neutral')}
       >
         <span>{localize('com_nav_mcp_status_disconnected')}</span>
       </div>
@@ -106,10 +106,7 @@ export default function MCPStatusBadge({
   // Error state - red
   if (connectionState === 'error') {
     return (
-      <div
-        role="status"
-        className={cn(badgeBaseClass, 'bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-400')}
-      >
+      <div role="status" className={cn(badgeBaseClass, 'bg-status-error-subtle text-status-error')}>
         <span>{localize('com_nav_mcp_status_error')}</span>
       </div>
     );
@@ -120,10 +117,7 @@ export default function MCPStatusBadge({
     return (
       <div
         role="status"
-        className={cn(
-          badgeBaseClass,
-          'bg-green-50 text-green-600 dark:bg-green-950 dark:text-green-400',
-        )}
+        className={cn(badgeBaseClass, 'bg-status-success-subtle text-status-success')}
       >
         <Check className="size-3" aria-hidden="true" />
         <span>{localize('com_nav_mcp_status_connected')}</span>
@@ -139,7 +133,7 @@ export default function MCPStatusBadge({
  *
  * Colors:
  * - Green: Connected
- * - Blue: Connecting/Initializing
+ * - Blue: Connecting/Initializing or request-scoped on-demand
  * - Amber: Needs action (OAuth required while disconnected)
  * - Gray: Disconnected (neutral)
  * - Red: Error
@@ -149,31 +143,37 @@ export function getStatusDotColor(
   isInitializing?: boolean,
 ): string {
   if (isInitializing) {
-    return 'bg-blue-500';
+    return 'bg-status-info';
   }
 
   if (!serverStatus) {
-    return 'bg-gray-400';
+    return 'bg-status-neutral';
   }
 
   const { connectionState, requiresOAuth } = serverStatus;
 
   if (connectionState === 'connecting') {
-    return 'bg-blue-500';
+    return 'bg-status-info';
+  }
+
+  if (serverStatus.requestScoped) {
+    return 'bg-status-info';
   }
 
   if (connectionState === 'connected') {
-    return 'bg-green-500';
+    return 'bg-status-success';
   }
 
   if (connectionState === 'error') {
-    return 'bg-red-500';
+    return 'bg-status-error';
   }
 
   if (connectionState === 'disconnected') {
-    // Needs OAuth = amber, otherwise gray
-    return requiresOAuth ? 'bg-amber-500' : 'bg-gray-400';
+    if (requiresOAuth) {
+      return 'bg-status-warning';
+    }
+    return 'bg-status-neutral';
   }
 
-  return 'bg-gray-400';
+  return 'bg-status-neutral';
 }

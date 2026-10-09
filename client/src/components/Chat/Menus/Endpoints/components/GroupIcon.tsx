@@ -1,41 +1,46 @@
 import React, { memo, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
-import type { IconMapProps } from '~/common';
-import { icons } from '~/hooks/Endpoint/Icons';
+import { pxToRem, ProviderIcon } from '@librechat/client';
+import { resolveProviderId } from 'librechat-data-provider';
+import { EntityEndpointMark, isEntityEndpoint } from '~/components/Endpoints/EntityEndpointMark';
+import CustomIcon from '~/components/ui/CustomIcon';
+import { isImageURL } from '~/utils/icons';
 
 interface GroupIconProps {
   iconURL: string;
   groupName: string;
 }
 
-type IconType = (props: IconMapProps) => React.JSX.Element;
-
 const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
   const [imageError, setImageError] = useState(false);
+  const provider = resolveProviderId(iconURL);
 
   const handleImageError = () => {
     setImageError(true);
   };
 
-  // Check if the iconURL is a built-in icon key
-  if (iconURL in icons) {
-    const Icon: IconType = (icons[iconURL] ?? icons.unknown) as IconType;
-    return <Icon size={20} context="menu-item" className="icon-md shrink-0 text-text-primary" />;
+  if (isEntityEndpoint(iconURL)) {
+    return (
+      <div
+        className="relative m-0.5"
+        style={{ width: pxToRem(20), height: pxToRem(20) }}
+        title={groupName}
+      >
+        <EntityEndpointMark endpoint={iconURL} />
+      </div>
+    );
   }
 
-  if (imageError) {
-    const DefaultIcon: IconType = icons.unknown as IconType;
+  if (provider || !isImageURL(iconURL) || imageError) {
     return (
-      <div className="relative" style={{ width: 20, height: 20, margin: '2px' }}>
-        <div className="icon-md shrink-0 overflow-hidden rounded-full">
-          <DefaultIcon context="menu-item" size={20} />
-        </div>
-        {imageError && iconURL && (
+      <div className="relative m-0.5" style={{ width: pxToRem(20), height: pxToRem(20) }}>
+        <ProviderIcon provider={provider} size={20} className="icon-md shrink-0" />
+        {imageError && (
           <div
-            className="absolute flex items-center justify-center rounded-full bg-red-500"
-            style={{ width: '14px', height: '14px', top: 0, right: 0 }}
+            className="bg-surface-destructive absolute flex items-center justify-center rounded-full"
+            style={{ width: pxToRem(14), height: pxToRem(14), top: 0, right: 0 }}
           >
-            <AlertCircle size={10} className="text-white" />
+            <AlertCircle className="text-text-on-status size-2.5" />
           </div>
         )}
       </div>
@@ -44,10 +49,10 @@ const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
 
   return (
     <div
-      className="icon-md shrink-0 overflow-hidden rounded-full"
-      style={{ width: 20, height: 20 }}
+      className="icon-md text-text-primary shrink-0 overflow-hidden rounded-full"
+      style={{ width: pxToRem(20), height: pxToRem(20) }}
     >
-      <img
+      <CustomIcon
         src={iconURL}
         alt={groupName}
         className="h-full w-full object-cover"

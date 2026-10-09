@@ -1,10 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Copy, CopyCheck } from 'lucide-react';
+import { Copy, CopyCheck } from 'lucide';
+import {
+  SystemRoles,
+  Permissions,
+  ResourceType,
+  PermissionBits,
+  PermissionTypes,
+} from 'librechat-data-provider';
 import {
   Label,
   Input,
   Button,
   Spinner,
+  MorphIcon,
   TrashIcon,
   useToastContext,
   OGDialog,
@@ -14,13 +22,6 @@ import {
   OGDialogContent,
   OGDialogTemplate,
 } from '@librechat/client';
-import {
-  SystemRoles,
-  Permissions,
-  ResourceType,
-  PermissionBits,
-  PermissionTypes,
-} from 'librechat-data-provider';
 import { useAuthContext, useHasAccess, useResourcePermissions, MCPServerDefinition } from '~/hooks';
 import { GenericGrantAccessDialog } from '~/components/Sharing';
 import { useMCPServerForm } from './hooks/useMCPServerForm';
@@ -157,21 +158,20 @@ export default function MCPServerDialog({
                   type="text"
                   readOnly
                   value={redirectUri}
-                  className="flex-1 text-text-secondary"
+                  className="text-text-secondary flex-1"
                 />
                 <Button
                   size="icon"
                   variant="outline"
                   onClick={() => {
                     if (isCopying) return;
+                    if (!copyLink(setIsCopying)) return;
                     showToast({ message: localize('com_ui_copied_to_clipboard') });
-                    copyLink(setIsCopying);
                   }}
-                  disabled={isCopying}
-                  className="p-0"
+                  disabled={isCopying || !redirectUri}
                   aria-label={localize('com_ui_copy_link')}
                 >
-                  {isCopying ? <CopyCheck className="size-4" /> : <Copy className="size-4" />}
+                  <MorphIcon icon={isCopying ? CopyCheck : Copy} className="size-4" />
                 </Button>
               </div>
             </div>
@@ -213,7 +213,7 @@ export default function MCPServerDialog({
             isEditMode ? (
               <div className="flex items-center gap-2">
                 <Button
-                  variant="destructive"
+                  variant="destructive-soft"
                   size="sm"
                   aria-label={localize('com_ui_delete_mcp_server_name', {
                     0: server?.config?.title || server?.serverName || '',

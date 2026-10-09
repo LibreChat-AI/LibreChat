@@ -129,6 +129,83 @@ describe('canAccessAgentFromBody middleware', () => {
 
       expect(next).toHaveBeenCalled();
     });
+
+    test.each([
+      {
+        label: 'inferred agents endpoint',
+        preset: { agent_id: 'agent_restricted' },
+      },
+      {
+        label: 'explicit agents endpoint',
+        preset: { endpoint: 'agents', agent_id: 'agent_restricted' },
+      },
+    ])('checks the enforced model spec agent for an $label', async ({ preset }) => {
+      const restrictedAgent = await createAgent({
+        id: preset.agent_id,
+        name: 'Restricted Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: otherUser._id,
+      });
+
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: otherUser._id,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: restrictedAgent._id,
+        permBits: 15,
+        grantedBy: otherUser._id,
+      });
+
+      req.body.spec = 'restricted-agent';
+      req.config = {
+        modelSpecs: {
+          enforce: true,
+          list: [{ name: 'restricted-agent', preset }],
+        },
+      };
+
+      const middleware = canAccessAgentFromBody({ requiredPermission: 1 });
+      await middleware(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+    });
+
+    test('permits an enforced model spec agent when the requester has access', async () => {
+      const restrictedAgent = await createAgent({
+        id: 'agent_shared',
+        name: 'Shared Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: otherUser._id,
+      });
+
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: testUser._id,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: restrictedAgent._id,
+        permBits: 1,
+        grantedBy: otherUser._id,
+      });
+
+      req.body.spec = 'shared-agent';
+      req.config = {
+        modelSpecs: {
+          enforce: true,
+          list: [{ name: 'shared-agent', preset: { agent_id: restrictedAgent.id } }],
+        },
+      };
+
+      const middleware = canAccessAgentFromBody({ requiredPermission: 1 });
+      await middleware(req, res, next);
+
+      expect(next).toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalled();
+    });
   });
 
   describe('addedConvo — absent or invalid shape', () => {

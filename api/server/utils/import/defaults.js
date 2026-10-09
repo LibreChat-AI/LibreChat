@@ -60,8 +60,83 @@ async function resolveImportDefaultModel({ endpoint, requestUserId, userRole }) 
   return FALLBACK_MODEL_BY_ENDPOINT[endpoint] ?? openAISettings.model.default;
 }
 
+/**
+ * Preferred endpoint order for conversations cloned without a known source
+ * endpoint. OpenAI is first so deployments that expose it keep prior behavior;
+ * any other configured endpoint is still selected when these are unavailable.
+ */
+const DEFAULT_ENDPOINT_PREFERENCE = [
+  EModelEndpoint.openAI,
+  EModelEndpoint.anthropic,
+  EModelEndpoint.google,
+  EModelEndpoint.azureOpenAI,
+  EModelEndpoint.bedrock,
+];
+
+/**
+ * Endpoints excluded as fork targets because they are stateful: each
+ * conversation needs an assistant_id and thread_id that a cloned conversation
+ * never creates, so the assistants chat controller rejects the first follow-up
+ * ("Missing thread_id for existing conversation"). A fork must land on a
+ * stateless chat endpoint. These can still surface in the runtime models config
+ * (e.g. a deployment exposing only assistant models), so filter them out.
+ */
+const EXCLUDED_FORK_ENDPOINTS = new Set([
+  EModelEndpoint.assistants,
+  EModelEndpoint.azureAssistants,
+]);
+
+/**
+ * Resolves an endpoint and model the requesting user can actually use, for
+ * conversations cloned without a known source endpoint (shared forks, whose
+ * original endpoint is stripped from the sanitized payload). Picks the first
+ * preferred endpoint exposing models, then any other configured endpoint
+ * (excluding stateful assistant endpoints, which a fork cannot resume), so a
+ * deployment that doesn't expose OpenAI doesn't produce a conversation whose
+ * first message is rejected by model validation. Falls back to OpenAI defaults
+ * only when the runtime models config is empty or unavailable.
+ *
+ * @param {object} args
+ * @param {string} args.requestUserId - The id of the requesting user.
+ * @param {string} [args.userRole] - The role of the requesting user.
+ * @returns {Promise<{ endpoint: string, model: string }>} A usable endpoint and model.
+ */
+async function resolveImportDefaultEndpoint({ requestUserId, userRole }) {
+  try {
+    const modelsConfig = await getModelsConfig({
+      user: { id: requestUserId, role: userRole, tenantId: getTenantId() },
+    });
+    if (modelsConfig) {
+      const orderedEndpoints = [
+        ...DEFAULT_ENDPOINT_PREFERENCE,
+        ...Object.keys(modelsConfig).filter(
+          (endpoint) => !DEFAULT_ENDPOINT_PREFERENCE.includes(endpoint),
+        ),
+      ];
+      for (const endpoint of orderedEndpoints) {
+        if (EXCLUDED_FORK_ENDPOINTS.has(endpoint)) {
+          continue;
+        }
+        const model = pickFirstConfiguredModel(endpoint, modelsConfig);
+        if (model) {
+          return { endpoint, model };
+        }
+      }
+    }
+  } catch (error) {
+    logger.warn(
+      `[import] Failed to resolve a default endpoint from modelsConfig: ${error.message}`,
+    );
+  }
+  return {
+    endpoint: EModelEndpoint.openAI,
+    model: FALLBACK_MODEL_BY_ENDPOINT[EModelEndpoint.openAI] ?? openAISettings.model.default,
+  };
+}
+
 module.exports = {
   FALLBACK_MODEL_BY_ENDPOINT,
   pickFirstConfiguredModel,
   resolveImportDefaultModel,
+  resolveImportDefaultEndpoint,
 };

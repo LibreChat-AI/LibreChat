@@ -32,7 +32,7 @@ export const data: TModelSpec[] = [
     // iconURL: 'https://i.ytimg.com/vi/SaneSRqePVY/maxresdefault.jpg',
     iconURL: EModelEndpoint.openAI, // Allow using project-included icons
     preset: {
-      chatGptLabel: 'Vision Helper',
+      modelLabel: 'Vision Helper',
       greeting: "What's up!!",
       endpoint: EModelEndpoint.openAI,
       model: 'gpt-4-turbo',

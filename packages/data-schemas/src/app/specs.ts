@@ -1,6 +1,10 @@
-import logger from '~/config/winston';
-import { EModelEndpoint, normalizeEndpointName } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  normalizeEndpointName,
+  materializeModelSpecEndpoints,
+} from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
+import logger from '~/config/winston';
 
 /**
  * Sets up Model Specs from the config (`librechat.yaml`) file.
@@ -18,7 +22,12 @@ export function processModelSpecs(
     return undefined;
   }
 
-  const list = _modelSpecs.list;
+  /**
+   * Fill inferable endpoints (agent specs may omit one) before the
+   * missing-endpoint guard below, which would otherwise skip them.
+   */
+  const specsConfig = materializeModelSpecEndpoints(_modelSpecs);
+  const list = specsConfig.list;
   const modelSpecs: typeof list = [];
 
   const customEndpoints = endpoints?.[EModelEndpoint.custom] ?? [];
@@ -37,6 +46,11 @@ export function processModelSpecs(
   }
 
   if (!list || list.length === 0) {
+    if (_modelSpecs.enforce) {
+      logger.warn(
+        'modelSpecs.enforce is true but list is empty — enforcement disabled at runtime.',
+      );
+    }
     return undefined;
   }
 
@@ -80,7 +94,7 @@ For more information, see the documentation at https://www.librechat.ai/docs/con
   }
 
   return {
-    ..._modelSpecs,
+    ...specsConfig,
     list: modelSpecs,
   };
 }

@@ -1,6 +1,6 @@
 import React from 'react';
-import { useApiErrorBoundary } from '~/hooks/ApiErrorBoundaryContext';
 import { useNavigate } from 'react-router-dom';
+import { useApiErrorBoundary } from '~/hooks/ApiErrorBoundaryContext';
 
 const ApiErrorWatcher = () => {
   const { error } = useApiErrorBoundary();

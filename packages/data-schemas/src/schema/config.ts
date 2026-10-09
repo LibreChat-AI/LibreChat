@@ -2,7 +2,7 @@ import { Schema } from 'mongoose';
 import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
 import type { IConfig } from '~/types';
 
-const configSchema = new Schema<IConfig>(
+const configSchema: Schema<IConfig> = new Schema<IConfig>(
   {
     principalType: {
       type: String,
@@ -29,6 +29,10 @@ const configSchema = new Schema<IConfig>(
     overrides: {
       type: Schema.Types.Mixed,
       default: {},
+    },
+    tombstones: {
+      type: [String],
+      default: [],
     },
     isActive: {
       type: Boolean,

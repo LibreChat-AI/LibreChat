@@ -178,6 +178,10 @@ export {
   // Non-streaming
   createResponseAggregator,
   buildAggregatedResponse,
+  buildResponsesUsage,
   createAggregatorEventHandlers,
   type ResponseAggregator,
 } from './service';
+
+// Client-side tool execution
+export { createClientToolHandoff, type ClientToolHandoff } from './clientTools';

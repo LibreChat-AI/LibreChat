@@ -56,7 +56,7 @@ describe('Code/Files', () => {
         <Files agent_id="agent-1" />
       </Wrapper>,
     );
-    expect(screen.getByText('com_assistants_code_interpreter_files')).toBeInTheDocument();
+    expect(screen.getByText('com_agents_run_code_files')).toBeInTheDocument();
   });
 
   it('returns null when file config is disabled for provider', () => {
@@ -133,6 +133,6 @@ describe('Code/Files', () => {
         <Files agent_id="agent-1" />
       </Wrapper>,
     );
-    expect(screen.getByText('com_assistants_code_interpreter_files')).toBeInTheDocument();
+    expect(screen.getByText('com_agents_run_code_files')).toBeInTheDocument();
   });
 });

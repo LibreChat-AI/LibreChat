@@ -1,4 +1,6 @@
-export default function LockIcon() {
+import { JSX } from 'react/jsx-runtime';
+
+export default function LockIcon(): JSX.Element {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"

@@ -21,6 +21,8 @@ function makeReq(overrides: Partial<PkceStrippableRequest> = {}): PkceStrippable
 
 describe('stripCodeChallenge', () => {
   const challenge = 'a'.repeat(64);
+  const callbackUrl = 'https://admin.example.com/auth/openid/callback';
+  const encodedCallbackUrl = 'https%3A%2F%2Fadmin.example.com%2Fauth%2Fopenid%2Fcallback';
 
   it('removes code_challenge from req.query and both URL strings (sole param)', () => {
     const req = makeReq({
@@ -33,6 +35,48 @@ describe('stripCodeChallenge', () => {
 
     expect(req.query.code_challenge).toBeUndefined();
     expect(req.originalUrl).toBe('/api/admin/oauth/openid');
+    expect(req.url).toBe('/oauth/openid');
+  });
+
+  it('removes admin-panel-only params before the request reaches Passport', () => {
+    const originalUrl =
+      `/api/admin/oauth/openid?code_challenge=${challenge}` +
+      `&redirect_uri=${encodedCallbackUrl}&redirectTo=%2Fsettings&foo=bar`;
+    const url =
+      `/oauth/openid?code_challenge=${challenge}` +
+      `&redirect_uri=${encodedCallbackUrl}&redirectTo=%2Fsettings&foo=bar`;
+    const req = makeReq({
+      query: {
+        code_challenge: challenge,
+        redirect_uri: callbackUrl,
+        redirectTo: '/settings',
+        foo: 'bar',
+      },
+      originalUrl,
+      url,
+    });
+
+    stripCodeChallenge(req);
+
+    expect(req.query.code_challenge).toBeUndefined();
+    expect(req.query.redirect_uri).toBeUndefined();
+    expect(req.query.redirectTo).toBeUndefined();
+    expect(req.query.foo).toBe('bar');
+    expect(req.originalUrl).toBe('/api/admin/oauth/openid?foo=bar');
+    expect(req.url).toBe('/oauth/openid?foo=bar');
+  });
+
+  it('removes redirect_uri when it is the only admin-panel-only param', () => {
+    const req = makeReq({
+      query: { redirect_uri: callbackUrl },
+      originalUrl: `/oauth/openid?redirect_uri=${encodedCallbackUrl}`,
+      url: `/oauth/openid?redirect_uri=${encodedCallbackUrl}`,
+    });
+
+    stripCodeChallenge(req);
+
+    expect(req.query.redirect_uri).toBeUndefined();
+    expect(req.originalUrl).toBe('/oauth/openid');
     expect(req.url).toBe('/oauth/openid');
   });
 
@@ -123,14 +167,20 @@ describe('stripCodeChallenge', () => {
 
 describe('storeAndStripChallenge', () => {
   const challenge = 'a'.repeat(64);
+  const callbackUrl = 'https://admin.example.com/auth/openid/callback';
+  const encodedCallbackUrl = 'https%3A%2F%2Fadmin.example.com%2Fauth%2Fopenid%2Fcallback';
 
   it('stores valid challenge in cache and strips from request', async () => {
     const cache = new Keyv();
     const setSpy = jest.spyOn(cache, 'set');
+    const url = `/oauth/openid?code_challenge=${challenge}&redirect_uri=${encodedCallbackUrl}`;
     const req = makeReq({
-      query: { code_challenge: challenge },
-      originalUrl: `/oauth/openid?code_challenge=${challenge}`,
-      url: `/oauth/openid?code_challenge=${challenge}`,
+      query: {
+        code_challenge: challenge,
+        redirect_uri: callbackUrl,
+      },
+      originalUrl: url,
+      url,
     });
 
     const result = await storeAndStripChallenge(cache, req, 'test-state', 'openid');
@@ -138,6 +188,7 @@ describe('storeAndStripChallenge', () => {
     expect(result).toBe(true);
     expect(setSpy).toHaveBeenCalledWith(`pkce:test-state`, challenge, expect.any(Number));
     expect(req.query.code_challenge).toBeUndefined();
+    expect(req.query.redirect_uri).toBeUndefined();
     expect(req.originalUrl).toBe('/oauth/openid');
     expect(req.url).toBe('/oauth/openid');
   });
@@ -162,10 +213,14 @@ describe('storeAndStripChallenge', () => {
   it('strips and returns true when code_challenge is invalid (not 64 hex)', async () => {
     const cache = new Keyv();
     const setSpy = jest.spyOn(cache, 'set');
+    const url = `/oauth/openid?code_challenge=too-short&redirect_uri=${encodedCallbackUrl}`;
     const req = makeReq({
-      query: { code_challenge: 'too-short' },
-      originalUrl: '/oauth/openid?code_challenge=too-short',
-      url: '/oauth/openid?code_challenge=too-short',
+      query: {
+        code_challenge: 'too-short',
+        redirect_uri: callbackUrl,
+      },
+      originalUrl: url,
+      url,
     });
 
     const result = await storeAndStripChallenge(cache, req, 'test-state', 'openid');
@@ -173,6 +228,7 @@ describe('storeAndStripChallenge', () => {
     expect(result).toBe(true);
     expect(setSpy).not.toHaveBeenCalled();
     expect(req.query.code_challenge).toBeUndefined();
+    expect(req.query.redirect_uri).toBeUndefined();
     expect(req.originalUrl).toBe('/oauth/openid');
     expect(req.url).toBe('/oauth/openid');
   });
@@ -180,18 +236,23 @@ describe('storeAndStripChallenge', () => {
   it('returns false and does not strip on cache failure', async () => {
     const cache = new Keyv();
     jest.spyOn(cache, 'set').mockRejectedValueOnce(new Error('cache down'));
+    const url = `/oauth/openid?code_challenge=${challenge}&redirect_uri=${encodedCallbackUrl}`;
     const req = makeReq({
-      query: { code_challenge: challenge },
-      originalUrl: `/oauth/openid?code_challenge=${challenge}`,
-      url: `/oauth/openid?code_challenge=${challenge}`,
+      query: {
+        code_challenge: challenge,
+        redirect_uri: callbackUrl,
+      },
+      originalUrl: url,
+      url,
     });
 
     const result = await storeAndStripChallenge(cache, req, 'test-state', 'openid');
 
     expect(result).toBe(false);
     expect(req.query.code_challenge).toBe(challenge);
-    expect(req.originalUrl).toBe(`/oauth/openid?code_challenge=${challenge}`);
-    expect(req.url).toBe(`/oauth/openid?code_challenge=${challenge}`);
+    expect(req.query.redirect_uri).toBe(callbackUrl);
+    expect(req.originalUrl).toBe(url);
+    expect(req.url).toBe(url);
   });
 
   it('reads code_challenge before stripping (ordering guarantee)', async () => {

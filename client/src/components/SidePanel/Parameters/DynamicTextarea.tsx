@@ -26,7 +26,9 @@ function DynamicTextarea({
   const localize = useLocalize();
   const { preset } = useChatContext();
 
-  const [setInputValue, inputValue, setLocalValue] = useDebouncedInput<string | null>({
+  const [setInputValue, inputValue, setLocalValue, flushInputValue] = useDebouncedInput<
+    string | null
+  >({
     optionKey: settingKey,
     initialValue:
       optionType !== OptionTypes.Custom
@@ -52,7 +54,7 @@ function DynamicTextarea({
       }`}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           <div className="flex w-full justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-textarea`}
@@ -60,7 +62,7 @@ function DynamicTextarea({
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40">
+                <small className="high-contrast:opacity-100 opacity-40">
                   (
                   {typeof defaultValue === 'undefined' || !(defaultValue as string).length
                     ? localize('com_endpoint_default_blank')
@@ -71,10 +73,20 @@ function DynamicTextarea({
             </Label>
           </div>
           <TextareaAutosize
+            focusOutline="hidden"
             id={`${settingKey}-dynamic-textarea`}
+            /** The field is measured by a shadow copy of itself, and the panel mounts
+             *  before the sidebar has settled on a width, so that measurement can come
+             *  back as one word per line. Capping the rows lets the library clamp its
+             *  own answer instead of leaving a CSS max-height to hide a wrong one. */
+            minRows={3}
+            maxRows={8}
             disabled={readonly}
             value={inputValue ?? ''}
             onChange={setInputValue}
+            /** Clicking Save blurs this first, so the pending edit is committed
+             *  before submitPreset reads the preset. */
+            onBlur={flushInputValue}
             aria-label={localize(label as TranslationKeys)}
             placeholder={
               placeholderCode
@@ -82,7 +94,7 @@ function DynamicTextarea({
                 : placeholder
             }
             className={cn(
-              'flex max-h-[138px] min-h-[100px] w-full resize-none rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-sm focus:outline-none',
+              'border-border-light bg-surface-secondary flex max-h-[13.75rem] min-h-[4.75rem] w-full resize-none rounded-lg border px-3 py-2 text-sm',
             )}
           />
         </HoverCardTrigger>

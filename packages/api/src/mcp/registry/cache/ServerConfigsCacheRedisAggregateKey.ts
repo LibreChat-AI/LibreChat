@@ -1,8 +1,9 @@
 import type Keyv from 'keyv';
 import type { IServerConfigsRepositoryInterface } from '~/mcp/registry/ServerConfigsRepositoryInterface';
 import type { ParsedServerConfig, AddServerResult } from '~/mcp/types';
+import { cacheConfig, evalKeyvRedisScript, keyvRedisClient, standardCache } from '~/cache';
+import { PRESERVE_EMPTY_ARRAYS_LUA } from './preserveEmptyArraysLua';
 import { BaseRegistryCache } from './BaseRegistryCache';
-import { cacheConfig, standardCache } from '~/cache';
 
 /**
  * Redis-backed MCP server configs cache that stores all entries under a single aggregate key.
@@ -13,21 +14,73 @@ import { cacheConfig, standardCache } from '~/cache';
  * caused by SCAN under concurrent load in large deployments (see GitHub #11624, #12408).
  *
  * Trade-offs:
- * - `add/update/remove` use a serialized read-modify-write on the aggregate key via a
- *   promise-based mutex. This prevents concurrent writes from racing within a single
- *   process (e.g., during `Promise.allSettled` initialization of multiple servers).
+ * - In-memory writes use a serialized read-modify-write via a promise-based mutex.
+ *   Redis writes use single-key Lua mutations, so replicas cannot overwrite one another.
  * - The entire config map is serialized/deserialized on every operation. With typical MCP
  *   deployments (~5-50 servers), the JSON payload is small (10-50KB).
  * - Cross-instance visibility is preserved: all instances read/write the same Redis key,
  *   so reinspection results propagate automatically after readThroughCache TTL expiry.
  *
- * IMPORTANT: The promise-based writeLock serializes writes within a single Node.js process
- * only. Concurrent writes from separate instances race at the Redis level (last-write-wins).
- * This is acceptable because writes are performed exclusively by the leader during
- * initialization via {@link MCPServersInitializer}. `reinspectServer` is manual and rare.
- * Callers must enforce this single-writer invariant externally.
+ * All mutations use Redis-side Lua when Redis backs this cache. This keeps
+ * simultaneous replicas from losing one another's changes and makes
+ * `resolvedInstructions` first-write-wins.
  */
 const AGGREGATE_KEY = '__all__';
+
+const MUTATE_AGGREGATE_ENTRY = `
+${PRESERVE_EMPTY_ARRAYS_LUA}
+local operation = ARGV[1]
+local serverName = ARGV[2]
+local encoded = redis.call('GET', KEYS[1])
+local sentinel = emptyArraySentinel(encoded, ARGV[3])
+local envelope
+if encoded then
+  envelope = cjson.decode(protectEmptyArrays(encoded, sentinel))
+else
+  envelope = { value = {} }
+end
+if not envelope.value then envelope.value = {} end
+local existing = envelope.value[serverName]
+if operation == 'add' and existing then return -1 end
+if (operation == 'update' or operation == 'remove') and not existing then return 0 end
+if operation == 'replaceStub' then
+  if not existing or existing.inspectionFailed ~= true then return 0 end
+  if ARGV[5] == '' and existing.updatedAt ~= nil then return 0 end
+  if ARGV[5] ~= '' and tonumber(ARGV[5]) ~= existing.updatedAt then return 0 end
+end
+local ttl = redis.call('PTTL', KEYS[1])
+if operation == 'remove' then
+  envelope.value[serverName] = nil
+else
+  local config = cjson.decode(protectEmptyArrays(ARGV[3], sentinel))
+  config.updatedAt = tonumber(ARGV[4])
+  envelope.value[serverName] = config
+end
+redis.call('SET', KEYS[1], restoreEmptyArrays(cjson.encode(envelope), sentinel))
+if ttl > 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
+return 1
+`;
+
+/** Keyv stores its serialized value in an envelope with a `value` member. This script
+ * updates that envelope atomically and preserves a configured Redis expiration. */
+const PATCH_AGGREGATE_ENTRY = `
+${PRESERVE_EMPTY_ARRAYS_LUA}
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return 0 end
+local sentinel = emptyArraySentinel(encoded, ARGV[2])
+local envelope = cjson.decode(protectEmptyArrays(encoded, sentinel))
+if not envelope.value then return 0 end
+local entry = envelope.value[ARGV[1]]
+if not entry then return 0 end
+local fields = cjson.decode(protectEmptyArrays(ARGV[2], sentinel))
+if ARGV[3] ~= '' and tonumber(ARGV[3]) ~= entry.updatedAt then return 0 end
+if fields.resolvedInstructions and entry.resolvedInstructions then return 0 end
+local ttl = redis.call('PTTL', KEYS[1])
+for field, value in pairs(fields) do entry[field] = value end
+redis.call('SET', KEYS[1], restoreEmptyArrays(cjson.encode(envelope), sentinel))
+if ttl > 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
+return 1
+`;
 
 export class ServerConfigsCacheRedisAggregateKey
   extends BaseRegistryCache
@@ -64,6 +117,42 @@ export class ServerConfigsCacheRedisAggregateKey
   private invalidateLocalSnapshot(): void {
     this.localSnapshot = null;
     this.localSnapshotExpiry = 0;
+  }
+
+  private usesRedisStore(): boolean {
+    const namespace = this.cache.namespace;
+    return (
+      keyvRedisClient != null &&
+      namespace != null &&
+      !cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES?.includes(namespace)
+    );
+  }
+
+  private aggregateRedisKey(): string {
+    const prefix = cacheConfig.REDIS_KEY_PREFIX
+      ? `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`
+      : '';
+    return `${prefix}${this.cache.namespace}:${AGGREGATE_KEY}`;
+  }
+
+  private async mutateRedisEntry(
+    operation: 'add' | 'update' | 'upsert' | 'remove' | 'replaceStub',
+    serverName: string,
+    config?: ParsedServerConfig,
+    updatedAt?: number,
+    stubUpdatedAt?: number,
+  ): Promise<number> {
+    const result = await evalKeyvRedisScript(MUTATE_AGGREGATE_ENTRY, {
+      keys: [this.aggregateRedisKey()],
+      arguments: [
+        operation,
+        serverName,
+        config ? JSON.stringify(config) : '',
+        updatedAt != null ? String(updatedAt) : '',
+        stubUpdatedAt != null ? String(stubUpdatedAt) : '',
+      ],
+    });
+    return typeof result === 'number' ? result : 0;
   }
 
   /**
@@ -112,9 +201,32 @@ export class ServerConfigsCacheRedisAggregateKey
     return all[serverName];
   }
 
+  /** Reads past the local snapshot, which can lag another replica's write by up to its TTL. */
+  public async getCurrent(serverName: string): Promise<ParsedServerConfig | undefined> {
+    this.invalidateLocalSnapshot();
+    const all = await this.getAll();
+    return all[serverName];
+  }
+
   public async add(serverName: string, config: ParsedServerConfig): Promise<AddServerResult> {
     if (this.leaderOnly) await this.leaderCheck('add MCP servers');
     return this.withWriteLock(async () => {
+      const storedConfig = { ...config, updatedAt: Date.now() };
+      if (this.usesRedisStore()) {
+        const result = await this.mutateRedisEntry(
+          'add',
+          serverName,
+          storedConfig,
+          storedConfig.updatedAt,
+        );
+        if (result === -1) {
+          throw new Error(
+            `Server "${serverName}" already exists in cache. Use update() to modify existing configs.`,
+          );
+        }
+        this.successCheck(`add ${this.namespace} server "${serverName}"`, result === 1);
+        return { serverName, config: storedConfig };
+      }
       // Force fresh Redis read so the read-modify-write uses current data,
       // not a snapshot that may predate this write. Distinct from the finally-block
       // invalidation which cleans up after the write completes or throws.
@@ -125,7 +237,6 @@ export class ServerConfigsCacheRedisAggregateKey
           `Server "${serverName}" already exists in cache. Use update() to modify existing configs.`,
         );
       }
-      const storedConfig = { ...config, updatedAt: Date.now() };
       const newAll = { ...all, [serverName]: storedConfig };
       const success = await this.cache.set(AGGREGATE_KEY, newAll);
       this.successCheck(`add ${this.namespace} server "${serverName}"`, success);
@@ -136,6 +247,17 @@ export class ServerConfigsCacheRedisAggregateKey
   public async update(serverName: string, config: ParsedServerConfig): Promise<void> {
     if (this.leaderOnly) await this.leaderCheck('update MCP servers');
     return this.withWriteLock(async () => {
+      const updatedAt = Date.now();
+      if (this.usesRedisStore()) {
+        const result = await this.mutateRedisEntry('update', serverName, config, updatedAt);
+        if (result === 0) {
+          throw new Error(
+            `Server "${serverName}" does not exist in cache. Use add() to create new configs.`,
+          );
+        }
+        this.successCheck(`update ${this.namespace} server "${serverName}"`, result === 1);
+        return;
+      }
       this.invalidateLocalSnapshot(); // Force fresh Redis read (see add() comment)
       const all = await this.getAll();
       if (!all[serverName]) {
@@ -143,7 +265,7 @@ export class ServerConfigsCacheRedisAggregateKey
           `Server "${serverName}" does not exist in cache. Use add() to create new configs.`,
         );
       }
-      const newAll = { ...all, [serverName]: { ...config, updatedAt: Date.now() } };
+      const newAll = { ...all, [serverName]: { ...config, updatedAt } };
       const success = await this.cache.set(AGGREGATE_KEY, newAll);
       this.successCheck(`update ${this.namespace} server "${serverName}"`, success);
     });
@@ -152,17 +274,103 @@ export class ServerConfigsCacheRedisAggregateKey
   public async upsert(serverName: string, config: ParsedServerConfig): Promise<void> {
     if (this.leaderOnly) await this.leaderCheck('upsert MCP servers');
     return this.withWriteLock(async () => {
+      const updatedAt = Date.now();
+      if (this.usesRedisStore()) {
+        const result = await this.mutateRedisEntry('upsert', serverName, config, updatedAt);
+        this.successCheck(`upsert ${this.namespace} server "${serverName}"`, result === 1);
+        return;
+      }
       this.invalidateLocalSnapshot();
       const all = await this.getAll();
-      const newAll = { ...all, [serverName]: { ...config, updatedAt: Date.now() } };
+      const newAll = { ...all, [serverName]: { ...config, updatedAt } };
       const success = await this.cache.set(AGGREGATE_KEY, newAll);
       this.successCheck(`upsert ${this.namespace} server "${serverName}"`, success);
+    });
+  }
+
+  /** Merges derived fields into an existing entry without bumping `updatedAt` —
+   * see the interface doc: a bump would mark live connections stale. */
+  public async patch(
+    serverName: string,
+    fields: Partial<ParsedServerConfig>,
+    expectedUpdatedAt?: number,
+  ): Promise<boolean> {
+    if (this.leaderOnly) await this.leaderCheck('patch MCP servers');
+    return this.withWriteLock(async () => {
+      if (this.usesRedisStore()) {
+        const result = await evalKeyvRedisScript(PATCH_AGGREGATE_ENTRY, {
+          keys: [this.aggregateRedisKey()],
+          arguments: [
+            serverName,
+            JSON.stringify(fields),
+            expectedUpdatedAt != null ? String(expectedUpdatedAt) : '',
+          ],
+        });
+        return result === 1;
+      }
+      this.invalidateLocalSnapshot(); // Force fresh Redis read (see add() comment)
+      const all = await this.getAll();
+      const existing = all[serverName];
+      if (!existing) {
+        return false;
+      }
+      if (expectedUpdatedAt != null && existing.updatedAt !== expectedUpdatedAt) {
+        return false;
+      }
+      if (fields.resolvedInstructions != null && existing.resolvedInstructions != null) {
+        return false;
+      }
+      const newAll = { ...all, [serverName]: { ...existing, ...fields } };
+      const success = await this.cache.set(AGGREGATE_KEY, newAll);
+      this.successCheck(`patch ${this.namespace} server "${serverName}"`, success);
+      return true;
+    });
+  }
+
+  /** Replaces a failed-inspection stub only while it is still that stub — see the interface doc.
+   * The Redis-side check and write are one script, so replicas racing the same recovery cannot
+   * both land. */
+  public async replaceStub(
+    serverName: string,
+    config: ParsedServerConfig,
+    stubUpdatedAt: number | undefined,
+  ): Promise<ParsedServerConfig | undefined> {
+    if (this.leaderOnly) await this.leaderCheck('replace MCP server stubs');
+    return this.withWriteLock(async () => {
+      const storedConfig = { ...config, updatedAt: Date.now() };
+      if (this.usesRedisStore()) {
+        const result = await this.mutateRedisEntry(
+          'replaceStub',
+          serverName,
+          storedConfig,
+          storedConfig.updatedAt,
+          stubUpdatedAt,
+        );
+        return result === 1 ? storedConfig : undefined;
+      }
+      this.invalidateLocalSnapshot(); // Force fresh Redis read (see add() comment)
+      const all = await this.getAll();
+      const existing = all[serverName];
+      if (existing?.inspectionFailed !== true || existing.updatedAt !== stubUpdatedAt) {
+        return undefined;
+      }
+      const success = await this.cache.set(AGGREGATE_KEY, { ...all, [serverName]: storedConfig });
+      this.successCheck(`replace ${this.namespace} server stub "${serverName}"`, success);
+      return storedConfig;
     });
   }
 
   public async remove(serverName: string): Promise<void> {
     if (this.leaderOnly) await this.leaderCheck('remove MCP servers');
     return this.withWriteLock(async () => {
+      if (this.usesRedisStore()) {
+        const result = await this.mutateRedisEntry('remove', serverName);
+        if (result === 0) {
+          throw new Error(`Failed to remove server "${serverName}" in cache.`);
+        }
+        this.successCheck(`remove ${this.namespace} server "${serverName}"`, result === 1);
+        return;
+      }
       this.invalidateLocalSnapshot(); // Force fresh Redis read (see add() comment)
       const all = await this.getAll();
       if (!all[serverName]) {

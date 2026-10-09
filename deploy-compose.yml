@@ -4,7 +4,7 @@ services:
     #   context: .
     #   dockerfile: Dockerfile.multi
     #   target: api-build
-    image: registry.librechat.ai/danny-avila/librechat-dev-api:latest
+    image: registry.librechat.ai/librechat-ai/librechat-dev-api:latest
     container_name: LibreChat-API
     ports:
       - 3080:3080
@@ -21,8 +21,17 @@ services:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongodb:27017/LibreChat
       - MEILI_HOST=http://meilisearch:7700
+      - LIBRECHAT_TEMP_CREDENTIALS_PATH=/app/data/.env.temp
       - RAG_PORT=${RAG_PORT:-8000}
       - RAG_API_URL=http://rag_api:${RAG_PORT:-8000}
+      - PROXY=${PROXY:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1},${no_proxy:-},mongodb,chat-mongodb,meilisearch,chat-meilisearch,rag_api,vectordb,host.docker.internal
+      - http_proxy=${http_proxy:-}
+      - https_proxy=${https_proxy:-}
+      - no_proxy=${no_proxy:-localhost,127.0.0.1,::1},${NO_PROXY:-},mongodb,chat-mongodb,meilisearch,chat-meilisearch,rag_api,vectordb,host.docker.internal
+      - ADMIN_PANEL_URL=${ADMIN_PANEL_URL:-http://admin.localhost}
     volumes:
       - type: bind
         source: ./librechat.yaml
@@ -30,6 +39,23 @@ services:
       - ./images:/app/client/public/images
       - ./uploads:/app/uploads
       - ./logs:/app/api/logs
+      - ./skill:/app/skill
+      - librechat-data:/app/data
+
+  admin-panel:
+    image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
+    container_name: admin-panel
+    depends_on:
+      - api
+    restart: always
+    environment:
+      - PORT=3000
+      # Plain expansion (not :?) so `docker compose down`/`pull` still run when this is unset.
+      # The panel itself refuses to start without it; set ADMIN_PANEL_SESSION_SECRET in .env.
+      - SESSION_SECRET=${ADMIN_PANEL_SESSION_SECRET}
+      - API_SERVER_URL=http://api:3080
+      - VITE_API_BASE_URL=${DOMAIN_CLIENT:-http://localhost}
+      - SESSION_COOKIE_SECURE=${ADMIN_PANEL_SESSION_COOKIE_SECURE:-false}
 
   client:
     image: nginx:1.27.0-alpine
@@ -39,6 +65,7 @@ services:
       - 443:443
     depends_on:
       - api
+      - admin-panel
     restart: always
     volumes:
       - ./client/nginx.conf:/etc/nginx/conf.d/default.conf
@@ -74,7 +101,7 @@ services:
     volumes:
       - pgdata2:/var/lib/postgresql/data
   rag_api:
-    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev-lite:latest
     environment:
       - DB_HOST=vectordb
       - RAG_PORT=${RAG_PORT:-8000}
@@ -86,3 +113,4 @@ services:
 
 volumes:
   pgdata2:
+  librechat-data:

@@ -2,9 +2,11 @@ import { Providers } from '@librechat/agents';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import type { BaseInitializeParams, InitializeResultBase } from '~/types';
+import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
+import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { initializeAnthropic } from '../anthropic/initialize';
 import { initializeBedrock } from '../bedrock/initialize';
+import { getReasoningCapabilityDeps } from '../reasoning';
 import { initializeCustom } from '../custom/initialize';
 import { initializeGoogle } from '../google/initialize';
 import { initializeOpenAI } from '../openai/initialize';
@@ -13,7 +15,7 @@ import { getCustomEndpointConfig } from '~/app/config';
 /**
  * Type for initialize functions
  */
-export type InitializeFn = (params: BaseInitializeParams) => Promise<InitializeResultBase>;
+export type InitializeFn = (params: ProviderInitializeParams) => Promise<InitializeResultBase>;
 
 /**
  * Check if the provider is a known custom provider
@@ -27,19 +29,100 @@ export function isKnownCustomProvider(provider?: string): boolean {
 }
 
 /**
- * Provider configuration map mapping providers to their initialization functions
+ * Production wiring for custom endpoints: the initializer takes its reasoning catalog client
+ * and cache from the caller, and this registry is where the real ones are supplied.
+ */
+const initializeCustomWithReasoning: InitializeFn = (params) =>
+  initializeCustom({
+    ...params,
+    reasoningCapabilityDeps: params.reasoningCapabilityDeps ?? getReasoningCapabilityDeps(),
+  });
+
+/**
+ * Provider configuration map mapping providers to their initialization functions.
+ *
+ * `Providers.VERTEXAI` shares `initializeGoogle` because the runtime distinction
+ * is auth-only — the agent flow may resolve `agent.provider` to `vertexai` when
+ * a service account is configured, but summarization (and other downstream
+ * resolvers) get the same lowercase enum value passed back. Without this
+ * mapping `getProviderConfig` throws "Provider vertexai not supported" and
+ * summarization falls back to the raw provider, dropping client overrides.
  */
 export const providerConfigMap: Record<string, InitializeFn> = {
-  [Providers.XAI]: initializeCustom,
-  [Providers.DEEPSEEK]: initializeCustom,
-  [Providers.MOONSHOT]: initializeCustom,
-  [Providers.OPENROUTER]: initializeCustom,
+  [Providers.XAI]: initializeCustomWithReasoning,
+  [Providers.DEEPSEEK]: initializeCustomWithReasoning,
+  [Providers.MOONSHOT]: initializeCustomWithReasoning,
+  [Providers.OPENROUTER]: initializeCustomWithReasoning,
+  [Providers.VERTEXAI]: initializeGoogle,
   [EModelEndpoint.openAI]: initializeOpenAI,
   [EModelEndpoint.google]: initializeGoogle,
   [EModelEndpoint.bedrock]: initializeBedrock,
   [EModelEndpoint.azureOpenAI]: initializeOpenAI,
   [EModelEndpoint.anthropic]: initializeAnthropic,
 };
+
+export type TitleTiming = 'immediate' | 'final';
+
+/**
+ * Resolves when conversation titles are generated for a given endpoint.
+ *
+ * `endpoints.all.titleTiming`, when present, is the global override. Otherwise,
+ * endpoint candidates are checked in order so the public endpoint (for example
+ * `agents`) can override the backing provider, with provider/custom config used
+ * as a fallback. Resolving custom providers via `getProviderConfig` picks up its
+ * case-insensitive fallback for normalized provider names (e.g. `openrouter` →
+ * `OpenRouter`). Defaults to `immediate`.
+ */
+export function resolveTitleTiming({
+  appConfig,
+  endpoint,
+}: {
+  appConfig?: AppConfig;
+  endpoint?: string | Array<string | undefined>;
+}): TitleTiming {
+  const endpoints = appConfig?.endpoints;
+  const resolveConfiguredTiming = (config?: Partial<TEndpoint>): TitleTiming | undefined =>
+    config?.titleTiming === 'final' || config?.titleTiming === 'immediate'
+      ? config.titleTiming
+      : undefined;
+
+  const globalTiming = resolveConfiguredTiming(endpoints?.all);
+  if (globalTiming) {
+    return globalTiming;
+  }
+
+  const endpointCandidates = (Array.isArray(endpoint) ? endpoint : [endpoint]).filter(
+    (value): value is string => !!value,
+  );
+
+  for (const endpointCandidate of endpointCandidates) {
+    const endpointConfig = endpoints?.[endpointCandidate as keyof NonNullable<typeof endpoints>] as
+      | Partial<TEndpoint>
+      | undefined;
+    const endpointTiming = resolveConfiguredTiming(endpointConfig);
+    if (endpointTiming) {
+      return endpointTiming;
+    }
+  }
+
+  for (const endpointCandidate of endpointCandidates) {
+    if (!appConfig) {
+      continue;
+    }
+    try {
+      const providerTiming = resolveConfiguredTiming(
+        getProviderConfig({ provider: endpointCandidate, appConfig }).customEndpointConfig,
+      );
+      if (providerTiming) {
+        return providerTiming;
+      }
+    } catch {
+      // Unsupported providers fall back to the default timing.
+    }
+  }
+
+  return 'immediate';
+}
 
 /**
  * Result from getProviderConfig
@@ -81,15 +164,62 @@ export function getProviderConfig({
     if (!customEndpointConfig) {
       throw new Error(`Provider ${provider} not supported`);
     }
-    getOptions = initializeCustom;
+    getOptions = initializeCustomWithReasoning;
     overrideProvider = Providers.OPENAI;
   }
 
   if (isKnownCustomProvider(overrideProvider) && !customEndpointConfig) {
     customEndpointConfig = getCustomEndpointConfig({ endpoint: provider, appConfig });
+    if (!customEndpointConfig && appConfig) {
+      /**
+       * Case-insensitive fallback for known custom providers only.
+       *
+       * The agent main flow looks up custom endpoints case-sensitively
+       * (case-preserving keys are how `loadCustomEndpointsConfig` lets
+       * users have e.g. `"OpenRouter"` and `"openrouter-staging"` as
+       * distinct entries). After it succeeds, `agent.provider` is
+       * normalized to the lowercase `Providers` enum value
+       * (e.g. `"openrouter"`). Downstream resolvers (summarization,
+       * title) re-enter `getProviderConfig` with that lowercase value,
+       * and the case-sensitive direct lookup misses configs whose
+       * `name` is camel-cased — the most common shape.
+       *
+       * Only fall back when the direct lookup already failed, so users
+       * with case-sensitive endpoint identity are unaffected — their
+       * exact-case match wins first. When multiple case-insensitive
+       * matches exist (e.g. both `OpenRouter` and `OPENROUTER`, neither
+       * lowercase), refuse to silently pick array-first; the caller's
+       * intent is ambiguous and either entry could route requests with
+       * different baseURL/apiKey.
+       */
+      const customEndpoints = appConfig.endpoints?.[EModelEndpoint.custom] ?? [];
+      const target = provider.toLowerCase();
+      const matches = customEndpoints.filter(
+        (endpointConfig) => (endpointConfig.name ?? '').toLowerCase() === target,
+      );
+      if (matches.length > 1) {
+        const names = matches.map((m) => m.name ?? '').join(', ');
+        throw new Error(
+          `Provider ${provider} is ambiguous: multiple custom endpoints match case-insensitively (${names}). Rename one or use the exact-case provider value.`,
+        );
+      }
+      customEndpointConfig = matches[0] && resolveCustomEndpointSecrets(matches[0]);
+    }
     if (!customEndpointConfig) {
       throw new Error(`Provider ${provider} not supported`);
     }
+  }
+
+  /**
+   * Custom endpoints default to the OpenAI-compatible client. An explicit
+   * `provider: anthropic` routes them through the native Anthropic `/v1/messages`
+   * client (`initializeCustom` builds the right config). Applied here — after all
+   * `customEndpointConfig` resolution — so it also wins when the endpoint name
+   * collides with a known custom-provider (e.g. `openrouter`), ensuring
+   * `overrideProvider`-derived values (token/context budget) use the Anthropic map.
+   */
+  if (customEndpointConfig?.provider === EModelEndpoint.anthropic) {
+    overrideProvider = Providers.ANTHROPIC;
   }
 
   return {

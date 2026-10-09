@@ -77,6 +77,16 @@ describe('cleanCodeToolOutput', () => {
     expect(output).toMatch(/- \/mnt\/data\/test_folder\/\.dirkeep/);
   });
 
+  it('preserves the compact session-file summary', () => {
+    const summary =
+      'Session files: 4 persisted file(s) are available in /mnt/data, including 1 image(s). ' +
+      'Use known /mnt/data paths directly in later code-tool calls. ' +
+      'The app displays files/images automatically; do not invent download links or wrap generated images in Markdown.';
+    const input = ['stdout:', 'Report generated', '', 'Generated files:', summary].join('\n');
+    const output = cleanCodeToolOutput(input);
+    expect(output).toBe(input);
+  });
+
   it('passes through output that contains no boilerplate (no false positives)', () => {
     const input = 'stdout:\nHello, world!\n';
     expect(cleanCodeToolOutput(input)).toBe('stdout:\nHello, world!');

@@ -108,13 +108,13 @@ describe('S3 Integration Tests', () => {
 
   describe('getS3Key', () => {
     it('constructs key from basePath, userId, and fileName', async () => {
-      const { getS3Key } = await import('../crud');
+      const { getS3Key } = await import('~/storage/s3/crud');
       const key = getS3Key(TEST_BASE_PATH, TEST_USER_ID, 'test-file.txt');
       expect(key).toBe(`${TEST_BASE_PATH}/${TEST_USER_ID}/test-file.txt`);
     });
 
     it('handles nested file names', async () => {
-      const { getS3Key } = await import('../crud');
+      const { getS3Key } = await import('~/storage/s3/crud');
       const key = getS3Key(TEST_BASE_PATH, TEST_USER_ID, 'folder/nested/file.pdf');
       expect(key).toBe(`${TEST_BASE_PATH}/${TEST_USER_ID}/folder/nested/file.pdf`);
     });
@@ -122,7 +122,7 @@ describe('S3 Integration Tests', () => {
 
   describe('saveBufferToS3 and getS3URL', () => {
     it('uploads buffer and returns signed URL', async () => {
-      const { saveBufferToS3 } = await import('../crud');
+      const { saveBufferToS3 } = await import('~/storage/s3/crud');
       const testContent = 'Hello, S3!';
       const buffer = Buffer.from(testContent);
       const fileName = `test-${Date.now()}.txt`;
@@ -140,7 +140,7 @@ describe('S3 Integration Tests', () => {
     });
 
     it('can get signed URL for existing file', async () => {
-      const { saveBufferToS3, getS3URL } = await import('../crud');
+      const { saveBufferToS3, getS3URL } = await import('~/storage/s3/crud');
       const buffer = Buffer.from('test content for URL');
       const fileName = `url-test-${Date.now()}.txt`;
 
@@ -162,7 +162,7 @@ describe('S3 Integration Tests', () => {
     });
 
     it('can get signed URL with custom filename and content type', async () => {
-      const { saveBufferToS3, getS3URL } = await import('../crud');
+      const { saveBufferToS3, getS3URL } = await import('~/storage/s3/crud');
       const buffer = Buffer.from('custom headers test');
       const fileName = `headers-test-${Date.now()}.txt`;
 
@@ -188,24 +188,25 @@ describe('S3 Integration Tests', () => {
 
   describe('saveURLToS3', () => {
     it('fetches URL content and uploads to S3', async () => {
-      const { saveURLToS3 } = await import('../crud');
+      const { saveURLToS3WithMetadata } = await import('~/storage/s3/crud');
       const fileName = `url-upload-${Date.now()}.json`;
 
-      const downloadURL = await saveURLToS3({
+      const savedFile = await saveURLToS3WithMetadata({
         userId: TEST_USER_ID,
-        URL: 'https://raw.githubusercontent.com/danny-avila/LibreChat/main/package.json',
+        URL: 'https://raw.githubusercontent.com/LibreChat-AI/LibreChat/main/package.json',
         fileName,
         basePath: TEST_BASE_PATH,
       });
 
-      expect(downloadURL).toBeDefined();
-      expect(downloadURL).toContain('X-Amz-Signature');
+      expect(savedFile.filepath).toBeDefined();
+      expect(savedFile.filepath).toContain('X-Amz-Signature');
+      expect(savedFile.bytes).toBeGreaterThan(0);
     });
   });
 
   describe('extractKeyFromS3Url', () => {
     it('extracts key from signed URL', async () => {
-      const { saveBufferToS3, extractKeyFromS3Url } = await import('../crud');
+      const { saveBufferToS3, extractKeyFromS3Url } = await import('~/storage/s3/crud');
       const buffer = Buffer.from('extract key test');
       const fileName = `extract-key-${Date.now()}.txt`;
 
@@ -221,7 +222,7 @@ describe('S3 Integration Tests', () => {
     });
 
     it('returns key as-is when not a URL', async () => {
-      const { extractKeyFromS3Url } = await import('../crud');
+      const { extractKeyFromS3Url } = await import('~/storage/s3/crud');
       const key = `${TEST_BASE_PATH}/${TEST_USER_ID}/file.txt`;
       expect(extractKeyFromS3Url(key)).toBe(key);
     });
@@ -229,7 +230,7 @@ describe('S3 Integration Tests', () => {
 
   describe('uploadFileToS3', () => {
     it('uploads file and returns filepath with bytes', async () => {
-      const { uploadFileToS3 } = await import('../crud');
+      const { uploadFileToS3 } = await import('~/storage/s3/crud');
       const testContent = 'File upload test content';
       const testFilePath = path.join(tempDir, 'upload-test.txt');
       fs.writeFileSync(testFilePath, testContent);
@@ -266,7 +267,7 @@ describe('S3 Integration Tests', () => {
     });
 
     it('throws error when user is not authenticated', async () => {
-      const { uploadFileToS3 } = await import('../crud');
+      const { uploadFileToS3 } = await import('~/storage/s3/crud');
       const mockReq = {} as ServerRequest;
       const mockFile = {
         path: '/fake/path.txt',
@@ -286,7 +287,7 @@ describe('S3 Integration Tests', () => {
 
   describe('getS3FileStream', () => {
     it('returns readable stream for existing file', async () => {
-      const { saveBufferToS3, getS3FileStream } = await import('../crud');
+      const { saveBufferToS3, getS3FileStream } = await import('~/storage/s3/crud');
       const testContent = 'Stream test content';
       const buffer = Buffer.from(testContent);
       const fileName = `stream-test-${Date.now()}.txt`;
@@ -317,12 +318,12 @@ describe('S3 Integration Tests', () => {
 
   describe('needsRefresh', () => {
     it('returns false for non-signed URLs', async () => {
-      const { needsRefresh } = await import('../crud');
+      const { needsRefresh } = await import('~/storage/s3/crud');
       expect(needsRefresh('https://example.com/file.png', 3600)).toBe(false);
     });
 
     it('returns true for expired signed URLs', async () => {
-      const { saveBufferToS3, needsRefresh } = await import('../crud');
+      const { saveBufferToS3, needsRefresh } = await import('~/storage/s3/crud');
       const buffer = Buffer.from('refresh test');
       const fileName = `refresh-test-${Date.now()}.txt`;
 
@@ -338,7 +339,7 @@ describe('S3 Integration Tests', () => {
     });
 
     it('returns false for fresh signed URLs', async () => {
-      const { saveBufferToS3, needsRefresh } = await import('../crud');
+      const { saveBufferToS3, needsRefresh } = await import('~/storage/s3/crud');
       const buffer = Buffer.from('fresh test');
       const fileName = `fresh-test-${Date.now()}.txt`;
 
@@ -356,7 +357,7 @@ describe('S3 Integration Tests', () => {
 
   describe('getNewS3URL', () => {
     it('generates signed URL from existing URL', async () => {
-      const { saveBufferToS3, getNewS3URL } = await import('../crud');
+      const { saveBufferToS3, getNewS3URL } = await import('~/storage/s3/crud');
       const buffer = Buffer.from('new url test');
       const fileName = `new-url-${Date.now()}.txt`;
 
@@ -377,7 +378,7 @@ describe('S3 Integration Tests', () => {
 
   describe('refreshS3Url', () => {
     it('returns original URL for non-S3 source', async () => {
-      const { refreshS3Url } = await import('../crud');
+      const { refreshS3Url } = await import('~/storage/s3/crud');
       const fileObj = {
         filepath: 'https://example.com/file.png',
         source: 'local',
@@ -388,7 +389,7 @@ describe('S3 Integration Tests', () => {
     });
 
     it('refreshes URL for S3 source when needed', async () => {
-      const { saveBufferToS3, refreshS3Url } = await import('../crud');
+      const { saveBufferToS3, refreshS3Url } = await import('~/storage/s3/crud');
       const buffer = Buffer.from('s3 refresh test');
       const fileName = `s3-refresh-${Date.now()}.txt`;
 
@@ -411,9 +412,10 @@ describe('S3 Integration Tests', () => {
     });
   });
 
-  describe('S3ImageService', () => {
+  describe('ImageService (S3 strategy)', () => {
     it('uploads avatar and returns URL', async () => {
-      const { S3ImageService } = await import('../images');
+      const { ImageService } = await import('~/storage/images');
+      const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
         resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
@@ -422,10 +424,10 @@ describe('S3 Integration Tests', () => {
           height: 100,
         })),
         updateUser: jest.fn().mockResolvedValue(undefined),
-        updateFile: jest.fn().mockResolvedValue(undefined),
+        updateFile: jest.fn().mockResolvedValue(null),
       };
 
-      const imageService = new S3ImageService(mockDeps);
+      const imageService = new ImageService(saveBufferToS3, mockDeps);
 
       const pngBuffer = MINIMAL_PNG;
 
@@ -442,7 +444,8 @@ describe('S3 Integration Tests', () => {
     });
 
     it('updates user when manual is true', async () => {
-      const { S3ImageService } = await import('../images');
+      const { ImageService } = await import('~/storage/images');
+      const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
         resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
@@ -451,10 +454,10 @@ describe('S3 Integration Tests', () => {
           height: 100,
         })),
         updateUser: jest.fn().mockResolvedValue(undefined),
-        updateFile: jest.fn().mockResolvedValue(undefined),
+        updateFile: jest.fn().mockResolvedValue(null),
       };
 
-      const imageService = new S3ImageService(mockDeps);
+      const imageService = new ImageService(saveBufferToS3, mockDeps);
 
       const pngBuffer = MINIMAL_PNG;
 
@@ -472,7 +475,8 @@ describe('S3 Integration Tests', () => {
     });
 
     it('does not update user when agentId is provided', async () => {
-      const { S3ImageService } = await import('../images');
+      const { ImageService } = await import('~/storage/images');
+      const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
         resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
@@ -481,10 +485,10 @@ describe('S3 Integration Tests', () => {
           height: 100,
         })),
         updateUser: jest.fn().mockResolvedValue(undefined),
-        updateFile: jest.fn().mockResolvedValue(undefined),
+        updateFile: jest.fn().mockResolvedValue(null),
       };
 
-      const imageService = new S3ImageService(mockDeps);
+      const imageService = new ImageService(saveBufferToS3, mockDeps);
 
       const pngBuffer = MINIMAL_PNG;
 
@@ -500,7 +504,8 @@ describe('S3 Integration Tests', () => {
     });
 
     it('returns tuple with resolved promise and filepath in prepareImageURL', async () => {
-      const { S3ImageService } = await import('../images');
+      const { ImageService } = await import('~/storage/images');
+      const { saveBufferToS3 } = await import('~/storage/s3/crud');
 
       const mockDeps = {
         resizeImageBuffer: jest.fn().mockImplementation(async (buffer: Buffer) => ({
@@ -509,10 +514,10 @@ describe('S3 Integration Tests', () => {
           height: 100,
         })),
         updateUser: jest.fn().mockResolvedValue(undefined),
-        updateFile: jest.fn().mockResolvedValue(undefined),
+        updateFile: jest.fn().mockResolvedValue(null),
       };
 
-      const imageService = new S3ImageService(mockDeps);
+      const imageService = new ImageService(saveBufferToS3, mockDeps);
 
       const testFile = {
         file_id: 'file-123',

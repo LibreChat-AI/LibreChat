@@ -153,6 +153,41 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         expect(result.tools).toEqual([]);
       });
 
+      it.each(['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash'])(
+        'should strip Flash-blocked addParams so the transform cannot re-add them (%s)',
+        (model) => {
+          const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
+          const endpoint = 'Gemini (Custom)';
+          const options = {
+            modelOptions: {
+              model,
+            },
+            customParams: {
+              defaultParamsEndpoint: 'google',
+            },
+            addParams: {
+              temperature: 0.8,
+              topP: 0.95,
+              topK: 40,
+              presencePenalty: 0.5,
+              frequencyPenalty: 0.5,
+              maxOutputTokens: 8192, // Supported Google param, should survive
+            },
+            reverseProxyUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+          };
+
+          const result = getOpenAIConfig(apiKey, options, endpoint);
+
+          expect(result.llmConfig).not.toHaveProperty('temperature');
+          expect(result.llmConfig).not.toHaveProperty('topP');
+          expect(result.llmConfig).not.toHaveProperty('presencePenalty');
+          expect(result.llmConfig).not.toHaveProperty('frequencyPenalty');
+          expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('topK');
+          expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('presencePenalty');
+          expect(result.llmConfig.modelKwargs).toMatchObject({ maxOutputTokens: 8192 });
+        },
+      );
+
       it('should drop Google native params with dropParams', () => {
         const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
         const endpoint = 'Gemini (Custom)';
@@ -210,6 +245,120 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         expect((result.llmConfig as Record<string, unknown>).topK).toBeUndefined();
         // Verify topK is not in modelKwargs either
         expect(result.llmConfig.modelKwargs?.topK).toBeUndefined();
+      });
+    });
+
+    describe('URL Context Support via addParams', () => {
+      const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
+      const endpoint = 'Gemini (Custom)';
+      const reverseProxyUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
+
+      it('should enable urlContext tool when url_context: true in addParams', () => {
+        const result = getOpenAIConfig(
+          apiKey,
+          {
+            modelOptions: { model: 'gemini-2.5-flash' },
+            customParams: { defaultParamsEndpoint: 'google' },
+            addParams: { url_context: true },
+            reverseProxyUrl,
+          },
+          endpoint,
+        );
+
+        expect(result.tools).toEqual([{ urlContext: {} }]);
+      });
+
+      it('should disable urlContext tool when url_context: false in addParams', () => {
+        const result = getOpenAIConfig(
+          apiKey,
+          {
+            modelOptions: { model: 'gemini-2.5-flash', url_context: true },
+            customParams: { defaultParamsEndpoint: 'google' },
+            addParams: { url_context: false },
+            reverseProxyUrl,
+          },
+          endpoint,
+        );
+
+        expect(result.tools).toEqual([]);
+      });
+
+      it('should disable urlContext when in dropParams', () => {
+        const result = getOpenAIConfig(
+          apiKey,
+          {
+            modelOptions: { model: 'gemini-2.5-flash', url_context: true },
+            customParams: { defaultParamsEndpoint: 'google' },
+            dropParams: ['url_context'],
+            reverseProxyUrl,
+          },
+          endpoint,
+        );
+
+        expect(result.tools).toEqual([]);
+      });
+
+      it('should filter out urlContext when url_context is only in modelOptions', () => {
+        const result = getOpenAIConfig(
+          apiKey,
+          {
+            modelOptions: { model: 'gemini-2.5-flash', url_context: true },
+            customParams: { defaultParamsEndpoint: 'google' },
+            reverseProxyUrl,
+          },
+          endpoint,
+        );
+
+        /** urlContext is filtered since url_context was not explicitly added via addParams/defaultParams */
+        expect(result.tools).toEqual([]);
+      });
+
+      it('should not enable urlContext on a model that does not support it (Gemini < 2.5)', () => {
+        const result = getOpenAIConfig(
+          apiKey,
+          {
+            modelOptions: { model: 'gemini-2.0-flash-exp' },
+            customParams: { defaultParamsEndpoint: 'google' },
+            addParams: { url_context: true },
+            reverseProxyUrl,
+          },
+          endpoint,
+        );
+
+        expect(result.tools).toEqual([]);
+      });
+
+      it('should enable urlContext via defaultParams', () => {
+        const result = getOpenAIConfig(
+          apiKey,
+          {
+            modelOptions: { model: 'gemini-2.5-flash' },
+            customParams: {
+              defaultParamsEndpoint: 'google',
+              paramDefinitions: [{ key: 'url_context', default: true }],
+            },
+            reverseProxyUrl,
+          },
+          endpoint,
+        );
+
+        expect(result.tools).toEqual([{ urlContext: {} }]);
+      });
+
+      it('should preserve both googleSearch and urlContext when both are enabled via addParams', () => {
+        const result = getOpenAIConfig(
+          apiKey,
+          {
+            modelOptions: { model: 'gemini-2.5-flash' },
+            customParams: { defaultParamsEndpoint: 'google' },
+            addParams: { web_search: true, url_context: true },
+            reverseProxyUrl,
+          },
+          endpoint,
+        );
+
+        expect(result.tools).toContainEqual({ googleSearch: {} });
+        expect(result.tools).toContainEqual({ urlContext: {} });
       });
     });
 

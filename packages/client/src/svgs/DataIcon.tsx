@@ -1,4 +1,6 @@
-export default function DataIcon({ className = 'icon-sm' }: { className?: string }) {
+import { JSX } from 'react/jsx-runtime';
+
+export default function DataIcon({ className = 'icon-sm' }: { className?: string }): JSX.Element {
   return (
     <svg
       width="18"

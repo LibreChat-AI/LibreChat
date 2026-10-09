@@ -1,22 +1,13 @@
-import { useCallback, useState, useMemo, useEffect } from 'react';
+import { useCallback, useState, useMemo, useRef } from 'react';
 import { Trans } from 'react-i18next';
-import debounce from 'lodash/debounce';
 import { useRecoilValue } from 'recoil';
 import { Link } from 'react-router-dom';
-import {
-  ArrowUp,
-  TrashIcon,
-  ArrowDown,
-  ArrowUpDown,
-  ExternalLink,
-  MessageSquare,
-} from 'lucide-react';
+import { TrashIcon, ExternalLink, MessageSquare } from 'lucide-react';
 import {
   Label,
   Button,
   Spinner,
   OGDialog,
-  DataTable,
   useMediaQuery,
   OGDialogTitle,
   TooltipAnchor,
@@ -25,9 +16,11 @@ import {
   OGDialogContent,
   useToastContext,
   OGDialogTemplate,
+  VirtualizedDataTable,
 } from '@librechat/client';
 import type { SharedLinkItem, SharedLinksListParams } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
+import type { SortingState, Updater } from '@tanstack/react-table';
+import type { TableColumn } from '@librechat/client';
 import { useDeleteSharedLinkMutation, useSharedLinksQuery } from '~/data-provider';
 import { NotificationSeverity } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -38,23 +31,25 @@ const PAGE_SIZE = 25;
 
 const DEFAULT_PARAMS: SharedLinksListParams = {
   pageSize: PAGE_SIZE,
-  isPublic: true,
   sortBy: 'createdAt',
   sortDirection: 'desc',
   search: '',
 };
 
+type SharedLinkRow = SharedLinkItem & Record<string, unknown>;
+
 export default function SharedLinks() {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [isOpen, setIsOpen] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
   const searchStore = useRecoilValue(store.search);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   const [deleteRow, setDeleteRow] = useState<SharedLinkItem | null>(null);
   const [queryParams, setQueryParams] = useState<SharedLinksListParams>(DEFAULT_PARAMS);
 
-  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, isLoading } =
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, isLoading, isFetching } =
     useSharedLinksQuery(queryParams, {
       enabled: isOpen,
       staleTime: 0,
@@ -64,31 +59,64 @@ export default function SharedLinks() {
     });
 
   const handleFilterChange = useCallback((value: string) => {
-    const encodedValue = encodeURIComponent(value.trim());
     setQueryParams((prev) => ({
       ...prev,
-      search: encodedValue,
+      search: value.trim(),
     }));
   }, []);
 
-  const debouncedFilterChange = useMemo(
-    () => debounce(handleFilterChange, 300),
-    [handleFilterChange],
-  );
+  const getRowId = useCallback((row: SharedLinkRow) => row.shareId, []);
 
-  useEffect(() => {
-    return () => {
-      debouncedFilterChange.cancel();
-    };
-  }, [debouncedFilterChange]);
+  /** Radix would otherwise seat focus on the search field, flashing its ring every
+   *  time the dialog opens. Anchor focus to the content instead: it is a landing
+   *  spot rather than a tab stop, so it shows no ring and the first Tab reaches a
+   *  real control that does. */
+  const handleOpenAutoFocus = useCallback((event: Event) => {
+    event.preventDefault();
+    contentRef.current?.focus();
+  }, []);
 
-  const allLinks = useMemo(() => {
+  const allLinks = useMemo<SharedLinkRow[]>(() => {
     if (!data?.pages) {
       return [];
     }
 
     return data.pages.flatMap((page) => page.links.filter(Boolean));
   }, [data?.pages]);
+
+  const sorting = useMemo<SortingState>(
+    () => [
+      {
+        id: queryParams.sortBy,
+        desc: queryParams.sortDirection === 'desc',
+      },
+    ],
+    [queryParams.sortBy, queryParams.sortDirection],
+  );
+
+  const handleSortingChange = useCallback((updater: Updater<SortingState>) => {
+    setQueryParams((prev) => {
+      const currentSorting: SortingState = [
+        { id: prev.sortBy, desc: prev.sortDirection === 'desc' },
+      ];
+      const nextSorting = typeof updater === 'function' ? updater(currentSorting) : updater;
+      const nextSort = nextSorting[0];
+
+      if (nextSort?.id !== 'title' && nextSort?.id !== 'createdAt') {
+        return {
+          ...prev,
+          sortBy: DEFAULT_PARAMS.sortBy,
+          sortDirection: DEFAULT_PARAMS.sortDirection,
+        };
+      }
+
+      return {
+        ...prev,
+        sortBy: nextSort.id,
+        sortDirection: nextSort.desc ? 'desc' : 'asc',
+      };
+    });
+  }, []);
 
   const deleteMutation = useDeleteSharedLinkMutation({
     onSuccess: async () => {
@@ -113,7 +141,7 @@ export default function SharedLinks() {
 
       if (validRows.length === 0) {
         showToast({
-          message: localize('com_ui_no_valid_items' as TranslationKeys),
+          message: localize('com_ui_no_valid_items'),
           severity: NotificationSeverity.WARNING,
         });
         return;
@@ -127,15 +155,15 @@ export default function SharedLinks() {
         showToast({
           message: localize(
             validRows.length === 1
-              ? ('com_ui_shared_link_delete_success' as TranslationKeys)
-              : ('com_ui_shared_link_bulk_delete_success' as TranslationKeys),
+              ? 'com_ui_shared_link_delete_success'
+              : 'com_ui_shared_link_bulk_delete_success',
           ),
           severity: NotificationSeverity.SUCCESS,
         });
       } catch (error) {
         console.error('Failed to delete shared links:', error);
         showToast({
-          message: localize('com_ui_bulk_delete_error' as TranslationKeys),
+          message: localize('com_ui_bulk_delete_error'),
           severity: NotificationSeverity.ERROR,
         });
       }
@@ -150,147 +178,85 @@ export default function SharedLinks() {
     await fetchNextPage();
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-  const confirmDelete = useCallback(() => {
+  const confirmDelete = useCallback(async () => {
     if (deleteRow) {
-      handleDelete([deleteRow]);
+      await handleDelete([deleteRow]);
     }
-    setIsDeleteOpen(false);
   }, [deleteRow, handleDelete]);
 
-  const columns = useMemo(
+  const columns = useMemo<TableColumn<SharedLinkRow, unknown>[]>(
     () => [
       {
         accessorKey: 'title',
-        header: ({ column }) => {
-          const sortState = column.getIsSorted();
-          let SortIcon = ArrowUpDown;
-          let ariaSort: 'ascending' | 'descending' | 'none' = 'none';
-          if (sortState === 'desc') {
-            SortIcon = ArrowDown;
-            ariaSort = 'descending';
-          } else if (sortState === 'asc') {
-            SortIcon = ArrowUp;
-            ariaSort = 'ascending';
-          }
-          return (
-            <TooltipAnchor
-              description={localize('com_ui_name_sort')}
-              side="top"
-              render={
-                <Button
-                  variant="ghost"
-                  onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                  className="px-2 py-0 text-xs hover:bg-surface-hover sm:px-2 sm:py-2 sm:text-sm"
-                  aria-sort={ariaSort}
-                  aria-label={localize('com_ui_name_sort')}
-                  aria-current={sortState ? 'true' : 'false'}
-                >
-                  {localize('com_ui_name')}
-                  <SortIcon className="ml-2 h-3 w-4 sm:h-4 sm:w-4" />
-                </Button>
-              }
-            />
-          );
-        },
+        header: localize('com_ui_name'),
         cell: ({ row }) => {
           const { title, shareId } = row.original;
+          const link = (
+            <Link
+              to={`/share/${shareId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group text-text-primary focus-visible:ring-text-primary flex items-center gap-1.5 truncate rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
+            >
+              <span className="truncate">{title}</span>
+              <ExternalLink
+                className="text-text-tertiary group-hover:text-text-secondary size-3.5 shrink-0 transition-colors"
+                aria-hidden="true"
+              />
+            </Link>
+          );
           return (
             <div className="flex items-center gap-2">
-              <Link
-                to={`/share/${shareId}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group flex items-center gap-1 truncate rounded-sm text-blue-600 underline decoration-1 underline-offset-2 hover:decoration-2 focus:outline-none focus:ring-2 focus:ring-ring"
-                title={title}
-              >
-                <span className="truncate">{title}</span>
-                <ExternalLink
-                  className="size-3 flex-shrink-0 opacity-70 group-hover:opacity-100"
-                  aria-hidden="true"
-                />
-              </Link>
+              {title ? <TooltipAnchor description={title} render={link} /> : link}
             </div>
           );
         },
         meta: {
-          size: '32%',
-          mobileSize: '50%',
+          width: 55,
+          isRowHeader: true,
         },
       },
       {
         accessorKey: 'createdAt',
-        header: ({ column }) => {
-          const sortState = column.getIsSorted();
-          let SortIcon = ArrowUpDown;
-          let ariaSort: 'ascending' | 'descending' | 'none' = 'none';
-          if (sortState === 'desc') {
-            SortIcon = ArrowDown;
-            ariaSort = 'descending';
-          } else if (sortState === 'asc') {
-            SortIcon = ArrowUp;
-            ariaSort = 'ascending';
-          }
-          return (
-            <TooltipAnchor
-              description={localize('com_ui_date_sort')}
-              side="top"
-              render={
-                <Button
-                  variant="ghost"
-                  onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                  className="px-2 py-0 text-xs hover:bg-surface-hover sm:px-2 sm:py-2 sm:text-sm"
-                  aria-sort={ariaSort}
-                  aria-label={localize('com_ui_date_sort')}
-                  aria-current={sortState ? 'true' : 'false'}
-                >
-                  {localize('com_ui_date')}
-                  <SortIcon className="ml-2 h-3 w-4 sm:h-4 sm:w-4" />
-                </Button>
-              }
-            />
-          );
-        },
+        header: localize('com_ui_date'),
         cell: ({ row }) => formatDate(row.original.createdAt?.toString() ?? '', isSmallScreen),
         meta: {
-          size: '10%',
-          mobileSize: '20%',
+          width: 25,
+          desktopOnly: true,
         },
       },
       {
-        accessorKey: 'actions',
-        header: () => (
-          <Label className="px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm">
-            {localize('com_assistants_actions')}
-          </Label>
-        ),
+        id: 'actions',
+        header: localize('com_assistants_actions'),
+        enableSorting: false,
         meta: {
-          size: '7%',
-          mobileSize: '25%',
+          width: 20,
         },
         cell: ({ row }) => (
           <div className="flex items-center gap-2">
             <TooltipAnchor
               description={localize('com_ui_open_source_chat_new_tab')}
               render={
-                <a
-                  href={`/c/${row.original.conversationId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex h-8 w-8 items-center justify-center rounded-md p-0 transition-colors hover:bg-surface-hover focus:outline-none focus:ring-2 focus:ring-ring"
-                  aria-label={localize('com_ui_open_source_chat_new_tab_title', {
-                    title: row.original.title || localize('com_ui_untitled'),
-                  })}
-                >
-                  <MessageSquare className="size-4" aria-hidden="true" />
-                </a>
+                <Button asChild variant="row-action" size="icon-sm">
+                  <a
+                    href={`/c/${row.original.conversationId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={localize('com_ui_open_source_chat_new_tab_title', {
+                      title: row.original.title || localize('com_ui_untitled'),
+                    })}
+                  >
+                    <MessageSquare className="size-4" aria-hidden="true" />
+                  </a>
+                </Button>
               }
             />
             <TooltipAnchor
               description={localize('com_ui_delete_shared_link_heading')}
               render={
                 <Button
-                  variant="ghost"
-                  className="h-8 w-8 p-0 hover:bg-surface-hover"
+                  variant="row-action"
+                  size="icon-sm"
                   onClick={() => {
                     setDeleteRow(row.original);
                     setIsDeleteOpen(true);
@@ -324,25 +290,34 @@ export default function SharedLinks() {
         </OGDialogTrigger>
 
         <OGDialogContent
-          title={localize('com_nav_shared_links')}
-          className="w-11/12 max-w-5xl bg-background text-text-primary shadow-2xl"
+          focusOutline="hidden"
+          ref={contentRef}
+          tabIndex={-1}
+          onOpenAutoFocus={handleOpenAutoFocus}
+          className="w-11/12 max-w-3xl shadow-2xl"
         >
           <OGDialogHeader>
             <OGDialogTitle>{localize('com_nav_shared_links')}</OGDialogTitle>
           </OGDialogHeader>
-          <DataTable
+          <VirtualizedDataTable
             columns={columns}
             data={allLinks}
-            onDelete={handleDelete}
-            filterColumn="title"
+            getRowId={getRowId}
+            className="max-h-[60vh] min-h-80 scrollbar-gutter-stable"
             hasNextPage={hasNextPage}
             isFetchingNextPage={isFetchingNextPage}
+            isFetching={isFetching}
             fetchNextPage={handleFetchNextPage}
-            showCheckboxes={false}
-            onFilterChange={debouncedFilterChange}
+            sorting={sorting}
+            onSortingChange={handleSortingChange}
+            onFilterChange={handleFilterChange}
             filterValue={queryParams.search}
             isLoading={isLoading}
-            enableSearch={searchStore.enabled === true}
+            config={{
+              selection: { enableRowSelection: false, showCheckboxes: false },
+              skeleton: { count: 6 },
+              search: { enableSearch: searchStore.enabled === true, debounce: 300 },
+            }}
           />
         </OGDialogContent>
       </OGDialog>
@@ -350,7 +325,7 @@ export default function SharedLinks() {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_ui_delete_shared_link_heading')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <>
               <div
@@ -371,7 +346,7 @@ export default function SharedLinks() {
           }
           selection={{
             selectHandler: confirmDelete,
-            selectClasses: `bg-red-700 dark:bg-red-600 hover:bg-red-800 dark:hover:bg-red-800 text-white ${
+            selectClasses: `bg-surface-destructive hover:bg-surface-destructive-hover text-text-on-status ${
               deleteMutation.isLoading ? 'cursor-not-allowed opacity-80' : ''
             }`,
             selectText: deleteMutation.isLoading ? <Spinner /> : localize('com_ui_delete'),

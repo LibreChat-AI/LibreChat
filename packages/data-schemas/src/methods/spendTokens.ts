@@ -1,5 +1,5 @@
-import logger from '~/config/winston';
 import type { TxData, TransactionResult } from './transaction';
+import logger from '~/config/winston';
 
 /** Base transaction context passed by callers — does not include fields added internally */
 export interface SpendTxData {
@@ -19,14 +19,29 @@ export function createSpendTokensMethods(
     createTransaction: (txData: TxData) => Promise<TransactionResult | undefined>;
     createStructuredTransaction: (txData: TxData) => Promise<TransactionResult | undefined>;
   },
-) {
+): {
+  spendTokens: (
+    txData: SpendTxData,
+    tokenUsage: { promptTokens?: number; completionTokens?: number },
+  ) => Promise<void>;
+  spendStructuredTokens: (
+    txData: SpendTxData,
+    tokenUsage: {
+      promptTokens?: { input?: number; write?: number; read?: number };
+      completionTokens?: number;
+    },
+  ) => Promise<{
+    prompt: TransactionResult | undefined;
+    completion: TransactionResult | undefined;
+  }>;
+} {
   /**
    * Creates up to two transactions to record the spending of tokens.
    */
   async function spendTokens(
     txData: SpendTxData,
     tokenUsage: { promptTokens?: number; completionTokens?: number },
-  ) {
+  ): Promise<void> {
     const { promptTokens, completionTokens } = tokenUsage;
     logger.debug(
       `[spendTokens] conversationId: ${txData.conversationId}${
@@ -81,7 +96,10 @@ export function createSpendTokensMethods(
       promptTokens?: { input?: number; write?: number; read?: number };
       completionTokens?: number;
     },
-  ) {
+  ): Promise<{
+    prompt: TransactionResult | undefined;
+    completion: TransactionResult | undefined;
+  }> {
     const { promptTokens, completionTokens } = tokenUsage;
     logger.debug(
       `[spendStructuredTokens] conversationId: ${txData.conversationId}${

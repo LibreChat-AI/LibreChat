@@ -6,6 +6,8 @@ interface MessagesViewContextValue {
   conversation: ReturnType<typeof useChatContext>['conversation'];
   conversationId: string | null | undefined;
 
+  readOnly: boolean;
+
   /** Submission and control states */
   isSubmitting: ReturnType<typeof useChatContext>['isSubmitting'];
   abortScroll: ReturnType<typeof useChatContext>['abortScroll'];
@@ -20,16 +22,33 @@ interface MessagesViewContextValue {
   index: ReturnType<typeof useChatContext>['index'];
   latestMessageId: ReturnType<typeof useChatContext>['latestMessageId'];
   latestMessageDepth: ReturnType<typeof useChatContext>['latestMessageDepth'];
-  setLatestMessage: ReturnType<typeof useChatContext>['setLatestMessage'];
   getMessages: ReturnType<typeof useChatContext>['getMessages'];
   setMessages: ReturnType<typeof useChatContext>['setMessages'];
 }
 
+type MessagesOperations = Pick<
+  MessagesViewContextValue,
+  'ask' | 'regenerate' | 'handleContinue' | 'getMessages' | 'setMessages'
+>;
+
 const MessagesViewContext = createContext<MessagesViewContextValue | undefined>(undefined);
 
-// Export the context so it can be provided by other providers (e.g., ShareMessagesProvider)
-export { MessagesViewContext };
-export type { MessagesViewContextValue };
+/**
+ * The view's operations alone. They are referentially stable, so components that
+ * only call them (every message row's hover actions) are not re-rendered by the
+ * submission and tail changes the combined context carries on each send.
+ */
+const MessagesOperationsContext = createContext<MessagesOperations | undefined>(undefined);
+
+/**
+ * Whether the view is generating, alone. A boolean context re-renders its consumers
+ * only when a send starts or settles, which is when every row's rerun controls flip.
+ */
+const MessagesSubmittingContext = createContext(false);
+
+// Export the contexts so they can be provided by other providers (e.g., ShareMessagesProvider)
+export { MessagesViewContext, MessagesOperationsContext, MessagesSubmittingContext };
+export type { MessagesViewContextValue, MessagesOperations };
 
 export function MessagesViewProvider({ children }: { children: React.ReactNode }) {
   const chatContext = useChatContext();
@@ -44,7 +63,6 @@ export function MessagesViewProvider({ children }: { children: React.ReactNode }
     latestMessageDepth,
     setAbortScroll,
     handleContinue,
-    setLatestMessage,
     abortScroll,
     getMessages,
     setMessages,
@@ -87,14 +105,14 @@ export function MessagesViewProvider({ children }: { children: React.ReactNode }
       index,
       latestMessageId,
       latestMessageDepth,
-      setLatestMessage,
     }),
-    [index, latestMessageId, latestMessageDepth, setLatestMessage],
+    [index, latestMessageId, latestMessageDepth],
   );
 
   /** Combine all values into final context value */
   const contextValue = useMemo<MessagesViewContextValue>(
     () => ({
+      readOnly: false,
       ...conversationValues,
       ...submissionStates,
       ...messageOperations,
@@ -104,8 +122,17 @@ export function MessagesViewProvider({ children }: { children: React.ReactNode }
   );
 
   return (
-    <MessagesViewContext.Provider value={contextValue}>{children}</MessagesViewContext.Provider>
+    <MessagesOperationsContext.Provider value={messageOperations}>
+      <MessagesSubmittingContext.Provider value={isSubmitting}>
+        <MessagesViewContext.Provider value={contextValue}>{children}</MessagesViewContext.Provider>
+      </MessagesSubmittingContext.Provider>
+    </MessagesOperationsContext.Provider>
   );
+}
+
+/** Whether the view is generating; false outside a live messages view. */
+export function useMessagesIsSubmitting(): boolean {
+  return useContext(MessagesSubmittingContext);
 }
 
 export function useMessagesViewContext() {
@@ -114,6 +141,11 @@ export function useMessagesViewContext() {
     throw new Error('useMessagesViewContext must be used within MessagesViewProvider');
   }
   return context;
+}
+
+/** Defaults to read-only when no provider is present, so live auth-bearing app actions stay off. */
+export function useIsMessagesViewReadOnly(): boolean {
+  return useContext(MessagesViewContext)?.readOnly ?? true;
 }
 
 /** Hook for components that only need conversation data */
@@ -132,20 +164,15 @@ export function useMessagesSubmission() {
 }
 
 /** Hook for components that only need message operations */
-export function useMessagesOperations() {
-  const { ask, regenerate, handleContinue, getMessages, setMessages } = useMessagesViewContext();
-  return useMemo(
-    () => ({ ask, regenerate, handleContinue, getMessages, setMessages }),
-    [ask, regenerate, handleContinue, getMessages, setMessages],
-  );
+export function useMessagesOperations(): MessagesOperations {
+  const context = useContext(MessagesOperationsContext);
+  if (!context) {
+    throw new Error('useMessagesOperations must be used within MessagesViewProvider');
+  }
+  return context;
 }
 
-type OptionalMessagesOps = Pick<
-  MessagesViewContextValue,
-  'ask' | 'regenerate' | 'handleContinue' | 'getMessages' | 'setMessages'
->;
-
-const NOOP_OPS: OptionalMessagesOps = {
+const NOOP_OPS: MessagesOperations = {
   ask: () => {},
   regenerate: () => {},
   handleContinue: () => {},
@@ -159,23 +186,8 @@ const NOOP_OPS: OptionalMessagesOps = {
  * be silently discarded rather than crashing. Callers must use optional chaining on
  * `getMessages()` results, as it returns `undefined` outside the provider.
  */
-export function useOptionalMessagesOperations(): OptionalMessagesOps {
-  const context = useContext(MessagesViewContext);
-  const ask = context?.ask;
-  const regenerate = context?.regenerate;
-  const handleContinue = context?.handleContinue;
-  const getMessages = context?.getMessages;
-  const setMessages = context?.setMessages;
-  return useMemo(
-    () => ({
-      ask: ask ?? NOOP_OPS.ask,
-      regenerate: regenerate ?? NOOP_OPS.regenerate,
-      handleContinue: handleContinue ?? NOOP_OPS.handleContinue,
-      getMessages: getMessages ?? NOOP_OPS.getMessages,
-      setMessages: setMessages ?? NOOP_OPS.setMessages,
-    }),
-    [ask, regenerate, handleContinue, getMessages, setMessages],
-  );
+export function useOptionalMessagesOperations(): MessagesOperations {
+  return useContext(MessagesOperationsContext) ?? NOOP_OPS;
 }
 
 /**
@@ -191,9 +203,9 @@ export function useOptionalMessagesConversation() {
 
 /** Hook for components that only need message state */
 export function useMessagesState() {
-  const { index, latestMessageId, latestMessageDepth, setLatestMessage } = useMessagesViewContext();
+  const { index, latestMessageId, latestMessageDepth } = useMessagesViewContext();
   return useMemo(
-    () => ({ index, latestMessageId, latestMessageDepth, setLatestMessage }),
-    [index, latestMessageId, latestMessageDepth, setLatestMessage],
+    () => ({ index, latestMessageId, latestMessageDepth }),
+    [index, latestMessageId, latestMessageDepth],
   );
 }

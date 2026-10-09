@@ -1,3 +1,5 @@
+import { useRef } from 'react';
+import { useQuery, useQueries, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import {
   QueryKeys,
   dataService,
@@ -6,14 +8,6 @@ import {
   defaultOrderQuery,
   defaultAssistantsVersion,
 } from 'librechat-data-provider';
-import { useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  UseInfiniteQueryOptions,
-  QueryObserverResult,
-  UseQueryOptions,
-  InfiniteData,
-} from '@tanstack/react-query';
-import type t from 'librechat-data-provider';
 import type {
   Action,
   TPreset,
@@ -30,8 +24,20 @@ import type {
   SharedLinksListParams,
   SharedLinksResponse,
 } from 'librechat-data-provider';
+import type {
+  UseInfiniteQueryOptions,
+  QueryObserverResult,
+  UseQueryOptions,
+  InfiniteData,
+} from '@tanstack/react-query';
+import type t from 'librechat-data-provider';
 import type { ConversationCursorData } from '~/utils/convos';
-import { findConversationInInfinite, isNotFoundError } from '~/utils';
+import {
+  acceptRunningConversation,
+  findConversationInInfinite,
+  isNotFoundError,
+  toSidebarConversation,
+} from '~/utils';
 
 export const useGetPresetsQuery = (
   config?: UseQueryOptions<TPreset[]>,
@@ -82,32 +88,228 @@ export const useGetConvoIdQuery = (
   );
 };
 
+const RUNNING_CONVERSATION_REFRESH_MS = 15_000;
+const RUNNING_CONVERSATION_MISSING_RETRY_MS = 2_000;
+const noRunningConversations: t.TConversation[] = [];
+
+/** The list endpoints derive `isShared` from active shared links; the record alone lacks it. */
+async function hasActiveSharedLink(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<boolean | undefined> {
+  try {
+    const link = await dataService.getSharedLink(conversationId, signal);
+    return link.shareId != null;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Rows for running chats that no loaded sidebar list holds: chats filed in a project,
+ * pinned chats, and chats past the pages fetched so far. Each row refreshes while it is
+ * shown, so a title generated mid-run reaches it. A chat whose record is not written yet
+ * reads as absent and is asked again within seconds, so a short run is not missed.
+ *
+ * The rows live under their own key so a pending or absent result never lands in the
+ * cache the chat view reads; a complete record seeds that cache only where it is empty.
+ */
+export const useRunningConversationsQuery = (
+  conversationIds: readonly string[],
+): t.TConversation[] => {
+  const queryClient = useQueryClient();
+  const results = useQueries({
+    queries: conversationIds.map(
+      (conversationId): UseQueryOptions<t.TConversation | null> => ({
+        queryKey: [QueryKeys.runningConversation, conversationId],
+        queryFn: async ({ signal }): Promise<t.TConversation | null> => {
+          try {
+            const [conversation, isShared] = await Promise.all([
+              dataService.getConversationById(conversationId, signal),
+              hasActiveSharedLink(conversationId, signal),
+            ]);
+            signal?.throwIfAborted();
+            return isShared === undefined ? conversation : { ...conversation, isShared };
+          } catch (error) {
+            if (isNotFoundError(error)) {
+              return null;
+            }
+            throw error;
+          }
+        },
+        onSuccess: (conversation: t.TConversation | null) => {
+          if (
+            !conversation ||
+            !acceptRunningConversation(queryClient, conversationId, conversation)
+          ) {
+            return;
+          }
+          const conversationKey = [QueryKeys.conversation, conversationId];
+          if (queryClient.getQueryData(conversationKey) === undefined) {
+            queryClient.setQueryData(conversationKey, conversation);
+          }
+        },
+        staleTime: RUNNING_CONVERSATION_REFRESH_MS,
+        refetchInterval: (data: t.TConversation | null | undefined) =>
+          data === null ? RUNNING_CONVERSATION_MISSING_RETRY_MS : RUNNING_CONVERSATION_REFRESH_MS,
+        refetchOnWindowFocus: false,
+      }),
+    ),
+  });
+
+  const recordsRef = useRef<t.TConversation[]>(noRunningConversations);
+  const rowsRef = useRef<t.TConversation[]>(noRunningConversations);
+  const records = results
+    .map((result) => result.data)
+    .filter((record): record is t.TConversation => record != null);
+  const previous = recordsRef.current;
+  if (
+    records.length !== previous.length ||
+    records.some((record, index) => record !== previous[index])
+  ) {
+    recordsRef.current = records;
+    rowsRef.current =
+      records.length === 0 ? noRunningConversations : records.map(toSidebarConversation);
+  }
+  return rowsRef.current;
+};
+
 export const useConversationsInfiniteQuery = (
   params: ConversationListParams,
   config?: UseInfiniteQueryOptions<ConversationListResponse, unknown>,
 ) => {
-  const { isArchived, sortBy, sortDirection, tags, search } = params;
+  const {
+    isArchived,
+    sortBy,
+    sortDirection,
+    tags,
+    search,
+    projectId,
+    updatedAfter,
+    createdAfter,
+    endpoints,
+    hasFiles,
+    sharedOnly,
+  } = params;
 
   return useInfiniteQuery<ConversationListResponse>({
+    /* Every filter belongs in the key: a facet left out would serve one filter's pages
+       to another and, because the cursor is part of that cache entry, keep paging the
+       wrong list. */
     queryKey: [
       isArchived ? QueryKeys.archivedConversations : QueryKeys.allConversations,
-      { isArchived, sortBy, sortDirection, tags, search },
-    ],
-    queryFn: ({ pageParam }) =>
-      dataService.listConversations({
+      {
         isArchived,
         sortBy,
         sortDirection,
         tags,
         search,
+        projectId,
+        updatedAfter,
+        createdAfter,
+        endpoints,
+        hasFiles,
+        sharedOnly,
+      },
+    ],
+    queryFn: async ({ pageParam }) => {
+      const page = await dataService.listConversations({
+        isArchived,
+        sortBy,
+        sortDirection,
+        tags,
+        search,
+        projectId,
+        updatedAfter,
+        createdAfter,
+        endpoints,
+        hasFiles,
+        sharedOnly,
         cursor: pageParam?.toString(),
-      }),
+      });
+      /* A row's own `isArchived` decides what its menu offers, so a backend that predates
+         that field in the list projection would make archived rows offer Archive and submit
+         a no-op. What the variant asked for is the answer for any row that omits it. */
+      return {
+        ...page,
+        conversations: page.conversations.map((conversation) =>
+          conversation.isArchived == null
+            ? { ...conversation, isArchived: isArchived === true }
+            : conversation,
+        ),
+      };
+    },
     getNextPageParam: (lastPage) => lastPage?.nextCursor ?? undefined,
     keepPreviousData: true,
     staleTime: 5 * 60 * 1000, // 5 minutes
     cacheTime: 30 * 60 * 1000, // 30 minutes
     ...config,
   });
+};
+
+/**
+ * Pinned chats are a hand-curated set, so the sidebar fetches the whole thing rather
+ * than paginating it: a pin older than the first page of the Chats list would
+ * otherwise stay hidden until that list scrolled far enough to reach it, and
+ * `groupConversations` keeps pins out of the Chats groups entirely, so any pin
+ * this query does not return is invisible in the sidebar. The page size is therefore a
+ * request size, not a cap; the query drains the cursor.
+ *
+ * It takes no filters on purpose: the Chats list's status, bookmark and sort choices
+ * narrow that list alone, and a curated shortcut row that emptied itself whenever a
+ * filter was on would be the opposite of a shortcut.
+ */
+export const pinnedConversationsPageSize = 100;
+
+export const usePinnedConversationsQuery = (
+  config?: UseQueryOptions<ConversationListResponse>,
+): QueryObserverResult<ConversationListResponse> => {
+  const queryClient = useQueryClient();
+  const queryKey = [QueryKeys.pinnedConversations];
+
+  return useQuery<ConversationListResponse>(
+    queryKey,
+    async ({ signal }) => {
+      const conversations: ConversationListResponse['conversations'] = [];
+      let cursor: string | undefined;
+
+      do {
+        let page: ConversationListResponse;
+        try {
+          page = await dataService.listConversations({
+            pinned: true,
+            limit: pinnedConversationsPageSize,
+            cursor,
+          });
+        } catch (error) {
+          signal?.throwIfAborted();
+          /** A page failing partway through the drain must not throw away the pins
+           * already loaded: publish them so the retry, which starts the drain over,
+           * renders against the partial set instead of an empty section. */
+          if (conversations.length > 0) {
+            queryClient.setQueryData<ConversationListResponse>(queryKey, {
+              conversations,
+              nextCursor: cursor ?? null,
+            });
+          }
+          throw error;
+        }
+        signal?.throwIfAborted();
+        conversations.push(...page.conversations);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+
+      return { conversations, nextCursor: null };
+    },
+    {
+      /* Left on the React Query defaults for focus and reconnect, matching the
+         conversations query: a pin changed in another tab is only reconciled by a
+         refetch, since the mutation that made it never touched this cache. */
+      staleTime: 5 * 60 * 1000,
+      cacheTime: 30 * 60 * 1000,
+      ...config,
+    },
+  );
 };
 
 export const useMessagesInfiniteQuery = (
@@ -143,15 +345,14 @@ export const useSharedLinksQuery = (
   params: SharedLinksListParams,
   config?: UseInfiniteQueryOptions<SharedLinksResponse, unknown>,
 ) => {
-  const { pageSize, isPublic, search, sortBy, sortDirection } = params;
+  const { pageSize, search, sortBy, sortDirection } = params;
 
   return useInfiniteQuery<SharedLinksResponse>({
-    queryKey: [QueryKeys.sharedLinks, { pageSize, isPublic, search, sortBy, sortDirection }],
+    queryKey: [QueryKeys.sharedLinks, { pageSize, search, sortBy, sortDirection }],
     queryFn: ({ pageParam }) =>
       dataService.listSharedLinks({
         cursor: pageParam?.toString(),
         pageSize,
-        isPublic,
         search,
         sortBy,
         sortDirection,

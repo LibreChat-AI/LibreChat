@@ -1,0 +1,680 @@
+name: Playwright E2E Tests
+
+on:
+  pull_request:
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/workflows/**'
+      - '.github/workflows/playwright-mock.yml'
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: false
+        default: 'Manual e2e run'
+      coverage:
+        description: 'Coverage profile: full suite on both stores, or the PR shards'
+        type: choice
+        options:
+          - full
+          - pr
+        default: full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playwright-mock-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: '--max-old-space-size=${{ secrets.NODE_MAX_OLD_SPACE_SIZE || 6144 }}'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  # Stage 2 of codegraph gating (stage 1 = backend jest in backend-review.yml). The graph decides
+  # two matrix lanes whose relevance is a reachability question: the redis-transport shards (the
+  # stream-boundary specs under a real Redis round-trip) and the MCP list_changed lanes. Memory
+  # shards always run. Monotone and fail-open: a lane is dropped ONLY on an explicit `false` from
+  # the service; unavailable/unconfigured/non-synchronize events keep the full matrix. Lock
+  # attribution rides along so a backend dependency bump (reaches nothing in the graph) still
+  # earns both lanes. Kill switch: repo variable CODEGRAPH_GATING=off.
+  codegraph_select:
+    name: Codegraph select
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'synchronize' &&
+      vars.CODEGRAPH_GATING != 'off' &&
+      github.event.pull_request != null &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    outputs:
+      decided: ${{ steps.sel.outputs.decided }}
+      e2e_include: ${{ steps.sel.outputs.e2e_include }}
+      mcp_run: ${{ steps.sel.outputs.mcp_run }}
+      e2e_skip: ${{ steps.sel.outputs.e2e_skip }}
+    steps:
+      - name: Select matrix lanes, fail open on any doubt
+        id: sel
+        env:
+          URL: ${{ secrets.CODEGRAPH_URL }}
+          TOKEN: ${{ secrets.CODEGRAPH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED: ${{ github.event.pull_request.changed_files }}
+          E2E_SKIP_ARMED: ${{ vars.CODEGRAPH_E2E_SKIP }}
+          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6","email_change":"true"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
+        run: |
+          set +e
+          note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          note "### Codegraph select — GATING (Playwright matrix lanes)"
+          if [ -z "$URL" ] || [ -z "$TOKEN" ]; then note "_no codegraph config; running FULL_"; exit 0; fi
+          # A failed or truncated page must not become a shorter file list: the pipeline would hide
+          # gh's exit status behind jq, and a partial list can turn a required lane off. Check the
+          # fetch status AND the count against the PR's own changed_files (Codex P1, #15136).
+          if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
+              --jq '.[] | {path: .filename, status, patch}' > files.ndjson; then
+            note "_could not fetch changed files; running FULL_"; exit 0
+          fi
+          jq -s . files.ndjson > files.json
+          N=$(jq 'length' files.json)
+          if [ "$N" -eq 0 ] || { [ -n "$CHANGED" ] && [ "$N" -ne "$CHANGED" ]; }; then
+            note "_changed-file list incomplete ($N of ${CHANGED:-?}); running FULL_"; exit 0
+          fi
+          jq -c --arg b "$BASE_SHA" --arg h "$HEAD_SHA" \
+            '{files: ., mode: "safe", lockBaseSha: $b, lockHeadSha: $h}' files.json > body.json
+          # curl's status is checked explicitly: a transfer that times out or truncates after a
+          # parseable body must fail open, not be honoured (Codex P1, #15136). --fail-with-body
+          # also turns HTTP errors into a failure while keeping the error text for the summary.
+          RESP=$(curl -sS --fail-with-body -m 45 -H "Authorization: Bearer $TOKEN" \
+            -H 'content-type: application/json' --data-binary @body.json "$URL/v1/select"); RC=$?
+          if [ "$RC" -ne 0 ] || [ -z "$RESP" ] || ! echo "$RESP" | jq -e '.matrix["playwright-mock"]' >/dev/null 2>&1; then
+            note "_codegraph unavailable (curl exit $RC: ${RESP:0:120}); running FULL_"
+            exit 0
+          fi
+          # A lane is skipped only on the JSON boolean false — tested inside jq, because `jq -r`
+          # prints the string "false" and the boolean identically (Codex P1, #15136). Anything
+          # else (true, null, a string, missing) runs.
+          if echo "$RESP" | jq -e '.e2e.fail_open == true' >/dev/null 2>&1; then
+            note "_fail-open decision (root/workflow/lockfile change or stale graph): everything runs_"
+          fi
+          REDIS=$(echo "$RESP" | jq -c '.matrix["playwright-mock"].redis_transport')
+          MCP=$(echo "$RESP" | jq -c '.matrix["playwright-mock"].mcp_tool_list_changed')
+          REDIS_SKIP=0; MCP_SKIP=0
+          echo "$RESP" | jq -e '.matrix["playwright-mock"].redis_transport == false' >/dev/null 2>&1 && REDIS_SKIP=1
+          echo "$RESP" | jq -e '.matrix["playwright-mock"].mcp_tool_list_changed == false' >/dev/null 2>&1 && MCP_SKIP=1
+          note "| lane | decision |"
+          note "|---|---|"
+          if [ "$REDIS_SKIP" = 1 ]; then
+            INCLUDE=$(echo "$FULL_INCLUDE" | jq -c '.include |= map(select(.suite != "transport"))')
+            note "| redis transport | skip (no reach into the stream boundary) |"
+          else
+            INCLUDE="$FULL_INCLUDE"
+            note "| redis transport | run |"
+          fi
+          if ! echo "$INCLUDE" | jq -e '.include | length >= 6' >/dev/null 2>&1; then
+            note "_matrix assembly failed; running FULL_"
+            exit 0
+          fi
+          echo "e2e_include=$INCLUDE" >> "$GITHUB_OUTPUT"
+          # Graduated per-spec skips are DARK until the operator arms repo variable
+          # CODEGRAPH_E2E_SKIP=on (the election switch — flipped only when the pre-registered
+          # resume condition holds). Even then, act only on a well-typed list from a non-fail-open
+          # decision: every entry must be a pool spec path, or nothing is skipped. The server
+          # already intersects with this PR's skippable tier and applies the streak bars
+          # (2x where history-coupled); see codegraph-poc service/graduate.ts.
+          SKIP=""
+          if [ "$E2E_SKIP_ARMED" = "on" ]; then
+            if echo "$RESP" | jq -e '(.e2e.fail_open != true) and (.e2e.graduated | type == "array" and all(.[]?; type == "string" and test("^e2e/specs/mock/[A-Za-z0-9._/-]+\\.spec\\.ts$") and (contains("..") | not)))' >/dev/null 2>&1; then
+              SKIP=$(echo "$RESP" | jq -r '[.e2e.graduated[] | sub("^e2e/"; "")] | join(" ")')
+            else
+              note "_graduated list absent or malformed; no specs skipped_"
+            fi
+          fi
+          echo "e2e_skip=$SKIP" >> "$GITHUB_OUTPUT"
+          if [ -n "$SKIP" ]; then
+            note "| graduated spec skips | $(echo "$SKIP" | wc -w | tr -d ' ') (armed) |"
+            echo "codegraph-e2e-graduated-skips: $SKIP"
+          fi
+          echo "codegraph-select: redis_transport=$REDIS mcp_tool_list_changed=$MCP matrix_entries=$(echo "$INCLUDE" | jq '.include | length')"
+          if [ "$MCP_SKIP" = 1 ]; then
+            echo "mcp_run=false" >> "$GITHUB_OUTPUT"
+            note "| MCP list_changed | skip (no reach into MCP) |"
+          else
+            echo "mcp_run=true" >> "$GITHUB_OUTPUT"
+            note "| MCP list_changed | run |"
+          fi
+          echo "decided=true" >> "$GITHUB_OUTPUT"
+          note ""
+          note "memory shards always run · kill switch: repo variable \`CODEGRAPH_GATING=off\` · full matrix on PR open and nightly"
+          exit 0
+
+  e2e_shards:
+    name: e2e (${{ matrix.name }})
+    needs: [codegraph_select]
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository)))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Separate runners isolate each shard's user, MongoDB, Redis and fixture state.
+    # Keep workers: 1 in Playwright; shared-user cleanup is not worker-safe.
+    strategy:
+      fail-fast: false
+      matrix: >-
+        ${{
+          (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
+          fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
+          ((github.event_name == 'pull_request' || inputs.coverage == 'pr') &&
+          fromJSON('{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6","email_change":"true"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
+          fromJSON('{"include":[{"name":"memory, shard 1/2","stream_store":"memory","redis_image":"","suite":"full","shard":"1/2","artifact":"memory-1-of-2","email_change":"true"},{"name":"memory, shard 2/2","stream_store":"memory","redis_image":"","suite":"full","shard":"2/2","artifact":"memory-2-of-2"},{"name":"redis, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/2","artifact":"redis-1-of-2"},{"name":"redis, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/2","artifact":"redis-2-of-2"}]}')
+        }}
+    services:
+      redis:
+        image: ${{ matrix.redis_image }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      E2E_CHROMIUM_CHANNEL: chrome
+      E2E_STREAM_STORE: ${{ matrix.stream_store }}
+      REDIS_URI: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Test Playwright matrix selection
+        run: node --test .github/scripts/playwright-matrix.test.mjs
+
+      - name: Restore data-provider build cache
+        id: cache-data-provider
+        uses: actions/cache@v5
+        with:
+          path: packages/data-provider/dist
+          key: build-data-provider-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-provider
+        if: steps.cache-data-provider.outputs.cache-hit != 'true'
+        run: npm run build:data-provider
+
+      - name: Restore data-schemas build cache
+        id: cache-data-schemas
+        uses: actions/cache@v5
+        with:
+          path: packages/data-schemas/dist
+          key: build-data-schemas-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-schemas
+        if: steps.cache-data-schemas.outputs.cache-hit != 'true'
+        run: npm run build:data-schemas
+
+      - name: Restore api build cache
+        id: cache-api
+        uses: actions/cache@v5
+        with:
+          path: packages/api/dist
+          key: build-api-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/api/src/**', 'packages/api/tsconfig*.json', 'packages/api/tsdown.config.mjs', 'packages/api/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json') }}
+
+      - name: Build api
+        if: steps.cache-api.outputs.cache-hit != 'true'
+        run: npm run build:api
+
+      - name: Restore client-package build cache
+        id: cache-client-package
+        uses: actions/cache@v5
+        with:
+          path: packages/client/dist
+          key: build-client-package-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/client/src/**', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build client-package
+        if: steps.cache-client-package.outputs.cache-hit != 'true'
+        run: npm run build:client-package
+
+      - name: Restore client app build cache
+        id: cache-client-app
+        uses: actions/cache@v5
+        with:
+          path: client/dist
+          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build client app
+        if: steps.cache-client-app.outputs.cache-hit != 'true'
+        run: npm run build:client
+
+      - name: Verify Chrome is present
+        run: google-chrome --version
+
+      # `video: 'on-first-retry'` needs ffmpeg; without it the first retry dies in
+      # browserContext.newPage before the test body runs, so a flaky test loses the
+      # retry that would have recovered it.
+      #
+      # This step used to burn its full 90s bound on every job. Playwright's bundled
+      # extractor hangs on Node 24.16.0 (a yauzl/extract-zip regression fixed in
+      # Playwright 1.60.0): the 2.3MB download finished in under a second, then
+      # extraction stalled and the timeout reaped it, leaving a truncated binary and
+      # no INSTALLATION_COMPLETE marker — so ffmpeg was never actually installed and
+      # retries never got video. With Playwright bumped past the fix the install
+      # takes about a second, and a restored cache skips it outright.
+      #
+      # The cache is only saved once the binary is verified to run, so a partial
+      # extraction can never be promoted into a cache every later job restores.
+      # Kept non-fatal: retry video is a debugging aid, not something CI asserts on.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright ffmpeg cache
+        id: cache-ffmpeg
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ffmpeg-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright ffmpeg (best effort)
+        id: install-ffmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          timeout -k 10 60 npx playwright install ffmpeg
+          .github/scripts/verify-playwright-ffmpeg.sh
+
+      - name: Save Playwright ffmpeg cache
+        if: steps.install-ffmpeg.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ffmpeg-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      # The runner's Chrome is an apt package, so its real library dependencies are
+      # already satisfied; all `install-deps` adds here are optional CJK/Thai/Cyrillic
+      # font packages (~21MB from azure.archive.ubuntu.com). Nothing in CI asserts on
+      # them — visual baselines are opt-in via E2E_VISUAL_SNAPSHOTS — so a stalled
+      # Ubuntu mirror must never be able to fail the suite.
+      - name: Install optional Playwright font dependencies (best effort)
+        timeout-minutes: 4
+        continue-on-error: true
+        run: .github/scripts/install-playwright-fonts.sh
+
+      - name: Run full mock-LLM Tier-1 e2e
+        if: matrix.suite == 'full'
+        env:
+          CI: 'true'
+          E2E_SKIP: ${{ needs.codegraph_select.outputs.e2e_skip }}
+        run: |
+          set +e
+          # Graduated-spec skipping (dark until repo var CODEGRAPH_E2E_SKIP=on upstream): subtract
+          # the earned skips from a run list derived from the tree itself, so an unknown or stale
+          # name in the skip list simply matches nothing. If subtraction would drop everything —
+          # or drops nothing — run the full shard exactly as before. Skipped specs still execute
+          # post-merge in every full-suite vote run, which is the net that catches a wrong skip.
+          RUN_ARGS=""
+          if [ -n "$E2E_SKIP" ]; then
+            KEEP=""; DROP=0
+            for spec in $(git ls-files 'e2e/specs/mock/*.spec.ts' 'e2e/specs/mock/**/*.spec.ts' | sed 's|^e2e/||' | sort -u); do
+              case "$spec" in *" "*) KEEP="$KEEP $spec"; continue;; esac
+              case " $E2E_SKIP " in
+                *" $spec "*) DROP=$((DROP+1));;
+                *) KEEP="$KEEP $spec";;
+              esac
+            done
+            if [ "$DROP" -gt 0 ] && [ -n "$KEEP" ]; then
+              RUN_ARGS="$KEEP"
+              echo "codegraph-e2e-skip: dropped $DROP graduated specs from this shard's pool"
+            fi
+          fi
+          set -e
+          npx playwright test --config=e2e/playwright.config.mock.ts --shard=${{ matrix.shard }} $RUN_ARGS
+
+      - name: Run Redis stream transport e2e
+        if: matrix.suite == 'transport'
+        run: npx playwright test --config=e2e/playwright.config.redis.ts --shard=${{ matrix.shard }}
+        env:
+          CI: 'true'
+
+      - name: Run registered-email change e2e
+        if: matrix.email_change == 'true'
+        run: npx playwright test --config=e2e/playwright.config.email.ts
+        env:
+          CI: 'true'
+
+      - name: Run disabled registered-email change e2e
+        if: matrix.email_change == 'true'
+        run: npx playwright test --config=e2e/playwright.config.email.ts
+        env:
+          CI: 'true'
+          E2E_ALLOW_EMAIL_CHANGE: 'false'
+
+      - name: Upload Playwright HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-report-${{ matrix.artifact }}
+          path: e2e/playwright-report/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload traces & screenshots
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-test-results-${{ matrix.artifact }}
+          path: e2e/specs/.test-results/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Run first-turn title ownership regressions
+        if: ${{ !cancelled() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        env:
+          CI: 'true'
+          E2E_TITLE_CONVO: 'true'
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          conversation-management.spec.ts --grep 'first-turn|final-title polling' --reporter=line
+          --output=e2e/specs/.test-results/title-ownership
+
+      - name: Upload title ownership diagnostics
+        if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-title-ownership-${{ matrix.artifact }}
+          path: e2e/specs/.test-results/title-ownership/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+  mcp_tool_list_changed:
+    name: MCP list_changed (replica count ${{ matrix.replicas }})
+    needs: [codegraph_select]
+    if: >-
+      !cancelled() &&
+      needs.codegraph_select.outputs.mcp_run != 'false' &&
+      (github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository)))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        replicas: [1, 2]
+    env:
+      CI: 'true'
+      E2E_CHROMIUM_CHANNEL: chrome
+      E2E_MCP_LIST_CHANGED: 'true'
+      E2E_REPLICAS: ${{ matrix.replicas }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build e2e dependencies
+        run: npm run e2e:prepare
+
+      - name: Verify Chrome is present
+        run: google-chrome --version
+
+      # ffmpeg for retry video — see the note in the e2e_shards job.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright ffmpeg cache
+        id: cache-ffmpeg
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ffmpeg-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright ffmpeg (best effort)
+        id: install-ffmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          timeout -k 10 60 npx playwright install ffmpeg
+          .github/scripts/verify-playwright-ffmpeg.sh
+
+      - name: Save Playwright ffmpeg cache
+        if: steps.install-ffmpeg.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ffmpeg-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      # This job deliberately skips the optional font install: its bounded
+      # Playwright apt process can outlive the wrapper on a slow mirror and
+      # retain the package-manager lock needed by the required Redis install.
+      # The MCP suite does not enable visual snapshot assertions.
+
+      # Redis is a hard requirement for this job, so this step stays fatal.
+      - name: Install Redis runtime dependencies
+        timeout-minutes: 5
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=300 update
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y redis-server redis-tools
+
+      - name: Start standalone Redis and Redis Cluster
+        run: |
+          redis-server --daemonize yes --port 6379
+          redis-cli -p 6379 ping
+          chmod +x redis-config/start-cluster.sh redis-config/stop-cluster.sh
+          ./redis-config/start-cluster.sh
+          redis-cli -p 7001 cluster info
+
+      - name: Test MCP notifications with in-memory cache
+        env:
+          E2E_STREAM_STORE: memory
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          mcp-tool-list-changed.spec.ts --retries=0
+
+      - name: Test MCP notifications with standalone Redis cache
+        env:
+          E2E_STREAM_STORE: redis
+          REDIS_URI: redis://127.0.0.1:6379
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          mcp-tool-list-changed.spec.ts --retries=0
+
+      - name: Test MCP notifications with Redis Cluster cache
+        env:
+          E2E_STREAM_STORE: redis-cluster
+          REDIS_URI: redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          mcp-tool-list-changed.spec.ts --retries=0
+
+      - name: Upload Playwright HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-mcp-list-changed-${{ matrix.replicas }}-replicas
+          path: e2e/playwright-report/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload traces & screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-mcp-list-changed-results-${{ matrix.replicas }}-replicas
+          path: e2e/specs/.test-results/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop Redis processes
+        if: always()
+        run: |
+          ./redis-config/stop-cluster.sh || true
+          redis-cli -p 6379 shutdown || true
+
+  mcp_apps:
+    name: MCP Apps (browser and server)
+    # Always run the dedicated fixture on eligible PRs, schedule, and manual runs. The regular
+    # mock shards skip it unless E2E_MCP_APPS=true; codegraph gating must not omit this lane.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      E2E_CHROMIUM_CHANNEL: chrome
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Verify Chrome is present
+        run: google-chrome --version
+
+      - name: Check MCP Apps result gating and same-repository PR eligibility
+        run: node --test e2e/mcp-apps/results.test.mjs e2e/mcp-apps/workflow.test.mjs
+
+      - name: Check real SDK server fixture
+        run: node --test e2e/mcp-apps/server.test.mjs
+
+      # The runner builds once, then runs all four browser policy phases against one disposable
+      # MongoDB. It also rejects a Playwright-successful phase if every test was skipped.
+      - name: Run MCP Apps browser fixture (enabled, disabled, omitted, quota)
+        run: node e2e/mcp-apps/run.mjs
+
+      - name: Upload per-phase Playwright reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-mcp-apps-reports
+          path: |
+            e2e/playwright-report/mcp-apps-*/**
+            e2e/.generated/mcp-apps-result-*.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload MCP Apps traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-mcp-apps-results
+          path: e2e/specs/.test-results/mcp-apps-*/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e:
+    name: e2e
+    # `!cancelled()`, not `always()`: the gate has to survive a failed shard to report it, but a
+    # run superseded by `cancel-in-progress` has nothing to adjudicate. Under `always()` it was
+    # still dispatched onto a fresh runner while every other job went `cancelled`, then read
+    # `needs.e2e_shards.result == 'cancelled'` and exited 1 — so each superseded push left this
+    # required check red instead of cancelled. Matches all three lanes it gates.
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.head.repo.full_name == github.repository)))
+    needs: [codegraph_select, e2e_shards, mcp_tool_list_changed, mcp_apps]
+    runs-on: ubuntu-latest
+    steps:
+      # A codegraph-skipped MCP lane reports `skipped`; that is a decision, not a failure.
+      - name: Verify every Playwright job passed
+        if: >-
+          needs.e2e_shards.result != 'success' ||
+          needs.mcp_apps.result != 'success' ||
+          (needs.mcp_tool_list_changed.result != 'success' &&
+          !(needs.mcp_tool_list_changed.result == 'skipped' && needs.codegraph_select.outputs.mcp_run == 'false'))
+        run: exit 1

@@ -1,8 +1,8 @@
 import mongoose, { Types } from 'mongoose';
-import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import type * as t from '~/types';
+import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { SystemCapability } from '~/types/admin';
+import type * as t from '~/types';
 import { SystemCapabilities, CapabilityImplications } from '~/admin/capabilities';
 import { createSystemGrantMethods } from './systemGrant';
 import systemGrantSchema from '~/schema/systemGrant';
@@ -25,6 +25,9 @@ beforeAll(async () => {
     mongoose.models.SystemGrant || mongoose.model<t.ISystemGrant>('SystemGrant', systemGrantSchema);
   methods = createSystemGrantMethods(mongoose);
   await mongoose.connect(mongoServer.getUri());
+  // Connecting does not wait for the unique index. Complete initialization
+  // before any seeding or duplicate writes can race the background build.
+  await SystemGrant.init();
 });
 
 afterAll(async () => {
@@ -113,13 +116,14 @@ describe('systemGrant methods', () => {
   describe('grantCapability', () => {
     it('creates a grant and returns the document', async () => {
       const userId = new Types.ObjectId();
-      const doc = await methods.grantCapability({
+      const { grant: doc, created } = await methods.grantCapability({
         principalType: PrincipalType.USER,
         principalId: userId,
         capability: SystemCapabilities.READ_USERS,
       });
 
       expect(doc).toBeTruthy();
+      expect(created).toBe(true);
       expect(doc!.principalType).toBe(PrincipalType.USER);
       expect(doc!.capability).toBe(SystemCapabilities.READ_USERS);
       expect(doc!.grantedAt).toBeInstanceOf(Date);
@@ -255,7 +259,7 @@ describe('systemGrant methods', () => {
         capability: SystemCapabilities.READ_USERS as SystemCapability,
       };
 
-      const original = await methods.grantCapability(params);
+      const { grant: original } = await methods.grantCapability(params);
 
       // Simulate a race: findOneAndUpdate upserts but hits a duplicate key
       const model = mongoose.models.SystemGrant;
@@ -265,8 +269,10 @@ describe('systemGrant methods', () => {
           Object.assign(new Error('E11000 duplicate key error'), { code: 11000 }),
         );
 
-      const result = await methods.grantCapability(params);
+      const { grant: result, created } = await methods.grantCapability(params);
       expect(result).toBeTruthy();
+      // a lost upsert race is not a new creation, so it must not be audited
+      expect(created).toBe(false);
       expect(result!.capability).toBe(SystemCapabilities.READ_USERS);
       expect(result!.principalId.toString()).toBe(original!.principalId.toString());
     });
@@ -305,7 +311,7 @@ describe('systemGrant methods', () => {
     });
 
     it('accepts any string for ROLE principal without ObjectId validation', async () => {
-      const doc = await methods.grantCapability({
+      const { grant: doc } = await methods.grantCapability({
         principalType: PrincipalType.ROLE,
         principalId: 'ANY_STRING_HERE',
         capability: SystemCapabilities.READ_CONFIGS,
@@ -890,6 +896,18 @@ describe('systemGrant methods', () => {
   });
 
   describe('schema validation', () => {
+    it('starts with the non-sparse unique grant index ready', async () => {
+      const indexes = await SystemGrant.collection.indexes();
+      const unique = indexes.find((index) => index.unique === true);
+      expect(unique?.key).toEqual({
+        principalType: 1,
+        principalId: 1,
+        capability: 1,
+        tenantId: 1,
+      });
+      expect(unique?.sparse).not.toBe(true);
+    });
+
     it('rejects null tenantId at the schema level', async () => {
       await expect(
         SystemGrant.create({
@@ -1469,6 +1487,115 @@ describe('systemGrant methods', () => {
       });
 
       expect(held.size).toBe(0);
+    });
+
+    it('resolves a section-scoped read capability when the principal holds the same-section manage grant', async () => {
+      const sectionManager = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: sectionManager,
+        capability: 'manage:configs:endpoints' as SystemCapability,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: sectionManager }],
+        capabilities: ['read:configs:endpoints' as SystemCapability],
+      });
+
+      expect(held).toEqual(new Set(['read:configs:endpoints']));
+    });
+
+    it("does not resolve a read capability from a different section's manage grant", async () => {
+      const otherSectionManager = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: otherSectionManager,
+        capability: 'manage:configs:balance' as SystemCapability,
+      });
+
+      const held = await methods.getHeldCapabilities({
+        principals: [{ principalType: PrincipalType.USER, principalId: otherSectionManager }],
+        capabilities: ['read:configs:endpoints' as SystemCapability],
+      });
+
+      expect(held.size).toBe(0);
+    });
+  });
+
+  describe('hasAnyConfigReadAccess', () => {
+    it('returns true for a broad read:configs holder', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns true for a broad manage:configs holder, which implies read', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.MANAGE_CONFIGS,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns true for a section-scoped read:configs:<section> holder', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: 'read:configs:endpoints' as SystemCapability,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns true for a section-scoped manage:configs:<section> holder', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: 'manage:configs:endpoints' as SystemCapability,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(true);
+    });
+
+    it('returns false for a caller with no config capability at all', async () => {
+      const userId = new Types.ObjectId();
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        capability: SystemCapabilities.READ_USAGE,
+      });
+
+      const result = await methods.hasAnyConfigReadAccess({
+        principals: [{ principalType: PrincipalType.USER, principalId: userId }],
+      });
+      expect(result).toBe(false);
+    });
+
+    it('returns false for an empty principals array', async () => {
+      const result = await methods.hasAnyConfigReadAccess({ principals: [] });
+      expect(result).toBe(false);
     });
   });
 });

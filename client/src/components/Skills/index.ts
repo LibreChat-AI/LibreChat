@@ -2,7 +2,6 @@ export * from './buttons';
 export * from './dialogs';
 export * from './display';
 export * from './forms';
-export * from './layouts';
 export * from './lists';
 export * from './sidebar';
 export * from './tree';

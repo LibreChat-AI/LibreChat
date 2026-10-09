@@ -223,12 +223,17 @@ describe('recordCollectedUsage — bulk path parity', () => {
   });
 
   describe('cache token handling - Anthropic format', () => {
-    it('should route Anthropic cache entries to structured path — same input_tokens as legacy', async () => {
+    it('routes Anthropic cache entries to structured path and subtracts cache from input', async () => {
+      /** Production Anthropic wire: input_tokens is cache-inclusive (140 =
+       *  100 fresh + 25 write + 15 read) and provider is tagged. The billed
+       *  input must be the fresh 100, not 140 — otherwise cache is charged
+       *  twice (full input rate + cache rate). Regression for LibreChat#13795. */
       const collectedUsage: UsageMetadata[] = [
         {
-          input_tokens: 100,
+          input_tokens: 140,
           output_tokens: 50,
           model: 'claude-3',
+          provider: 'anthropic',
           cache_creation_input_tokens: 25,
           cache_read_input_tokens: 15,
         },
@@ -236,7 +241,7 @@ describe('recordCollectedUsage — bulk path parity', () => {
 
       const result = await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
 
-      expect(result?.input_tokens).toBe(140); // 100 + 25 + 15
+      expect(result?.input_tokens).toBe(140);
       expect(mockInsertMany).toHaveBeenCalledTimes(1);
       expect(mockSpendStructuredTokens).not.toHaveBeenCalled();
 
@@ -339,34 +344,48 @@ describe('recordCollectedUsage — bulk path parity', () => {
     });
 
     it('should handle cache tokens with multiple tool calls — same totals as legacy', async () => {
+      /** Cache-inclusive Anthropic wire (input_tokens = fresh + write + read).
+       *  The billed input on each call is the fresh portion only. */
       const collectedUsage: UsageMetadata[] = [
         {
-          input_tokens: 788,
+          input_tokens: 31596, // 788 fresh + 30808 write
           output_tokens: 163,
           model: 'claude-opus',
+          provider: 'anthropic',
           input_token_details: { cache_read: 0, cache_creation: 30808 },
         },
         {
-          input_tokens: 3802,
+          input_tokens: 35378, // 3802 fresh + 30808 read + 768 write
           output_tokens: 149,
           model: 'claude-opus',
+          provider: 'anthropic',
           input_token_details: { cache_read: 30808, cache_creation: 768 },
         },
         {
-          input_tokens: 26808,
+          input_tokens: 58384, // 26808 fresh + 31576 read
           output_tokens: 225,
           model: 'claude-opus',
+          provider: 'anthropic',
           input_token_details: { cache_read: 31576, cache_creation: 0 },
         },
       ];
 
       const result = await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
 
-      expect(result?.input_tokens).toBe(31596); // 788 + 30808 + 0
+      expect(result?.input_tokens).toBe(31596); // total prompt of first call
       expect(result?.output_tokens).toBe(537); // 163 + 149 + 225
       expect(mockInsertMany).toHaveBeenCalledTimes(1);
       expect(mockSpendStructuredTokens).not.toHaveBeenCalled();
       expect(mockSpendTokens).not.toHaveBeenCalled();
+
+      /** Each prompt doc bills only the fresh portion — cache is never folded
+       *  into inputTokens on top of its own write/read charge. */
+      const promptDocs = mockInsertMany.mock.calls[0][0].filter(
+        (d: { tokenType: string }) => d.tokenType === 'prompt',
+      );
+      expect(promptDocs.map((d: { inputTokens: number }) => d.inputTokens)).toEqual([
+        -788, -3802, -26808,
+      ]);
     });
   });
 

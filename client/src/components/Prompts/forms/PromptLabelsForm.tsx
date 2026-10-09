@@ -16,7 +16,12 @@ const PromptLabelsForm = ({ selectedPrompt }: { selectedPrompt?: TPrompt }) => {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && labelInput.trim()) {
+    // Ignore the Enter that commits an IME composition (see useTextarea.ts).
+    if (
+      e.key === 'Enter' &&
+      !(e.nativeEvent.isComposing || e.keyCode === 229) &&
+      labelInput.trim()
+    ) {
       const newLabels = [...labels, labelInput.trim()];
       setLabels(newLabels);
       setLabelInput('');

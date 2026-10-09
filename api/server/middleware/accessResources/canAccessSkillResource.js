@@ -1,6 +1,7 @@
-const { ResourceType } = require('librechat-data-provider');
+const { ResourceType, PermissionBits } = require('librechat-data-provider');
 const { canAccessResource } = require('./canAccessResource');
 const { getSkillById } = require('~/models');
+const { getDeploymentSkillById } = require('@librechat/api');
 
 /**
  * Skill-specific middleware factory that checks skill access permissions.
@@ -19,12 +20,35 @@ const canAccessSkillResource = (options) => {
     throw new Error('canAccessSkillResource: requiredPermission is required and must be a number');
   }
 
-  return canAccessResource({
+  const aclMiddleware = canAccessResource({
     resourceType: ResourceType.SKILL,
     requiredPermission,
     resourceIdParam,
     idResolver: getSkillById,
   });
+
+  return (req, res, next) => {
+    const rawResourceId = req.params[resourceIdParam];
+    const deploymentSkill = rawResourceId ? getDeploymentSkillById(rawResourceId) : null;
+    if (!deploymentSkill) {
+      return aclMiddleware(req, res, next);
+    }
+    if (requiredPermission !== PermissionBits.VIEW) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Deployment skills are read-only',
+      });
+    }
+    req.resourceAccess = {
+      resourceType: ResourceType.SKILL,
+      resourceId: deploymentSkill._id,
+      customResourceId: rawResourceId,
+      permission: requiredPermission,
+      userId: req.user?.id,
+      resourceInfo: deploymentSkill,
+    };
+    return next();
+  };
 };
 
 module.exports = {

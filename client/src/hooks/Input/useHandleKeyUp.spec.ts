@@ -9,12 +9,20 @@ const mockSkillsEnabled = { current: true };
 const mockEndpoint = { current: 'openAI' as string | null };
 const mockCommandToggles = { at: true, plus: true, slash: true, dollar: true };
 
+jest.mock('jotai', () => ({
+  ...jest.requireActual('jotai'),
+  useSetAtom: jest.fn((atom: string) =>
+    atom === 'showSkillsPopoverFamily-0' ? mockSetShowSkillsPopover : jest.fn(),
+  ),
+}));
+
+jest.mock('~/components/Chat/Input/skillsState', () => ({
+  showSkillsPopoverFamily: (idx: number) => `showSkillsPopoverFamily-${idx}`,
+}));
+
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
   useRecoilValue: jest.fn((atom) => {
-    if (atom === 'latestMessageFamily-0') {
-      return null;
-    }
     if (atom === 'effectiveEndpointByIndex-0') {
       return mockEndpoint.current;
     }
@@ -42,9 +50,6 @@ jest.mock('recoil', () => ({
     if (atom === 'showPromptsPopoverFamily-0') {
       return mockSetShowPromptsPopover;
     }
-    if (atom === 'showSkillsPopoverFamily-0') {
-      return mockSetShowSkillsPopover;
-    }
     return jest.fn();
   }),
 }));
@@ -53,9 +58,7 @@ jest.mock('~/store', () => ({
   showPromptsPopoverFamily: (idx: number) => `showPromptsPopoverFamily-${idx}`,
   showMentionPopoverFamily: (idx: number) => `showMentionPopoverFamily-${idx}`,
   showPlusPopoverFamily: (idx: number) => `showPlusPopoverFamily-${idx}`,
-  showSkillsPopoverFamily: (idx: number) => `showSkillsPopoverFamily-${idx}`,
   effectiveEndpointByIndex: (idx: number) => `effectiveEndpointByIndex-${idx}`,
-  latestMessageFamily: (idx: number) => `latestMessageFamily-${idx}`,
   atCommand: 'atCommand',
   plusCommand: 'plusCommand',
   slashCommand: 'slashCommand',
@@ -87,9 +90,16 @@ jest.mock('~/hooks/Agents/useAgentCapabilities', () =>
   })),
 );
 
+jest.mock('~/hooks/Messages/useLatestMessage', () => ({
+  useGetLatestMessage: jest.fn(() => () => null),
+}));
+
 import React from 'react';
 import { renderHook, act } from '@testing-library/react';
+import { useGetLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import useHandleKeyUp from './useHandleKeyUp';
+
+const mockUseGetLatestMessage = useGetLatestMessage as jest.Mock;
 
 const makeTextAreaRef = (value = '', selectionStart?: number) => {
   const ref = {
@@ -168,6 +178,15 @@ describe('useHandleKeyUp', () => {
 
     it('triggers $ skill command for "$" at position 1', () => {
       const ref = makeTextAreaRef('$', 1);
+      const { handleKeyUp, setShowSkillsPopover } = renderUseHandleKeyUp(ref);
+
+      act(() => handleKeyUp(makeKeyEvent('$')));
+
+      expect(setShowSkillsPopover).toHaveBeenCalledWith(true);
+    });
+
+    it('triggers $ skill command when $ is inserted before an existing draft', () => {
+      const ref = makeTextAreaRef('$Keep this draft', 1);
       const { handleKeyUp, setShowSkillsPopover } = renderUseHandleKeyUp(ref);
 
       act(() => handleKeyUp(makeKeyEvent('$')));
@@ -515,6 +534,77 @@ describe('useHandleKeyUp', () => {
       const { setShowSkillsPopover } = renderUseHandleKeyUp(ref);
 
       expect(setShowSkillsPopover).toHaveBeenCalledWith(false);
+    });
+  });
+
+  describe('ArrowUp edits the latest message (call-time tail read)', () => {
+    const parentMessageId = 'user-msg-1';
+    let editButton: HTMLButtonElement | null = null;
+
+    const mountEditButton = (id = `edit-${parentMessageId}`) => {
+      editButton = document.createElement('button');
+      editButton.id = id;
+      document.body.appendChild(editButton);
+      return jest.spyOn(editButton, 'click');
+    };
+
+    afterEach(() => {
+      editButton?.remove();
+      editButton = null;
+      mockUseGetLatestMessage.mockReturnValue(() => null);
+    });
+
+    it('clicks the edit control for the latest message parent on ArrowUp in an empty composer', () => {
+      mockUseGetLatestMessage.mockReturnValue(() => ({
+        messageId: 'assistant-1',
+        parentMessageId,
+      }));
+      const click = mountEditButton();
+      const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef('', 0));
+      const event = makeKeyEvent('ArrowUp');
+
+      act(() => handleKeyUp(event));
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(click).toHaveBeenCalled();
+    });
+
+    it('does nothing when there is no latest message', () => {
+      mockUseGetLatestMessage.mockReturnValue(() => null);
+      const click = mountEditButton();
+      const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef('', 0));
+      const event = makeKeyEvent('ArrowUp');
+
+      act(() => handleKeyUp(event));
+
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(click).not.toHaveBeenCalled();
+    });
+
+    it('does not preventDefault when the edit control is absent', () => {
+      mockUseGetLatestMessage.mockReturnValue(() => ({
+        messageId: 'assistant-1',
+        parentMessageId: 'missing',
+      }));
+      const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef('', 0));
+      const event = makeKeyEvent('ArrowUp');
+
+      act(() => handleKeyUp(event));
+
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
+
+    it('ignores ArrowUp when the composer has text', () => {
+      const reader = jest.fn(() => ({ messageId: 'assistant-1', parentMessageId }));
+      mockUseGetLatestMessage.mockReturnValue(reader);
+      mountEditButton();
+      const { handleKeyUp } = renderUseHandleKeyUp(makeTextAreaRef('draft', 5));
+      const event = makeKeyEvent('ArrowUp');
+
+      act(() => handleKeyUp(event));
+
+      expect(reader).not.toHaveBeenCalled();
+      expect(event.preventDefault).not.toHaveBeenCalled();
     });
   });
 });

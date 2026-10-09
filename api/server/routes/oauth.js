@@ -4,8 +4,19 @@ const passport = require('passport');
 const { randomState } = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
 const { ErrorTypes } = require('librechat-data-provider');
-const { createSetBalanceConfig } = require('@librechat/api');
-const { checkDomainAllowed, loginLimiter, logHeaders } = require('~/server/middleware');
+const {
+  buildOAuthFailureLog,
+  createOpenIDCallbackAuthenticator,
+  createSetBalanceConfig,
+  getOAuthFailureMessage,
+  redirectToAuthFailure,
+} = require('@librechat/api');
+const {
+  checkDomainAllowed,
+  loginLimiter,
+  logHeaders,
+  markOAuthNavigation,
+} = require('~/server/middleware');
 const { createOAuthHandler } = require('~/server/controllers/auth/oauth');
 const { findBalanceByUser, upsertBalanceFields } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
@@ -23,19 +34,36 @@ const domains = {
   server: process.env.DOMAIN_SERVER,
 };
 
+const authFailureRedirectOptions = {
+  clientDomain: domains.client,
+  authFailedError: ErrorTypes.AUTH_FAILED,
+};
+
 router.use(logHeaders);
+router.use(markOAuthNavigation);
 router.use(loginLimiter);
 
 const oauthHandler = createOAuthHandler();
+const authenticateOpenIDCallback = createOpenIDCallbackAuthenticator({
+  passport,
+  logger,
+  ...authFailureRedirectOptions,
+});
 
 router.get('/error', (req, res) => {
   /** A single error message is pushed by passport when authentication fails. */
-  const errorMessage = req.session?.messages?.pop() || 'Unknown OAuth error';
-  logger.error('Error in OAuth authentication:', {
-    message: errorMessage,
-  });
+  const errorMessage = getOAuthFailureMessage(req);
+  logger.warn(
+    '[OAuth] Authentication failed',
+    buildOAuthFailureLog({
+      provider: 'unknown',
+      req,
+      info: { message: errorMessage },
+      defaultMessage: errorMessage,
+    }),
+  );
 
-  res.redirect(`${domains.client}/login?redirect=false&error=${ErrorTypes.AUTH_FAILED}`);
+  redirectToAuthFailure(res, authFailureRedirectOptions);
 });
 
 /**
@@ -53,7 +81,6 @@ router.get(
   '/google/callback',
   passport.authenticate('google', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['openid', 'profile', 'email'],
   }),
@@ -78,7 +105,6 @@ router.get(
   '/facebook/callback',
   passport.authenticate('facebook', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['public_profile'],
     profileFields: ['id', 'email', 'name'],
@@ -100,11 +126,7 @@ router.get('/openid', (req, res, next) => {
 
 router.get(
   '/openid/callback',
-  passport.authenticate('openid', {
-    failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
-    session: false,
-  }),
+  authenticateOpenIDCallback,
   setBalanceConfig,
   checkDomainAllowed,
   oauthHandler,
@@ -125,7 +147,6 @@ router.get(
   '/github/callback',
   passport.authenticate('github', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['user:email', 'read:user'],
   }),
@@ -149,7 +170,6 @@ router.get(
   '/discord/callback',
   passport.authenticate('discord', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
     scope: ['identify', 'email'],
   }),
@@ -172,7 +192,6 @@ router.post(
   '/apple/callback',
   passport.authenticate('apple', {
     failureRedirect: `${domains.client}/oauth/error`,
-    failureMessage: true,
     session: false,
   }),
   setBalanceConfig,

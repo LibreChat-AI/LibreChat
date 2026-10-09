@@ -13,7 +13,7 @@
 # jobs:
 #   tests_e2e:
 #     name: Run Playwright tests
-#     if: github.event.pull_request.head.repo.full_name == 'danny-avila/LibreChat'
+#     if: github.event.pull_request.head.repo.full_name == github.repository
 #     timeout-minutes: 60
 #     runs-on: ubuntu-latest
 #     env:
@@ -36,10 +36,10 @@
 #       PLAYWRIGHT_BROWSERS_PATH: 0 # Places binaries to node_modules/@playwright/test
 #       TITLE_CONVO: false
 #     steps:
-#       - uses: actions/checkout@v4
-#       - uses: actions/setup-node@v4
+#       - uses: actions/checkout@v5
+#       - uses: actions/setup-node@v5
 #         with:
-#           node-version: 18
+#           node-version: 24.16.0
 #           cache: 'npm'
 
 #       - name: Install global dependencies
@@ -64,7 +64,7 @@
 #         run: npm run e2e:ci
 
 #       - name: Upload playwright report
-#         uses: actions/upload-artifact@v3
+#         uses: actions/upload-artifact@v6
 #         if: always()
 #         with:
 #           name: playwright-report

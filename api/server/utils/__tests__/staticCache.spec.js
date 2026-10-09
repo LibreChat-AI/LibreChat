@@ -5,6 +5,12 @@ const request = require('supertest');
 const zlib = require('zlib');
 const staticCache = require('../staticCache');
 
+const binaryParser = (res, callback) => {
+  const chunks = [];
+  res.on('data', (chunk) => chunks.push(chunk));
+  res.on('end', () => callback(null, Buffer.concat(chunks)));
+};
+
 describe('staticCache', () => {
   let app;
   let testDir;
@@ -36,10 +42,15 @@ describe('staticCache', () => {
     fs.writeFileSync(manifestFile, jsonContent);
     fs.writeFileSync(swFile, swContent);
 
-    // Create gzipped versions of some files
+    // Create precompressed versions of some files
     fs.writeFileSync(testFile + '.gz', zlib.gzipSync(jsContent));
+    fs.writeFileSync(testFile + '.br', zlib.brotliCompressSync(jsContent));
     fs.writeFileSync(path.join(testDir, 'test.css'), 'body { color: red; }');
     fs.writeFileSync(path.join(testDir, 'test.css.gz'), zlib.gzipSync('body { color: red; }'));
+    fs.writeFileSync(
+      path.join(testDir, 'test.css.br'),
+      zlib.brotliCompressSync('body { color: red; }'),
+    );
 
     // Create a file that only exists in gzipped form
     fs.writeFileSync(
@@ -67,6 +78,7 @@ describe('staticCache', () => {
     delete process.env.NODE_ENV;
     delete process.env.STATIC_CACHE_S_MAX_AGE;
     delete process.env.STATIC_CACHE_MAX_AGE;
+    delete process.env.ENABLE_STATIC_ASSET_BROTLI;
   });
   describe('cache headers in production', () => {
     beforeEach(() => {
@@ -119,6 +131,19 @@ describe('staticCache', () => {
       const response = await request(app).get('/test.js').expect(200);
 
       expect(response.headers['cache-control']).toBe('no-store, no-cache, must-revalidate');
+    });
+
+    it('should prevent shared caching when authorization marks an image private', async () => {
+      app.use((_req, res, next) => {
+        res.locals.privateImageCache = true;
+        next();
+      });
+      app.use(staticCache(testDir));
+
+      const response = await request(app).get('/test.js').expect(200);
+
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      expect(response.headers.vary).toBe('Cookie');
     });
   });
 
@@ -191,6 +216,51 @@ describe('staticCache', () => {
   describe('express-static-gzip behavior', () => {
     beforeEach(() => {
       process.env.NODE_ENV = 'production';
+    });
+
+    it('should serve Brotli files when client accepts Brotli encoding', async () => {
+      process.env.ENABLE_STATIC_ASSET_BROTLI = 'true';
+      app.use(staticCache(testDir, { skipGzipScan: false }));
+
+      const response = await request(app)
+        .get('/test.js')
+        .set('Accept-Encoding', 'br, gzip, deflate')
+        .buffer(true)
+        .parse(binaryParser)
+        .expect(200);
+
+      expect(response.headers['content-encoding']).toBe('br');
+      expect(response.headers['content-type']).toMatch(/javascript/);
+      expect(response.headers['cache-control']).toBe('public, max-age=172800, s-maxage=86400');
+      expect(zlib.brotliDecompressSync(response.body).toString()).toBe('console.log("test");');
+    });
+
+    it('should prefer Brotli over gzip when both encodings are accepted', async () => {
+      process.env.ENABLE_STATIC_ASSET_BROTLI = 'true';
+      app.use(staticCache(testDir, { skipGzipScan: false }));
+
+      const response = await request(app)
+        .get('/test.css')
+        .set('Accept-Encoding', 'gzip, br')
+        .buffer(true)
+        .parse(binaryParser)
+        .expect(200);
+
+      expect(response.headers['content-encoding']).toBe('br');
+      expect(response.headers['content-type']).toMatch(/css/);
+      expect(zlib.brotliDecompressSync(response.body).toString()).toBe('body { color: red; }');
+    });
+
+    it('should keep serving gzip when Brotli is not enabled', async () => {
+      app.use(staticCache(testDir, { skipGzipScan: false }));
+
+      const response = await request(app)
+        .get('/test.js')
+        .set('Accept-Encoding', 'br, gzip, deflate')
+        .expect(200);
+
+      expect(response.headers['content-encoding']).toBe('gzip');
+      expect(response.text).toBe('console.log("test");');
     });
 
     it('should serve gzipped files when client accepts gzip encoding', async () => {

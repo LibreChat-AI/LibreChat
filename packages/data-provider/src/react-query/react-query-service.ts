@@ -4,17 +4,18 @@ import type {
   UseMutationResult,
   QueryObserverResult,
 } from '@tanstack/react-query';
+import type { MCPReinitializeResponse } from '../types/mcpServers';
+import { MCPServerConnectionStatusResponse } from '../types/queries';
 import { Constants, initialModelsConfig } from '../config';
 import { defaultOrderQuery } from '../types/assistants';
-import { MCPServerConnectionStatusResponse } from '../types/queries';
+import * as permissions from '../accessPermissions';
+import { ResourceType } from '../accessPermissions';
 import * as dataService from '../data-service';
 import * as m from '../types/mutations';
 import * as q from '../types/queries';
 import { QueryKeys } from '../keys';
 import * as s from '../schemas';
 import * as t from '../types';
-import * as permissions from '../accessPermissions';
-import { ResourceType } from '../accessPermissions';
 
 export { hasPermissions } from '../accessPermissions';
 
@@ -51,10 +52,7 @@ export const useGetSharedLinkQuery = (
       refetchOnReconnect: false,
       refetchOnMount: false,
       onSuccess: (data) => {
-        queryClient.setQueryData([QueryKeys.sharedLinks, conversationId], {
-          conversationId: data.conversationId,
-          shareId: data.shareId,
-        });
+        queryClient.setQueryData([QueryKeys.sharedLinks, conversationId], data);
       },
       ...config,
     },
@@ -125,6 +123,8 @@ export const useUpdateUserKeysMutation = (): UseMutationResult<
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries([QueryKeys.name, variables.name]);
       queryClient.invalidateQueries([QueryKeys.models]);
+      /** token-config is derived from the same per-user model fetch */
+      queryClient.invalidateQueries([QueryKeys.tokenConfig]);
     },
   });
 };
@@ -134,6 +134,8 @@ export const useClearConversationsMutation = (): UseMutationResult<unknown> => {
   return useMutation(() => dataService.clearAllConversations(), {
     onSuccess: () => {
       queryClient.invalidateQueries([QueryKeys.allConversations]);
+      queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
+      queryClient.invalidateQueries([QueryKeys.conversationTags]);
     },
   });
 };
@@ -144,6 +146,7 @@ export const useRevokeUserKeyMutation = (name: string): UseMutationResult<unknow
     onSuccess: () => {
       queryClient.invalidateQueries([QueryKeys.name, name]);
       queryClient.invalidateQueries([QueryKeys.models]);
+      queryClient.invalidateQueries([QueryKeys.tokenConfig]);
       if (s.isAssistantsEndpoint(name)) {
         queryClient.invalidateQueries([QueryKeys.assistants, name, defaultOrderQuery]);
         queryClient.invalidateQueries([QueryKeys.assistantDocs]);
@@ -162,6 +165,7 @@ export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
   return useMutation(() => dataService.revokeAllUserKeys(), {
     onSuccess: () => {
       queryClient.invalidateQueries([QueryKeys.name]);
+      queryClient.invalidateQueries([QueryKeys.tokenConfig]);
       queryClient.invalidateQueries([
         QueryKeys.assistants,
         s.EModelEndpoint.assistants,
@@ -332,13 +336,7 @@ export const useUpdateUserPluginsMutation = (
 };
 
 export const useReinitializeMCPServerMutation = (): UseMutationResult<
-  {
-    success: boolean;
-    message: string;
-    serverName: string;
-    oauthRequired?: boolean;
-    oauthUrl?: string;
-  },
+  MCPReinitializeResponse,
   unknown,
   string,
   unknown
@@ -476,6 +474,10 @@ export const useUpdateResourcePermissionsMutation = (): UseMutationResult<
 
       queryClient.invalidateQueries({
         queryKey: [QueryKeys.effectivePermissions, variables.resourceType, variables.resourceId],
+      });
+
+      queryClient.invalidateQueries({
+        queryKey: [QueryKeys.effectivePermissions, 'all', variables.resourceType],
       });
     },
   });

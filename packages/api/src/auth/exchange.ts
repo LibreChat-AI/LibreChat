@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Keyv } from 'keyv';
 import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
+import { consumeCacheEntry } from '../cache/consume';
 
 /** Default admin panel URL for local development */
 const DEFAULT_ADMIN_PANEL_URL = 'http://localhost:3000';
@@ -30,7 +31,10 @@ export interface AdminExchangeUser {
 }
 
 /**
- * Data stored in cache for admin OAuth exchange
+ * Data stored in cache for admin OAuth exchange.
+ *
+ * `expiresAt` is the absolute expiry of `token` (ms epoch). Used by admin
+ * panel clients to drive proactive refresh before the bearer expires.
  */
 export interface AdminExchangeData {
   userId: string;
@@ -39,6 +43,7 @@ export interface AdminExchangeData {
   refreshToken?: string;
   origin?: string;
   codeChallenge?: string;
+  expiresAt?: number;
 }
 
 /**
@@ -46,8 +51,15 @@ export interface AdminExchangeData {
  */
 export interface AdminExchangeResponse {
   token: string;
+  /**
+   * When Google rotates the refresh token on use, this will differ from the
+   * token the client originally sent. Clients MUST persist this value; failing
+   * to do so causes future refresh calls to fail once Google's original grant
+   * expires or is revoked.
+   */
   refreshToken?: string;
   user: AdminExchangeUser;
+  expiresAt?: number;
 }
 
 /**
@@ -94,6 +106,7 @@ export function verifyCodeChallenge(verifier: string, challenge: string): boolea
  * @param refreshToken - Optional refresh token for OpenID users
  * @param origin - The admin panel origin (scheme://host:port) for origin binding
  * @param codeChallenge - PKCE code_challenge (hex-encoded SHA-256 of code_verifier)
+ * @param expiresAt - Optional absolute expiry of `token` (ms epoch); admin panel uses for proactive refresh
  * @returns The generated exchange code
  */
 export async function generateAdminExchangeCode(
@@ -103,6 +116,7 @@ export async function generateAdminExchangeCode(
   refreshToken?: string,
   origin?: string,
   codeChallenge?: string,
+  expiresAt?: number,
 ): Promise<string> {
   const exchangeCode = crypto.randomBytes(32).toString('hex');
 
@@ -113,6 +127,7 @@ export async function generateAdminExchangeCode(
     refreshToken,
     origin,
     codeChallenge,
+    expiresAt,
   };
 
   await cache.set(exchangeCode, data);
@@ -124,7 +139,7 @@ export async function generateAdminExchangeCode(
 
 /**
  * Exchanges an authorization code for tokens and user data.
- * The code is deleted immediately after retrieval (one-time use).
+ * The code is atomically removed before validation (one-time use).
  * @param cache - The Keyv cache instance for retrieving exchange data
  * @param code - The authorization code to exchange
  * @param requestOrigin - The origin of the requesting client for origin binding
@@ -137,10 +152,7 @@ export async function exchangeAdminCode(
   requestOrigin?: string,
   codeVerifier?: string,
 ): Promise<AdminExchangeResponse | null> {
-  const data = (await cache.get(code)) as AdminExchangeData | undefined;
-
-  /** Delete before validation — ensures one-time use even if subsequent checks throw */
-  await cache.delete(code);
+  const data = await consumeCacheEntry<AdminExchangeData>(cache, code);
 
   if (!data) {
     logger.warn('[adminExchange] Invalid or expired authorization code');
@@ -165,17 +177,45 @@ export async function exchangeAdminCode(
     token: data.token,
     refreshToken: data.refreshToken,
     user: data.user,
+    expiresAt: data.expiresAt,
   };
 }
 
 /** PKCE challenge cache TTL: 5 minutes (enough for user to authenticate with IdP) */
-export const PKCE_CHALLENGE_TTL = 5 * 60 * 1000;
+export const PKCE_CHALLENGE_TTL: number = 5 * 60 * 1000;
 /** Regex pattern for valid PKCE challenges: 64 hex characters (SHA-256 hex digest) */
-export const PKCE_CHALLENGE_PATTERN = /^[a-f0-9]{64}$/;
+export const PKCE_CHALLENGE_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 
-/** Removes `code_challenge` from a single URL string, preserving other query params. */
-const stripChallengeFromUrl = (url: string): string =>
-  url.replace(/\?code_challenge=[^&]*&/, '?').replace(/[?&]code_challenge=[^&]*/, '');
+const ADMIN_OAUTH_STRIPPED_QUERY_PARAMS = new Set(['code_challenge', 'redirect_uri', 'redirectTo']);
+
+const getQueryParamName = (param: string): string => {
+  const separatorIndex = param.indexOf('=');
+  return separatorIndex === -1 ? param : param.slice(0, separatorIndex);
+};
+
+/** Removes admin-panel-only query params from a single URL string. */
+const stripAdminOAuthParamsFromUrl = (url: string): string => {
+  const hashIndex = url.indexOf('#');
+  const urlWithoutHash = hashIndex === -1 ? url : url.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? '' : url.slice(hashIndex);
+  const queryIndex = urlWithoutHash.indexOf('?');
+
+  if (queryIndex === -1) {
+    return url;
+  }
+
+  const path = urlWithoutHash.slice(0, queryIndex);
+  const query = urlWithoutHash.slice(queryIndex + 1);
+  const params = query.split('&').filter((param) => {
+    if (!param) {
+      return false;
+    }
+
+    return !ADMIN_OAUTH_STRIPPED_QUERY_PARAMS.has(getQueryParamName(param));
+  });
+
+  return params.length > 0 ? `${path}?${params.join('&')}${hash}` : `${path}${hash}`;
+};
 
 /** Minimal request shape needed by {@link stripCodeChallenge}. */
 export interface PkceStrippableRequest {
@@ -185,29 +225,31 @@ export interface PkceStrippableRequest {
 }
 
 /**
- * Strips `code_challenge` from the request query and URL strings.
+ * Strips admin-panel-only params from the request query and URL strings.
  *
  * openid-client v6's Passport Strategy uses `currentUrl.searchParams.size === 0`
  * to distinguish an initial authorization request from an OAuth callback.
- * The admin-panel-specific `code_challenge` query parameter would cause the
- * strategy to misclassify the request as a callback and return 401.
+ * Admin-panel-specific query params would cause the strategy to misclassify the
+ * request as a callback and return 401.
  *
  * Applied defensively to all providers to ensure the admin-panel-private
- * `code_challenge` parameter never reaches any Passport strategy.
+ * parameters never reach any Passport strategy.
  */
 export function stripCodeChallenge(req: PkceStrippableRequest): void {
   delete req.query.code_challenge;
-  req.originalUrl = stripChallengeFromUrl(req.originalUrl);
-  req.url = stripChallengeFromUrl(req.url);
+  delete req.query.redirect_uri;
+  delete req.query.redirectTo;
+  req.originalUrl = stripAdminOAuthParamsFromUrl(req.originalUrl);
+  req.url = stripAdminOAuthParamsFromUrl(req.url);
 }
 
 /**
- * Stores the admin-panel PKCE challenge in cache, then strips `code_challenge`
- * from the request so it doesn't interfere with the Passport strategy.
+ * Stores the admin-panel PKCE challenge in cache, then strips admin-panel-only
+ * params from the request so they don't interfere with the Passport strategy.
  *
  * Must be called before `passport.authenticate()` — the two operations are
  * logically atomic: read the challenge from the query, persist it, then remove
- * the parameter from the request URL.
+ * those parameters from the request URL.
  * @param cache - The Keyv cache instance for storing PKCE challenges.
  * @param req - The Express request to read and mutate.
  * @param state - The OAuth state value (cache key).
@@ -236,14 +278,29 @@ export async function storeAndStripChallenge(
 }
 
 /**
- * Checks if the redirect URI is for the admin panel (cross-origin).
- * Uses proper URL parsing to compare origins, handling edge cases where
- * both URLs might share the same prefix (e.g., localhost:3000 vs localhost:3001).
+ * Normalizes a URL path by removing any trailing slash, except for the root path.
+ * @returns The normalized path.
+ */
+const normalizePath = (path: string): string => {
+  if (!path || path === '/') {
+    return '/';
+  }
+
+  return path.endsWith('/') ? path.slice(0, -1) : path;
+};
+
+/**
+ * Checks if the redirect URI targets the admin panel.
+ *
+ * Supported cases:
+ * - Cross-origin admin panel: redirect origin must match admin origin.
+ * - Same-origin admin panel under a subpath: redirect path must be within
+ *   the configured admin subpath.
  *
  * @param redirectUri - The redirect URI to check.
  * @param adminPanelUrl - The admin panel URL (defaults to ADMIN_PANEL_URL env var)
  * @param domainClient - The main client domain
- * @returns True if redirecting to admin panel (different origin from main client).
+ * @returns True if redirecting to admin panel.
  */
 export function isAdminPanelRedirect(
   redirectUri: string,
@@ -251,12 +308,30 @@ export function isAdminPanelRedirect(
   domainClient: string,
 ): boolean {
   try {
-    const redirectOrigin = new URL(redirectUri).origin;
-    const adminOrigin = new URL(adminPanelUrl).origin;
-    const clientOrigin = new URL(domainClient).origin;
+    const redirectURL = new URL(redirectUri);
+    const adminURL = new URL(adminPanelUrl);
+    const clientURL = new URL(domainClient);
 
-    /** Redirect is for admin panel if it matches admin origin but not main client origin */
-    return redirectOrigin === adminOrigin && redirectOrigin !== clientOrigin;
+    const redirectOrigin = redirectURL.origin;
+    const adminOrigin = adminURL.origin;
+    const clientOrigin = clientURL.origin;
+
+    if (redirectOrigin !== adminOrigin) {
+      return false;
+    }
+
+    if (adminOrigin !== clientOrigin) {
+      return true;
+    }
+
+    const adminPath = normalizePath(adminURL.pathname);
+    const redirectPath = normalizePath(redirectURL.pathname);
+
+    if (adminPath === '/') {
+      return false;
+    }
+
+    return redirectPath === adminPath || redirectPath.startsWith(`${adminPath}/`);
   } catch {
     /** If URL parsing fails, fall back to simple string comparison */
     return redirectUri.startsWith(adminPanelUrl) && !redirectUri.startsWith(domainClient);

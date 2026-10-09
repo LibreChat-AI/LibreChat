@@ -7,7 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
-const { getBasePath } = require('@librechat/api');
+const { applySSRFSafeAgentIfDirect, getBasePath } = require('@librechat/api');
 const paths = require('~/config/paths');
 
 const stableDiffusionJsonSchema = {
@@ -54,6 +54,7 @@ class StableDiffusionAPI extends Tool {
 
     this.name = 'stable-diffusion';
     this.url = fields.SD_WEBUI_URL || this.getServerURL();
+    this.isUserProvidedEndpoint = fields.userProvidedAuthFields?.has('SD_WEBUI_URL') === true;
     this.description_for_model = `// Generate images and visuals using text.
 // Guidelines:
 // - ALWAYS use {{"prompt": "7+ detailed keywords", "negative_prompt": "7+ detailed keywords"}} structure for queries.
@@ -116,7 +117,11 @@ class StableDiffusionAPI extends Tool {
     };
     let generationResponse;
     try {
-      generationResponse = await axios.post(`${url}/sdapi/v1/txt2img`, payload);
+      const requestUrl = `${url}/sdapi/v1/txt2img`;
+      const requestConfig = this.isUserProvidedEndpoint
+        ? applySSRFSafeAgentIfDirect({}, requestUrl)
+        : undefined;
+      generationResponse = await axios.post(requestUrl, payload, requestConfig);
     } catch (error) {
       logger.error('[StableDiffusion] Error while generating image:', error);
       return this.returnValue('Error making API request.');

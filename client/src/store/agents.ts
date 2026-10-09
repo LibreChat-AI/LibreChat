@@ -43,7 +43,7 @@ export function useApplyNewAgentTemplate() {
         const sourceId = _sourceId || Constants.NEW_CONVO;
         logger.log('agents', `Attempting to apply template from "${sourceId}" to "${targetId}"`);
 
-        if (targetId === sourceId) {
+        if (targetId === sourceId && ephemeralAgentState == null) {
           logger.warn('agents', `Attempted to apply template to itself ("${sourceId}"). Skipping.`);
           return;
         }

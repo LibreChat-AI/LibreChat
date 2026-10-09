@@ -8,65 +8,41 @@ on:
     paths:
       - 'api/**'
       - 'client/**'
+      - 'config/**'
+      - 'skill/**'
       - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - 'Dockerfile.multi'
+      - '.dockerignore'
+      - '!**.md'
+      # Deployment skills are Markdown the image ships and reads at runtime
+      # (skill/<name>/SKILL.md plus md resources); re-include them after the
+      # !**.md exclusion (later patterns win), keeping the top-level README
+      # documentation-only.
+      - 'skill/**/*.md'
+      - '!skill/README.md'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: api-build
-            file: Dockerfile.multi
-            image_name: lc-dev-api
-          - target: node
-            file: Dockerfile
-            image_name: lc-dev
-
-    steps:
-      # Check out the repository
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Set up QEMU
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      # Set up Docker Buildx
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Log in to GitHub Container Registry
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Login to Docker Hub
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Prepare the environment
-      - name: Prepare environment
-        run: |
-          cp .env.example .env
-
-      # Build and push Docker images for each target
-      - name: Build and push Docker images
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ matrix.file }}
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image_name }}:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:${{ github.sha }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:latest
-          platforms: linux/amd64,linux/arm64
-          target: ${{ matrix.target }} 
+  publish:
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      images: >-
+        [{"target":"api-build","file":"Dockerfile.multi","image_name":"lc-dev-api"},
+         {"target":"node","file":"Dockerfile","image_name":"lc-dev"}]
+      tag_suffixes: |
+        ${{ github.sha }}
+        latest
+      build_branch: ${{ github.ref_name }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

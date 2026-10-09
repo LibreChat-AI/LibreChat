@@ -1,3 +1,4 @@
+import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils';
 
 export default function BedrockIcon({
@@ -6,14 +7,14 @@ export default function BedrockIcon({
 }: {
   size?: number;
   className?: string;
-}) {
+}): JSX.Element {
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
       xmlns="http://www.w3.org/2000/svg"
-      className={cn('fill-current text-black', className)}
+      className={cn('fill-current', className)}
       aria-hidden="true"
     >
       <g fill="currentColor">

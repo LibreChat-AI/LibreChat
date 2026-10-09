@@ -1,52 +1,71 @@
-import React from 'react';
-import { useRecoilValue } from 'recoil';
-import { TooltipAnchor } from '@librechat/client';
-import { MessageCircleDashed } from 'lucide-react';
-import { useRecoilState, useRecoilCallback } from 'recoil';
+import { HatGlasses } from 'lucide-react';
+import { Chip, TooltipAnchor } from '@librechat/client';
+import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
+import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 export function TemporaryChat() {
   const localize = useLocalize();
-  const [isTemporary, setIsTemporary] = useRecoilState(store.isTemporary);
-  const conversation = useRecoilValue(store.conversationByIndex(0));
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
+  const { show, isTemporary, isEnforced, toggle } = useTemporaryChat();
+  const tooltipDescription = useShortcutHint('toggleTemporaryChat', localize('com_ui_temporary'));
+  const ariaKey = useShortcutAriaKey('toggleTemporaryChat');
 
-  const handleBadgeToggle = useRecoilCallback(
-    () => () => {
-      setIsTemporary(!isTemporary);
-    },
-    [isTemporary],
-  );
-
-  if (
-    (Array.isArray(conversation?.messages) && conversation.messages.length >= 1) ||
-    isSubmitting
-  ) {
+  if (!show) {
     return null;
   }
+
+  const label = isEnforced ? localize('com_ui_temporary_enforced') : localize('com_ui_temporary');
 
   return (
     <div className="relative flex flex-wrap items-center gap-2">
       <TooltipAnchor
-        description={localize('com_ui_temporary')}
+        description={isEnforced ? label : tooltipDescription}
         render={
           <button
-            onClick={handleBadgeToggle}
-            aria-label={localize('com_ui_temporary')}
+            onClick={toggle}
+            aria-label={label}
             aria-pressed={isTemporary}
+            aria-disabled={isEnforced}
+            aria-keyshortcuts={isEnforced ? undefined : ariaKey}
             className={cn(
-              'inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border border-border-light text-text-primary transition-all ease-in-out',
+              'border-border-chrome text-text-primary inline-flex size-9 shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out',
               isTemporary
                 ? 'bg-surface-active'
-                : 'bg-presentation shadow-sm hover:bg-surface-active-alt',
+                : 'bg-presentation hover:bg-surface-active-alt shadow-xs',
+              isEnforced && 'cursor-not-allowed',
             )}
           >
-            <MessageCircleDashed className="icon-md" aria-hidden="true" />
+            <HatGlasses className="icon-md" aria-hidden="true" />
           </button>
         }
       />
     </div>
+  );
+}
+
+/** Once the first message is sent the toggle retires, so the active mode still
+ * needs a persistent, read-only cue in the header. `role="status"` carries the
+ * mode change to assistive technology, which matters most below `md` where the
+ * label is visually hidden and only the icon remains. */
+export function TemporaryChatIndicator() {
+  const localize = useLocalize();
+  const { isActive } = useTemporaryChat();
+
+  if (!isActive) {
+    return null;
+  }
+
+  return (
+    <Chip
+      role="status"
+      tone="neutral"
+      size="theme"
+      shape="theme"
+      className="shrink-0"
+      leading={<HatGlasses className="size-4 shrink-0" aria-hidden="true" />}
+    >
+      <span className="max-md:sr-only">{localize('com_ui_temporary')}</span>
+    </Chip>
   );
 }

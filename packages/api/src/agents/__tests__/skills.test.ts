@@ -1,7 +1,11 @@
 /**
  * Mock the pieces of `@librechat/agents` the installed SDK version may not
- * export yet. Includes both the `Constants.SKILL_TOOL` stub and the skill
- * catalog/tool-definition helpers needed to exercise `injectSkillCatalog`.
+ * export yet — the `Constants.SKILL_TOOL` stub and the tool definitions
+ * needed to exercise `injectSkillCatalog`.
+ *
+ * `formatSkillCatalog` is deliberately NOT stubbed. Its truncation ladder is
+ * the behaviour the catalog warnings report on, and a passthrough stub hides
+ * every truncation the model actually sees.
  */
 jest.mock('@librechat/agents', () => ({
   ...jest.requireActual('@librechat/agents'),
@@ -10,9 +14,23 @@ jest.mock('@librechat/agents', () => ({
       .Constants,
     SKILL_TOOL: 'skill',
   },
-  formatSkillCatalog: (skills: Array<{ name: string; description: string }>) =>
-    skills.map((s) => `- ${s.name}: ${s.description}`).join('\n'),
-  SkillToolDefinition: { name: 'skill', description: 'skill tool', parameters: {} },
+  SkillToolDefinition: {
+    name: 'skill',
+    description: `skill tool
+
+CONSTRAINTS:
+- Skill names come from the catalog only. Do not guess names.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        skillName: {
+          type: 'string',
+          description: 'Must match a name from the "Available Skills" section.',
+        },
+      },
+      required: ['skillName'],
+    },
+  },
   ReadFileToolDefinition: {
     name: 'read_file',
     description: 'read file',
@@ -33,17 +51,22 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 import { Types } from 'mongoose';
+import { logger } from '@librechat/data-schemas';
+import { SkillsScope } from 'librechat-data-provider';
 import { HumanMessage, AIMessage } from '@librechat/agents/langchain/messages';
 import {
   scopeSkillIds,
   resolveSkillActive,
   resolveAgentScopedSkillIds,
+  resolveModelSpecSkillIds,
   injectSkillCatalog,
   buildSkillPrimeMessage,
   resolveManualSkills,
   resolveAlwaysApplySkills,
   injectManualSkillPrimes,
   injectSkillPrimes,
+  selectSkillPrimesForTurn,
+  collectFreshSkillPrimeNames,
   extractManualSkills,
   isSkillPrimeMessage,
   buildSkillPrimeContentParts,
@@ -252,9 +275,9 @@ describe('scopeSkillIds', () => {
     expect(scopeSkillIds(accessible, null)).toBe(accessible);
   });
 
-  it('returns [] when agentSkills is an empty array (explicit none)', () => {
+  it('returns the full set when agentSkills is an empty array (no allowlist)', () => {
     const accessible = [makeId(), makeId()];
-    expect(scopeSkillIds(accessible, [])).toEqual([]);
+    expect(scopeSkillIds(accessible, [])).toBe(accessible);
   });
 
   it('returns intersection when agentSkills overlaps accessibleSkillIds', () => {
@@ -305,16 +328,25 @@ describe('resolveAgentScopedSkillIds', () => {
   const persistedAgent = (
     skills?: string[],
     skills_enabled?: boolean,
-  ): { id: string; skills?: string[]; skills_enabled?: boolean } => ({
+    skills_scope?: SkillsScope,
+  ): {
+    id: string;
+    skills?: string[];
+    skills_enabled?: boolean;
+    skills_scope?: SkillsScope;
+  } => ({
     id: 'agent_persisted_1',
     skills,
     skills_enabled,
+    skills_scope,
   });
   const ephemeralAgent = (
     skills?: string[],
+    skills_enabled?: boolean,
   ): { id: string; skills?: string[]; skills_enabled?: boolean } => ({
     id: 'ephemeral_convo_xyz',
     skills,
+    skills_enabled,
   });
 
   it('returns [] when the skills capability is disabled, even with every other signal on', () => {
@@ -366,14 +398,50 @@ describe('resolveAgentScopedSkillIds', () => {
       expect(scoped.map((o) => o.toString()).sort()).toEqual([a.toString(), b.toString()].sort());
     });
 
-    it('ignores any `skills` field on an ephemeral agent (toggle is the only signal)', () => {
+    it('returns the full accessible catalog when a model spec enables skills', () => {
+      const a = makeId();
+      const b = makeId();
+      const scoped = resolveAgentScopedSkillIds({
+        agent: ephemeralAgent(undefined, true),
+        accessibleSkillIds: [a, b],
+        skillsCapabilityEnabled: true,
+        ephemeralSkillsToggle: false,
+      });
+      expect(scoped.map((o) => o.toString()).sort()).toEqual([a.toString(), b.toString()].sort());
+    });
+
+    it('returns the model-spec allowlist intersection when configured', () => {
+      const a = makeId();
+      const b = makeId();
+      const scoped = resolveAgentScopedSkillIds({
+        agent: ephemeralAgent([a.toString()], true),
+        accessibleSkillIds: [a, b],
+        skillsCapabilityEnabled: true,
+        ephemeralSkillsToggle: false,
+      });
+      expect(scoped.map((o) => o.toString())).toEqual([a.toString()]);
+    });
+
+    it('treats an empty model-spec allowlist as explicit none', () => {
       const a = makeId();
       expect(
         resolveAgentScopedSkillIds({
-          agent: ephemeralAgent([a.toString()]),
+          agent: ephemeralAgent([], true),
           accessibleSkillIds: [a],
           skillsCapabilityEnabled: true,
-          ephemeralSkillsToggle: false,
+          ephemeralSkillsToggle: true,
+        }),
+      ).toEqual([]);
+    });
+
+    it('lets an explicit model-spec skills=false override the badge toggle', () => {
+      const a = makeId();
+      expect(
+        resolveAgentScopedSkillIds({
+          agent: ephemeralAgent(undefined, false),
+          accessibleSkillIds: [a],
+          skillsCapabilityEnabled: true,
+          ephemeralSkillsToggle: true,
         }),
       ).toEqual([]);
     });
@@ -443,6 +511,42 @@ describe('resolveAgentScopedSkillIds', () => {
       expect(scoped.map((o) => o.toString()).sort()).toEqual([a.toString(), c.toString()].sort());
     });
 
+    it('returns no catalog for an enabled agent with explicit none scope', () => {
+      const a = makeId();
+      expect(
+        resolveAgentScopedSkillIds({
+          agent: persistedAgent([], true, SkillsScope.none),
+          accessibleSkillIds: [a],
+          skillsCapabilityEnabled: true,
+          ephemeralSkillsToggle: false,
+        }),
+      ).toEqual([]);
+    });
+
+    it('returns the full catalog for explicit all scope even with stale selected ids', () => {
+      const a = makeId();
+      const b = makeId();
+      const scoped = resolveAgentScopedSkillIds({
+        agent: persistedAgent([a.toString()], true, SkillsScope.all),
+        accessibleSkillIds: [a, b],
+        skillsCapabilityEnabled: true,
+        ephemeralSkillsToggle: false,
+      });
+      expect(scoped).toEqual([a, b]);
+    });
+
+    it('fails closed when explicit selected scope has no ids', () => {
+      const a = makeId();
+      expect(
+        resolveAgentScopedSkillIds({
+          agent: persistedAgent([], true, SkillsScope.selected),
+          accessibleSkillIds: [a],
+          skillsCapabilityEnabled: true,
+          ephemeralSkillsToggle: false,
+        }),
+      ).toEqual([]);
+    });
+
     it('is unaffected by the ephemeral toggle — the persisted config is authoritative', () => {
       const a = makeId();
       const b = makeId();
@@ -467,6 +571,95 @@ describe('resolveAgentScopedSkillIds', () => {
         }),
       ).toEqual([]);
     });
+  });
+});
+
+describe('resolveModelSpecSkillIds', () => {
+  const userObjectId = new Types.ObjectId();
+
+  it('resolves configured names against accessible skills and skips misses without failing', async () => {
+    const knownId = new Types.ObjectId();
+    const getSkillByName = jest.fn(async (name: string) => {
+      if (name === 'known-skill') {
+        return {
+          _id: knownId,
+          name,
+          body: 'body',
+          author: userObjectId,
+        };
+      }
+      if (name === 'throws') {
+        throw new Error('lookup failed');
+      }
+      return null;
+    });
+
+    const result = await resolveModelSpecSkillIds({
+      names: [' known-skill ', 'missing-skill', 'throws', 'known-skill'],
+      accessibleSkillIds: [knownId],
+      getSkillByName,
+    });
+
+    expect(result.map((id) => id.toString())).toEqual([knownId.toString()]);
+    expect(getSkillByName).toHaveBeenCalledTimes(3);
+    expect(getSkillByName).toHaveBeenCalledWith('known-skill', [knownId], {
+      preferModelInvocable: true,
+    });
+  });
+
+  it('resolves configured names sequentially to avoid query bursts', async () => {
+    const firstId = new Types.ObjectId();
+    const secondId = new Types.ObjectId();
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstLookup = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const getSkillByName = jest.fn(async (name: string) => {
+      order.push(`start:${name}`);
+      if (name === 'first') {
+        await firstLookup;
+        order.push(`end:${name}`);
+        return {
+          _id: firstId,
+          name,
+          body: 'body',
+          author: userObjectId,
+        };
+      }
+      order.push(`end:${name}`);
+      return {
+        _id: secondId,
+        name,
+        body: 'body',
+        author: userObjectId,
+      };
+    });
+
+    const promise = resolveModelSpecSkillIds({
+      names: ['first', 'second'],
+      accessibleSkillIds: [firstId, secondId],
+      getSkillByName,
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(['start:first']);
+
+    releaseFirst();
+    const result = await promise;
+
+    expect(result.map((id) => id.toString())).toEqual([firstId.toString(), secondId.toString()]);
+    expect(order).toEqual(['start:first', 'end:first', 'start:second', 'end:second']);
+  });
+
+  it('returns [] when no skill lookup is available', async () => {
+    const result = await resolveModelSpecSkillIds({
+      names: ['known-skill'],
+      accessibleSkillIds: [new Types.ObjectId()],
+      getSkillByName: undefined,
+    });
+
+    expect(result).toEqual([]);
   });
 });
 
@@ -521,6 +714,30 @@ describe('resolveSkillActive', () => {
         defaultActiveOnShare: true,
       }),
     ).toBe(false);
+  });
+
+  it('respects explicit override = false even for deployment skills', () => {
+    const deploymentSkill = { ...makeSkill(new Types.ObjectId()), deployment: true };
+    expect(
+      resolveSkillActive({
+        skill: deploymentSkill,
+        skillStates: { [deploymentSkill._id.toString()]: false },
+        userId: undefined,
+        defaultActiveOnShare: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('defaults deployment skills to active without ownership or shared defaults', () => {
+    const deploymentSkill = { ...makeSkill(new Types.ObjectId()), deployment: true };
+    expect(
+      resolveSkillActive({
+        skill: deploymentSkill,
+        skillStates: {},
+        userId: undefined,
+        defaultActiveOnShare: false,
+      }),
+    ).toBe(true);
   });
 
   it('owned skills default to active when no override is present', () => {
@@ -744,6 +961,224 @@ describe('injectSkillCatalog', () => {
     expect(agent.additional_instructions).toContain('desc-my-skill');
   });
 
+  /** Truncated descriptions, as `[skillName, reachedChars, authoredChars]`. */
+  function truncationWarnings(warnSpy: jest.SpyInstance): Array<[string, number, number]> {
+    return warnSpy.mock.calls
+      .map((call) => String(call[0]))
+      .map((msg) =>
+        /skill "([^"]+)" description reached the model truncated to (\d+) of (\d+)/.exec(msg),
+      )
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => [m[1], Number(m[2]), Number(m[3])]);
+  }
+
+  /** Skills whose description the catalog dropped entirely. */
+  function droppedWarnings(warnSpy: jest.SpyInstance): string[] {
+    return warnSpy.mock.calls
+      .map((call) => String(call[0]))
+      .map((msg) => /skill "([^"]+)" description was dropped from the model catalog/.exec(msg))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => m[1]);
+  }
+
+  it('warns when a skill description exceeds the catalog entry cap', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    const longSkill: PageSkill = {
+      ...makeSkill('long-skill', userObjectId),
+      description: 'x'.repeat(400),
+    };
+    const shortSkill = makeSkill('short-skill', userObjectId);
+    const listSkillsByAccess = buildPager([[longSkill, shortSkill]]);
+    const agent = makeAgent();
+    await injectSkillCatalog(baseParams({ listSkillsByAccess, agent }));
+
+    const warnings = truncationWarnings(warnSpy);
+    expect(warnings).toHaveLength(1);
+    const [name, reached, authored] = warnings[0];
+    expect(name).toBe('long-skill');
+    expect(authored).toBe(400);
+    expect(reached).toBeLessThan(authored);
+    /* The catalog still reaches the model — the warning is additive. */
+    expect(agent.additional_instructions).toContain('long-skill');
+    expect(agent.additional_instructions).toContain('short-skill');
+    warnSpy.mockRestore();
+  });
+
+  it('warns for a sub-cap description the catalog budget still truncates', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    /* Every description sits under the per-entry cap, so a warning keyed to
+       that cap alone stays silent — but a catalog this size overruns its
+       context budget and gets cut well below it anyway. */
+    const skills = Array.from({ length: 8 }, (_, i) => ({
+      ...makeSkill(`budget-skill-${i}`, userObjectId),
+      description: 'x'.repeat(200),
+    }));
+    const listSkillsByAccess = buildPager([skills]);
+    const agent = makeAgent();
+    await injectSkillCatalog(
+      baseParams({ listSkillsByAccess, agent, contextWindowTokens: 20_000 }),
+    );
+
+    const warnings = truncationWarnings(warnSpy);
+    expect(warnings).toHaveLength(skills.length);
+    for (const [, reached, authored] of warnings) {
+      expect(authored).toBe(200);
+      expect(reached).toBeGreaterThan(0);
+      expect(reached).toBeLessThan(200);
+    }
+    warnSpy.mockRestore();
+  });
+
+  it('reports descriptions as dropped when the catalog falls back to names-only', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    const skills = Array.from({ length: 10 }, (_, i) => ({
+      ...makeSkill(`dropped-skill-${i}`, userObjectId),
+      description: 'x'.repeat(200),
+    }));
+    const listSkillsByAccess = buildPager([skills]);
+    const agent = makeAgent();
+    await injectSkillCatalog(baseParams({ listSkillsByAccess, agent, contextWindowTokens: 2_000 }));
+
+    expect(droppedWarnings(warnSpy)).toHaveLength(skills.length);
+    /* Names still reach the model even when every description is dropped. */
+    expect(agent.additional_instructions).toContain('dropped-skill-0');
+    warnSpy.mockRestore();
+  });
+
+  it('measures duplicate-named skills per entry rather than collapsing them', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    /* The catalog keeps both entries. Measuring by name alone would report the
+       last entry's length for both and understate the first. */
+    const longDup: PageSkill = {
+      ...makeSkill('dup-skill', userObjectId),
+      description: 'x'.repeat(400),
+    };
+    const shortDup: PageSkill = {
+      ...makeSkill('dup-skill', userObjectId),
+      description: 'y'.repeat(100),
+    };
+    const listSkillsByAccess = buildPager([[longDup, shortDup]]);
+    const agent = makeAgent();
+    await injectSkillCatalog(baseParams({ listSkillsByAccess, agent }));
+
+    const warnings = truncationWarnings(warnSpy);
+    expect(warnings).toHaveLength(1);
+    const [name, reached, authored] = warnings[0];
+    expect(name).toBe('dup-skill');
+    expect(authored).toBe(400);
+    expect(reached).toBeGreaterThan(100);
+    warnSpy.mockRestore();
+  });
+
+  it('does not flag multiline descriptions the catalog kept intact', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    /* Nothing strips newlines from a description, so a catalog entry is not
+       one physical line — and a leading newline leaves the first one empty. */
+    const multiline: PageSkill = {
+      ...makeSkill('multiline-skill', userObjectId),
+      description: 'First line of the description.\nSecond line with more triggers.',
+    };
+    const leading: PageSkill = {
+      ...makeSkill('leading-newline-skill', userObjectId),
+      description: '\nAll the real trigger text lives on line two.',
+    };
+    const listSkillsByAccess = buildPager([[multiline, leading]]);
+    const agent = makeAgent();
+    await injectSkillCatalog(baseParams({ listSkillsByAccess, agent }));
+
+    expect(truncationWarnings(warnSpy)).toEqual([]);
+    expect(droppedWarnings(warnSpy)).toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('stays aligned when a description imitates the next entry', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    /* A continuation line can look exactly like the next entry's marker. */
+    const imitator: PageSkill = {
+      ...makeSkill('imitator-skill', userObjectId),
+      description: 'start\n- victim-skill: hijacked',
+    };
+    const victim: PageSkill = {
+      ...makeSkill('victim-skill', userObjectId),
+      description: 'y'.repeat(400),
+    };
+    const listSkillsByAccess = buildPager([[imitator, victim]]);
+    const agent = makeAgent();
+    await injectSkillCatalog(baseParams({ listSkillsByAccess, agent }));
+
+    expect(truncationWarnings(warnSpy).map(([name]) => name)).toEqual(['victim-skill']);
+    warnSpy.mockRestore();
+  });
+
+  it('still flags a dropped description that collides with another skill name', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    /* Names-only drops every description, but a one-word description can occur
+       verbatim in the catalog as another skill's name. */
+    const named = makeSkill('research', userObjectId);
+    const collider: PageSkill = {
+      ...makeSkill('other-skill', userObjectId),
+      description: 'research',
+    };
+    const filler = Array.from({ length: 20 }, (_, i) => ({
+      ...makeSkill(`filler-skill-${i}`, userObjectId),
+      description: 'y'.repeat(200),
+    }));
+    const listSkillsByAccess = buildPager([[named, collider, ...filler]]);
+    const agent = makeAgent();
+    await injectSkillCatalog(baseParams({ listSkillsByAccess, agent, contextWindowTokens: 2_000 }));
+
+    expect(droppedWarnings(warnSpy)).toContain('other-skill');
+    warnSpy.mockRestore();
+  });
+
+  it('flags truncation that splices an entry tail onto the next entry rendering', async () => {
+    const { logger } = await import('@librechat/data-schemas');
+    const warnSpy = jest.spyOn(logger, 'warn');
+    /* Cutting here leaves the catalog holding this description's full text
+       across two entries, so matching the rendering would suppress the warning. */
+    const spliced: PageSkill = {
+      ...makeSkill('spliced-skill', userObjectId),
+      description: `${'z'.repeat(249)}\u2026\n- next-skill: next description`,
+    };
+    const next: PageSkill = {
+      ...makeSkill('next-skill', userObjectId),
+      description: 'next description',
+    };
+    const listSkillsByAccess = buildPager([[spliced, next]]);
+    const agent = makeAgent();
+    await injectSkillCatalog(baseParams({ listSkillsByAccess, agent }));
+
+    expect(truncationWarnings(warnSpy).map(([name]) => name)).toEqual(['spliced-skill']);
+    warnSpy.mockRestore();
+  });
+
+  it('honors a configured maxCatalogSkills below the default hard limit', async () => {
+    const first = makeSkill('first-skill', userObjectId);
+    const second = makeSkill('second-skill', userObjectId);
+    const third = makeSkill('third-skill', userObjectId);
+    const listSkillsByAccess = buildPager([[first, second, third]]);
+    const agent = makeAgent();
+    const result = await injectSkillCatalog(
+      baseParams({ listSkillsByAccess, agent, maxCatalogSkills: 2 }),
+    );
+
+    expect(result.skillCount).toBe(2);
+    expect(result.activeSkillIds.map((id) => id.toString())).toEqual([
+      first._id.toString(),
+      second._id.toString(),
+    ]);
+    expect(agent.additional_instructions).toContain('first-skill');
+    expect(agent.additional_instructions).toContain('second-skill');
+    expect(agent.additional_instructions).not.toContain('third-skill');
+  });
+
   it('fails closed when userId is absent (shared skills drop, owned would need override)', async () => {
     const owned = makeSkill('my-skill', userObjectId);
     const shared = makeSkill('shared-skill', new Types.ObjectId());
@@ -875,6 +1310,38 @@ describe('injectSkillCatalog', () => {
     expect(definedNames).not.toContain('skill');
   });
 
+  it('carries attached defaults when the skill catalog registers tools first', async () => {
+    const listSkillsByAccess = buildPager([[makeSkill('attached-defaults')]]);
+    const result = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess,
+        codeEnvAvailable: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['read_file', 'execute_command']),
+        workspaceCommandTimeoutMaxMs: 80_000,
+        workspaceCommandTimeoutDefaultMs: 60_000,
+        workspaceReadFileDefaultLines: 500,
+      }),
+    );
+    expect(
+      result.toolDefinitions?.find(({ name }) => name === 'read_file')?.parameters,
+    ).toMatchObject({
+      properties: {
+        max_lines: { maximum: 500, description: expect.stringContaining('Defaults to 500') },
+      },
+    });
+    expect(
+      result.toolDefinitions?.find(({ name }) => name === 'bash_tool')?.parameters,
+    ).toMatchObject({
+      properties: {
+        timeoutMs: {
+          maximum: 80_000,
+          description: expect.stringContaining('Defaults to 60000 for foreground calls'),
+        },
+      },
+    });
+  });
+
   it('registers bash_tool with the tool-output reference syntax guide when codeEnvAvailable', async () => {
     /**
      * Symmetry check with `initializeAgent`'s call: `injectSkillCatalog`
@@ -954,6 +1421,137 @@ describe('injectSkillCatalog', () => {
        catalog-visible skill. */
     expect(names).toContain('skill');
   });
+
+  it('registers the skill tool with an empty catalog when the run can author skills', async () => {
+    /* A model that can write `skills/{skillName}/SKILL.md` needs the `skill`
+       tool bound at init: definitions bind once per run, so a run that only
+       learned about the skill after creating it could never invoke it. */
+    const listSkillsByAccess = jest.fn();
+    const agent = makeAgent();
+    const result = await injectSkillCatalog(
+      baseParams({
+        agent,
+        accessibleSkillIds: [],
+        listSkillsByAccess,
+        skillAuthoringAvailable: true,
+      }),
+    );
+
+    const definedNames = (result.toolDefinitions ?? []).map((d) => d.name);
+    expect(definedNames).toContain('skill');
+    expect(result.toolNames).toContain('skill');
+    expect(result.skillCount).toBe(0);
+    expect(result.activeSkillIds).toEqual([]);
+    expect(agent.additional_instructions).toBeUndefined();
+    expect(listSkillsByAccess).not.toHaveBeenCalled();
+  });
+
+  it('omits the skill tool with an empty catalog when the run cannot author skills', async () => {
+    const result = await injectSkillCatalog(
+      baseParams({ accessibleSkillIds: [], listSkillsByAccess: jest.fn() }),
+    );
+
+    expect((result.toolDefinitions ?? []).map((d) => d.name)).not.toContain('skill');
+    expect(result.toolNames).toEqual([]);
+  });
+
+  it('registers the skill tool for an authoring run whose only skill is model-disabled', async () => {
+    const ownedHidden: PageSkill = {
+      ...makeSkill('owned-hidden-authoring', userObjectId),
+      disableModelInvocation: true,
+    };
+    const listSkillsByAccess = buildPager([[ownedHidden]]);
+    const result = await injectSkillCatalog(
+      baseParams({ listSkillsByAccess, skillAuthoringAvailable: true }),
+    );
+
+    const definedNames = (result.toolDefinitions ?? []).map((d) => d.name);
+    expect(definedNames).toContain('skill');
+    expect(definedNames).toContain('read_file');
+    expect(result.skillCount).toBe(0);
+    expect(result.activeSkillIds.map((id) => id.toString())).toEqual([ownedHidden._id.toString()]);
+  });
+
+  it('advertises authored skills only on authoring runs', async () => {
+    const owned = makeSkill('owned-skill', userObjectId);
+    const authoring = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess: buildPager([[owned]]),
+        skillAuthoringAvailable: true,
+      }),
+    );
+    const catalogOnly = await injectSkillCatalog(
+      baseParams({ listSkillsByAccess: buildPager([[owned]]) }),
+    );
+
+    const authoringDef = (authoring.toolDefinitions ?? []).find((d) => d.name === 'skill');
+    const catalogOnlyDef = (catalogOnly.toolDefinitions ?? []).find((d) => d.name === 'skill');
+    expect(authoringDef?.description).toContain('a skill you created in this conversation');
+    expect(catalogOnlyDef?.description).toContain('Skill names come from the catalog only');
+  });
+
+  it('replaces an already-registered skill definition instead of leaving it stale', async () => {
+    /**
+     * Counting occurrences is not enough: a surviving catalog-only definition
+     * tells an authoring run's model that a name it just created is invalid,
+     * which is the failure this registration exists to prevent. Assert the
+     * definition that survives, and assert the registry the host handler
+     * resolves agrees with the array the model reads.
+     */
+    const owned = makeSkill('owned-skill', userObjectId);
+    type ToolRegistryArg = NonNullable<Parameters<typeof injectSkillCatalog>[0]['toolRegistry']>;
+    type ToolDef = Parameters<ToolRegistryArg['set']>[1];
+    const preSkill: ToolDef = {
+      name: 'skill',
+      description: 'pre-registered catalog-only definition',
+      parameters: { type: 'object', properties: {} },
+    };
+    const preRegistry = new Map<string, ToolDef>() as unknown as ToolRegistryArg;
+    preRegistry.set('skill', preSkill);
+
+    const result = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess: buildPager([[owned]]),
+        skillAuthoringAvailable: true,
+        toolRegistry: preRegistry,
+        toolDefinitions: [preSkill],
+      }),
+    );
+
+    const skillDefs = (result.toolDefinitions ?? []).filter((d) => d.name === 'skill');
+    expect(skillDefs).toHaveLength(1);
+    expect(skillDefs[0].description).not.toBe(preSkill.description);
+    expect(skillDefs[0].description).toContain('a skill you created in this conversation');
+    expect((preRegistry as unknown as Map<string, ToolDef>).get('skill')).toBe(skillDefs[0]);
+  });
+
+  it('keeps the non-authoring variant live when it replaces a stale definition', async () => {
+    /* Same replacement on a run that cannot author: the model must end up with
+       the SDK definition, never a leftover from an earlier registration. */
+    const owned = makeSkill('owned-skill', userObjectId);
+    type ToolRegistryArg = NonNullable<Parameters<typeof injectSkillCatalog>[0]['toolRegistry']>;
+    type ToolDef = Parameters<ToolRegistryArg['set']>[1];
+    const preSkill: ToolDef = {
+      name: 'skill',
+      description: 'stale definition from an earlier registration',
+      parameters: { type: 'object', properties: {} },
+    };
+    const preRegistry = new Map<string, ToolDef>() as unknown as ToolRegistryArg;
+    preRegistry.set('skill', preSkill);
+
+    const result = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess: buildPager([[owned]]),
+        toolRegistry: preRegistry,
+        toolDefinitions: [preSkill],
+      }),
+    );
+
+    const skillDefs = (result.toolDefinitions ?? []).filter((d) => d.name === 'skill');
+    expect(skillDefs).toHaveLength(1);
+    expect(skillDefs[0].description).toContain('Skill names come from the catalog only');
+    expect((preRegistry as unknown as Map<string, ToolDef>).get('skill')).toBe(skillDefs[0]);
+  });
 });
 
 describe('buildSkillPrimeMessage', () => {
@@ -990,6 +1588,7 @@ describe('resolveManualSkills', () => {
     author: Types.ObjectId;
     allowedTools?: string[];
     userInvocable?: boolean;
+    deployment?: boolean;
   };
 
   const buildGetSkillByName =
@@ -1095,6 +1694,25 @@ describe('resolveManualSkills', () => {
     expect(result).toEqual([{ _id: real._id, name: 'real', body: 'body of real' }]);
   });
 
+  it('does not log a raw submitted name when the requested skill cannot be resolved', async () => {
+    const submittedName = 'PRIVATE-SKILL-NAME';
+    const warn = jest.spyOn(logger, 'warn');
+
+    const result = await resolveManualSkills({
+      names: [submittedName],
+      getSkillByName: buildGetSkillByName({}),
+      accessibleSkillIds: [new Types.ObjectId()],
+      userId,
+    });
+
+    expect(result).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      '[resolveManualSkills] Requested skill not found or not accessible',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(submittedName);
+    warn.mockRestore();
+  });
+
   it('silently skips skills with userInvocable: false, preserving the rest of the batch', async () => {
     const open = mkSkill('open', userOid);
     const modelOnly: SkillDoc = { ...mkSkill('model-only', userOid), userInvocable: false };
@@ -1197,6 +1815,21 @@ describe('resolveManualSkills', () => {
       defaultActiveOnShare: true,
     });
     expect(result).toEqual([{ _id: shared._id, name: 'shared', body: 'shared-body' }]);
+  });
+
+  it('allows deployment skills even when shared skills default inactive', async () => {
+    const deployment = {
+      ...mkSkill('deployment', otherAuthor, 'deployment-body'),
+      deployment: true,
+    };
+    const result = await resolveManualSkills({
+      names: ['deployment'],
+      getSkillByName: buildGetSkillByName({ deployment }),
+      accessibleSkillIds: [deployment._id],
+      userId,
+      defaultActiveOnShare: false,
+    });
+    expect(result).toEqual([{ _id: deployment._id, name: 'deployment', body: 'deployment-body' }]);
   });
 
   it('drops explicitly-deactivated skills (skillStates override wins over ownership default)', async () => {
@@ -1633,6 +2266,7 @@ describe('resolveAlwaysApplySkills', () => {
     body: string;
     author: Types.ObjectId | string;
     allowedTools?: string[];
+    deployment?: boolean;
   };
 
   const mkRow = (
@@ -1718,6 +2352,22 @@ describe('resolveAlwaysApplySkills', () => {
       defaultActiveOnShare: true,
     });
     expect(result).toEqual([{ _id: shared._id, name: 'shared-on', body: 'shared-body' }]);
+  });
+
+  it('allows deployment always-apply skills even when shared skills default inactive', async () => {
+    const deployment: AlwaysApplyRow = {
+      ...mkRow('deployment-always', otherAuthor, 'deployment body'),
+      deployment: true,
+    };
+    const result = await resolveAlwaysApplySkills({
+      listAlwaysApplySkills: buildLister([deployment]),
+      accessibleSkillIds: [deployment._id],
+      userId,
+      defaultActiveOnShare: false,
+    });
+    expect(result).toEqual([
+      { _id: deployment._id, name: 'deployment-always', body: 'deployment body' },
+    ]);
   });
 
   it('honors explicit deactivation override even for owned skills', async () => {
@@ -1885,6 +2535,23 @@ describe('injectSkillPrimes', () => {
   const manual = (name: string, body: string) => ({ name, body });
   const always = (name: string, body: string) => ({ name, body });
 
+  it('selects the shared model-bound prime set before downstream consumers run', () => {
+    const selected = selectSkillPrimesForTurn({
+      manualSkillPrimes: [manual('shared', 'manual'), manual('explicit', 'explicit')],
+      alwaysApplySkillPrimes: [
+        always('shared', 'discarded'),
+        always('ambient-1', 'ambient-1'),
+        always('ambient-2', 'ambient-2'),
+      ],
+      maxPrimesPerTurn: 3,
+    });
+
+    expect(selected.manualSkillPrimes.map(({ name }) => name)).toEqual(['shared', 'explicit']);
+    expect(selected.alwaysApplySkillPrimes.map(({ name }) => name)).toEqual(['ambient-1']);
+    expect(selected.alwaysApplyDedupedFromManual).toBe(1);
+    expect(selected.alwaysApplyDropped).toBe(1);
+  });
+
   it('splices both lists with always-apply first, manual last (closer to user msg)', () => {
     const userMsg = new HumanMessage('what next?');
     const messages = [userMsg];
@@ -2040,5 +2707,47 @@ describe('injectSkillPrimes', () => {
     expect(result.alwaysApplyDedupedFromManual).toBe(1);
     expect(result.alwaysApplyDropped).toBe(0);
     expect(result.inserted).toBe(2);
+  });
+});
+
+describe('collectFreshSkillPrimeNames', () => {
+  it('returns the union of manual + always-apply prime names', () => {
+    const names = collectFreshSkillPrimeNames({
+      manualSkillPrimes: [{ name: 'pdf-analyzer' }, { name: 'code-review' }],
+      alwaysApplySkillPrimes: [{ name: 'clickhouse-best-practices' }],
+    });
+    expect(names).toEqual(new Set(['pdf-analyzer', 'code-review', 'clickhouse-best-practices']));
+  });
+
+  it('dedupes a skill that is both manual and always-apply', () => {
+    const names = collectFreshSkillPrimeNames({
+      manualSkillPrimes: [{ name: 'clickhouse-best-practices' }],
+      alwaysApplySkillPrimes: [{ name: 'clickhouse-best-practices' }],
+    });
+    expect(names.size).toBe(1);
+    expect(names.has('clickhouse-best-practices')).toBe(true);
+  });
+
+  it('handles undefined / empty inputs', () => {
+    expect(collectFreshSkillPrimeNames({}).size).toBe(0);
+    expect(
+      collectFreshSkillPrimeNames({
+        manualSkillPrimes: [],
+        alwaysApplySkillPrimes: [],
+      }).size,
+    ).toBe(0);
+  });
+
+  it('collects names from only one side when the other is absent', () => {
+    expect(
+      collectFreshSkillPrimeNames({
+        alwaysApplySkillPrimes: [{ name: 'only-always' }],
+      }),
+    ).toEqual(new Set(['only-always']));
+    expect(
+      collectFreshSkillPrimeNames({
+        manualSkillPrimes: [{ name: 'only-manual' }],
+      }),
+    ).toEqual(new Set(['only-manual']));
   });
 });

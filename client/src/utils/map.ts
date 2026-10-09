@@ -24,6 +24,39 @@ export function mapAttachments(attachments: Array<t.TAttachment | null | undefin
   return attachmentMap;
 }
 
+/**
+ * Filters a part's mapped attachments to its saved-agent and host run-step
+ * owner. Provider tool-call ids repeat across agents and turns, so
+ * `toolCallId` alone can route sibling output to the wrong card. Missing
+ * attachment ownership remains a wildcard for legacy rows; a live part with
+ * no step excludes step identities already owned by message siblings.
+ */
+export function filterAttachmentsForPart(
+  attachments: t.TAttachment[] | undefined,
+  partAgentId?: string,
+  partStepId?: string,
+  siblingStepIds?: ReadonlySet<string>,
+): t.TAttachment[] | undefined {
+  if (
+    !attachments ||
+    (partAgentId == null &&
+      partStepId == null &&
+      (siblingStepIds == null || siblingStepIds.size === 0))
+  ) {
+    return attachments;
+  }
+  const filtered = attachments.filter((attachment) => {
+    const agentMatches =
+      partAgentId == null || attachment.agentId == null || attachment.agentId === partAgentId;
+    const stepMatches =
+      partStepId != null
+        ? attachment.stepId == null || attachment.stepId === partStepId
+        : attachment.stepId == null || siblingStepIds?.has(attachment.stepId) !== true;
+    return agentMatches && stepMatches;
+  });
+  return filtered.length === attachments.length ? attachments : filtered;
+}
+
 /** Maps Files by `file_id` for quick lookup */
 export function mapFiles(files: t.TFile[]) {
   const fileMap = {} as Record<string, t.TFile>;

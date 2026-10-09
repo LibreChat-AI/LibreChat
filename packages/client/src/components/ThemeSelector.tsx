@@ -1,26 +1,56 @@
 import { useContext, useCallback, useEffect, useState } from 'react';
-import { Sun, Moon, Monitor } from 'lucide-react';
-import { ThemeContext, isDark } from '../theme';
+import { JSX } from 'react/jsx-runtime';
+import { Sun, Moon, Monitor, Contrast } from 'lucide';
+import type { IconNode } from './MorphIcon';
+import { ThemeContext, isDark, isHighContrast } from '../theme';
+import { MorphIcon } from './MorphIcon';
 import { useLocalize } from '../hooks';
+import { Button } from './Button';
 
 declare global {
   interface Window {
-    lastThemeChange?: number;
+    /** Last accepted change per appearance control. Global rather than a ref so
+     *  the throttle survives the selector remounting, which the auth routes do
+     *  on every navigation between login, register and verification. */
+    lastThemeChange?: Record<string, number>;
   }
 }
 
-type ThemeType = 'system' | 'dark' | 'light';
+/** Ctrl+Shift+T auto-repeats while held, which is what this throttle is for.
+ *  Keyed per control, because the scheme and contrast toggles are independent
+ *  settings: going from plain light to high-contrast dark is one flip of each,
+ *  and a shared window would silently swallow the second click. */
+const CHANGE_THROTTLE_MS = 500;
 
-const Theme = ({ theme, onChange }: { theme: string; onChange: (value: string) => void }) => {
+type ThemeType = 'system' | 'dark' | 'light' | 'high-contrast-light' | 'high-contrast-dark';
+
+/** Each control shows what it controls: the scheme toggle shows the scheme it
+ *  is currently on, and the contrast toggle below owns the `Contrast` glyph. */
+const themeIcons: Record<ThemeType, IconNode> = {
+  system: Monitor,
+  dark: Moon,
+  light: Sun,
+  'high-contrast-light': Sun,
+  'high-contrast-dark': Moon,
+};
+
+const Theme = ({
+  theme,
+  highContrast,
+  onChange,
+}: {
+  theme: string;
+  highContrast: boolean;
+  onChange: (value: string) => void;
+}) => {
   const localize = useLocalize();
 
-  const themeIcons: Record<ThemeType, JSX.Element> = {
-    system: <Monitor aria-hidden="true" />,
-    dark: <Moon aria-hidden="true" />,
-    light: <Sun aria-hidden="true" />,
-  };
-
-  const nextTheme = isDark(theme) ? 'light' : 'dark';
+  const nextScheme = isDark(theme) ? 'light' : 'dark';
+  /** The toggle flips the colour scheme without discarding a contrast choice.
+   *  Resolved contrast rather than `isHighContrast(theme)`: under `system` the
+   *  contrast comes from `prefers-contrast`, which the stored mode never names,
+   *  so keying off the mode alone would silently drop an OS-requested need. */
+  const nextTheme = highContrast ? `high-contrast-${nextScheme}` : nextScheme;
 
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
@@ -34,40 +64,89 @@ const Theme = ({ theme, onChange }: { theme: string; onChange: (value: string) =
   }, [nextTheme, onChange]);
 
   return (
-    <button
-      className="flex items-center gap-2 rounded-lg p-2 text-text-primary transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 dark:focus-visible:ring-0"
+    <Button
+      variant="ghost"
+      size="icon"
+      className="h-auto w-auto p-2 text-text-primary"
       aria-label={localize('com_ui_toggle_theme')}
       aria-keyshortcuts="Ctrl+Shift+T"
       onClick={(e) => {
         e.preventDefault();
         onChange(nextTheme);
       }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onChange(nextTheme);
-        }
-      }}
     >
-      {themeIcons[theme as ThemeType]}
-    </button>
+      <MorphIcon icon={themeIcons[theme as ThemeType]} size={24} />
+    </Button>
   );
 };
 
-const ThemeSelector = ({ returnThemeOnly }: { returnThemeOnly?: boolean }) => {
-  const { theme, setTheme } = useContext(ThemeContext);
+/**
+ * Contrast toggle, rendered beside the scheme toggle. On the login,
+ * registration and email-verification routes this selector is the only
+ * appearance control, and the scheme toggle above preserves a contrast choice
+ * but can never introduce one — the full appearance dropdown lives behind auth.
+ * Without this button a logged-out user who needs the high contrast palette
+ * could reach it only by editing local storage or turning on an OS-wide
+ * preference.
+ */
+const ContrastToggle = ({
+  theme,
+  highContrast,
+  onChange,
+}: {
+  theme: string;
+  highContrast: boolean;
+  onChange: (value: string) => void;
+}) => {
+  const localize = useLocalize();
+
+  const scheme = isDark(theme) ? 'dark' : 'light';
+  /** Turning contrast off lands on the plain mode for the scheme currently
+   *  rendered, so `system` under an OS contrast request becomes an explicit
+   *  opt-out rather than silently snapping back on. */
+  const nextTheme = highContrast ? scheme : `high-contrast-${scheme}`;
+
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="h-auto w-auto p-2 text-text-primary"
+      aria-label={localize('com_ui_toggle_high_contrast')}
+      aria-pressed={highContrast}
+      onClick={(e) => {
+        e.preventDefault();
+        onChange(nextTheme);
+      }}
+    >
+      <MorphIcon icon={Contrast} size={24} />
+    </Button>
+  );
+};
+
+const ThemeSelector = ({ returnThemeOnly }: { returnThemeOnly?: boolean }): JSX.Element => {
+  const { theme, highContrast, setTheme } = useContext(ThemeContext);
   const [announcement, setAnnouncement] = useState('');
   const localize = useLocalize();
 
   const changeTheme = useCallback(
-    (value: string) => {
+    (value: string, control: string) => {
       const now = Date.now();
-      if (typeof window.lastThemeChange === 'number' && now - window.lastThemeChange < 500) {
+      const changes = window.lastThemeChange ?? {};
+      const last = changes[control];
+      if (typeof last === 'number' && now - last < CHANGE_THROTTLE_MS) {
         return;
       }
-      window.lastThemeChange = now;
+      window.lastThemeChange = { ...changes, [control]: now };
 
       setTheme(value);
+      if (isHighContrast(value)) {
+        setAnnouncement(
+          isDark(value)
+            ? localize('com_ui_high_contrast_dark_theme_enabled')
+            : localize('com_ui_high_contrast_light_theme_enabled'),
+        );
+        return;
+      }
       setAnnouncement(
         isDark(value)
           ? localize('com_ui_dark_theme_enabled')
@@ -75,6 +154,12 @@ const ThemeSelector = ({ returnThemeOnly }: { returnThemeOnly?: boolean }) => {
       );
     },
     [setTheme, localize],
+  );
+
+  const changeScheme = useCallback((value: string) => changeTheme(value, 'scheme'), [changeTheme]);
+  const changeContrast = useCallback(
+    (value: string) => changeTheme(value, 'contrast'),
+    [changeTheme],
   );
 
   useEffect(() => {
@@ -85,13 +170,14 @@ const ThemeSelector = ({ returnThemeOnly }: { returnThemeOnly?: boolean }) => {
   }, [announcement]);
 
   if (returnThemeOnly === true) {
-    return <Theme theme={theme} onChange={changeTheme} />;
+    return <Theme theme={theme} highContrast={highContrast} onChange={changeScheme} />;
   }
 
   return (
-    <div className="flex flex-col items-center justify-center bg-white pt-6 dark:bg-gray-900 sm:pt-0">
-      <div className="absolute bottom-0 left-0 m-4">
-        <Theme theme={theme} onChange={changeTheme} />
+    <div className="flex flex-col items-center justify-center bg-surface-primary pt-6 sm:pt-0">
+      <div className="absolute bottom-0 left-0 m-4 flex items-center">
+        <Theme theme={theme} highContrast={highContrast} onChange={changeScheme} />
+        <ContrastToggle theme={theme} highContrast={highContrast} onChange={changeContrast} />
       </div>
       <div role="alert" aria-live="assertive" aria-atomic="true" className="sr-only">
         {announcement}

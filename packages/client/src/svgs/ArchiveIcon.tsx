@@ -1,4 +1,10 @@
-export default function ArchiveIcon({ className = 'icon-md' }) {
+import { JSX } from 'react/jsx-runtime';
+
+export default function ArchiveIcon({
+  className = 'icon-md',
+}: {
+  className?: string | undefined;
+}): JSX.Element {
   return (
     <svg
       width="18"

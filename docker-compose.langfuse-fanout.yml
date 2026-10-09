@@ -1,0 +1,77 @@
+services:
+  api:
+    depends_on:
+      - langfuse-fanout-collector
+    environment:
+      - LANGFUSE_FANOUT_ENABLED=true
+      - LANGFUSE_FANOUT_COLLECTOR_URL=http://langfuse-fanout-collector:4318
+      - LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED=${LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED-false}
+      - LANGFUSE_FANOUT_TENANT_DESTINATIONS=${LANGFUSE_FANOUT_TENANT_DESTINATIONS:-eu=https://cloud.langfuse.com,us=https://us.cloud.langfuse.com,jp=https://jp.cloud.langfuse.com}
+    networks:
+      - default
+      - langfuse-fanout
+
+  langfuse-fanout-collector:
+    build:
+      context: .
+      dockerfile: otel/langfuse-fanout/Dockerfile
+    image: librechat-langfuse-fanout:local
+    restart: always
+    depends_on:
+      - langfuse-fanout-otel
+      - langfuse-fanout-redis
+    env_file:
+      - .env
+    environment:
+      - LANGFUSE_FANOUT_CENTRAL_BASE_URL=${LANGFUSE_FANOUT_CENTRAL_BASE_URL:-https://cloud.langfuse.com}
+      - LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER=${LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER:?Set LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER to central Langfuse Basic auth header}
+      - LANGFUSE_FANOUT_CENTRAL_MEDIA_EXPORT_DISABLED=${LANGFUSE_FANOUT_CENTRAL_MEDIA_EXPORT_DISABLED:-false}
+      - LANGFUSE_FANOUT_TENANT_DESTINATIONS=${LANGFUSE_FANOUT_TENANT_DESTINATIONS:-eu=https://cloud.langfuse.com,us=https://us.cloud.langfuse.com,jp=https://jp.cloud.langfuse.com}
+      - LANGFUSE_FANOUT_UPSTREAM_TIMEOUT=${LANGFUSE_FANOUT_UPSTREAM_TIMEOUT:-30s}
+      - LANGFUSE_FANOUT_PUBLIC_URL=${LANGFUSE_FANOUT_PUBLIC_URL:-http://langfuse-fanout-collector:4318}
+      - LANGFUSE_FANOUT_TRACE_COLLECTOR_URL=http://langfuse-fanout-otel:4319
+      - LANGFUSE_FANOUT_TRACE_DESTINATION_KEYS=eu,us,jp
+      - LANGFUSE_FANOUT_REDIS_URI=${LANGFUSE_FANOUT_REDIS_URI:-redis://langfuse-fanout-redis:6379}
+      - LANGFUSE_FANOUT_REDIS_USERNAME=${LANGFUSE_FANOUT_REDIS_USERNAME:-}
+      - LANGFUSE_FANOUT_REDIS_PASSWORD=${LANGFUSE_FANOUT_REDIS_PASSWORD:-}
+      - LANGFUSE_FANOUT_REDIS_KEY_PREFIX=${LANGFUSE_FANOUT_REDIS_KEY_PREFIX:-langfuse-fanout}
+    expose:
+      - '4318'
+    networks:
+      - langfuse-fanout
+
+  langfuse-fanout-redis:
+    image: redis:7.4-alpine
+    restart: always
+    expose:
+      - '6379'
+    networks:
+      - langfuse-fanout
+
+  langfuse-fanout-otel:
+    image: otel/opentelemetry-collector-contrib:0.143.0
+    restart: always
+    command: ['--config=/etc/otelcol/otelcol.yaml']
+    env_file:
+      - .env
+    environment:
+      - LANGFUSE_FANOUT_CENTRAL_BASE_URL=${LANGFUSE_FANOUT_CENTRAL_BASE_URL:-https://cloud.langfuse.com}
+      - LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER=${LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER:?Set LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER to central Langfuse Basic auth header}
+      - LANGFUSE_FANOUT_OTEL_RECEIVER_ENDPOINT=0.0.0.0:4319
+      - LANGFUSE_FANOUT_TENANT_EU_BASE_URL=${LANGFUSE_FANOUT_TENANT_EU_BASE_URL:-https://cloud.langfuse.com}
+      - LANGFUSE_FANOUT_TENANT_US_BASE_URL=${LANGFUSE_FANOUT_TENANT_US_BASE_URL:-https://us.cloud.langfuse.com}
+      - LANGFUSE_FANOUT_TENANT_JP_BASE_URL=${LANGFUSE_FANOUT_TENANT_JP_BASE_URL:-https://jp.cloud.langfuse.com}
+      - LANGFUSE_FANOUT_MEMORY_LIMIT_MIB=${LANGFUSE_FANOUT_MEMORY_LIMIT_MIB:-256}
+      - LANGFUSE_FANOUT_MEMORY_SPIKE_LIMIT_MIB=${LANGFUSE_FANOUT_MEMORY_SPIKE_LIMIT_MIB:-64}
+      - LANGFUSE_FANOUT_BATCH_TIMEOUT=${LANGFUSE_FANOUT_BATCH_TIMEOUT:-1s}
+      - LANGFUSE_FANOUT_BATCH_SEND_SIZE=${LANGFUSE_FANOUT_BATCH_SEND_SIZE:-128}
+      - LANGFUSE_FANOUT_METADATA_CARDINALITY_LIMIT=${LANGFUSE_FANOUT_METADATA_CARDINALITY_LIMIT:-1000}
+    volumes:
+      - ./otel/langfuse-fanout/otelcol.yaml:/etc/otelcol/otelcol.yaml:ro
+    expose:
+      - '4319'
+    networks:
+      - langfuse-fanout
+
+networks:
+  langfuse-fanout:

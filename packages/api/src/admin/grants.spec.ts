@@ -53,8 +53,8 @@ function createDeps(overrides: Partial<AdminGrantsDeps> = {}): AdminGrantsDeps {
     countGrants: jest.fn().mockResolvedValue(0),
     getCapabilitiesForPrincipal: jest.fn().mockResolvedValue([]),
     getCapabilitiesForPrincipals: jest.fn().mockResolvedValue([]),
-    grantCapability: jest.fn().mockResolvedValue(mockGrant()),
-    revokeCapability: jest.fn().mockResolvedValue(undefined),
+    grantCapability: jest.fn().mockResolvedValue({ grant: mockGrant(), created: true }),
+    revokeCapability: jest.fn().mockResolvedValue({ deletedCount: 1 }),
     getUserPrincipals: jest.fn().mockResolvedValue([
       { principalType: PrincipalType.USER, principalId: new Types.ObjectId() },
       { principalType: PrincipalType.ROLE, principalId: 'admin' },
@@ -599,7 +599,9 @@ describe('createAdminGrantsHandlers', () => {
 
     it('assigns a grant and returns 201', async () => {
       const grant = mockGrant();
-      const deps = createDeps({ grantCapability: jest.fn().mockResolvedValue(grant) });
+      const deps = createDeps({
+        grantCapability: jest.fn().mockResolvedValue({ grant, created: true }),
+      });
       const handlers = createAdminGrantsHandlers(deps);
       const { req, res, status, json } = createReqRes({ body: validBody });
 
@@ -652,7 +654,7 @@ describe('createAdminGrantsHandlers', () => {
         capability: 'manage:configs:endpoints' as ISystemGrant['capability'],
       });
       const deps = createDeps({
-        grantCapability: jest.fn().mockResolvedValue(grant),
+        grantCapability: jest.fn().mockResolvedValue({ grant, created: true }),
         getHeldCapabilities: jest
           .fn()
           .mockResolvedValue(
@@ -672,7 +674,7 @@ describe('createAdminGrantsHandlers', () => {
     it('accepts config assignment capabilities', async () => {
       const grant = mockGrant({ capability: 'assign:configs:group' as ISystemGrant['capability'] });
       const deps = createDeps({
-        grantCapability: jest.fn().mockResolvedValue(grant),
+        grantCapability: jest.fn().mockResolvedValue({ grant, created: true }),
         getHeldCapabilities: jest
           .fn()
           .mockResolvedValue(new Set([SystemCapabilities.MANAGE_ROLES, 'assign:configs:group'])),
@@ -935,7 +937,7 @@ describe('createAdminGrantsHandlers', () => {
 
     it('returns 500 when grantCapability returns null', async () => {
       const deps = createDeps({
-        grantCapability: jest.fn().mockResolvedValue(null),
+        grantCapability: jest.fn().mockResolvedValue({ grant: null, created: false }),
       });
       const handlers = createAdminGrantsHandlers(deps);
       const { req, res, status, json } = createReqRes({ body: validBody });
@@ -967,9 +969,11 @@ describe('createAdminGrantsHandlers', () => {
       capability: SystemCapabilities.READ_USERS,
     };
 
-    it('returns 200 idempotently even if the grant does not exist', async () => {
+    it('returns 200 idempotently and skips audit emission when the grant does not exist', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = createDeps({
-        revokeCapability: jest.fn().mockResolvedValue(undefined),
+        revokeCapability: jest.fn().mockResolvedValue({ deletedCount: 0 }),
+        recordAuditEntry,
       });
       const handlers = createAdminGrantsHandlers(deps);
       const { req, res, status, json } = createReqRes({ params: validParams });
@@ -978,6 +982,9 @@ describe('createAdminGrantsHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(200);
       expect(json).toHaveBeenCalledWith({ success: true });
+      /** A no-op revoke must not produce an audit row. The whole point of the
+       * `deletedCount > 0` gate is to avoid logging fictitious revocations. */
+      expect(recordAuditEntry).not.toHaveBeenCalled();
     });
 
     it('revokes a grant and returns 200', async () => {
@@ -1163,6 +1170,154 @@ describe('createAdminGrantsHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({ error: 'Failed to revoke grant' });
+    });
+  });
+
+  describe('audit emission', () => {
+    const assignBody = {
+      principalType: PrincipalType.ROLE,
+      principalId: 'editor',
+      capability: SystemCapabilities.READ_USERS,
+    };
+
+    function reqUser(overrides: { name?: string; username?: string; email?: string } = {}) {
+      return {
+        _id: new Types.ObjectId(),
+        role: 'admin',
+        tenantId: 'tenant-1',
+        ...overrides,
+      } as { _id: Types.ObjectId; role: string; tenantId?: string };
+    }
+
+    it('emits a grant.assigned entry after a successful assignment', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({ recordAuditEntry });
+      const handlers = createAdminGrantsHandlers(deps);
+      const user = reqUser({ name: 'Alice Admin' });
+      const { req, res } = createReqRes({ body: assignBody, user });
+
+      await handlers.assignGrant(req, res);
+
+      expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'grant.assigned',
+          outcome: 'success',
+          actor: { type: 'user', id: user._id.toString(), name: 'Alice Admin' },
+          /** ROLE targets carry the human-readable name in `principalId`, so the
+           * audit target id and name are both that role name. */
+          target: { type: PrincipalType.ROLE, id: 'editor', name: 'editor' },
+          metadata: { capability: SystemCapabilities.READ_USERS },
+          tenantId: 'tenant-1',
+        }),
+      );
+    });
+
+    it('emits a grant.removed entry when deletedCount > 0', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({
+        revokeCapability: jest.fn().mockResolvedValue({ deletedCount: 1 }),
+        recordAuditEntry,
+      });
+      const handlers = createAdminGrantsHandlers(deps);
+      const user = reqUser({ username: 'alice' });
+      const { req, res } = createReqRes({ params: assignBody, user });
+
+      await handlers.revokeGrant(req, res);
+
+      expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'grant.removed',
+          actor: expect.objectContaining({ type: 'user', name: 'alice' }),
+          target: { type: PrincipalType.ROLE, id: 'editor', name: 'editor' },
+        }),
+      );
+    });
+
+    it('does not emit when recordAuditEntry is not configured', async () => {
+      const deps = createDeps();
+      const handlers = createAdminGrantsHandlers(deps);
+      const { req, res, status } = createReqRes({ body: assignBody, user: reqUser() });
+
+      await handlers.assignGrant(req, res);
+
+      expect(status).toHaveBeenCalledWith(201);
+    });
+
+    it('does not audit re-assigning a capability the role already holds', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({
+        recordAuditEntry,
+        // the upsert reports created:false → idempotent re-assert, no change
+        grantCapability: jest.fn().mockResolvedValue({ grant: mockGrant(), created: false }),
+      });
+      const handlers = createAdminGrantsHandlers(deps);
+      const { req, res, status } = createReqRes({ body: assignBody, user: reqUser() });
+
+      await handlers.assignGrant(req, res);
+
+      expect(status).toHaveBeenCalledWith(201);
+      expect(recordAuditEntry).not.toHaveBeenCalled();
+    });
+
+    it('fail-open: a failed audit write does not fail the grant', async () => {
+      const recordAuditEntry = jest.fn().mockRejectedValue(new Error('audit down'));
+      const deps = createDeps({ recordAuditEntry });
+      const handlers = createAdminGrantsHandlers(deps);
+      const { req, res, status } = createReqRes({ body: assignBody, user: reqUser() });
+
+      await handlers.assignGrant(req, res);
+
+      expect(status).toHaveBeenCalledWith(201);
+    });
+
+    it('fail-closed: a failed assign audit rolls back the grant and 500s', async () => {
+      const recordAuditEntry = jest.fn().mockRejectedValue(new Error('audit down'));
+      const deps = createDeps({ recordAuditEntry, auditFailClosed: true });
+      const handlers = createAdminGrantsHandlers(deps);
+      const { req, res, status } = createReqRes({ body: assignBody, user: reqUser() });
+
+      await handlers.assignGrant(req, res);
+
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ failClosed: true }),
+      );
+      // compensating rollback removes the grant we just created
+      expect(deps.revokeCapability).toHaveBeenCalledWith(
+        expect.objectContaining({
+          principalType: PrincipalType.ROLE,
+          principalId: 'editor',
+          capability: SystemCapabilities.READ_USERS,
+        }),
+      );
+      expect(status).toHaveBeenCalledWith(500);
+    });
+
+    it('fail-closed: a failed revoke audit restores the grant and 500s', async () => {
+      const recordAuditEntry = jest.fn().mockRejectedValue(new Error('audit down'));
+      const grantCapability = jest.fn().mockResolvedValue({ grant: { id: 'g1' }, created: true });
+      const deps = createDeps({
+        recordAuditEntry,
+        auditFailClosed: true,
+        grantCapability,
+        revokeCapability: jest.fn().mockResolvedValue({ deletedCount: 1 }),
+      });
+      const handlers = createAdminGrantsHandlers(deps);
+      const { req, res, status } = createReqRes({ params: assignBody, user: reqUser() });
+
+      await handlers.revokeGrant(req, res);
+
+      // compensating re-grant restores access removed before the audit failed
+      expect(grantCapability).toHaveBeenCalledWith(
+        expect.objectContaining({
+          principalType: PrincipalType.ROLE,
+          principalId: 'editor',
+          capability: SystemCapabilities.READ_USERS,
+        }),
+      );
+      expect(status).toHaveBeenCalledWith(500);
     });
   });
 });

@@ -1,25 +1,11 @@
-import React, { memo, useMemo } from 'react';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import supersub from 'remark-supersub';
-import rehypeKatex from 'rehype-katex';
+import React, { memo, useRef, useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
-import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
-import remarkDirective from 'remark-directive';
-import type { Pluggable } from 'unified';
-import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
-import {
-  mcpUIResourcePlugin,
-  MCPUIResource,
-  MCPUIResourceCarousel,
-} from '~/components/MCPUIResource';
-import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
-import { ArtifactProvider, CodeBlockProvider } from '~/Providers';
+import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
+import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
-import { langSubset, preprocessLaTeX } from '~/utils';
-import { unicodeCitation } from '~/components/Web';
-import { code, a, p, img } from './MarkdownComponents';
+import { FADE_HYDRATION_THRESHOLD } from './animate';
+import { useMessageContext } from '~/Providers';
+import MarkdownBlocks from './MarkdownBlocks';
 import store from '~/store';
 
 type TContentProps = {
@@ -28,40 +14,30 @@ type TContentProps = {
 };
 
 const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TContentProps) {
+  const { isSubmitting = false } = useMessageContext() ?? {};
+  const smoothStreaming = useSmoothStreaming();
   const LaTeXParsing = useRecoilValue<boolean>(store.LaTeXParsing);
   const isInitializing = content === '';
 
-  const currentContent = useMemo(() => {
-    if (isInitializing) {
-      return '';
+  const streaming = isLatestMessage && isSubmitting;
+  const animate = smoothStreaming && streaming;
+
+  // Hydration signal for the fade: substantial content already present at the
+  // render where `animate` flips on means resumed/switched-to/follow-up
+  // content, which becomes the fade baseline instead of re-animating. The flag
+  // is cleared after that render commits, so blocks mounting later in the same
+  // stream (new paragraphs, however large) always animate.
+  const prevAnimateRef = useRef(false);
+  const hydratedRef = useRef(false);
+  if (animate && !prevAnimateRef.current) {
+    hydratedRef.current = content.length > FADE_HYDRATION_THRESHOLD;
+  }
+  prevAnimateRef.current = animate;
+  useEffect(() => {
+    if (animate) {
+      hydratedRef.current = false;
     }
-    return LaTeXParsing ? preprocessLaTeX(content) : content;
-  }, [content, LaTeXParsing, isInitializing]);
-
-  const rehypePlugins = useMemo(
-    () => [
-      [rehypeKatex],
-      [
-        rehypeHighlight,
-        {
-          detect: true,
-          ignoreMissing: true,
-          subset: langSubset,
-        },
-      ],
-    ],
-    [],
-  );
-
-  const remarkPlugins: Pluggable[] = [
-    supersub,
-    remarkGfm,
-    remarkDirective,
-    artifactPlugin,
-    [remarkMath, { singleDollarTextMath: false }],
-    unicodeCitation,
-    mcpUIResourcePlugin,
-  ];
+  }, [animate]);
 
   if (isInitializing) {
     return (
@@ -75,34 +51,15 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
 
   return (
     <MarkdownErrorBoundary content={content} codeExecution={true}>
-      <ArtifactProvider>
-        <CodeBlockProvider>
-          <ReactMarkdown
-            /** @ts-ignore */
-            remarkPlugins={remarkPlugins}
-            /* @ts-ignore */
-            rehypePlugins={rehypePlugins}
-            components={
-              {
-                code,
-                a,
-                p,
-                img,
-                artifact: Artifact,
-                citation: Citation,
-                'highlighted-text': HighlightedText,
-                'composite-citation': CompositeCitation,
-                'mcp-ui-resource': MCPUIResource,
-                'mcp-ui-carousel': MCPUIResourceCarousel,
-              } as {
-                [nodeType: string]: React.ElementType;
-              }
-            }
-          >
-            {currentContent}
-          </ReactMarkdown>
-        </CodeBlockProvider>
-      </ArtifactProvider>
+      <MarkdownBlocks
+        content={content}
+        streaming={streaming}
+        remarkPlugins={getRemarkPlugins(LaTeXParsing)}
+        rehypePlugins={getRehypePlugins()}
+        components={getMarkdownComponents()}
+        animate={animate}
+        hydrated={hydratedRef.current}
+      />
     </MarkdownErrorBoundary>
   );
 });

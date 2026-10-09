@@ -1,15 +1,28 @@
 import { PermissionBits } from 'librechat-data-provider';
 
 /**
- * Common role combinations
+ * Common role combinations. Values mirror unions of `PermissionBits` flags;
+ * literals are required by `--isolatedDeclarations` (cross-file enum refs
+ * aren't computable). The guard below fails fast on any drift.
  */
 export enum RoleBits {
-  /** 0001 = 1 */
-  VIEWER = PermissionBits.VIEW,
-  /** 0011 = 3 */
-  EDITOR = PermissionBits.VIEW | PermissionBits.EDIT,
-  /** 0111 = 7 */
-  MANAGER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE,
-  /** 1111 = 15 */
-  OWNER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+  /** VIEW */
+  VIEWER = 1,
+  /** VIEW | EDIT */
+  EDITOR = 3,
+  /** VIEW | EDIT | DELETE */
+  MANAGER = 7,
+  /** VIEW | EDIT | DELETE | SHARE */
+  OWNER = 15,
+}
+
+if (
+  (RoleBits.VIEWER as number) !== PermissionBits.VIEW ||
+  (RoleBits.EDITOR as number) !== (PermissionBits.VIEW | PermissionBits.EDIT) ||
+  (RoleBits.MANAGER as number) !==
+    (PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE) ||
+  (RoleBits.OWNER as number) !==
+    (PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE)
+) {
+  throw new Error('RoleBits is out of sync with PermissionBits');
 }

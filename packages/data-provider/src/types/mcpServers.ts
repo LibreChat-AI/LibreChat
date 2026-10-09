@@ -44,6 +44,38 @@ export type MCPServerDBObjectResponse = {
   serverName: string;
   /** True if access is only via agent (not directly shared with user) */
   consumeOnly?: boolean;
+  /** True when chat request fields are required before the server can connect. */
+  requestScoped?: boolean;
 } & MCPOptions;
 
 export type MCPServersListResponse = Record<string, MCPServerDBObjectResponse>;
+
+export type MCPReinitializeFailureReason =
+  | 'unreachable'
+  | 'missing_custom_user_vars'
+  | 'oauth_required'
+  | 'initialization_failed';
+
+export interface MCPReinitializeResponse {
+  success: boolean;
+  message: string;
+  serverName: string;
+  oauthRequired?: boolean;
+  oauthUrl?: string | null;
+  /** Shared OAuth attempt identifier used to poll durable flow state. */
+  flowId?: string;
+  /** Remaining OAuth completion window for this attempt, in milliseconds. */
+  oauthTimeout?: number;
+  failureReason?: MCPReinitializeFailureReason;
+  missingUserVars?: string[];
+  /** True when the server uses request-scoped placeholders and the connection
+   *  was deferred to the next chat turn (tools are not enumerable up front). */
+  connectionDeferred?: boolean;
+}
+
+export interface MCPOAuthStatusResponse {
+  status: 'PENDING' | 'COMPLETED' | 'FAILED';
+  completed: boolean;
+  failed: boolean;
+  error?: string;
+}

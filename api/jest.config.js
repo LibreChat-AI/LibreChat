@@ -1,9 +1,30 @@
+const { maxWorkers } = require('../config/jest.workers.cjs');
+
+const esModules = [
+  'openid-client',
+  'oauth4webapi',
+  'jose',
+  '@langchain/langgraph',
+  '@langchain/langgraph-checkpoint',
+  '@langchain/langgraph-sdk',
+  '@mistralai/mistralai',
+  '@modelcontextprotocol/ext-apps',
+  'uuid',
+  'sanitize-html',
+  'htmlparser2',
+  'domhandler',
+  'domelementtype',
+  'domutils',
+  'dom-serializer',
+  'entities',
+].join('|');
+
 module.exports = {
   testEnvironment: 'node',
   clearMocks: true,
   roots: ['<rootDir>'],
   coverageDirectory: 'coverage',
-  maxWorkers: '50%',
+  maxWorkers,
   testTimeout: 30000, // 30 seconds timeout for all tests
   setupFiles: ['./test/jestSetup.js', './test/__mocks__/logger.js'],
   moduleNameMapper: {
@@ -12,5 +33,16 @@ module.exports = {
     '^openid-client/passport$': '<rootDir>/test/__mocks__/openid-client-passport.js',
     '^openid-client$': '<rootDir>/test/__mocks__/openid-client.js',
   },
-  transformIgnorePatterns: ['/node_modules/(?!(openid-client|oauth4webapi|jose)/).*/'],
+  transform: {
+    '\\.[jt]sx?$': [
+      'babel-jest',
+      {
+        presets: [
+          ['@babel/preset-env', { targets: { node: 'current' } }],
+          '@babel/preset-typescript',
+        ],
+      },
+    ],
+  },
+  transformIgnorePatterns: [`/node_modules/(?!(${esModules})/).*/`],
 };

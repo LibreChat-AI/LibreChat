@@ -1,41 +1,35 @@
 const path = require('path');
-const crypto = require('crypto');
 const multer = require('multer');
 const express = require('express');
 const {
-  createSkillsHandlers,
   createImportHandler,
+  createSkillUploadHandler,
   generateCheckAccess,
+  getStorageMetadata,
+  resolveRequestTenantId,
+  restoreTenantContextFromReq,
 } = require('@librechat/api');
-const { isValidObjectIdString, logger } = require('@librechat/data-schemas');
+const { logger } = require('@librechat/data-schemas');
 const {
   PermissionBits,
   PermissionTypes,
   Permissions,
   FileContext,
+  mergeFileConfig,
 } = require('librechat-data-provider');
 const {
   createSkill,
   getSkillById,
-  listSkillsByAccess,
-  updateSkill,
   deleteSkill,
-  listSkillFiles,
   upsertSkillFile,
-  deleteSkillFile,
   getSkillFileByPath,
-  updateSkillFileContent,
   getRoleByName,
 } = require('~/models');
 const { requireJwtAuth, canAccessSkillResource } = require('~/server/middleware');
-const {
-  findAccessibleResources,
-  findPubliclyAccessibleResources,
-  hasPublicPermission,
-  grantPermission,
-} = require('~/server/services/PermissionService');
+const { grantPermission } = require('~/server/services/PermissionService');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { createFileLimiters } = require('~/server/middleware/limiters/uploadLimiters');
+const { maybeRunGitHubSkillSyncForRequest } = require('~/server/services/Skills/sync');
 const configMiddleware = require('~/server/middleware/config/app');
 const { getFileStrategy } = require('~/server/utils/getFileStrategy');
 
@@ -49,6 +43,11 @@ const MAX_IMPORT_SIZE = 50 * 1024 * 1024; // 50 MB
 
 const memoryStorage = multer.memoryStorage();
 
+function getSkillImportSizeLimit(req) {
+  const fileConfig = mergeFileConfig(req.config?.fileConfig);
+  return fileConfig.skills?.fileSizeLimit ?? MAX_IMPORT_SIZE;
+}
+
 const skillImportFilter = (_req, file, cb) => {
   const ext = path.extname(file.originalname).toLowerCase();
   if (ALLOWED_EXTENSIONS.has(ext)) {
@@ -59,11 +58,12 @@ const skillImportFilter = (_req, file, cb) => {
   }
 };
 
-const skillUpload = multer({
-  storage: memoryStorage,
-  fileFilter: skillImportFilter,
-  limits: { fileSize: MAX_IMPORT_SIZE },
-});
+const skillUpload = (req, res, next) =>
+  multer({
+    storage: memoryStorage,
+    fileFilter: skillImportFilter,
+    limits: { fileSize: getSkillImportSizeLimit(req) },
+  }).single('file')(req, res, next);
 
 // Per-file upload (for adding individual files to an existing skill)
 const MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -98,23 +98,8 @@ router.use(checkSkillAccess);
 // ---------------------------------------------------------------------------
 // CRUD handlers
 // ---------------------------------------------------------------------------
-const handlers = createSkillsHandlers({
-  createSkill,
-  getSkillById,
-  listSkillsByAccess,
-  updateSkill,
-  deleteSkill,
-  listSkillFiles,
-  deleteSkillFile,
-  getSkillFileByPath,
-  updateSkillFileContent,
-  getStrategyFunctions,
-  findAccessibleResources,
-  findPubliclyAccessibleResources,
-  hasPublicPermission,
-  grantPermission,
-  isValidObjectIdString,
-});
+const { getSkillsHandlers } = require('~/server/services/Skills/handlers');
+const handlers = getSkillsHandlers();
 
 // ---------------------------------------------------------------------------
 // File storage helper: resolve the active strategy's saveBuffer
@@ -132,16 +117,23 @@ function resolveSkillStorage(req, { isImage = false } = {}) {
 // Import handler (zip/md/skill → create skill + files)
 // ---------------------------------------------------------------------------
 const importHandler = createImportHandler({
+  limits: (req) => ({
+    maxZipBytes: getSkillImportSizeLimit(req),
+  }),
   createSkill,
   getSkillById,
   deleteSkill,
   upsertSkillFile,
-  saveBuffer: (req, { userId, buffer, fileName, basePath, isImage }) => {
+  saveBuffer: (req, { userId, buffer, fileName, basePath, isImage, tenantId }) => {
+    const requestTenantId = tenantId ?? resolveRequestTenantId(req);
     const storage = resolveSkillStorage(req, { isImage });
-    return storage.saveBuffer({ userId, buffer, fileName, basePath }).then((filepath) => ({
-      filepath,
-      source: storage.source,
-    }));
+    return storage
+      .saveBuffer({ userId, buffer, fileName, basePath, tenantId: requestTenantId })
+      .then((filepath) => ({
+        filepath,
+        source: storage.source,
+        ...getStorageMetadata({ filepath, source: storage.source }),
+      }));
   },
   deleteFile: (req, file) => {
     const { deleteFile } = getStrategyFunctions(file.source);
@@ -156,97 +148,25 @@ const importHandler = createImportHandler({
 // ---------------------------------------------------------------------------
 // Per-file upload handler (add a single file to an existing skill)
 // ---------------------------------------------------------------------------
-async function uploadFileHandler(req, res) {
-  try {
-    const { file } = req;
-    if (!file) {
-      return res.status(400).json({ error: 'No file provided' });
-    }
-
-    const skillId = req.params.id;
-    const relativePath = req.body.relativePath;
-    if (!relativePath) {
-      return res.status(400).json({ error: 'relativePath is required in form body' });
-    }
-    if (relativePath.toUpperCase() === 'SKILL.MD') {
-      return res.status(400).json({ error: 'SKILL.md is reserved; update the skill body instead' });
-    }
-    // Reject traversal, absolute paths, empty/dot segments — matches model-layer validator
-    // so storage writes don't happen before DB rejects the path.
-    if (
-      !/^[a-zA-Z0-9._\-/]+$/.test(relativePath) ||
-      /^\//.test(relativePath) ||
-      relativePath.split('/').some((s) => s === '' || s === '.' || s === '..')
-    ) {
-      return res.status(400).json({ error: 'Invalid file path' });
-    }
-
-    // Look up existing file before saving — needed to clean up old blob on replace
-    const existingFile = await getSkillFileByPath(skillId, relativePath);
-
-    const fileId = crypto.randomUUID();
-    const filename = file.originalname;
-    const storageFileName = `${fileId}__${filename}`;
-
-    const isImage = (file.mimetype || '').startsWith('image/');
-    const storage = resolveSkillStorage(req, { isImage });
-    const filepath = await storage.saveBuffer({
-      userId: req.user.id,
-      buffer: file.buffer,
-      fileName: storageFileName,
-      basePath: 'uploads',
-    });
-
-    let result;
-    try {
-      result = await upsertSkillFile({
-        skillId,
-        relativePath,
-        file_id: fileId,
-        filename,
-        filepath,
-        source: storage.source,
-        mimeType: file.mimetype || 'application/octet-stream',
-        bytes: file.size,
-        isExecutable: false,
-        author: req.user._id,
-      });
-    } catch (dbError) {
-      // Clean up the stored blob so it doesn't leak on DB failure
-      try {
-        const { deleteFile } = getStrategyFunctions(storage.source);
-        if (deleteFile) {
-          await deleteFile(req, { filepath });
-        }
-      } catch (cleanupErr) {
-        logger.error('[uploadFile] Failed to clean up orphaned blob:', cleanupErr);
-      }
-      throw dbError;
-    }
-
-    // Clean up old blob if this was a replace (different filepath means new storage object)
-    if (existingFile && existingFile.filepath !== filepath) {
-      const { deleteFile: delOld } = getStrategyFunctions(existingFile.source);
-      if (delOld) {
-        delOld(req, { filepath: existingFile.filepath }).catch((e) =>
-          logger.error('[uploadFile] Old blob cleanup failed:', e),
-        );
-      }
-    }
-
-    return res.status(200).json(result);
-  } catch (error) {
-    if (error.code === 'SKILL_FILE_VALIDATION_FAILED') {
-      return res.status(400).json({ error: error.message });
-    }
-    logger.error('[uploadFile] Error:', error);
-    return res.status(500).json({ error: 'Failed to upload file' });
-  }
-}
+const uploadFileHandler = createSkillUploadHandler({
+  getSkillById,
+  getSkillFileByPath,
+  upsertSkillFile,
+  resolveStorage: resolveSkillStorage,
+  getStrategyFunctions,
+});
 
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+async function maybeStartRequestSkillSync(req, _res, next) {
+  try {
+    await maybeRunGitHubSkillSyncForRequest(req);
+  } catch (error) {
+    logger.error('[GET /skills] Failed to start request-scoped skill sync:', error);
+  }
+  next();
+}
 
 // Import: accepts .md / .zip / .skill via multipart
 router.post(
@@ -254,11 +174,12 @@ router.post(
   checkSkillCreate,
   fileUploadIpLimiter,
   fileUploadUserLimiter,
-  skillUpload.single('file'),
+  skillUpload,
+  restoreTenantContextFromReq,
   importHandler,
 );
 
-router.get('/', handlers.list);
+router.get('/', maybeStartRequestSkillSync, handlers.list);
 router.post('/', checkSkillCreate, handlers.create);
 
 router.get(
@@ -287,24 +208,29 @@ router.get(
   handlers.listFiles,
 );
 
-// Per-file upload (live — replaces 501 stub)
+// Legacy upload and revision-checked editing. Older servers have no POST wildcard route.
 router.post(
-  '/:id/files',
+  ['/:id/files', '/:id/files/*relativePath'],
   canAccessSkillResource({ requiredPermission: PermissionBits.EDIT }),
   fileUploadIpLimiter,
   fileUploadUserLimiter,
   singleFileUpload.single('file'),
+  restoreTenantContextFromReq,
   uploadFileHandler,
 );
 
+// Wildcard splat (`*relativePath`) captures nested skill paths (e.g.
+// `references/guide.md`) whether the client sends an encoded `%2F` or a proxy
+// has already decoded it to a literal slash. A single `:relativePath` segment
+// 404s in the latter case, which is why nested files failed behind proxies.
 router.get(
-  '/:id/files/:relativePath',
+  '/:id/files/*relativePath',
   canAccessSkillResource({ requiredPermission: PermissionBits.VIEW }),
   handlers.downloadFile,
 );
 
 router.delete(
-  '/:id/files/:relativePath',
+  '/:id/files/*relativePath',
   canAccessSkillResource({ requiredPermission: PermissionBits.EDIT }),
   handlers.deleteFile,
 );

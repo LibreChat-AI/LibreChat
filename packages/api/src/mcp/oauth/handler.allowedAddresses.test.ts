@@ -8,7 +8,7 @@
  * `isOAuthUrlAllowed` returns false but `isSSRFTarget` / `resolveHostnameSSRF`
  * are still called. Those calls used to forward `allowedAddresses`
  * unconditionally, which let an unrelated `allowedAddresses` entry (e.g.
- * `127.0.0.1` configured for a self-hosted LLM) silently broaden a strict
+ * `127.0.0.1:11434` configured for a self-hosted LLM) silently broaden a strict
  * `allowedDomains` whitelist for OAuth.
  */
 jest.mock('node:dns/promises', () => ({
@@ -43,10 +43,10 @@ describe('MCPOAuthHandler.validateOAuthUrl — allowedAddresses scoping', () => 
   });
 
   describe('without allowedDomains configured', () => {
-    it('permits a private OAuth URL when its hostname is in allowedAddresses', async () => {
+    it('permits a private OAuth URL when its host:port is in allowedAddresses', async () => {
       // No DNS lookup needed: the hostname-literal exemption short-circuits.
       await expect(
-        validateOAuthUrl('http://127.0.0.1/oauth', 'token_endpoint', null, ['127.0.0.1']),
+        validateOAuthUrl('http://127.0.0.1/oauth', 'token_endpoint', null, ['127.0.0.1:80']),
       ).resolves.toBeUndefined();
     });
 
@@ -57,13 +57,21 @@ describe('MCPOAuthHandler.validateOAuthUrl — allowedAddresses scoping', () => 
       // before DNS resolution happens. The exemption path is supposed to
       // take effect after DNS resolves the host to a permitted private IP.
       await expect(
-        validateOAuthUrl('https://ollama.example.com/oauth', 'token_endpoint', null, ['10.0.0.5']),
+        validateOAuthUrl('https://ollama.example.com/oauth', 'token_endpoint', null, [
+          '10.0.0.5:443',
+        ]),
       ).resolves.toBeUndefined();
+    });
+
+    it('rejects a private OAuth URL on a different port of an allowed address', async () => {
+      await expect(
+        validateOAuthUrl('http://127.0.0.1:8080/oauth', 'token_endpoint', null, ['127.0.0.1:80']),
+      ).rejects.toThrow('targets a blocked address');
     });
 
     it('rejects a private URL not present in allowedAddresses', async () => {
       await expect(
-        validateOAuthUrl('http://192.168.1.1/oauth', 'token_endpoint', null, ['10.0.0.5']),
+        validateOAuthUrl('http://192.168.1.1/oauth', 'token_endpoint', null, ['10.0.0.5:80']),
       ).rejects.toThrow('targets a blocked address');
     });
   });
@@ -83,7 +91,7 @@ describe('MCPOAuthHandler.validateOAuthUrl — allowedAddresses scoping', () => 
 
     it('rejects a private URL even when allowedAddresses lists it (regression for bypass)', async () => {
       // Admin set `allowedDomains: ['oauth.trusted.com']` to constrain OAuth
-      // endpoints. Independently, they also set `allowedAddresses: ['127.0.0.1']`
+      // endpoints. Independently, they also set `allowedAddresses: ['127.0.0.1:80']`
       // to permit a self-hosted LLM. A malicious MCP server now advertises an
       // OAuth token endpoint at `http://127.0.0.1/oauth`. The address
       // exemption MUST NOT grant the URL trust beyond the strict OAuth
@@ -93,7 +101,7 @@ describe('MCPOAuthHandler.validateOAuthUrl — allowedAddresses scoping', () => 
           'http://127.0.0.1/oauth',
           'token_endpoint',
           ['oauth.trusted.com'],
-          ['127.0.0.1'],
+          ['127.0.0.1:80'],
         ),
       ).rejects.toThrow();
     });
@@ -105,7 +113,7 @@ describe('MCPOAuthHandler.validateOAuthUrl — allowedAddresses scoping', () => 
           'https://attacker.example.com/oauth',
           'token_endpoint',
           ['oauth.trusted.com'],
-          ['10.0.0.5'],
+          ['10.0.0.5:443'],
         ),
       ).rejects.toThrow('resolves to a private IP address');
     });
@@ -129,13 +137,13 @@ describe('MCPOAuthHandler.validateOAuthUrl — allowedAddresses scoping', () => 
 
   describe('schema-level rejections (defense in depth)', () => {
     it('ignores a public IP listed in allowedAddresses', async () => {
-      // Even though `8.8.8.8` is in `allowedAddresses`, the runtime helper
+      // Even though `8.8.8.8:53` is in `allowedAddresses`, the runtime helper
       // drops public-IP entries (mirrors the schema refinement). Public IPs
       // are never SSRF targets, so this scenario is benign — but the test
       // documents the scoping invariant.
       mockedLookup.mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }] as never);
       await expect(
-        validateOAuthUrl('https://other.public.com/oauth', 'token_endpoint', null, ['8.8.8.8']),
+        validateOAuthUrl('https://other.public.com/oauth', 'token_endpoint', null, ['8.8.8.8:53']),
       ).resolves.toBeUndefined();
     });
 
@@ -146,7 +154,7 @@ describe('MCPOAuthHandler.validateOAuthUrl — allowedAddresses scoping', () => 
       // strict `new URL(url)` parse. The strict gate in `isOAuthUrlAllowed`
       // ensures schemeless inputs fall through to the explicit error here.
       await expect(
-        validateOAuthUrl('10.0.0.5/oauth', 'token_endpoint', null, ['10.0.0.5']),
+        validateOAuthUrl('10.0.0.5/oauth', 'token_endpoint', null, ['10.0.0.5:443']),
       ).rejects.toThrow(/Invalid OAuth/);
     });
   });

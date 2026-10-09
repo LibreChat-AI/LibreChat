@@ -1,6 +1,7 @@
 import { memo, useState, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import { ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import type { SourceData } from '~/components/Web/SourceHovercard';
 import type { CitationProps } from './types';
 import { SourceHovercard, FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
@@ -10,6 +11,7 @@ import { useLocalize } from '~/hooks';
 interface FileCitationMetadata {
   fileBytes?: number;
   fileType?: string;
+  storageType?: string;
 }
 
 interface FileCitationSource {
@@ -37,6 +39,15 @@ function getFileCitationData(source?: FileCitationSource) {
     filePages: isFileType ? source.pages : undefined,
     fileRelevance: isFileType ? source.relevance : undefined,
     filePageRelevance: isFileType ? source.pageRelevance : undefined,
+  };
+}
+
+function toSourceData(source: FileCitationSource): SourceData {
+  return {
+    link: source.link ?? '',
+    title: source.title,
+    attribution: source.attribution,
+    snippet: source.snippet,
   };
 }
 
@@ -107,7 +118,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
   return (
     <>
       <SourceHovercard
-        source={currentSource}
+        source={toSourceData(currentSource)}
         label={getCitationLabel()}
         onMouseEnter={() => setHoveredCitationId(citationId || null)}
         onMouseLeave={() => setHoveredCitationId(null)}
@@ -272,6 +283,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
           pages={filePages}
           pageRelevance={filePageRelevance}
           fileType={fileMeta?.fileType}
+          fileSource={fileMeta?.storageType}
           fileSize={fileMeta?.fileBytes}
         />
       )}
@@ -329,7 +341,7 @@ export function Citation(props: CitationComponentProps) {
   return (
     <>
       <SourceHovercard
-        source={refData}
+        source={toSourceData(refData)}
         label={getCitationLabel()}
         onMouseEnter={() => setHoveredCitationId(citationId || null)}
         onMouseLeave={() => setHoveredCitationId(null)}
@@ -348,6 +360,7 @@ export function Citation(props: CitationComponentProps) {
           pages={filePages}
           pageRelevance={filePageRelevance}
           fileType={fileMeta?.fileType}
+          fileSource={fileMeta?.storageType}
           fileSize={fileMeta?.fileBytes}
         />
       )}
@@ -373,7 +386,7 @@ export const HighlightedText = memo(function HighlightedText({
 
   return (
     <span
-      className={`rounded px-0 py-0.5 transition-colors ${isHighlighted ? 'bg-amber-300/20' : ''}`}
+      className={`rounded px-0 py-0.5 transition-colors ${isHighlighted ? 'bg-surface-active' : ''}`}
     >
       {children}
     </span>

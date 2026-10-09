@@ -5,6 +5,7 @@ import { logger } from '@librechat/data-schemas';
 import { FileSources } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { logAxiosError, readFileAsString } from '~/utils';
+import { getFileExtractionLogDetails } from './extract';
 import { generateShortLivedToken } from '~/crypto/jwt';
 
 const MARKDOWN_MIME_TYPES = new Set([
@@ -34,38 +35,68 @@ function isMarkdownFile(file: Express.Multer.File): boolean {
 }
 
 /**
- * Attempts to parse text using RAG API, falls back to native text parsing
+ * Attempts to parse text using RAG API, falls back to native text parsing.
  * @param params - The parameters object
  * @param params.req - The Express request object
  * @param params.file - The uploaded file
  * @param params.file_id - The file ID
+ * @param params.allowNativeFallback - When false, throw instead of falling back to native parsing
+ *   if the RAG API is unavailable. Callers handling document types (docx/pdf/etc.) set this so a
+ *   RAG outage can be routed to the built-in document parser rather than degraded to raw bytes.
  * @returns
  */
 export async function parseText({
   req,
   file,
   file_id,
+  allowNativeFallback = true,
 }: {
   req: ServerRequest;
   file: Express.Multer.File;
   file_id: string;
+  allowNativeFallback?: boolean;
 }): Promise<{ text: string; bytes: number; source: string }> {
-  if (!process.env.RAG_API_URL) {
-    logger.debug('[parseText] RAG_API_URL not defined, falling back to native text parsing');
+  const getExtractionLogDetails = (error: unknown) =>
+    getFileExtractionLogDetails({
+      filters: req.config?.filters,
+      filename: file.originalname,
+      fileId: file_id,
+      error,
+    });
+  const { contentProtected, fileLabel } = getExtractionLogDetails(undefined);
+  const logRagError = (message: string, error: unknown): void => {
+    if (!contentProtected) {
+      logAxiosError({ message, error });
+      return;
+    }
+    logger.error(message, getExtractionLogDetails(error).errorMetadata);
+  };
+  const nativeFallback = (): Promise<{ text: string; bytes: number; source: string }> => {
+    if (!allowNativeFallback) {
+      throw new Error(
+        `[parseText] RAG text extraction unavailable for ${fileLabel} and native fallback is disabled`,
+      );
+    }
     return parseTextNative(file);
+  };
+
+  if (!process.env.RAG_API_URL) {
+    logger.debug('[parseText] RAG_API_URL not defined');
+    return nativeFallback();
   }
 
   if (isMarkdownFile(file)) {
+    const markdownFileLabel = contentProtected ? fileLabel : file.originalname;
     logger.debug(
-      `[parseText] Markdown file detected (${file.originalname}, ${file.mimetype}), using native parsing to preserve raw formatting`,
+      `[parseText] Markdown file detected (${markdownFileLabel}, ${file.mimetype}), using native parsing to preserve raw formatting`,
     );
     return parseTextNative(file);
   }
 
   const userId = req.user?.id;
   if (!userId) {
-    logger.debug('[parseText] No user ID provided, falling back to native text parsing');
-    return parseTextNative(file);
+    logger.debug('[parseText] No user ID provided');
+    return nativeFallback();
   }
 
   try {
@@ -73,15 +104,12 @@ export async function parseText({
       timeout: 10000,
     });
     if (healthResponse?.statusText !== 'OK' && healthResponse?.status !== 200) {
-      logger.debug('[parseText] RAG API health check failed, falling back to native parsing');
-      return parseTextNative(file);
+      logger.debug('[parseText] RAG API health check failed');
+      return nativeFallback();
     }
   } catch (healthError) {
-    logAxiosError({
-      message: '[parseText] RAG API health check failed, falling back to native parsing:',
-      error: healthError,
-    });
-    return parseTextNative(file);
+    logRagError('[parseText] RAG API health check failed:', healthError);
+    return nativeFallback();
   }
 
   try {
@@ -114,11 +142,8 @@ export async function parseText({
       source: FileSources.text,
     };
   } catch (error) {
-    logAxiosError({
-      message: '[parseText] RAG API text parsing failed, falling back to native parsing',
-      error,
-    });
-    return parseTextNative(file);
+    logRagError('[parseText] RAG API text parsing failed', error);
+    return nativeFallback();
   }
 }
 

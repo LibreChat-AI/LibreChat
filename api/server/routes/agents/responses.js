@@ -20,40 +20,23 @@
  * @see https://openresponses.org/specification
  */
 const express = require('express');
-const { PermissionTypes, Permissions } = require('librechat-data-provider');
-const {
-  generateCheckAccess,
-  createRequireApiKeyAuth,
-  createCheckRemoteAgentAccess,
-} = require('@librechat/api');
 const {
   createResponse,
   getResponse,
   listModels,
 } = require('~/server/controllers/agents/responses');
-const { getEffectivePermissions } = require('~/server/services/PermissionService');
 const { configMiddleware } = require('~/server/middleware');
-const db = require('~/models');
+const {
+  checkAgentPermission,
+  preAuthTenantMiddleware,
+  requireRemoteAgentAuth,
+  checkRemoteAgentsFeature,
+} = require('./middleware');
 
 const router = express.Router();
 
-const requireApiKeyAuth = createRequireApiKeyAuth({
-  validateAgentApiKey: db.validateAgentApiKey,
-  findUser: db.findUser,
-});
-
-const checkRemoteAgentsFeature = generateCheckAccess({
-  permissionType: PermissionTypes.REMOTE_AGENTS,
-  permissions: [Permissions.USE],
-  getRoleByName: db.getRoleByName,
-});
-
-const checkAgentPermission = createCheckRemoteAgentAccess({
-  getAgent: db.getAgent,
-  getEffectivePermissions,
-});
-
-router.use(requireApiKeyAuth);
+router.use(preAuthTenantMiddleware);
+router.use(requireRemoteAgentAuth);
 router.use(configMiddleware);
 router.use(checkRemoteAgentsFeature);
 

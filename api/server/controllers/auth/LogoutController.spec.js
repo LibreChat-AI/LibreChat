@@ -4,12 +4,28 @@ const mockLogoutUser = jest.fn();
 const mockLogger = { warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 const mockIsEnabled = jest.fn();
 const mockGetOpenIdConfig = jest.fn();
+const mockClearCloudFrontCookies = jest.fn();
+const mockDeleteAllRefreshTokenBridges = jest.fn();
+const mockRevokeOpenIDRefreshTokenChain = jest.fn();
 
 jest.mock('cookie');
-jest.mock('@librechat/api', () => ({ isEnabled: (...args) => mockIsEnabled(...args) }));
-jest.mock('@librechat/data-schemas', () => ({ logger: mockLogger }));
+jest.mock('@librechat/api', () => ({
+  isEnabled: (...args) => mockIsEnabled(...args),
+  math: (_value, fallback) => fallback,
+  clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
+}));
+jest.mock('@librechat/data-schemas', () => ({
+  logger: mockLogger,
+  DEFAULT_REFRESH_TOKEN_EXPIRY: 7 * 24 * 60 * 60 * 1000,
+}));
 jest.mock('~/server/services/AuthService', () => ({
   logoutUser: (...args) => mockLogoutUser(...args),
+}));
+jest.mock('~/server/services/RefreshTokenBridge', () => ({
+  deleteAllRefreshTokenBridges: (...args) => mockDeleteAllRefreshTokenBridges(...args),
+}));
+jest.mock('~/server/services/OpenIDRefreshRecovery', () => ({
+  revokeOpenIDRefreshTokenChain: (...args) => mockRevokeOpenIDRefreshTokenChain(...args),
 }));
 jest.mock('~/strategies', () => ({ getOpenIdConfig: () => mockGetOpenIdConfig() }));
 
@@ -20,7 +36,11 @@ function buildReq(overrides = {}) {
     user: { _id: 'user1', openidId: 'oid1', provider: 'openid' },
     headers: { cookie: 'refreshToken=rt1' },
     session: {
-      openidTokens: { refreshToken: 'srt', idToken: 'small-id-token' },
+      openidTokens: {
+        refreshToken: 'srt',
+        idToken: 'small-id-token',
+        publicationFlightKey: 'recorded-publication-key',
+      },
       destroy: jest.fn(),
     },
     ...overrides,
@@ -50,6 +70,8 @@ beforeEach(() => {
   };
   cookies.parse.mockReturnValue({ refreshToken: 'cookie-rt' });
   mockLogoutUser.mockResolvedValue({ status: 200, message: 'Logout successful' });
+  mockDeleteAllRefreshTokenBridges.mockResolvedValue({ acknowledged: true, deletedCount: 1 });
+  mockRevokeOpenIDRefreshTokenChain.mockResolvedValue(['cookie-rt', 'srt']);
   mockIsEnabled.mockReturnValue(true);
   mockGetOpenIdConfig.mockReturnValue({
     serverMetadata: () => ({
@@ -242,6 +264,91 @@ describe('LogoutController', () => {
     });
   });
 
+  describe('bridge revocation', () => {
+    it('revokes all predecessor bridges and deletes the browser durable session', async () => {
+      const req = buildReq({
+        user: {
+          _id: 'user1',
+          openidId: 'oid1',
+          provider: 'openid',
+          tenantId: 'tenantA',
+        },
+      });
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockDeleteAllRefreshTokenBridges).toHaveBeenCalledWith({
+        userId: 'user1',
+        tenantId: 'tenantA',
+      });
+      expect(mockRevokeOpenIDRefreshTokenChain).toHaveBeenCalledWith({
+        req,
+        user: req.user,
+        identityContext: {
+          appUserId: 'user1',
+          openidSubject: 'oid1',
+          tenantId: 'tenantA',
+          openidIssuer: undefined,
+        },
+        refreshTokens: ['cookie-rt', 'srt'],
+        publicationKeys: ['recorded-publication-key'],
+        ttl: 7 * 24 * 60 * 60 * 1000,
+      });
+      expect(mockRevokeOpenIDRefreshTokenChain.mock.invocationCallOrder[0]).toBeLessThan(
+        mockDeleteAllRefreshTokenBridges.mock.invocationCallOrder[0],
+      );
+      expect(mockLogoutUser).toHaveBeenCalledWith(req, 'cookie-rt');
+      expect(mockLogoutUser).toHaveBeenCalledWith(req, 'srt');
+      expect(mockLogoutUser).toHaveBeenCalledTimes(2);
+      expect(req.session.openidTokens).toBeUndefined();
+    });
+
+    it('deletes successors retained by completed flights before a late refresh response arrives', async () => {
+      mockRevokeOpenIDRefreshTokenChain.mockResolvedValue([
+        'cookie-rt',
+        'srt',
+        'grant-successor',
+        'publication-successor',
+      ]);
+      const req = buildReq();
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockLogoutUser).toHaveBeenCalledWith(req, 'cookie-rt');
+      expect(mockLogoutUser).toHaveBeenCalledWith(req, 'srt');
+      expect(mockLogoutUser).toHaveBeenCalledWith(req, 'grant-successor');
+      expect(mockLogoutUser).toHaveBeenCalledWith(req, 'publication-successor');
+      expect(mockLogoutUser).toHaveBeenCalledTimes(4);
+    });
+
+    it('fails closed before logout when bridge revocation fails', async () => {
+      mockDeleteAllRefreshTokenBridges.mockRejectedValue(new Error('bridge delete failed'));
+      const req = buildReq();
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockLogoutUser).not.toHaveBeenCalled();
+      expect(req.session.openidTokens).toBeDefined();
+      expect(res.status).toHaveBeenCalledWith(500);
+    });
+
+    it('fails closed before deleting auth state when the refresh-flight fence fails', async () => {
+      mockRevokeOpenIDRefreshTokenChain.mockRejectedValue(new Error('flight fence failed'));
+      const req = buildReq();
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockDeleteAllRefreshTokenBridges).not.toHaveBeenCalled();
+      expect(mockLogoutUser).not.toHaveBeenCalled();
+      expect(req.session.openidTokens).toBeDefined();
+      expect(res.status).toHaveBeenCalledWith(500);
+    });
+  });
+
   describe('cookie clearing', () => {
     it('clears all auth cookies on successful logout', async () => {
       const req = buildReq();
@@ -254,6 +361,18 @@ describe('LogoutController', () => {
       expect(res.clearCookie).toHaveBeenCalledWith('openid_id_token');
       expect(res.clearCookie).toHaveBeenCalledWith('openid_user_id');
       expect(res.clearCookie).toHaveBeenCalledWith('token_provider');
+    });
+
+    it('calls clearCloudFrontCookies on successful logout', async () => {
+      const req = buildReq({ user: { _id: 'user1', tenantId: 'tenantA' } });
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(mockClearCloudFrontCookies).toHaveBeenCalledWith(res, {
+        userId: 'user1',
+        tenantId: 'tenantA',
+      });
     });
   });
 

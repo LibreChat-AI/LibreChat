@@ -1,4 +1,4 @@
-import type { ExtendedJsonSchema } from '../registry/definitions';
+import type { ExtendedJsonSchema } from '../registry/schema';
 
 /** Default descriptions for image generation tool  */
 const DEFAULT_IMAGE_GEN_DESCRIPTION =
@@ -67,6 +67,9 @@ const getImageEditPromptDescription = () => {
   return process.env.IMAGE_EDIT_OAI_PROMPT_DESCRIPTION || DEFAULT_IMAGE_EDIT_PROMPT_DESCRIPTION;
 };
 
+/** `auto` or `WIDTHxHEIGHT`; the image API enforces which dimensions the configured model supports. */
+export const IMAGE_SIZE_PATTERN = '^(auto|[1-9][0-9]*x[1-9][0-9]*)$';
+
 const imageGenOaiJsonSchema: ExtendedJsonSchema = {
   type: 'object',
   properties: {
@@ -88,9 +91,9 @@ const imageGenOaiJsonSchema: ExtendedJsonSchema = {
     },
     size: {
       type: 'string',
-      enum: ['auto', '1024x1024', '1536x1024', '1024x1536'],
+      pattern: IMAGE_SIZE_PATTERN,
       description:
-        'The size of the generated image. One of 1024x1024, 1536x1024 (landscape), 1024x1536 (portrait), or auto (default).',
+        'The size of the generated image as WIDTHxHEIGHT in pixels, or auto (default). Common sizes: 1024x1024, 1536x1024 (landscape), 1024x1536 (portrait). Models that support custom dimensions accept others, e.g. 2048x2048 or 3840x2160; the image API rejects sizes the configured model does not support.',
     },
   },
   required: ['prompt'],
@@ -123,15 +126,28 @@ Guidelines:
     },
     size: {
       type: 'string',
-      enum: ['auto', '1024x1024', '1536x1024', '1024x1536', '256x256', '512x512'],
+      pattern: IMAGE_SIZE_PATTERN,
       description:
-        'The size of the generated images. For gpt-image-1: auto (default), 1024x1024, 1536x1024, 1024x1536. For dall-e-2: 256x256, 512x512, 1024x1024.',
+        'The size of the generated images as WIDTHxHEIGHT in pixels, or auto (default). Common sizes: 1024x1024, 1536x1024, 1024x1536; dall-e-2 uses 256x256, 512x512 or 1024x1024. Models that support custom dimensions accept others, e.g. 3840x2160.',
     },
   },
   required: ['image_ids', 'prompt'],
 };
 
-export const oaiToolkit = {
+export const oaiToolkit: {
+  readonly image_gen_oai: {
+    readonly name: 'image_gen_oai';
+    readonly description: string;
+    readonly schema: ExtendedJsonSchema;
+    readonly responseFormat: 'content_and_artifact';
+  };
+  readonly image_edit_oai: {
+    readonly name: 'image_edit_oai';
+    readonly description: string;
+    readonly schema: ExtendedJsonSchema;
+    readonly responseFormat: 'content_and_artifact';
+  };
+} = {
   image_gen_oai: {
     name: 'image_gen_oai' as const,
     description: getImageGenDescription(),

@@ -10,19 +10,24 @@ import type {
 import type { useLocalize } from '~/hooks';
 import SpecIcon from '~/components/Chat/Menus/Endpoints/components/SpecIcon';
 import { Endpoint, SelectedValues } from '~/common';
+import { getSpecAgentAvatarURL } from '~/utils';
 
 export function filterItems<
   T extends {
     label: string;
     name?: string;
     value?: string;
+    hasModels?: boolean;
     models?: Array<{ name: string; isGlobal?: boolean }>;
+    searchAliases?: string[];
+    showMarketplace?: boolean;
   },
 >(
   items: T[],
   searchValue: string,
   agentsMap: TAgentsMap | undefined,
   assistantsMap: TAssistantsMap | undefined,
+  localize?: ReturnType<typeof useLocalize>,
 ): T[] | null {
   const searchTermLower = searchValue.trim().toLowerCase();
   if (!searchTermLower) {
@@ -30,10 +35,20 @@ export function filterItems<
   }
 
   return items.filter((item) => {
+    if (!shouldRenderEndpointOption(item)) {
+      return false;
+    }
+
     const itemMatches =
       item.label.toLowerCase().includes(searchTermLower) ||
       (item.name && item.name.toLowerCase().includes(searchTermLower)) ||
-      (item.value && item.value.toLowerCase().includes(searchTermLower));
+      (item.value && item.value.toLowerCase().includes(searchTermLower)) ||
+      item.searchAliases?.some((alias) => alias.toLowerCase().includes(searchTermLower)) ||
+      (item.showMarketplace === true &&
+        localize != null &&
+        [localize('com_agents_marketplace'), localize('com_ui_marketplace')].some((label) =>
+          label.toLowerCase().includes(searchTermLower),
+        ));
 
     if (itemMatches) {
       return true;
@@ -65,6 +80,13 @@ export function filterItems<
 
     return false;
   });
+}
+
+export function shouldRenderEndpointOption(endpoint: {
+  value?: string;
+  hasModels?: boolean;
+}): boolean {
+  return !isAgentsEndpoint(endpoint.value) || endpoint.hasModels === true;
 }
 
 export function filterModels(
@@ -103,11 +125,13 @@ export function getSelectedIcon({
   selectedValues,
   modelSpecs,
   endpointsConfig,
+  agentsMap,
 }: {
   mappedEndpoints: Endpoint[];
   selectedValues: SelectedValues;
   modelSpecs: TModelSpec[];
   endpointsConfig: TEndpointsConfig;
+  agentsMap?: TAgentsMap;
 }): React.ReactNode | null {
   const { endpoint, model, modelSpec } = selectedValues;
 
@@ -123,6 +147,7 @@ export function getSelectedIcon({
     return React.createElement(SpecIcon, {
       currentSpec: spec,
       endpointsConfig,
+      agentAvatarURL: getSpecAgentAvatarURL(spec, agentsMap),
     });
   }
 

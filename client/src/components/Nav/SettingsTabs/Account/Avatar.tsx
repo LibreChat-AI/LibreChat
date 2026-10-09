@@ -18,9 +18,31 @@ import {
 } from '@librechat/client';
 import type { TUser } from 'librechat-data-provider';
 import { useUploadAvatarMutation, useGetFileConfig } from '~/data-provider';
-import { cn, formatBytes } from '~/utils';
+import { cn } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
+
+const AVATAR_FILE_EXTENSIONS = ['.jpeg', '.jpg', '.png'];
+const AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png']);
+const DEFAULT_AVATAR_SIZE_LIMIT_MB = 2;
+
+const getAvatarSizeLimitMB = (sizeLimit?: number | null) => {
+  if (sizeLimit == null) {
+    return DEFAULT_AVATAR_SIZE_LIMIT_MB;
+  }
+
+  return Number((sizeLimit / (1024 * 1024)).toFixed(2));
+};
+
+const isSupportedAvatarFile = (file: File) => {
+  const fileName = file.name.toLowerCase();
+  const hasSupportedExtension = AVATAR_FILE_EXTENSIONS.some((extension) =>
+    fileName.endsWith(extension),
+  );
+  const hasSupportedMimeType = file.type === '' || AVATAR_MIME_TYPES.has(file.type.toLowerCase());
+
+  return hasSupportedExtension && hasSupportedMimeType;
+};
 
 interface AvatarEditorRef {
   getImageScaledToCanvas: () => HTMLCanvasElement;
@@ -51,6 +73,7 @@ function Avatar() {
 
   const localize = useLocalize();
   const { showToast } = useToastContext();
+  const avatarSizeLimitMB = getAvatarSizeLimitMB(fileConfig.avatarSizeLimit);
 
   const { mutate: uploadAvatar, isLoading: isUploading } = useUploadAvatarMutation({
     onSuccess: (data) => {
@@ -70,21 +93,23 @@ function Avatar() {
 
   const handleFile = useCallback(
     (file: File | undefined) => {
-      if (fileConfig.avatarSizeLimit != null && file && file.size <= fileConfig.avatarSizeLimit) {
+      const isWithinSizeLimit =
+        file != null &&
+        (fileConfig.avatarSizeLimit == null || file.size <= fileConfig.avatarSizeLimit);
+
+      if (file && isSupportedAvatarFile(file) && isWithinSizeLimit) {
         setImage(file);
         setScale(1);
         setRotation(0);
         setPosition({ x: 0.5, y: 0.5 });
       } else {
-        const megabytes =
-          fileConfig.avatarSizeLimit != null ? formatBytes(fileConfig.avatarSizeLimit) : 2;
         showToast({
-          message: localize('com_ui_upload_invalid_var', { 0: megabytes + '' }),
+          message: localize('com_ui_avatar_invalid_file', { 0: avatarSizeLimitMB }),
           status: 'error',
         });
       }
     },
-    [fileConfig.avatarSizeLimit, localize, showToast],
+    [avatarSizeLimitMB, fileConfig.avatarSizeLimit, localize, showToast],
   );
 
   const handleScaleChange = (value: number[]) => {
@@ -134,13 +159,9 @@ function Avatar() {
     e.preventDefault();
   }, []);
 
-  const openFileDialog = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
   const handleSelectFileClick = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    openFileDialog();
+    event.preventDefault();
+    fileInputRef.current?.click();
   };
 
   const resetImage = useCallback(() => {
@@ -166,29 +187,29 @@ function Avatar() {
         }
       }}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{localize('com_nav_profile_picture')}</span>
         <OGDialogTrigger asChild>
           <Button variant="outline">
-            <FileImage className="mr-2 flex w-[22px] items-center" aria-hidden="true" />
+            <FileImage className="mr-2 flex w-[1.375rem] items-center" aria-hidden="true" />
             <span>{localize('com_nav_change_picture')}</span>
           </Button>
         </OGDialogTrigger>
       </div>
 
-      <OGDialogContent showCloseButton={false} className="w-11/12 max-w-md">
+      <OGDialogContent className="w-11/12 max-w-md">
         <OGDialogHeader>
-          <OGDialogTitle className="text-lg font-medium leading-6 text-text-primary">
+          <OGDialogTitle className="text-lg leading-6 font-medium">
             {image != null ? localize('com_ui_preview') : localize('com_ui_upload_image')}
           </OGDialogTitle>
         </OGDialogHeader>
-        <div className="flex flex-col items-center justify-center p-2">
+        <div className="flex min-w-0 flex-col items-center justify-center p-2">
           {image != null ? (
             <>
               <div
                 className={cn(
-                  'relative overflow-hidden rounded-full ring-4 ring-gray-200 transition-all dark:ring-gray-700',
-                  isDragging && 'cursor-move ring-blue-500 dark:ring-blue-400',
+                  'ring-border-light relative w-full max-w-[17.5rem] overflow-hidden rounded-full ring-4 transition-all',
+                  isDragging && 'ring-ring-primary cursor-move',
                 )}
                 onMouseDown={() => setIsDragging(true)}
                 onMouseUp={() => setIsDragging(false)}
@@ -206,12 +227,16 @@ function Avatar() {
                   rotate={rotation}
                   position={position}
                   onPositionChange={handlePositionChange}
-                  className="cursor-move"
+                  /* The width/height props stay at 280 so the exported avatar keeps its
+                     resolution; only the rendered canvas yields to the dialog, which is
+                     narrower than 17.5rem once the scale or the reader's font grows. The
+                     editor writes its size inline, so the overrides are important. */
+                  className="aspect-square h-auto! w-full! cursor-move"
                 />
                 {!isDragging && (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition-opacity hover:opacity-100">
-                    <div className="rounded-full bg-black/50 p-2">
-                      <Move className="h-6 w-6 text-white" aria-hidden="true" />
+                    <div className="bg-surface-media-overlay/50 rounded-full p-2">
+                      <Move className="text-text-on-media h-6 w-6" aria-hidden="true" />
                     </div>
                   </div>
                 )}
@@ -224,7 +249,7 @@ function Avatar() {
                     <Label htmlFor="zoom-slider" className="text-sm font-medium">
                       {localize('com_ui_zoom')}
                     </Label>
-                    <span className="text-sm text-text-secondary">{Math.round(scale * 100)}%</span>
+                    <span className="text-text-secondary text-sm">{Math.round(scale * 100)}%</span>
                   </div>
                   <div className="flex items-center space-x-3">
                     <Button
@@ -262,7 +287,7 @@ function Avatar() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-center space-x-3">
+                <div className="flex flex-wrap items-center justify-center gap-3">
                   <Button
                     type="button"
                     variant="outline"
@@ -286,13 +311,13 @@ function Avatar() {
                 </div>
 
                 {/* Helper Text */}
-                <p className="text-center text-xs text-gray-500 dark:text-gray-400">
+                <p className="text-text-tertiary text-center text-xs">
                   {localize('com_ui_editor_instructions')}
                 </p>
               </div>
 
               {/* Action Buttons */}
-              <div className="mt-6 flex w-full space-x-3">
+              <div className="mt-6 flex w-full flex-wrap gap-3">
                 <Button
                   type="button"
                   variant="outline"
@@ -305,7 +330,7 @@ function Avatar() {
                 <Button
                   variant="submit"
                   type="button"
-                  className={cn('w-full', isUploading ? 'cursor-not-allowed opacity-90' : '')}
+                  className={cn('flex-1', isUploading ? 'cursor-not-allowed opacity-90' : '')}
                   onClick={handleUpload}
                   disabled={isUploading}
                 >
@@ -320,30 +345,17 @@ function Avatar() {
             </>
           ) : (
             <div
-              className="flex h-72 w-full flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-transparent transition-colors hover:border-gray-400 dark:border-gray-600 dark:hover:border-gray-500"
+              className="border-border-medium hover:border-border-heavy flex h-72 w-full flex-col items-center justify-center rounded-lg border-2 border-dashed bg-transparent transition-colors"
               onDrop={handleDrop}
               onDragOver={handleDragOver}
-              role="button"
-              tabIndex={0}
-              onClick={openFileDialog}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  openFileDialog();
-                }
-              }}
-              aria-label={localize('com_ui_upload_avatar_label')}
             >
-              <FileImage className="mb-4 size-16 text-gray-400" />
-              <p className="mb-2 text-center text-sm font-medium text-text-primary">
-                {localize('com_ui_drag_drop')}
+              <FileImage className="text-text-tertiary mb-4 size-16" aria-hidden="true" />
+              <p className="text-text-primary mb-2 text-center text-sm font-medium">
+                {localize('com_ui_avatar_drop_image')}
               </p>
-              <p className="mb-4 text-center text-xs text-text-secondary">
-                {localize('com_ui_max_file_size', {
-                  0:
-                    fileConfig.avatarSizeLimit != null
-                      ? formatBytes(fileConfig.avatarSizeLimit)
-                      : '2MB',
+              <p className="text-text-secondary mb-4 text-center text-xs">
+                {localize('com_ui_avatar_file_requirements', {
+                  0: avatarSizeLimitMB,
                 })}
               </p>
               <Button type="button" variant="secondary" onClick={handleSelectFileClick}>

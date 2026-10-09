@@ -64,6 +64,7 @@ describe('applyModelSpecEphemeralAgent', () => {
         execute_code: true,
         web_search: false,
         file_search: true,
+        memory: false,
         artifacts: 'default',
       });
     });
@@ -101,6 +102,18 @@ describe('applyModelSpecEphemeralAgent', () => {
       expect(agent.mcp).toEqual([]);
     });
 
+    it('should honor the memory default from the spec', () => {
+      const enabled = createModelSpec({ memory: true });
+      applyModelSpecEphemeralAgent({ convoId: null, modelSpec: enabled, updateEphemeralAgent });
+      expect((updateEphemeralAgent.mock.calls[0][1] as TEphemeralAgent).memory).toBe(true);
+
+      updateEphemeralAgent.mockClear();
+
+      const disabled = createModelSpec({ memory: false });
+      applyModelSpecEphemeralAgent({ convoId: null, modelSpec: disabled, updateEphemeralAgent });
+      expect((updateEphemeralAgent.mock.calls[0][1] as TEphemeralAgent).memory).toBe(false);
+    });
+
     it('should map artifacts: true to "default" string', () => {
       const modelSpec = createModelSpec({ artifacts: true });
 
@@ -117,6 +130,16 @@ describe('applyModelSpecEphemeralAgent', () => {
 
       const agent = updateEphemeralAgent.mock.calls[0][1] as TEphemeralAgent;
       expect(agent.artifacts).toBe('custom-renderer');
+    });
+
+    it('should not copy model spec subagents into client ephemeral agent state', () => {
+      const subagents = { enabled: true, allowSelf: true, agent_ids: ['agent_private'] };
+      const modelSpec = createModelSpec({ subagents });
+
+      applyModelSpecEphemeralAgent({ convoId: null, modelSpec, updateEphemeralAgent });
+
+      const agent = updateEphemeralAgent.mock.calls[0][1] as TEphemeralAgent;
+      expect('subagents' in agent).toBe(false);
     });
   });
 
@@ -217,6 +240,7 @@ describe('applyModelSpecEphemeralAgent', () => {
         execute_code: true,
         web_search: false,
         file_search: true,
+        memory: false,
         artifacts: 'default',
       });
     });

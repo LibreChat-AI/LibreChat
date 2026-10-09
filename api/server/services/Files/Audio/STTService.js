@@ -2,9 +2,24 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { Readable } = require('stream');
 const { logger } = require('@librechat/data-schemas');
-const { HttpsProxyAgent } = require('https-proxy-agent');
-const { genAzureEndpoint, logAxiosError } = require('@librechat/api');
-const { extractEnvVariable, STTProviders } = require('librechat-data-provider');
+const {
+  inspectContent,
+  extractFileContent,
+  hasActiveFileFieldPolicy,
+  genAzureEndpoint,
+  getSafeErrorMetadata,
+  applyAxiosProxyConfig,
+  resolveConfigSecret,
+  applySSRFSafeAgentIfDirect,
+  contentFilterBlockResponse,
+  contentFilterUninspectableResponse,
+  getBlockedUninspectableFileField,
+} = require('@librechat/api');
+const {
+  STTProviders,
+  extractEnvVariable,
+  listConfiguredSpeechProviders,
+} = require('librechat-data-provider');
 const { getAppConfig } = require('~/server/services/Config');
 const { validateUrl } = require('~/server/utils/urlValidation');
 const { safeReadFile, safeUnlink } = require('~/server/utils/pathValidation');
@@ -55,11 +70,11 @@ function getValidatedLanguageCode(language) {
     }
 
     logger.warn(
-      `[STT] Invalid language format "${language}". Expected ISO-639-1 locale code like "en-US" or "en". Skipping language parameter.`,
+      '[STT] Invalid language format. Expected ISO-639-1 locale code like "en-US" or "en". Skipping language parameter.',
     );
     return null;
   } catch (error) {
-    logger.error(`[STT] Error validating language code "${language}":`, error);
+    logger.error('[STT] Error validating language code:', getSafeErrorMetadata(error));
     return null;
   }
 }
@@ -135,7 +150,7 @@ class STTService {
   /**
    * Retrieves the configured STT provider and its schema.
    * @param {ServerRequest} req - The request object.
-   * @returns {Promise<[string, Object]>} A promise that resolves to an array containing the provider name and its schema.
+   * @returns {Promise<[string, Object, (string[]|undefined)]>} A promise that resolves to the provider name, its schema, and the section-level allowedAddresses exemption list.
    * @throws {Error} If no STT schema is set, multiple providers are set, or no provider is set.
    */
   async getProviderSchema(req) {
@@ -143,6 +158,7 @@ class STTService {
       req.config ??
       (await getAppConfig({
         role: req?.user?.role,
+        userId: req?.user?.id,
         tenantId: req?.user?.tenantId,
       }));
     const sttSchema = appConfig?.speech?.stt;
@@ -152,9 +168,7 @@ class STTService {
       );
     }
 
-    const providers = Object.entries(sttSchema).filter(
-      ([, value]) => Object.keys(value).length > 0,
-    );
+    const providers = listConfiguredSpeechProviders(sttSchema);
 
     if (providers.length !== 1) {
       throw new Error(
@@ -165,7 +179,7 @@ class STTService {
     }
 
     const [provider, schema] = providers[0];
-    return [provider, schema];
+    return [provider, schema, sttSchema.allowedAddresses];
   }
 
   /**
@@ -196,7 +210,7 @@ class STTService {
    */
   openAIProvider(sttSchema, audioReadStream, audioFile, language) {
     const url = sttSchema?.url || 'https://api.openai.com/v1/audio/transcriptions';
-    const apiKey = extractEnvVariable(sttSchema.apiKey) || '';
+    const apiKey = resolveConfigSecret(sttSchema.apiKey) || '';
 
     const data = {
       file: audioReadStream,
@@ -232,7 +246,7 @@ class STTService {
       azureOpenAIApiDeploymentName: extractEnvVariable(sttSchema?.deploymentName),
     })}/audio/transcriptions?api-version=${extractEnvVariable(sttSchema?.apiVersion)}`;
 
-    const apiKey = sttSchema.apiKey ? extractEnvVariable(sttSchema.apiKey) : '';
+    const apiKey = sttSchema.apiKey ? resolveConfigSecret(sttSchema.apiKey) || '' : '';
 
     if (audioBuffer.byteLength > 25 * 1024 * 1024) {
       throw new Error('The audio file size exceeds the limit of 25MB');
@@ -279,10 +293,11 @@ class STTService {
    * @param {Buffer} requestData.audioBuffer - The audio data to be transcribed.
    * @param {Object} requestData.audioFile - The audio file object containing originalname, mimetype, and size.
    * @param {string} requestData.language - The language code for the transcription.
+   * @param {string[]} [allowedAddresses] - Section-level SSRF exemption list of host:port pairs.
    * @returns {Promise<string>} A promise that resolves to the transcribed text.
    * @throws {Error} If the provider is invalid, the response status is not 200, or the response data is missing.
    */
-  async sttRequest(provider, sttSchema, { audioBuffer, audioFile, language }) {
+  async sttRequest(provider, sttSchema, { audioBuffer, audioFile, language }, allowedAddresses) {
     const strategy = this.providerStrategies[provider];
     if (!strategy) {
       throw new Error('Invalid provider');
@@ -303,9 +318,8 @@ class STTService {
 
     const options = { headers };
 
-    if (process.env.PROXY) {
-      options.httpsAgent = new HttpsProxyAgent(process.env.PROXY);
-    }
+    applyAxiosProxyConfig(options, url);
+    applySSRFSafeAgentIfDirect(options, url, allowedAddresses);
 
     try {
       validateUrl(url);
@@ -331,7 +345,7 @@ class STTService {
 
       return response.data.text.trim();
     } catch (error) {
-      logAxiosError({ message: `STT request failed for provider ${provider}:`, error });
+      logger.error(`[STT] Request failed for provider ${provider}:`, getSafeErrorMetadata(error));
       throw error;
     }
   }
@@ -348,20 +362,72 @@ class STTService {
       return res.status(400).json({ message: 'No audio file provided in the FormData' });
     }
 
-    const audioBuffer = await safeReadFile(req.file.path);
-    const audioFile = {
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-    };
-
     try {
-      const [provider, sttSchema] = await this.getProviderSchema(req);
-      const language = req.body?.language || '';
-      const text = await this.sttRequest(provider, sttSchema, { audioBuffer, audioFile, language });
+      if (hasActiveFileFieldPolicy(req.config?.filters, ['name', 'content', 'transcript'])) {
+        const finding = inspectContent(extractFileContent({ name: req.file.originalname }), {
+          filters: req.config.filters,
+        });
+        if (finding != null) {
+          res.status(400).json(contentFilterBlockResponse(finding));
+          return;
+        }
+        const uninspectableField = getBlockedUninspectableFileField(req.config.filters, [
+          'content',
+        ]);
+        if (uninspectableField != null) {
+          res.status(400).json(contentFilterUninspectableResponse(uninspectableField));
+          return;
+        }
+      }
+
+      let text;
+      try {
+        const audioBuffer = await fs.readFile(req.file.path);
+        const audioFile = {
+          originalname: req.file.originalname,
+          mimetype: req.file.mimetype,
+          size: req.file.size,
+        };
+        const [provider, sttSchema, allowedAddresses] = await this.getProviderSchema(req);
+        const language = req.body?.language || '';
+        text = await this.sttRequest(
+          provider,
+          sttSchema,
+          { audioBuffer, audioFile, language },
+          allowedAddresses,
+        );
+      } catch (error) {
+        const uninspectableField = getBlockedUninspectableFileField(req.config?.filters, [
+          'transcript',
+        ]);
+        if (uninspectableField != null) {
+          res.status(400).json(contentFilterUninspectableResponse(uninspectableField));
+          return;
+        }
+        throw error;
+      }
+      if (
+        (typeof text !== 'string' || text.trim().length === 0) &&
+        getBlockedUninspectableFileField(req.config?.filters, ['transcript']) != null
+      ) {
+        res.status(400).json(contentFilterUninspectableResponse('transcript'));
+        return;
+      }
+      if (hasActiveFileFieldPolicy(req.config?.filters, ['transcript'])) {
+        const finding = inspectContent(extractFileContent({ transcript: text }), {
+          filters: req.config.filters,
+        });
+        if (finding != null) {
+          res.status(400).json(contentFilterBlockResponse(finding));
+          return;
+        }
+      }
       res.json({ text });
     } catch (error) {
-      logAxiosError({ message: 'An error occurred while processing the audio:', error });
+      logger.error(
+        '[STT] An error occurred while processing the audio:',
+        getSafeErrorMetadata(error),
+      );
       res.sendStatus(500);
     } finally {
       try {

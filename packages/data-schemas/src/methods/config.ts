@@ -1,11 +1,81 @@
 import { Types } from 'mongoose';
 import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
-import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
+import type { FilterQuery, Model, ClientSession } from 'mongoose';
 import type { TCustomConfig } from 'librechat-data-provider';
-import type { Model, ClientSession } from 'mongoose';
 import type { IConfig } from '~/types';
+import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
+import { escapeRegExp } from '~/utils/string';
 
-export function createConfigMethods(mongoose: typeof import('mongoose')) {
+/** Tombstones a field write clears: the written path and its ancestors below the section. */
+export function getTombstonePathsToClear(fieldPath: string): string[] {
+  const parts = fieldPath.split('.');
+  if (parts.length <= 1) {
+    return [fieldPath];
+  }
+  return parts.slice(1).map((_, index) => parts.slice(0, index + 2).join('.'));
+}
+
+function getPathAndDescendantsRegex(fieldPath: string): RegExp {
+  return new RegExp(`^${escapeRegExp(fieldPath)}(?:\\.|$)`);
+}
+
+export function createConfigMethods(mongoose: typeof import('mongoose')): {
+  listAllConfigs: (filter?: { isActive?: boolean }, session?: ClientSession) => Promise<IConfig[]>;
+  findConfigByPrincipal: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    options?: { includeInactive?: boolean },
+    session?: ClientSession,
+  ) => Promise<IConfig | null>;
+  getApplicableConfigs: (
+    principals?: Array<{ principalType: string; principalId?: string | Types.ObjectId }>,
+    session?: ClientSession,
+  ) => Promise<IConfig[]>;
+  upsertConfig: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    principalModel: PrincipalModel,
+    overrides: Partial<TCustomConfig>,
+    priority: number,
+    session?: ClientSession,
+    options?: { expectEmpty?: boolean; preservePriority?: boolean },
+  ) => Promise<IConfig | null>;
+  patchConfigFields: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    principalModel: PrincipalModel,
+    fields: Record<string, unknown>,
+    priority: number,
+    session?: ClientSession,
+  ) => Promise<IConfig | null>;
+  tombstoneConfigField: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    principalModel: PrincipalModel,
+    fieldPath: string,
+    priority: number,
+    session?: ClientSession,
+  ) => Promise<IConfig | null>;
+  unsetConfigField: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    fieldPath: string,
+    session?: ClientSession,
+  ) => Promise<IConfig | null>;
+  deleteConfig: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    session?: ClientSession,
+    options?: { expectEmpty?: boolean },
+  ) => Promise<IConfig | null>;
+  toggleConfigActive: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    isActive: boolean,
+    session?: ClientSession,
+    options?: { expectEmpty?: boolean },
+  ) => Promise<IConfig | null>;
+} {
   async function findConfigByPrincipal(
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
@@ -22,7 +92,7 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     }
     return await Config.findOne(filter)
       .session(session ?? null)
-      .lean();
+      .lean<IConfig>();
   }
 
   async function listAllConfigs(
@@ -37,7 +107,7 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     return await Config.find(where)
       .sort({ priority: 1 })
       .session(session ?? null)
-      .lean();
+      .lean<IConfig[]>();
   }
 
   async function getApplicableConfigs(
@@ -70,7 +140,7 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     })
       .sort({ priority: 1 })
       .session(session ?? null)
-      .lean();
+      .lean<IConfig[]>();
   }
 
   async function upsertConfig(
@@ -80,25 +150,33 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     overrides: Partial<TCustomConfig>,
     priority: number,
     session?: ClientSession,
+    options?: { expectEmpty?: boolean; preservePriority?: boolean },
   ): Promise<IConfig | null> {
     const Config = mongoose.models.Config as Model<IConfig>;
 
-    const query = {
+    const query: FilterQuery<IConfig> = {
       principalType,
       principalId: principalId.toString(),
     };
+    if (options?.expectEmpty) {
+      query.$and = [
+        { $or: [{ overrides: { $eq: {} } }, { overrides: { $exists: false } }] },
+        { $or: [{ tombstones: { $size: 0 } }, { tombstones: { $exists: false } }] },
+      ];
+    }
 
     const update = {
       $set: {
         principalModel,
         overrides,
-        priority,
+        ...(options?.preservePriority ? {} : { priority }),
         isActive: true,
       },
+      ...(options?.preservePriority ? { $setOnInsert: { priority } } : {}),
       $inc: { configVersion: 1 },
     };
 
-    const options = {
+    const mongoOptions = {
       upsert: true,
       new: true,
       setDefaultsOnInsert: true,
@@ -106,11 +184,14 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     };
 
     try {
-      return await Config.findOneAndUpdate(query, update, options);
+      return await Config.findOneAndUpdate(query, update, mongoOptions);
     } catch (err: unknown) {
       if ((err as { code?: number }).code === 11000) {
+        if (options?.expectEmpty) {
+          return null;
+        }
         return await Config.findOneAndUpdate(
-          query,
+          { principalType, principalId: principalId.toString() },
           { $set: update.$set, $inc: update.$inc },
           { new: true, ...(session ? { session } : {}) },
         );
@@ -139,6 +220,40 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
       setPayload[`overrides.${path}`] = value;
     }
 
+    const tombstonesToClear = [...new Set(Object.keys(fields).flatMap(getTombstonePathsToClear))];
+
+    const options = {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+      ...(session ? { session } : {}),
+    };
+
+    const update: Record<string, unknown> = {
+      $set: setPayload,
+      $inc: { configVersion: 1 },
+    };
+    if (tombstonesToClear.length > 0) {
+      update.$pull = { tombstones: { $in: tombstonesToClear } };
+    }
+
+    return await Config.findOneAndUpdate(
+      { principalType, principalId: principalId.toString() },
+      update,
+      options,
+    );
+  }
+
+  async function tombstoneConfigField(
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    principalModel: PrincipalModel,
+    fieldPath: string,
+    priority: number,
+    session?: ClientSession,
+  ): Promise<IConfig | null> {
+    const Config = mongoose.models.Config as Model<IConfig>;
+
     const options = {
       upsert: true,
       new: true,
@@ -148,7 +263,15 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
 
     return await Config.findOneAndUpdate(
       { principalType, principalId: principalId.toString() },
-      { $set: setPayload, $inc: { configVersion: 1 } },
+      {
+        $set: {
+          principalModel,
+          priority,
+        },
+        $unset: { [`overrides.${fieldPath}`]: '' },
+        $addToSet: { tombstones: fieldPath },
+        $inc: { configVersion: 1 },
+      },
       options,
     );
   }
@@ -168,7 +291,11 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
 
     return await Config.findOneAndUpdate(
       { principalType, principalId: principalId.toString() },
-      { $unset: { [`overrides.${fieldPath}`]: '' }, $inc: { configVersion: 1 } },
+      {
+        $unset: { [`overrides.${fieldPath}`]: '' },
+        $pull: { tombstones: { $regex: getPathAndDescendantsRegex(fieldPath) } },
+        $inc: { configVersion: 1 },
+      },
       options,
     );
   }
@@ -177,13 +304,20 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
     session?: ClientSession,
+    options?: { expectEmpty?: boolean },
   ): Promise<IConfig | null> {
     const Config = mongoose.models.Config as Model<IConfig>;
-
-    return await Config.findOneAndDelete({
+    const filter: FilterQuery<IConfig> = {
       principalType,
       principalId: principalId.toString(),
-    }).session(session ?? null);
+    };
+    if (options?.expectEmpty) {
+      filter.$and = [
+        { $or: [{ overrides: { $eq: {} } }, { overrides: { $exists: false } }] },
+        { $or: [{ tombstones: { $size: 0 } }, { tombstones: { $exists: false } }] },
+      ];
+    }
+    return await Config.findOneAndDelete(filter).session(session ?? null);
   }
 
   async function toggleConfigActive(
@@ -191,10 +325,21 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     principalId: string | Types.ObjectId,
     isActive: boolean,
     session?: ClientSession,
+    options?: { expectEmpty?: boolean },
   ): Promise<IConfig | null> {
     const Config = mongoose.models.Config as Model<IConfig>;
+    const filter: FilterQuery<IConfig> = {
+      principalType,
+      principalId: principalId.toString(),
+    };
+    if (options?.expectEmpty) {
+      filter.$and = [
+        { $or: [{ overrides: { $eq: {} } }, { overrides: { $exists: false } }] },
+        { $or: [{ tombstones: { $size: 0 } }, { tombstones: { $exists: false } }] },
+      ];
+    }
     return await Config.findOneAndUpdate(
-      { principalType, principalId: principalId.toString() },
+      filter,
       { $set: { isActive } },
       { new: true, ...(session ? { session } : {}) },
     );
@@ -206,6 +351,7 @@ export function createConfigMethods(mongoose: typeof import('mongoose')) {
     getApplicableConfigs,
     upsertConfig,
     patchConfigFields,
+    tombstoneConfigField,
     unsetConfigField,
     deleteConfig,
     toggleConfigActive,

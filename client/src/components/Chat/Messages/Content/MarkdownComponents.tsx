@@ -2,12 +2,17 @@ import React, { memo, useMemo, useRef, useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { PermissionTypes, Permissions, apiBaseUrl } from 'librechat-data-provider';
+import {
+  handleDoubleClick,
+  triggerDownload,
+  resolveInlineMedia,
+  toAbsoluteFilePath,
+} from '~/utils';
 import Mermaid, { MermaidErrorBoundary } from '~/components/Messages/Content/Mermaid';
+import { useCodeBlockContext, useMediaContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { useFileDownload } from '~/data-provider';
-import { useCodeBlockContext } from '~/Providers';
-import { handleDoubleClick } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -41,8 +46,12 @@ export const code: React.ElementType = memo(function MarkdownCode({
   const isMermaid = lang === 'mermaid';
   const isSingleLine = isSingleLineCode(children);
 
-  const { getNextIndex, resetCounter } = useCodeBlockContext();
+  const { getNextIndex, getNextMermaidIndex, resetCounter } = useCodeBlockContext();
   const blockIndex = useRef(getNextIndex(isMath || isMermaid || isSingleLine)).current;
+  /* Mermaid fences do not consume a code-block index, so every one of them in a
+   * message would otherwise share `blockIndex` and collapse onto a single
+   * artifact id. They carry their own sequence instead. */
+  const mermaidIndex = useRef(isMermaid ? getNextMermaidIndex() : -1).current;
 
   useEffect(() => {
     resetCounter();
@@ -54,7 +63,7 @@ export const code: React.ElementType = memo(function MarkdownCode({
     const content = typeof children === 'string' ? children : String(children);
     return (
       <MermaidErrorBoundary code={content}>
-        <Mermaid id={`mermaid-${blockIndex}`}>{content}</Mermaid>
+        <Mermaid id={`mermaid-${mermaidIndex}`}>{content}</Mermaid>
       </MermaidErrorBoundary>
     );
   } else if (isSingleLine) {
@@ -127,7 +136,7 @@ export const a: React.ElementType = memo(function MarkdownAnchor({ href, childre
     return { file_id: '', filename: '', filepath: '' };
   }, [user?.id, href]);
 
-  const { refetch: downloadFile } = useFileDownload(user?.id ?? '', file_id);
+  const { refetch: downloadFile } = useFileDownload(user?.id ?? '', file_id, { direct: false });
   const props: { target?: string; onClick?: React.MouseEventHandler } = { target: '_blank' };
 
   if (!file_id || !filename) {
@@ -150,13 +159,7 @@ export const a: React.ElementType = memo(function MarkdownAnchor({ href, childre
         });
         return;
       }
-      const link = document.createElement('a');
-      link.href = stream.data;
-      link.setAttribute('download', filename);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(stream.data);
+      triggerDownload(stream.data, filename);
     } catch (error) {
       console.error('Error downloading file:', error);
     }
@@ -191,6 +194,19 @@ export const p: React.ElementType = memo(function MarkdownParagraph({ children }
 });
 p.displayName = 'MarkdownParagraph';
 
+type TTableProps = {
+  children: React.ReactNode;
+};
+
+export const table: React.ElementType = memo(function MarkdownTable({ children }: TTableProps) {
+  return (
+    <div className="markdown-table-wrapper w-full max-w-full">
+      <table>{children}</table>
+    </div>
+  );
+});
+table.displayName = 'MarkdownTable';
+
 type TImageProps = {
   src?: string;
   alt?: string;
@@ -208,19 +224,17 @@ export const img: React.ElementType = memo(function MarkdownImage({
 }: TImageProps) {
   // Get the base URL from the API endpoints
   const baseURL = apiBaseUrl();
+  /** A model writing `![DTI](5_dti.png)` is naming a file its run produced,
+   *  not a path the browser can fetch. Resolving the reference against the
+   *  turn's attachments is what turns those into the chart instead of a
+   *  broken-image glyph; an unmatched source keeps its original behavior. */
+  const { attachmentsByName } = useMediaContext();
 
-  // If src starts with /images/, prepend the base URL
   const fixedSrc = useMemo(() => {
     if (!src) return src;
-
-    // If it's already an absolute URL or doesn't start with /images/, return as is
-    if (src.startsWith('http') || src.startsWith('data:') || !src.startsWith('/images/')) {
-      return src;
-    }
-
-    // Prepend base URL to the image path
-    return `${baseURL}${src}`;
-  }, [src, baseURL]);
+    const resolved = resolveInlineMedia(src, attachmentsByName)?.filepath ?? src;
+    return toAbsoluteFilePath(resolved, baseURL);
+  }, [src, baseURL, attachmentsByName]);
 
   return <img src={fixedSrc} alt={alt} title={title} className={className} style={style} />;
 });

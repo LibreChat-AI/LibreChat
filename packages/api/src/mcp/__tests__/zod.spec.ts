@@ -7,6 +7,7 @@ import {
   convertJsonSchemaToZod,
   resolveJsonSchemaRefs,
   normalizeJsonSchema,
+  sanitizeGeminiSchema,
 } from '../zod';
 
 describe('convertJsonSchemaToZod', () => {
@@ -2120,6 +2121,50 @@ describe('normalizeJsonSchema', () => {
     expect(result.additionalProperties).toEqual({ type: 'string', enum: ['val'] });
   });
 
+  it('should drop malformed required keywords recursively', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        required: { type: 'boolean' },
+        config: {
+          type: 'object',
+          properties: { host: { type: 'string' } },
+          required: { host: true },
+        },
+      },
+      oneOf: [{ type: 'object', required: 'name' }],
+      items: { type: 'object', required: null },
+      required: {},
+    };
+
+    expect(normalizeJsonSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        required: { type: 'boolean' },
+        config: {
+          type: 'object',
+          properties: { host: { type: 'string' } },
+        },
+      },
+      oneOf: [{ type: 'object' }],
+      items: { type: 'object' },
+    });
+  });
+
+  it('should normalize required arrays to unique property names', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        age: { type: 'number' },
+      },
+      required: ['name', 42, null, 'age', 'name', { key: 'value' }],
+    };
+
+    expect(normalizeJsonSchema(schema).required).toEqual(['name', 'age']);
+    expect(normalizeJsonSchema({ type: 'object', required: [] }).required).toEqual([]);
+  });
+
   it('should handle null, undefined, and primitive inputs safely', () => {
     expect(normalizeJsonSchema(null as any)).toBeNull();
     expect(normalizeJsonSchema(undefined as any)).toBeUndefined();
@@ -2297,6 +2342,70 @@ describe('normalizeJsonSchema', () => {
     expect(result.properties.name).toEqual({ type: 'string' });
   });
 
+  it('should strip the spec-compliant $schema keyword (MongoDB rejects $-prefixed keys)', () => {
+    const schema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+      },
+      required: ['title'],
+    } as any;
+
+    const result = normalizeJsonSchema(schema);
+    expect(result).not.toHaveProperty('$schema');
+    expect(result.type).toBe('object');
+    expect(result.properties.title).toEqual({ type: 'string' });
+    expect(result.required).toEqual(['title']);
+    // Nothing left behind that MongoDB would reject.
+    expect(Object.keys(result).some((k) => k.startsWith('$'))).toBe(false);
+  });
+
+  it('should strip $-prefixed annotation keywords at all nesting levels', () => {
+    const schema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $id: 'urn:tool:create_citation',
+      $comment: 'root comment',
+      type: 'object',
+      properties: {
+        note: {
+          type: 'string',
+          $comment: 'nested comment',
+          $anchor: 'note',
+        },
+        items: {
+          type: 'array',
+          items: { type: 'string', $id: 'urn:item' },
+        },
+      },
+    } as any;
+
+    const result = normalizeJsonSchema(schema);
+    expect(result).not.toHaveProperty('$schema');
+    expect(result).not.toHaveProperty('$id');
+    expect(result).not.toHaveProperty('$comment');
+    expect(result.properties.note).toEqual({ type: 'string' });
+    expect(result.properties.items.items).toEqual({ type: 'string' });
+  });
+
+  it('should preserve property names that begin with $', () => {
+    const schema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        $ref: { type: 'string', description: 'a property literally named $ref' },
+      },
+    } as any;
+
+    const result = normalizeJsonSchema(schema);
+    expect(result).not.toHaveProperty('$schema');
+    // A `$`-prefixed name under `properties` is a data field, not a keyword.
+    expect(result.properties.$ref).toEqual({
+      type: 'string',
+      description: 'a property literally named $ref',
+    });
+  });
+
   it('should strip x-* fields inside oneOf/anyOf/allOf', () => {
     const schema = {
       type: 'object',
@@ -2359,5 +2468,815 @@ describe('normalizeJsonSchema', () => {
     // Standard fields preserved
     expect(result.properties.travelMode.enum).toEqual(['DRIVE', 'BICYCLE', 'TRANSIT', 'WALK']);
     expect(result.properties.origin).toEqual({ type: 'string', description: 'Starting address' });
+  });
+});
+
+describe('sanitizeGeminiSchema', () => {
+  it('collapses a multi-member anyOf to its first member', () => {
+    const schema = {
+      anyOf: [
+        { type: 'string', description: 'a string' },
+        { type: 'number', description: 'a number' },
+      ],
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result).toEqual({ type: 'string', description: 'a string' });
+    expect(result).not.toHaveProperty('anyOf');
+  });
+
+  it('collapses oneOf the same way as anyOf', () => {
+    const schema = {
+      oneOf: [{ type: 'integer' }, { type: 'boolean' }],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'integer' });
+  });
+
+  it('preserves sibling keys and lets the chosen member override them', () => {
+    const schema = {
+      title: 'field',
+      description: 'parent description',
+      anyOf: [
+        {
+          type: 'object',
+          description: 'member description',
+          properties: { id: { type: 'string' } },
+        },
+        { type: 'string' },
+      ],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      title: 'field',
+      description: 'member description',
+      type: 'object',
+      properties: { id: { type: 'string' } },
+    });
+  });
+
+  it('marks the field nullable when a null member is dropped from a union', () => {
+    const schema = {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'string', nullable: true });
+  });
+
+  it('handles a 3-member union that includes null (google-common would throw on this)', () => {
+    const schema = {
+      anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'null' }],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'string', nullable: true });
+  });
+
+  it('collapses a nested union introduced by the chosen member', () => {
+    const schema = {
+      anyOf: [{ anyOf: [{ type: 'string' }, { type: 'number' }] }, { type: 'boolean' }],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'string' });
+  });
+
+  it('collapses multi-entry type arrays', () => {
+    expect(sanitizeGeminiSchema({ type: ['string', 'number'] } as any)).toEqual({
+      type: 'string',
+    });
+  });
+
+  it('collapses a nullable type array to a single type plus nullable', () => {
+    expect(sanitizeGeminiSchema({ type: ['string', 'null'] } as any)).toEqual({
+      type: 'string',
+      nullable: true,
+    });
+  });
+
+  it('flattens unions nested inside object properties and array items', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        owner: { anyOf: [{ type: 'string' }, { type: 'object', properties: {} }] },
+        labels: {
+          type: 'array',
+          items: { oneOf: [{ type: 'string' }, { type: 'object' }] },
+        },
+        plain: { type: 'string', description: 'untouched' },
+      },
+      required: ['owner'],
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result.properties.owner).toEqual({ type: 'string' });
+    expect(result.properties.labels.items).toEqual({ type: 'string' });
+    expect(result.properties.plain).toEqual({ type: 'string', description: 'untouched' });
+    expect(result.required).toEqual(['owner']);
+  });
+
+  it('flattens a discriminated-union MCP tool schema (GitHub issue_write pattern)', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        method: {
+          anyOf: [
+            {
+              type: 'object',
+              properties: { action: { const: 'create' }, title: { type: 'string' } },
+              required: ['action', 'title'],
+            },
+            {
+              type: 'object',
+              properties: { action: { const: 'update' }, issue_number: { type: 'number' } },
+              required: ['action', 'issue_number'],
+            },
+          ],
+        },
+      },
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result.properties.method).toEqual({
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['create'] }, title: { type: 'string' } },
+      required: ['action', 'title'],
+    });
+    expect(result.properties.method).not.toHaveProperty('anyOf');
+  });
+
+  it('is a no-op for schemas without unions', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Name' },
+        age: { type: 'number' },
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['name'],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual(schema);
+  });
+
+  it('handles null, undefined, and primitive inputs safely', () => {
+    expect(sanitizeGeminiSchema(null as any)).toBeNull();
+    expect(sanitizeGeminiSchema(undefined as any)).toBeUndefined();
+    expect(sanitizeGeminiSchema('string' as any)).toBe('string');
+    expect(sanitizeGeminiSchema(42 as any)).toBe(42);
+  });
+
+  it('leaves no anyOf/oneOf/multi-type keys for google-common to reject', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        a: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+        b: { type: ['boolean', 'null'] },
+        c: { oneOf: [{ type: 'object', properties: { x: { type: 'string' } } }, { type: 'null' }] },
+      },
+    } as any;
+
+    const json = JSON.stringify(sanitizeGeminiSchema(schema));
+    expect(json).not.toContain('"anyOf"');
+    expect(json).not.toContain('"oneOf"');
+    expect(sanitizeGeminiSchema(schema).properties.b).toEqual({
+      type: 'boolean',
+      nullable: true,
+    });
+  });
+
+  it('preserves parent properties and required outside the union when collapsing', () => {
+    const schema = {
+      type: 'object',
+      properties: { repo: { type: 'string' } },
+      required: ['repo'],
+      anyOf: [
+        { properties: { title: { type: 'string' } }, required: ['title'] },
+        { properties: { body: { type: 'string' } }, required: ['body'] },
+      ],
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result.type).toBe('object');
+    expect(result.properties).toEqual({
+      repo: { type: 'string' },
+      title: { type: 'string' },
+    });
+    expect([...result.required].sort()).toEqual(['repo', 'title']);
+    expect(result).not.toHaveProperty('anyOf');
+  });
+
+  it('merges nested object properties from parent and chosen branch', () => {
+    const schema = {
+      type: 'object',
+      properties: { owner: { type: 'string' } },
+      oneOf: [
+        { type: 'object', properties: { sha: { type: 'string' } } },
+        { type: 'object', properties: { ref: { type: 'string' } } },
+      ],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema).properties).toEqual({
+      owner: { type: 'string' },
+      sha: { type: 'string' },
+    });
+  });
+
+  it('strips the dropped null from enum when a type array is nullable', () => {
+    const schema = { type: ['string', 'null'], enum: ['open', 'closed', null] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'string',
+      nullable: true,
+      enum: ['open', 'closed'],
+    });
+  });
+
+  it('strips null from enum when nullability comes from a union member', () => {
+    const schema = {
+      anyOf: [{ type: 'string', enum: ['a', 'b', null] }, { type: 'null' }],
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result.type).toBe('string');
+    expect(result.nullable).toBe(true);
+    expect(result.enum).toEqual(['a', 'b']);
+  });
+
+  it('keeps enum untouched when the field is not nullable', () => {
+    const schema = { type: ['string', 'number'], enum: ['a', 'b'] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'string', enum: ['a', 'b'] });
+  });
+
+  it('drops a boolean enum that Gemini rejects (the reported 400), keeping the type', () => {
+    const schema = { type: 'boolean', enum: [true, false] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'boolean' });
+  });
+
+  it('drops a boolean enum produced by normalizeJsonSchema const→enum', () => {
+    // normalizeJsonSchema turns `const: true` into `enum: [true]`; Gemini rejects it.
+    const schema = normalizeJsonSchema({ type: 'boolean', const: true } as any);
+    expect(sanitizeGeminiSchema(schema as any)).toEqual({ type: 'boolean' });
+  });
+
+  it('resolves the reported failing shape: boolean enum inside array→items→object', () => {
+    // tools[0].function_declarations[N].parameters.properties[k].items.properties[0].enum[0] = true
+    const schema = {
+      type: 'object',
+      properties: {
+        rows: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              active: { type: 'boolean', enum: [true, false] },
+              name: { type: 'string' },
+            },
+          },
+        },
+      },
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result.properties.rows.items.properties.active).toEqual({ type: 'boolean' });
+    expect(JSON.stringify(result)).not.toContain('"enum"');
+  });
+
+  it('filters non-string members out of a mixed string enum', () => {
+    const schema = { type: 'string', enum: ['a', 1, true, 'b', null] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'string', enum: ['a', 'b'] });
+  });
+
+  it('strips unsupported keywords (additionalProperties, $schema) but keeps Gemini-supported default', () => {
+    const schema = {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      additionalProperties: { type: 'string' },
+      properties: {
+        name: { type: 'string', default: 'anon' },
+      },
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result).not.toHaveProperty('$schema');
+    expect(result).not.toHaveProperty('additionalProperties');
+    expect(result.properties.name).toEqual({ type: 'string', default: 'anon' });
+  });
+
+  it('folds exclusive bounds into inclusive minimum/maximum', () => {
+    const schema = { type: 'number', exclusiveMinimum: 0, exclusiveMaximum: 100 } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'number', minimum: 0, maximum: 100 });
+  });
+
+  it('does not overwrite an existing minimum with an exclusive bound', () => {
+    const schema = { type: 'number', minimum: 5, exclusiveMinimum: 0 } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'number', minimum: 5 });
+  });
+
+  it('merges allOf intersections into a single object', () => {
+    const schema = {
+      allOf: [
+        { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] },
+        { type: 'object', properties: { b: { type: 'number' } }, required: ['b'] },
+      ],
+    } as any;
+
+    const result = sanitizeGeminiSchema(schema);
+    expect(result.type).toBe('object');
+    expect(result.properties).toEqual({ a: { type: 'string' }, b: { type: 'number' } });
+    expect([...result.required].sort()).toEqual(['a', 'b']);
+    expect(result).not.toHaveProperty('allOf');
+  });
+
+  it('leaves a clean Gemini-ready schema unchanged', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        owner: { type: 'string', description: 'Repo owner' },
+        side: { type: 'string', enum: ['LEFT', 'RIGHT'] },
+        line: { type: 'number' },
+      },
+      required: ['owner'],
+    } as any;
+
+    expect(sanitizeGeminiSchema(schema)).toEqual(schema);
+  });
+
+  it('drops the enum when a mixed type array collapses to a non-string type', () => {
+    const schema = { type: ['integer', 'string'], enum: [1, 'auto'] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'integer' });
+  });
+
+  it('keeps the enum when a mixed type array collapses to string', () => {
+    const schema = { type: ['string', 'integer'], enum: ['auto', 1] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'string', enum: ['auto'] });
+  });
+
+  it('makes a typeless surviving enum a string type (Gemini enum requires Type.STRING)', () => {
+    const schema = { enum: ['a', 'b'] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'string', enum: ['a', 'b'] });
+  });
+
+  it('drops a number enum on an integer field', () => {
+    const schema = { type: 'integer', enum: [1, 2, 3] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'integer' });
+  });
+
+  it('strips annotation keywords Gemini rejects (examples, readOnly, writeOnly, deprecated, $comment)', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        token: {
+          type: 'string',
+          examples: ['abc'],
+          readOnly: true,
+          writeOnly: false,
+          deprecated: true,
+          $comment: 'internal',
+        },
+      },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: { token: { type: 'string' } },
+    });
+  });
+
+  it('strips numeric/array validators Gemini rejects (multipleOf, uniqueItems)', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        count: { type: 'integer', multipleOf: 2 },
+        tags: { type: 'array', items: { type: 'string' }, uniqueItems: true },
+      },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        count: { type: 'integer' },
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+    });
+  });
+
+  it('strips object-composition keywords Gemini rejects (patternProperties, propertyNames, dependentRequired)', () => {
+    const schema = {
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      patternProperties: { '^x': { type: 'string' } },
+      propertyNames: { pattern: '^[a-z]+$' },
+      dependentRequired: { a: ['b'] },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+    });
+  });
+
+  it('strips tuple/array-extension keywords Gemini rejects (prefixItems, additionalItems)', () => {
+    const schema = {
+      type: 'array',
+      items: { type: 'string' },
+      prefixItems: [{ type: 'string' }, { type: 'number' }],
+      additionalItems: false,
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'array',
+      items: { type: 'string' },
+    });
+  });
+
+  it('synthesizes `items` from `prefixItems` when a tuple array has none (Gemini requires items)', () => {
+    const schema = {
+      type: 'array',
+      prefixItems: [{ type: 'string', readOnly: true }, { type: 'number' }],
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'array',
+      items: { type: 'string' },
+    });
+  });
+
+  it('preserves an existing `items` over a `prefixItems`-derived one', () => {
+    const schema = {
+      type: 'array',
+      items: { type: 'boolean' },
+      prefixItems: [{ type: 'string' }],
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'array',
+      items: { type: 'boolean' },
+    });
+  });
+
+  it('synthesizes `items` from `prefixItems` when `items` is boolean false (Draft 2020 tuple)', () => {
+    const schema = {
+      type: 'array',
+      prefixItems: [{ type: 'number' }],
+      items: false,
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'array',
+      items: { type: 'number' },
+    });
+  });
+
+  it('falls back to an empty `items` schema for a boolean `items` with no prefixItems', () => {
+    expect(sanitizeGeminiSchema({ type: 'array', items: false } as any)).toEqual({
+      type: 'array',
+      items: {},
+    });
+    expect(sanitizeGeminiSchema({ type: 'array', items: true } as any)).toEqual({
+      type: 'array',
+      items: {},
+    });
+  });
+
+  it('falls back to an empty `items` schema for an array missing items entirely', () => {
+    expect(sanitizeGeminiSchema({ type: 'array' } as any)).toEqual({
+      type: 'array',
+      items: {},
+    });
+  });
+
+  it('drops a tuple-array `items: [...]` form and falls back rather than emit an array items', () => {
+    const schema = { type: 'array', items: [{ type: 'string' }, { type: 'number' }] } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({ type: 'array', items: {} });
+  });
+
+  it('preserves an object `default` verbatim without sanitizing its data keys', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        cfg: {
+          type: 'object',
+          default: { id: 'abc', readOnly: true, deprecated: false, nested: { id: 'x' } },
+          properties: { id: { type: 'string' } },
+        },
+      },
+    } as any;
+    const result = sanitizeGeminiSchema(schema);
+    expect(result.properties.cfg.default).toEqual({
+      id: 'abc',
+      readOnly: true,
+      deprecated: false,
+      nested: { id: 'x' },
+    });
+    expect(result.properties.cfg.properties).toEqual({ id: { type: 'string' } });
+  });
+
+  it('preserves an array `default` verbatim', () => {
+    const schema = {
+      type: 'array',
+      items: { type: 'string' },
+      default: ['id', 'readOnly'],
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'array',
+      items: { type: 'string' },
+      default: ['id', 'readOnly'],
+    });
+  });
+
+  it('strips content keywords and the bare `id` alias Gemini rejects', () => {
+    const schema = {
+      id: 'urn:example',
+      type: 'object',
+      properties: {
+        blob: { type: 'string', contentEncoding: 'base64', contentMediaType: 'image/png' },
+      },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: { blob: { type: 'string' } },
+    });
+  });
+
+  it('strips deeply nested unsupported keywords through arrays, items, and properties', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        ranges: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { score: { type: 'number', exclusiveMinimum: 0, multipleOf: 0.5 } },
+          },
+        },
+      },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        ranges: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { score: { type: 'number', minimum: 0 } },
+          },
+        },
+      },
+    });
+  });
+
+  it('strips unresolvable `$ref` keys that survive ref resolution (Gemini rejects them)', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        recurrence: { $ref: 'https://example.com/external.json', description: 'Recurrence rule' },
+      },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        recurrence: { description: 'Recurrence rule' },
+      },
+    });
+  });
+});
+
+describe('resolveJsonSchemaRefs local pointer refs', () => {
+  it('resolves a `#/properties/...` pointer against the root schema', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        body: {
+          type: 'object' as const,
+          properties: {
+            start: {
+              type: 'object' as const,
+              properties: {
+                dateTime: { type: 'string' as const },
+                timeZone: { type: 'string' as const },
+              },
+            },
+            end: { $ref: '#/properties/body/properties/start' },
+          },
+        },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.body?.properties?.end).toEqual({
+      type: 'object',
+      properties: {
+        dateTime: { type: 'string' },
+        timeZone: { type: 'string' },
+      },
+    });
+    expect(JSON.stringify(resolved)).not.toContain('$ref');
+  });
+
+  it('resolves pointers that traverse array indices (e.g. anyOf members)', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        daysOfWeek: {
+          type: 'array' as const,
+          items: {
+            anyOf: [{ type: 'string' as const, enum: ['monday', 'tuesday'] }],
+          },
+        },
+        firstDayOfWeek: { $ref: '#/properties/daysOfWeek/items/anyOf/0' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.firstDayOfWeek).toEqual({
+      type: 'string',
+      enum: ['monday', 'tuesday'],
+    });
+  });
+
+  it('breaks mutually circular local pointers without hanging', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        a: { $ref: '#/properties/b' },
+        b: { $ref: '#/properties/a' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.a).toEqual({ type: 'object' });
+    expect(resolved.properties?.b).toEqual({ type: 'object' });
+  });
+
+  it('keeps dangling local pointers as-is', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        broken: { $ref: '#/properties/missing/nested' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.broken).toEqual({ $ref: '#/properties/missing/nested' });
+  });
+
+  it('unescapes RFC 6901 tokens (~0 → ~, ~1 → /) in pointer segments', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        'a/b': { type: 'string' as const },
+        alias: { $ref: '#/properties/a~1b' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.alias).toEqual({ type: 'string' });
+  });
+});
+
+describe('normalizeJsonSchema $-key recursion', () => {
+  /** Mongo rejects `$`-prefixed field names at any depth, so a `$` keyword nested
+   *  under a schema-valued container has to be stripped too or the stored
+   *  `parameters` blob still fails to persist. */
+  const nested = (container: Record<string, unknown>) =>
+    normalizeJsonSchema({
+      type: 'object',
+      properties: { q: { type: 'string', ...container } },
+    } as Record<string, unknown>) as {
+      properties: { q: Record<string, unknown> };
+    };
+
+  it.each([
+    ['not', { not: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'null' } }],
+    ['if', { if: { $comment: 'x', type: 'string' } }],
+    ['then', { then: { $comment: 'x', type: 'string' } }],
+    ['else', { else: { $comment: 'x', type: 'string' } }],
+    ['contains', { contains: { $id: 'x', type: 'string' } }],
+    ['propertyNames', { propertyNames: { $comment: 'x', type: 'string' } }],
+  ])('strips a $ keyword nested under %s', (name, container) => {
+    const result = nested(container);
+    expect(JSON.stringify(result)).not.toContain('"$');
+    expect(result.properties.q[name]).toBeDefined();
+  });
+
+  it('strips $ keywords under patternProperties and dependentSchemas', () => {
+    const result = normalizeJsonSchema({
+      type: 'object',
+      patternProperties: { '^a': { $schema: 'x', type: 'string' } },
+      dependentSchemas: { a: { $comment: 'x', type: 'object' } },
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+
+  it('strips $ keywords under prefixItems', () => {
+    const result = normalizeJsonSchema({
+      type: 'array',
+      prefixItems: [{ $schema: 'x', type: 'string' }],
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+
+  it('preserves a $-prefixed property name, which is data rather than a keyword', () => {
+    /** `$filter` is a real argument the tool accepts; dropping it would silently
+     *  remove the parameter from the schema the model sees. Modern MongoDB accepts
+     *  `$`-prefixed field names, so this is left intact deliberately. */
+    const result = normalizeJsonSchema({
+      type: 'object',
+      properties: { $filter: { type: 'string', $comment: 'odata' } },
+    } as Record<string, unknown>) as { properties: Record<string, unknown> };
+
+    expect(result.properties.$filter).toEqual({ type: 'string' });
+  });
+});
+
+describe('normalizeJsonSchema draft-07 and 2020-12 containers', () => {
+  it('strips a $ keyword under draft-07 dependencies', () => {
+    const result = normalizeJsonSchema({
+      type: 'object',
+      dependencies: { foo: { $comment: 'x', type: 'object' } },
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+
+  it('leaves a draft-07 dependencies property-name array intact', () => {
+    /** `dependencies` is polymorphic: an array of required property names is data,
+     *  not a subschema, and must round-trip unchanged. */
+    const result = normalizeJsonSchema({
+      type: 'object',
+      dependencies: { foo: ['bar', 'baz'] },
+    } as Record<string, unknown>) as { dependencies: Record<string, unknown> };
+
+    expect(result.dependencies.foo).toEqual(['bar', 'baz']);
+  });
+
+  it('strips a $ keyword under contentSchema', () => {
+    const result = normalizeJsonSchema({
+      type: 'string',
+      contentMediaType: 'application/json',
+      contentSchema: { $schema: 'x', type: 'object' },
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+});
+
+describe('normalizeJsonSchema prototype-polluting map keys', () => {
+  /** An MCP server's schema arrives as JSON, and `JSON.parse` creates a real own
+   *  `__proto__` property — unlike an object literal, where it sets the prototype. */
+  const parse = (json: string) => JSON.parse(json) as Record<string, unknown>;
+
+  it('keeps a __proto__ entry in a schema map as an own property', () => {
+    const result = normalizeJsonSchema(
+      parse('{"type":"object","properties":{"__proto__":{"type":"string","$comment":"x"}}}'),
+    ) as { properties: Record<string, unknown> };
+
+    expect(Object.prototype.hasOwnProperty.call(result.properties, '__proto__')).toBe(true);
+    expect(JSON.parse(JSON.stringify(result)).properties.__proto__).toEqual({ type: 'string' });
+  });
+
+  it('keeps a __proto__ entry under dependentSchemas', () => {
+    const result = normalizeJsonSchema(
+      parse('{"type":"object","dependentSchemas":{"__proto__":{"type":"object"}}}'),
+    ) as { dependentSchemas: Record<string, unknown> };
+
+    expect(Object.prototype.hasOwnProperty.call(result.dependentSchemas, '__proto__')).toBe(true);
+  });
+});
+
+describe('resolveJsonSchemaRefs expansion safety', () => {
+  /** A remote MCP server controls this schema. Each `Dn` holding two refs to
+   *  `Dn-1` is a compact acyclic graph that expands 2^n, so registration must
+   *  stay bounded rather than exhaust memory. */
+  const fanOutSchema = (depth: number) => {
+    const $defs: Record<string, unknown> = { D0: { type: 'string' } };
+    for (let i = 1; i <= depth; i++) {
+      $defs[`D${i}`] = {
+        type: 'object',
+        properties: { a: { $ref: `#/$defs/D${i - 1}` }, b: { $ref: `#/$defs/D${i - 1}` } },
+      };
+    }
+    return { $defs, $ref: `#/$defs/D${depth}` } as Record<string, unknown>;
+  };
+
+  it('stays bounded on an exponentially-expanding reference graph', () => {
+    const start = Date.now();
+    const result = resolveJsonSchemaRefs(fanOutSchema(30));
+    const nodes = JSON.stringify(result).length;
+
+    expect(Date.now() - start).toBeLessThan(10_000);
+    expect(nodes).toBeLessThan(50_000_000);
+  });
+
+  it('still resolves an ordinary reference graph fully', () => {
+    const result = resolveJsonSchemaRefs({
+      $defs: { Name: { type: 'string' } },
+      type: 'object',
+      properties: { first: { $ref: '#/$defs/Name' } },
+    } as Record<string, unknown>) as { properties: { first: Record<string, unknown> } };
+
+    expect(result.properties.first).toEqual({ type: 'string' });
+  });
+
+  it('keeps a __proto__ argument through reference resolution', () => {
+    const parsed = JSON.parse(
+      '{"type":"object","properties":{"__proto__":{"type":"string"}}}',
+    ) as Record<string, unknown>;
+    const result = resolveJsonSchemaRefs(parsed) as { properties: Record<string, unknown> };
+
+    expect(Object.prototype.hasOwnProperty.call(result.properties, '__proto__')).toBe(true);
   });
 });

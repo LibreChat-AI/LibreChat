@@ -1,21 +1,47 @@
-const { logger } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Calculator, createSearchTool, createCodeExecutionTool } = require('@librechat/agents');
 const {
   checkAccess,
+  createGitHubCompareTool,
+  getProxyDispatcher,
   toolkitParent,
+  toolRolePermissions,
+  checkToolRolePermission,
   createSafeUser,
+  loadMCPTools,
+  createAuthIdentityContext,
+  selectMCPUpstreamTokenProvider,
   mcpToolPattern,
   loadWebSearchAuth,
+  splitMCPToolKey,
+  buildServerNameAliases,
+  findShadowedServerNames,
+  isNormalizationSensitiveName,
+  buildInlineMemoryTool,
+  getCodeApiAuthHeaders,
   buildImageToolContext,
+  SET_MEMORY_TOOL_NAME,
   buildWebSearchContext,
+  DELETE_MEMORY_TOOL_NAME,
+  createAskUserQuestionTool,
+  ASK_USER_QUESTION_TOOL_NAME,
+  resolveWebSearchSSRFAgents,
   buildWebSearchDynamicContext,
+  codeExecutionAuthHeaders,
+  getCodeFileLocation,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
+  resolveMCPClientCapabilityProfile,
 } = require('@librechat/api');
 const {
+  AuthType,
   Tools,
   Constants,
   Permissions,
   EToolResources,
   PermissionTypes,
+  AgentCapabilities,
+  resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
   availableTools,
@@ -34,14 +60,22 @@ const {
   createGeminiImageTool,
   createOpenAIImageTools,
 } = require('../');
-const { createMCPTool, createMCPTools, resolveConfigServers } = require('~/server/services/MCP');
+const {
+  createMCPTool,
+  createMCPTools,
+  createMCPPermissionContext,
+  resolveMcpServerContext,
+  resolveCollisionAuditNames,
+} = require('~/server/services/MCP');
+const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
+const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSearch');
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
 const { getUserPluginAuthValue } = require('~/server/services/PluginService');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
-const { getMCPServerTools } = require('~/server/services/Config');
+const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
-const { getRoleByName } = require('~/models');
+const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
 
 /**
  * Validates the availability and authentication of tools for a user based on environment variables or user-specific plugin authentication values.
@@ -122,7 +156,20 @@ const validateTools = async (user, tools = []) => {
 const loadToolWithAuth = (userId, authFields, ToolConstructor, options = {}) => {
   return async function () {
     const authValues = await loadAuthValues({ userId, authFields });
-    return new ToolConstructor({ ...options, ...authValues, userId });
+    const userProvidedAuthFields = new Set(
+      authFields
+        .flatMap((authField) => authField.split('||'))
+        .filter((authField) => {
+          const value = process.env[authField];
+          return !value || value.trim() === '' || value === AuthType.USER_PROVIDED;
+        }),
+    );
+    return new ToolConstructor({
+      ...options,
+      ...authValues,
+      userId,
+      userProvidedAuthFields,
+    });
   };
 };
 
@@ -181,6 +228,13 @@ const loadTools = async ({
   };
 
   const customConstructors = {
+    github_compare: () =>
+      createGitHubCompareTool({
+        config: options.req?.config?.githubCompare,
+        toolRegistry: options.toolRegistry,
+        fetch,
+        getDispatcher: getProxyDispatcher,
+      }),
     image_gen_oai: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });
@@ -226,6 +280,13 @@ const loadTools = async ({
   };
 
   const requestedTools = {};
+  const hasMCPTools = tools.some((toolName) => toolName && mcpToolPattern.test(toolName));
+  const mcpPermissionContext =
+    options.mcpPermissionContext ?? createMCPPermissionContext(options.req);
+  const canUseMCP = hasMCPTools
+    ? await mcpPermissionContext.canUseServers(options.req?.user)
+    : true;
+  let loggedMCPDenied = false;
 
   if (functions === true) {
     toolConstructors.dalle = DALLE3;
@@ -265,16 +326,89 @@ const loadTools = async ({
 
   /** Resolve config-source servers for the current user/tenant context */
   let configServers;
-  if (tools.some((tool) => tool && mcpToolPattern.test(tool))) {
-    configServers = await resolveConfigServers(options.req);
+  /** All configured names, in the normalized form tool keys carry */
+  let mcpServerNames = [];
+  /** All configured names in raw config form, for normalized→raw resolution */
+  let mcpRawServerNames = [];
+  if (hasMCPTools && canUseMCP) {
+    /** Reuse the caller's context when it already resolved one, so the chat
+     *  startup path reads the request app config once. */
+    ({
+      configServers,
+      serverNames: mcpServerNames,
+      rawServerNames: mcpRawServerNames = [],
+    } = options.mcpServerContext ?? (await resolveMcpServerContext(options.req)));
   }
+  /**
+   * Collision guards need the FULL accessible set (operator + user DB): a
+   * cross-tier collision (DB `foo` vs operator `foo!`) is invisible to the
+   * operator-config names alone. The caller's heal may have already fetched
+   * it (threaded via `mcpServerContext.accessibleServerNames`); otherwise it
+   * is fetched ONLY when a configured name actually needs normalizing. When
+   * the full set was needed but unavailable, normalization-sensitive
+   * references FAIL CLOSED below rather than auditing operator names alone.
+   */
+  const collisionAudit = hasMCPTools
+    ? await resolveCollisionAuditNames({
+        rawServerNames: mcpRawServerNames,
+        /** Load-time callers thread the audit inside `mcpServerContext`;
+         *  deferred execution threads initialization's snapshot as a bare
+         *  `accessibleMcpServerNames` (it resolves no server context). */
+        accessibleServerNames:
+          options.mcpServerContext?.accessibleServerNames ?? options.accessibleMcpServerNames,
+        userId: user,
+        role: options.req?.user?.role,
+      })
+    : { names: [], complete: true };
+  const serverNameAliases = buildServerNameAliases(collisionAudit.names);
+  const shadowedServers = findShadowedServerNames(collisionAudit.names);
 
   for (const tool of tools) {
+    /** `loadTools` is the shared boundary for every runtime that equips these
+     *  tools — agents, and the Assistants required-action flow via
+     *  `processRequiredActions`, which never passes through the agent capability
+     *  filter. Gate here so a denied role cannot reach the sandbox or the search
+     *  index down any of them. The check is request-cached, so the agent path
+     *  that already resolved this grant pays nothing for the second look. */
+    const rolePermission = toolRolePermissions[tool];
+    if (rolePermission != null && options.req?.user != null) {
+      const allowed = await checkToolRolePermission({
+        req: options.req,
+        user: options.req.user,
+        permissionType: rolePermission,
+        getRoleByName,
+        context: 'handleTools',
+      });
+      if (!allowed) {
+        continue;
+      }
+    }
+
     if (tool === Tools.execute_code) {
       requestedTools[tool] = async () => {
+        const codeExecutionContext =
+          options.codeExecutionContext ??
+          resolveAgentCodeExecution(
+            withRequestCodeInputs({
+              req: options.req ?? {},
+              agent,
+              codeExecutionAvailable: true,
+              statefulSessionsAvailable:
+                agent?.stateful_code_sessions === true &&
+                (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions)),
+              userId: user,
+              conversationId: options.req?.body?.conversationId,
+            }),
+          ).context;
         const { files, toolContext } = await primeCodeFiles({
           ...options,
+          signal,
           agentId: agent?.id,
+          codeApiBaseUrl: codeExecutionContext.baseUrl,
+          executionProfile: codeExecutionContext.executionProfile,
+          executionRouteKey: codeExecutionContext.executionRouteKey,
+          bridgeWorkerId: codeExecutionContext.bridgeWorkerId,
+          codeFileLocation: getCodeFileLocation(codeExecutionContext),
         });
         if (toolContext) {
           dynamicToolContextMap[tool] = toolContext;
@@ -282,7 +416,16 @@ const loadTools = async ({
         if (files?.length) {
           primedCodeFiles = files;
         }
-        return createCodeExecutionTool({ user_id: user, files });
+        return createCodeExecutionTool({
+          user_id: user,
+          files,
+          authHeaders: () =>
+            codeExecutionAuthHeaders(
+              (bridgeWorkerId) => getCodeApiAuthHeaders(options.req, bridgeWorkerId),
+              codeExecutionContext,
+            ),
+          ...codeExecutionContext,
+        });
       };
       continue;
     } else if (tool === Tools.file_search) {
@@ -312,6 +455,7 @@ const loadTools = async ({
         }
 
         return createFileSearchTool({
+          appConfig: options.req.config,
           userId: user,
           files,
           entity_id: agent?.id,
@@ -325,29 +469,101 @@ const loadTools = async ({
         loadAuthValues,
         webSearchConfig: webSearch,
       });
+      if (!result.authenticated) {
+        logger.warn('[handleTools] Skipping web search because authentication is incomplete.');
+        continue;
+      }
       const { onSearchResults, onGetHighlights } = options?.[Tools.web_search] ?? {};
+      const { httpAgent, httpsAgent } = resolveWebSearchSSRFAgents(
+        result.authResult,
+        webSearch?.allowedAddresses,
+      );
       requestedTools[tool] = async () => {
         toolContextMap[tool] = buildWebSearchContext();
-        dynamicToolContextMap[tool] = buildWebSearchDynamicContext(
-          options.req?.conversationCreatedAt,
-        );
+        dynamicToolContextMap[tool] = buildWebSearchDynamicContext(options.req?.turnStartedAt);
         return createSearchTool({
           ...result.authResult,
+          httpAgent,
+          httpsAgent,
           onSearchResults,
           onGetHighlights,
           logger,
         });
       };
       continue;
+    } else if (tool === ASK_USER_QUESTION_TOOL_NAME) {
+      requestedTools[tool] = async () => createAskUserQuestionTool();
+      continue;
+    } else if (tool === SET_MEMORY_TOOL_NAME || tool === DELETE_MEMORY_TOOL_NAME) {
+      requestedTools[tool] = () =>
+        buildInlineMemoryTool({
+          toolName: tool,
+          req: options.req,
+          agent,
+          userId: user,
+          memoryMethods: { setMemory, deleteMemory, getFormattedMemories },
+          getRoleByName,
+        });
+      continue;
     } else if (tool && mcpToolPattern.test(tool)) {
-      const [toolName, serverName] = tool.split(Constants.mcp_delimiter);
+      if (!canUseMCP) {
+        if (!loggedMCPDenied) {
+          logger.warn(
+            `[handleTools] User ${options.req?.user?.id} lacks MCP server use permission`,
+          );
+          loggedMCPDenied = true;
+        }
+        continue;
+      }
+
+      /** Keys carry the normalized server name (raw in pre-normalization data),
+       *  so both spellings resolve the boundary; everything downstream — the
+       *  registry, config maps, cache, and auth rows — is keyed by the RAW name. */
+      const [toolName, parsedServerName] = splitMCPToolKey(tool, [
+        ...mcpServerNames,
+        ...serverNameAliases.values(),
+      ]);
       if (toolName === Constants.mcp_server) {
         /** Placeholder used for UI purposes */
         continue;
       }
-      const serverConfig = serverName
+      /** DIRECT-FIRST: a server resolving under the parsed name as-is wins
+       *  (a user-DB server may be named exactly like an operator server's
+       *  normalized form); only when nothing resolves is the parsed name
+       *  treated as a normalized spelling of a raw config name. */
+      let serverName = parsedServerName;
+      let serverConfig = serverName
         ? await getMCPServersRegistry().getServerConfig(serverName, user, configServers)
         : null;
+      if (!serverConfig && serverName != null) {
+        const aliasedName = serverNameAliases.get(serverName);
+        if (aliasedName != null && aliasedName !== serverName) {
+          serverConfig = await getMCPServersRegistry().getServerConfig(
+            aliasedName,
+            user,
+            configServers,
+          );
+          if (serverConfig) {
+            serverName = aliasedName;
+          }
+        }
+      }
+      /** A shadowed server's instances (wildcard-expanded or single) get the
+       *  SAME normalized names as the winning server's — in-run dispatch
+       *  could execute either. Fail closed at execution too, since legacy
+       *  raw keys and `mcp_all` tokens bypass catalog filtering. Under an
+       *  incomplete audit, any normalization-sensitive reference is
+       *  potentially shadowed and fails closed the same way. */
+      if (
+        serverName != null &&
+        (shadowedServers.has(serverName) ||
+          (!collisionAudit.complete && isNormalizationSensitiveName(serverName, mcpRawServerNames)))
+      ) {
+        logger.warn(
+          `[handleTools] Skipping MCP tool "${tool}": server "${serverName}" is shadowed by a name collision (or the collision audit is unavailable); rename one server or retry.`,
+        );
+        continue;
+      }
       if (!serverConfig) {
         logger.warn(
           `MCP server "${serverName}" for "${toolName}" tool is not configured${agent?.id != null && agent.id ? ` but attached to "${agent.id}"` : ''}`,
@@ -419,79 +635,76 @@ const loadTools = async ({
   }
 
   const loadedTools = (await Promise.all(toolPromises)).flatMap((plugin) => plugin || []);
-  const mcpToolPromises = [];
-  /** MCP server tools are initialized sequentially by server */
-  let index = -1;
-  const failedMCPServers = new Set();
   const safeUser = createSafeUser(options.req?.user);
+  const admittedAppConfig = options.req?.config;
+  const admittedMCPAppsPolicy = resolveMCPAppsPolicy(
+    admittedAppConfig?.mcpSettings?.apps,
+    admittedAppConfig?.mcpAppSandbox,
+    admittedAppConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+    admittedAppConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+    admittedAppConfig?.mcpAppSandbox?.url,
+    admittedAppConfig?.mcpAppSandbox?.maxActiveViews,
+    admittedAppConfig?.mcpAppSandbox?.maxActionPreviewChars,
+    admittedAppConfig?.mcpAppSandbox?.operationLimits,
+  );
+  const capabilityProfile = resolveMCPClientCapabilityProfile(admittedMCPAppsPolicy);
+  const requestScopedConnections =
+    options.requestScopedConnections ?? getMCPRequestContext(options.req, options.res);
+  /**
+   * Build the OBO upstream-token closure once at the request boundary (where
+   * `req`/`res` are in scope) and thread the function into MCP handling, so the
+   * MCP layer never receives the raw Express request. The closure reads/refreshes
+   * the live `req.session.openidTokens` at tool-call time and mirrors rotations
+   * to the `refreshToken` cookie when the response is still writable.
+   */
+  const oboIdentityContext = createAuthIdentityContext({
+    user: options.req?.user,
+    tenantId: getTenantId(),
+  });
+  const upstreamTokenProviderResolver = options.upstreamTokenProviderResolver;
+  const upstreamTokenProvider = selectMCPUpstreamTokenProvider({
+    upstreamTokenProvider: options.upstreamTokenProvider,
+    upstreamTokenProviderResolver,
+    createSessionProvider: () =>
+      createOpenIDSessionTokenProvider({
+        req: options.req,
+        res: options.res,
+        user: options.req?.user,
+        identityContext: oboIdentityContext,
+        tokenPreference: 'access_token',
+      }),
+  });
 
-  for (const [serverName, toolConfigs] of Object.entries(requestedMCPTools)) {
-    index++;
-    /** @type {LCAvailableTools} */
-    let availableTools;
-    for (const config of toolConfigs) {
-      try {
-        if (failedMCPServers.has(serverName)) {
-          continue;
-        }
-        const mcpParams = {
-          index,
-          signal,
-          user: safeUser,
-          userMCPAuthMap,
-          configServers,
-          res: options.res,
-          streamId: options.req?._resumableStreamId || null,
-          model: agent?.model ?? model,
-          serverName: config.serverName,
-          provider: agent?.provider ?? endpoint,
-          config: config.config,
-        };
-
-        if (config.type === 'all' && toolConfigs.length === 1) {
-          /** Handle async loading for single 'all' tool config */
-          mcpToolPromises.push(
-            createMCPTools(mcpParams).catch((error) => {
-              logger.error(`Error loading ${serverName} tools:`, error);
-              return null;
-            }),
-          );
-          continue;
-        }
-        if (!availableTools) {
-          try {
-            availableTools = await getMCPServerTools(safeUser.id, serverName);
-          } catch (error) {
-            logger.error(`Error fetching available tools for MCP server ${serverName}:`, error);
-          }
-        }
-
-        /** Handle synchronous loading */
-        const mcpTool =
-          config.type === 'all'
-            ? await createMCPTools(mcpParams)
-            : await createMCPTool({
-                ...mcpParams,
-                availableTools,
-                toolKey: config.toolKey,
-              });
-
-        if (Array.isArray(mcpTool)) {
-          loadedTools.push(...mcpTool);
-        } else if (mcpTool) {
-          loadedTools.push(mcpTool);
-        } else {
-          failedMCPServers.add(serverName);
-          logger.warn(
-            `MCP tool creation failed for "${config.toolKey}", server may be unavailable or unauthenticated.`,
-          );
-        }
-      } catch (error) {
-        logger.error(`Error loading MCP tool for server ${serverName}:`, error);
-      }
-    }
-  }
-  loadedTools.push(...(await Promise.all(mcpToolPromises)).flatMap((plugin) => plugin || []));
+  loadedTools.push(
+    ...(await loadMCPTools({
+      userId: user,
+      requestedTools: requestedMCPTools,
+      availableTools: options.mcpAvailableTools,
+      createTools: createMCPTools,
+      createTool: createMCPTool,
+      getAvailableTools: (userId, serverName, config) =>
+        getMCPServerTools(userId, serverName, config, capabilityProfile),
+      context: {
+        agentId: agent?.id,
+        mcpPermissionContext,
+        signal,
+        user: safeUser,
+        userMCPAuthMap,
+        mcpApps: admittedMCPAppsPolicy,
+        configServers,
+        requestBody: options.requestBody ?? options.req?.body,
+        requestScopedConnections,
+        res: options.res,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
+        oboIdentityContext,
+        streamId: options.req?._resumableStreamId || null,
+        jobCreatedAt: options.jobCreatedAt,
+        model: agent?.model ?? model,
+        provider: agent?.provider ?? endpoint,
+      },
+    })),
+  );
   return { loadedTools, toolContextMap, dynamicToolContextMap, primedCodeFiles };
 };
 

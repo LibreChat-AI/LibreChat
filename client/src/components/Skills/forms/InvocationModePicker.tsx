@@ -42,10 +42,10 @@ export default function InvocationModePicker({ value, onChange }: InvocationMode
         render: (props) => (
           <button {...props}>
             <div className="flex flex-col items-start gap-0.5 text-left">
-              <span className="font-medium text-text-primary">
+              <span className="text-text-primary font-medium">
                 {localize(invocationLabels[mode])}
               </span>
-              <span className="text-xs text-text-secondary">
+              <span className="text-text-secondary text-xs">
                 {localize(invocationDescriptions[mode])}
               </span>
             </div>
@@ -57,7 +57,7 @@ export default function InvocationModePicker({ value, onChange }: InvocationMode
 
   return (
     <div className="flex flex-col">
-      <label className="mb-1 text-sm font-medium text-text-secondary">
+      <label className="text-text-secondary mb-1 text-sm font-medium">
         {localize('com_ui_invocation_mode')}
       </label>
       <DropdownPopup
@@ -67,16 +67,16 @@ export default function InvocationModePicker({ value, onChange }: InvocationMode
         trigger={
           <Ariakit.MenuButton
             aria-label={localize('com_ui_invocation_mode')}
-            className="flex w-fit items-center justify-between gap-2 rounded-xl border border-border-medium bg-transparent px-3 py-2 text-sm text-text-primary transition-colors hover:bg-surface-tertiary"
+            className="border-border-medium text-text-primary hover:bg-surface-tertiary flex w-fit items-center justify-between gap-2 rounded-xl border bg-transparent px-3 py-2 text-sm transition-colors"
           >
-            <span className="font-medium text-text-primary">
+            <span className="text-text-primary font-medium">
               {localize(invocationLabels[value])}
             </span>
-            <ChevronDown className="size-4 text-text-secondary" aria-hidden="true" />
+            <ChevronDown className="text-text-secondary size-4" aria-hidden="true" />
           </Ariakit.MenuButton>
         }
         items={menuItems}
-        className="w-[280px]"
+        className="w-[min(17.5rem,90vw)]"
         portal={true}
       />
     </div>

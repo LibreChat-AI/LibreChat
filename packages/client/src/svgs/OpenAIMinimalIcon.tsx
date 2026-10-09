@@ -1,4 +1,10 @@
-export default function OpenAIMinimalIcon({ className = 'h-4 w-4' }) {
+import { JSX } from 'react/jsx-runtime';
+
+export default function OpenAIMinimalIcon({
+  className = 'h-4 w-4',
+}: {
+  className?: string | undefined;
+}): JSX.Element {
   return (
     <svg
       stroke="currentColor"

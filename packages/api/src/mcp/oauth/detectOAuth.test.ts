@@ -8,6 +8,8 @@ jest.mock('@modelcontextprotocol/sdk/client/auth.js', () => ({
 }));
 
 jest.mock('~/auth', () => ({
+  createSSRFSafeUndiciConnect: jest.fn(() => ({ lookup: jest.fn() })),
+  isOAuthUrlAllowed: jest.fn(() => false),
   isSSRFTarget: jest.fn(() => false),
   resolveHostnameSSRF: jest.fn(async () => false),
 }));
@@ -233,6 +235,7 @@ describe('detectOAuthRequirement', () => {
       expect(mockDiscoverOAuthProtectedResourceMetadata).toHaveBeenCalledWith(
         'https://mcp.example.com',
         expect.objectContaining({ resourceMetadataUrl: new URL(metadataUrl) }),
+        expect.any(Function),
       );
     });
 
@@ -284,6 +287,7 @@ describe('detectOAuthRequirement', () => {
       expect(mockDiscoverOAuthProtectedResourceMetadata).toHaveBeenCalledWith(
         'https://mcp.example.com/mcp',
         expect.objectContaining({ resourceMetadataUrl: new URL(metadataUrl) }),
+        expect.any(Function),
       );
     });
   });
@@ -315,6 +319,7 @@ describe('detectOAuthRequirement', () => {
       expect(mockDiscoverOAuthProtectedResourceMetadata).toHaveBeenCalledWith(
         'https://mcp.example.com',
         expect.objectContaining({ resourceMetadataUrl: undefined }),
+        expect.any(Function),
       );
       expect(result.requiresOAuth).toBe(true);
       expect(result.method).toBe('protected-resource-metadata');
@@ -343,6 +348,7 @@ describe('detectOAuthRequirement', () => {
       expect(mockDiscoverOAuthProtectedResourceMetadata).toHaveBeenCalledWith(
         'https://mcp.example.com',
         expect.objectContaining({ resourceMetadataUrl: undefined }),
+        expect.any(Function),
       );
       expect(result.requiresOAuth).toBe(true);
       expect(result.method).toBe('401-challenge-metadata');
@@ -371,6 +377,7 @@ describe('detectOAuthRequirement', () => {
       expect(mockDiscoverOAuthProtectedResourceMetadata).toHaveBeenCalledWith(
         'https://mcp.example.com',
         expect.objectContaining({ resourceMetadataUrl: undefined }),
+        expect.any(Function),
       );
     });
   });

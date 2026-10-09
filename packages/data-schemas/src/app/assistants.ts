@@ -52,6 +52,10 @@ export function assistantsConfigSetup(
 
   return {
     ...prevConfig,
+    version:
+      assistantsConfig?.version != null
+        ? parsedConfig.version
+        : (prevConfig.version ?? parsedConfig.version),
     retrievalModels: parsedConfig.retrievalModels,
     disableBuilder: parsedConfig.disableBuilder,
     pollIntervalMs: parsedConfig.pollIntervalMs,

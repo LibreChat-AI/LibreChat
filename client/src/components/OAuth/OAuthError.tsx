@@ -1,4 +1,5 @@
 import React from 'react';
+import { Button } from '@librechat/client';
 import { useSearchParams } from 'react-router-dom';
 import { useLocalize } from '~/hooks';
 
@@ -35,12 +36,12 @@ export default function OAuthError() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 p-8">
-      <div className="w-full max-w-md rounded-lg bg-white p-8 text-center shadow-lg">
+    <div className="flex min-h-screen items-center justify-center bg-surface-secondary p-8">
+      <div className="w-full max-w-md rounded-lg bg-surface-primary p-8 text-center shadow-lg">
         <div className="mb-4 flex justify-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-status-error-subtle">
             <svg
-              className="h-6 w-6 text-red-600"
+              className="h-6 w-6 text-status-error"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -55,17 +56,17 @@ export default function OAuthError() {
             </svg>
           </div>
         </div>
-        <h1 className="mb-4 text-3xl font-bold text-gray-900">
+        <h1 className="mb-4 text-3xl font-bold text-text-primary">
           {localize('com_ui_oauth_error_title') || 'Authentication Failed'}
         </h1>
-        <p className="mb-6 text-sm text-gray-600">{getErrorMessage(error)}</p>
-        <button
+        <p className="mb-6 text-sm text-text-secondary">{getErrorMessage(error)}</p>
+        <Button
+          variant="default"
           onClick={() => window.close()}
-          className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2"
-          aria-label={localize('com_ui_close_window') || 'Close Window'}
+          aria-label={localize('com_ui_close_window')}
         >
-          {localize('com_ui_close_window') || 'Close Window'}
-        </button>
+          {localize('com_ui_close_window')}
+        </Button>
       </div>
     </div>
   );

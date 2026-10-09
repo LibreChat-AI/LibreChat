@@ -1,8 +1,9 @@
 import { Component, ErrorInfo, ReactNode, createRef } from 'react';
+import { JSX } from 'react/jsx-runtime';
 import { RefreshCw } from 'lucide-react';
+import { useLocalize } from '~/hooks';
 import { Button } from '../Button';
 import { logger } from '~/utils';
-import { useLocalize } from '~/hooks';
 
 /**
  * Error boundary specifically for DataTable component.
@@ -72,22 +73,22 @@ class DataTableErrorBoundaryInner extends Component<
             aria-labelledby="datatable-error-title"
             aria-describedby="datatable-error-desc"
             tabIndex={-1}
-            className="before:bg-surface-destructive/80 relative w-full max-w-md overflow-hidden rounded-lg border border-border-light bg-surface-primary-alt p-6 shadow-sm outline-none before:absolute before:left-0 before:top-0 before:h-full before:w-1 focus:ring-2 focus:ring-ring focus:ring-offset-2 dark:border-border-medium dark:bg-surface-secondary"
+            className="border-border-light bg-surface-primary-alt before:bg-surface-destructive/80 focus:ring-focus-control relative w-full max-w-md overflow-hidden rounded-lg border p-6 shadow-xs outline-hidden before:absolute before:top-0 before:left-0 before:h-full before:w-1 focus:ring-2 focus:ring-offset-2"
           >
             <div className="flex items-center gap-2">
-              <RefreshCw className="h-4 w-4 text-surface-destructive" />
-              <h3 id="datatable-error-title" className="text-sm font-medium text-text-primary">
+              <RefreshCw className="text-surface-destructive h-4 w-4" />
+              <h3 id="datatable-error-title" className="text-text-primary text-sm font-medium">
                 {this.props.localize('com_ui_table_error')}
               </h3>
             </div>
-            <p id="datatable-error-desc" className="mt-2 text-sm text-text-secondary">
+            <p id="datatable-error-desc" className="text-text-secondary mt-2 text-sm">
               {this.props.localize('com_ui_table_error_description')}
             </p>
             <div className="mt-4 flex justify-center">
               <Button
                 variant="outline"
                 onClick={this.handleReset}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-surface-hover dark:hover:bg-surface-active"
+                className="hover:bg-surface-hover dark:hover:bg-surface-active flex items-center gap-2 px-3 py-1.5 text-sm"
                 aria-label="Retry loading table"
               >
                 <RefreshCw className="h-3 w-3" />
@@ -97,11 +98,11 @@ class DataTableErrorBoundaryInner extends Component<
           </div>
 
           {import.meta.env.MODE === 'development' && this.state.error && (
-            <details className="mt-4 max-w-md rounded-md bg-surface-secondary p-3 text-xs dark:bg-surface-tertiary">
-              <summary className="cursor-pointer font-medium text-text-primary">
+            <details className="bg-surface-secondary mt-4 max-w-md rounded-md p-3 text-xs">
+              <summary className="text-text-primary cursor-pointer font-medium">
                 {this.props.localize('com_ui_error_details')}
               </summary>
-              <pre className="mt-2 whitespace-pre-wrap text-text-secondary">
+              <pre className="text-text-secondary mt-2 whitespace-pre-wrap">
                 {this.state.error.message}
               </pre>
             </details>
@@ -114,7 +115,7 @@ class DataTableErrorBoundaryInner extends Component<
   }
 }
 
-export function DataTableErrorBoundary(props: DataTableErrorBoundaryProps) {
+export function DataTableErrorBoundary(props: DataTableErrorBoundaryProps): JSX.Element {
   const localize = useLocalize();
   return <DataTableErrorBoundaryInner {...props} localize={localize} />;
 }

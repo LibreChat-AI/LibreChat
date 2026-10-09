@@ -19,6 +19,7 @@ const mockRecordCollectedUsage = jest
   .mockResolvedValue({ input_tokens: 100, output_tokens: 50 });
 
 jest.mock('~/models', () => ({
+  initializeMessageBudget: jest.fn(),
   spendTokens: (...args) => mockSpendTokens(...args),
   spendStructuredTokens: (...args) => mockSpendStructuredTokens(...args),
   getMultiplier: mockGetMultiplier,
@@ -87,6 +88,77 @@ describe('AgentClient - recordCollectedUsage', () => {
     client = new AgentClient(mockOptions);
     client.conversationId = 'convo-123';
     client.user = 'user-123';
+  });
+
+  describe('recordTokenUsage fallback', () => {
+    const estimate = { promptTokens: 40, completionTokens: 7 };
+
+    it('does not bill the estimate when provider usage was already recorded', async () => {
+      await client.recordTokenUsage({
+        ...estimate,
+        usage: { input_tokens: 40, output_tokens: 0 },
+        model: 'gpt-4',
+      });
+
+      expect(mockSpendTokens).not.toHaveBeenCalled();
+    });
+
+    it('bills the estimate when no provider usage was recorded', async () => {
+      await client.recordTokenUsage({ ...estimate, usage: undefined, model: 'gpt-4' });
+
+      expect(mockSpendTokens).toHaveBeenCalledTimes(1);
+      expect(mockSpendTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'gpt-4', context: 'message' }),
+        estimate,
+      );
+    });
+
+    it('labels the estimate as an abort when the run was stopped and no context is given', async () => {
+      client.abortController = { signal: { aborted: true } };
+
+      await client.recordTokenUsage({ ...estimate, usage: undefined, model: 'gpt-4' });
+
+      expect(mockSpendTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ context: 'abort' }),
+        estimate,
+      );
+    });
+
+    it('labels the estimate as a message when the run completed and no context is given', async () => {
+      client.abortController = { signal: { aborted: false } };
+
+      await client.recordTokenUsage({ ...estimate, usage: undefined, model: 'gpt-4' });
+
+      expect(mockSpendTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ context: 'message' }),
+        estimate,
+      );
+    });
+
+    it('does not bill the estimate when a later primary call was billed but the aggregate hides it', async () => {
+      client.collectedUsage = [
+        { input_tokens: 0, output_tokens: 0 },
+        { input_tokens: 5, output_tokens: 0 },
+      ];
+
+      await client.recordTokenUsage({
+        ...estimate,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        model: 'gpt-4',
+      });
+
+      expect(mockSpendTokens).not.toHaveBeenCalled();
+    });
+
+    it('still bills the estimate when the recorded report is all zero', async () => {
+      await client.recordTokenUsage({
+        ...estimate,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        model: 'gpt-4',
+      });
+
+      expect(mockSpendTokens).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('basic functionality', () => {

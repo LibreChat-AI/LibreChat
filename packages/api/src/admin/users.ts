@@ -24,14 +24,31 @@ export interface AdminUsersDeps {
     options?: { limit?: number; offset?: number; sort?: Record<string, 1 | -1> },
   ) => Promise<IUser[]>;
   countUsers: (filter?: FilterQuery<IUser>) => Promise<number>;
+  beginAgentTriggerUserDeletion: (
+    userId: string,
+    startedAt: Date,
+  ) => Promise<'acquired' | 'in_progress' | 'missing'>;
+  cancelAgentTriggerUserDeletion: (userId: string, startedAt: Date) => Promise<boolean>;
+  drainAgentTriggerDeliveriesForUser: (userId: string) => Promise<void>;
+  prepareAgentTriggerUserPurge: (
+    userId: string,
+    fenceStartedAt: Date,
+    tenantId?: string,
+  ) => Promise<void>;
+  cancelAgentTriggerUserPurge: (userId: string, fenceStartedAt: Date) => Promise<boolean>;
+  purgeAgentTriggerDeliveriesForUser: (userId: string) => Promise<void>;
+  revokeUserCodeEnvironmentWorkers?: (userId: string) => Promise<number>;
   /**
    * Thin data-layer delete — removes the User document only.
    * Full cascade of user-owned resources (conversations, messages, files, tokens, etc.)
    * is handled by `UserController.deleteUserController` in the self-delete flow.
-   * This admin endpoint currently cascades Config and AclEntries.
+   * This admin endpoint fences durable triggers around the user commit and currently
+   * cascades Config and AclEntries.
    * A future iteration should consolidate the full cascade into a shared service function.
    */
   deleteUserById: (userId: string) => Promise<UserDeleteResult>;
+  deleteUserCodeEnvironments: (userId: string | Types.ObjectId) => Promise<number>;
+  invalidateCodeEnvironmentConfigCache: (tenantId?: string) => Promise<void>;
   deleteConfig: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
@@ -40,10 +57,35 @@ export interface AdminUsersDeps {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
   }) => Promise<void>;
+  /**
+   * Credential IDs are globally unique, so passkeys left behind by a deleted user
+   * keep authentication material and can collide with a later registration.
+   */
+  deletePasskeysByUser: (userId: string) => Promise<number>;
 }
 
-export function createAdminUsersHandlers(deps: AdminUsersDeps) {
-  const { findUsers, countUsers, deleteUserById, deleteConfig, deleteAclEntries } = deps;
+export function createAdminUsersHandlers(deps: AdminUsersDeps): {
+  listUsers: (req: ServerRequest, res: Response) => Promise<Response>;
+  searchUsers: (req: ServerRequest, res: Response) => Promise<Response>;
+  deleteUser: (req: ServerRequest, res: Response) => Promise<Response>;
+} {
+  const {
+    findUsers,
+    countUsers,
+    beginAgentTriggerUserDeletion,
+    cancelAgentTriggerUserDeletion,
+    drainAgentTriggerDeliveriesForUser,
+    prepareAgentTriggerUserPurge,
+    cancelAgentTriggerUserPurge,
+    purgeAgentTriggerDeliveriesForUser,
+    revokeUserCodeEnvironmentWorkers,
+    deleteUserCodeEnvironments,
+    deleteUserById,
+    invalidateCodeEnvironmentConfigCache,
+    deleteConfig,
+    deleteAclEntries,
+    deletePasskeysByUser,
+  } = deps;
 
   async function listUsersHandler(req: ServerRequest, res: Response) {
     try {
@@ -122,8 +164,13 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps) {
   }
 
   async function deleteUserHandler(req: ServerRequest, res: Response) {
+    let targetUserId: string | undefined;
+    let triggerDeletionFence: Date | undefined;
+    let userDeleted = false;
+
     try {
       const { id } = req.params as { id: string };
+      targetUserId = id;
 
       if (!isValidObjectIdString(id)) {
         return res.status(400).json({ error: 'Invalid user ID format' });
@@ -134,7 +181,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps) {
         return res.status(403).json({ error: 'Cannot delete your own account' });
       }
 
-      const [targetUser] = await findUsers({ _id: id }, 'role', { limit: 1 });
+      const [targetUser] = await findUsers({ _id: id }, 'role tenantId', { limit: 1 });
       if (targetUser?.role === SystemRoles.ADMIN) {
         const adminCount = await countUsers({ role: SystemRoles.ADMIN });
         if (adminCount <= 1) {
@@ -142,11 +189,36 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps) {
         }
       }
 
+      triggerDeletionFence = new Date();
+      const fenceState = await beginAgentTriggerUserDeletion(id, triggerDeletionFence);
+      if (fenceState === 'in_progress') {
+        triggerDeletionFence = undefined;
+        return res.status(409).json({ error: 'User deletion is already in progress' });
+      }
+      if (fenceState === 'missing') {
+        triggerDeletionFence = undefined;
+        return res.status(404).json({ error: 'User not found' });
+      }
+      await prepareAgentTriggerUserPurge(id, triggerDeletionFence, targetUser?.tenantId);
+      await drainAgentTriggerDeliveriesForUser(id);
+
       const result = await deleteUserById(id);
 
       if (result.deletedCount === 0) {
+        await cancelAgentTriggerUserPurge(id, triggerDeletionFence);
+        await cancelAgentTriggerUserDeletion(id, triggerDeletionFence);
+        triggerDeletionFence = undefined;
         return res.status(404).json({ error: 'User not found' });
       }
+      userDeleted = true;
+      let codeEnvironmentCleanupSafe = true;
+      try {
+        await revokeUserCodeEnvironmentWorkers?.(id);
+      } catch (error) {
+        codeEnvironmentCleanupSafe = false;
+        logger.error('[adminUsers] failed to revoke code environment workers:', id, error);
+      }
+      await purgeAgentTriggerDeliveriesForUser(id);
 
       if (targetUser?.role === SystemRoles.ADMIN) {
         const remaining = await countUsers({ role: SystemRoles.ADMIN });
@@ -161,16 +233,33 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps) {
       const objectId = new Types.ObjectId(id);
       const cleanupResults = await Promise.allSettled([
         deleteConfig(PrincipalType.USER, id),
+        ...(codeEnvironmentCleanupSafe ? [deleteUserCodeEnvironments(objectId)] : []),
         deleteAclEntries({ principalType: PrincipalType.USER, principalId: objectId }),
+        deletePasskeysByUser(id),
       ]);
       for (const r of cleanupResults) {
         if (r.status === 'rejected') {
           logger.error('[adminUsers] cascade cleanup failed for user:', id, r.reason);
         }
       }
+      await invalidateCodeEnvironmentConfigCache(targetUser?.tenantId).catch((error: unknown) => {
+        logger.error('[adminUsers] code environment cache invalidation failed:', id, error);
+      });
 
       return res.status(200).json({ message: result.message || 'User deleted successfully' });
     } catch (error) {
+      if (targetUserId != null && triggerDeletionFence != null && !userDeleted) {
+        try {
+          await cancelAgentTriggerUserPurge(targetUserId, triggerDeletionFence);
+        } catch (purgeFenceError) {
+          logger.error('[adminUsers] failed to disarm trigger purge recovery:', purgeFenceError);
+        }
+        try {
+          await cancelAgentTriggerUserDeletion(targetUserId, triggerDeletionFence);
+        } catch (fenceError) {
+          logger.error('[adminUsers] failed to release trigger deletion fence:', fenceError);
+        }
+      }
       logger.error('[adminUsers] deleteUser error:', error);
       return res.status(500).json({ error: 'Failed to delete user' });
     }

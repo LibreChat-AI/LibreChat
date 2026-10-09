@@ -3,7 +3,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { TooltipAnchor } from '@librechat/client';
 import { Zap, Circle, CheckCircle2 } from 'lucide-react';
 import type { TPrompt, TPromptGroup } from 'librechat-data-provider';
-import { useLocalize } from '~/hooks';
+import { useLocalize, useClockFormat } from '~/hooks';
 import { cn } from '~/utils';
 
 const VersionBadge = ({
@@ -26,13 +26,13 @@ const VersionBadge = ({
           className={cn(
             'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
             isProduction
-              ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
-              : 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400',
+              ? 'bg-status-success-subtle text-status-success'
+              : 'bg-status-info-subtle text-status-info',
           )}
         >
           {isProduction ? (
             <>
-              <span className="slow-pulse size-1.5 rounded-full bg-green-500" />
+              <span className="slow-pulse size-1.5 rounded-full bg-status-success" />
               <span>{label}</span>
             </>
           ) : (
@@ -49,10 +49,10 @@ const VersionBadge = ({
 
 const getTimelineConnectorClasses = (isSelected: boolean, isProduction: boolean) => {
   if (isSelected) {
-    return 'border-green-500 bg-green-500 text-white';
+    return 'border-status-success-strong bg-status-success-strong text-text-on-status';
   }
   if (isProduction) {
-    return 'border-green-400 bg-transparent text-green-500';
+    return 'border-status-success-border bg-transparent text-status-success';
   }
   return 'border-border-medium bg-transparent text-text-secondary';
 };
@@ -75,6 +75,7 @@ const VersionCard = ({
   isProduction: boolean;
 }) => {
   const localize = useLocalize();
+  const hour12 = useClockFormat();
   const versionNumber = totalVersions - index;
 
   return (
@@ -106,7 +107,7 @@ const VersionCard = ({
         className={cn(
           'group mb-2 ml-2 flex flex-1 flex-col rounded-lg border p-3 text-left',
           isSelected
-            ? 'border-green-500/50 bg-green-50/50 dark:bg-green-950/20'
+            ? 'border-status-success-border bg-status-success-subtle'
             : 'border-border-medium bg-transparent hover:border-border-heavy hover:bg-surface-hover',
         )}
         onClick={onClick}
@@ -116,7 +117,7 @@ const VersionCard = ({
           <span
             className={cn(
               'text-sm font-semibold',
-              isSelected ? 'text-green-700 dark:text-green-400' : 'text-text-primary',
+              isSelected ? 'text-status-success' : 'text-text-primary',
             )}
           >
             {localize('com_ui_version_var', { 0: versionNumber })}
@@ -142,7 +143,7 @@ const VersionCard = ({
         <time
           className="mt-1 text-xs text-text-secondary"
           dateTime={prompt.createdAt}
-          title={new Date(prompt.createdAt).toLocaleString()}
+          title={new Date(prompt.createdAt).toLocaleString(undefined, { hour12 })}
         >
           {formatDistanceToNow(new Date(prompt.createdAt), { addSuffix: true })}
         </time>

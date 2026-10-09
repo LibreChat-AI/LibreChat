@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import {
   ErrorTypes,
@@ -9,8 +10,64 @@ import type { TModelsConfig, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/types';
 import type { FetchModelsParams } from '~/endpoints/models';
+import type { GetAppConfigOptions } from '~/app/service';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
+import { getTokenConfigKey } from '~/endpoints/custom/initialize';
+import { getAppConfigOptionsFromUser } from '~/app/service';
+
+/**
+ * Built-in endpoints whose configured `models` list replaces their `*_MODELS`
+ * environment list. Read per request, so principal overrides can narrow them.
+ */
+type ConfiguredModelListEndpoint =
+  | EModelEndpoint.openAI
+  | EModelEndpoint.google
+  | EModelEndpoint.anthropic
+  | EModelEndpoint.bedrock;
+
+const CONFIGURED_MODEL_LIST_ENDPOINTS: readonly ConfiguredModelListEndpoint[] = [
+  EModelEndpoint.openAI,
+  EModelEndpoint.google,
+  EModelEndpoint.anthropic,
+  EModelEndpoint.bedrock,
+];
+
+/**
+ * The model list configured for a built-in endpoint in the resolved config, or
+ * `undefined` when none is set. A configured list replaces the environment list
+ * and makes provider discovery unnecessary.
+ */
+export function configuredModelList(
+  appConfig: AppConfig | null | undefined,
+  endpoint: ConfiguredModelListEndpoint,
+): string[] | undefined {
+  const models = appConfig?.endpoints?.[endpoint]?.models;
+  if (!Array.isArray(models)) {
+    return undefined;
+  }
+  return models.filter((model): model is string => typeof model === 'string');
+}
+import { resolveConfigSecret } from '~/admin/secrets';
+import { validateEndpointURL } from '~/auth';
+import { tokenConfigCache } from '~/cache';
 import { isUserProvided } from '~/utils';
+
+/**
+ * Stable fingerprint of a headers object, used to disambiguate the
+ * in-request fetch-coalescing key. Two endpoints that share the same
+ * baseURL+apiKey but configure different headers must NOT share a fetch
+ * promise, otherwise the first endpoint's filtered /models response would
+ * be reused for the other in the same request.
+ */
+function headersFingerprint(headers: Record<string, string> | undefined): string {
+  if (!headers || Object.keys(headers).length === 0) {
+    return '';
+  }
+  const ordered = Object.keys(headers)
+    .sort()
+    .map((k) => [k, headers[k]]);
+  return crypto.createHash('sha256').update(JSON.stringify(ordered)).digest('hex').slice(0, 16);
+}
 
 interface ResolvedEndpoint {
   name: string;
@@ -22,7 +79,7 @@ interface ResolvedEndpoint {
 }
 
 export interface LoadConfigModelsDeps {
-  getAppConfig: (params: { role?: string | null; tenantId?: string }) => Promise<AppConfig>;
+  getAppConfig: (params: GetAppConfigOptions) => Promise<AppConfig>;
   getUserKeyValues: GetUserKeyValuesFunction;
   fetchModels?: (params: FetchModelsParams) => Promise<string[]>;
 }
@@ -31,10 +88,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   const { getAppConfig, getUserKeyValues, fetchModels = defaultFetchModels } = deps;
 
   return async function loadConfigModels(req: ServerRequest): Promise<TModelsConfig> {
-    const appConfig = await getAppConfig({
-      role: req.user?.role,
-      tenantId: req.user?.tenantId,
-    });
+    const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     if (!appConfig) {
       return {};
     }
@@ -51,9 +105,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       modelsConfig[EModelEndpoint.azureAssistants] = azureConfig.assistantModels;
     }
 
-    const bedrockConfig = appConfig.endpoints?.[EModelEndpoint.bedrock];
-    if (bedrockConfig?.models && Array.isArray(bedrockConfig.models)) {
-      modelsConfig[EModelEndpoint.bedrock] = bedrockConfig.models;
+    for (const endpoint of CONFIGURED_MODEL_LIST_ENDPOINTS) {
+      const models = configuredModelList(appConfig, endpoint);
+      if (models) {
+        modelsConfig[endpoint] = models;
+      }
     }
 
     if (!Array.isArray(appConfig.endpoints?.[EModelEndpoint.custom])) {
@@ -71,7 +127,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
 
     const fetchPromisesMap: Record<string, Promise<string[]>> = {};
     const uniqueKeyToEndpointsMap: Record<string, string[]> = {};
+    /** tokenKey the deduped fetch cached its token config under, so siblings
+     *  sharing the fetch can be backfilled with the same config afterward */
+    const uniqueKeyToTokenKey: Record<string, string> = {};
     const endpointsMap: Record<string, TEndpoint> = {};
+    const tenantId = req.user?.tenantId;
 
     const resolved: ResolvedEndpoint[] = [];
     const userKeyEndpoints: ResolvedEndpoint[] = [];
@@ -83,7 +143,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       endpointsMap[name] = endpoint;
       modelsConfig[name] = [];
 
-      const resolvedApiKey = extractEnvVariable(apiKey);
+      const resolvedApiKey = resolveConfigSecret(apiKey) ?? '';
       const resolvedBaseURL = extractEnvVariable(baseURL);
       const entry: ResolvedEndpoint = {
         name,
@@ -142,21 +202,32 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       baseURLIsUserProvided,
     } of resolved) {
       const { models, headers: endpointHeaders } = endpoint;
-      const uniqueKey = `${BASE_URL}__${API_KEY}`;
+      // Include a fingerprint of the configured headers so two admin-trusted
+      // endpoints that happen to share the same baseURL+apiKey but configure
+      // different (potentially user-bound) headers don't reuse each other's
+      // fetched model list within the same request.
+      const uniqueKey = `${BASE_URL}__${API_KEY}__${headersFingerprint(endpointHeaders)}`;
 
       if (models?.fetch && !apiKeyIsUserProvided && !baseURLIsUserProvided) {
-        fetchPromisesMap[uniqueKey] =
-          fetchPromisesMap[uniqueKey] ||
-          fetchModels({
+        if (!fetchPromisesMap[uniqueKey]) {
+          /** User-scoped when configured headers resolve per user — the
+           *  derived token config must not be cached under the shared name */
+          const tokenKey = getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId);
+          uniqueKeyToTokenKey[uniqueKey] = tokenKey;
+          fetchPromisesMap[uniqueKey] = fetchModels({
             name,
             apiKey: API_KEY,
             baseURL: BASE_URL,
+            baseURLIsUserProvided: false,
+            allowedAddresses: appConfig.endpoints?.allowedAddresses,
             user: req.user?.id,
             userObject: req.user,
             headers: endpointHeaders,
             direct: endpoint.directEndpoint,
             userIdQuery: models.userIdQuery,
+            tokenKey,
           });
+        }
         uniqueKeyToEndpointsMap[uniqueKey] = uniqueKeyToEndpointsMap[uniqueKey] || [];
         uniqueKeyToEndpointsMap[uniqueKey].push(name);
         continue;
@@ -164,24 +235,44 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
 
       if (models?.fetch && userKeyMap.has(name)) {
         const userKeyValues = userKeyMap.get(name);
-        const resolvedApiKey = apiKeyIsUserProvided ? userKeyValues?.apiKey : API_KEY;
+        const resolvedApiKey =
+          apiKeyIsUserProvided || baseURLIsUserProvided ? userKeyValues?.apiKey : API_KEY;
         const resolvedBaseURL = baseURLIsUserProvided ? userKeyValues?.baseURL : BASE_URL;
 
         if (resolvedApiKey && resolvedBaseURL) {
           const userFetchKey = `user:${req.user?.id}:${name}`;
           fetchPromisesMap[userFetchKey] =
             fetchPromisesMap[userFetchKey] ||
-            fetchModels({
-              name,
-              apiKey: resolvedApiKey,
-              baseURL: resolvedBaseURL,
-              user: req.user?.id,
-              userObject: req.user,
-              headers: endpointHeaders,
-              direct: endpoint.directEndpoint,
-              userIdQuery: models.userIdQuery,
-              skipCache: true,
-            });
+            (async () => {
+              if (baseURLIsUserProvided) {
+                await validateEndpointURL(
+                  resolvedBaseURL,
+                  name,
+                  appConfig.endpoints?.allowedAddresses,
+                );
+              }
+              return fetchModels({
+                name,
+                apiKey: resolvedApiKey,
+                baseURL: resolvedBaseURL,
+                baseURLIsUserProvided,
+                allowedAddresses: appConfig.endpoints?.allowedAddresses,
+                user: req.user?.id,
+                userObject: req.user,
+                // Do not forward header overrides when the base URL is
+                // user-supplied: configured templates such as
+                // {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve and be
+                // sent to a destination the user controls, leaking the user's
+                // identity token. Header overrides are only safe for endpoints
+                // whose base URL is admin-trusted.
+                headers: baseURLIsUserProvided ? undefined : endpointHeaders,
+                direct: endpoint.directEndpoint,
+                userIdQuery: models.userIdQuery,
+                skipCache: true,
+                /** Fetched with the user's key/URL — always user-scoped */
+                tokenKey: getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId),
+              });
+            })();
           uniqueKeyToEndpointsMap[userFetchKey] = uniqueKeyToEndpointsMap[userFetchKey] || [];
           uniqueKeyToEndpointsMap[userFetchKey].push(name);
           continue;
@@ -213,6 +304,28 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
           typeof m === 'string' ? m : m.name,
         );
         modelsConfig[name] = !modelData?.length ? defaults : modelData;
+      }
+
+      /** A shared fetch caches token config under one endpoint's tokenKey;
+       *  copy it to the siblings so /token-config resolves each by its own
+       *  name (the query is staleTime:Infinity and won't recover otherwise) */
+      const winnerTokenKey = uniqueKeyToTokenKey[currentKey];
+      if (settled.status === 'fulfilled' && winnerTokenKey != null && associatedNames.length > 1) {
+        const cache = tokenConfigCache();
+        const config = await cache.get(winnerTokenKey);
+        if (config != null) {
+          for (const name of associatedNames) {
+            const siblingKey = getTokenConfigKey(
+              endpointsMap[name],
+              name,
+              req.user?.id ?? '',
+              tenantId,
+            );
+            if (siblingKey !== winnerTokenKey) {
+              await cache.set(siblingKey, config);
+            }
+          }
+        }
       }
     }
 

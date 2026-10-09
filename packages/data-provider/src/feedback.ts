@@ -107,11 +107,22 @@ export function getTagsForRating(rating: TFeedbackRating): TFeedbackTag[] {
 export const feedbackTagKeySchema = z.enum(FEEDBACK_REASON_KEYS);
 export const feedbackRatingSchema = z.enum(FEEDBACK_RATINGS);
 
-export const feedbackSchema = z.object({
-  rating: feedbackRatingSchema,
-  tag: feedbackTagKeySchema,
-  text: z.string().max(1024).optional(),
-});
+export const feedbackSchema = z
+  .object({
+    rating: feedbackRatingSchema,
+    tag: feedbackTagKeySchema,
+    text: z.string().max(1024).optional(),
+  })
+  .refine(
+    ({ rating, tag }) =>
+      FEEDBACK_TAGS.some(
+        (feedbackTag) => feedbackTag.key === tag && feedbackTag.direction === rating,
+      ),
+    {
+      message: 'Feedback tag does not match rating',
+      path: ['tag'],
+    },
+  );
 
 export type TMinimalFeedback = z.infer<typeof feedbackSchema>;
 

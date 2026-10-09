@@ -1,9 +1,19 @@
 import { z } from 'zod';
-import { Tools } from './types/assistants';
-import type { TMessageContentParts, FunctionTool, FunctionToolCall } from './types/assistants';
-import { TFeedback, feedbackSchema } from './feedback';
+import type { TMessageContentParts } from './types/content';
+import type { AgentSubagentGraph } from './types/agents';
 import type { SearchResultData } from './types/web';
+import type { FunctionTool } from './types/tools';
 import type { TFile } from './types/files';
+import {
+  CODE_ENVIRONMENT_MODES,
+  CODE_WORKSPACE_ID_PATTERN,
+  CODE_WORKSPACE_CHECKOUT_MODES,
+  MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
+} from './code/workspace';
+import { userSubmittedMessageFieldPathSchema } from './filters';
+import { TFeedback, feedbackSchema } from './feedback';
+import { CODE_APPROVAL_MODES } from './code/approval';
+import { Tools } from './types/tools';
 
 export const isUUID = z.string().uuid();
 
@@ -79,8 +89,69 @@ export const isOpenAILikeProvider = (provider?: string | null): boolean => {
   return openAILikeProviders.has(provider ?? '');
 };
 
+/**
+ * Providers whose `usage_metadata.input_tokens` ALREADY INCLUDES cached tokens
+ * (`input_token_details.cache_*` is a subset, not an additional charge):
+ * Google/Vertex (`promptTokenCount`), OpenAI/Azure (`prompt_tokens`), and the
+ * OpenAI-compatible family. `@librechat/agents`' `getAnthropicUsageMetadata`
+ * folds `cache_creation` + `cache_read` into `input_tokens`, so Anthropic is a
+ * subset provider too; without this the cache portion is billed twice. Bedrock
+ * stays additive — its Converse path passes AWS `inputTokens` through unmodified.
+ * Single source of truth shared by the backend billing path
+ * (`packages/api/src/agents/usage.ts`) and the client usage normalization.
+ */
+export const cacheSubsetProviders = new Set<string>([
+  Providers.OPENAI,
+  Providers.AZURE,
+  Providers.GOOGLE,
+  Providers.VERTEXAI,
+  Providers.XAI,
+  Providers.DEEPSEEK,
+  Providers.OPENROUTER,
+  Providers.MOONSHOT,
+  Providers.ANTHROPIC,
+]);
+
+export const inputTokensIncludesCache = (provider?: string | null): boolean => {
+  return cacheSubsetProviders.has(provider ?? '');
+};
+
 export const isDocumentSupportedProvider = (provider?: string | null): boolean => {
-  return documentSupportedProviders.has(provider ?? '');
+  const normalized = provider?.toLowerCase() ?? '';
+  return Array.from(documentSupportedProviders).some(
+    (candidate) => candidate.toLowerCase() === normalized,
+  );
+};
+
+/**
+ * Endpoints whose encoders actually build native audio/video payloads. Narrower than
+ * `documentSupportedProviders`: a provider can accept PDFs and still emit nothing for
+ * media, in which case the upload has to fall back to text/STT.
+ */
+export const mediaSupportedProviders = new Set<string>([
+  EModelEndpoint.google,
+  Providers.VERTEXAI,
+  Providers.OPENROUTER,
+]);
+
+export const isMediaSupportedProvider = (provider?: string | null): boolean => {
+  return mediaSupportedProviders.has(provider?.toLowerCase() ?? '');
+};
+
+/**
+ * Built-in endpoint and provider identifiers. A name outside this set is a custom
+ * endpoint whose real provider is resolved at request time, so its capabilities
+ * cannot be judged from the name alone.
+ */
+const knownProviderIdentifiers = new Set<string>([
+  ...Object.values(EModelEndpoint),
+  ...Object.values(Providers),
+  ...Object.values(EModelEndpoint).map((provider) => provider.toLowerCase()),
+  ...Object.values(Providers).map((provider) => provider.toLowerCase()),
+]);
+
+export const isKnownProviderIdentifier = (provider?: string | null): boolean => {
+  return knownProviderIdentifiers.has(provider?.toLowerCase() ?? '');
 };
 
 export const paramEndpoints = new Set<EModelEndpoint | string>([
@@ -175,6 +246,18 @@ export enum ReasoningEffort {
   medium = 'medium',
   high = 'high',
   xhigh = 'xhigh',
+  max = 'max',
+}
+
+export enum ReasoningParameterFormat {
+  disabled = 'disabled',
+  reasoningEffort = 'reasoning_effort',
+  reasoningObject = 'reasoning_object',
+}
+
+export enum ReasoningResponseKey {
+  reasoning = 'reasoning',
+  reasoningContent = 'reasoning_content',
 }
 
 export enum AnthropicEffort {
@@ -193,6 +276,9 @@ export enum AnthropicEffort {
  *   omit by default (Opus 4.7+), leave the field off for older models.
  * - `'summarized'` - always request a post-hoc summary of the reasoning.
  * - `'omitted'` - always suppress reasoning content. Slightly lower latency.
+ * - `'updates'` - return only the progress notes Claude writes between tool
+ *   calls (mid-thinking display updates); reasoning blocks stay empty. Needs
+ *   the `thinking-display-updates-2026-08-18` beta header.
  *
  * See https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default
  */
@@ -200,6 +286,7 @@ export enum ThinkingDisplay {
   auto = 'auto',
   summarized = 'summarized',
   omitted = 'omitted',
+  updates = 'updates',
 }
 
 /**
@@ -236,6 +323,21 @@ export enum ThinkingLevel {
   high = 'high',
 }
 
+/** OpenAI Responses API `reasoning.mode` (GPT-5.6+). */
+export enum ReasoningMode {
+  unset = '',
+  standard = 'standard',
+  pro = 'pro',
+}
+
+/** OpenAI Responses API `reasoning.context` (GPT-5.6+). */
+export enum ReasoningContext {
+  unset = '',
+  auto = 'auto',
+  current_turn = 'current_turn',
+  all_turns = 'all_turns',
+}
+
 export const imageDetailNumeric = {
   [ImageDetail.low]: 0,
   [ImageDetail.auto]: 1,
@@ -250,11 +352,46 @@ export const imageDetailValue = {
 
 export const eImageDetailSchema = z.nativeEnum(ImageDetail);
 export const eReasoningEffortSchema = z.nativeEnum(ReasoningEffort);
+export const eReasoningParameterFormatSchema = z.nativeEnum(ReasoningParameterFormat);
+export const eReasoningResponseKeySchema = z.nativeEnum(ReasoningResponseKey);
 export const eAnthropicEffortSchema = z.nativeEnum(AnthropicEffort);
 export const eThinkingDisplaySchema = z.nativeEnum(ThinkingDisplay);
 export const eReasoningSummarySchema = z.nativeEnum(ReasoningSummary);
 export const eVerbositySchema = z.nativeEnum(Verbosity);
 export const eThinkingLevelSchema = z.nativeEnum(ThinkingLevel);
+export const eReasoningModeSchema = z.nativeEnum(ReasoningMode);
+export const eReasoningContextSchema = z.nativeEnum(ReasoningContext);
+
+export const reasoningOverrideSchema = z.discriminatedUnion('key', [
+  z
+    .object({
+      key: z.literal('reasoning_effort'),
+      value: eReasoningEffortSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('effort'),
+      value: eAnthropicEffortSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('thinkingLevel'),
+      value: eThinkingLevelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('thinkingBudget'),
+      /* No fixed ceiling: an operator's paramDefinitions may widen the range,
+         and the request is checked against the resolved range server-side. */
+      value: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER),
+    })
+    .strict(),
+]);
+
+export type TReasoningOverride = z.infer<typeof reasoningOverrideSchema>;
 
 export const defaultAssistantFormValues = {
   assistant: '',
@@ -288,21 +425,39 @@ export const defaultAgentFormValues = {
   [Tools.execute_code]: false,
   [Tools.file_search]: false,
   [Tools.web_search]: false,
+  [Tools.memory]: false,
+  stateful_code_environment: 'user' as const,
+  code_environment_id: undefined as string | null | undefined,
+  code_environment_ids: [] as string[],
+  code_workspace_id: undefined as string | undefined,
+  repositoryInstructions: undefined as 'prefer' | 'defer' | 'off' | undefined,
   category: 'general',
   support_contact: {
     name: '',
     email: '',
   },
+  conversation_starters: [] as string[],
   /** Optional allowlist. Only applies when `skills_enabled === true`.
    *  Empty/undefined + enabled = full catalog; non-empty + enabled = narrow to ids. */
   skills: undefined as string[] | undefined,
   /** Master toggle for skill use on this agent. `true` activates skills
    *  (full catalog unless `skills` narrows it). Anything else = inactive. */
   skills_enabled: undefined as boolean | undefined,
+  /** Enables runtime skill creation without exposing an existing skill catalog. */
+  skill_authoring_enabled: undefined as boolean | undefined,
+  /** Explicit catalog scope. Missing preserves the legacy enabled + empty = all behavior. */
+  skills_scope: undefined as SkillsScope | undefined,
   /** `undefined` = feature disabled by default (no subagent tool injected). */
   subagents: undefined as
-    | { enabled?: boolean; allowSelf?: boolean; agent_ids?: string[] }
+    | {
+        enabled?: boolean;
+        allowSelf?: boolean;
+        agent_ids?: string[];
+        graphs?: AgentSubagentGraph[];
+      }
     | undefined,
+  /** Memory partition: 'agent' isolates memories per (user, agent); default shared pool */
+  memory_scope: undefined as MemoryScope | undefined,
 };
 
 export const ImageVisionTool: FunctionTool = {
@@ -318,7 +473,9 @@ export const ImageVisionTool: FunctionTool = {
   },
 };
 
-export const isImageVisionTool = (tool: FunctionTool | FunctionToolCall) =>
+/** Structural on purpose: accepts assistants tools/tool calls and agents function tool
+ *  calls alike — the check only ever reads `type` and `function.name`. */
+export const isImageVisionTool = (tool: { type?: string; function?: { name?: string } }) =>
   tool.type === 'function' && tool.function?.name === ImageVisionTool.function?.name;
 
 export const openAISettings = {
@@ -366,15 +523,90 @@ export const openAISettings = {
   },
 };
 
+/**
+ * `65535` (not 65536) is the value valid on both Google AI Studio and Vertex AI:
+ * Vertex caps current Gemini text models at 65,535 output tokens, so defaulting to
+ * 65,536 would make otherwise-default Vertex requests fail validation.
+ */
+const GOOGLE_MAX_OUTPUT = 65535 as const;
+const GOOGLE_IMAGE_MAX_OUTPUT = 32768 as const;
+const GOOGLE_LEGACY_MAX_OUTPUT = 8192 as const;
+
+/**
+ * Resolves the documented max output-token limit for a Google/Gemini model.
+ * Current Gemini text models (2.5 and 3+) support 64K output tokens; their image
+ * variants (e.g. `gemini-2.5-flash-image`) cap at 32K; legacy/deprecated models
+ * (2.0 and earlier, including legacy image models) and Gemma retain the 8K limit.
+ */
+const getGoogleMaxOutputTokens = (modelName: string): number => {
+  if (/gemini-(?:2\.5|[3-9]|\d{2,})/i.test(modelName)) {
+    if (/image/i.test(modelName)) {
+      return GOOGLE_IMAGE_MAX_OUTPUT;
+    }
+    return GOOGLE_MAX_OUTPUT;
+  }
+  return GOOGLE_LEGACY_MAX_OUTPUT;
+};
+
+/**
+ * Per-model thinking budget bounds, documented in
+ * `com_endpoint_google_thinking_budget`: Gemini 2.5 Pro accepts 128-32,768,
+ * Flash accepts 0-24,576, and Flash Lite accepts 512-24,576. The generic
+ * 32,000 in the shared definition both under-limits Pro and lets invalid
+ * Flash values through.
+ *
+ * `-1` remains the "decide automatically" sentinel and is not part of these
+ * floors. Callers must keep `range.min` at -1 and apply `min` only to
+ * non-negative values.
+ */
+const GOOGLE_THINKING_BUDGET_PRO_MAX = 32768 as const;
+const GOOGLE_THINKING_BUDGET_FLASH_MAX = 24576 as const;
+const GOOGLE_THINKING_BUDGET_PRO_MIN = 128 as const;
+const GOOGLE_THINKING_BUDGET_FLASH_MIN = 0 as const;
+const GOOGLE_THINKING_BUDGET_FLASH_LITE_MIN = 512 as const;
+
+export type GoogleThinkingBudgetBounds = { min: number; max: number };
+
+export const getGoogleThinkingBudgetBounds = (
+  modelName: string,
+): GoogleThinkingBudgetBounds | undefined => {
+  if (!/gemini-2\.5/i.test(modelName)) {
+    return undefined;
+  }
+  if (/flash[-_.]?lite/i.test(modelName)) {
+    return { min: GOOGLE_THINKING_BUDGET_FLASH_LITE_MIN, max: GOOGLE_THINKING_BUDGET_FLASH_MAX };
+  }
+  if (/flash/i.test(modelName)) {
+    return { min: GOOGLE_THINKING_BUDGET_FLASH_MIN, max: GOOGLE_THINKING_BUDGET_FLASH_MAX };
+  }
+  if (/pro/i.test(modelName)) {
+    return { min: GOOGLE_THINKING_BUDGET_PRO_MIN, max: GOOGLE_THINKING_BUDGET_PRO_MAX };
+  }
+  return undefined;
+};
+
+export const getGoogleThinkingBudgetMax = (modelName: string): number | undefined =>
+  getGoogleThinkingBudgetBounds(modelName)?.max;
+
 export const googleSettings = {
   model: {
     default: 'gemini-1.5-flash-latest' as const,
   },
+  maxContextTokens: {
+    min: 10 as const,
+    max: 2000000 as const,
+    step: 1000 as const,
+  },
   maxOutputTokens: {
     min: 1 as const,
-    max: 64000 as const,
+    max: GOOGLE_MAX_OUTPUT,
     step: 1 as const,
-    default: 8192 as const,
+    default: GOOGLE_LEGACY_MAX_OUTPUT,
+    reset: (modelName: string): number => getGoogleMaxOutputTokens(modelName),
+    set: (value: number, modelName: string): number => {
+      const max = getGoogleMaxOutputTokens(modelName);
+      return value > max ? max : value;
+    },
   },
   temperature: {
     min: 0 as const,
@@ -416,6 +648,29 @@ const CLAUDE_4_64K_MAX_OUTPUT = 64000 as const;
 const CLAUDE_32K_MAX_OUTPUT = 32000 as const;
 const DEFAULT_MAX_OUTPUT = 8192 as const;
 const LEGACY_ANTHROPIC_MAX_OUTPUT = 4096 as const;
+const CLAUDE_SONNET_128K_OUTPUT_PATTERN =
+  /claude-sonnet[-.]?(?:4[-.]?(?:[6-9]|\d{2})|[5-9]|\d{2,})(?=$|[^0-9])/;
+
+/**
+ * Claude "Mythos-class" model families — new top-level classes (peers of
+ * `opus`/`sonnet`/`haiku`) that ship with the post-Opus-4.7 modern profile:
+ * adaptive thinking always on, raw thinking omitted by default (summarized
+ * opt-in), sampling parameters rejected, and a 1M context window. The tier
+ * word is the class name itself, so the `opus`/`sonnet` version parsers don't
+ * cover them.
+ *
+ * Single source of truth: add a future sibling class name here and every
+ * Mythos-class gate (adaptive thinking, sampling omission, prompt caching, 1M
+ * context, 128K output) picks it up.
+ */
+export const MYTHOS_CLASS_FAMILIES = ['fable', 'mythos'] as const;
+const MYTHOS_CLASS_PATTERN = new RegExp(`claude-(?:${MYTHOS_CLASS_FAMILIES.join('|')})[-.]?\\d`);
+
+/** Whether the model is a Claude Mythos-class model (e.g. `claude-fable-5`). */
+export function isMythosClassModel(model: string): boolean {
+  return MYTHOS_CLASS_PATTERN.test(model);
+}
+
 export const anthropicSettings = {
   model: {
     default: 'claude-3-5-sonnet-latest' as const,
@@ -428,6 +683,9 @@ export const anthropicSettings = {
   },
   promptCache: {
     default: true as const,
+  },
+  promptCacheTtl: {
+    default: undefined,
   },
   thinking: {
     default: true as const,
@@ -444,7 +702,15 @@ export const anthropicSettings = {
     step: 1 as const,
     default: DEFAULT_MAX_OUTPUT,
     reset: (modelName: string) => {
+      if (isMythosClassModel(modelName)) {
+        return ANTHROPIC_MAX_OUTPUT;
+      }
+
       if (/claude-opus[-.]?(?:4[-.]?(?:[6-9]|\d{2,})|[5-9]|\d{2,})/.test(modelName)) {
+        return ANTHROPIC_MAX_OUTPUT;
+      }
+
+      if (CLAUDE_SONNET_128K_OUTPUT_PATTERN.test(modelName)) {
         return ANTHROPIC_MAX_OUTPUT;
       }
 
@@ -463,7 +729,21 @@ export const anthropicSettings = {
       return DEFAULT_MAX_OUTPUT;
     },
     set: (value: number, modelName: string) => {
+      if (isMythosClassModel(modelName)) {
+        if (value > ANTHROPIC_MAX_OUTPUT) {
+          return ANTHROPIC_MAX_OUTPUT;
+        }
+        return value;
+      }
+
       if (/claude-opus[-.]?(?:4[-.]?(?:[6-9]|\d{2,})|[5-9]|\d{2,})/.test(modelName)) {
+        if (value > ANTHROPIC_MAX_OUTPUT) {
+          return ANTHROPIC_MAX_OUTPUT;
+        }
+        return value;
+      }
+
+      if (CLAUDE_SONNET_128K_OUTPUT_PATTERN.test(modelName)) {
         if (value > ANTHROPIC_MAX_OUTPUT) {
           return ANTHROPIC_MAX_OUTPUT;
         }
@@ -531,7 +811,12 @@ export const anthropicSettings = {
   },
   thinkingDisplay: {
     default: ThinkingDisplay.auto,
-    options: [ThinkingDisplay.auto, ThinkingDisplay.summarized, ThinkingDisplay.omitted],
+    options: [
+      ThinkingDisplay.auto,
+      ThinkingDisplay.summarized,
+      ThinkingDisplay.omitted,
+      ThinkingDisplay.updates,
+    ],
   },
   web_search: {
     default: false as const,
@@ -599,6 +884,8 @@ export const tPluginAuthConfigSchema = z.object({
   label: z.string(),
   description: z.string(),
   optional: z.boolean().optional(),
+  /** Whether the field holds a secret and should be masked in the UI (defaults to masked when omitted). */
+  sensitive: z.boolean().optional(),
 });
 
 export type TPluginAuthConfig = z.infer<typeof tPluginAuthConfigSchema>;
@@ -613,6 +900,9 @@ export const tPluginSchema = z.object({
   chatMenu: z.boolean().optional(),
   isButton: z.boolean().optional(),
   toolkit: z.boolean().optional(),
+  /** Raw upstream tool name when the model-facing key stripped a redundant
+   *  server-name prefix — proves upstream identity for legacy id migration. */
+  serverToolName: z.string().optional(),
 });
 
 export type TPlugin = z.infer<typeof tPluginSchema>;
@@ -632,6 +922,13 @@ export const tExampleSchema = z.object({
 
 export type TExample = z.infer<typeof tExampleSchema>;
 
+/** Compact context-fading tier persisted beside a message's calibration ratio. */
+const agentFadingTierSchema = z.object({
+  v: z.union([z.literal(1), z.literal(2)]),
+  budgetTokens: z.number().positive(),
+  masked: z.boolean(),
+});
+
 export const tMessageSchema = z.object({
   messageId: z.string(),
   endpoint: z.string().optional(),
@@ -648,6 +945,16 @@ export const tMessageSchema = z.object({
   /** @deprecated */
   generation: z.string().nullable().optional(),
   isCreatedByUser: z.boolean(),
+  /** Opaque revision of the separately authorized owner display. */
+  privacyRevision: z.string().optional(),
+  /** True when the complete stored row came from outside the model. */
+  isUserSubmitted: z.boolean().optional(),
+  /** JSON pointers to caller-authored fields in an otherwise mixed model response. */
+  userSubmittedPaths: z.array(z.string().startsWith('/')).optional(),
+  /** Exact HITL message-field identity for caller-authored values stored in mixed responses. */
+  userSubmittedMessageFieldPaths: z.array(userSubmittedMessageFieldPathSchema).optional(),
+  isTemporary: z.boolean().optional(),
+  expiredAt: z.string().nullable().optional(),
   error: z.boolean().optional(),
   clientTimestamp: z.string().optional(),
   createdAt: z
@@ -669,6 +976,8 @@ export const tMessageSchema = z.object({
   feedback: feedbackSchema.optional(),
   /** metadata */
   metadata: z.record(z.unknown()).optional(),
+  /** Output tokens for assistant messages, calibrated prompt-side estimate for user messages */
+  tokenCount: z.number().optional(),
   contextMeta: z
     .object({
       calibrationRatio: z
@@ -683,6 +992,15 @@ export const tMessageSchema = z.object({
         .describe(
           'Tokenizer encoding used when this ratio was computed (e.g. "claude", "o200k_base")',
         ),
+      fading: agentFadingTierSchema
+        .optional()
+        .describe(
+          'Latched context-fading tier of the default agent; seeds the next run so the provider projection of history keeps the same bytes',
+        ),
+      fadingTiers: z
+        .array(agentFadingTierSchema.extend({ agentId: z.string().min(1) }))
+        .optional()
+        .describe('Latched context-fading tiers keyed by agent ID, stored as entries'),
     })
     .optional(),
   /**
@@ -702,27 +1020,104 @@ export const tMessageSchema = z.object({
    * what actually ran, not the current catalog).
    */
   alwaysAppliedSkills: z.array(z.string()).optional(),
+  /**
+   * Verbatim excerpts the user quoted (via the "Add to chat" selection
+   * popup) to reference on this turn. UI metadata that `MessageQuotes`
+   * renders above the user bubble so the references persist on reload. The
+   * excerpts are merged into the user message text sent to the model at
+   * request time and counted in the user message token count.
+   */
+  quotes: z.array(z.string()).optional(),
+  /** Request-scoped reasoning selection that produced this user turn. */
+  reasoningOverride: reasoningOverrideSchema.optional(),
 });
+
+/**
+ * Which memory partition an agent reads/writes.
+ * `user` = the shared personal pool (default); `agent` = a partition
+ * isolated per (user, agent) so the agent only sees its own memories.
+ */
+export enum MemoryScope {
+  user = 'user',
+  agent = 'agent',
+}
+
+/** Catalog exposure for a persisted agent with skills enabled. */
+export enum SkillsScope {
+  all = 'all',
+  selected = 'selected',
+  none = 'none',
+}
+
+/** Resolves explicit and legacy persisted-agent skill catalog states. */
+export function resolveAgentSkillsScope(
+  skills: readonly string[] | undefined,
+  enabled: boolean | undefined,
+  scope: SkillsScope | undefined,
+): SkillsScope {
+  if (enabled !== true) {
+    return SkillsScope.none;
+  }
+  if (scope !== undefined) {
+    return scope;
+  }
+  return (skills ?? []).length > 0 ? SkillsScope.selected : SkillsScope.all;
+}
 
 export type MemoryArtifact = {
   key: string;
   value?: string;
   tokenCount?: number;
   type: 'update' | 'delete' | 'error';
+  /** Agent partition the write targeted; absent = shared personal pool */
+  agentId?: string;
 };
 
 export type UIResource = {
   resourceId: string;
   uri: string;
+  name?: string;
   mimeType?: string;
   text?: string;
+  serverName?: string;
+  toolName?: string;
+  /** Opaque server-issued binding required for executable MCP App callbacks. */
+  serverBinding?: string;
+  structuredContent?: Record<string, unknown>;
+  content?: unknown[];
+  csp?: {
+    connectDomains?: string[];
+    resourceDomains?: string[];
+    frameDomains?: string[];
+    baseUriDomains?: string[];
+  };
+  permissions?: {
+    camera?: Record<string, never>;
+    microphone?: Record<string, never>;
+    geolocation?: Record<string, never>;
+    clipboardWrite?: Record<string, never>;
+  };
+  toolArgs?: Record<string, unknown>;
+  isError?: boolean;
+  resultMeta?: Record<string, unknown>;
   [key: string]: unknown;
+};
+
+export type WorkspaceChange = {
+  profile: 'stateful';
+  operation: 'created' | 'updated';
+  path: string;
 };
 
 export type TAttachmentMetadata = {
   type?: Tools;
   messageId: string;
   toolCallId: string;
+  /** Saved-agent owner when provider tool-call ids repeat across handoffs. */
+  agentId?: string;
+  /** Host run-step owner when one agent repeats a provider tool-call id. */
+  stepId?: string;
+  workspaceChange?: WorkspaceChange;
   [Tools.memory]?: MemoryArtifact;
   [Tools.ui_resources]?: UIResource[];
   [Tools.web_search]?: SearchResultData;
@@ -746,6 +1141,8 @@ export type TMessage = z.input<typeof tMessageSchema> & {
   siblingIndex?: number;
   attachments?: TAttachment[];
   clientTimestamp?: string;
+  /** Client-only durable branch anchor while this message is an optimistic response. */
+  clientQueueParentMessageId?: string;
   feedback?: TFeedback;
 };
 
@@ -775,12 +1172,53 @@ const DocumentType: z.ZodType<DocumentTypeValue> = z.lazy(() =>
   ]),
 );
 
+export const subagentThreadLineageSchema = z.object({
+  rootConversationId: z.string().min(1),
+  parentConversationId: z.string().min(1),
+  parentMessageId: z.string().min(1),
+  parentToolCallId: z.string().min(1),
+  parentAgentId: z.string().min(1).optional(),
+  subagentType: z.string().min(1),
+  subagentKind: z.enum(['agent', 'graph']),
+  depth: z.number().int().positive(),
+});
+
+export type TSubagentThreadLineage = z.infer<typeof subagentThreadLineageSchema>;
+
 export const tConversationSchema = z.object({
   conversationId: z.string().nullable(),
   endpoint: eModelEndpointSchema.nullable(),
   endpointType: eModelEndpointSchema.nullable().optional(),
   isArchived: z.boolean().optional(),
+  /** When the chat was archived; absent on chats archived before this was recorded. */
+  archivedAt: z.string().nullable().optional(),
+  pinned: z.boolean().optional(),
+  /** Server-derived: an active shared link exists for this conversation. Not persisted. */
+  isShared: z.boolean().optional(),
+  /** Server-derived on list rows: the listing replica returned the code decision. Not persisted. */
+  codeDecisionListed: z.boolean().optional(),
+  codeApprovalMode: z.enum(CODE_APPROVAL_MODES).optional(),
+  codeEnvironmentMode: z.enum(CODE_ENVIRONMENT_MODES).optional(),
+  codeWorkspaces: z
+    .array(
+      z
+        .object({
+          environmentId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          workspaceId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          checkout: z.enum(CODE_WORKSPACE_CHECKOUT_MODES).optional(),
+          agentIds: z
+            .array(z.string().regex(CODE_WORKSPACE_ID_PATTERN))
+            .min(1)
+            .max(MAX_AGENT_CODE_ENVIRONMENT_CHOICES)
+            .optional(),
+        })
+        .strict(),
+    )
+    .optional(),
   title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
+  /** Server-owned title authority; ordinary chat saves cannot set or clear it. */
+  titleSetByUser: z.boolean().optional(),
+  titleRevision: z.number().int().nonnegative().optional(),
   user: z.string().optional(),
   messages: z.array(z.string()).optional(),
   tools: z.union([z.array(tPluginSchema), z.array(z.string())]).optional(),
@@ -800,6 +1238,7 @@ export const tConversationSchema = z.object({
   max_tokens: coerceNumber.optional(),
   /* Anthropic */
   promptCache: z.boolean().optional(),
+  promptCacheTtl: z.enum(['5m', '1h']).optional(),
   system: z.string().optional(),
   thinking: z.boolean().optional(),
   thinkingBudget: coerceNumber.optional(),
@@ -812,8 +1251,19 @@ export const tConversationSchema = z.object({
   examples: z.array(tExampleSchema).optional(),
   /* DB */
   tags: z.array(z.string()).optional(),
+  chatProjectId: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** Set only when an assistant message is persisted; drives the unseen-reply indicator. */
+  lastResponseAt: z.string().optional(),
+  /** Durable messageId of the assistant reply named by `lastResponseAt`. */
+  lastResponseMessageId: z.string().optional(),
+  /** True only while `lastResponseAt` is the synthetic marker from "mark unread". */
+  lastResponseIsManual: z.boolean().optional(),
+  /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
+  isMarkedUnread: z.boolean().optional(),
+  /** Read acknowledgement; epoch is the explicit unseen-reply watermark. */
+  lastSeenAt: z.string().optional(),
   /* Files */
   resendFiles: z.boolean().optional(),
   file_ids: z.array(z.string()).optional(),
@@ -822,6 +1272,9 @@ export const tConversationSchema = z.object({
   /* OpenAI: Reasoning models only */
   reasoning_effort: eReasoningEffortSchema.optional().nullable(),
   reasoning_summary: eReasoningSummarySchema.optional().nullable(),
+  /* OpenAI Responses API: reasoning mode (standard/pro) + context */
+  reasoning_mode: eReasoningModeSchema.optional().nullable(),
+  reasoning_context: eReasoningContextSchema.optional().nullable(),
   /* OpenAI: Verbosity control */
   verbosity: eVerbositySchema.optional().nullable(),
   /* OpenAI: use Responses API */
@@ -832,12 +1285,16 @@ export const tConversationSchema = z.object({
   thinkingDisplay: eThinkingDisplaySchema.optional().nullable(),
   /* OpenAI Responses API / Anthropic API / Google API */
   web_search: z.boolean().optional(),
+  /* Google API: URL Context tool (+ native YouTube video understanding) */
+  url_context: z.boolean().optional(),
   /* disable streaming */
   disableStreaming: z.boolean().optional(),
   /* assistant */
   assistant_id: z.string().optional(),
   /* agents */
   agent_id: z.string().optional(),
+  /** Durable parent/child navigation for a subagent thread. */
+  subagentThread: subagentThreadLineageSchema.optional(),
   /* AWS Bedrock */
   region: z.string().optional(),
   maxTokens: coerceNumber.optional(),
@@ -855,6 +1312,7 @@ export const tConversationSchema = z.object({
   iconURL: z.string().nullable().optional(),
   /* temporary chat */
   expiredAt: z.string().nullable().optional(),
+  isTemporary: z.boolean().optional(),
   /* file token limits */
   fileTokenLimit: coerceNumber.optional(),
   /** @deprecated */
@@ -866,9 +1324,19 @@ export const tConversationSchema = z.object({
 export const tPresetSchema = tConversationSchema
   .omit({
     conversationId: true,
+    chatProjectId: true,
     createdAt: true,
     updatedAt: true,
     title: true,
+    titleSetByUser: true,
+    titleRevision: true,
+    /* Runtime unseen-reply state must not ride into presets: applying one would stamp
+       stale timestamps back onto conversations. */
+    lastResponseAt: true,
+    lastResponseMessageId: true,
+    lastResponseIsManual: true,
+    isMarkedUnread: true,
+    lastSeenAt: true,
   })
   .merge(
     z.object({
@@ -935,11 +1403,17 @@ export const tQueryParamsSchema = tConversationSchema
     /** @endpoints openAI, custom, azureOpenAI */
     reasoning_summary: true,
     /** @endpoints openAI, custom, azureOpenAI */
+    reasoning_mode: true,
+    /** @endpoints openAI, custom, azureOpenAI */
+    reasoning_context: true,
+    /** @endpoints openAI, custom, azureOpenAI */
     verbosity: true,
     /** @endpoints openAI, custom, azureOpenAI */
     useResponsesApi: true,
     /** @endpoints openAI, anthropic, google */
     web_search: true,
+    /** @endpoints google */
+    url_context: true,
     /** @endpoints openAI, custom, azureOpenAI */
     disableStreaming: true,
     /** @endpoints google, anthropic, bedrock */
@@ -950,6 +1424,7 @@ export const tQueryParamsSchema = tConversationSchema
     maxOutputTokens: true,
     /** @endpoints anthropic */
     promptCache: true,
+    promptCacheTtl: true,
     thinking: true,
     thinkingBudget: true,
     thinkingLevel: true,
@@ -989,24 +1464,53 @@ export const tQueryParamsSchema = tConversationSchema
  * `spec` is set by the client from `modelSpec.name` via `getModelSpecPreset` and is
  * omitted to avoid duplicate configuration surface.
  */
-export const tModelSpecPresetSchema = tPresetSchema.omit({
-  conversationId: true,
-  presetId: true,
-  title: true,
-  defaultPreset: true,
-  order: true,
-  isArchived: true,
-  user: true,
-  messages: true,
-  tags: true,
-  file_ids: true,
-  expiredAt: true,
-  parentMessageId: true,
-  resendImages: true,
-  chatGptLabel: true,
-  presetOverride: true,
-  spec: true,
-});
+export const tModelSpecPresetSchema = tPresetSchema
+  .omit({
+    conversationId: true,
+    presetId: true,
+    title: true,
+    defaultPreset: true,
+    order: true,
+    isArchived: true,
+    user: true,
+    messages: true,
+    tags: true,
+    file_ids: true,
+    expiredAt: true,
+    parentMessageId: true,
+    resendImages: true,
+    chatGptLabel: true,
+    presetOverride: true,
+    spec: true,
+  })
+  .merge(
+    z.object({
+      /**
+       * Optional here, unlike `tPresetSchema`, where the key is required (though
+       * nullable). A preset naming an `agent_id` has an unambiguous endpoint, so
+       * config may omit it and `resolveModelSpecEndpoint` infers `agents` when
+       * specs are materialized at config load.
+       */
+      endpoint: extendedModelEndpointSchema.nullish(),
+    }),
+  )
+  .superRefine((preset, ctx) => {
+    /**
+     * Omission is only legal when the endpoint is inferable, which requires a
+     * NON-EMPTY `agent_id` — form-backed writers persist untouched fields as
+     * `''`, which names no agent. An explicit `endpoint: null` stays accepted:
+     * it validated before the key became optional, so rejecting it now would
+     * break previously valid configs.
+     */
+    if (preset.endpoint === undefined && !preset.agent_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['endpoint'],
+        message:
+          'endpoint is required unless the preset names a non-empty agent_id (the agents endpoint is then inferred)',
+      });
+    }
+  });
 
 export type TModelSpecPreset = z.infer<typeof tModelSpecPresetSchema>;
 
@@ -1024,8 +1528,8 @@ export type TConversation = z.infer<typeof tConversationSchema> & {
 export const tSharedLinkSchema = z.object({
   conversationId: z.string(),
   shareId: z.string(),
+  targetMessageId: z.string().optional(),
   messages: z.array(z.string()),
-  isPublic: z.boolean(),
   title: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -1046,12 +1550,14 @@ export const tConversationTagSchema = z.object({
 export type TConversationTag = z.infer<typeof tConversationTagSchema>;
 
 export const googleBaseSchema = tConversationSchema.pick({
+  chatProjectId: true,
   model: true,
   modelLabel: true,
   promptPrefix: true,
   examples: true,
   temperature: true,
   maxOutputTokens: true,
+  resendFiles: true,
   artifacts: true,
   topP: true,
   topK: true,
@@ -1059,6 +1565,7 @@ export const googleBaseSchema = tConversationSchema.pick({
   thinkingBudget: true,
   thinkingLevel: true,
   web_search: true,
+  url_context: true,
   fileTokenLimit: true,
   iconURL: true,
   greeting: true,
@@ -1093,6 +1600,7 @@ export const googleGenConfigSchema = z
       })
       .optional(),
     web_search: z.boolean().optional(),
+    url_context: z.boolean().optional(),
   })
   .strip()
   .optional();
@@ -1117,6 +1625,7 @@ export function removeNullishValues<T extends Record<string, unknown>>(
 }
 
 const assistantBaseSchema = tConversationSchema.pick({
+  chatProjectId: true,
   model: true,
   assistant_id: true,
   instructions: true,
@@ -1152,6 +1661,7 @@ export const assistantSchema = assistantBaseSchema
   }));
 
 const compactAssistantBaseSchema = tConversationSchema.pick({
+  chatProjectId: true,
   model: true,
   assistant_id: true,
   instructions: true,
@@ -1167,6 +1677,7 @@ export const compactAssistantSchema = compactAssistantBaseSchema
   .catch(() => ({}));
 
 export const agentsBaseSchema = tConversationSchema.pick({
+  chatProjectId: true,
   model: true,
   modelLabel: true,
   temperature: true,
@@ -1220,6 +1731,7 @@ export const agentsSchema = agentsBaseSchema
   }));
 
 export const openAIBaseSchema = tConversationSchema.pick({
+  chatProjectId: true,
   model: true,
   modelLabel: true,
   chatGptLabel: true,
@@ -1239,6 +1751,8 @@ export const openAIBaseSchema = tConversationSchema.pick({
   max_tokens: true,
   reasoning_effort: true,
   reasoning_summary: true,
+  reasoning_mode: true,
+  reasoning_context: true,
   verbosity: true,
   useResponsesApi: true,
   web_search: true,
@@ -1250,13 +1764,18 @@ export const openAISchema = openAIBaseSchema
   .transform((obj: Partial<TConversation>) => removeNullishValues(obj, true))
   .catch(() => ({}));
 
+export const openRouterSchema = openAIBaseSchema
+  .merge(tConversationSchema.pick({ promptCache: true, promptCacheTtl: true }))
+  .transform((obj: Partial<TConversation>) => removeNullishValues(obj, true))
+  .catch(() => ({}));
+
 export const compactGoogleSchema = googleBaseSchema
   .transform((obj) => {
     const newObj: Partial<TConversation> = { ...obj };
     if (newObj.temperature === google.temperature.default) {
       delete newObj.temperature;
     }
-    if (newObj.maxOutputTokens === google.maxOutputTokens.default) {
+    if (newObj.maxOutputTokens === google.maxOutputTokens.reset(newObj.model ?? '')) {
       delete newObj.maxOutputTokens;
     }
     if (newObj.topP === google.topP.default) {
@@ -1271,6 +1790,7 @@ export const compactGoogleSchema = googleBaseSchema
   .catch(() => ({}));
 
 export const anthropicBaseSchema = tConversationSchema.pick({
+  chatProjectId: true,
   model: true,
   modelLabel: true,
   promptPrefix: true,
@@ -1280,6 +1800,7 @@ export const anthropicBaseSchema = tConversationSchema.pick({
   topK: true,
   resendFiles: true,
   promptCache: true,
+  promptCacheTtl: true,
   thinking: true,
   thinkingBudget: true,
   effort: true,
@@ -1312,6 +1833,7 @@ export const tBannerSchema = z.object({
 export type TBanner = z.infer<typeof tBannerSchema>;
 
 export const compactAgentsBaseSchema = tConversationSchema.pick({
+  chatProjectId: true,
   spec: true,
   // model: true,
   iconURL: true,

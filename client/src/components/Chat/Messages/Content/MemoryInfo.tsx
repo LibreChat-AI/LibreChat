@@ -1,5 +1,6 @@
-import type { MemoryArtifact } from 'librechat-data-provider';
 import { useMemo } from 'react';
+import { Alert } from '@librechat/client';
+import type { MemoryArtifact } from 'librechat-data-provider';
 import { useLocalize } from '~/hooks';
 
 export default function MemoryInfo({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) {
@@ -46,60 +47,45 @@ export default function MemoryInfo({ memoryArtifacts }: { memoryArtifacts: Memor
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-3 p-3">
       {updatedMemories.length > 0 && (
-        <div>
-          <h4 className="mb-2 text-sm font-semibold text-text-primary">
-            {localize('com_ui_memory_updated_items')}
-          </h4>
-          <div className="space-y-2">
-            {updatedMemories.map((artifact) => (
-              <div key={`update-${artifact.key}`} className="rounded-lg p-3">
-                <div className="mb-1 text-xs font-medium uppercase tracking-wide text-text-secondary">
-                  {artifact.key}
-                </div>
-                <div className="whitespace-pre-wrap text-sm text-text-primary">
-                  {artifact.value}
-                </div>
+        <div className="space-y-3">
+          {updatedMemories.map((artifact) => (
+            <div key={`update-${artifact.key}`}>
+              <div className="mb-1 text-xs font-bold uppercase tracking-wide text-text-secondary">
+                {artifact.key}
               </div>
-            ))}
-          </div>
+              <div className="whitespace-pre-wrap text-sm text-text-primary">{artifact.value}</div>
+            </div>
+          ))}
         </div>
       )}
 
       {deletedMemories.length > 0 && (
-        <div>
-          <h4 className="mb-2 text-sm font-semibold text-text-primary">
-            {localize('com_ui_memory_deleted_items')}
-          </h4>
-          <div className="space-y-2">
-            {deletedMemories.map((artifact) => (
-              <div key={`delete-${artifact.key}`} className="rounded-lg p-3 opacity-60">
-                <div className="mb-1 text-xs font-medium uppercase tracking-wide text-text-secondary">
-                  {artifact.key}
-                </div>
-                <div className="text-sm italic text-text-secondary">
-                  {localize('com_ui_memory_deleted')}
-                </div>
+        <div className="space-y-3">
+          {deletedMemories.map((artifact) => (
+            <div key={`delete-${artifact.key}`} className="opacity-60">
+              <div className="mb-1 text-xs font-bold uppercase tracking-wide text-text-secondary">
+                {artifact.key}
               </div>
-            ))}
-          </div>
+              <div className="text-sm italic text-text-secondary">
+                {localize('com_ui_memory_deleted')}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
       {errorMessages.length > 0 && (
         <div>
-          <h4 className="mb-2 text-sm font-semibold text-red-500">
+          <p className="mb-2 text-sm font-semibold text-status-error">
             {localize('com_ui_memory_storage_full')}
-          </h4>
+          </p>
           <div className="space-y-2">
             {errorMessages.map((errorMessage) => (
-              <div
-                key={errorMessage}
-                className="rounded-md bg-red-50 p-3 text-sm text-red-800 dark:bg-red-900/20 dark:text-red-400"
-              >
+              <Alert key={errorMessage} variant="error" icon={false} className="rounded-md p-3">
                 {errorMessage}
-              </div>
+              </Alert>
             ))}
           </div>
         </div>

@@ -1,30 +1,54 @@
 /** Memories */
 import { z } from 'zod';
-import { Tools } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
 import { tool } from '@librechat/agents/langchain/tools';
 import { Run, Providers, GraphEvents } from '@librechat/agents';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
+import {
+  Tools,
+  MemoryScope,
+  Permissions,
+  EModelEndpoint,
+  PermissionTypes,
+  AgentCapabilities,
+  hasActivePiiPatterns,
+  stripAgentIdSuffix,
+} from 'librechat-data-provider';
 import type {
   OpenAIClientOptions,
   StreamEventData,
   ToolEndCallback,
+  LCToolRegistry,
   EventHandler,
   ToolEndData,
   LLMConfig,
+  LCTool,
 } from '@librechat/agents';
+import type {
+  IRole,
+  ObjectId,
+  MemoryMethods,
+  IUser,
+  FormattedMemoriesResult,
+} from '@librechat/data-schemas';
+import type { TAttachment, FiltersConfig, MemoryArtifact } from 'librechat-data-provider';
 import type { BaseMessage, ToolMessage } from '@librechat/agents/langchain/messages';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
-import type { ObjectId, MemoryMethods, IUser } from '@librechat/data-schemas';
-import type { TAttachment, MemoryArtifact } from 'librechat-data-provider';
 import type { Response as ServerResponse } from 'express';
+import type { ServerRequest, RunLLMConfig } from '~/types';
+import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata } from '~/utils';
+import { contentFilterModelBoundBlockResponse } from '~/middleware/contentFilter';
+import { extractMemoryContent } from '~/protection/adapters/submissions';
+import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
-import { resolveHeaders, createSafeUser } from '~/utils';
+import { inspectContent } from '~/protection/runtime';
+import { checkAccess } from '~/middleware/access';
+import { isMemoryEnabled } from '~/memory';
 import Tokenizer from '~/utils/tokenizer';
 
 type RequiredMemoryMethods = Pick<
   MemoryMethods,
-  'setMemory' | 'deleteMemory' | 'getFormattedMemories'
+  'setMemory' | 'deleteMemory' | 'getFormattedMemories' | 'getUserMemories'
 >;
 
 type ToolEndMetadata = Record<string, unknown> & {
@@ -50,7 +74,26 @@ function normalizeMemoryLLMConfig(llmConfig?: Partial<LLMConfig>): SanitizedMemo
 }
 
 export const memoryInstructions =
-  'The system automatically stores important user information and can update or delete memories based on user requests, enabling dynamic memory management.';
+  'Persistent memory is available across conversations within the current memory scope. Saved memories, if any, are shown below. No entries shown here does not mean memory is unavailable. Use memory tools only if provided; claim a memory was saved or deleted only after the action is confirmed.';
+
+export function formatMemoryContext(memory: string | undefined): string | undefined {
+  if (memory == null) {
+    return undefined;
+  }
+  return memory
+    ? `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`
+    : memoryInstructions;
+}
+
+export const SET_MEMORY_TOOL_NAME = 'set_memory';
+export const DELETE_MEMORY_TOOL_NAME = 'delete_memory';
+
+/** Maximum memory key length, matching the REST memory routes. */
+const MEMORY_KEY_CHAR_LIMIT = 1000;
+
+const SET_MEMORY_DESCRIPTION = 'Saves important information about the user into memory.';
+const DELETE_MEMORY_DESCRIPTION =
+  'Deletes specific memory data about the user using the provided key. For updating existing memories, use the `set_memory` tool instead';
 
 const getDefaultInstructions = (
   validKeys?: string[],
@@ -79,106 +122,165 @@ The \`delete_memory\` tool should only be used in two scenarios:
 
 ${validKeys && validKeys.length > 0 ? `\nVALID KEYS: ${validKeys.join(', ')}` : ''}
 
-${tokenLimit ? `\nTOKEN LIMIT: Maximum ${tokenLimit} tokens per memory value.` : ''}
+${tokenLimit ? `\nTOKEN LIMIT: Maximum ${tokenLimit} tokens across all memory values.` : ''}
 
 When in doubt, and the user hasn't asked to remember or forget anything, END THE TURN IMMEDIATELY.`;
+
+type MemoryArtifactRecord = Record<Tools.memory, MemoryArtifact>;
 
 /**
  * Creates a memory tool instance with user context
  */
 export const createMemoryTool = ({
   userId,
+  agentId,
   setMemory,
   validKeys,
+  charLimit,
   tokenLimit,
   totalTokens = 0,
+  tokenCountsByKey,
+  filters,
+  onWrite,
 }: {
   userId: string | ObjectId;
+  /** Agent partition to write to; omit for the shared personal pool */
+  agentId?: string;
   setMemory: MemoryMethods['setMemory'];
   validKeys?: string[];
+  charLimit?: number;
   tokenLimit?: number;
   totalTokens?: number;
+  tokenCountsByKey?: ReadonlyMap<string, number>;
+  filters?: FiltersConfig;
+  onWrite?: () => void;
 }): DynamicStructuredTool => {
-  const remainingTokens = tokenLimit ? tokenLimit - totalTokens : Infinity;
-  const isOverflowing = tokenLimit ? remainingTokens <= 0 : false;
+  /** Running token total, advanced after each successful write. Writes are
+   *  serialized through `writeChain` so multiple `set_memory` calls in one
+   *  event-driven batch (executed in parallel) can't each pass the limit
+   *  check against the same stale total and collectively exceed `tokenLimit`. */
+  let currentTotalTokens = totalTokens;
+  let writeChain: Promise<unknown> = Promise.resolve();
+  /** Token counts are seeded from persisted memory and advanced after each
+   *  successful write. `set_memory` upserts, so every write replaces this
+   *  key's prior contribution instead of adding both values to the total. */
+  const currentTokensByKey = new Map(tokenCountsByKey);
 
   return tool(
     async ({ key, value }) => {
-      try {
-        if (validKeys && validKeys.length > 0 && !validKeys.includes(key)) {
-          logger.warn(
-            `Memory Agent failed to set memory: Invalid key "${key}". Must be one of: ${validKeys.join(
-              ', ',
-            )}`,
-          );
-          return [`Invalid key "${key}". Must be one of: ${validKeys.join(', ')}`, undefined];
-        }
+      const run = async (): Promise<[string, MemoryArtifactRecord?]> => {
+        try {
+          /** Mirror the REST memory routes' size guards so inline writes can't
+           *  persist values the normal memory UI/API would reject. */
+          if (key.length > MEMORY_KEY_CHAR_LIMIT) {
+            return [
+              `Key exceeds maximum length of ${MEMORY_KEY_CHAR_LIMIT} characters.`,
+              undefined,
+            ];
+          }
+          if (charLimit && value.length > charLimit) {
+            return [`Value exceeds maximum length of ${charLimit} characters.`, undefined];
+          }
 
-        const tokenCount = Tokenizer.getTokenCount(value, 'o200k_base');
+          const finding =
+            filters == null
+              ? null
+              : inspectContent(extractMemoryContent({ key, value }), { filters });
+          if (finding != null) {
+            return [JSON.stringify(contentFilterModelBoundBlockResponse(finding)), undefined];
+          }
 
-        if (isOverflowing) {
-          const errorArtifact: Record<Tools.memory, MemoryArtifact> = {
-            [Tools.memory]: {
-              key: 'system',
-              type: 'error',
-              value: JSON.stringify({
-                errorType: 'already_exceeded',
-                tokenCount: Math.abs(remainingTokens),
-                totalTokens: totalTokens,
-                tokenLimit: tokenLimit!,
-              }),
-              tokenCount: totalTokens,
-            },
-          };
-          return [`Memory storage exceeded. Cannot save new memories.`, errorArtifact];
-        }
+          if (validKeys && validKeys.length > 0 && !validKeys.includes(key)) {
+            logger.warn('Memory Agent rejected an invalid memory key', {
+              keyLength: key.length,
+              allowedKeyCount: validKeys.length,
+            });
+            return [`Invalid key "${key}". Must be one of: ${validKeys.join(', ')}`, undefined];
+          }
 
-        if (tokenLimit) {
-          const newTotalTokens = totalTokens + tokenCount;
-          const newRemainingTokens = tokenLimit - newTotalTokens;
+          const tokenCount = Tokenizer.getTokenCount(value, 'o200k_base');
+          /** Total excluding this key's prior persisted or in-instance value,
+           *  so a rewrite is measured as a replacement rather than an addition. */
+          const baseTotalTokens = currentTotalTokens - (currentTokensByKey.get(key) ?? 0);
+          const remainingTokens = tokenLimit ? tokenLimit - baseTotalTokens : Infinity;
 
-          if (newRemainingTokens < 0) {
-            const errorArtifact: Record<Tools.memory, MemoryArtifact> = {
+          if (tokenLimit && remainingTokens <= 0) {
+            const errorArtifact: MemoryArtifactRecord = {
               [Tools.memory]: {
                 key: 'system',
                 type: 'error',
                 value: JSON.stringify({
-                  errorType: 'would_exceed',
-                  tokenCount: Math.abs(newRemainingTokens),
-                  totalTokens: newTotalTokens,
-                  tokenLimit,
+                  errorType: 'already_exceeded',
+                  tokenCount: Math.abs(remainingTokens),
+                  totalTokens: baseTotalTokens,
+                  tokenLimit: tokenLimit!,
                 }),
-                tokenCount: totalTokens,
+                tokenCount: baseTotalTokens,
               },
             };
-            return [`Memory storage would exceed limit. Cannot save this memory.`, errorArtifact];
+            return [`Memory storage exceeded. Cannot save new memories.`, errorArtifact];
           }
-        }
 
-        const artifact: Record<Tools.memory, MemoryArtifact> = {
-          [Tools.memory]: {
-            key,
-            value,
-            tokenCount,
-            type: 'update',
-          },
-        };
+          const newTotalTokens = baseTotalTokens + tokenCount;
 
-        const result = await setMemory({ userId, key, value, tokenCount });
-        if (result.ok) {
-          logger.debug(`Memory set for key "${key}" (${tokenCount} tokens) for user "${userId}"`);
-          return [`Memory set for key "${key}" (${tokenCount} tokens)`, artifact];
+          if (tokenLimit) {
+            const newRemainingTokens = tokenLimit - newTotalTokens;
+
+            if (newRemainingTokens < 0) {
+              const errorArtifact: MemoryArtifactRecord = {
+                [Tools.memory]: {
+                  key: 'system',
+                  type: 'error',
+                  value: JSON.stringify({
+                    errorType: 'would_exceed',
+                    tokenCount: Math.abs(newRemainingTokens),
+                    totalTokens: newTotalTokens,
+                    tokenLimit,
+                  }),
+                  tokenCount: baseTotalTokens,
+                },
+              };
+              return [`Memory storage would exceed limit. Cannot save this memory.`, errorArtifact];
+            }
+          }
+
+          const artifact: MemoryArtifactRecord = {
+            [Tools.memory]: {
+              key,
+              value,
+              tokenCount,
+              type: 'update',
+              ...(agentId ? { agentId } : {}),
+            },
+          };
+
+          const result = await setMemory({ userId, key, value, tokenCount, agentId });
+          if (result.ok) {
+            if (tokenLimit) {
+              currentTotalTokens = newTotalTokens;
+              currentTokensByKey.set(key, tokenCount);
+            }
+            onWrite?.();
+            logger.debug(`Memory set for key "${key}" (${tokenCount} tokens) for user "${userId}"`);
+            return [`Memory set for key "${key}" (${tokenCount} tokens)`, artifact];
+          }
+          logger.warn(`Failed to set memory for key "${key}" for user "${userId}"`);
+          return [`Failed to set memory for key "${key}"`, undefined];
+        } catch (error) {
+          logger.error('Memory Agent failed to set memory', getSafeErrorMetadata(error));
+          return [`Error setting memory for key "${key}"`, undefined];
         }
-        logger.warn(`Failed to set memory for key "${key}" for user "${userId}"`);
-        return [`Failed to set memory for key "${key}"`, undefined];
-      } catch (error) {
-        logger.error('Memory Agent failed to set memory', error);
-        return [`Error setting memory for key "${key}"`, undefined];
-      }
+      };
+
+      const resultPromise = writeChain.then(run, run);
+      /** Keep the chain alive (and non-rejecting) so the next queued call still
+       *  runs even if a prior one threw; `run` already resolves on every path. */
+      writeChain = resultPromise.catch(() => undefined);
+      return resultPromise;
     },
     {
-      name: 'set_memory',
-      description: 'Saves important information about the user into memory.',
+      name: SET_MEMORY_TOOL_NAME,
+      description: SET_MEMORY_DESCRIPTION,
       responseFormat: 'content_and_artifact',
       schema: z.object({
         key: z
@@ -201,15 +303,20 @@ export const createMemoryTool = ({
 /**
  * Creates a delete memory tool instance with user context
  */
-const createDeleteMemoryTool = ({
+export const createDeleteMemoryTool = ({
   userId,
+  agentId,
   deleteMemory,
   validKeys,
+  onWrite,
 }: {
   userId: string | ObjectId;
+  /** Agent partition to delete from; omit for the shared personal pool */
+  agentId?: string;
   deleteMemory: MemoryMethods['deleteMemory'];
   validKeys?: string[];
-}) => {
+  onWrite?: () => void;
+}): DynamicStructuredTool => {
   return tool(
     async ({ key }) => {
       try {
@@ -226,25 +333,26 @@ const createDeleteMemoryTool = ({
           [Tools.memory]: {
             key,
             type: 'delete',
+            ...(agentId ? { agentId } : {}),
           },
         };
 
-        const result = await deleteMemory({ userId, key });
+        const result = await deleteMemory({ userId, key, agentId });
         if (result.ok) {
+          onWrite?.();
           logger.debug(`Memory deleted for key "${key}" for user "${userId}"`);
           return [`Memory deleted for key "${key}"`, artifact];
         }
         logger.warn(`Failed to delete memory for key "${key}" for user "${userId}"`);
         return [`Failed to delete memory for key "${key}"`, undefined];
       } catch (error) {
-        logger.error('Memory Agent failed to delete memory', error);
+        logger.error('Memory Agent failed to delete memory', getSafeErrorMetadata(error));
         return [`Error deleting memory for key "${key}"`, undefined];
       }
     },
     {
-      name: 'delete_memory',
-      description:
-        'Deletes specific memory data about the user using the provided key. For updating existing memories, use the `set_memory` tool instead',
+      name: DELETE_MEMORY_TOOL_NAME,
+      description: DELETE_MEMORY_DESCRIPTION,
       responseFormat: 'content_and_artifact',
       schema: z.object({
         key: z
@@ -258,6 +366,369 @@ const createDeleteMemoryTool = ({
     },
   );
 };
+/**
+ * Strict usage guard appended to the agent's instructions when the inline
+ * memory tools are registered, preserving the memory-agent's explicit-request
+ * behavior so the model never stores facts it merely observed.
+ */
+export const memoryToolUsageGuard = `Only use the \`set_memory\` and \`delete_memory\` tools when the user explicitly asks you to remember, update, or forget something (e.g. "remember that...", "don't forget...", "forget..."). Never store information merely because the user mentioned it in conversation.`;
+
+/**
+ * LLM-facing definitions for the inline memory tool pair, used by the
+ * event-driven (definitions-only) loader. The `memory` capability string on
+ * an agent's `tools` array expands into this pair at initialize time via
+ * {@link registerMemoryTools}; the runtime instances created in the tool
+ * service enforce `validKeys`/`tokenLimit` and emit memory artifacts.
+ * `validKeys` is surfaced in the key descriptions so the model is told the
+ * allowed keys up front, matching the runtime `createMemoryTool` schema.
+ */
+export function getMemoryToolDefinitions(validKeys?: string[]): LCTool[] {
+  const hasValidKeys = Array.isArray(validKeys) && validKeys.length > 0;
+  return [
+    {
+      name: SET_MEMORY_TOOL_NAME,
+      description: SET_MEMORY_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            description: hasValidKeys
+              ? `The key of the memory value. Must be one of: ${validKeys!.join(', ')}`
+              : 'The key identifier for this memory',
+          },
+          value: {
+            type: 'string',
+            description:
+              'Value MUST be a complete sentence that fully describes relevant user information.',
+          },
+        },
+        required: ['key', 'value'],
+      },
+    },
+    {
+      name: DELETE_MEMORY_TOOL_NAME,
+      description: DELETE_MEMORY_DESCRIPTION,
+      parameters: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            description: hasValidKeys
+              ? `The key of the memory to delete. Must be one of: ${validKeys!.join(', ')}`
+              : 'The key identifier of the memory to delete',
+          },
+        },
+        required: ['key'],
+      },
+    },
+  ] as LCTool[];
+}
+
+/**
+ * Idempotently registers the inline memory tool pair (`set_memory` +
+ * `delete_memory`) into the run's tool registry and tool-definition list.
+ * Mirrors `registerCodeExecutionTools`: the `memory` capability string stays
+ * as the `agent.tools` trigger marker and expands into this pair here so the
+ * definitions-only loader surfaces both tools to the LLM.
+ */
+export function registerMemoryTools({
+  toolRegistry,
+  toolDefinitions,
+  validKeys,
+}: {
+  toolRegistry?: LCToolRegistry;
+  toolDefinitions?: LCTool[];
+  validKeys?: string[];
+}): { toolDefinitions: LCTool[]; registered: string[]; toolNames: string[] } {
+  const memoryToolDefinitions = getMemoryToolDefinitions(validKeys);
+  const toolNames = memoryToolDefinitions.map((def) => def.name);
+  const inputDefinitions = toolDefinitions ?? [];
+  const newDefs: LCTool[] = [];
+  const registered: string[] = [];
+
+  for (const def of memoryToolDefinitions) {
+    const inRegistry = toolRegistry?.has(def.name) === true;
+    const inDefs = inputDefinitions.some((d) => d.name === def.name);
+    if (inRegistry || inDefs) {
+      continue;
+    }
+    toolRegistry?.set(def.name, def);
+    newDefs.push(def);
+    registered.push(def.name);
+  }
+
+  if (newDefs.length === 0) {
+    return { toolDefinitions: inputDefinitions, registered, toolNames };
+  }
+  return { toolDefinitions: [...inputDefinitions, ...newDefs], registered, toolNames };
+}
+
+type GetRoleByName = (
+  roleName: string,
+  fieldsToSelect?: string | string[],
+) => Promise<IRole | null>;
+
+type InlineMemoryAgent =
+  | { id?: string; tools?: unknown[]; memoryToolsRegistered?: boolean; memory_scope?: MemoryScope }
+  | null
+  | undefined;
+
+/**
+ * Resolves the memory partition an agent reads/writes: its persisted id when
+ * the agent opted into isolated memory (`memory_scope: 'agent'`), otherwise
+ * `undefined` for the shared personal pool. Runtime ids carry a `____N`
+ * suffix in added-conversation paths, so the suffix is stripped to keep the
+ * partition stable across single- and multi-agent runs. Ephemeral agents
+ * never carry `memory_scope`, so they always resolve to the shared pool.
+ */
+export function getMemoryAgentId(agent: InlineMemoryAgent): string | undefined {
+  if (agent?.memory_scope === MemoryScope.agent && typeof agent.id === 'string' && agent.id) {
+    return stripAgentIdSuffix(agent.id);
+  }
+  return undefined;
+}
+
+/**
+ * Whether an agent carries the inline memory tools. Prefers the LibreChat-only
+ * `memoryToolsRegistered` flag set by `initializeAgent`, falling back to the raw
+ * `memory` capability marker on `tools`. This works for both the raw agent and
+ * the initialized config that may be held in the tool-execution context, and
+ * never matches an MCP tool that merely shares the `set_memory`/`delete_memory`
+ * name (that name only collides at the tool level, not the capability marker).
+ */
+export function agentHasInlineMemoryTools(agent: InlineMemoryAgent): boolean {
+  if (!agent) {
+    return false;
+  }
+  /** An initialized config carries an explicit boolean: honor it so an agent
+   *  whose registration was denied (`false`) is not treated as memory-enabled
+   *  just because the raw `memory` marker survives in `tools`. Fall back to the
+   *  marker only for the raw agent, where the flag is absent. */
+  if (typeof agent.memoryToolsRegistered === 'boolean') {
+    return agent.memoryToolsRegistered;
+  }
+  return (agent.tools ?? []).some(
+    (entry) =>
+      (typeof entry === 'string' ? entry : (entry as { name?: string })?.name) === Tools.memory,
+  );
+}
+
+/** Builds the memory system context for an inline-memory agent. */
+export async function buildInlineMemoryContext({
+  agent,
+  req,
+  userId,
+  memoryAvailable,
+  getFormattedMemories,
+}: {
+  agent: InlineMemoryAgent;
+  req: ServerRequest;
+  userId: string | ObjectId;
+  memoryAvailable: boolean;
+  getFormattedMemories: MemoryMethods['getFormattedMemories'];
+}): Promise<string> {
+  if (!memoryAvailable || !agentHasInlineMemoryTools(agent)) {
+    return '';
+  }
+  try {
+    const memories = await getRequestMemories({
+      req,
+      userId,
+      agentId: getMemoryAgentId(agent),
+      getFormattedMemories,
+    });
+    return formatMemoryContext(memories.withKeys) ?? '';
+  } catch (error) {
+    logger.error('[memory] Error loading inline agent memory context', error);
+    return '';
+  }
+}
+
+/**
+ * Request-scoped cache so that multiple memory-enabled agents in one run (and
+ * the run's memory context load) share a single `getFormattedMemories` call
+ * per partition instead of each re-fetching the same memories.
+ */
+const requestMemoriesCache = new WeakMap<object, Map<string, Promise<FormattedMemoriesResult>>>();
+
+export function getRequestMemories({
+  req,
+  userId,
+  agentId,
+  getFormattedMemories,
+}: {
+  req: object;
+  userId: string | ObjectId;
+  /** Agent partition; omit for the shared personal pool */
+  agentId?: string;
+  getFormattedMemories: MemoryMethods['getFormattedMemories'];
+}): Promise<FormattedMemoriesResult> {
+  let partitions = requestMemoriesCache.get(req);
+  if (!partitions) {
+    partitions = new Map();
+    requestMemoriesCache.set(req, partitions);
+  }
+  const partitionKey = agentId ?? '';
+  let cached = partitions.get(partitionKey);
+  if (!cached) {
+    cached = getFormattedMemories({ userId, agentId });
+    partitions.set(partitionKey, cached);
+  }
+  return cached;
+}
+
+/**
+ * Drops the cached memories for a request partition so the next
+ * {@link getRequestMemories} re-fetches. Inline `set_memory`/`delete_memory`
+ * writes call this on success so a later tool round in the same response is
+ * seeded with the post-write usage total instead of a stale pre-write one.
+ */
+export function invalidateRequestMemories(req: object, agentId?: string): void {
+  requestMemoriesCache.get(req)?.delete(agentId ?? '');
+}
+
+/**
+ * Re-checks the run-level memory gate at tool-execution time: the agents
+ * `memory` capability is enabled, memory is configured, the user hasn't opted
+ * out, and the user holds the required (write) permissions. The event-driven
+ * executor loads tools by requested name, so this must be re-verified rather
+ * than trusted from registration time.
+ */
+export async function isMemoryToolAllowed({
+  req,
+  writePermissions = [],
+  getRoleByName,
+}: {
+  req: ServerRequest;
+  writePermissions?: Permissions[];
+  getRoleByName: GetRoleByName;
+}): Promise<boolean> {
+  const agentsCapabilities = req?.config?.endpoints?.[EModelEndpoint.agents]?.capabilities;
+  if (
+    !Array.isArray(agentsCapabilities) ||
+    !agentsCapabilities.includes(AgentCapabilities.memory)
+  ) {
+    return false;
+  }
+  if (!isMemoryEnabled(req?.config?.memory)) {
+    return false;
+  }
+  if (!req?.user || req.user.personalization?.memories === false) {
+    return false;
+  }
+  try {
+    return await checkAccess({
+      user: req.user,
+      permissionType: PermissionTypes.MEMORIES,
+      permissions: [Permissions.USE, ...writePermissions],
+      getRoleByName,
+    });
+  } catch (error) {
+    logger.error('[memory] Memory permission check failed', getSafeErrorMetadata(error));
+    return false;
+  }
+}
+
+/**
+ * Builds an inline memory tool instance for the event-driven executor, applying
+ * the full opt-in + permission + config gate. Returns `null` when the call is
+ * not permitted (e.g. a hallucinated/undeclared call, missing write permission,
+ * or a disabled capability), so the executor drops the tool.
+ */
+export async function buildInlineMemoryTool({
+  toolName,
+  req,
+  agent,
+  userId,
+  memoryMethods,
+  getRoleByName,
+}: {
+  toolName: string;
+  req: ServerRequest;
+  agent: InlineMemoryAgent;
+  userId: string | ObjectId;
+  memoryMethods: Pick<MemoryMethods, 'setMemory' | 'deleteMemory' | 'getFormattedMemories'>;
+  getRoleByName: GetRoleByName;
+}): Promise<DynamicStructuredTool | null> {
+  if (!agentHasInlineMemoryTools(agent)) {
+    return null;
+  }
+
+  const memoryConfig = req?.config?.memory;
+  const validKeys = memoryConfig?.validKeys as string[] | undefined;
+  const memoryAgentId = getMemoryAgentId(agent);
+
+  if (toolName === DELETE_MEMORY_TOOL_NAME) {
+    const allowed = await isMemoryToolAllowed({
+      req,
+      writePermissions: [Permissions.UPDATE],
+      getRoleByName,
+    });
+    if (!allowed) {
+      return null;
+    }
+    return createDeleteMemoryTool({
+      userId,
+      agentId: memoryAgentId,
+      deleteMemory: memoryMethods.deleteMemory,
+      validKeys,
+      onWrite: () => invalidateRequestMemories(req, memoryAgentId),
+    });
+  }
+
+  const allowed = await isMemoryToolAllowed({
+    req,
+    writePermissions: [Permissions.CREATE, Permissions.UPDATE],
+    getRoleByName,
+  });
+  if (!allowed) {
+    return null;
+  }
+
+  const charLimit = memoryConfig?.charLimit as number | undefined;
+  const tokenLimit = memoryConfig?.tokenLimit as number | undefined;
+  let totalTokens = 0;
+  let tokenCountsByKey: ReadonlyMap<string, number> | undefined;
+  if (tokenLimit) {
+    try {
+      const formatted = await getRequestMemories({
+        req,
+        userId,
+        agentId: memoryAgentId,
+        getFormattedMemories: memoryMethods.getFormattedMemories,
+      });
+      /** A formatted read failure has no trustworthy usage total. */
+      if (formatted.readFailed) {
+        return null;
+      }
+      totalTokens = formatted.totalTokens ?? 0;
+      tokenCountsByKey = formatted.tokenCountsByKey;
+    } catch (error) {
+      logger.error(
+        '[memory] Failed to load memory token count for set_memory',
+        getSafeErrorMetadata(error),
+      );
+      /** Fail closed: without the current usage total a configured tokenLimit
+       *  could be silently bypassed. */
+      return null;
+    }
+  }
+
+  return createMemoryTool({
+    userId,
+    agentId: memoryAgentId,
+    setMemory: memoryMethods.setMemory,
+    validKeys,
+    charLimit,
+    tokenLimit,
+    totalTokens,
+    tokenCountsByKey,
+    filters: req.config?.filters,
+    onWrite: () => invalidateRequestMemories(req, memoryAgentId),
+  });
+}
+
 export class BasicToolEndHandler implements EventHandler {
   private callback?: ToolEndCallback;
   constructor(callback?: ToolEndCallback) {
@@ -285,10 +756,15 @@ export class BasicToolEndHandler implements EventHandler {
 export async function processMemory({
   res,
   userId,
+  agentId,
   setMemory,
   deleteMemory,
   messages,
+  inspectionMessages,
+  privateTextTokens,
+  signal,
   memory,
+  memoryEntries,
   messageId,
   conversationId,
   validKeys,
@@ -296,35 +772,79 @@ export async function processMemory({
   llmConfig,
   tokenLimit,
   totalTokens = 0,
+  tokenCountsByKey,
+  filters,
   streamId = null,
+  jobCreatedAt,
   user,
+  tenantId,
 }: {
   res: ServerResponse;
   setMemory: MemoryMethods['setMemory'];
   deleteMemory: MemoryMethods['deleteMemory'];
   userId: string | ObjectId;
+  /** Agent partition; omit for the shared personal pool */
+  agentId?: string;
   memory: string;
   messageId: string;
   conversationId: string;
   messages: BaseMessage[];
+  inspectionMessages?: BaseMessage[];
+  privateTextTokens?: ReadonlySet<string>;
+  signal?: AbortSignal;
   validKeys?: string[];
   instructions: string;
+  /** Canonical rows preserve key/value granularity for field-scoped policy. */
+  memoryEntries?: readonly {
+    key?: string;
+    value?: string;
+    summary?: string;
+  }[];
   tokenLimit?: number;
   totalTokens?: number;
+  tokenCountsByKey?: ReadonlyMap<string, number>;
+  filters?: FiltersConfig;
   llmConfig?: Partial<LLMConfig>;
   streamId?: string | null;
+  jobCreatedAt?: number;
   user?: IUser;
+  tenantId?: string;
 }): Promise<(TAttachment | null)[] | undefined> {
   try {
+    signal?.throwIfAborted();
+    const submittedMessages = (inspectionMessages ?? messages).filter(
+      (message) => message._getType() !== 'ai',
+    );
+    let memories = memoryEntries ?? [];
+    if (memoryEntries == null && memory) {
+      /**
+       * Direct callers may only have the formatted context. Inspect it
+       * conservatively under every field so field selection cannot turn
+       * missing canonical provenance into a bypass.
+       */
+      memories = [{ key: memory, value: memory, summary: memory }];
+    }
+    assertModelBoundContent({
+      filters,
+      privateTextTokens,
+      submittedMessages,
+      agents: [{ instructions, model_parameters: llmConfig }],
+      memories,
+    });
+
     const memoryTool = createMemoryTool({
       userId,
+      agentId,
       tokenLimit,
       setMemory,
       validKeys,
       totalTokens,
+      tokenCountsByKey,
+      filters,
     });
     const deleteMemoryTool = createDeleteMemoryTool({
       userId,
+      agentId,
       validKeys,
       deleteMemory,
     });
@@ -334,7 +854,7 @@ export async function processMemory({
     let memoryStatus = `# Existing memory:\n${memory ?? 'No existing memories'}`;
 
     if (tokenLimit) {
-      const remainingTokens = tokenLimit - currentMemoryTokens;
+      const remainingTokens = Math.max(tokenLimit - currentMemoryTokens, 0);
       memoryStatus = `# Memory Status:
 Current memory usage: ${currentMemoryTokens} tokens
 Token limit: ${tokenLimit} tokens
@@ -355,6 +875,7 @@ ${memory ?? 'No existing memories'}`;
     const finalLLMConfig = {
       ...defaultLLMConfig,
       ...normalizeMemoryLLMConfig(llmConfig),
+      maxRetries: 0,
       /**
        * Ensure streaming is always disabled for memory processing
        */
@@ -404,16 +925,26 @@ ${memory ?? 'No existing memories'}`;
       delete (finalLLMConfig as Record<string, unknown>).temperature;
     }
 
-    const llmConfigWithHeaders = finalLLMConfig as OpenAIClientOptions;
-    if (llmConfigWithHeaders?.configuration?.defaultHeaders != null) {
-      llmConfigWithHeaders.configuration.defaultHeaders = resolveHeaders({
-        headers: llmConfigWithHeaders.configuration.defaultHeaders as Record<string, string>,
-        user: user ? createSafeUser(user) : undefined,
-      });
-    }
+    /**
+     * Resolve request-based headers across provider-specific carriers (OpenAI
+     * `configuration.defaultHeaders`, native Anthropic `clientOptions.defaultHeaders`)
+     * so gateway-fronted built-in providers receive resolved metadata/auth headers
+     * on memory extraction too. Native Google headers are resolved at init.
+     */
+    resolveConfigHeaders({
+      llmConfig: finalLLMConfig as unknown as RunLLMConfig,
+      user: user ? createSafeUser(user) : undefined,
+      tenantId,
+      body: { conversationId, messageId },
+    });
 
     const artifactPromises: Promise<TAttachment | null>[] = [];
-    const memoryCallback = createMemoryCallback({ res, artifactPromises, streamId });
+    const memoryCallback = createMemoryCallback({
+      res,
+      artifactPromises,
+      streamId,
+      jobCreatedAt,
+    });
     const customHandlers = {
       [GraphEvents.TOOL_END]: new BasicToolEndHandler(memoryCallback),
     };
@@ -469,7 +1000,9 @@ ${memory ?? 'No existing memories'}`;
       returnContent: true,
     });
 
+    signal?.throwIfAborted();
     const config = {
+      ...(signal != null && { signal }),
       runName: 'MemoryRun',
       configurable: {
         user_id: userId,
@@ -499,7 +1032,7 @@ ${memory ?? 'No existing memories'}`;
   } catch (error) {
     logger.error(
       `[MemoryAgent] Failed to process memory | userId: ${userId} | conversationId: ${conversationId} | messageId: ${messageId}`,
-      { error },
+      getSafeErrorMetadata(error),
     );
   }
 }
@@ -507,52 +1040,109 @@ ${memory ?? 'No existing memories'}`;
 export async function createMemoryProcessor({
   res,
   userId,
+  agentId,
   messageId,
   memoryMethods,
   conversationId,
+  req,
   config = {},
+  filters,
   streamId = null,
+  jobCreatedAt,
   user,
+  tenantId,
 }: {
   res: ServerResponse;
   messageId: string;
   conversationId: string;
   userId: string | ObjectId;
+  /** Agent partition; omit for the shared personal pool */
+  agentId?: string;
   memoryMethods: RequiredMemoryMethods;
+  /** Reuses the request-scoped formatted snapshot for the chat context. */
+  req?: object;
   config?: MemoryConfig;
+  filters?: FiltersConfig;
   streamId?: string | null;
+  jobCreatedAt?: number;
   user?: IUser;
-}): Promise<[string, (messages: BaseMessage[]) => Promise<(TAttachment | null)[] | undefined>]> {
+  tenantId?: string;
+}): Promise<
+  | [undefined, undefined]
+  | [
+      string,
+      (
+        messages: BaseMessage[],
+        inspectionMessages?: BaseMessage[],
+        privateTextTokens?: ReadonlySet<string>,
+        signal?: AbortSignal,
+      ) => Promise<(TAttachment | null)[] | undefined>,
+    ]
+> {
   const { validKeys, instructions, llmConfig, tokenLimit } = config;
   const finalInstructions = instructions || getDefaultInstructions(validKeys, tokenLimit);
 
-  const { withKeys, withoutKeys, totalTokens } = await memoryMethods.getFormattedMemories({
-    userId,
-  });
+  const [formatted, memoryEntries] = await Promise.all([
+    (req
+      ? getRequestMemories({
+          req,
+          userId,
+          agentId,
+          getFormattedMemories: memoryMethods.getFormattedMemories,
+        })
+      : memoryMethods.getFormattedMemories({ userId, agentId })
+    ).catch((error) => {
+      logger.error('[memory] Error loading automatic memory context', getSafeErrorMetadata(error));
+      return undefined;
+    }),
+    hasActivePiiPatterns(filters?.memories?.pii)
+      ? memoryMethods.getUserMemories({ userId, agentId })
+      : Promise.resolve(undefined),
+  ]);
+  /** Without the current memory snapshot we cannot safely seed token limits
+   *  or assert that no previous memories exist. Skip extraction for this turn. */
+  if (!formatted || formatted.readFailed) {
+    return [undefined, undefined];
+  }
+  const { withKeys, withoutKeys, totalTokens, tokenCountsByKey } = formatted;
 
   return [
     withoutKeys,
-    async function (messages: BaseMessage[]): Promise<(TAttachment | null)[] | undefined> {
+    async function (
+      messages: BaseMessage[],
+      inspectionMessages?: BaseMessage[],
+      privateTextTokens?: ReadonlySet<string>,
+      signal?: AbortSignal,
+    ): Promise<(TAttachment | null)[] | undefined> {
       try {
         return await processMemory({
           res,
           userId,
+          agentId,
           messages,
+          inspectionMessages,
+          privateTextTokens,
+          signal,
           validKeys,
           llmConfig,
           messageId,
           tokenLimit,
           streamId,
+          jobCreatedAt,
           conversationId,
           memory: withKeys,
+          memoryEntries,
           totalTokens: totalTokens || 0,
+          tokenCountsByKey,
+          filters,
           instructions: finalInstructions,
           setMemory: memoryMethods.setMemory,
           deleteMemory: memoryMethods.deleteMemory,
           user,
+          tenantId,
         });
       } catch (error) {
-        logger.error('Memory Agent failed to process memory', error);
+        logger.error('Memory Agent failed to process memory', getSafeErrorMetadata(error));
       }
     },
   ];
@@ -563,11 +1153,13 @@ async function handleMemoryArtifact({
   data,
   metadata,
   streamId = null,
+  jobCreatedAt,
 }: {
   res: ServerResponse;
   data: ToolEndData;
   metadata?: ToolEndMetadata;
   streamId?: string | null;
+  jobCreatedAt?: number;
 }) {
   const output = data?.output as ToolMessage | undefined;
   if (!output) {
@@ -594,7 +1186,11 @@ async function handleMemoryArtifact({
     return attachment;
   }
   if (streamId) {
-    GenerationJobManager.emitChunk(streamId, { event: 'attachment', data: attachment });
+    GenerationJobManager.emitChunk(
+      streamId,
+      { event: 'attachment', data: attachment },
+      { expectedCreatedAt: jobCreatedAt },
+    );
   } else {
     res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
@@ -607,16 +1203,19 @@ async function handleMemoryArtifact({
  * @param params.res - The server response object
  * @param params.artifactPromises - Array to collect artifact promises
  * @param params.streamId - The stream ID for resumable mode, or null for standard mode
+ * @param params.jobCreatedAt - The generation epoch that owns emitted artifacts
  * @returns The memory callback function
  */
 export function createMemoryCallback({
   res,
   artifactPromises,
   streamId = null,
+  jobCreatedAt,
 }: {
   res: ServerResponse;
   artifactPromises: Promise<Partial<TAttachment> | null>[];
   streamId?: string | null;
+  jobCreatedAt?: number;
 }): ToolEndCallback {
   return async (data: ToolEndData, metadata?: Record<string, unknown>) => {
     const output = data?.output as ToolMessage | undefined;
@@ -625,8 +1224,8 @@ export function createMemoryCallback({
       return;
     }
     artifactPromises.push(
-      handleMemoryArtifact({ res, data, metadata, streamId }).catch((error) => {
-        logger.error('Error processing memory artifact content:', error);
+      handleMemoryArtifact({ res, data, metadata, streamId, jobCreatedAt }).catch((error) => {
+        logger.error('Error processing memory artifact content:', getSafeErrorMetadata(error));
         return null;
       }),
     );

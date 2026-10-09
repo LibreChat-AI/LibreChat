@@ -1,8 +1,9 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
 import { RecoilRoot } from 'recoil';
-import type { MutableSnapshot } from 'recoil';
+import { render, screen } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
+import type { MutableSnapshot } from 'recoil';
+import { MessageContext } from '~/Providers/MessageContext';
 import LogContent from '../LogContent';
 import store from '~/store';
 
@@ -75,7 +76,15 @@ const renderWith = (ui: React.ReactElement, opts: { streaming?: boolean } = {}) 
   const initializeState = (snapshot: MutableSnapshot) => {
     snapshot.set(store.isSubmittingFamily(0), streaming);
   };
-  return render(<RecoilRoot initializeState={initializeState}>{ui}</RecoilRoot>);
+  return render(
+    <RecoilRoot initializeState={initializeState}>
+      <MessageContext.Provider
+        value={{ messageId: 'test-response', isExpanded: true, isSubmitting: streaming }}
+      >
+        {ui}
+      </MessageContext.Provider>
+    </RecoilRoot>,
+  );
 };
 
 describe('LogContent attachment routing', () => {
@@ -86,8 +95,8 @@ describe('LogContent attachment routing', () => {
       text: '<h1>hi</h1>',
     } as Partial<TAttachment>);
     renderWith(<LogContent output="" attachments={[html]} />);
-    // The panel card carries an aria-pressed state; auto-focused on mount.
-    expect(screen.getByRole('button', { pressed: true })).toBeInTheDocument();
+    // The artifact row carries an aria-expanded state; auto-focused on mount.
+    expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument();
     expect(screen.getByText('index.html')).toBeInTheDocument();
   });
 
@@ -100,18 +109,21 @@ describe('LogContent attachment routing', () => {
     renderWith(<LogContent output="" attachments={[mmd]} />);
     expect(screen.getByTestId('mermaid-render')).toHaveTextContent('graph TD');
     // Panel card not rendered for mermaid
-    expect(screen.queryByRole('button', { pressed: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { expanded: true })).not.toBeInTheDocument();
   });
 
-  it('routes text-bearing CSV through inline <pre>, not the panel', () => {
-    const csv = baseAttachment({
+  it('routes text-bearing JSON through inline <pre>, not the panel', () => {
+    /* CSV used to fall through here, but now routes to the SPREADSHEET
+     * preview bucket. JSON has no dedicated viewer yet, so it remains
+     * the canonical "unrouted text" example. */
+    const json = baseAttachment({
       file_id: 'c',
-      filename: 'data.csv',
-      text: 'a,b,c\n1,2,3',
-    } as Partial<TAttachment>);
-    const { container } = renderWith(<LogContent output="" attachments={[csv]} />);
+      filename: 'data.json',
+      text: '{"a":1,"b":2}',
+    });
+    const { container } = renderWith(<LogContent output="" attachments={[json]} />);
     expect(container.querySelector('pre')).not.toBeNull();
-    expect(screen.queryByRole('button', { pressed: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { expanded: true })).not.toBeInTheDocument();
     expect(screen.queryByTestId('mermaid-render')).not.toBeInTheDocument();
   });
 
@@ -119,39 +131,54 @@ describe('LogContent attachment routing', () => {
     const zip = baseAttachment({
       file_id: 'd',
       filename: 'archive.zip',
-      type: 'application/zip',
-    } as Partial<TAttachment>);
+    });
     renderWith(<LogContent output="" attachments={[zip]} />);
     expect(screen.getByTestId('log-link')).toHaveAttribute('data-filename', 'archive.zip');
   });
 
-  it('renders a panel card for pptx with empty text using the placeholder', () => {
-    // pptx text extraction is deferred; the artifact still routes through
-    // the panel and gets the localized placeholder content. Here the
-    // localize mock returns the key, so we assert by class/structure.
+  it('renders a panel card for a pptx with backend-rendered HTML in text', () => {
+    /* PPTX (and DOCX/XLSX/CSV) now route through the office preview
+     * bucket with a strict empty-text gate — the artifact only registers
+     * once the backend's `bufferToOfficeHtml` has produced the slide-list
+     * HTML and shipped it via `attachment.text`. */
     const pptx = baseAttachment({
       file_id: 'e',
       filename: 'slides.pptx',
-      text: undefined as unknown as string,
-    } as Partial<TAttachment>);
+      text: '<!DOCTYPE html><body><ol><li>Slide 1</li></ol></body>',
+    });
     renderWith(<LogContent output="" attachments={[pptx]} />);
     expect(screen.getByText('slides.pptx')).toBeInTheDocument();
   });
 
+  it('falls back to the legacy download branch for an office file with no extracted text', () => {
+    /* Empty `text` for an office type fails the strict gate, so the
+     * artifact stays unregistered and the file flows to the download
+     * fallback (LogLink), not a half-rendered panel card. */
+    const pptx = baseAttachment({
+      file_id: 'e2',
+      filename: 'slides.pptx',
+      text: undefined,
+    });
+    renderWith(<LogContent output="" attachments={[pptx]} />);
+    expect(screen.queryByRole('button', { expanded: true })).not.toBeInTheDocument();
+    expect(screen.getByTestId('log-link')).toHaveAttribute('data-filename', 'slides.pptx');
+  });
+
   it('routes an expired panel-eligible attachment through the legacy expired path', () => {
-    // Without this gate, an expired pptx/html/etc. would render as a
-    // clickable artifact card backed by a dead download link. The
-    // legacy "download expired" message must win for any panel-eligible
-    // entry whose `expiresAt` is in the past.
+    /* Without this gate, an expired pptx/html/etc. with extracted HTML
+     * would render as a clickable artifact card backed by a dead
+     * download link. The legacy "download expired" message must win for
+     * any panel-eligible entry whose `expiresAt` is in the past — even
+     * when the office HTML is present. */
     const expired = baseAttachment({
       file_id: 'x-expired',
       filename: 'slides.pptx',
-      text: undefined as unknown as string,
+      text: '<!DOCTYPE html><body><ol><li>Slide 1</li></ol></body>',
       expiresAt: Date.now() - 60_000,
-    } as Partial<TAttachment>);
+    });
     renderWith(<LogContent output="" attachments={[expired]} />);
     // No panel card and no log-link (the expired branch returns plain text).
-    expect(screen.queryByRole('button', { pressed: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { expanded: true })).not.toBeInTheDocument();
     expect(screen.queryByTestId('log-link')).not.toBeInTheDocument();
     // The localize mock returns the key, so we assert the expired-message key
     // appears in the rendered output alongside the filename.
@@ -166,7 +193,7 @@ describe('LogContent attachment routing', () => {
       expiresAt: Date.now() + 60_000,
     } as Partial<TAttachment>);
     renderWith(<LogContent output="" attachments={[fresh]} />);
-    expect(screen.getByRole('button', { pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument();
   });
 
   it('splits a mixed list into the right buckets', () => {
@@ -183,8 +210,12 @@ describe('LogContent attachment routing', () => {
       } as Partial<TAttachment>),
       baseAttachment({
         file_id: 't',
-        filename: 'notes.csv',
-        text: 'a,b\n1,2',
+        /* JSON stays on the inline `<pre>` rendering path. CSV used to
+         * live here too but now routes to the SPREADSHEET preview
+         * bucket, so it would no longer satisfy the "inline pre" check
+         * below. */
+        filename: 'notes.json',
+        text: '{"a":1,"b":2}',
       } as Partial<TAttachment>),
     ] as TAttachment[];
     const { container } = renderWith(
@@ -194,7 +225,7 @@ describe('LogContent attachment routing', () => {
     expect(screen.getByText('index.html')).toBeInTheDocument();
     // mermaid render present
     expect(screen.getByTestId('mermaid-render')).toBeInTheDocument();
-    // CSV inline pre present
+    // JSON inline pre present
     expect(container.querySelector('pre')).not.toBeNull();
   });
 });

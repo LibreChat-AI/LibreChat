@@ -1,4 +1,4 @@
-import { forwardRef, ReactNode, Ref } from 'react';
+import { forwardRef, ForwardRefExoticComponent, ReactNode, Ref, RefAttributes } from 'react';
 import {
   DialogClose,
   DialogContent,
@@ -7,7 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from './Dialog';
-import { cn } from '~/utils/';
+import { cn, disabledFillClasses } from '~/utils';
 
 type SelectionProps = {
   selectHandler?: () => void;
@@ -29,7 +29,9 @@ type DialogTemplateProps = {
   showCancelButton?: boolean;
 };
 
-const DialogTemplate = forwardRef((props: DialogTemplateProps, ref: Ref<HTMLDivElement>) => {
+const DialogTemplate: ForwardRefExoticComponent<
+  DialogTemplateProps & RefAttributes<HTMLDivElement>
+> = forwardRef((props: DialogTemplateProps, ref: Ref<HTMLDivElement>) => {
   const {
     title,
     description,
@@ -46,23 +48,26 @@ const DialogTemplate = forwardRef((props: DialogTemplateProps, ref: Ref<HTMLDivE
   const { selectHandler, selectClasses, selectText } = selection || {};
   const Cancel = 'cancel';
 
-  const defaultSelect =
-    'bg-gray-800 text-white transition-colors hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-200 dark:text-gray-800 dark:hover:bg-gray-200';
+  const defaultSelect = cn(
+    'bg-surface-inverted text-text-inverted transition-colors hover:bg-surface-inverted-hover disabled:cursor-not-allowed disabled:opacity-50',
+    disabledFillClasses,
+  );
   return (
     <DialogContent
       showCloseButton={showCloseButton}
       ref={ref}
-      className={cn('shadow-2xl dark:bg-gray-700', className || '')}
+      className={cn(
+        'bg-surface-dialog high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none shadow-2xl',
+        className || '',
+      )}
       onClick={(e) => e.stopPropagation()}
     >
       <DialogHeader className={cn(headerClassName ?? '')}>
-        <DialogTitle className="text-lg font-medium leading-6 text-gray-800 dark:text-gray-200">
+        <DialogTitle className="text-text-primary text-lg leading-6 font-medium">
           {title}
         </DialogTitle>
         {description && (
-          <DialogDescription className="text-gray-600 dark:text-gray-300">
-            {description}
-          </DialogDescription>
+          <DialogDescription className="text-text-secondary">{description}</DialogDescription>
         )}
       </DialogHeader>
       <div className="px-6">{main ? main : null}</div>
@@ -70,7 +75,7 @@ const DialogTemplate = forwardRef((props: DialogTemplateProps, ref: Ref<HTMLDivE
         <div>{leftButtons ? leftButtons : null}</div>
         <div className="flex h-auto gap-3">
           {showCancelButton && (
-            <DialogClose className="border-gray-100 hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-600">
+            <DialogClose className="border-border-light hover:bg-surface-hover">
               {Cancel}
             </DialogClose>
           )}

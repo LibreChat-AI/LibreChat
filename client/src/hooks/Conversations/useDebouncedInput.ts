@@ -1,5 +1,5 @@
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import debounce from 'lodash/debounce';
-import React, { useState, useCallback, useMemo } from 'react';
 import type { SetterOrUpdater } from 'recoil';
 import type { TSetOption } from '~/common';
 import { defaultDebouncedDelay } from '~/common';
@@ -23,16 +23,38 @@ function useDebouncedInput<T = unknown>({
   (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | T, numeric?: boolean) => void,
   T,
   SetterOrUpdater<T>,
-  // (newValue: string) => void,
+  () => void,
 ] {
   const [value, setValue] = useState<T>(initialValue);
 
-  /** A debounced function to call the passed setOption with the optionKey and new value.
-   *
-  Note: We use useMemo to ensure our debounced function is stable across renders and properly typed. */
+  /** The callbacks are read through refs so the debounced function itself stays
+   *  stable. Neither is memoized by its caller: `setOption` is a plain arrow in
+   *  useSetIndexOptions and the dynamic settings pass `setter: () => ({})`
+   *  inline, so depending on them rebuilt the debouncer on every render. Each
+   *  render then produced a fresh instance while the previous one kept its
+   *  timer, which left `flush()` pointing at an instance with nothing pending
+   *  and let a superseded value land after a correction. */
+  const setOptionRef = useRef(setOption);
+  const setterRef = useRef(setter);
+  setOptionRef.current = setOption;
+  setterRef.current = setter;
+
+  /** A debounced function to call the passed setOption with the optionKey and new value. */
   const setDebouncedOption = useMemo(
-    () => debounce(setOption && optionKey ? setOption(optionKey) : setter || (() => {}), delay),
-    [setOption, optionKey, setter, delay],
+    () =>
+      debounce((newValue: T) => {
+        const currentSetOption = setOptionRef.current;
+        if (currentSetOption && optionKey != null) {
+          /** T is the caller's field type; TSetOption is typed against the whole
+           *  conversation union, which does not narrow per key. The previous
+           *  form passed the setter to debounce directly and inherited the same
+           *  looseness. */
+          (currentSetOption(optionKey) as (value: T) => void)(newValue);
+          return;
+        }
+        setterRef.current?.(newValue);
+      }, delay),
+    [optionKey, delay],
   );
 
   /** An onChange handler that updates the local state and the debounced option */
@@ -52,7 +74,13 @@ function useDebouncedInput<T = unknown>({
     },
     [setDebouncedOption],
   );
-  return [onChange, value, setValue];
+  /** Lets a caller commit a pending edit immediately, e.g. on blur, so a Save
+   *  clicked in the same gesture does not read the pre-edit value. */
+  const flush = useCallback(() => {
+    setDebouncedOption.flush();
+  }, [setDebouncedOption]);
+
+  return [onChange, value, setValue, flush];
 }
 
 export default useDebouncedInput;

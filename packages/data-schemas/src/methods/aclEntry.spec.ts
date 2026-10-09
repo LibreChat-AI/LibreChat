@@ -1,13 +1,17 @@
 import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   ResourceType,
   PrincipalType,
   PrincipalModel,
   PermissionBits,
 } from 'librechat-data-provider';
-import { MongoMemoryServer } from 'mongodb-memory-server';
 import type * as t from '~/types';
-import { createAclEntryMethods, permissionBitSupersets } from './aclEntry';
+import {
+  OWNER_ACL_PERMISSION_BITS,
+  createAclEntryMethods,
+  permissionBitSupersets,
+} from './aclEntry';
 import aclEntrySchema from '~/schema/aclEntry';
 
 let mongoServer: MongoMemoryServer;
@@ -1194,6 +1198,42 @@ describe('AclEntry Model Tests', () => {
       expect(agentIds).toHaveLength(1);
       expect(agentIds[0].toString()).toBe(agentRes.toString());
     });
+
+    test('should have a public-principal compound index available for the planner', async () => {
+      await AclEntry.syncIndexes();
+      const indexes = await AclEntry.collection.indexes();
+      const publicIndex = indexes.find(
+        (idx) =>
+          idx.key?.principalType === 1 &&
+          idx.key?.resourceType === 1 &&
+          idx.key?.permBits === 1 &&
+          idx.key?.resourceId === 1,
+      );
+      expect(publicIndex).toBeDefined();
+
+      await methods.grantPermission(
+        PrincipalType.PUBLIC,
+        null,
+        ResourceType.AGENT,
+        new mongoose.Types.ObjectId(),
+        PermissionBits.VIEW,
+        grantedById,
+      );
+
+      const explain = (await AclEntry.find({
+        principalType: PrincipalType.PUBLIC,
+        resourceType: ResourceType.AGENT,
+        permBits: { $in: [PermissionBits.VIEW] },
+      })
+        .hint(publicIndex!.name as string)
+        .explain('queryPlanner')) as unknown as {
+        queryPlanner?: { winningPlan?: Record<string, unknown> };
+      };
+
+      const planString = JSON.stringify(explain?.queryPlanner?.winningPlan ?? {});
+      expect(planString).toContain('IXSCAN');
+      expect(planString).not.toContain('COLLSCAN');
+    });
   });
 
   describe('aggregateAclEntries', () => {
@@ -1223,14 +1263,14 @@ describe('AclEntry Model Tests', () => {
         grantedById,
       );
 
-      const results = await methods.aggregateAclEntries([
+      const results = (await methods.aggregateAclEntries([
         { $group: { _id: '$resourceType', count: { $sum: 1 } } },
         { $sort: { _id: 1 } },
-      ]);
+      ])) as Array<{ _id: string; count: number }>;
 
       expect(results).toHaveLength(2);
-      const agentResult = results.find((r: { _id: string }) => r._id === ResourceType.AGENT);
-      expect(agentResult.count).toBe(2);
+      const agentResult = results.find((r) => r._id === ResourceType.AGENT);
+      expect(agentResult?.count).toBe(2);
     });
 
     test('should return empty array for non-matching pipeline', async () => {
@@ -1238,6 +1278,85 @@ describe('AclEntry Model Tests', () => {
         { $match: { principalType: 'nonexistent' } },
       ]);
       expect(results).toEqual([]);
+    });
+  });
+
+  describe('getFirstOwnerIdsByResource', () => {
+    test('answers with the earliest owner when a transfer left two owner entries behind', async () => {
+      const formerOwner = new mongoose.Types.ObjectId();
+      const currentOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        formerOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+      await methods.grantPermission(
+        PrincipalType.USER,
+        currentOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(formerOwner.toString());
+    });
+
+    /* Granting Agent Insights ORs VIEW_INSIGHTS into the owner's role bits, so an owner
+       entry is not always exactly OWNER_ACL_PERMISSION_BITS. */
+    test('recognises an owner whose entry also carries the insights bit', async () => {
+      const owner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        owner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS | PermissionBits.VIEW_INSIGHTS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(owner.toString());
+    });
+
+    /* An agent and its remote counterpart share one id, so a lookup that ignored the
+       resource type would let a revoked remote owner decide the agent's public author. */
+    test('ignores an owner entry stored against another resource type with the same id', async () => {
+      const remoteOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        remoteOwner,
+        ResourceType.MCPSERVER,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.size).toBe(0);
+    });
+
+    test('ignores a viewer and asks nothing of the database for an empty page', async () => {
+      await methods.grantPermission(
+        PrincipalType.USER,
+        userId,
+        ResourceType.AGENT,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+      );
+
+      expect(
+        (await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId])).size,
+      ).toBe(0);
+      expect((await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [])).size).toBe(0);
     });
   });
 
@@ -1375,6 +1494,68 @@ describe('AclEntry Model Tests', () => {
         expect(result).toHaveLength(1);
         expect(result[0].toString()).toBe(viewEdit.toString());
       });
+
+      describe('resourceIds bound', () => {
+        const otherResource = new mongoose.Types.ObjectId();
+        beforeEach(async () => {
+          await methods.grantPermission(
+            PrincipalType.USER,
+            userId,
+            ResourceType.AGENT,
+            resourceId,
+            PermissionBits.VIEW,
+            grantedById,
+          );
+          await methods.grantPermission(
+            PrincipalType.USER,
+            userId,
+            ResourceType.AGENT,
+            otherResource,
+            PermissionBits.VIEW,
+            grantedById,
+          );
+        });
+
+        test('intersects access with the bound candidate ids only', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+            [resourceId, new mongoose.Types.ObjectId()],
+          );
+          expect(result).toHaveLength(1);
+          expect(result[0].toString()).toBe(resourceId.toString());
+        });
+
+        test('returns nothing when every accessible resource is outside the bound', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+            [new mongoose.Types.ObjectId()],
+          );
+          expect(result).toHaveLength(0);
+        });
+
+        test('an empty bound matches nothing rather than lifting the filter', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+            [],
+          );
+          expect(result).toHaveLength(0);
+        });
+
+        test('an unbound call still returns every accessible resource', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+          );
+          expect(result).toHaveLength(2);
+        });
+      });
     });
 
     describe('findPublicResourceIds', () => {
@@ -1395,6 +1576,42 @@ describe('AclEntry Model Tests', () => {
         );
         expect(result).toHaveLength(1);
         expect(result[0].toString()).toBe(shared.toString());
+      });
+
+      test('with resourceIds bound, intersects public access with the candidate ids', async () => {
+        const shared = new mongoose.Types.ObjectId();
+        const unreachable = new mongoose.Types.ObjectId();
+        await methods.grantPermission(
+          PrincipalType.PUBLIC,
+          null,
+          ResourceType.AGENT,
+          shared,
+          PermissionBits.VIEW,
+          grantedById,
+        );
+        await methods.grantPermission(
+          PrincipalType.PUBLIC,
+          null,
+          ResourceType.AGENT,
+          unreachable,
+          PermissionBits.VIEW,
+          grantedById,
+        );
+
+        const result = await methods.findPublicResourceIds(
+          ResourceType.AGENT,
+          PermissionBits.VIEW,
+          [shared, new mongoose.Types.ObjectId()],
+        );
+        expect(result).toHaveLength(1);
+        expect(result[0].toString()).toBe(shared.toString());
+
+        const emptyBound = await methods.findPublicResourceIds(
+          ResourceType.AGENT,
+          PermissionBits.VIEW,
+          [],
+        );
+        expect(emptyBound).toHaveLength(0);
       });
 
       test('deduplicates when duplicate public entries exist for the same resource', async () => {
@@ -1548,20 +1765,131 @@ describe('AclEntry Model Tests', () => {
    * `permBits: { $in: permissionBitSupersets(X) }`), so it warrants direct
    * coverage independent of the higher-level parity and behavior specs.
    */
-  describe('permissionBitSupersets', () => {
-    test('requiredBits=0 matches every permBits value in [0, 15]', () => {
-      const result = permissionBitSupersets(0);
-      expect(result).toHaveLength(16);
-      expect([...result].sort((a, b) => a - b)).toEqual([
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-      ]);
+  describe('modifyPermissionBits (atomic guarded writes, issue #16163)', () => {
+    const principal = new mongoose.Types.ObjectId();
+    const resource = new mongoose.Types.ObjectId();
+    const INSIGHTS = PermissionBits.VIEW_INSIGHTS;
+
+    const seed = (permBits: number) =>
+      AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: principal,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: resource,
+        permBits,
+        grantedBy: grantedById,
+      });
+
+    const modify = (add?: number | null, remove?: number | null) =>
+      methods.modifyPermissionBits(
+        PrincipalType.USER,
+        principal,
+        ResourceType.AGENT,
+        resource,
+        add,
+        remove,
+      );
+
+    test('adds bits, leaving independently administered bits alone', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(PermissionBits.EDIT, null);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
     });
 
-    test('requiredBits=15 (all four bits) matches only [15]', () => {
-      const result = permissionBitSupersets(
-        PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+    test('removes bits, leaving independently administered bits alone', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
+      const updated = await modify(null, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | INSIGHTS);
+    });
+
+    test('applies an add and a remove in one stored value', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
+      const updated = await modify(PermissionBits.SHARE, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+    });
+
+    test('changes bits in one guarded write and never emits $bit', async () => {
+      await seed(PermissionBits.VIEW);
+      const spy = jest.spyOn(AclEntry, 'bulkWrite');
+      try {
+        await modify(PermissionBits.EDIT, PermissionBits.VIEW);
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][0]).toHaveLength(1);
+        expect(spy.mock.calls[0][0][0]).toMatchObject({
+          updateOne: {
+            filter: { permBits: PermissionBits.VIEW },
+            update: { $set: { permBits: PermissionBits.EDIT } },
+          },
+        });
+        expect(JSON.stringify(spy.mock.calls)).not.toContain('$bit');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test('retries a concurrent Insights grant without overwriting it', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT);
+      const real = AclEntry.bulkWrite.bind(AclEntry);
+      const race = (async (...args: Parameters<typeof real>) => {
+        await AclEntry.updateMany({ principalId: principal }, { $set: { permBits: 19 } });
+        return real(...args);
+      }) as unknown as typeof AclEntry.bulkWrite;
+      const spy = jest.spyOn(AclEntry, 'bulkWrite').mockImplementationOnce(race);
+      try {
+        const updated = await modify(PermissionBits.SHARE, PermissionBits.EDIT);
+        expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+        expect(spy).toHaveBeenCalledTimes(2);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test('removes a bit named in both masks, matching the prior precedence', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(PermissionBits.EDIT | PermissionBits.SHARE, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+    });
+
+    test('initializes an absent permission field without inheriting anything', async () => {
+      await seed(PermissionBits.VIEW);
+      await mongoose.models.AclEntry.collection.updateMany(
+        { principalId: principal },
+        { $unset: { permBits: '' } },
       );
-      expect([...result].sort((a, b) => a - b)).toEqual([15]);
+      const updated = await modify(PermissionBits.EDIT, PermissionBits.VIEW);
+      expect(updated?.permBits).toBe(PermissionBits.EDIT);
+    });
+
+    test('returns null when no entry matches', async () => {
+      expect(await modify(PermissionBits.EDIT, PermissionBits.VIEW)).toBeNull();
+    });
+
+    test('returns the entry unchanged when neither side is requested', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(null, null);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | INSIGHTS);
+    });
+  });
+
+  describe('permissionBitSupersets', () => {
+    test('requiredBits=0 matches every permBits value in [0, 31]', () => {
+      const result = permissionBitSupersets(0);
+      expect(result).toHaveLength(32);
+      expect([...result].sort((a, b) => a - b)).toEqual(
+        Array.from({ length: 32 }, (_, value) => value),
+      );
+    });
+
+    test('all permission bits match only the upper bound', () => {
+      const result = permissionBitSupersets(
+        PermissionBits.VIEW |
+          PermissionBits.EDIT |
+          PermissionBits.DELETE |
+          PermissionBits.SHARE |
+          PermissionBits.VIEW_INSIGHTS,
+      );
+      expect([...result].sort((a, b) => a - b)).toEqual([31]);
     });
 
     test('every returned value is a bitwise superset of requiredBits', () => {
@@ -1570,6 +1898,8 @@ describe('AclEntry Model Tests', () => {
         PermissionBits.EDIT,
         PermissionBits.DELETE,
         PermissionBits.SHARE,
+        PermissionBits.VIEW_INSIGHTS,
+        PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
         PermissionBits.VIEW | PermissionBits.EDIT,
         PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE,
       ]) {
@@ -1583,12 +1913,12 @@ describe('AclEntry Model Tests', () => {
     test('returns exactly the values satisfying $bitsAllSet semantics', () => {
       /**
        * Parity check against the literal definition: for every required mask,
-       * the returned set must equal the set of all v in [0,15] whose bits
+       * the returned set must equal the set of all v in [0,31] whose bits
        * include `required`.
        */
-      for (let required = 0; required <= 15; required++) {
+      for (let required = 0; required <= 31; required++) {
         const expected: number[] = [];
-        for (let v = 0; v <= 15; v++) {
+        for (let v = 0; v <= 31; v++) {
           if ((v & required) === required) {
             expected.push(v);
           }
@@ -1625,7 +1955,12 @@ describe('AclEntry Model Tests', () => {
      */
     describe('rejection of out-of-range inputs (cache-growth safety)', () => {
       const MAX =
-        PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE;
+        PermissionBits.VIEW |
+        PermissionBits.EDIT |
+        PermissionBits.DELETE |
+        PermissionBits.SHARE |
+        PermissionBits.VIEW_INSIGHTS;
+      const FIRST_TRUNCATED_32_BIT_VALUE = 2 ** 32;
       const SHARED_EMPTY = permissionBitSupersets(MAX + 1);
 
       test('returns a frozen empty array for requiredBits above MAX_PERM_BITS', () => {
@@ -1641,18 +1976,28 @@ describe('AclEntry Model Tests', () => {
         expect(permissionBitSupersets(MAX + 1)).toBe(SHARED_EMPTY);
         expect(permissionBitSupersets(MAX + 100)).toBe(SHARED_EMPTY);
         expect(permissionBitSupersets(-1)).toBe(SHARED_EMPTY);
+        expect(permissionBitSupersets(FIRST_TRUNCATED_32_BIT_VALUE)).toBe(SHARED_EMPTY);
+        expect(permissionBitSupersets(FIRST_TRUNCATED_32_BIT_VALUE * 2)).toBe(SHARED_EMPTY);
         expect(permissionBitSupersets(Number.MAX_SAFE_INTEGER)).toBe(SHARED_EMPTY);
         expect(permissionBitSupersets(NaN)).toBe(SHARED_EMPTY);
         expect(permissionBitSupersets(1.5)).toBe(SHARED_EMPTY);
       });
 
+      test('rejects large integers that truncate to in-range 32-bit values', () => {
+        expect(FIRST_TRUNCATED_32_BIT_VALUE & ~MAX).toBe(0);
+        expect(permissionBitSupersets(FIRST_TRUNCATED_32_BIT_VALUE)).toBe(SHARED_EMPTY);
+        expect(permissionBitSupersets(FIRST_TRUNCATED_32_BIT_VALUE + PermissionBits.VIEW)).toBe(
+          SHARED_EMPTY,
+        );
+      });
+
       test('rejects inputs with bits above MAX_PERM_BITS even if some in-range bits are set', () => {
         /**
-         * `permBits = 17 = 0b10001` has VIEW set AND bit 4 (out of range). A
-         * stored `permBits` can never be both ≤ 15 and have bit 4 set, so the
+         * `permBits = 33 = 0b100001` has VIEW set and an out-of-range bit. A
+         * stored `permBits` can never be both ≤ 31 and have bit 5 set, so the
          * match set is necessarily empty — reject before caching.
          */
-        expect(permissionBitSupersets(MAX + PermissionBits.VIEW)).toBe(SHARED_EMPTY);
+        expect(permissionBitSupersets(MAX + 1 + PermissionBits.VIEW)).toBe(SHARED_EMPTY);
       });
 
       test('does NOT cache rejected inputs (reference identity)', () => {
@@ -1692,6 +2037,7 @@ describe('AclEntry Model Tests', () => {
           const before = setSpy.mock.calls.length;
           for (let i = 0; i < 500; i++) {
             permissionBitSupersets(MAX + 1 + i);
+            permissionBitSupersets(FIRST_TRUNCATED_32_BIT_VALUE + i);
             permissionBitSupersets(-(i + 1));
             permissionBitSupersets(i + 0.5);
           }
@@ -1721,7 +2067,11 @@ describe('AclEntry Model Tests', () => {
    */
   describe('permBits schema bounds', () => {
     const MAX_PERM_BITS =
-      PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE;
+      PermissionBits.VIEW |
+      PermissionBits.EDIT |
+      PermissionBits.DELETE |
+      PermissionBits.SHARE |
+      PermissionBits.VIEW_INSIGHTS;
 
     test('accepts permBits at the upper bound (all enum bits set)', async () => {
       const resource = new mongoose.Types.ObjectId();

@@ -4,12 +4,7 @@ export { PromptName, Command, Description, CategorySelector } from './fields';
 export { PreviewPrompt, DeleteVersion, VariableDialog, SharePrompt } from './dialogs';
 export { PromptForm, CreatePromptForm, VariableForm, PromptLabelsForm } from './forms';
 export { PromptEditor, VariablesDropdown, CodeVariableGfm, PromptVariableGfm } from './editor';
-export { PromptDetails, PromptVariables, PromptVersions, EmptyPromptPreview } from './display';
-export {
-  GroupSidePanel as PromptSidePanel,
-  PromptsAccordion,
-  FilterPrompts,
-  PanelNavigation,
-} from './sidebar';
+export { PromptDetails, PromptVariables, PromptVersions } from './display';
+export { GroupSidePanel as PromptSidePanel, PromptsAccordion, FilterPrompts } from './sidebar';
 export { List as PromptGroupsList, ChatGroupItem, ListCard, NoPromptGroup } from './lists';
 export { CreatePromptButton, AdminSettings, AlwaysMakeProd, AutoSendPrompt } from './buttons';

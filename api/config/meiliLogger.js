@@ -29,13 +29,15 @@ const getLogDir = () => {
   return path.join(__dirname, '..', 'logs');
 };
 
-const logDir = getLogDir();
-
-const { NODE_ENV, DEBUG_LOGGING = false } = process.env;
+const { NODE_ENV, DEBUG_LOGGING = false, LOG_TO_FILE = true } = process.env;
 
 const useDebugLogging =
   (typeof DEBUG_LOGGING === 'string' && DEBUG_LOGGING?.toLowerCase() === 'true') ||
   DEBUG_LOGGING === true;
+
+const useFileLogging =
+  (typeof LOG_TO_FILE === 'string' && LOG_TO_FILE?.toLowerCase() !== 'false') ||
+  LOG_TO_FILE === true;
 
 const levels = {
   error: 0,
@@ -68,17 +70,23 @@ const fileFormat = winston.format.combine(
 );
 
 const logLevel = useDebugLogging ? 'debug' : 'error';
-const transports = [
-  new winston.transports.DailyRotateFile({
-    level: logLevel,
-    filename: `${logDir}/meiliSync-%DATE%.log`,
-    datePattern: 'YYYY-MM-DD',
-    zippedArchive: true,
-    maxSize: '20m',
-    maxFiles: '14d',
-    format: fileFormat,
-  }),
-];
+const transports = [];
+
+if (useFileLogging) {
+  const logDir = getLogDir();
+
+  transports.push(
+    new winston.transports.DailyRotateFile({
+      level: logLevel,
+      filename: `${logDir}/meiliSync-%DATE%.log`,
+      datePattern: 'YYYY-MM-DD',
+      zippedArchive: true,
+      maxSize: '20m',
+      maxFiles: '14d',
+      format: fileFormat,
+    }),
+  );
+}
 
 const consoleFormat = winston.format.combine(
   winston.format.colorize({ all: true }),

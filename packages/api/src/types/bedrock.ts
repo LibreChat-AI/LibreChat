@@ -9,6 +9,13 @@ import type { BedrockConverseInput } from 'librechat-data-provider';
 export type BedrockCredentials = Partial<AwsCredentialIdentity>;
 
 /**
+ * User-provided Bedrock credentials can be either AWS credentials or an API key.
+ */
+export type BedrockUserCredentials = BedrockCredentials & {
+  bearerToken?: string;
+};
+
+/**
  * AWS Bedrock Guardrail configuration
  * @see https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_GuardrailConfiguration.html
  */
@@ -19,6 +26,8 @@ export interface GuardrailConfiguration {
   guardrailVersion: string;
   /** The trace behavior for the guardrail */
   trace?: 'enabled' | 'disabled' | 'enabled_full';
+  /** The processing mode for guardrail; 'sync' is the default guardrail behavior if unset */
+  streamProcessingMode?: 'sync' | 'async';
 }
 
 /**
@@ -39,6 +48,8 @@ export interface BedrockConfigOptions {
   client?: BedrockRuntimeClient;
   /** AWS credentials */
   credentials?: BedrockCredentials;
+  /** AWS shared config profile for the SDK credential provider chain */
+  profile?: string;
   /** Custom endpoint host for reverse proxy */
   endpointHost?: string;
   /** Guardrail configuration for content filtering */
@@ -55,6 +66,7 @@ export interface BedrockLLMConfigResult {
     region?: string;
     client?: BedrockRuntimeClient;
     credentials?: BedrockCredentials;
+    profile?: string;
     endpointHost?: string;
     guardrailConfig?: GuardrailConfiguration;
     applicationInferenceProfile?: string;

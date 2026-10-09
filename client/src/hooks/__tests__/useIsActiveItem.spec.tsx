@@ -14,6 +14,37 @@ function Probe() {
 const getProbe = (container: HTMLElement) =>
   container.querySelector('[data-testid="probe"]') as HTMLDivElement;
 
+/**
+ * Resolves once a `data-active-item` mutation has been delivered to observers. The hook
+ * registers its observer on mount, so it is always ahead of this one in delivery order,
+ * which means the hook has already reacted by the time this resolves. Filtering matters:
+ * React writes `data-active` onto the same element when it re-renders, and an unfiltered
+ * observer would resolve on that write instead of on the attribute under test.
+ */
+const nextActiveItemMutation = (element: HTMLElement): Promise<void> =>
+  new Promise((resolve) => {
+    const observer = new MutationObserver(() => {
+      observer.disconnect();
+      resolve();
+    });
+    observer.observe(element, { attributes: true, attributeFilter: ['data-active-item'] });
+  });
+
+/**
+ * Resolves once an attribute mutation on `element` has been delivered to observers. The
+ * hook's observer filters on `data-active-item`, so it is never notified of the unrelated
+ * mutation; this unfiltered observer proves delivery happened before the test asserts
+ * that the hook did not react.
+ */
+const nextAttributeMutation = (element: HTMLElement, attributeName: string): Promise<void> =>
+  new Promise((resolve) => {
+    const observer = new MutationObserver(() => {
+      observer.disconnect();
+      resolve();
+    });
+    observer.observe(element, { attributes: true, attributeFilter: [attributeName] });
+  });
+
 describe('useIsActiveItem', () => {
   it('starts with isActive=false when data-active-item is absent', () => {
     const { container } = render(<Probe />);
@@ -24,10 +55,10 @@ describe('useIsActiveItem', () => {
     const { container } = render(<Probe />);
     const probe = getProbe(container);
 
+    const delivered = nextActiveItemMutation(probe);
     await act(async () => {
       probe.setAttribute('data-active-item', '');
-      // Allow the MutationObserver microtask to run
-      await Promise.resolve();
+      await delivered;
     });
 
     expect(probe.getAttribute('data-active')).toBe('true');
@@ -37,15 +68,17 @@ describe('useIsActiveItem', () => {
     const { container } = render(<Probe />);
     const probe = getProbe(container);
 
+    const added = nextActiveItemMutation(probe);
     await act(async () => {
       probe.setAttribute('data-active-item', '');
-      await Promise.resolve();
+      await added;
     });
     expect(probe.getAttribute('data-active')).toBe('true');
 
+    const removed = nextActiveItemMutation(probe);
     await act(async () => {
       probe.removeAttribute('data-active-item');
-      await Promise.resolve();
+      await removed;
     });
     expect(probe.getAttribute('data-active')).toBe('false');
   });
@@ -54,9 +87,10 @@ describe('useIsActiveItem', () => {
     const { container } = render(<Probe />);
     const probe = getProbe(container);
 
+    const delivered = nextAttributeMutation(probe, 'data-something-else');
     await act(async () => {
       probe.setAttribute('data-something-else', 'x');
-      await Promise.resolve();
+      await delivered;
     });
 
     expect(probe.getAttribute('data-active')).toBe('false');

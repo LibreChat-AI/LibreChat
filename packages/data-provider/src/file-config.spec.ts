@@ -1,8 +1,20 @@
+import type { MimeUploadCapability } from './file-config';
+import type { ResponsesApiRouting } from './types';
 import type { FileConfig } from './types/files';
 import {
   fileConfig as baseFileConfig,
+  fileConfigSchema,
+  resolveEffectiveUseResponsesApi,
+  prefersResponsesApiByModel,
+  isAnthropicTextDocumentType,
+  getConfiguredMimeAccept,
+  getDocumentFileExtension,
+  bedrockDocumentMimeTypes,
+  isAnthropicDocumentType,
   isPermissiveMimeConfig,
+  isExplicitMimeConfig,
   convertStringsToRegex,
+  setFileConfigRegexCompiler,
   documentParserMimeTypes,
   getEndpointFileConfig,
   applicationMimeTypes,
@@ -12,6 +24,7 @@ import {
   inferMimeType,
   textMimeTypes,
 } from './file-config';
+import { resolveDefaultLLMDeliveryPath } from './resolve-llm-delivery-path';
 import { EModelEndpoint } from './schemas';
 
 describe('inferMimeType', () => {
@@ -21,6 +34,18 @@ describe('inferMimeType', () => {
 
   it('should normalize text/x-markdown to text/markdown', () => {
     expect(inferMimeType('test.md', 'text/x-markdown')).toBe('text/markdown');
+  });
+
+  it('should normalize application/x-zip-compressed to application/zip', () => {
+    expect(inferMimeType('archive.zip', 'application/x-zip-compressed')).toBe('application/zip');
+  });
+
+  it('should normalize application/x-shellscript to application/x-sh', () => {
+    expect(inferMimeType('test.sh', 'application/x-shellscript')).toBe('application/x-sh');
+  });
+
+  it('should normalize text/x-shellscript to application/x-sh', () => {
+    expect(inferMimeType('test.sh', 'text/x-shellscript')).toBe('application/x-sh');
   });
 
   it('should return a type that matches textMimeTypes after normalization', () => {
@@ -36,6 +61,7 @@ describe('inferMimeType', () => {
   it('should infer from extension when browser type is empty', () => {
     expect(inferMimeType('test.py', '')).toBe('text/x-python');
     expect(inferMimeType('code.js', '')).toBe('text/javascript');
+    expect(inferMimeType('archive.zip', '')).toBe('application/zip');
     expect(inferMimeType('photo.heic', '')).toBe('image/heic');
     expect(inferMimeType('Main.java', '')).toBe('text/x-java');
   });
@@ -54,12 +80,63 @@ describe('inferMimeType', () => {
     expect(baseFileConfig.checkType(normalized)).toBe(true);
   });
 
+  it.each(['application/x-shellscript', 'text/x-shellscript'])(
+    'should produce a type accepted by checkType after normalizing %s',
+    (browserType) => {
+      expect(baseFileConfig.checkType(inferMimeType('test.sh', browserType))).toBe(true);
+    },
+  );
+
+  it.each(['application/x-shellscript', 'text/x-shellscript'])(
+    'should reject raw %s without normalization',
+    (browserType) => {
+      expect(baseFileConfig.checkType(browserType)).toBe(false);
+    },
+  );
+
   it('should reject raw text/x-python-script without normalization', () => {
     expect(baseFileConfig.checkType('text/x-python-script')).toBe(false);
   });
 
   it('should reject raw text/x-markdown without normalization', () => {
     expect(baseFileConfig.checkType('text/x-markdown')).toBe(false);
+  });
+
+  it('should infer message/rfc822 from extension when browser type is empty', () => {
+    expect(inferMimeType('email.eml', '')).toBe('message/rfc822');
+  });
+
+  it('should pass through message/rfc822 when browser reports it', () => {
+    expect(inferMimeType('email.eml', 'message/rfc822')).toBe('message/rfc822');
+  });
+
+  it('should produce a type accepted by checkType for .eml files', () => {
+    const normalized = inferMimeType('test.eml', '');
+    expect(baseFileConfig.checkType(normalized)).toBe(true);
+  });
+
+  it('infers Office MIME types from extension when the browser reports none', () => {
+    expect(inferMimeType('legacy.doc', '')).toBe('application/msword');
+    expect(inferMimeType('report.docx', '')).toBe(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    expect(inferMimeType('legacy.xls', '')).toBe('application/vnd.ms-excel');
+    expect(inferMimeType('sheet.xlsx', '')).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    expect(inferMimeType('deck.pptx', '')).toBe(
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    );
+    expect(inferMimeType('template.potx', '')).toBe(
+      'application/vnd.openxmlformats-officedocument.presentationml.template',
+    );
+  });
+
+  it('produces Office types accepted by checkType after inference', () => {
+    expect(baseFileConfig.checkType(inferMimeType('report.docx', ''))).toBe(true);
+    expect(baseFileConfig.checkType(inferMimeType('sheet.xlsx', ''))).toBe(true);
+    expect(baseFileConfig.checkType(inferMimeType('legacy.doc', ''))).toBe(true);
+    expect(baseFileConfig.checkType(inferMimeType('template.potx', ''))).toBe(true);
   });
 });
 
@@ -82,6 +159,7 @@ describe('applicationMimeTypes', () => {
     'application/msword',
     'application/xml',
     'application/zip',
+    'application/x-zip-compressed',
     'application/epub+zip',
     'application/x-tar',
     'application/x-sh',
@@ -125,7 +203,8 @@ describe('defaultOCRMimeTypes', () => {
     'application/vnd.oasis.opendocument.spreadsheet',
     'application/vnd.oasis.opendocument.presentation',
     'application/vnd.oasis.opendocument.graphics',
-  ])('matches ODF type for OCR: %s', (mimeType) => {
+    'application/vnd.openxmlformats-officedocument.presentationml.template',
+  ])('matches configured OCR type: %s', (mimeType) => {
     expect(checkOCRType(mimeType)).toBe(true);
   });
 });
@@ -139,8 +218,13 @@ describe('supportedMimeTypes', () => {
     'application/vnd.oasis.opendocument.spreadsheet',
     'application/vnd.oasis.opendocument.presentation',
     'application/vnd.oasis.opendocument.graphics',
-  ])('ODF type flows through supportedMimeTypes: %s', (mimeType) => {
+    'application/vnd.openxmlformats-officedocument.presentationml.template',
+  ])('document type flows through supportedMimeTypes: %s', (mimeType) => {
     expect(checkSupported(mimeType)).toBe(true);
+  });
+
+  it('message/rfc822 (.eml) flows through supportedMimeTypes', () => {
+    expect(checkSupported('message/rfc822')).toBe(true);
   });
 });
 
@@ -169,6 +253,47 @@ describe('documentParserMimeTypes', () => {
     'image/png',
   ])('does not match OCR-only or unsupported type: %s', (mimeType) => {
     expect(check(mimeType)).toBe(false);
+  });
+});
+
+describe('isAnthropicDocumentType', () => {
+  it.each([
+    'application/pdf',
+    'text/plain',
+    'text/html',
+    'text/markdown',
+    'text/csv',
+    'text/x-python',
+    'application/json',
+    'application/xml',
+    'application/yaml',
+    'application/sql',
+    'application/csv',
+  ])('accepts type the Anthropic document path can send: %s', (mimeType) => {
+    expect(isAnthropicDocumentType(mimeType)).toBe(true);
+  });
+
+  it.each([
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/msword',
+    'application/vnd.ms-excel',
+    'application/epub+zip',
+    'application/zip',
+    'application/vnd.apache.parquet',
+    'image/png',
+    '',
+  ])('rejects type Anthropic would 400 on: %s', (mimeType) => {
+    expect(isAnthropicDocumentType(mimeType)).toBe(false);
+  });
+
+  it('rejects undefined', () => {
+    expect(isAnthropicDocumentType(undefined)).toBe(false);
+  });
+
+  it('excludes PDF from the plain-text subset', () => {
+    expect(isAnthropicTextDocumentType('application/pdf')).toBe(false);
+    expect(isAnthropicTextDocumentType('text/plain')).toBe(true);
   });
 });
 
@@ -836,6 +961,36 @@ describe('getEndpointFileConfig', () => {
       expect(result.fileSizeLimit).toBe(10 * 1024 * 1024);
     });
 
+    it('should convert skills fileSizeLimit from MB to bytes', () => {
+      const merged = mergeFileConfig({
+        skills: {
+          fileSizeLimit: 15,
+        },
+      });
+
+      expect(merged.skills?.fileSizeLimit).toBe(15 * 1024 * 1024);
+    });
+
+    it('defaults skill rollback concurrency and preserves configured overrides', () => {
+      expect(mergeFileConfig(undefined).skills?.importCleanupConcurrency).toBe(8);
+      const parsed = fileConfigSchema.parse({ skills: { importCleanupConcurrency: 3 } });
+      const merged = mergeFileConfig(parsed);
+      expect(merged.skills?.importCleanupConcurrency).toBe(3);
+      expect(merged.skills?.fileSizeLimit).toBe(50 * 1024 * 1024);
+    });
+
+    it.each([0, -1, 1.5])('rejects invalid rollback concurrency %s', (concurrency) => {
+      expect(
+        fileConfigSchema.safeParse({ skills: { importCleanupConcurrency: concurrency } }).success,
+      ).toBe(false);
+    });
+
+    it('should default skills fileSizeLimit to 50 MB', () => {
+      const merged = mergeFileConfig(undefined);
+
+      expect(merged.skills?.fileSizeLimit).toBe(50 * 1024 * 1024);
+    });
+
     it('should preserve disabled: false in merged config', () => {
       const dynamicConfig = {
         endpoints: {
@@ -1262,6 +1417,35 @@ describe('getEndpointFileConfig', () => {
   });
 });
 
+describe('isExplicitMimeConfig', () => {
+  it('is false for undefined or empty lists', () => {
+    expect(isExplicitMimeConfig(undefined)).toBe(false);
+    expect(isExplicitMimeConfig([])).toBe(false);
+  });
+
+  it('is false for the built-in default list (inherited, not configured)', () => {
+    expect(isExplicitMimeConfig(supportedMimeTypes)).toBe(false);
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: mergeFileConfig({ endpoints: { Other: { fileLimit: 1 } } }),
+      endpoint: 'MyGateway',
+      endpointType: 'custom',
+    });
+    expect(isExplicitMimeConfig(endpointConfig.supportedMimeTypes)).toBe(false);
+  });
+
+  it('is true for an admin-configured list, permissive or not', () => {
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: mergeFileConfig({
+        endpoints: { MyGateway: { supportedMimeTypes: ['image/.*', 'video/.*'] } },
+      }),
+      endpoint: 'MyGateway',
+      endpointType: 'custom',
+    });
+    expect(isExplicitMimeConfig(endpointConfig.supportedMimeTypes)).toBe(true);
+    expect(isExplicitMimeConfig([/.*/])).toBe(true);
+  });
+});
+
 describe('isPermissiveMimeConfig', () => {
   it('returns true for wildcard .* pattern', () => {
     expect(isPermissiveMimeConfig([/.*/])).toBe(true);
@@ -1318,5 +1502,743 @@ describe('isPermissiveMimeConfig', () => {
   it('returns true for regex produced by convertStringsToRegex with .*', () => {
     const converted = convertStringsToRegex(['.*']);
     expect(isPermissiveMimeConfig(converted)).toBe(true);
+  });
+});
+
+describe('getConfiguredMimeAccept', () => {
+  const toSet = (accept?: string) => new Set((accept ?? '').split(',').filter(Boolean));
+
+  /** Provider capability tiers: image-only, document providers, Google/OpenRouter, and Bedrock. */
+  const IMAGE_ONLY: MimeUploadCapability = { categories: ['image'] };
+  const IMAGE_DOC: MimeUploadCapability = { categories: ['image', 'document'] };
+  const ALL: MimeUploadCapability = { categories: ['image', 'document', 'audio', 'video'] };
+  const BEDROCK: MimeUploadCapability = {
+    categories: ['image', 'document'],
+    documentMimeTypes: bedrockDocumentMimeTypes,
+  };
+  const GOOGLE: MimeUploadCapability = {
+    categories: ['image', 'document', 'audio', 'video'],
+    documentMimeTypes: ['application/pdf'],
+  };
+
+  it('returns undefined for undefined', () => {
+    expect(getConfiguredMimeAccept(undefined, ALL)).toBeUndefined();
+  });
+
+  it('returns undefined for empty array', () => {
+    expect(getConfiguredMimeAccept([], ALL)).toBeUndefined();
+  });
+
+  it('returns undefined for the built-in default supportedMimeTypes (keep provider filter)', () => {
+    expect(getConfiguredMimeAccept(supportedMimeTypes, ALL)).toBeUndefined();
+  });
+
+  it("returns '' for permissive configs so the picker stays unrestricted", () => {
+    expect(getConfiguredMimeAccept(convertStringsToRegex(['.*']), ALL)).toBe('');
+    expect(getConfiguredMimeAccept([/^.+$/], ALL)).toBe('');
+  });
+
+  it('translates the finite Office + image allowlist from issue #14162', () => {
+    const config = convertStringsToRegex([
+      '^image/.*',
+      '^application/pdf$',
+      '^application/msword$',
+      '^application/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document$',
+      '^application/vnd\\.ms-excel$',
+      '^application/vnd\\.openxmlformats-officedocument\\.spreadsheetml\\.sheet$',
+    ]);
+    const accept = toSet(getConfiguredMimeAccept(config, IMAGE_DOC));
+
+    for (const token of [
+      'image/*',
+      '.pdf',
+      'application/pdf',
+      '.doc',
+      'application/msword',
+      '.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.xls',
+      'application/vnd.ms-excel',
+      '.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ]) {
+      expect(accept.has(token)).toBe(true);
+    }
+    expect(accept.has('.pptx')).toBe(false);
+    expect(accept.has('audio/*')).toBe(false);
+    expect(accept.has('video/*')).toBe(false);
+  });
+
+  it('translates a PowerPoint template allowlist to the template extension and MIME', () => {
+    const templateMime = 'application/vnd.openxmlformats-officedocument.presentationml.template';
+    const accept = toSet(
+      getConfiguredMimeAccept(
+        convertStringsToRegex([
+          '^application/vnd\\.openxmlformats-officedocument\\.presentationml\\.template$',
+        ]),
+        IMAGE_DOC,
+      ),
+    );
+
+    expect(accept).toEqual(new Set(['.potx', templateMime]));
+  });
+
+  it('emits image/* for an image-only allowlist', () => {
+    const accept = toSet(getConfiguredMimeAccept([/^image\/(jpeg|png)$/], IMAGE_DOC));
+    expect(accept.has('image/*')).toBe(true);
+    expect(accept.has('.pdf')).toBe(false);
+  });
+
+  it('emits media wildcards for audio and video allowlists on a media-capable path', () => {
+    const accept = toSet(getConfiguredMimeAccept([/^audio\/.*$/, /^video\/.*$/], ALL));
+    expect(accept.has('audio/*')).toBe(true);
+    expect(accept.has('video/*')).toBe(true);
+  });
+
+  it('returns undefined for a finite config with no recognized types (fall back to provider filter)', () => {
+    expect(getConfiguredMimeAccept([/^application\/x-librechat-unknown$/], ALL)).toBeUndefined();
+  });
+
+  it('falls back when any configured type is unrepresentable, rather than emitting a partial accept', () => {
+    expect(
+      getConfiguredMimeAccept([/^application\/pdf$/, /^text\/x-python$/], IMAGE_DOC),
+    ).toBeUndefined();
+  });
+
+  it('translates a fully-representable mixed pdf + audio allowlist on a media-capable path', () => {
+    const accept = toSet(getConfiguredMimeAccept([/^application\/pdf$/, /^audio\/mp3$/], ALL));
+    expect(accept.has('.pdf')).toBe(true);
+    expect(accept.has('application/pdf')).toBe(true);
+    expect(accept.has('audio/*')).toBe(true);
+    expect(accept.has('video/*')).toBe(false);
+    expect(accept.has('image/*')).toBe(false);
+  });
+
+  it('keeps the image upload path image-only even when the allowlist adds documents', () => {
+    const config = convertStringsToRegex([
+      '^image/.*',
+      '^application/pdf$',
+      '^application/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document$',
+    ]);
+    const accept = toSet(getConfiguredMimeAccept(config, IMAGE_ONLY));
+    expect(accept.has('image/*')).toBe(true);
+    expect(accept.has('.pdf')).toBe(false);
+    expect(accept.has('.docx')).toBe(false);
+  });
+
+  it('excludes audio/video for document providers that cannot send them', () => {
+    const accept = toSet(
+      getConfiguredMimeAccept([/^image\/.*$/, /^application\/pdf$/, /^audio\/mp3$/], IMAGE_DOC),
+    );
+    expect(accept.has('image/*')).toBe(true);
+    expect(accept.has('.pdf')).toBe(true);
+    expect(accept.has('audio/*')).toBe(false);
+  });
+
+  it('falls back for a broad application/.* regex that reaches unrepresentable types', () => {
+    expect(getConfiguredMimeAccept([/^application\/.*$/], IMAGE_DOC)).toBeUndefined();
+  });
+
+  it('restricts Bedrock document accepts to Bedrock-supported formats', () => {
+    const config = convertStringsToRegex([
+      '^application/pdf$',
+      '^application/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document$',
+      '^application/vnd\\.openxmlformats-officedocument\\.presentationml\\.presentation$',
+    ]);
+    const accept = toSet(getConfiguredMimeAccept(config, BEDROCK));
+    expect(accept.has('.pdf')).toBe(true);
+    expect(accept.has('.docx')).toBe(true);
+    expect(accept.has('.pptx')).toBe(false);
+    expect(
+      accept.has('application/vnd.openxmlformats-officedocument.presentationml.presentation'),
+    ).toBe(false);
+  });
+
+  it('includes both .html and .htm when translating text/html', () => {
+    const accept = toSet(getConfiguredMimeAccept([/^text\/html$/], BEDROCK));
+    expect(accept.has('.html')).toBe(true);
+    expect(accept.has('.htm')).toBe(true);
+    expect(accept.has('text/html')).toBe(true);
+  });
+
+  it('restricts Google/OpenRouter documents to PDF while keeping media categories', () => {
+    const config = convertStringsToRegex([
+      '^image/.*$',
+      '^application/pdf$',
+      '^application/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document$',
+      '^audio/.*$',
+    ]);
+    const accept = toSet(getConfiguredMimeAccept(config, GOOGLE));
+    expect(accept.has('image/*')).toBe(true);
+    expect(accept.has('.pdf')).toBe(true);
+    expect(accept.has('audio/*')).toBe(true);
+    expect(accept.has('.docx')).toBe(false);
+  });
+
+  it('translates a sampled audio subtype (audio/webm) rather than hiding it', () => {
+    const accept = toSet(getConfiguredMimeAccept([/^image\/.*$/, /^audio\/webm$/], GOOGLE));
+    expect(accept.has('image/*')).toBe(true);
+    expect(accept.has('audio/*')).toBe(true);
+  });
+
+  it('falls back when a configured pattern matches no known MIME type', () => {
+    expect(
+      getConfiguredMimeAccept([/^image\/.*$/, /^audio\/x-librechat-unknown$/], GOOGLE),
+    ).toBeUndefined();
+  });
+
+  it('translates a finite Excel allowlist that includes legacy MIME aliases', () => {
+    const config = convertStringsToRegex([
+      '^application/(vnd\\.ms-excel|msexcel|x-msexcel|x-ms-excel|x-excel|x-dos_ms_excel|xls|x-xls|vnd\\.openxmlformats-officedocument\\.spreadsheetml\\.sheet)$',
+    ]);
+    const accept = toSet(getConfiguredMimeAccept(config, IMAGE_DOC));
+    expect(accept.has('.xls')).toBe(true);
+    expect(accept.has('.xlsx')).toBe(true);
+  });
+
+  it('translates finite epub and parquet document allowlists', () => {
+    const accept = toSet(
+      getConfiguredMimeAccept(
+        [/^application\/epub\+zip$/, /^application\/vnd\.apache\.parquet$/],
+        IMAGE_DOC,
+      ),
+    );
+    expect(accept.has('.epub')).toBe(true);
+    expect(accept.has('.parquet')).toBe(true);
+  });
+});
+
+describe('setFileConfigRegexCompiler (MIME pattern compiler seam)', () => {
+  afterEach(() => {
+    setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+  });
+
+  it('defaults to a native RegExp compiler', () => {
+    const [regex] = convertStringsToRegex(['^text/']);
+    expect(regex.test('text/csv')).toBe(true);
+    expect(regex.test('image/png')).toBe(false);
+  });
+
+  it('routes patterns through an injected compiler', () => {
+    const seen: string[] = [];
+    setFileConfigRegexCompiler((pattern) => {
+      seen.push(pattern);
+      return { test: () => false };
+    });
+    const compiled = convertStringsToRegex(['application/pdf', 'text/*']);
+    expect(seen).toEqual(['application/pdf', 'text/*']);
+    expect(compiled.every((matcher) => matcher.test('anything') === false)).toBe(true);
+  });
+
+  it('returns a single reject-all matcher when every pattern fails to compile', () => {
+    setFileConfigRegexCompiler(() => {
+      throw new Error('unsupported pattern');
+    });
+    const compiled = convertStringsToRegex(['application/pdf', 'text/*']);
+    expect(compiled).toHaveLength(1);
+    expect(compiled[0].test('application/pdf')).toBe(false);
+    expect(compiled[0].test('anything')).toBe(false);
+  });
+});
+
+describe('mergeFileConfig clientImageResize', () => {
+  it('leaves the user in control when no dynamic config is provided', () => {
+    const merged = mergeFileConfig(undefined);
+    expect(merged.clientImageResize?.enabled).toBe(false);
+    expect(merged.clientImageResize?.enforced).toBe(false);
+  });
+
+  it('leaves the user in control when the admin config omits clientImageResize', () => {
+    const merged = mergeFileConfig({ serverFileSizeLimit: 100 });
+    expect(merged.clientImageResize?.enforced).toBe(false);
+  });
+
+  it('enforces an admin-enabled value', () => {
+    const merged = mergeFileConfig({ clientImageResize: { enabled: true } });
+    expect(merged.clientImageResize?.enabled).toBe(true);
+    expect(merged.clientImageResize?.enforced).toBe(true);
+  });
+
+  it('enforces an admin-disabled value', () => {
+    const merged = mergeFileConfig({ clientImageResize: { enabled: false } });
+    expect(merged.clientImageResize?.enabled).toBe(false);
+    expect(merged.clientImageResize?.enforced).toBe(true);
+  });
+
+  it('applies admin resize parameters without enforcing the toggle', () => {
+    const merged = mergeFileConfig({
+      clientImageResize: { maxWidth: 1024, maxHeight: 1024, quality: 0.8 },
+    });
+    expect(merged.clientImageResize?.maxWidth).toBe(1024);
+    expect(merged.clientImageResize?.maxHeight).toBe(1024);
+    expect(merged.clientImageResize?.quality).toBe(0.8);
+    expect(merged.clientImageResize?.enforced).toBe(false);
+  });
+});
+
+describe('fileConfigSchema clientImageResize', () => {
+  it.each(['maxWidth', 'maxHeight'] as const)('rejects a non-positive %s', (dimension) => {
+    const result = fileConfigSchema.safeParse({
+      clientImageResize: { [dimension]: 0 },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('defaultLLMDeliveryPath config merging', () => {
+  it('should include defaultLLMDeliveryPath and legacyFileUploadUX in merged endpoint config', () => {
+    const merged = mergeFileConfig({
+      endpoints: {
+        [EModelEndpoint.agents]: {
+          defaultLLMDeliveryPath: {
+            fallback: 'none',
+            overrides: { 'image/*': 'text' },
+          },
+          legacyFileUploadUX: true,
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.agents,
+    });
+    expect(endpointConfig.defaultLLMDeliveryPath).toEqual({
+      fallback: 'none',
+      overrides: { 'image/*': 'text' },
+    });
+    expect(endpointConfig.legacyFileUploadUX).toBe(true);
+  });
+
+  it('inherits the global fallback when an endpoint supplies only overrides', () => {
+    const merged = mergeFileConfig({
+      defaultLLMDeliveryPath: { fallback: 'none' },
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          defaultLLMDeliveryPath: { overrides: { 'image/*': 'provider' } },
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+
+    expect(endpointConfig.defaultLLMDeliveryPath).toEqual({
+      fallback: 'none',
+      overrides: { 'image/*': 'provider' },
+    });
+  });
+
+  it('lets an endpoint wildcard outrank a global exact override', () => {
+    const merged = mergeFileConfig({
+      defaultLLMDeliveryPath: {
+        fallback: 'text',
+        overrides: { 'image/png': 'text', 'audio/mpeg': 'none' },
+      },
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          defaultLLMDeliveryPath: { overrides: { 'image/*': 'provider' } },
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+
+    expect(
+      resolveDefaultLLMDeliveryPath(
+        'image/png',
+        endpointConfig.defaultLLMDeliveryPath,
+        merged.defaultLLMDeliveryPath,
+        EModelEndpoint.openAI,
+      ),
+    ).toBe('provider');
+    expect(
+      resolveDefaultLLMDeliveryPath(
+        'audio/mpeg',
+        endpointConfig.defaultLLMDeliveryPath,
+        merged.defaultLLMDeliveryPath,
+        EModelEndpoint.openAI,
+      ),
+    ).toBe('none');
+  });
+
+  it('keeps a global exact override the endpoint wildcard does not cover', () => {
+    const merged = mergeFileConfig({
+      defaultLLMDeliveryPath: { overrides: { 'image/png': 'text' } },
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          defaultLLMDeliveryPath: { overrides: { 'audio/*': 'none' } },
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+
+    expect(endpointConfig.defaultLLMDeliveryPath?.overrides?.['image/png']).toBe('text');
+  });
+
+  it('lets an endpoint exact override win inside its own wildcard family', () => {
+    const merged = mergeFileConfig({
+      defaultLLMDeliveryPath: { overrides: { 'image/png': 'none' } },
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          defaultLLMDeliveryPath: { overrides: { 'image/*': 'provider', 'image/png': 'text' } },
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+
+    expect(
+      resolveDefaultLLMDeliveryPath(
+        'image/png',
+        endpointConfig.defaultLLMDeliveryPath,
+        merged.defaultLLMDeliveryPath,
+        EModelEndpoint.openAI,
+      ),
+    ).toBe('text');
+  });
+
+  it('merges override maps with the endpoint winning per key', () => {
+    const merged = mergeFileConfig({
+      defaultLLMDeliveryPath: {
+        fallback: 'text',
+        overrides: { 'image/*': 'provider', 'audio/*': 'none' },
+      },
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          defaultLLMDeliveryPath: { overrides: { 'audio/*': 'text' } },
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+
+    expect(endpointConfig.defaultLLMDeliveryPath).toEqual({
+      fallback: 'text',
+      overrides: { 'image/*': 'provider', 'audio/*': 'text' },
+    });
+  });
+
+  it('keeps an endpoint fallback ahead of inherited default overrides', () => {
+    const merged = mergeFileConfig({
+      endpoints: {
+        default: { defaultLLMDeliveryPath: { overrides: { 'image/*': 'text' } } },
+        [EModelEndpoint.openAI]: { defaultLLMDeliveryPath: { fallback: 'provider' } },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+
+    expect(endpointConfig.defaultLLMDeliveryPath?.overrides?.['image/*']).toBeUndefined();
+    expect(endpointConfig.defaultLLMDeliveryPath?.fallback).toBe('provider');
+  });
+
+  it('lets an endpoint fallback override the global fallback', () => {
+    const merged = mergeFileConfig({
+      defaultLLMDeliveryPath: { fallback: 'none' },
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          defaultLLMDeliveryPath: { fallback: 'text' },
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+
+    expect(endpointConfig.defaultLLMDeliveryPath?.fallback).toBe('text');
+  });
+
+  it('should merge global defaultLLMDeliveryPath into mergedConfig', () => {
+    const merged = mergeFileConfig({
+      defaultLLMDeliveryPath: {
+        fallback: 'provider',
+        overrides: { 'audio/*': 'none' },
+      },
+      legacyFileUploadUX: true,
+    });
+    expect(merged.defaultLLMDeliveryPath).toEqual({
+      fallback: 'provider',
+      overrides: { 'audio/*': 'none' },
+    });
+    expect(merged.legacyFileUploadUX).toBe(true);
+  });
+
+  it('should inherit global legacyFileUploadUX into endpoint config', () => {
+    const merged = mergeFileConfig({
+      legacyFileUploadUX: true,
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+    expect(endpointConfig.legacyFileUploadUX).toBe(true);
+  });
+
+  it('should allow endpoint legacyFileUploadUX to override global legacyFileUploadUX', () => {
+    const merged = mergeFileConfig({
+      legacyFileUploadUX: true,
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          legacyFileUploadUX: false,
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+    expect(endpointConfig.legacyFileUploadUX).toBe(false);
+  });
+
+  it('should pass through endpoint defaultLLMDeliveryPath in mergeWithDefault', () => {
+    const merged = mergeFileConfig({
+      endpoints: {
+        [EModelEndpoint.openAI]: {
+          defaultLLMDeliveryPath: { overrides: { 'application/pdf': 'text' } },
+        },
+      },
+    });
+    const endpointConfig = getEndpointFileConfig({
+      fileConfig: merged,
+      endpoint: EModelEndpoint.openAI,
+    });
+    expect(endpointConfig.defaultLLMDeliveryPath?.overrides?.['application/pdf']).toBe('text');
+  });
+
+  it('should default legacyFileUploadUX to undefined when not set', () => {
+    const merged = mergeFileConfig(undefined);
+    expect(merged.legacyFileUploadUX).toBeUndefined();
+  });
+});
+
+describe('textFallbackWithoutTools config merging', () => {
+  const resolveFor = (dynamic: Parameters<typeof mergeFileConfig>[0], endpoint: string) =>
+    getEndpointFileConfig({ fileConfig: mergeFileConfig(dynamic), endpoint })
+      .textFallbackWithoutTools;
+
+  it('is off unless configured', () => {
+    expect(mergeFileConfig(undefined).textFallbackWithoutTools).toBeUndefined();
+    expect(resolveFor(undefined, EModelEndpoint.openAI)).toBeUndefined();
+    expect(resolveFor({ endpoints: { default: {} } }, EModelEndpoint.openAI)).toBeUndefined();
+  });
+
+  it('accepts the setting at the top level and on an endpoint', () => {
+    expect(
+      fileConfigSchema.safeParse({
+        textFallbackWithoutTools: true,
+        endpoints: { openAI: { textFallbackWithoutTools: false } },
+      }).success,
+    ).toBe(true);
+    expect(fileConfigSchema.safeParse({ textFallbackWithoutTools: 'yes' }).success).toBe(false);
+  });
+
+  it('reaches an endpoint configured for it', () => {
+    expect(
+      resolveFor(
+        { endpoints: { [EModelEndpoint.openAI]: { textFallbackWithoutTools: true } } },
+        EModelEndpoint.openAI,
+      ),
+    ).toBe(true);
+  });
+
+  it('is inherited from the top level and from the default endpoint', () => {
+    expect(resolveFor({ textFallbackWithoutTools: true }, EModelEndpoint.anthropic)).toBe(true);
+    expect(
+      resolveFor({ endpoints: { default: { textFallbackWithoutTools: true } } }, 'MyGateway'),
+    ).toBe(true);
+  });
+
+  it('lets an endpoint turn off what it would inherit', () => {
+    expect(
+      resolveFor(
+        {
+          endpoints: {
+            default: { textFallbackWithoutTools: true },
+            [EModelEndpoint.openAI]: { textFallbackWithoutTools: false },
+          },
+        },
+        EModelEndpoint.openAI,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('agent attachment context limits', () => {
+  it('keeps the turn-memory ceiling separate from agent upload storage', () => {
+    expect(baseFileConfig.fileContextSizeLimit).toBe(128 * 1024 * 1024);
+    expect(baseFileConfig.endpoints[EModelEndpoint.agents].totalSizeLimit).toBe(512 * 1024 * 1024);
+  });
+
+  it('validates and merges an aggregate model-context size limit in MB', () => {
+    expect(fileConfigSchema.safeParse({ fileContextSizeLimit: 64 }).success).toBe(true);
+    expect(mergeFileConfig({ fileContextSizeLimit: 64 }).fileContextSizeLimit).toBe(
+      64 * 1024 * 1024,
+    );
+  });
+
+  it('validates and merges an aggregate extracted-text character limit', () => {
+    expect(fileConfigSchema.safeParse({ fileContextCharLimit: 250_000 }).success).toBe(true);
+    expect(mergeFileConfig({ fileContextCharLimit: 250_000 }).fileContextCharLimit).toBe(250_000);
+  });
+});
+
+describe('getDocumentFileExtension', () => {
+  it.each([
+    ['text/markdown', '.md'],
+    [' TEXT/PLAIN; charset=UTF-8', '.txt'],
+    ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.docx'],
+    ['application/vnd.oasis.opendocument.text', '.odt'],
+    ['text/csv', '.csv'],
+    ['application/csv', '.csv'],
+    ['text/comma-separated-values', '.csv'],
+    [' TEXT/COMMA-SEPARATED-VALUES; charset=utf-8', '.csv'],
+    ['application/vnd.ms-excel', '.xls'],
+    ['application/msexcel', '.xls'],
+    ['application/x-msexcel', '.xls'],
+    ['application/x-ms-excel', '.xls'],
+    ['application/x-excel', '.xls'],
+    ['application/x-dos_ms_excel', '.xls'],
+    ['application/xls', '.xls'],
+    ['application/x-xls', '.xls'],
+    ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'],
+    ['application/vnd.oasis.opendocument.spreadsheet', '.ods'],
+    ['application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pptx'],
+    ['application/vnd.openxmlformats-officedocument.presentationml.template', '.potx'],
+    ['application/unknown', undefined],
+    [undefined, undefined],
+  ])('resolves %s', (mimeType, expected) => {
+    expect(getDocumentFileExtension(mimeType)).toBe(expected);
+  });
+});
+
+describe('server-effective Responses routing', () => {
+  const enabled = { default: true, on: true, off: false };
+  const disabled = { default: false, on: false, off: false };
+  it('does not assume model defaults before policy arrives or against an older server', () => {
+    expect(
+      resolveEffectiveUseResponsesApi({ endpoint: EModelEndpoint.azureOpenAI, model: 'gpt-6-sol' }),
+    ).toBeUndefined();
+  });
+  it('routes a native point release by its family until the server publishes its own policy', () => {
+    const optIn = { default: false, on: true, off: false };
+    const familyOnly = { 'gpt-6-sol': enabled, '*': disabled };
+    const route = (endpoint: EModelEndpoint, model: string, routing: ResponsesApiRouting) =>
+      resolveEffectiveUseResponsesApi({ endpoint, model, routing });
+    expect(prefersResponsesApiByModel('gpt-6.1-sol')).toBe(true);
+    expect(route(EModelEndpoint.openAI, 'gpt-6.1-sol', familyOnly)).toBe(true);
+    // Snapshots and Azure deployments keep their existing wildcard-only inheritance.
+    expect(route(EModelEndpoint.openAI, 'gpt-6.1-sol-2026-10-01', familyOnly)).toBe(false);
+    expect(route(EModelEndpoint.azureOpenAI, 'gpt-6.1-sol', familyOnly)).toBe(false);
+    expect(
+      route(EModelEndpoint.azureOpenAI, 'gpt-6.1-sol-2026-10-01', {
+        ...familyOnly,
+        'gpt-6-sol-*': enabled,
+      }),
+    ).toBe(true);
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-6.1-sol',
+        routing: { ...familyOnly, 'gpt-6.1-sol': optIn },
+      }),
+    ).toBe(false);
+  });
+  it('uses native snapshot policy but does not invent an Azure deployment', () => {
+    const routing = { 'gpt-6-sol': enabled, 'gpt-6-sol-*': enabled, '*': disabled };
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-6-sol-2026-09-22',
+        routing,
+      }),
+    ).toBe(true);
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model: 'gpt-6-sol-2026-09-22',
+        routing: { 'gpt-6-sol': enabled, '*': disabled },
+      }),
+    ).toBe(false);
+  });
+  it('leaves custom provider selections alone rather than inferring native support', () => {
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.custom,
+        model: 'gpt-6-sol',
+        routing: { 'gpt-6-sol': enabled },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+it('inherits environment-based Azure snapshot policy only when the server advertises a family wildcard', () => {
+  const routing = { 'gpt-6-sol-*': { default: true, on: true, off: false } };
+  expect(
+    resolveEffectiveUseResponsesApi({
+      endpoint: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-sol-2026-09-22',
+      routing,
+    }),
+  ).toBe(true);
+});
+it('selects web-search routing without changing stored route selection', () => {
+  const routing = {
+    'gpt-6-sol': {
+      default: false,
+      on: true,
+      off: false,
+      withWebSearch: { default: true, on: true, off: true },
+    },
+  };
+  expect(
+    resolveEffectiveUseResponsesApi({
+      endpoint: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-sol',
+      value: false,
+      webSearch: true,
+      routing,
+    }),
+  ).toBe(true);
+  expect(
+    resolveEffectiveUseResponsesApi({
+      endpoint: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-sol',
+      value: false,
+      routing,
+    }),
+  ).toBe(false);
+});
+
+describe('mergeFileConfig memoization', () => {
+  it('returns the same instance for the same dynamic object and for undefined', () => {
+    const dynamic = fileConfigSchema.parse({ serverFileSizeLimit: 5 });
+    expect(mergeFileConfig(dynamic)).toBe(mergeFileConfig(dynamic));
+    expect(mergeFileConfig(undefined)).toBe(mergeFileConfig(undefined));
+    expect(mergeFileConfig(fileConfigSchema.parse({ serverFileSizeLimit: 5 }))).not.toBe(
+      mergeFileConfig(dynamic),
+    );
+  });
+
+  it('clears the cache when the regex compiler is swapped', () => {
+    const dynamic = fileConfigSchema.parse({ serverFileSizeLimit: 5 });
+    const before = mergeFileConfig(dynamic);
+    const beforeStatic = mergeFileConfig(undefined);
+    setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+    expect(mergeFileConfig(dynamic)).not.toBe(before);
+    expect(mergeFileConfig(undefined)).not.toBe(beforeStatic);
   });
 });

@@ -32,28 +32,66 @@ export async function loadDefaultInterface({
     modelSelect:
       interfaceConfig?.modelSelect ??
       (hasModelSpecs ? includesAddedEndpoints : defaults.modelSelect),
+    runningChatRename: interfaceConfig?.runningChatRename ?? defaults.runningChatRename,
+    codeHighlightThrottleMs:
+      interfaceConfig?.codeHighlightThrottleMs ?? defaults.codeHighlightThrottleMs,
+    agentSelectorLimit: interfaceConfig?.agentSelectorLimit ?? defaults.agentSelectorLimit,
     parameters: interfaceConfig?.parameters ?? (hasModelSpecs ? false : defaults.parameters),
     presets: interfaceConfig?.presets ?? (hasModelSpecs ? false : defaults.presets),
     privacyPolicy: interfaceConfig?.privacyPolicy ?? defaults.privacyPolicy,
     termsOfService: interfaceConfig?.termsOfService ?? defaults.termsOfService,
     mcpServers: interfaceConfig?.mcpServers ?? defaults.mcpServers,
     customWelcome: interfaceConfig?.customWelcome ?? defaults.customWelcome,
+    autoSubmitFromUrl: interfaceConfig?.autoSubmitFromUrl ?? defaults.autoSubmitFromUrl,
+    buildInfo: interfaceConfig?.buildInfo ?? defaults.buildInfo,
+    mascot: interfaceConfig?.mascot ?? defaults.mascot,
+    contextUsage: interfaceConfig?.contextUsage ?? defaults.contextUsage,
+    artifactUndocking: interfaceConfig?.artifactUndocking ?? defaults.artifactUndocking,
+    contextCost: interfaceConfig?.contextCost ?? defaults.contextCost,
+    feedback: interfaceConfig?.feedback ?? defaults.feedback,
+    currency: interfaceConfig?.currency ?? defaults.currency,
+    theme: interfaceConfig?.theme,
+    steerArmConfirmationTimeoutMs:
+      interfaceConfig?.steerArmConfirmationTimeoutMs ?? defaults.steerArmConfirmationTimeoutMs,
+    queuedTurnReconciliationTimeoutMs:
+      interfaceConfig?.queuedTurnReconciliationTimeoutMs ??
+      defaults.queuedTurnReconciliationTimeoutMs,
+    queuedSendLockTimeoutMs:
+      interfaceConfig?.queuedSendLockTimeoutMs ?? defaults.queuedSendLockTimeoutMs,
+    composerRecentFiles: interfaceConfig?.composerRecentFiles ?? defaults.composerRecentFiles,
+    historyCacheTtlMs: interfaceConfig?.historyCacheTtlMs ?? defaults.historyCacheTtlMs,
+    historyCacheRecent: interfaceConfig?.historyCacheRecent ?? defaults.historyCacheRecent,
 
-    // Permissions - only include if explicitly configured
+    // Permissions and related settings - only include if explicitly configured
     bookmarks: interfaceConfig?.bookmarks,
     memories: shouldDisableMemories ? false : interfaceConfig?.memories,
     prompts: interfaceConfig?.prompts,
     multiConvo: interfaceConfig?.multiConvo,
     agents: interfaceConfig?.agents,
     temporaryChat: interfaceConfig?.temporaryChat,
+    temporaryChatRetention: interfaceConfig?.temporaryChatRetention,
+    generalChatRetention: interfaceConfig?.generalChatRetention,
+    retentionMode: interfaceConfig?.retentionMode,
+    retainAgentFiles: interfaceConfig?.retainAgentFiles,
     runCode: interfaceConfig?.runCode,
     webSearch: interfaceConfig?.webSearch,
     fileSearch: interfaceConfig?.fileSearch,
     fileCitations: interfaceConfig?.fileCitations,
+    traceViewer: interfaceConfig?.traceViewer,
+    defaultPinnedTools: interfaceConfig?.defaultPinnedTools,
     peoplePicker: interfaceConfig?.peoplePicker,
     marketplace: interfaceConfig?.marketplace,
     remoteAgents: interfaceConfig?.remoteAgents,
     skills: interfaceConfig?.skills,
+    sharedLinks: interfaceConfig?.sharedLinks,
+    schedules: interfaceConfig?.schedules,
+
+    /* Merged per field rather than taken whole, so an operator who sets one capability keeps
+       the defaults for the rest instead of silently turning the others off. */
+    replyNotifications: {
+      ...defaults.replyNotifications,
+      ...interfaceConfig?.replyNotifications,
+    },
   });
 
   return loadedInterface;

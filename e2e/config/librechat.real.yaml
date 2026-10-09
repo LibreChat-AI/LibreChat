@@ -1,0 +1,36 @@
+# Real-provider local e2e template. Used only by e2e/playwright.config.real.ts,
+# which requires ANTHROPIC_API_KEY in the invoking environment — the key is
+# passed through process env at runtime and never written to disk. Not wired
+# into CI; the mock workflow only runs playwright.config.mock.ts.
+version: 1.3.11
+cache: true
+
+interface:
+  # Exercise the cost row against real provider usage.
+  contextCost: true
+
+# Local stdio fixture reused from the mock harness: gives the real model a
+# genuine tool to call, so tool-calling behaviour (including intent labels)
+# is exercised end to end without any external service.
+mcpServers:
+  e2e-memory:
+    type: stdio
+    command: node
+    args:
+      - e2e/setup/fake-mcp-server.js
+    title: E2E Memory
+    description: Local MCP fixture used by real-provider end-to-end tests.
+    timeout: 30000
+
+endpoints:
+  agents:
+    # Defaults plus `tool_intents`, so the real provider is asked to author an
+    # `intent` label as the first argument of every opted-in tool call.
+    capabilities:
+      - deferred_tools
+      - execute_code
+      - file_search
+      - actions
+      - tools
+      - tool_intents
+      - subagents

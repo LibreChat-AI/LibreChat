@@ -94,6 +94,7 @@ export interface DataTableConfig {
 export interface DataTableProps<TData extends Record<string, unknown>, TValue> {
   columns: TableColumn<TData, TValue>[];
   data: TData[];
+  getRowId?: (row: TData, index: number) => string;
   className?: string;
   isLoading?: boolean;
   isFetching?: boolean;

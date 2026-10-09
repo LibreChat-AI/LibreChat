@@ -4,14 +4,20 @@ import type {
   TFileConfig,
   TAzureConfig,
   TCustomConfig,
+  TChatProjectsConfig,
   TMemoryConfig,
   EModelEndpoint,
   TVertexAIConfig,
   TAgentsEndpoint,
+  CloudFrontConfig,
   TCustomEndpoints,
   TAssistantEndpoint,
   TAnthropicEndpoint,
   SummarizationConfig,
+  TConversationListConfig,
+  TToolCallPreviewsConfig,
+  SkillSyncConfig,
+  FiltersConfig,
 } from 'librechat-data-provider';
 
 export type JsonSchemaType = {
@@ -61,12 +67,29 @@ export interface AppConfig {
   summarization?: SummarizationConfig;
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
-  /** File storage strategy ('local', 's3', 'firebase', 'azure_blob') */
+  githubCompare?: TCustomConfig['githubCompare'];
+  /** Source-scoped content filter configuration */
+  filters?: FiltersConfig;
+  /** Message filter configuration (PII and future filter types) */
+  messageFilter?: TCustomConfig['messageFilter'];
+  /** Langfuse tracing configuration */
+  langfuse?: TCustomConfig['langfuse'];
+  /** Skill sync configuration */
+  skillSync?: SkillSyncConfig;
+  /** File storage strategy ('local', 's3', 'firebase', 'azure_blob', 'cloudfront') */
   fileStrategy: FileStorage;
   /** File strategies configuration */
   fileStrategies?: TCustomConfig['fileStrategies'];
+  /** CloudFront CDN configuration */
+  cloudfront?: CloudFrontConfig;
+  /** Chat Projects limits resolved from the deployment configuration */
+  projects?: TChatProjectsConfig;
   /** Registration configurations */
   registration?: TCustomConfig['registration'];
+  /** Changing the registered email address */
+  emailChange?: TCustomConfig['emailChange'];
+  /** Passkey enrollment configuration */
+  passkeys?: TCustomConfig['passkeys'];
   /** Actions configurations */
   actions?: TCustomConfig['actions'];
   /** Admin-filtered tools */
@@ -89,16 +112,22 @@ export interface AppConfig {
   mcpConfig?: TCustomConfig['mcpServers'] | null;
   /** MCP settings (domain allowlist, etc.) */
   mcpSettings?: TCustomConfig['mcpSettings'] | null;
+  /** Deployment-owned MCP App sandbox transport limits. */
+  mcpAppSandbox?: TCustomConfig['mcpAppSandbox'];
   /** File configuration */
   fileConfig?: TFileConfig;
-  /** Secure image links configuration */
+  /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
+  /** Validation limits for the conversation list's filter facets */
+  conversationList?: TConversationListConfig;
+  /** Bounds for the tool-call previews sent on conversation loads */
+  toolCallPreviews?: TToolCallPreviewsConfig;
   /** Processed model specifications */
   modelSpecs?: TCustomConfig['modelSpecs'];
   /** Available tools */
   availableTools?: Record<string, FunctionTool>;
   endpoints?: {
-    /** Admin exemption list of hostnames/IPs that bypass the SSRF private-IP block */
+    /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
     allowedAddresses?: string[];
     /** OpenAI endpoint configuration */
     openAI?: Partial<TEndpoint>;

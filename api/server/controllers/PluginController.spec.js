@@ -90,6 +90,18 @@ describe('PluginController', () => {
       expect(responseData[0].authenticated).toBeUndefined();
     });
 
+    it('excludes agentsOnly plugins from the legacy plugins endpoint (no run to pause)', async () => {
+      require('~/app/clients/tools').availableTools.push(
+        { name: 'Ask User', pluginKey: 'ask_user_question', description: 'q', agentsOnly: true },
+        { name: 'Plugin2', pluginKey: 'key2', description: 'Second' },
+      );
+
+      await getAvailablePluginsController(mockReq, mockRes);
+
+      const responseData = mockRes.json.mock.calls[0][0];
+      expect(responseData.map((p) => p.pluginKey)).toEqual(['key2']);
+    });
+
     it('should filter plugins based on includedTools', async () => {
       const mockPlugins = [
         { name: 'Plugin1', pluginKey: 'key1', description: 'First' },
@@ -98,10 +110,10 @@ describe('PluginController', () => {
 
       require('~/app/clients/tools').availableTools.push(...mockPlugins);
 
-      getAppConfig.mockResolvedValueOnce({
+      mockReq.config = {
         filteredTools: [],
         includedTools: ['key1'],
-      });
+      };
 
       await getAvailablePluginsController(mockReq, mockRes);
 
@@ -118,10 +130,10 @@ describe('PluginController', () => {
 
       require('~/app/clients/tools').availableTools.push(...mockPlugins);
 
-      getAppConfig.mockResolvedValueOnce({
+      mockReq.config = {
         filteredTools: ['key2'],
         includedTools: [],
-      });
+      };
 
       await getAvailablePluginsController(mockReq, mockRes);
 
@@ -139,10 +151,10 @@ describe('PluginController', () => {
 
       require('~/app/clients/tools').availableTools.push(...mockPlugins);
 
-      getAppConfig.mockResolvedValueOnce({
+      mockReq.config = {
         includedTools: ['key1', 'key2'],
         filteredTools: ['key2'],
-      });
+      };
 
       await getAvailablePluginsController(mockReq, mockRes);
 
@@ -153,6 +165,72 @@ describe('PluginController', () => {
   });
 
   describe('getAvailableTools', () => {
+    it.each([undefined, false, true])(
+      'gates the comparison entry on request policy (%p)',
+      async (enabled) => {
+        require('~/app/clients/tools').availableTools.push({
+          name: 'GitHub Compare',
+          pluginKey: 'github_compare',
+          description: 'compare',
+          agentsOnly: true,
+        });
+        mockReq.baseUrl = '/agents';
+        mockReq.config.githubCompare = { enabled };
+        getCachedTools.mockResolvedValue({
+          github_compare: { type: 'function', function: { name: 'github_compare' } },
+        });
+        await getAvailableTools(mockReq, mockRes);
+        expect(mockRes.json.mock.calls[0][0].map(({ pluginKey }) => pluginKey)).toEqual(
+          enabled === true ? ['github_compare'] : [],
+        );
+      },
+    );
+    it('keeps enabled comparison out of the assistants catalog', async () => {
+      require('~/app/clients/tools').availableTools.push({
+        name: 'GitHub Compare',
+        pluginKey: 'github_compare',
+        description: 'compare',
+        agentsOnly: true,
+      });
+      mockReq.baseUrl = '/assistants';
+      mockReq.config.githubCompare = { enabled: true };
+      getCachedTools.mockResolvedValue({
+        github_compare: { type: 'function', function: { name: 'github_compare' } },
+      });
+      await getAvailableTools(mockReq, mockRes);
+      expect(mockRes.json.mock.calls[0][0]).toEqual([]);
+    });
+
+    it('scopes agentsOnly plugins out of the ASSISTANTS listing but keeps them for agents', async () => {
+      const cached = {
+        ask_user_question: {
+          type: 'function',
+          function: { name: 'ask_user_question', description: 'q', parameters: {} },
+        },
+      };
+      require('~/app/clients/tools').availableTools.push({
+        name: 'Ask User',
+        pluginKey: 'ask_user_question',
+        description: 'q',
+        agentsOnly: true,
+      });
+
+      // Agents route: listed.
+      getCachedTools.mockResolvedValueOnce(cached);
+      mockReq.baseUrl = '/api/agents/tools';
+      await getAvailableTools(mockReq, mockRes);
+      expect(mockRes.json.mock.calls[0][0].map((t) => t.pluginKey)).toContain('ask_user_question');
+
+      // Assistants route: the runtime executes tools with no run to pause — excluded.
+      mockRes.json.mockClear();
+      getCachedTools.mockResolvedValueOnce(cached);
+      mockReq.baseUrl = '/api/assistants/v2/tools';
+      await getAvailableTools(mockReq, mockRes);
+      expect(mockRes.json.mock.calls[0][0].map((t) => t.pluginKey)).not.toContain(
+        'ask_user_question',
+      );
+    });
+
     it('should use filterUniquePlugins to deduplicate combined tools', async () => {
       const mockUserTools = {
         'user-tool': {

@@ -3,6 +3,7 @@ import { useMultiSearch } from '@librechat/client';
 import { Root, Trigger, Content, Portal } from '@radix-ui/react-popover';
 import type { TPlugin } from 'librechat-data-provider';
 import MenuItem from '~/components/Chat/Menus/UI/MenuItem';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils/';
 
 type SelectDropDownProps = {
@@ -32,6 +33,7 @@ function MultiSelectPop({
   optionValueKey = 'value',
   searchPlaceholder,
 }: SelectDropDownProps) {
+  const localize = useLocalize();
   const title = _title;
   const excludeIds = ['select-plugin', 'plugins-label', 'selected-plugins'];
 
@@ -52,36 +54,34 @@ function MultiSelectPop({
             <button
               data-testid="select-dropdown-button"
               className={cn(
-                'relative flex flex-col rounded-md border border-black/10 bg-white py-2 pl-3 pr-10 text-left focus:outline-none focus:ring-0 focus:ring-offset-0 dark:border-gray-700 dark:bg-gray-800 sm:text-sm',
-                'pointer-cursor font-normal',
-                'hover:bg-gray-50 radix-state-open:bg-gray-50 dark:hover:bg-gray-700 dark:radix-state-open:bg-gray-700',
+                'border-border-light bg-surface-secondary relative flex flex-col rounded-md border py-2 pr-10 pl-3 text-left focus:ring-0 focus:ring-offset-0 focus:outline-hidden sm:text-sm',
+                'cursor-pointer font-normal',
+                'hover:bg-surface-hover data-[state=open]:bg-surface-hover',
               )}
             >
               {' '}
-              {showLabel && (
-                <label className="block text-xs text-gray-700 dark:text-gray-500">{title}</label>
-              )}
+              {showLabel && <label className="text-text-secondary block text-xs">{title}</label>}
               <span className="inline-flex" id={excludeIds[2]}>
                 <span
                   className={cn(
-                    'flex h-6 items-center gap-1 text-sm text-gray-800 dark:text-white',
+                    'text-text-primary flex h-6 items-center gap-1 text-sm',
                     !showLabel ? 'text-xs' : '',
                   )}
                 >
                   {/* {!showLabel && title.length > 0 && (
-                    <span className="text-xs text-gray-700 dark:text-gray-500">{title}:</span>
+                    <span className="text-xs text-text-secondary">{title}:</span>
                   )} */}
                   <span className="flex items-center gap-1">
                     <div className="flex gap-1">
-                      {value.length === 0 && 'None selected'}
+                      {value.length === 0 && localize('com_ui_none_selected')}
                       {value.map((v, i) => (
                         <div key={i} className="relative">
                           {v.icon ? (
                             <img src={v.icon} alt={`${v} logo`} className="icon-lg rounded-sm" />
                           ) : (
-                            <Wrench className="icon-lg rounded-sm bg-white" />
+                            <Wrench className="icon-lg bg-surface-fixed rounded-sm" />
                           )}
-                          <div className="absolute inset-0 rounded-sm ring-1 ring-inset ring-black/10" />
+                          <div className="ring-border-light absolute inset-0 rounded-sm ring-1 ring-inset" />
                         </div>
                       ))}
                     </div>
@@ -96,7 +96,7 @@ function MultiSelectPop({
                   viewBox="0 0 24 24"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="h-4 w-4 text-gray-400"
+                  className="text-text-tertiary h-4 w-4"
                   height="1em"
                   width="1em"
                   xmlns="http://www.w3.org/2000/svg"
@@ -112,7 +112,7 @@ function MultiSelectPop({
               side="bottom"
               align="center"
               className={cn(
-                'mt-2 max-h-[52vh] min-w-full overflow-hidden overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-700 dark:text-white',
+                'border-border-light bg-surface-secondary mt-2 max-h-[52vh] min-w-full overflow-hidden overflow-y-auto rounded-lg border shadow-lg',
                 hasSearchRender && 'relative',
               )}
             >
@@ -137,7 +137,7 @@ function MultiSelectPop({
                           className="icon-sm mr-1 rounded-sm bg-cover"
                         />
                       ) : (
-                        <Wrench className="icon-sm mr-1 rounded-sm bg-white bg-cover dark:bg-gray-800" />
+                        <Wrench className="icon-sm bg-surface-secondary mr-1 rounded-sm bg-cover" />
                       )
                     }
                   />

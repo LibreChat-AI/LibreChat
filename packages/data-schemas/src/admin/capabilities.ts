@@ -1,10 +1,5 @@
 import { ResourceType } from 'librechat-data-provider';
-import type {
-  BaseSystemCapability,
-  SystemCapability,
-  ConfigSection,
-  CapabilityCategory,
-} from '~/types/admin';
+import type { TCustomConfig } from 'librechat-data-provider';
 
 // ---------------------------------------------------------------------------
 // System Capabilities
@@ -30,17 +25,61 @@ export const SystemCapabilities = {
   MANAGE_CONFIGS: 'manage:configs',
   ASSIGN_CONFIGS: 'assign:configs',
   READ_USAGE: 'read:usage',
+  READ_INSIGHTS: 'read:insights',
   READ_AGENTS: 'read:agents',
   MANAGE_AGENTS: 'manage:agents',
   MANAGE_MCP_SERVERS: 'manage:mcpservers',
+  /** Enrolls and revokes deployment-owned Code API workers. */
+  MANAGE_CODE_ENVIRONMENTS: 'manage:code_environments',
   READ_PROMPTS: 'read:prompts',
   MANAGE_PROMPTS: 'manage:prompts',
   READ_SKILLS: 'read:skills',
   MANAGE_SKILLS: 'manage:skills',
+  READ_SHARED_LINKS: 'read:sharedlinks',
+  MANAGE_SHARED_LINKS: 'manage:sharedlinks',
   /** Reserved — not yet enforced by any middleware. */
   READ_ASSISTANTS: 'read:assistants',
   MANAGE_ASSISTANTS: 'manage:assistants',
+  /**
+   * Required to list, view, and CSV-export the SystemGrant audit log. Append-only
+   * by design, so there is no MANAGE counterpart — modifying historical entries
+   * would defeat the forensic guarantee.
+   */
+  READ_AUDIT_LOG: 'read:audit_log',
 } as const;
+
+/** Base capabilities derived from the SystemCapabilities constant. */
+export type BaseSystemCapability = (typeof SystemCapabilities)[keyof typeof SystemCapabilities];
+
+/** Principal types that can receive config overrides. */
+export type ConfigAssignTarget = 'user' | 'group' | 'role';
+
+/** Top-level keys of the configSchema from librechat.yaml. */
+export type ConfigSection = string & keyof TCustomConfig;
+
+/** Section-level config capabilities derived from configSchema keys. */
+type ConfigSectionCapability = `manage:configs:${ConfigSection}` | `read:configs:${ConfigSection}`;
+
+/** Principal-scoped config assignment capabilities. */
+type ConfigAssignCapability = `assign:configs:${ConfigAssignTarget}`;
+
+/**
+ * Union of all valid capability strings:
+ * - Base capabilities from SystemCapabilities
+ * - Section-level config capabilities (manage:configs:<section>, read:configs:<section>)
+ * - Config assignment capabilities (assign:configs:<user|group|role>)
+ */
+export type SystemCapability =
+  | BaseSystemCapability
+  | ConfigSectionCapability
+  | ConfigAssignCapability;
+
+/** UI grouping of capabilities for the admin panel's capability editor. */
+export type CapabilityCategory = {
+  key: string;
+  labelKey: string;
+  capabilities: BaseSystemCapability[];
+};
 
 /**
  * Capabilities that are implied by holding a broader capability.
@@ -55,6 +94,7 @@ export const CapabilityImplications: Partial<Record<BaseSystemCapability, BaseSy
     [SystemCapabilities.MANAGE_AGENTS]: [SystemCapabilities.READ_AGENTS],
     [SystemCapabilities.MANAGE_PROMPTS]: [SystemCapabilities.READ_PROMPTS],
     [SystemCapabilities.MANAGE_SKILLS]: [SystemCapabilities.READ_SKILLS],
+    [SystemCapabilities.MANAGE_SHARED_LINKS]: [SystemCapabilities.READ_SHARED_LINKS],
     [SystemCapabilities.MANAGE_ASSISTANTS]: [SystemCapabilities.READ_ASSISTANTS],
   };
 
@@ -139,10 +179,12 @@ export function expandImplications(directCaps: string[]): string[] {
  */
 export const ResourceCapabilityMap: Record<ResourceType, SystemCapability> = {
   [ResourceType.AGENT]: SystemCapabilities.MANAGE_AGENTS,
+  [ResourceType.CODE_ENVIRONMENT]: SystemCapabilities.MANAGE_CODE_ENVIRONMENTS,
   [ResourceType.PROMPTGROUP]: SystemCapabilities.MANAGE_PROMPTS,
   [ResourceType.MCPSERVER]: SystemCapabilities.MANAGE_MCP_SERVERS,
   [ResourceType.REMOTE_AGENT]: SystemCapabilities.MANAGE_AGENTS,
   [ResourceType.SKILL]: SystemCapabilities.MANAGE_SKILLS,
+  [ResourceType.SHARED_LINK]: SystemCapabilities.MANAGE_SHARED_LINKS,
 };
 
 /**
@@ -213,11 +255,19 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
       SystemCapabilities.MANAGE_ASSISTANTS,
       SystemCapabilities.READ_ASSISTANTS,
       SystemCapabilities.MANAGE_MCP_SERVERS,
+      SystemCapabilities.MANAGE_CODE_ENVIRONMENTS,
+      SystemCapabilities.MANAGE_SHARED_LINKS,
+      SystemCapabilities.READ_SHARED_LINKS,
     ],
   },
   {
     key: 'system',
     labelKey: 'com_cap_cat_system',
-    capabilities: [SystemCapabilities.ACCESS_ADMIN, SystemCapabilities.READ_USAGE],
+    capabilities: [
+      SystemCapabilities.ACCESS_ADMIN,
+      SystemCapabilities.READ_USAGE,
+      SystemCapabilities.READ_INSIGHTS,
+      SystemCapabilities.READ_AUDIT_LOG,
+    ],
   },
 ];

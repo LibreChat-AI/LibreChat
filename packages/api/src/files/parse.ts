@@ -10,7 +10,7 @@ const imageExtensionRegex = /\.(jpg|jpeg|png|gif|bmp|tiff|svg|webp)$/i;
  * @returns The basename of the image file from the URL.
  * Returns an empty string if the URL does not contain a valid image basename.
  */
-export function getImageBasename(urlString: string) {
+export function getImageBasename(urlString: string): string {
   try {
     const url = new URL(urlString);
     const basename = path.basename(url.pathname);
@@ -29,7 +29,7 @@ export function getImageBasename(urlString: string) {
  * @returns The basename of the file from the URL.
  * Returns an empty string if the URL parsing fails.
  */
-export function getFileBasename(urlString: string) {
+export function getFileBasename(urlString: string): string {
   try {
     const url = new URL(urlString);
     return path.basename(url.pathname);

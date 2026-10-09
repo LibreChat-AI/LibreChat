@@ -1,3 +1,4 @@
+import { TStartupConfig } from 'librechat-data-provider';
 import {
   GoogleIcon,
   FacebookIcon,
@@ -8,16 +9,17 @@ import {
   SamlIcon,
 } from '@librechat/client';
 
+import PasskeySignIn from './PasskeySignIn';
 import SocialButton from './SocialButton';
-
 import { useLocalize } from '~/hooks';
-
-import { TStartupConfig } from 'librechat-data-provider';
 
 function SocialLoginRender({
   startupConfig,
+  /** Passkeys sign an existing account in, so they are offered on login only. */
+  showPasskey = false,
 }: {
   startupConfig: TStartupConfig | null | undefined;
+  showPasskey?: boolean;
 }) {
   const localize = useLocalize();
 
@@ -117,24 +119,32 @@ function SocialLoginRender({
     ),
   };
 
+  const passkeyEnabled = showPasskey && startupConfig.passkeyLoginEnabled === true;
+  const socialEnabled =
+    startupConfig.socialLoginEnabled === true && (startupConfig.socialLogins?.length ?? 0) > 0;
+
+  if (!passkeyEnabled && !socialEnabled) {
+    return null;
+  }
+
   return (
-    startupConfig.socialLoginEnabled && (
-      <>
-        {startupConfig.emailLoginEnabled && (
-          <>
-            <div className="relative mt-6 flex w-full items-center justify-center border border-t border-gray-300 uppercase dark:border-gray-600">
-              <div className="absolute bg-white px-3 text-xs text-black dark:bg-gray-900 dark:text-white">
-                Or
-              </div>
+    <>
+      {startupConfig.emailLoginEnabled && (
+        <>
+          <div className="border-border-medium relative mt-6 flex w-full items-center justify-center border border-t uppercase">
+            <div className="bg-surface-primary text-text-primary absolute px-3 text-xs">
+              {localize('com_auth_or')}
             </div>
-            <div className="mt-8" />
-          </>
-        )}
-        <div className="mt-2">
-          {startupConfig.socialLogins?.map((provider) => providerComponents[provider] || null)}
-        </div>
-      </>
-    )
+          </div>
+          <div className="mt-8" />
+        </>
+      )}
+      <div className="mt-2">
+        <PasskeySignIn enabled={passkeyEnabled} />
+        {socialEnabled &&
+          startupConfig.socialLogins?.map((provider) => providerComponents[provider] || null)}
+      </div>
+    </>
   );
 }
 

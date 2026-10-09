@@ -5,6 +5,9 @@
   "module": "./index.es.js",
   "types": "../dist/types/react-query/index.d.ts",
   "dependencies": {
-    "axios": "^1.15.0"
+    "axios": "^1.20.0"
+  },
+  "overrides": {
+    "form-data": "^4.0.6"
   }
 }

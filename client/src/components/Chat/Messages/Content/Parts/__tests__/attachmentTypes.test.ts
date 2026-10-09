@@ -1,5 +1,4 @@
 import type { TAttachment } from 'librechat-data-provider';
-import { TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
 import {
   artifactTypeForAttachment,
   attachmentSalience,
@@ -8,6 +7,7 @@ import {
   isInternalSandboxArtifact,
   isTextAttachment,
 } from '../attachmentTypes';
+import { TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
 
 const baseAttachment = (overrides: Partial<TAttachment> = {}): TAttachment =>
   ({
@@ -133,10 +133,13 @@ describe('artifactTypeForAttachment', () => {
   });
 
   it('returns null for unsupported extensions', () => {
+    /* CSV / DOCX / XLSX / PPTX now route through the office preview
+     * buckets (rich HTML preview); use a binary type with no preview
+     * pipeline instead. */
     const attachment = baseAttachment({
-      filename: 'data.csv',
-      text: 'a,b,c',
-    } as Partial<TAttachment>);
+      filename: 'photo.jpg',
+      text: undefined,
+    });
     expect(artifactTypeForAttachment(attachment)).toBeNull();
   });
 });

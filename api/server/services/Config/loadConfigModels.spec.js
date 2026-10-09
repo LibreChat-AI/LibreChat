@@ -13,6 +13,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 jest.mock('~/models', () => ({
   getUserKeyValues: jest.fn(),
+  initializeMessageBudget: jest.fn(),
 }));
 
 const exampleConfig = {
@@ -91,6 +92,42 @@ describe('loadConfigModels', () => {
     getAppConfig.mockResolvedValue(null);
     const result = await loadConfigModels(mockRequest);
     expect(result).toEqual({});
+  });
+
+  it('passes userId when resolving scoped model config', async () => {
+    getAppConfig.mockResolvedValue({});
+
+    await loadConfigModels({
+      user: { id: 'testUserId', role: 'USER', tenantId: 'tenant-a' },
+    });
+
+    expect(getAppConfig).toHaveBeenCalledWith({
+      role: 'USER',
+      userId: 'testUserId',
+      tenantId: 'tenant-a',
+      idOnTheSource: undefined,
+    });
+  });
+
+  it('uses req.config when available instead of calling getAppConfig', async () => {
+    const result = await loadConfigModels({
+      user: { id: 'testUserId' },
+      config: {
+        endpoints: {
+          custom: [
+            {
+              name: 'LocalOnly',
+              apiKey: 'local-key',
+              baseURL: 'https://example.com/v1',
+              models: { default: ['local-model'], fetch: false },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(getAppConfig).not.toHaveBeenCalled();
+    expect(result.LocalOnly).toEqual(['local-model']);
   });
 
   it('handles azure models and endpoint correctly', async () => {

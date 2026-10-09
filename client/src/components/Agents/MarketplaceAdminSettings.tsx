@@ -1,16 +1,16 @@
 import { ShieldEllipsis } from 'lucide-react';
-import { Permissions, PermissionTypes } from 'librechat-data-provider';
 import { Button, useToastContext } from '@librechat/client';
-import { AdminSettingsDialog } from '~/components/ui';
-import { useUpdateMarketplacePermissionsMutation } from '~/data-provider';
-import { useLocalize } from '~/hooks';
+import { Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { PermissionConfig } from '~/components/ui';
+import { useUpdateMarketplacePermissionsMutation } from '~/data-provider';
+import { AdminSettingsDialog } from '~/components/ui';
+import { useLocalize } from '~/hooks';
 
 const permissions: PermissionConfig[] = [
   { permission: Permissions.USE, labelKey: 'com_ui_marketplace_allow_use' },
 ];
 
-const MarketplaceAdminSettings = ({ compact = false }: { compact?: boolean }) => {
+const MarketplaceAdminSettings = () => {
   const localize = useLocalize();
   const { showToast } = useToastContext();
 
@@ -23,22 +23,16 @@ const MarketplaceAdminSettings = ({ compact = false }: { compact?: boolean }) =>
     },
   });
 
-  const trigger = compact ? (
+  /* `outline` matches the search field it sits beside — same border token, same
+     radius — and `size-9` keeps the two controls the same height. */
+  const trigger = (
     <Button
-      size="icon"
+      size="icon-sm"
       variant="outline"
-      className="rounded-xl bg-presentation duration-0 hover:bg-surface-active-alt"
+      className="size-9 shrink-0 transition-none"
       aria-label={localize('com_ui_admin_settings')}
     >
-      <ShieldEllipsis className="icon-md" aria-hidden="true" />
-    </Button>
-  ) : (
-    <Button
-      variant="outline"
-      className="relative h-12 rounded-xl border-border-medium font-medium"
-      aria-label={localize('com_ui_admin_settings')}
-    >
-      <ShieldEllipsis className="cursor-pointer" aria-hidden="true" />
+      <ShieldEllipsis className="size-4" aria-hidden="true" />
     </Button>
   );
 
@@ -50,7 +44,6 @@ const MarketplaceAdminSettings = ({ compact = false }: { compact?: boolean }) =>
       menuId="marketplace-role-dropdown"
       mutation={mutation}
       trigger={trigger}
-      dialogContentClassName="w-11/12 max-w-md border-border-light bg-surface-primary text-text-primary"
       showAdminWarning={false}
     />
   );

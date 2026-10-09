@@ -130,11 +130,26 @@ async function validateAnthropicPdf(
 }
 
 /**
- * Matches Bedrock Claude 4+ model identifiers, including cross-region inference profile IDs.
- * Pattern: [region.]anthropic.claude-{family}-{version≥4}-{date}-v{n}:{rev}
- * e.g. "anthropic.claude-sonnet-4-6" or "us.anthropic.claude-sonnet-4-6"
+ * Matches Bedrock Claude 4+ model identifiers in every form they occur:
+ * prefixed (`anthropic.claude-*`, `us.anthropic.claude-*`,
+ * `global.anthropic.claude-*`), bare (`claude-*`, used when the LibreChat model
+ * ID maps to an application inference profile), and either segment order
+ * (`claude-opus-5`, `claude-4-6-opus`).
+ *
+ * Two forms were previously dropped, each defaulting the model back to the
+ * 4.5 MB limit: requiring a `-` after the major version excluded undated IDs
+ * like `claude-opus-5`, and requiring a literal `anthropic.` excluded bare
+ * inference-profile IDs. Fable/Mythos are Claude 4+ generation and take the
+ * same PDF exemption.
+ *
+ * Mirrors `BEDROCK_CLAUDE_4PLUS_THINKING` in `librechat-data-provider`, which
+ * matches on the family token for the same reason. Only reached for the Bedrock
+ * provider, so the loose prefix cannot leak into other endpoints.
  */
-const BEDROCK_CLAUDE_4_PLUS_RE = /(?:^|\.)anthropic\.claude-(?:sonnet|opus|haiku)-[4-9]\d*-/;
+const CLAUDE_FAMILY = 'sonnet|opus|haiku|fable|mythos';
+const BEDROCK_CLAUDE_4_PLUS_RE = new RegExp(
+  `(?:^|\\.)(?:anthropic\\.)?claude-(?:(?:${CLAUDE_FAMILY})-[4-9]\\d*|[4-9]\\d*(?:[-.]\\d+)?-(?:${CLAUDE_FAMILY}))(?:[-.]|$)`,
+);
 const isBedrockClaude4Plus = (model?: string): boolean =>
   model != null && BEDROCK_CLAUDE_4_PLUS_RE.test(model);
 

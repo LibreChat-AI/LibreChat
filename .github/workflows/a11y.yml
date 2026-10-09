@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'client/src/**'
+      - '!**.md'
   workflow_dispatch:
     inputs:
       run_workflow:
@@ -11,16 +12,24 @@ on:
         required: true
         default: 'false'
 
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   axe-linter:
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'danny-avila/LibreChat') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_workflow == 'true')
     
     steps:
-      - uses: actions/checkout@v4
-      - uses: dequelabs/axe-linter-action@v1
+      - uses: actions/checkout@v5
+      - uses: dequelabs/axe-linter-action@v2
         with:
           api_key: ${{ secrets.AXE_LINTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

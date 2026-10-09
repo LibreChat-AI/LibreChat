@@ -1,115 +1,289 @@
-import { IThemeRGB, IThemeVariables } from '../types';
+import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
+import {
+  controlBorderFallback,
+  focusFallbacks,
+  overlayFallbacks,
+  pressedFallbacks,
+  primaryButtonFallbacks,
+  primaryInkFallbacks,
+  primaryInkRoles,
+  MARK_NEIGHBOURHOOD,
+  themeAppearanceProperties,
+  themeBrandTokens,
+  themeColorTokens,
+} from '../registry';
 
-/**
- * Validates RGB string format (e.g., "255 255 255")
- */
+const colorProperty = (token: keyof IThemeRGB): `--${string}` => `--${token.slice(4)}`;
+const brandProperty = (token: keyof IThemeBrands): `--${string}` => `--${token}`;
+
+export const themeOwnedProperties: readonly string[] = Object.freeze([
+  ...themeColorTokens.map(colorProperty),
+  ...Object.values(themeAppearanceProperties),
+  ...themeBrandTokens.map(brandProperty),
+]);
+
+const rgbPattern = /^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})$/;
+
 function validateRGB(rgb: string): boolean {
-  if (!rgb) return true;
-  const rgbRegex = /^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})$/;
-  const match = rgb.match(rgbRegex);
-
-  if (!match) return false;
-
-  // Check that each value is between 0-255
-  const [, r, g, b] = match;
-  return [r, g, b].every((val) => {
-    const num = parseInt(val, 10);
-    return num >= 0 && num <= 255;
-  });
+  const match = rgb.match(rgbPattern);
+  return match !== null && match.slice(1).every((channel) => Number(channel) <= 255);
 }
 
-/**
- * Maps theme RGB values to CSS variables
- */
-function mapTheme(rgb: IThemeRGB): Partial<IThemeVariables> {
-  const variables: Partial<IThemeVariables> = {};
+/** `base` is the bundled palette for the mode being applied. The adapter writes
+ *  only the keys a theme names, so a derivation whose source the theme inherits
+ *  rather than restates has nothing to read without it. */
+function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]> {
+  const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
+    const value = colors[token];
+    if (value !== undefined) {
+      result.push([colorProperty(token), value]);
+    }
+    return result;
+  }, []);
 
-  // Map each RGB value to its corresponding CSS variable
-  const mappings: Record<keyof IThemeRGB, keyof IThemeVariables> = {
-    'rgb-text-primary': '--text-primary',
-    'rgb-text-secondary': '--text-secondary',
-    'rgb-text-secondary-alt': '--text-secondary-alt',
-    'rgb-text-tertiary': '--text-tertiary',
-    'rgb-text-warning': '--text-warning',
-    'rgb-ring-primary': '--ring-primary',
-    'rgb-header-primary': '--header-primary',
-    'rgb-header-hover': '--header-hover',
-    'rgb-header-button-hover': '--header-button-hover',
-    'rgb-surface-active': '--surface-active',
-    'rgb-surface-active-alt': '--surface-active-alt',
-    'rgb-surface-hover': '--surface-hover',
-    'rgb-surface-hover-alt': '--surface-hover-alt',
-    'rgb-surface-primary': '--surface-primary',
-    'rgb-surface-primary-alt': '--surface-primary-alt',
-    'rgb-surface-primary-contrast': '--surface-primary-contrast',
-    'rgb-surface-secondary': '--surface-secondary',
-    'rgb-surface-secondary-alt': '--surface-secondary-alt',
-    'rgb-surface-tertiary': '--surface-tertiary',
-    'rgb-surface-tertiary-alt': '--surface-tertiary-alt',
-    'rgb-surface-dialog': '--surface-dialog',
-    'rgb-surface-submit': '--surface-submit',
-    'rgb-surface-submit-hover': '--surface-submit-hover',
-    'rgb-surface-destructive': '--surface-destructive',
-    'rgb-surface-destructive-hover': '--surface-destructive-hover',
-    'rgb-surface-chat': '--surface-chat',
-    'rgb-border-light': '--border-light',
-    'rgb-border-medium': '--border-medium',
-    'rgb-border-medium-alt': '--border-medium-alt',
-    'rgb-border-heavy': '--border-heavy',
-    'rgb-border-xheavy': '--border-xheavy',
-    'rgb-brand-purple': '--brand-purple',
-    'rgb-presentation': '--presentation',
+  if (
+    colors['rgb-surface-composer-hover'] === undefined &&
+    colors['rgb-surface-hover'] !== undefined
+  ) {
+    variables.push(['--surface-composer-hover', colors['rgb-surface-hover']]);
+  }
 
-    // Utility colors
-    'rgb-background': '--background',
-    'rgb-foreground': '--foreground',
-    'rgb-primary': '--primary',
-    'rgb-primary-foreground': '--primary-foreground',
-    'rgb-secondary': '--secondary',
-    'rgb-secondary-foreground': '--secondary-foreground',
-    'rgb-muted': '--muted',
-    'rgb-muted-foreground': '--muted-foreground',
-    'rgb-accent': '--accent',
-    'rgb-accent-foreground': '--accent-foreground',
-    'rgb-destructive-foreground': '--destructive-foreground',
-    'rgb-border': '--border',
-    'rgb-input': '--input',
-    'rgb-ring': '--ring',
-    'rgb-card': '--card',
-    'rgb-card-foreground': '--card-foreground',
-  };
+  /**
+   * Stored and environment themes predate the shimmer stops, and this adapter
+   * applies only the keys a theme names — so without this they would keep the
+   * stock sweep while every other color moved, and in dark mode the CSS cannot
+   * recover: `.dark` declares a base outright, so the `--text-primary` fallback
+   * never runs. The bright stop follows the theme's primary text color, which
+   * is what it already resolves to in light. The dip has no legacy counterpart
+   * and stays at its default: it is the faded half of the sweep, carried at low
+   * alpha, so it reads as dimmed against any base.
+   */
+  if (colors['rgb-shimmer-base'] === undefined && colors['rgb-text-primary'] !== undefined) {
+    variables.push(['--shimmer-base', colors['rgb-text-primary']]);
+  }
 
-  Object.entries(mappings).forEach(([rgbKey, cssVar]) => {
-    const value = rgb[rgbKey as keyof IThemeRGB];
-    if (value) {
-      variables[cssVar] = value;
+  /** The dark page was `surface-primary-alt` before it had a role, as in `resolveTheme`. */
+  if (colors['rgb-page-canvas'] === undefined && colors['rgb-surface-primary-alt'] !== undefined) {
+    variables.push(['--page-canvas', colors['rgb-surface-primary-alt']]);
+  }
+
+  if (colors['rgb-text-muted'] === undefined && colors['rgb-text-tertiary'] !== undefined) {
+    variables.push(['--text-muted', colors['rgb-text-tertiary']]);
+  }
+
+  if (
+    colors['rgb-chart-widget-surface'] === undefined &&
+    colors['rgb-surface-primary'] !== undefined
+  ) {
+    variables.push(['--chart-widget-surface', colors['rgb-surface-primary']]);
+  }
+
+  /** The switch knob was painted `surface-primary` before it had a role, as in `resolveTheme`. */
+  if (colors['rgb-switch-thumb'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--switch-thumb', colors['rgb-surface-primary']]);
+  }
+
+  /** The field fill follows the canvas, as in `resolveTheme`. */
+  if (colors['rgb-field-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--field-fill', colors['rgb-surface-primary']]);
+  }
+
+  Object.entries(overlayFallbacks(colors)).forEach(([role, value]) => {
+    variables.push([colorProperty(role as keyof IThemeRGB), value]);
+  });
+
+  if (colors['rgb-table-header-text'] === undefined && colors['rgb-text-secondary'] !== undefined) {
+    variables.push(['--table-header-text', colors['rgb-text-secondary']]);
+  }
+
+  if (colors['rgb-table-header-fill'] === undefined && colors['rgb-surface-dialog'] !== undefined) {
+    variables.push(['--table-header-fill', colors['rgb-surface-dialog']]);
+  }
+
+  if (colors['rgb-chart-widget-stroke'] === undefined && colors['rgb-border-light'] !== undefined) {
+    variables.push(['--chart-widget-stroke', colors['rgb-border-light']]);
+  }
+
+  if (colors['rgb-focus-subtle'] === undefined && colors['rgb-border-heavy'] !== undefined) {
+    variables.push(['--focus-subtle', colors['rgb-border-heavy']]);
+  }
+
+  const legacyControlBorder = controlBorderFallback(colors);
+  if (legacyControlBorder !== undefined) {
+    variables.push(['--border-control', legacyControlBorder]);
+  }
+
+  const focus = focusFallbacks(colors);
+  if (colors['rgb-focus-outline'] === undefined && focus['rgb-focus-outline'] !== undefined) {
+    variables.push(['--focus-outline', focus['rgb-focus-outline']]);
+  }
+  if (colors['rgb-focus-control'] === undefined && focus['rgb-focus-control'] !== undefined) {
+    variables.push(['--focus-control', focus['rgb-focus-control']]);
+  }
+  if (
+    colors['rgb-border-field-focus'] === undefined &&
+    focus['rgb-border-field-focus'] !== undefined
+  ) {
+    variables.push(['--border-field-focus', focus['rgb-border-field-focus']]);
+  }
+
+  const pressed = pressedFallbacks(colors);
+  if (colors['rgb-surface-pressed'] === undefined && pressed['rgb-surface-pressed'] !== undefined) {
+    variables.push(['--surface-pressed', pressed['rgb-surface-pressed']]);
+  }
+  if (
+    colors['rgb-surface-inverted-pressed'] === undefined &&
+    pressed['rgb-surface-inverted-pressed'] !== undefined
+  ) {
+    variables.push(['--surface-inverted-pressed', pressed['rgb-surface-inverted-pressed']]);
+  }
+
+  const primary = primaryButtonFallbacks(colors);
+  if (colors['rgb-button-primary'] === undefined && primary['rgb-button-primary'] !== undefined) {
+    variables.push(['--button-primary', primary['rgb-button-primary']]);
+  }
+  if (
+    colors['rgb-button-primary-hover'] === undefined &&
+    primary['rgb-button-primary-hover'] !== undefined
+  ) {
+    variables.push(['--button-primary-hover', primary['rgb-button-primary-hover']]);
+  }
+
+  const inks = primaryInkFallbacks(colors);
+  primaryInkRoles.forEach((role) => {
+    const ink = inks[role];
+    if (colors[role] === undefined && ink !== undefined) {
+      variables.push([`--${role.slice(4)}`, ink]);
     }
   });
+
+  /**
+   * Same rule as `resolveTheme`: a theme that paints what the mark is measured
+   * against coordinated the `status-success-strong` the mark wore before it had
+   * a token, so it keeps that fill rather than taking LibreChat's stock blue.
+   * This adapter writes only the keys a theme names, so the inherited value
+   * arrives through `base`, the bundled palette for the mode being applied.
+   */
+  const ownsMarkSurroundings = MARK_NEIGHBOURHOOD.some((token) => colors[token] !== undefined);
+  const inheritedSuccess =
+    colors['rgb-status-success-strong'] ?? base?.['rgb-status-success-strong'];
+  if (
+    ownsMarkSurroundings &&
+    colors['rgb-status-verified'] === undefined &&
+    inheritedSuccess !== undefined
+  ) {
+    variables.push(['--status-verified', inheritedSuccess]);
+  }
 
   return variables;
 }
 
+/** The `theme-chrome-quiet:` variant matches the literal `0`, so every spelling of zero is written as it. */
+function canonicalAppearance(key: keyof IThemeAppearance, value: string): string {
+  return key === 'chromeBorderAlpha' && Number(value) === 0 ? '0' : value;
+}
+
+function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
+  return Object.entries(themeAppearanceProperties).map(([key, property]) => [
+    property,
+    canonicalAppearance(key as keyof IThemeAppearance, appearance[key as keyof IThemeAppearance]),
+  ]);
+}
+
 /**
- * Applies theme to the document root
- * Sets CSS variables as rgb() values for compatibility with existing CSS
+ * Mirrors the applied theme's `disabledStyle` on the root for host stylesheets and tests. Absent
+ * means the default `dim` style. The `theme-disabled:` variants read the inherited
+ * `--theme-disabled-style` property instead, so the nearest themed root decides.
  */
-export default function applyTheme(themeRGB?: IThemeRGB) {
-  if (!themeRGB) return;
+export const THEME_DISABLED_ATTRIBUTE = 'data-theme-disabled';
 
-  const themeObject = mapTheme(themeRGB);
-  const root = document.documentElement;
+/**
+ * Marks a root other than the document one that a legacy palette themes. The stylesheet points
+ * the avatar backdrop at that root's own secondary surface, or its tertiary one under a `.dark`
+ * ancestor, as the document root's alias does, so the backdrop follows a later mode change.
+ */
+export const THEME_SCOPE_ATTRIBUTE = 'data-theme-scope';
 
-  Object.entries(themeObject).forEach(([cssVar, value]) => {
-    if (!value) return;
+/**
+ * Mirrors the applied theme's `fieldFocusStyle` on the root, like `THEME_DISABLED_ATTRIBUTE`.
+ * The `theme-field-border:` variant and `Field.css` read the inherited
+ * `--theme-field-focus-style` property instead, so the nearest themed root decides.
+ */
+export const THEME_FIELD_FOCUS_ATTRIBUTE = 'data-theme-field-focus';
 
-    const validation = validateRGB(value);
-    if (!validation) {
-      console.error(`Invalid RGB value for ${cssVar}: ${value}`);
+/**
+ * Marks a root that `client/index.html` painted from the cached deployment theme before the
+ * bundle ran. The provider drops that copy before it snapshots the root, so a later restore
+ * returns to the stylesheet rather than to a theme the server may since have withdrawn.
+ */
+export const THEME_BOOT_ATTRIBUTE = 'data-theme-boot';
+
+export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
+  themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
+  root.removeAttribute('data-theme');
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_SCOPE_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  root.removeAttribute(THEME_BOOT_ATTRIBUTE);
+}
+
+/** What `applyResolvedTheme` writes on the root, as plain data a boot script can replay. */
+export type ResolvedThemeStyle = {
+  properties: Array<[string, string]>;
+  attributes: Record<string, string>;
+};
+
+export function describeResolvedTheme(theme: ResolvedThemeDefinition): ResolvedThemeStyle {
+  return {
+    properties: [
+      ...mapColors(theme.colors),
+      ...mapAppearance(theme.appearance),
+      ...themeBrandTokens.map(
+        (token) => [brandProperty(token), theme.brands[token]] as [string, string],
+      ),
+    ],
+    attributes: {
+      'data-theme': theme.name,
+      ...(theme.appearance.disabledStyle === 'fill' && { [THEME_DISABLED_ATTRIBUTE]: 'fill' }),
+      ...(theme.appearance.fieldFocusStyle === 'border' && {
+        [THEME_FIELD_FOCUS_ATTRIBUTE]: 'border',
+      }),
+    },
+  };
+}
+
+export function applyResolvedTheme(
+  theme: ResolvedThemeDefinition,
+  root: HTMLElement = document.documentElement,
+): void {
+  const { properties, attributes } = describeResolvedTheme(theme);
+  properties.forEach(([property, value]) => root.style.setProperty(property, value));
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  Object.entries(attributes).forEach(([name, value]) => root.setAttribute(name, value));
+}
+
+/**
+ * Backward-compatible adapter for the original partial RGB theme interface.
+ * New theme implementations should resolve a ThemeDefinition and use applyResolvedTheme.
+ */
+export default function applyTheme(
+  themeRGB?: IThemeRGB,
+  root: HTMLElement = document.documentElement,
+  base?: IThemeRGB,
+): void {
+  if (!themeRGB) {
+    return;
+  }
+
+  if (root !== root.ownerDocument.documentElement) {
+    root.setAttribute(THEME_SCOPE_ATTRIBUTE, '');
+  }
+  mapColors(themeRGB, base).forEach(([property, value]) => {
+    if (!validateRGB(value)) {
+      console.error(`Invalid RGB value for ${property}: ${value}`);
       return;
     }
-
-    // Set the CSS variable as rgb() value for compatibility
-    // This ensures existing CSS that expects color values (not space-separated RGB) continues to work
-    root.style.setProperty(cssVar, `rgb(${value})`);
+    root.style.setProperty(property, value);
   });
 }

@@ -83,6 +83,60 @@ describe('batchResetMeiliFlags', () => {
       expect(expiredDoc._meiliIndex).toBe(true);
     });
 
+    it('should reset active non-temporary documents with expiredAt set for all-data retention', async () => {
+      const retentionDate = new Date(Date.now() + 60 * 60 * 1000);
+      await testCollection.insertMany([
+        {
+          _id: new mongoose.Types.ObjectId(),
+          isTemporary: false,
+          expiredAt: retentionDate,
+          _meiliIndex: true,
+        },
+        {
+          _id: new mongoose.Types.ObjectId(),
+          isTemporary: true,
+          expiredAt: retentionDate,
+          _meiliIndex: true,
+        },
+      ]);
+
+      const result = await batchResetMeiliFlags(testCollection);
+
+      expect(result).toBe(1);
+
+      const retainedDoc = await testCollection.findOne({ isTemporary: false });
+      const temporaryDoc = await testCollection.findOne({ isTemporary: true });
+      expect(retainedDoc._meiliIndex).toBe(false);
+      expect(temporaryDoc._meiliIndex).toBe(true);
+    });
+
+    it('should not reset expired non-temporary documents with expiredAt set for all-data retention', async () => {
+      const retentionDate = new Date(Date.now() - 60 * 60 * 1000);
+      await testCollection.insertMany([
+        {
+          _id: new mongoose.Types.ObjectId(),
+          isTemporary: false,
+          expiredAt: retentionDate,
+          _meiliIndex: true,
+        },
+        {
+          _id: new mongoose.Types.ObjectId(),
+          isTemporary: false,
+          expiredAt: null,
+          _meiliIndex: true,
+        },
+      ]);
+
+      const result = await batchResetMeiliFlags(testCollection);
+
+      expect(result).toBe(1);
+
+      const expiredDoc = await testCollection.findOne({ expiredAt: retentionDate });
+      const permanentDoc = await testCollection.findOne({ expiredAt: null });
+      expect(expiredDoc._meiliIndex).toBe(true);
+      expect(permanentDoc._meiliIndex).toBe(false);
+    });
+
     it('should not modify documents with _meiliIndex: false', async () => {
       await testCollection.insertMany([
         { _id: new mongoose.Types.ObjectId(), expiredAt: null, _meiliIndex: false },

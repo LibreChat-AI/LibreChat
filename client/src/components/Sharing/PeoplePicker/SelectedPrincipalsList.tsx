@@ -1,16 +1,20 @@
 import React from 'react';
-import { Button, useMediaQuery } from '@librechat/client';
-import { Users, X, ExternalLink } from 'lucide-react';
 import { ResourceType } from 'librechat-data-provider';
+import { Users, X, ExternalLink, Info } from 'lucide-react';
+import { Button, Checkbox, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type { TPrincipal, AccessRoleIds } from 'librechat-data-provider';
 import AccessRolesPicker from '~/components/Sharing/AccessRolesPicker';
 import PrincipalAvatar from '~/components/Sharing/PrincipalAvatar';
+import { RESOURCE_CONFIGS } from '~/utils/resources';
+import { principalKey } from '../shareChanges';
 import { useLocalize } from '~/hooks';
 
 interface SelectedPrincipalsListProps {
   principles: TPrincipal[];
-  onRemoveHandler: (idOnTheSource: string) => void;
-  onRoleChange?: (idOnTheSource: string, newRoleId: AccessRoleIds) => void;
+  onRemoveHandler: (principalKey: string) => void;
+  onRoleChange?: (principalKey: string, newRoleId: AccessRoleIds) => void;
+  onInsightsAccessChange?: (principalKey: string, enabled: boolean) => void;
+  showInsightsAccess?: boolean;
   resourceType?: ResourceType;
   className?: string;
 }
@@ -20,6 +24,8 @@ export default function SelectedPrincipalsList({
   onRemoveHandler,
   className = '',
   onRoleChange,
+  onInsightsAccessChange,
+  showInsightsAccess = false,
   resourceType = ResourceType.AGENT,
 }: SelectedPrincipalsListProps) {
   const localize = useLocalize();
@@ -37,7 +43,7 @@ export default function SelectedPrincipalsList({
   if (principles.length === 0) {
     return (
       <div className={`space-y-3 ${className}`}>
-        <div className="rounded-lg border border-dashed border-border-medium py-8 text-center text-muted-foreground">
+        <div className="border-border-medium text-text-secondary rounded-lg border border-dashed py-8 text-center">
           <Users className="mx-auto mb-2 h-8 w-8 opacity-50" aria-hidden="true" />
           <p className="mt-1 text-xs">{localize('com_ui_search_above_to_add_all')}</p>
         </div>
@@ -50,17 +56,28 @@ export default function SelectedPrincipalsList({
       <div className="space-y-2">
         {principles.map((share) => {
           const { displayName, subtitle } = getPrincipalDisplayInfo(share);
+          const ownerRoleId = RESOURCE_CONFIGS[resourceType]?.defaultOwnerRoleId;
+          const isOwner = share.accessRoleId === ownerRoleId;
+          const isSharedLink = resourceType === ResourceType.SHARED_LINK;
+          const lockOwner = isSharedLink && isOwner;
+          const shareKey = principalKey(share);
+          const hasAutomaticInsightsAccess = share.isAdmin === true;
+          const insightsDescription = localize(
+            hasAutomaticInsightsAccess
+              ? 'com_ui_view_agent_insights_admin_description'
+              : 'com_ui_view_agent_insights_description',
+          );
           return (
             <div
-              key={share.idOnTheSource + '-principalList'}
-              className="bg-surface flex items-center justify-between rounded-2xl border border-border p-3"
+              key={`${shareKey}-principalList`}
+              className="border-border-light flex flex-col gap-3 rounded-xl border bg-transparent p-3 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <PrincipalAvatar principal={share} size="md" />
 
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{displayName}</div>
-                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <div className="text-text-secondary flex items-center gap-1 text-xs">
                     <span>{subtitle}</span>
                     {share.source === 'entra' && (
                       <>
@@ -72,25 +89,61 @@ export default function SelectedPrincipalsList({
                 </div>
               </div>
 
-              <div className="flex flex-shrink-0 items-center gap-2">
-                {!!share.accessRoleId && !!onRoleChange && (
-                  <AccessRolesPicker
-                    resourceType={resourceType}
-                    selectedRoleId={share.accessRoleId}
-                    onRoleChange={(newRole) => {
-                      onRoleChange?.(share.idOnTheSource!, newRole);
-                    }}
-                    className="min-w-0"
-                  />
+              <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
+                {showInsightsAccess && onInsightsAccessChange && (
+                  <div className="mr-auto flex items-center gap-2 sm:mr-1">
+                    <Checkbox
+                      checked={hasAutomaticInsightsAccess || share.viewInsights === true}
+                      disabled={hasAutomaticInsightsAccess}
+                      onCheckedChange={(checked) =>
+                        onInsightsAccessChange(shareKey, checked === true)
+                      }
+                      aria-label={localize('com_ui_view_agent_insights')}
+                    />
+                    <span className="text-text-secondary text-sm whitespace-nowrap">
+                      {localize('com_ui_view_agent_insights')}
+                    </span>
+                    <TooltipAnchor
+                      description={insightsDescription}
+                      render={
+                        <button
+                          type="button"
+                          aria-label={insightsDescription}
+                          className="text-text-secondary hover:text-text-primary"
+                        >
+                          <Info className="size-4" aria-hidden="true" />
+                        </button>
+                      }
+                    />
+                  </div>
                 )}
-                <Button
-                  variant="outline"
-                  onClick={() => onRemoveHandler(share.idOnTheSource!)}
-                  className="h-9 w-9 p-0 hover:border-destructive/10 hover:bg-destructive/10 hover:text-destructive"
-                  aria-label={localize('com_ui_remove_user', { 0: displayName })}
-                >
-                  <X className="h-4 w-4" aria-hidden="true" />
-                </Button>
+                {lockOwner ? (
+                  <span className="text-text-secondary px-3 py-2 text-sm font-medium">
+                    {localize('com_ui_role_owner')}
+                  </span>
+                ) : (
+                  !!share.accessRoleId &&
+                  !!onRoleChange && (
+                    <AccessRolesPicker
+                      resourceType={resourceType}
+                      selectedRoleId={share.accessRoleId}
+                      onRoleChange={(newRole) => {
+                        onRoleChange?.(shareKey, newRole);
+                      }}
+                      className="min-w-0"
+                    />
+                  )
+                )}
+                {!lockOwner && (
+                  <Button
+                    variant="outline"
+                    onClick={() => onRemoveHandler(shareKey)}
+                    className="hover:border-status-error-border hover:bg-status-error-subtle hover:text-text-destructive h-9 w-9 p-0"
+                    aria-label={localize('com_ui_remove_user', { 0: displayName })}
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </Button>
+                )}
               </div>
             </div>
           );

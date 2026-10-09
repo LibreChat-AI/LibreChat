@@ -2,7 +2,7 @@ import { Schema } from 'mongoose';
 import { Constants } from 'librechat-data-provider';
 import type { IPromptGroupDocument } from '~/types';
 
-const promptGroupSchema = new Schema<IPromptGroupDocument>(
+const promptGroupSchema: Schema<IPromptGroupDocument> = new Schema<IPromptGroupDocument>(
   {
     name: {
       type: String,

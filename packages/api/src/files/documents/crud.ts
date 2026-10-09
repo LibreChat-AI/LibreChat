@@ -3,6 +3,7 @@ import yauzl from 'yauzl';
 import { megabyte, excelMimeTypes, FileSources } from 'librechat-data-provider';
 import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 import type { MistralOCRUploadResult } from '~/types';
+import { assertSafeZipSize } from './zipSafety';
 
 type FileParseFn = (file: Express.Multer.File) => Promise<string>;
 
@@ -93,8 +94,14 @@ async function pdfToText(file: Express.Multer.File): Promise<string> {
 
 /** Parses Word document, returns text inside. */
 async function wordDocToText(file: Express.Multer.File): Promise<string> {
+  const buffer = await fs.promises.readFile(file.path);
+  /* Reject zip-bomb DOCX before mammoth's internal extractor runs.
+   * mammoth has no decompressed-size cap of its own; without this, a
+   * sub-1MB compressed bomb (~200x ratio) would block the event loop
+   * and spike RSS to ~1GB. See SEC review on PR #12934. */
+  await assertSafeZipSize(buffer, { name: file.originalname ?? 'docx' });
   const { extractRawText } = await import('mammoth');
-  const rawText = await extractRawText({ buffer: await fs.promises.readFile(file.path) });
+  const rawText = await extractRawText({ buffer });
   return rawText.value;
 }
 
@@ -104,6 +111,12 @@ async function excelSheetToText(file: Express.Multer.File): Promise<string> {
   // readFile() fails with "Cannot access file". read() takes a pre-loaded Buffer instead.
   const { read, utils } = await import('xlsx');
   const data = await fs.promises.readFile(file.path);
+  /* Reject zip-bomb XLSX/ODS before SheetJS's internal extractor runs.
+   * `.xls` (BIFF/CFB) is not a ZIP — magic-byte check skips the
+   * validator for it (yauzl would reject it as malformed anyway). */
+  if (data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b) {
+    await assertSafeZipSize(data, { name: file.originalname ?? 'spreadsheet' });
+  }
   const workbook = read(data, { type: 'buffer' });
 
   let text = '';

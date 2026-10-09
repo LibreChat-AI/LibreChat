@@ -1,20 +1,26 @@
 import { logger } from '@librechat/data-schemas';
-import { ContentTypes, isAgentsEndpoint } from 'librechat-data-provider';
+import {
+  ContentTypes,
+  isAgentsEndpoint,
+  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+} from 'librechat-data-provider';
 import {
   labelContentByAgent,
   extractImageDimensions,
   getTokenCountForMessage,
   estimateOpenAIImageTokens,
   estimateAnthropicImageTokens,
+  markTokenCounterCacheCompatible,
 } from '@librechat/agents';
+import type { MessageContentComplex, TokenCounter } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
-import type { MessageContentComplex } from '@librechat/agents';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
+import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
 import Tokenizer from '~/utils/tokenizer';
-import { logAxiosError } from '~/utils';
 
-export const omitTitleOptions = new Set([
+export const omitTitleOptions: Set<string> = new Set([
   'stream',
   'thinking',
   'streaming',
@@ -26,11 +32,34 @@ export const omitTitleOptions = new Set([
   'additionalModelRequestFields',
 ]);
 
-export function payloadParser({ req, endpoint }: { req: ServerRequest; endpoint: string }) {
+export function payloadParser({
+  req,
+  endpoint,
+}: {
+  req: ServerRequest;
+  endpoint: string;
+}): Record<string, unknown> | undefined {
   if (isAgentsEndpoint(endpoint)) {
     return;
   }
-  return req.body?.endpointOption?.model_parameters;
+  const modelParameters = req.body?.endpointOption?.model_parameters;
+  if (modelParameters == null || req.reasoningOverrideBase == null) {
+    return modelParameters;
+  }
+
+  const { key, hadValue, value } = req.reasoningOverrideBase;
+  const persistedParameters = { ...modelParameters };
+  if (hadValue) {
+    persistedParameters[key] = value;
+  } else {
+    delete persistedParameters[key];
+  }
+  if (req.reasoningOverrideBase.thinkingHadValue === true) {
+    persistedParameters.thinking = req.reasoningOverrideBase.thinkingValue;
+  } else if (req.reasoningOverrideBase.thinkingHadValue === false) {
+    delete persistedParameters.thinking;
+  }
+  return persistedParameters;
 }
 
 /**
@@ -53,8 +82,129 @@ type ContentBlock = {
   mime_type?: string;
   data?: string;
   text?: string;
-  tool_call?: { name?: string; args?: string; output?: string };
+  tool_call?: { id?: string; name?: string; args?: string; output?: string };
 };
+
+export type FormattedMessageContentPart = {
+  type?: string;
+  text?: string;
+  [key: string]: unknown;
+};
+
+export type FormattedMessageWithContent = {
+  role?: string;
+  content?: string | FormattedMessageContentPart[];
+};
+
+/**
+ * Substitutes stand-in text for a user turn that carries attachments but has
+ * nothing the provider can see: file search and code environment files reach
+ * the model out-of-band, so the content stays empty and Anthropic rejects the
+ * message outright. Apply after the file-context and quote merges so a turn
+ * that already gained inline content is left alone. The stored `message.text`
+ * keeps its empty value, so the UI still renders the attachment on its own.
+ *
+ * Takes the turn's files rather than the message because the current turn does
+ * not carry them yet: `BaseClient` assigns `userMessage.files` only after
+ * `buildMessages` returns, so callers pass the resolved attachments instead.
+ */
+export function applyAttachmentOnlyText(
+  formattedMessage: FormattedMessageWithContent,
+  files?: TMessage['files'] | null,
+): void {
+  if (formattedMessage.role !== 'user' || !files?.length) {
+    return;
+  }
+
+  if (formattedMessage.content !== '') {
+    return;
+  }
+
+  formattedMessage.content = ATTACHMENT_ONLY_TEXT;
+}
+
+/**
+ * Prepends context text to a formatted message: joined ahead of its string
+ * content or first text part, or added as a leading text part when it has
+ * neither. Array content is replaced, never edited in place: a formatted copy
+ * shares its array with the stored row it came from, so the stored row and
+ * every other reader of it stay untouched.
+ */
+export function prependContextText(
+  formattedMessage: FormattedMessageWithContent,
+  text: string | null | undefined,
+  separator = '\n',
+): void {
+  if (!text) {
+    return;
+  }
+
+  if (typeof formattedMessage.content === 'string') {
+    formattedMessage.content = `${text}${separator}${formattedMessage.content}`;
+    return;
+  }
+
+  if (!Array.isArray(formattedMessage.content)) {
+    return;
+  }
+
+  const index = formattedMessage.content.findIndex(
+    (part) => part.type === ContentTypes.TEXT && typeof part.text === 'string',
+  );
+  if (index < 0) {
+    formattedMessage.content = [{ type: ContentTypes.TEXT, text }, ...formattedMessage.content];
+    return;
+  }
+  const textPart = formattedMessage.content[index];
+  formattedMessage.content = formattedMessage.content.map((part, position) =>
+    position === index ? { ...textPart, text: `${text}${separator}${textPart.text}` } : part,
+  );
+}
+
+export function prependFileContext(
+  formattedMessage: FormattedMessageWithContent,
+  fileContext?: string | null,
+): void {
+  prependContextText(formattedMessage, fileContext);
+}
+
+/**
+ * Prepends quoted excerpts (the "Add to chat" selections persisted on
+ * `message.quotes`) to a formatted message's content as Markdown blockquotes.
+ * Applied to every user message that carries quotes — current and historical —
+ * so the model durably receives the referenced context and the token count
+ * stays consistent with what was persisted. The stored `message.text` is left
+ * clean; the excerpts live on `message.quotes` for the UI.
+ */
+export function prependQuotes(
+  formattedMessage: FormattedMessageWithContent,
+  quotes?: string[] | null,
+): void {
+  if (quotes == null || quotes.length === 0) {
+    return;
+  }
+  const block = formatQuotesAsMarkdown(quotes);
+  if (block.length === 0) {
+    return;
+  }
+
+  if (typeof formattedMessage.content === 'string') {
+    formattedMessage.content = mergeQuotedText(formattedMessage.content, quotes);
+    return;
+  }
+
+  if (!Array.isArray(formattedMessage.content)) {
+    return;
+  }
+
+  const textPart = formattedMessage.content.find((part) => part.type === ContentTypes.TEXT);
+  if (textPart != null && typeof textPart.text === 'string') {
+    textPart.text = mergeQuotedText(textPart.text, quotes);
+    return;
+  }
+
+  formattedMessage.content.unshift({ type: ContentTypes.TEXT, text: block });
+}
 
 function estimateImageDataTokens(data: string, isClaude: boolean): number {
   const dims = extractImageDimensions(data);
@@ -205,7 +355,12 @@ export function countFormattedMessageTokens(
           continue;
         }
 
-        if (type === ContentTypes.THINK || type === ContentTypes.ERROR) {
+        if (
+          type === ContentTypes.THINK ||
+          type === ContentTypes.ERROR ||
+          // UI-only progress headers — never model input, never billed output
+          type === ContentTypes.ACTIVITY_LABEL
+        ) {
           continue;
         }
 
@@ -264,10 +419,111 @@ export function countFormattedMessageTokens(
   return isClaude ? Math.ceil(numTokens * CLAUDE_TOKEN_CORRECTION) : numTokens;
 }
 
-export function createTokenCounter(encoding: Parameters<typeof Tokenizer.getTokenCount>[1]) {
+/**
+ * Exact token count of the tool results a turn retains beyond its last context
+ * snapshot.
+ *
+ * Snapshots are dispatched pre-invoke, so the results of the tools the call they
+ * precede requested are never in them; normally the next call's snapshot carries
+ * those results as kept-message context, but a run that stops at the tool-call
+ * limit makes no next call — the result stays on the response and in no snapshot.
+ * `priorToolCallIds` are the calls the last snapshot already saw, so a call whose
+ * id is absent from it belongs to that final, unsnapshotted step. The boundary is
+ * the call id rather than a content index because completion reshapes the array —
+ * skill cards are unshifted onto the front and `hide_sequential_outputs` replaces
+ * it with a filtered one — so any index recorded mid-run means something else by
+ * the time the turn is saved. A call with no id cannot be placed and is skipped.
+ *
+ * Only the tool OUTPUT counts. A call's name and arguments are model output,
+ * already carried by the snapshot's `completedOutputTokens`, so counting them
+ * again would double them. The result-message framing the next turn adds (role,
+ * tool_call_id, per-message overhead) is left out as well: the figure is added to
+ * exact provider accounting, so it errs low rather than overstating the context.
+ * Non-string outputs are skipped, matching {@link countFormattedMessageTokens}.
+ *
+ * `maxCountChars` bounds the tokenization this turn may cost — one call can request
+ * several tools, so the budget spans all their results — and `countExact` returns
+ * `undefined` for content it cannot count exactly. Either limit withdraws the whole
+ * figure: a turn whose gauge is missing the retained result is better than one
+ * whose exact figures absorbed a guess. The Claude framing correction is applied,
+ * matching the counter that produced the snapshot.
+ */
+export function countRetainedToolTokens({
+  contentParts,
+  priorToolCallIds,
+  countExact,
+  maxCountChars = DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+  isClaude = false,
+}: {
+  contentParts: ReadonlyArray<unknown> | null | undefined;
+  priorToolCallIds: ReadonlySet<string> | null | undefined;
+  countExact: (text: string) => number | undefined;
+  maxCountChars?: number;
+  isClaude?: boolean;
+}): number | undefined {
+  if (!Array.isArray(contentParts)) {
+    return 0;
+  }
+  let tokens = 0;
+  let charactersCounted = 0;
+  for (const candidate of contentParts) {
+    const part = candidate as ContentBlock | null | undefined;
+    if (part == null || part.type !== ContentTypes.TOOL_CALL) {
+      continue;
+    }
+    const { id, output } = part.tool_call ?? {};
+    if (typeof id !== 'string' || id.length === 0 || priorToolCallIds?.has(id) === true) {
+      continue;
+    }
+    if (typeof output !== 'string' || output.length === 0) {
+      continue;
+    }
+    charactersCounted += output.length;
+    if (charactersCounted > maxCountChars) {
+      return undefined;
+    }
+    const counted = countExact(output);
+    if (counted == null) {
+      return undefined;
+    }
+    tokens += counted;
+  }
+  return isClaude ? Math.ceil(tokens * CLAUDE_TOKEN_CORRECTION) : tokens;
+}
+
+/** The tool calls a content array carries, by provider id — the boundary a later
+ *  save path measures "retained past this snapshot" against. */
+export function collectToolCallIds(
+  contentParts: ReadonlyArray<unknown> | null | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(contentParts)) {
+    return ids;
+  }
+  for (const candidate of contentParts) {
+    const part = candidate as ContentBlock | null | undefined;
+    const id = part?.type === ContentTypes.TOOL_CALL ? part.tool_call?.id : undefined;
+    if (typeof id === 'string' && id.length > 0) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+export function createTokenCounter(
+  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
+): TokenCounter {
+  return createMessageTokenCounter(encoding, (text: string) =>
+    Tokenizer.getTokenCount(text, encoding),
+  );
+}
+
+function createMessageTokenCounter(
+  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
+  countTokens: (text: string) => number,
+): TokenCounter {
   const isClaude = encoding === 'claude';
-  const countTokens = (text: string) => Tokenizer.getTokenCount(text, encoding);
-  return function (message: BaseMessage) {
+  return function (message: BaseMessage): number {
     const count = getTokenCountForMessage(
       message,
       countTokens,
@@ -277,11 +533,28 @@ export function createTokenCounter(encoding: Parameters<typeof Tokenizer.getToke
   };
 }
 
-export function logToolError(_graph: unknown, error: unknown, toolId: string) {
-  logAxiosError({
-    error,
-    message: `[api/server/controllers/agents/client.js #chatCompletion] Tool Error "${toolId}"`,
-  });
+export async function createCachedTokenCounter(
+  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
+): Promise<TokenCounter> {
+  const countTokens = await Tokenizer.createExactTokenCounter(encoding ?? 'o200k_base');
+  return markTokenCounterCacheCompatible(createMessageTokenCounter(encoding, countTokens));
+}
+
+export function logToolError(_graph: unknown, error: unknown, toolId: string): void {
+  /**
+   * A GraphInterrupt unwinding out of a tool body is the HITL pause working as
+   * designed (e.g. `ask_user_question` raising LangGraph `interrupt()`), not a
+   * tool failure — logging it as a Tool Error at error level is alarming noise.
+   * Name-based check: the class arrives from `@langchain/langgraph` inside
+   * `@librechat/agents`, so an instanceof against our own import can miss.
+   */
+  if ((error as Error | undefined)?.name === 'GraphInterrupt') {
+    return;
+  }
+  logger.error(
+    `[api/server/controllers/agents/client.js #chatCompletion] Tool Error "${toolId}"`,
+    getSafeErrorMetadata(error),
+  );
 }
 
 const AGENT_SUFFIX_PATTERN = /____(\d+)$/;
@@ -398,7 +671,10 @@ export function createMultiAgentMapper(primaryAgent: Agent, agentConfigs?: Map<s
 
       return { ...message, content: finalContent as TMessage['content'] };
     } catch (error) {
-      logger.error('[AgentClient] Error processing multi-agent message:', error);
+      logger.error(
+        '[AgentClient] Error processing multi-agent message:',
+        getSafeErrorMetadata(error),
+      );
       return message;
     }
   };

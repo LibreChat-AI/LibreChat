@@ -11,6 +11,7 @@ export * from './http';
 export * from './mistral';
 export type * from './openai';
 export * from './prompts';
+export * from './reasoning';
 export * from './run';
 export * from './tokens';
 export * from './stream';

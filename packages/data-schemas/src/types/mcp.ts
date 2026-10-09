@@ -8,6 +8,7 @@ import type { MCPServerDB } from 'librechat-data-provider';
 export interface MCPServerDocument
   extends Omit<MCPServerDB, 'author' | '_id'>,
     Document<Types.ObjectId> {
+  normalizedServerName: string;
   author: Types.ObjectId; // ObjectId reference in DB (vs string in API)
   tenantId?: string;
 }

@@ -1,40 +1,14 @@
 import type { PrincipalType, PrincipalModel, TCustomConfig } from 'librechat-data-provider';
-import type { SystemCapabilities } from '~/admin/capabilities';
 
-/* ── Capability types ───────────────────────────────────────────────── */
+/* ── Capability types (defined alongside the SystemCapabilities constant) ── */
 
-/** Base capabilities derived from the SystemCapabilities constant. */
-export type BaseSystemCapability = (typeof SystemCapabilities)[keyof typeof SystemCapabilities];
-
-/** Principal types that can receive config overrides. */
-export type ConfigAssignTarget = 'user' | 'group' | 'role';
-
-/** Top-level keys of the configSchema from librechat.yaml. */
-export type ConfigSection = string & keyof TCustomConfig;
-
-/** Section-level config capabilities derived from configSchema keys. */
-type ConfigSectionCapability = `manage:configs:${ConfigSection}` | `read:configs:${ConfigSection}`;
-
-/** Principal-scoped config assignment capabilities. */
-type ConfigAssignCapability = `assign:configs:${ConfigAssignTarget}`;
-
-/**
- * Union of all valid capability strings:
- * - Base capabilities from SystemCapabilities
- * - Section-level config capabilities (manage:configs:<section>, read:configs:<section>)
- * - Config assignment capabilities (assign:configs:<user|group|role>)
- */
-export type SystemCapability =
-  | BaseSystemCapability
-  | ConfigSectionCapability
-  | ConfigAssignCapability;
-
-/** UI grouping of capabilities for the admin panel's capability editor. */
-export type CapabilityCategory = {
-  key: string;
-  labelKey: string;
-  capabilities: BaseSystemCapability[];
-};
+export type {
+  BaseSystemCapability,
+  ConfigAssignTarget,
+  ConfigSection,
+  SystemCapability,
+  CapabilityCategory,
+} from '~/admin/capabilities';
 
 /* ── Admin API response types ───────────────────────────────────────── */
 
@@ -65,8 +39,116 @@ export type AdminConfigDeleteResponse = {
   success: boolean;
 };
 
-/** Audit action types for grant changes. */
-export type AuditAction = 'grant_assigned' | 'grant_removed';
+/* ── Audit log taxonomy ─────────────────────────────────────────────── */
+
+/**
+ * High-level domains an audit entry can belong to. The audit log is a
+ * general-purpose, append-only compliance record; new domains (agent runs,
+ * tool/MCP calls, config and permission changes, approvals) are added here as
+ * the surface grows, without reshaping the record.
+ */
+export const AUDIT_CATEGORIES = [
+  'grant',
+  'agent_run',
+  'tool_call',
+  'mcp',
+  'config',
+  'permission',
+  'auth',
+  'approval',
+] as const;
+export type AuditCategory = (typeof AUDIT_CATEGORIES)[number];
+
+/**
+ * Single source of truth for the audit-action enum. Actions are namespaced
+ * `<category>.<verb>` so the registry stays readable as it grows and every
+ * action maps unambiguously to a category. The Mongoose schema enum and the
+ * HTTP handler's whitelist both consume this constant so they cannot drift.
+ */
+export const AUDIT_ACTIONS = [
+  'grant.assigned',
+  'grant.removed',
+  'permission.insights_assigned',
+  'permission.insights_removed',
+] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+/** Maps each action to its category so writers never pass both. */
+export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
+  'grant.assigned': 'grant',
+  'grant.removed': 'grant',
+  'permission.insights_assigned': 'permission',
+  'permission.insights_removed': 'permission',
+};
+
+/** Result of the audited operation. Kept first-class instead of being encoded
+ * into the action so `allowed` vs `denied` vs `failed` is queryable. */
+export const AUDIT_OUTCOMES = ['success', 'failure', 'denied', 'pending'] as const;
+export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
+
+/** Coarse severity for SIEM routing and alerting. */
+export const AUDIT_SEVERITIES = ['info', 'warning', 'critical'] as const;
+export type AuditSeverity = (typeof AUDIT_SEVERITIES)[number];
+
+/**
+ * Who initiated the action. Non-human actors are first-class: a scheduled job,
+ * an agent acting autonomously, an internal service, or a webhook are all
+ * representable without forcing a `User` id.
+ */
+export const AUDIT_ACTOR_TYPES = [
+  'user',
+  'system',
+  'agent',
+  'service',
+  'schedule',
+  'webhook',
+  'api',
+] as const;
+export type AuditActorType = (typeof AUDIT_ACTOR_TYPES)[number];
+
+/** Primitive metadata values; event-specific payload is a flat string-keyed map
+ * (e.g. `{ capability }` for grants, `{ runId, triggerType }` for agent runs). */
+export type AuditMetadataValue = string | number | boolean | null;
+export type AuditMetadata = Record<string, AuditMetadataValue>;
+
+/** Denormalized actor identity captured at write time. */
+export type AuditActor = {
+  type: AuditActorType;
+  /** Stable id (user id, service-account id, agent id); absent for anonymous
+   * system events. */
+  id?: string;
+  /** Display name captured at write time so the record stays readable after the
+   * underlying principal is renamed or deleted. */
+  name: string;
+};
+
+/** Generic target of the action — not principal-locked, so it can describe a
+ * role, agent, MCP server, config section, etc. */
+export type AuditTarget = {
+  type: string;
+  id?: string;
+  name?: string;
+};
+
+/** Request context for forensic joins and SIEM correlation. */
+export type AuditContext = {
+  /** Correlation id (`x-request-id` / `x-correlation-id`). */
+  requestId?: string;
+  ip?: string;
+  userAgent?: string;
+  sessionId?: string;
+};
+
+/** Per-entry tamper-evidence surfaced to readers. The full chain is verifiable
+ * via the verify endpoint. */
+export type AuditIntegrity = {
+  /** Monotonic per-chain sequence number (1-based). */
+  seq: number;
+  /** SHA-256 of this entry's canonical content linked to `prevHash`. */
+  hash: string;
+  /** Hash of the previous entry in the chain (genesis links to a zero hash). */
+  prevHash: string;
+};
 
 /** SystemGrant document as returned by the admin API. */
 export type AdminSystemGrant = {
@@ -79,16 +161,22 @@ export type AdminSystemGrant = {
   expiresAt?: string;
 };
 
-/** Audit log entry for grant changes as returned by the admin API. */
+/** Audit log entry as returned by the admin API. */
 export type AdminAuditLogEntry = {
   id: string;
+  schemaVersion: number;
+  category: AuditCategory;
   action: AuditAction;
-  actorId: string;
-  actorName: string;
-  targetPrincipalType: PrincipalType;
-  targetPrincipalId: string;
-  targetName: string;
-  capability: string;
+  outcome: AuditOutcome;
+  severity: AuditSeverity;
+  actor: AuditActor;
+  target: AuditTarget;
+  metadata?: AuditMetadata;
+  context?: AuditContext;
+  /** Absent = platform-operator entry; present = tenant-scoped entry. */
+  tenantId?: string;
+  integrity: AuditIntegrity;
+  /** `createdAt` as an ISO 8601 string. */
   timestamp: string;
 };
 

@@ -19,7 +19,7 @@ export default function ImageVision() {
             {...field}
             checked={field.value}
             onCheckedChange={field.onChange}
-            className="relative float-left mr-2 inline-flex h-4 w-4 cursor-pointer"
+            className="relative float-left mr-2 inline-flex cursor-pointer"
             value={field.value.toString()}
             aria-labelledby={Capabilities.image_vision}
           />
@@ -27,7 +27,7 @@ export default function ImageVision() {
       />
       <label
         id={Capabilities.image_vision}
-        className="form-check-label text-token-text-primary w-full cursor-pointer"
+        className="form-check-label text-text-primary w-full cursor-pointer"
         htmlFor={Capabilities.image_vision}
         onClick={() =>
           setValue(Capabilities.image_vision, !getValues(Capabilities.image_vision), {

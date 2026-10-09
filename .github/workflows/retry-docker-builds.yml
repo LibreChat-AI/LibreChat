@@ -1,0 +1,136 @@
+name: Retry Failed Docker Builds
+
+on:
+  workflow_run:
+    workflows:
+      - Docker Build Smoke Tests
+      - Docker Compose Build Latest Main Image Tag (Manual Dispatch)
+      - Docker Dev Branch Images Build
+      - Docker Dev Images Build
+      - Docker Dev Staging Images Build
+      - Docker Images Build on Tag
+    types:
+      - completed
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  retry-failed-jobs:
+    name: Re-run failed jobs
+    if: >
+      (github.event.workflow_run.conclusion == 'failure' ||
+       github.event.workflow_run.conclusion == 'timed_out') &&
+      github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check failed run is still current
+        id: current-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+
+          encode_uri() {
+            jq -nr --arg value "$1" '$value | @uri'
+          }
+
+          workflow_runs_path="repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs"
+          query="per_page=1&exclude_pull_requests=false"
+
+          if [ "$WORKFLOW_NAME" = "Docker Images Build on Tag" ]; then
+            if [ -z "$HEAD_BRANCH" ]; then
+              echo "No tag name found for ${WORKFLOW_NAME}; skipping retry."
+              echo "should_retry=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! tag_ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$(encode_uri "$HEAD_BRANCH")" --jq '.object'); then
+              echo "Tag ${HEAD_BRANCH} no longer exists; skipping retry."
+              echo "should_retry=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            tag_object_type=$(jq -r '.type' <<< "$tag_ref")
+            tag_object_sha=$(jq -r '.sha' <<< "$tag_ref")
+
+            if [ "$tag_object_type" = "tag" ]; then
+              tag_head_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.object.sha')
+            else
+              tag_head_sha="$tag_object_sha"
+            fi
+
+            if [ "$tag_head_sha" = "$HEAD_SHA" ]; then
+              echo "should_retry=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Skipping retry for stale ${WORKFLOW_NAME} run ${RUN_ID}; tag ${HEAD_BRANCH} now points to ${tag_head_sha}."
+            echo "should_retry=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$RUN_EVENT" ]; then
+            query="${query}&event=$(encode_uri "$RUN_EVENT")"
+          fi
+
+          if [ -n "$HEAD_BRANCH" ]; then
+            query_with_ref="${query}&branch=$(encode_uri "$HEAD_BRANCH")"
+            latest_run=$(gh api "${workflow_runs_path}?${query_with_ref}" --jq '.workflow_runs[0] // empty')
+          else
+            latest_run=""
+          fi
+
+          if [ -z "$latest_run" ]; then
+            latest_run=$(gh api "${workflow_runs_path}?${query}" --jq '.workflow_runs[0] // empty')
+          fi
+
+          if [ -z "$latest_run" ]; then
+            echo "No matching workflow runs found for ${WORKFLOW_NAME}; skipping retry."
+            echo "should_retry=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest_run_id=$(jq -r '.id' <<< "$latest_run")
+          latest_head_sha=$(jq -r '.head_sha' <<< "$latest_run")
+
+          if [ "$latest_run_id" = "$RUN_ID" ] || [ "$latest_head_sha" = "$HEAD_SHA" ]; then
+            echo "should_retry=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Skipping retry for stale ${WORKFLOW_NAME} run ${RUN_ID}; newer run ${latest_run_id} is at ${latest_head_sha}."
+          echo "should_retry=false" >> "$GITHUB_OUTPUT"
+
+      - name: Re-run failed Docker jobs
+        if: steps.current-run.outputs.should_retry == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+
+          cancelled_jobs=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+            | jq -s '[.[].jobs[]? | select(.conclusion == "cancelled")] | length')
+
+          if [ "$cancelled_jobs" -gt 0 ]; then
+            endpoint="rerun"
+            echo "Found ${cancelled_jobs} cancelled job(s); re-running the full workflow run."
+          else
+            endpoint="rerun-failed-jobs"
+            echo "Re-running failed jobs only."
+          fi
+
+          echo "Retrying ${WORKFLOW_NAME} (run ${RUN_ID}, attempt ${RUN_ATTEMPT})."
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/${endpoint}"

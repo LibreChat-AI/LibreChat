@@ -1,9 +1,9 @@
 import mongoose, { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
+import type { IConfig } from '~/types';
 import { createConfigMethods } from './config';
 import configSchema from '~/schema/config';
-import type { IConfig } from '~/types';
 
 let mongoServer: MongoMemoryServer;
 let methods: ReturnType<typeof createConfigMethods>;
@@ -14,6 +14,7 @@ beforeAll(async () => {
   if (!mongoose.models.Config) {
     mongoose.model<IConfig>('Config', configSchema);
   }
+  await mongoose.models.Config.init();
   methods = createConfigMethods(mongoose);
 });
 
@@ -26,7 +27,7 @@ beforeEach(async () => {
   await mongoose.models.Config.deleteMany({});
 });
 
-describe('upsertConfig', () => {
+describe('upsertConfig tombstone preservation', () => {
   it('creates a new config document', async () => {
     const result = await methods.upsertConfig(
       PrincipalType.ROLE,
@@ -270,6 +271,137 @@ describe('patchConfigFields', () => {
     expect(result).toBeTruthy();
     expect(result!.principalId).toBe('newrole');
   });
+
+  it('clears tombstones for patched paths and their ancestors', async () => {
+    await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'mcpServers.github',
+      10,
+    );
+
+    const result = await methods.patchConfigFields(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { 'mcpServers.github.url': 'https://scoped.example.com' },
+      10,
+    );
+
+    expect(result!.tombstones).not.toContain('mcpServers.github');
+  });
+
+  it('does not clear a whole-section tombstone when patching a nested path', async () => {
+    await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'mcpServers',
+      10,
+    );
+
+    const result = await methods.patchConfigFields(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { 'mcpServers.github.url': 'https://scoped.example.com' },
+      10,
+    );
+
+    expect(result!.tombstones).toContain('mcpServers');
+  });
+});
+
+describe('tombstoneConfigField', () => {
+  it('adds a tombstone and removes the overridden subtree', async () => {
+    await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      {
+        mcpServers: {
+          github: {
+            type: 'streamable-http',
+            url: 'https://github.example.com',
+          },
+          slack: {
+            type: 'streamable-http',
+            url: 'https://slack.example.com',
+          },
+        },
+      },
+      10,
+    );
+
+    const result = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'mcpServers.github',
+      10,
+    );
+    const overrides = result!.overrides as Record<string, unknown>;
+    const mcpServers = overrides.mcpServers as Record<string, unknown>;
+
+    expect(result!.tombstones).toContain('mcpServers.github');
+    expect(mcpServers.github).toBeUndefined();
+    expect(mcpServers.slack).toEqual({
+      type: 'streamable-http',
+      url: 'https://slack.example.com',
+    });
+  });
+
+  it('creates a config if none exists', async () => {
+    const result = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'mcpServers.github',
+      10,
+    );
+
+    expect(result).toBeTruthy();
+    expect(result!.tombstones).toContain('mcpServers.github');
+  });
+
+  it('preserves inactive configs when adding a tombstone', async () => {
+    await methods.upsertConfig(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {}, 10);
+    await methods.toggleConfigActive(PrincipalType.ROLE, 'admin', false);
+
+    const result = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'mcpServers.github',
+      10,
+    );
+
+    expect(result!.isActive).toBe(false);
+    expect(result!.tombstones).toContain('mcpServers.github');
+  });
+});
+
+describe('upsertConfig', () => {
+  it('preserves tombstones when replacing overrides', async () => {
+    await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'mcpServers.github',
+      10,
+    );
+
+    const result = await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { interface: { modelSelect: false } },
+      10,
+    );
+
+    expect(result!.tombstones).toContain('mcpServers.github');
+  });
 });
 
 describe('unsetConfigField', () => {
@@ -296,6 +428,20 @@ describe('unsetConfigField', () => {
   it('returns null for non-existent config', async () => {
     const result = await methods.unsetConfigField(PrincipalType.ROLE, 'ghost', 'a.b');
     expect(result).toBeNull();
+  });
+
+  it('clears tombstones for the reset path and descendants', async () => {
+    await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'mcpServers.github',
+      10,
+    );
+
+    const result = await methods.unsetConfigField(PrincipalType.ROLE, 'admin', 'mcpServers.github');
+
+    expect(result!.tombstones).not.toContain('mcpServers.github');
   });
 });
 
@@ -329,5 +475,174 @@ describe('toggleConfigActive', () => {
 
     const result = await methods.toggleConfigActive(PrincipalType.ROLE, 'admin', true);
     expect(result!.isActive).toBe(true);
+  });
+});
+
+describe('expectEmpty atomic guard', () => {
+  it('deleteConfig with expectEmpty matches and deletes an empty doc', async () => {
+    await methods.upsertConfig(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {}, 10);
+
+    const result = await methods.deleteConfig(PrincipalType.ROLE, 'admin', undefined, {
+      expectEmpty: true,
+    });
+    expect(result).toBeTruthy();
+
+    const remaining = await mongoose.models.Config.countDocuments({});
+    expect(remaining).toBe(0);
+  });
+
+  it('deleteConfig with expectEmpty returns null when overrides is non-empty (doc preserved)', async () => {
+    await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { interface: { modelSelect: false } },
+      10,
+    );
+
+    const result = await methods.deleteConfig(PrincipalType.ROLE, 'admin', undefined, {
+      expectEmpty: true,
+    });
+    expect(result).toBeNull();
+
+    const remaining = await mongoose.models.Config.countDocuments({});
+    expect(remaining).toBe(1);
+  });
+
+  it('deleteConfig with expectEmpty returns null when tombstones is non-empty (doc preserved)', async () => {
+    await mongoose.models.Config.create({
+      principalType: PrincipalType.ROLE,
+      principalId: 'admin',
+      principalModel: PrincipalModel.ROLE,
+      overrides: {},
+      tombstones: ['endpoints.openai.apiKey'],
+      priority: 10,
+      isActive: true,
+      configVersion: 1,
+    });
+
+    const result = await methods.deleteConfig(PrincipalType.ROLE, 'admin', undefined, {
+      expectEmpty: true,
+    });
+    expect(result).toBeNull();
+
+    const remaining = await mongoose.models.Config.countDocuments({});
+    expect(remaining).toBe(1);
+  });
+
+  it('toggleConfigActive with expectEmpty matches and toggles an empty doc', async () => {
+    await methods.upsertConfig(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {}, 10);
+
+    const result = await methods.toggleConfigActive(PrincipalType.ROLE, 'admin', false, undefined, {
+      expectEmpty: true,
+    });
+    expect(result).toBeTruthy();
+    expect(result!.isActive).toBe(false);
+  });
+
+  it('toggleConfigActive with expectEmpty returns null on non-empty doc (isActive preserved)', async () => {
+    await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { interface: { modelSelect: false } },
+      10,
+    );
+
+    const result = await methods.toggleConfigActive(PrincipalType.ROLE, 'admin', false, undefined, {
+      expectEmpty: true,
+    });
+    expect(result).toBeNull();
+
+    const doc = await methods.findConfigByPrincipal(PrincipalType.ROLE, 'admin');
+    expect(doc!.isActive).toBe(true);
+  });
+
+  it('upsertConfig with expectEmpty inserts when no doc exists', async () => {
+    const result = await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      {},
+      10,
+      undefined,
+      { expectEmpty: true },
+    );
+    expect(result).toBeTruthy();
+    expect(result!.principalId).toBe('admin');
+  });
+
+  it('upsertConfig with expectEmpty updates an empty existing doc', async () => {
+    await methods.upsertConfig(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {}, 5);
+
+    const result = await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      {},
+      99,
+      undefined,
+      { expectEmpty: true },
+    );
+    expect(result).toBeTruthy();
+    expect(result!.priority).toBe(99);
+  });
+
+  it('upsertConfig with preservePriority inserts with the requested priority', async () => {
+    const result = await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      {},
+      10,
+      undefined,
+      { expectEmpty: true, preservePriority: true },
+    );
+
+    expect(result).toBeTruthy();
+    expect(result!.priority).toBe(10);
+  });
+
+  it('upsertConfig with preservePriority keeps an empty existing doc priority', async () => {
+    await methods.upsertConfig(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {}, 5);
+
+    const result = await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      {},
+      99,
+      undefined,
+      { expectEmpty: true, preservePriority: true },
+    );
+
+    expect(result).toBeTruthy();
+    expect(result!.priority).toBe(5);
+    expect(result!.configVersion).toBe(2);
+  });
+
+  it('upsertConfig with expectEmpty returns null when existing doc has non-empty overrides', async () => {
+    await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { interface: { modelSelect: false } },
+      10,
+    );
+
+    const result = await methods.upsertConfig(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      {},
+      99,
+      undefined,
+      { expectEmpty: true },
+    );
+    expect(result).toBeNull();
+
+    const doc = await methods.findConfigByPrincipal(PrincipalType.ROLE, 'admin');
+    expect(doc!.priority).toBe(10);
+    expect(Object.keys(doc!.overrides ?? {}).length).toBeGreaterThan(0);
   });
 });

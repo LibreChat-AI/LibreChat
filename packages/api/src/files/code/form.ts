@@ -7,11 +7,28 @@ export interface CodeEnvFileOptions {
   filepath?: string;
 }
 
-const CODE_ENV_SAFE_FILEPATH_PATTERN = /^[a-zA-Z0-9._\-/]+$/;
-const CODE_ENV_FILENAME_CONTROL_CHARS_PATTERN = /[\x00-\x1f\x7f]/g;
+const CODE_ENV_SAFE_ASCII_FILEPATH_CHAR_PATTERN = /^[a-zA-Z0-9._\-/]$/;
+const CODE_ENV_UNSAFE_UNICODE_FILEPATH_CHAR_PATTERN = /[^\p{L}\p{M}\p{N}\p{Emoji}\u200d._\-/]/u;
+
+function hasUnsafeCodeEnvFilepathChar(filepath: string): boolean {
+  for (const char of filepath) {
+    if (char.charCodeAt(0) <= 0x7f) {
+      if (!CODE_ENV_SAFE_ASCII_FILEPATH_CHAR_PATTERN.test(char)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (CODE_ENV_UNSAFE_UNICODE_FILEPATH_CHAR_PATTERN.test(char)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function isSafeCodeEnvFilepath(filepath: string): boolean {
-  if (!filepath || filepath.startsWith('/') || !CODE_ENV_SAFE_FILEPATH_PATTERN.test(filepath)) {
+  if (!filepath || filepath.startsWith('/') || hasUnsafeCodeEnvFilepathChar(filepath)) {
     return false;
   }
 
@@ -30,7 +47,10 @@ function getCodeEnvBasename(filepath: string): string {
 }
 
 function getSafeCodeEnvFilename(filename: string): string {
-  return filename.replace(CODE_ENV_FILENAME_CONTROL_CHARS_PATTERN, '_');
+  return Array.from(filename, (char) => {
+    const code = char.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f ? '_' : char;
+  }).join('');
 }
 
 /**
@@ -50,6 +70,20 @@ export function getCodeEnvFileOptions(filename: string): CodeEnvFileOptions {
   }
 
   return { filename: basename, filepath: normalized };
+}
+
+/** The destination encoded by the multipart adapter, including its safe-path fallback. */
+export function getCodeEnvUploadFilename(filename: string): string {
+  const options = getCodeEnvFileOptions(filename);
+  return options.filepath ?? options.filename;
+}
+
+/** Older upload strategies may omit the receipt name; use their shared multipart normalization. */
+export function getUploadedCodeEnvFilename(
+  uploaded: { filename?: string },
+  requestedFilename: string,
+): string {
+  return uploaded.filename || getCodeEnvUploadFilename(requestedFilename);
 }
 
 export function appendCodeEnvFile(

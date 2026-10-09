@@ -1,14 +1,12 @@
-import React, { useState } from 'react';
-import * as Menu from '@ariakit/react/menu';
-import { Ellipsis, PinOff } from 'lucide-react';
-import { DropdownPopup } from '@librechat/client';
+import React from 'react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { Agent, TModelSpec, TEndpointsConfig } from 'librechat-data-provider';
 import type { FavoriteModel } from '~/store/favorites';
 import SpecIcon from '~/components/Chat/Menus/Endpoints/components/SpecIcon';
+import UnpinButton from '~/components/Conversations/UnpinButton';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
 import { useFavorites, useLocalize } from '~/hooks';
-import { renderAgentAvatar, cn } from '~/utils';
+import { renderAgentAvatar } from '~/utils';
 
 type Kwargs = {
   model?: string;
@@ -19,6 +17,9 @@ type Kwargs = {
 
 type FavoriteItemBaseProps = {
   onRemoveFocus?: () => void;
+  /** Shortcuts an owning list handles for this row, declared here because this
+   *  is the element that takes focus. */
+  keyShortcuts?: string;
 };
 
 type AgentFavoriteProps = FavoriteItemBaseProps & {
@@ -31,6 +32,7 @@ type ModelFavoriteProps = FavoriteItemBaseProps & {
   type: 'model';
   item: FavoriteModel;
   onSelectEndpoint?: (endpoint?: EModelEndpoint | string | null, kwargs?: Kwargs) => void;
+  endpointsConfig?: TEndpointsConfig;
 };
 
 type SpecFavoriteProps = FavoriteItemBaseProps & {
@@ -38,15 +40,16 @@ type SpecFavoriteProps = FavoriteItemBaseProps & {
   item: TModelSpec;
   onSelectSpec?: (spec: TModelSpec) => void;
   endpointsConfig?: TEndpointsConfig;
+  /** Avatar of the agent the spec targets, used when the spec defines no icon of its own. */
+  agentAvatarURL?: string;
 };
 
 type FavoriteItemProps = AgentFavoriteProps | ModelFavoriteProps | SpecFavoriteProps;
 
 export default function FavoriteItem(props: FavoriteItemProps) {
-  const { onRemoveFocus } = props;
+  const { onRemoveFocus, keyShortcuts } = props;
   const localize = useLocalize();
   const { removeFavoriteAgent, removeFavoriteModel, removeFavoriteSpec } = useFavorites();
-  const [isPopoverActive, setIsPopoverActive] = useState(false);
 
   const handleSelect = () => {
     if (props.type === 'agent') {
@@ -59,7 +62,7 @@ export default function FavoriteItem(props: FavoriteItemProps) {
   };
 
   const handleClick = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('[data-testid="favorite-options-button"]')) {
+    if ((e.target as HTMLElement).closest('[data-testid="favorite-unpin-button"]')) {
       return;
     }
     handleSelect();
@@ -81,7 +84,6 @@ export default function FavoriteItem(props: FavoriteItemProps) {
     } else {
       removeFavoriteModel(props.item.model, props.item.endpoint);
     }
-    setIsPopoverActive(false);
     requestAnimationFrame(() => {
       onRemoveFocus?.();
     });
@@ -94,13 +96,23 @@ export default function FavoriteItem(props: FavoriteItemProps) {
     if (props.type === 'spec') {
       return (
         <div className="mr-2 h-5 w-5">
-          <SpecIcon currentSpec={props.item} endpointsConfig={props.endpointsConfig} />
+          <SpecIcon
+            currentSpec={props.item}
+            endpointsConfig={props.endpointsConfig}
+            agentAvatarURL={props.agentAvatarURL}
+          />
         </div>
       );
     }
     return (
       <div className="mr-2 h-5 w-5">
-        <MinimalIcon endpoint={props.item.endpoint} size={20} isCreatedByUser={false} />
+        <MinimalIcon
+          endpoint={props.item.endpoint}
+          endpointsConfig={props.endpointsConfig}
+          model={props.item.model}
+          size={20}
+          isCreatedByUser={false}
+        />
       </div>
     );
   };
@@ -119,25 +131,13 @@ export default function FavoriteItem(props: FavoriteItemProps) {
   }
   const ariaLabel = `${name} (${typeLabel})`;
 
-  const menuId = React.useId();
-
-  const dropdownItems = [
-    {
-      label: localize('com_ui_unpin'),
-      onClick: handleRemove,
-      icon: <PinOff className="h-4 w-4 text-text-secondary" />,
-    },
-  ];
-
   return (
     <div
       role="button"
       tabIndex={0}
       aria-label={ariaLabel}
-      className={cn(
-        'group relative flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm text-text-primary outline-none hover:bg-surface-active-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black dark:focus-visible:ring-white',
-        isPopoverActive ? 'bg-surface-active-alt' : '',
-      )}
+      aria-keyshortcuts={keyShortcuts}
+      className="group text-text-primary hover:bg-surface-nav-hover focus-visible:ring-text-primary relative flex w-full cursor-pointer items-center justify-between rounded-lg p-2 text-sm outline-hidden focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       data-testid="favorite-item"
@@ -147,45 +147,19 @@ export default function FavoriteItem(props: FavoriteItemProps) {
         <span className="truncate">{name}</span>
       </div>
 
-      <div
-        className={cn(
-          'absolute right-2 flex items-center',
-          isPopoverActive
-            ? 'pointer-events-auto opacity-100'
-            : 'pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100',
-        )}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <DropdownPopup
-          portal={true}
-          mountByState={true}
-          isOpen={isPopoverActive}
-          setIsOpen={setIsPopoverActive}
-          className="z-[125]"
-          trigger={
-            <Menu.MenuButton
-              className={cn(
-                'inline-flex h-7 w-7 items-center justify-center rounded-md border-none p-0 text-sm font-medium ring-ring-primary transition-all duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50',
-                isPopoverActive
-                  ? 'opacity-100'
-                  : 'opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 data-[open]:opacity-100',
-              )}
-              aria-label={localize('com_nav_convo_menu_options')}
-              data-testid="favorite-options-button"
-              onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.stopPropagation();
-              }}
-              onKeyDown={(e: React.KeyboardEvent<HTMLButtonElement>) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.stopPropagation();
-                }
-              }}
-            >
-              <Ellipsis className="icon-md text-text-secondary" aria-hidden={true} />
-            </Menu.MenuButton>
-          }
-          items={dropdownItems}
-          menuId={menuId}
+      {/* Inset by the same 4px the 28px control leaves above and below it in a
+          36px row, which is also where a pinned chat keeps its last control, so
+          the two row kinds line up. Clicks are swallowed here rather than
+          reaching the row underneath. */}
+      <div className="absolute right-1 flex items-center" onClick={(e) => e.stopPropagation()}>
+        <UnpinButton
+          testId="favorite-unpin-button"
+          onClick={handleRemove}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.stopPropagation();
+            }
+          }}
         />
       </div>
     </div>

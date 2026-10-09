@@ -1,3 +1,4 @@
+import type { CodeEnvRef, CodeEnvRefMap } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 /**
@@ -69,14 +70,14 @@ export interface ISkill {
   version: number;
   /**
    * Provenance of this skill's canonical definition.
-   * - `inline` — authored inside LibreChat (the only value phase 1 produces).
-   * - `github` / `notion` — reserved for phase 2+ external sync. Kept in the
-   *   enum so a future sync worker can populate it without a migration.
+   * - `inline` — authored inside LibreChat.
+   * - `github` — mirrored from a configured GitHub skill sync source.
+   * - `notion` — reserved for future external sync integrations.
    */
   source: 'inline' | 'github' | 'notion';
   /**
-   * Provenance payload keyed by `source`. Phase 2+ sync workers will store
-   * upstream identifiers (commit SHA, page id, etc.) here. Unused in phase 1.
+   * Provenance payload keyed by `source`, including upstream identifiers
+   * such as GitHub source id, path, and commit/blob SHAs.
    */
   sourceMetadata?: Record<string, unknown>;
   /** Denormalized count of associated `SkillFile` rows. Kept in sync by skill methods. */
@@ -116,7 +117,10 @@ export interface ISkillFile {
   file_id: string;
   filename: string;
   filepath: string;
+  storageKey?: string;
+  storageRegion?: string;
   source: string;
+  sourceMetadata?: Record<string, unknown>;
   mimeType: string;
   bytes: number;
   category: 'script' | 'reference' | 'asset' | 'other';
@@ -128,11 +132,12 @@ export interface ISkillFile {
   /** Set on first read. `true` prevents repeated storage reads for non-text files. */
   isBinary?: boolean;
   /**
-   * Code environment file identifier (`session_id/fileId`).
-   * Set after uploading to code env, used to check freshness on subsequent runs.
-   * Cleared when the skill file is re-uploaded to storage.
+   * Code-environment cache pointer. Set after uploading the file to
+   * codeapi, used to check freshness on subsequent primes. Cleared
+   * when the skill file is re-uploaded to storage.
    */
-  codeEnvIdentifier?: string;
+  codeEnvRef?: CodeEnvRef;
+  codeEnvRefs?: CodeEnvRefMap;
   createdAt?: Date;
   updatedAt?: Date;
 }

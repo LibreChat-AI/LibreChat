@@ -5,7 +5,10 @@
 export function normalizeHttpError(
   err: Error | { status?: number; message?: string } | unknown,
   fallbackStatus = 400,
-) {
+): {
+  status: number;
+  message: string;
+} {
   let status = fallbackStatus;
   if (err && typeof err === 'object' && 'status' in err && typeof err.status === 'number') {
     status = err.status;

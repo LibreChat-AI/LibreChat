@@ -1,4 +1,8 @@
-// const { fontFamily } = require('tailwindcss/defaultTheme');
+// Semantic colors are declared in
+// packages/client/src/theme/tokens.css, which src/style.css imports. The radius scale and the
+// sans and mono families are theme-owned properties mapped in src/style.css.
+const libreChatTailwindPreset = require('../packages/client/tailwind.preset.cjs');
+const compatibilityColors = require('../packages/client/tailwind.compat.cjs');
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
@@ -9,16 +13,10 @@ module.exports = {
   ],
   // darkMode: 'class',
   darkMode: ['class'],
+  presets: [libreChatTailwindPreset],
   theme: {
-    fontFamily: {
-      sans: ['Inter', 'sans-serif'],
-      mono: ['Roboto Mono', 'monospace'],
-    },
-    // fontFamily: {
-    //   sans: ['Söhne', 'sans-serif'],
-    //   mono: ['Söhne Mono', 'monospace'],
-    // },
     extend: {
+      colors: compatibilityColors,
       width: {
         authPageWidth: '370px',
       },
@@ -30,6 +28,18 @@ module.exports = {
         'accordion-up': {
           from: { height: 'var(--radix-accordion-content-height)' },
           to: { height: 0 },
+        },
+        /** Radix Collapsible exposes its own height variable, not the accordion one.
+         *  The fade rides along so the rows dissolve instead of squashing. Opening
+         *  decelerates into place; closing accelerates away, because a decelerating
+         *  close stalls over its final pixels before the unmount. */
+        'collapsible-down': {
+          from: { height: 0, opacity: 0 },
+          to: { height: 'var(--radix-collapsible-content-height)', opacity: 1 },
+        },
+        'collapsible-up': {
+          from: { height: 'var(--radix-collapsible-content-height)', opacity: 1 },
+          to: { height: 0, opacity: 0 },
         },
         'slide-in-right': {
           '0%': { transform: 'translateX(100%)' },
@@ -47,121 +57,51 @@ module.exports = {
           '0%': { transform: 'translateX(0)' },
           '100%': { transform: 'translateX(100%)' },
         },
+        'shortcut-shake': {
+          '0%, 100%': { transform: 'translateX(0)' },
+          '25%': { transform: 'translateX(-3px)' },
+          '75%': { transform: 'translateX(3px)' },
+        },
+        /** Named distinctly: `blink` is already taken by keyframes in style.css. */
+        'logo-blink': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0' },
+        },
+        'refresh-link-spin': {
+          from: { transform: 'rotate(0deg)' },
+          to: { transform: 'rotate(360deg)' },
+        },
+        'reset-spin': {
+          from: { transform: 'rotate(0deg)' },
+          to: { transform: 'rotate(-360deg)' },
+        },
       },
       animation: {
         'fade-in': 'fadeIn 0.5s ease-out forwards',
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
+        'collapsible-down': 'collapsible-down 0.3s cubic-bezier(0, 0, 0.2, 1)',
+        'collapsible-up': 'collapsible-up 0.2s cubic-bezier(0.4, 0, 1, 1)',
         'slide-in-right': 'slide-in-right 300ms cubic-bezier(0.25, 0.1, 0.25, 1)',
         'slide-in-left': 'slide-in-left 300ms cubic-bezier(0.25, 0.1, 0.25, 1)',
         'slide-out-left': 'slide-out-left 300ms cubic-bezier(0.25, 0.1, 0.25, 1)',
         'slide-out-right': 'slide-out-right 300ms cubic-bezier(0.25, 0.1, 0.25, 1)',
-      },
-      colors: {
-        gray: {
-          20: '#ececf1',
-          50: '#f7f7f8',
-          100: '#ececec',
-          200: '#e3e3e3',
-          300: '#cdcdcd',
-          400: '#999696',
-          500: '#595959',
-          600: '#424242',
-          700: '#2f2f2f',
-          800: '#212121',
-          850: '#171717',
-          900: '#0d0d0d',
-        },
-        green: {
-          50: '#f1f9f7',
-          100: '#def2ed',
-          200: '#a6e5d6',
-          300: '#6dc8b9',
-          400: '#41a79d',
-          500: '#10a37f',
-          550: '#349072',
-          600: '#126e6b',
-          700: '#0a4f53',
-          800: '#06373e',
-          900: '#031f29',
-        },
-        'brand-purple': 'var(--brand-purple)',
-        presentation: 'var(--presentation)',
-        'text-primary': 'var(--text-primary)',
-        'text-secondary': 'var(--text-secondary)',
-        'text-secondary-alt': 'var(--text-secondary-alt)',
-        'text-tertiary': 'var(--text-tertiary)',
-        'text-warning': 'var(--text-warning)',
-        'text-destructive': 'var(--text-destructive)',
-        'ring-primary': 'var(--ring-primary)',
-        'header-primary': 'var(--header-primary)',
-        'header-hover': 'var(--header-hover)',
-        'header-button-hover': 'var(--header-button-hover)',
-        'surface-active': 'var(--surface-active)',
-        'surface-active-alt': 'var(--surface-active-alt)',
-        'surface-hover': 'var(--surface-hover)',
-        'surface-hover-alt': 'var(--surface-hover-alt)',
-        'surface-primary': 'var(--surface-primary)',
-        'surface-primary-alt': 'var(--surface-primary-alt)',
-        'surface-primary-contrast': 'var(--surface-primary-contrast)',
-        'surface-secondary': 'var(--surface-secondary)',
-        'surface-secondary-alt': 'var(--surface-secondary-alt)',
-        'surface-tertiary': 'var(--surface-tertiary)',
-        'surface-tertiary-alt': 'var(--surface-tertiary-alt)',
-        'surface-dialog': 'var(--surface-dialog)',
-        'surface-submit': 'var(--surface-submit)',
-        'surface-submit-hover': 'var(--surface-submit-hover)',
-        'surface-destructive': 'var(--surface-destructive)',
-        'surface-destructive-hover': 'var(--surface-destructive-hover)',
-        'surface-chat': 'var(--surface-chat)',
-        'border-light': 'var(--border-light)',
-        'border-medium': 'var(--border-medium)',
-        'border-medium-alt': 'var(--border-medium-alt)',
-        'border-heavy': 'var(--border-heavy)',
-        'border-xheavy': 'var(--border-xheavy)',
-        'border-destructive': 'var(--border-destructive)',
-        /* These are test styles */
-        border: 'hsl(var(--border))',
-        input: 'hsl(var(--input))',
-        ['switch-unchecked']: 'hsl(var(--switch-unchecked))',
-        ring: 'hsl(var(--ring))',
-        background: 'hsl(var(--background))',
-        foreground: 'hsl(var(--foreground))',
-        primary: {
-          DEFAULT: 'hsl(var(--primary))',
-          foreground: 'hsl(var(--primary-foreground))',
-        },
-        secondary: {
-          DEFAULT: 'hsl(var(--secondary))',
-          foreground: 'hsl(var(--secondary-foreground))',
-        },
-        destructive: {
-          DEFAULT: 'hsl(var(--destructive))',
-          foreground: 'hsl(var(--destructive-foreground))',
-        },
-        muted: {
-          DEFAULT: 'hsl(var(--muted))',
-          foreground: 'hsl(var(--muted-foreground))',
-        },
-        accent: {
-          DEFAULT: 'hsl(var(--accent))',
-          foreground: 'hsl(var(--accent-foreground))',
-        },
-        card: {
-          DEFAULT: 'hsl(var(--card))',
-          foreground: 'hsl(var(--card-foreground))',
-        },
-      },
-      borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+        'shortcut-shake': 'shortcut-shake 0.25s ease-in-out',
+        'logo-blink': 'logo-blink 3s infinite',
+        'refresh-link-spin': 'refresh-link-spin 650ms cubic-bezier(0.42, 0, 0.58, 1)',
+        'reset-spin': 'reset-spin 500ms cubic-bezier(0.22, 1, 0.36, 1)',
       },
     },
   },
   plugins: [
-    require('tailwindcss-animate'),
-    require('tailwindcss-radix'),
+    // tailwindcss-radix is gone: its addVariant call produces nothing under Tailwind v4, and
+    // Radix sets the same attributes it keyed off, so callers use `data-[state=open]:` and
+    // `data-[disabled]:` directly. Its last caller was a table mockup nothing rendered, removed
+    // with this upgrade rather than migrated.
+    //
+    // tailwindcss-animate is not listed here: the published preset above registers it, and
+    // Tailwind runs a plugin once per registration, so naming it again would emit every
+    // `animate-in`/`fade-in-*` utility twice.
     // require('@tailwindcss/typography'),
   ],
 };

@@ -55,6 +55,7 @@ describe('formatAgentMessages', () => {
               name: 'search',
               args: '{"query":"weather"}',
               output: 'The weather is sunny.',
+              inputValidationError: true,
             },
           },
         ],
@@ -65,6 +66,7 @@ describe('formatAgentMessages', () => {
     expect(result[0]).toBeInstanceOf(AIMessage);
     expect(result[1]).toBeInstanceOf(ToolMessage);
     expect(result[0].tool_calls).toHaveLength(1);
+    expect(result[0].tool_calls[0]).not.toHaveProperty('inputValidationError');
     expect(result[1].tool_call_id).toBe('123');
   });
 
@@ -361,5 +363,318 @@ describe('formatAgentMessages', () => {
         item.type === ContentTypes.ERROR || JSON.stringify(item).includes('An error occurred'),
     );
     expect(hasErrorContent).toBe(false);
+  });
+
+  describe('Vertex Gemini thoughtSignatures persistence (issue #13006 follow-up)', () => {
+    const SIG_A = 'AY89a1/sigA==';
+    const SIG_B = 'AY89a1/sigB==';
+
+    it('restores additional_kwargs.signatures onto the AIMessage that owns the tool_call', () => {
+      const payload = [
+        { role: 'user', content: 'list files' },
+        {
+          role: 'assistant',
+          metadata: { thoughtSignatures: { t1: SIG_A } },
+          content: [
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: '', tool_call_ids: ['t1'] },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't1', name: 'bash', args: '{}', output: 'ok' },
+            },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+
+      const assistant = result.find((m) => m instanceof AIMessage);
+      expect(assistant.tool_calls).toHaveLength(1);
+      expect(assistant.additional_kwargs?.signatures).toEqual([SIG_A]);
+    });
+
+    it('attaches signatures per-step in multi-step tool turns (codex review fix)', () => {
+      // Reproduces the Codex P1 concern: an assistant turn where the agent
+      // loop made two LLM cycles, each emitting its own tool_call. Each step
+      // must carry its OWN signature on resume — Vertex validates per-step,
+      // not per-turn.
+      const payload = [
+        { role: 'user', content: 'do two things' },
+        {
+          role: 'assistant',
+          metadata: { thoughtSignatures: { t1: SIG_A, t2: SIG_B } },
+          content: [
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'first', tool_call_ids: ['t1'] },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't1', name: 'a', args: '{}', output: 'okA' },
+            },
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'second', tool_call_ids: ['t2'] },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't2', name: 'b', args: '{}', output: 'okB' },
+            },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      const aiMessages = result.filter((m) => m instanceof AIMessage);
+      expect(aiMessages).toHaveLength(2);
+      expect(aiMessages[0].tool_calls).toHaveLength(1);
+      expect(aiMessages[0].additional_kwargs?.signatures).toEqual([SIG_A]);
+      expect(aiMessages[1].tool_calls).toHaveLength(1);
+      expect(aiMessages[1].additional_kwargs?.signatures).toEqual([SIG_B]);
+    });
+
+    it('preserves tool_call ordering when signatures are partial', () => {
+      // Mixed case: only some tool_calls have stored signatures. Position-
+      // aligned array (with empty placeholders) lets the agents-side
+      // dispatcher attach the correct signature to the correct functionCall.
+      const payload = [
+        { role: 'user', content: 'two parallel tools' },
+        {
+          role: 'assistant',
+          metadata: { thoughtSignatures: { t2: SIG_B } },
+          content: [
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: '', tool_call_ids: ['t1', 't2'] },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't1', name: 'a', args: '{}', output: 'okA' },
+            },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't2', name: 'b', args: '{}', output: 'okB' },
+            },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      const assistant = result.find((m) => m instanceof AIMessage);
+      expect(assistant.additional_kwargs?.signatures).toEqual(['', SIG_B]);
+    });
+
+    it('no-op when metadata.thoughtSignatures is absent', () => {
+      const payload = [
+        { role: 'user', content: 'hi' },
+        {
+          role: 'assistant',
+          content: [
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: '', tool_call_ids: ['t1'] },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't1', name: 'bash', args: '{}', output: 'ok' },
+            },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      const assistant = result.find((m) => m instanceof AIMessage);
+      expect(assistant.additional_kwargs?.signatures).toBeUndefined();
+    });
+
+    it('no-op when assistant message has no tool_calls', () => {
+      const payload = [
+        { role: 'user', content: 'hi' },
+        {
+          role: 'assistant',
+          metadata: { thoughtSignatures: { t1: SIG_A } },
+          content: 'plain text reply',
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      const assistant = result.find((m) => m instanceof AIMessage);
+      expect(assistant.additional_kwargs?.signatures).toBeUndefined();
+    });
+
+    it('no-op when no tool_call has a corresponding stored signature', () => {
+      // The persisted map exists but addresses different tool_call_ids
+      // (e.g., the previous turn's signatures, somehow leaked). Don't
+      // fabricate empty arrays onto the AIMessage.
+      const payload = [
+        { role: 'user', content: 'hi' },
+        {
+          role: 'assistant',
+          metadata: { thoughtSignatures: { unrelated_id: SIG_A } },
+          content: [
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: '', tool_call_ids: ['t1'] },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't1', name: 'bash', args: '{}', output: 'ok' },
+            },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      const assistant = result.find((m) => m instanceof AIMessage);
+      expect(assistant.additional_kwargs?.signatures).toBeUndefined();
+    });
+  });
+
+  describe('steer content parts', () => {
+    it('replays a steer between tool steps as a standalone HumanMessage', () => {
+      const payload = [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: ContentTypes.TEXT,
+              [ContentTypes.TEXT]: 'Checking the weather.',
+              tool_call_ids: ['t1'],
+            },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't1', name: 'search', args: '{}', output: 'sunny' },
+            },
+            {
+              type: ContentTypes.STEER,
+              [ContentTypes.STEER]: 'also check tomorrow',
+              steerId: 's1',
+            },
+            {
+              type: ContentTypes.TEXT,
+              [ContentTypes.TEXT]: 'Checking tomorrow too.',
+              tool_call_ids: ['t2'],
+            },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 't2', name: 'search', args: '{}', output: 'rain' },
+            },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      expect(result.map((m) => m.constructor)).toEqual([
+        AIMessage,
+        ToolMessage,
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+      ]);
+      expect(result[2].content).toBe('also check tomorrow');
+      expect(result[2].additional_kwargs).toEqual({ source: 'steer' });
+      expect(result[3].tool_calls).toHaveLength(1);
+    });
+
+    it('flushes accumulated assistant text before the steer', () => {
+      const payload = [
+        {
+          role: 'assistant',
+          content: [
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'Some prose so far.' },
+            { type: ContentTypes.STEER, [ContentTypes.STEER]: 'change direction' },
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'New direction prose.' },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      expect(result.map((m) => m.constructor)).toEqual([AIMessage, HumanMessage, AIMessage]);
+      expect(result[0].content).toBe('Some prose so far.');
+      expect(result[1].content).toBe('change direction');
+      expect(result[2].content).toEqual([
+        { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'New direction prose.' },
+      ]);
+    });
+
+    it('handles a steer as the final content part', () => {
+      const payload = [
+        {
+          role: 'assistant',
+          content: [
+            { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'Answer text.' },
+            { type: ContentTypes.STEER, [ContentTypes.STEER]: 'trailing steer' },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      expect(result.map((m) => m.constructor)).toEqual([AIMessage, HumanMessage]);
+      expect(result[1].content).toBe('trailing steer');
+    });
+
+    it('prefers stamped media content for multimodal steers', () => {
+      const media = [
+        { type: 'text', text: 'see the chart' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,abc', detail: 'auto' } },
+      ];
+      const payload = [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: ContentTypes.STEER,
+              [ContentTypes.STEER]: 'see the chart',
+              files: [{ file_id: 'f1' }],
+              media,
+            },
+          ],
+        },
+      ];
+
+      const result = formatAgentMessages(payload);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toBeInstanceOf(HumanMessage);
+      expect(result[0].content).toEqual(media);
+    });
+  });
+
+  describe('promptless sends', () => {
+    const PLACEHOLDER = [{ type: 'text', text: '(no text)' }];
+
+    it('should stand in for a replayed promptless turn instead of a blank block', () => {
+      const result = formatAgentMessages([
+        { role: 'user', content: '' },
+        { role: 'assistant', content: 'Hi' },
+      ]);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toBeInstanceOf(HumanMessage);
+      expect(result[0].content).toEqual(PLACEHOLDER);
+      expect(result[0].content).not.toContainEqual(
+        expect.objectContaining({ type: 'text', text: '' }),
+      );
+    });
+
+    it('should keep the turn so assistant messages never become adjacent', () => {
+      const result = formatAgentMessages([
+        { role: 'assistant', content: 'first' },
+        { role: 'user', content: '' },
+        { role: 'assistant', content: 'second' },
+      ]);
+
+      expect(result).toHaveLength(3);
+      expect(result[1]).toBeInstanceOf(HumanMessage);
+    });
+
+    it('should not emit a blank text block for a whitespace-only user message', () => {
+      const result = formatAgentMessages([{ role: 'user', content: '   ' }]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toEqual(PLACEHOLDER);
+    });
+
+    it('should keep a promptless user message that still carries its images', () => {
+      const image_urls = [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } }];
+      const result = formatAgentMessages([{ role: 'user', content: '', image_urls }]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toEqual(image_urls);
+      expect(result[0].content).not.toContainEqual(
+        expect.objectContaining({ type: 'text', text: '' }),
+      );
+    });
+
+    it('should still format a user message that has text', () => {
+      const result = formatAgentMessages([{ role: 'user', content: 'hello' }]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toBeInstanceOf(HumanMessage);
+      expect(result[0].content).toEqual([{ type: 'text', text: 'hello' }]);
+    });
   });
 });

@@ -1,14 +1,53 @@
+const dataSchemas = require('@librechat/data-schemas');
+const { logger } = dataSchemas;
 const { Constants, actionDelimiter, actionDomainSeparator } = require('librechat-data-provider');
-const { domainParser, legacyDomainEncode, validateAndUpdateTool } = require('./ActionService');
+
+const mockEmitChunk = jest.fn();
+const mockFindToken = jest.fn();
+const mockActionFlowManager = {
+  createFlowWithHandler: jest.fn(),
+  createFlow: jest.fn(),
+};
 
 jest.mock('keyv');
 
+jest.mock('jsonwebtoken', () => ({
+  sign: jest.fn(() => 'signed-state'),
+}));
+
+jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
+  sleep: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
+  validateActionOAuthMetadata: jest.fn().mockResolvedValue(undefined),
+  GenerationJobManager: {
+    emitChunk: (...args) => mockEmitChunk(...args),
+  },
+}));
+
 jest.mock('~/models', () => ({
   getActions: jest.fn(),
+  findToken: (...args) => mockFindToken(...args),
+  updateToken: jest.fn(),
+  createToken: jest.fn(),
   deleteActions: jest.fn(),
+  deleteAssistant: jest.fn(),
+}));
+
+jest.mock('~/config', () => ({
+  getActionFlowStateManager: jest.fn(() => mockActionFlowManager),
 }));
 
 const { getActions } = require('~/models');
+const {
+  createActionTool,
+  domainParser,
+  legacyDomainEncode,
+  validateAndUpdateTool,
+} = require('./ActionService');
 
 let mockDomainCache = {};
 jest.mock('~/cache/getLogStores', () => {
@@ -24,6 +63,10 @@ jest.mock('~/cache/getLogStores', () => {
 beforeEach(() => {
   mockDomainCache = {};
   getActions.mockReset();
+  mockEmitChunk.mockReset();
+  mockFindToken.mockReset();
+  mockActionFlowManager.createFlowWithHandler.mockReset();
+  mockActionFlowManager.createFlow.mockReset();
 });
 
 const SEP = actionDomainSeparator;
@@ -199,6 +242,390 @@ describe('legacyDomainEncode', () => {
   it('produces same result as new domainParser for short bare hostnames', async () => {
     const domain = 'swapi.tech';
     expect(legacyDomainEncode(domain)).toBe(await domainParser(domain, true));
+  });
+});
+
+describe('createActionTool OAuth events', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = { ...originalEnv, DOMAIN_CLIENT: 'https://client.example/ui/' };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it.each([
+    [undefined, 'http://localhost:3080'],
+    ['https://server.example', 'https://server.example'],
+    ['https://server.example/', 'https://server.example'],
+    ['https://server.example///', 'https://server.example'],
+    ['https://server.example/chat', 'https://server.example/chat'],
+    ['https://server.example/chat/', 'https://server.example/chat'],
+    ['https://server.example/chat///', 'https://server.example/chat'],
+    ['https://server.example/apps/librechat/', 'https://server.example/apps/librechat'],
+  ])(
+    'fences OAuth events and uses one canonical callback for %s',
+    async (domainServer, baseUrl) => {
+      if (domainServer === undefined) {
+        delete process.env.DOMAIN_SERVER;
+      } else {
+        process.env.DOMAIN_SERVER = domainServer;
+      }
+      const streamId = 'action-oauth-stream';
+      const jobCreatedAt = 1234;
+      const preparedExecutor = {
+        setAuth: jest.fn().mockResolvedValue(undefined),
+        execute: jest.fn().mockResolvedValue({ data: { ok: true } }),
+      };
+      const requestBuilder = {
+        createExecutor: jest.fn(() => ({
+          setParams: jest.fn(() => preparedExecutor),
+        })),
+      };
+      let authorizationUrl;
+      mockEmitChunk.mockImplementation(async (_streamId, event) => {
+        authorizationUrl ??= event.data?.delta?.auth;
+      });
+      mockFindToken.mockResolvedValue(null);
+      mockActionFlowManager.createFlowWithHandler.mockImplementation(
+        async (_flowId, _type, handler) => handler(),
+      );
+      mockActionFlowManager.createFlow.mockResolvedValue({
+        access_token: 'access-token',
+        refresh_token: 'refresh-token',
+        expires_in: 3600,
+      });
+
+      const actionTool = await createActionTool({
+        userId: 'action-user',
+        res: {},
+        action: {
+          action_id: 'action-1',
+          metadata: {
+            domain: 'https://api.example.com',
+            oauth_client_id: 'client-id',
+            auth: {
+              type: 'oauth',
+              authorization_url: 'https://auth.example.com/authorize',
+              client_url: 'https://auth.example.com/token',
+              scope: 'read',
+            },
+          },
+        },
+        requestBuilder,
+        encrypted: {
+          oauth_client_id: 'encrypted-client-id',
+          oauth_client_secret: 'encrypted-client-secret',
+        },
+        streamId,
+        jobCreatedAt,
+      });
+
+      await actionTool._call(
+        {},
+        {
+          metadata: {
+            thread_id: 'thread-1',
+            run_id: 'run-1',
+          },
+          toolCall: {
+            id: 'tool-call-1',
+            stepId: 'step-1',
+            name: 'action-tool',
+            type: 'tool_call',
+          },
+        },
+      );
+
+      const expectedRedirectUri = `${baseUrl}/api/actions/action-1/oauth/callback`;
+      const [, , flowMetadata] = mockActionFlowManager.createFlow.mock.calls[0];
+      expect(flowMetadata.redirect_uri).toBe(expectedRedirectUri);
+      expect(new URL(authorizationUrl).searchParams.get('redirect_uri')).toBe(expectedRedirectUri);
+      expect(mockEmitChunk).toHaveBeenCalledTimes(2);
+      for (const [emittedStreamId, , options] of mockEmitChunk.mock.calls) {
+        expect(emittedStreamId).toBe(streamId);
+        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
+      }
+    },
+  );
+});
+
+describe('createActionTool OAuth flow cancellation', () => {
+  /**
+   * `monitorFlow` deletes the flow key when a waiter's signal aborts. The
+   * authorization and refresh flows are keyed `userId:action_id`, so a second
+   * run for the same action joins the very same record and the browser's OAuth
+   * callback reads its metadata to exchange the code — one Stop must not strand
+   * either of them. Only the run-scoped login flow may carry the run signal.
+   */
+  it('withholds the run signal from flows shared beyond this run', async () => {
+    const preparedExecutor = {
+      setAuth: jest.fn().mockResolvedValue(undefined),
+      execute: jest.fn().mockResolvedValue({ data: { ok: true } }),
+    };
+    const requestBuilder = {
+      createExecutor: jest.fn(() => ({
+        setParams: jest.fn(() => preparedExecutor),
+      })),
+    };
+    mockFindToken.mockResolvedValue(null);
+    mockActionFlowManager.createFlowWithHandler.mockImplementation(
+      async (_flowId, _type, handler) => handler(),
+    );
+    mockActionFlowManager.createFlow.mockResolvedValue({
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_in: 3600,
+    });
+
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res: {},
+      action: {
+        action_id: 'action-1',
+        metadata: {
+          domain: 'https://api.example.com',
+          oauth_client_id: 'client-id',
+          auth: {
+            type: 'oauth',
+            authorization_url: 'https://auth.example.com/authorize',
+            client_url: 'https://auth.example.com/token',
+            scope: 'read',
+          },
+        },
+      },
+      requestBuilder,
+      encrypted: {
+        oauth_client_id: 'encrypted-client-id',
+        oauth_client_secret: 'encrypted-client-secret',
+      },
+      streamId: 'action-oauth-stream',
+      jobCreatedAt: 1234,
+    });
+
+    const signal = new AbortController().signal;
+    await actionTool._call(
+      {},
+      {
+        signal,
+        metadata: { thread_id: 'thread-1', run_id: 'run-1' },
+        toolCall: {
+          id: 'tool-call-1',
+          stepId: 'step-1',
+          name: 'action-tool',
+          type: 'tool_call',
+        },
+      },
+    );
+
+    const [sharedFlowId, sharedType, , sharedSignal] =
+      mockActionFlowManager.createFlow.mock.calls[0];
+    expect(sharedFlowId).toBe('action-user:action-1');
+    expect(sharedType).toBe('oauth');
+    expect(sharedSignal).toBeUndefined();
+
+    const loginCall = mockActionFlowManager.createFlowWithHandler.mock.calls.find(
+      ([, type]) => type === 'oauth_login',
+    );
+    expect(loginCall[0]).toBe('action-user:action-1:oauth_login:thread-1:run-1');
+    expect(loginCall[3]).toBe(signal);
+  });
+});
+
+describe('createActionTool OAuth stop behavior', () => {
+  /**
+   * Detaching is not the same as ignoring the Stop: the shared flow survives for
+   * other waiters and the browser callback, but a late authorization must not
+   * resume this call into the API request it was gating.
+   */
+  it('does not run the API request when the run is stopped mid-OAuth', async () => {
+    const preparedExecutor = {
+      setAuth: jest.fn().mockResolvedValue(undefined),
+      execute: jest.fn().mockResolvedValue({ data: { ok: true } }),
+    };
+    const requestBuilder = {
+      createExecutor: jest.fn(() => ({
+        setParams: jest.fn(() => preparedExecutor),
+      })),
+    };
+    mockFindToken.mockResolvedValue(null);
+    mockActionFlowManager.createFlowWithHandler.mockImplementation(
+      async (_flowId, _type, handler) => handler(),
+    );
+
+    /** The shared flow completes only after the user has pressed Stop, exactly
+     *  as it would when the browser callback lands late. */
+    let completeFlow;
+    mockActionFlowManager.createFlow.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          completeFlow = resolve;
+        }),
+    );
+
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res: {},
+      action: {
+        action_id: 'action-1',
+        metadata: {
+          domain: 'https://api.example.com',
+          oauth_client_id: 'client-id',
+          auth: {
+            type: 'oauth',
+            authorization_url: 'https://auth.example.com/authorize',
+            client_url: 'https://auth.example.com/token',
+            scope: 'read',
+          },
+        },
+      },
+      requestBuilder,
+      encrypted: {
+        oauth_client_id: 'encrypted-client-id',
+        oauth_client_secret: 'encrypted-client-secret',
+      },
+      streamId: 'action-oauth-stream',
+      jobCreatedAt: 1234,
+    });
+
+    const controller = new AbortController();
+    const call = actionTool._call(
+      {},
+      {
+        signal: controller.signal,
+        metadata: { thread_id: 'thread-1', run_id: 'run-1' },
+        toolCall: {
+          id: 'tool-call-1',
+          stepId: 'step-1',
+          name: 'action-tool',
+          type: 'tool_call',
+        },
+      },
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+
+    await expect(call).rejects.toThrow();
+
+    completeFlow({
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      expires_in: 3600,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(preparedExecutor.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('createActionTool OAuth abort identity', () => {
+  const oauthAction = {
+    action_id: 'action-1',
+    metadata: {
+      domain: 'https://api.example.com',
+      oauth_client_id: 'client-id',
+      auth: {
+        type: 'oauth',
+        authorization_url: 'https://auth.example.com/authorize',
+        client_url: 'https://auth.example.com/token',
+        scope: 'read',
+      },
+    },
+  };
+
+  function oauthToolFixture() {
+    const preparedExecutor = {
+      setAuth: jest.fn().mockResolvedValue(undefined),
+      execute: jest.fn().mockResolvedValue({ data: { ok: true } }),
+    };
+    return {
+      preparedExecutor,
+      requestBuilder: {
+        createExecutor: jest.fn(() => ({
+          setParams: jest.fn(() => preparedExecutor),
+        })),
+      },
+    };
+  }
+
+  function callConfig(signal) {
+    return {
+      signal,
+      metadata: { thread_id: 'thread-1', run_id: 'run-1' },
+      toolCall: { id: 'tool-call-1', stepId: 'step-1', name: 'action-tool', type: 'tool_call' },
+    };
+  }
+
+  it('does not request a fresh login when a stopped run detaches from a refresh', async () => {
+    const { requestBuilder, preparedExecutor } = oauthToolFixture();
+    /** No access token but a live refresh token: the branch that waits on the
+     *  shared refresh flow rather than opening a login. */
+    mockFindToken.mockImplementation(async ({ type }) =>
+      type === 'oauth_refresh' ? { token: 'encrypted-refresh-token' } : null,
+    );
+    jest.spyOn(dataSchemas, 'decryptV2').mockResolvedValue('refresh-token');
+
+    /** The refresh never settles; the run stops while it is pending. */
+    mockActionFlowManager.createFlowWithHandler.mockImplementation(() => new Promise(() => {}));
+    mockActionFlowManager.createFlow.mockImplementation(() => new Promise(() => {}));
+
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res: {},
+      action: oauthAction,
+      requestBuilder,
+      encrypted: {
+        oauth_client_id: 'encrypted-client-id',
+        oauth_client_secret: 'encrypted-client-secret',
+      },
+    });
+
+    const controller = new AbortController();
+    const call = actionTool._call({}, callConfig(controller.signal));
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await expect(call).rejects.toThrow();
+
+    const loginFlows = mockActionFlowManager.createFlowWithHandler.mock.calls.filter(
+      ([, type]) => type === 'oauth_login',
+    );
+    expect(loginFlows).toHaveLength(0);
+    expect(mockEmitChunk).not.toHaveBeenCalled();
+    expect(preparedExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it('propagates the abort instead of reporting a failed API call', async () => {
+    const { requestBuilder } = oauthToolFixture();
+    mockFindToken.mockResolvedValue(null);
+    mockActionFlowManager.createFlowWithHandler.mockImplementation(
+      async (_flowId, _type, handler) => handler(),
+    );
+    mockActionFlowManager.createFlow.mockImplementation(() => new Promise(() => {}));
+
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res: {},
+      action: oauthAction,
+      requestBuilder,
+      encrypted: {
+        oauth_client_id: 'encrypted-client-id',
+        oauth_client_secret: 'encrypted-client-secret',
+      },
+      streamId: 'action-oauth-stream',
+      jobCreatedAt: 1234,
+    });
+
+    const controller = new AbortController();
+    const call = actionTool._call({}, callConfig(controller.signal));
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+
+    await expect(call).rejects.toBe(controller.signal.reason);
+    expect(logger.error).not.toHaveBeenCalledWith(
+      'Failed to authenticate OAuth tool',
+      expect.anything(),
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 import { Schema } from 'mongoose';
 import type { IGroup } from '~/types';
 
-const groupSchema = new Schema<IGroup>(
+const groupSchema: Schema<IGroup> = new Schema<IGroup>(
   {
     name: {
       type: String,
@@ -56,6 +56,6 @@ groupSchema.index(
     partialFilterExpression: { idOnTheSource: { $exists: true } },
   },
 );
-groupSchema.index({ memberIds: 1 });
+groupSchema.index({ memberIds: 1, tenantId: 1 });
 
 export default groupSchema;

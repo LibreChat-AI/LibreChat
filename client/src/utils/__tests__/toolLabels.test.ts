@@ -1,3 +1,4 @@
+import { Constants } from 'librechat-data-provider';
 import { parseToolName, getToolDisplayLabel, TOOL_FRIENDLY_NAME_KEYS } from '../toolLabels';
 
 describe('parseToolName', () => {
@@ -59,6 +60,34 @@ describe('getToolDisplayLabel', () => {
     expect(getToolDisplayLabel('web_search', identityLocalize)).toBe(
       TOOL_FRIENDLY_NAME_KEYS.web_search,
     );
+  });
+
+  it('returns the code translation key for bash PTC tool calls', () => {
+    expect(getToolDisplayLabel(Constants.BASH_PROGRAMMATIC_TOOL_CALLING, identityLocalize)).toBe(
+      TOOL_FRIENDLY_NAME_KEYS[Constants.BASH_PROGRAMMATIC_TOOL_CALLING],
+    );
+  });
+
+  it('returns the code translation key for bash_tool calls', () => {
+    expect(getToolDisplayLabel('bash_tool', identityLocalize)).toBe(
+      TOOL_FRIENDLY_NAME_KEYS.bash_tool,
+    );
+  });
+
+  it('uses the background task label for the native poll tool, not an MCP tool with that name', () => {
+    expect(getToolDisplayLabel(Constants.CHECK_BACKGROUND_TASK, identityLocalize)).toBe(
+      'com_ui_background_tasks',
+    );
+    expect(
+      getToolDisplayLabel(
+        `${Constants.CHECK_BACKGROUND_TASK}${Constants.mcp_delimiter}remote`,
+        identityLocalize,
+      ),
+    ).toBe('remote');
+  });
+
+  it.each(['set_memory', 'delete_memory'])('returns a friendly memory label for %s', (toolName) => {
+    expect(getToolDisplayLabel(toolName, identityLocalize)).toBe(TOOL_FRIENDLY_NAME_KEYS[toolName]);
   });
 
   it('returns the raw name for an unknown native tool', () => {

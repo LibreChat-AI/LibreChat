@@ -2,177 +2,114 @@ import React, { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { OGDialog, OGDialogTemplate } from '@librechat/client';
 import {
-  ImageUpIcon,
   FileSearch,
+  ImageUpIcon,
   FileType2Icon,
   FileImageIcon,
   TerminalSquareIcon,
 } from 'lucide-react';
 import {
+  Constants,
   Providers,
-  inferMimeType,
   EToolResources,
   EModelEndpoint,
-  isBedrockDocumentType,
-  defaultAgentCapabilities,
   isDocumentSupportedProvider,
 } from 'librechat-data-provider';
 import {
-  useAgentToolPermissions,
-  useAgentCapabilities,
-  useGetAgentsConfig,
   useLocalize,
+  useUploadOptions,
+  useFileUploadRouter,
+  useAgentToolPermissions,
 } from '~/hooks';
+import { useDragDropContext, useUploadModalContext } from '~/Providers';
 import { ephemeralAgentByConvoId } from '~/store';
-import { useDragDropContext } from '~/Providers';
 
-interface DragDropModalProps {
-  onOptionSelect: (option: EToolResources | undefined) => void;
-  files: File[];
-  isVisible: boolean;
-  setShowModal: (showModal: boolean) => void;
-}
-
-interface FileOption {
-  label: string;
-  value?: EToolResources;
-  icon: React.JSX.Element;
-  condition?: boolean;
-}
-
-const DragDropModal = ({ onOptionSelect, setShowModal, files, isVisible }: DragDropModalProps) => {
+const DragDropModal = () => {
   const localize = useLocalize();
-  const { agentsConfig } = useGetAgentsConfig();
-  /** TODO: Ephemeral Agent Capabilities
-   * Allow defining agent capabilities on a per-endpoint basis
-   * Use definition for agents endpoint for ephemeral agents
-   * */
-  const capabilities = useAgentCapabilities(agentsConfig?.capabilities ?? defaultAgentCapabilities);
+  const { isVisible, files, closeModal } = useUploadModalContext();
   const { conversationId, agentId, endpoint, endpointType, useResponsesApi } = useDragDropContext();
-  const ephemeralAgent = useRecoilValue(ephemeralAgentByConvoId(conversationId ?? ''));
-  const { fileSearchAllowedByAgent, codeAllowedByAgent, provider } = useAgentToolPermissions(
-    agentId,
-    ephemeralAgent,
+  const ephemeralAgent = useRecoilValue(
+    ephemeralAgentByConvoId(conversationId ?? Constants.NEW_CONVO),
   );
+  const { provider } = useAgentToolPermissions(agentId, ephemeralAgent);
+  const { getOptions } = useUploadOptions();
+  const routeFiles = useFileUploadRouter();
 
-  const options = useMemo(() => {
-    const _options: FileOption[] = [];
-    let currentProvider = provider || endpoint;
-
-    // This will be removed in a future PR to formally normalize Providers comparisons to be case insensitive
-    if (currentProvider?.toLowerCase() === Providers.OPENROUTER) {
+  const isProviderDocSupported = useMemo(() => {
+    let currentProvider = (provider || endpoint) ?? '';
+    if (currentProvider.toLowerCase() === Providers.OPENROUTER) {
       currentProvider = Providers.OPENROUTER;
     }
-
-    /** Helper to get inferred MIME type for a file */
-    const getFileType = (file: File) => inferMimeType(file.name, file.type);
-
     const isAzureWithResponsesApi =
-      currentProvider === EModelEndpoint.azureOpenAI && useResponsesApi;
-
-    // Check if provider supports document upload
-    if (
+      (currentProvider === EModelEndpoint.azureOpenAI ||
+        endpointType === EModelEndpoint.azureOpenAI) &&
+      useResponsesApi === true;
+    return (
       isDocumentSupportedProvider(endpointType) ||
       isDocumentSupportedProvider(currentProvider) ||
       isAzureWithResponsesApi
-    ) {
-      const supportsImageDocVideoAudio =
-        currentProvider === EModelEndpoint.google || currentProvider === Providers.OPENROUTER;
-      const isBedrock =
-        currentProvider === Providers.BEDROCK || endpointType === EModelEndpoint.bedrock;
+    );
+  }, [provider, endpoint, endpointType, useResponsesApi]);
 
-      const isValidProviderFile = (file: File): boolean => {
-        const type = getFileType(file);
-        if (supportsImageDocVideoAudio) {
-          return (
-            type?.startsWith('image/') ||
-            type?.startsWith('video/') ||
-            type?.startsWith('audio/') ||
-            type === 'application/pdf'
-          );
-        }
-        if (isBedrock) {
-          return type?.startsWith('image/') || isBedrockDocumentType(type);
-        }
-        return type?.startsWith('image/') || type === 'application/pdf';
-      };
+  const getOptionMeta = (value: EToolResources | undefined) => {
+    switch (value) {
+      case EToolResources.file_search:
+        return {
+          label: localize('com_ui_upload_file_search'),
+          icon: <FileSearch className="icon-md" />,
+        };
+      case EToolResources.execute_code:
+        return {
+          label: localize('com_ui_upload_code_environment'),
+          icon: <TerminalSquareIcon className="icon-md" />,
+        };
+      case EToolResources.context:
+        return {
+          label: localize('com_ui_upload_ocr_text'),
+          icon: <FileType2Icon className="icon-md" />,
+        };
+      default:
+        return isProviderDocSupported
+          ? {
+              label: localize('com_ui_upload_provider'),
+              icon: <FileImageIcon className="icon-md" />,
+            }
+          : {
+              label: localize('com_ui_upload_image_input'),
+              icon: <ImageUpIcon className="icon-md" />,
+            };
+    }
+  };
 
-      const validFileTypes = files.every(isValidProviderFile);
-
-      _options.push({
-        label: localize('com_ui_upload_provider'),
-        value: undefined,
-        icon: <FileImageIcon className="icon-md" />,
-        condition: validFileTypes,
-      });
-    } else {
-      // Only show image upload option if all files are images and provider doesn't support documents
-      _options.push({
-        label: localize('com_ui_upload_image_input'),
-        value: undefined,
-        icon: <ImageUpIcon className="icon-md" />,
-        condition: files.every((file) => getFileType(file)?.startsWith('image/')),
-      });
-    }
-    if (capabilities.fileSearchEnabled && fileSearchAllowedByAgent) {
-      _options.push({
-        label: localize('com_ui_upload_file_search'),
-        value: EToolResources.file_search,
-        icon: <FileSearch className="icon-md" />,
-      });
-    }
-    if (capabilities.codeEnabled && codeAllowedByAgent) {
-      _options.push({
-        label: localize('com_ui_upload_code_files'),
-        value: EToolResources.execute_code,
-        icon: <TerminalSquareIcon className="icon-md" />,
-      });
-    }
-    if (capabilities.contextEnabled) {
-      _options.push({
-        label: localize('com_ui_upload_ocr_text'),
-        value: EToolResources.context,
-        icon: <FileType2Icon className="icon-md" />,
-      });
-    }
-
-    return _options;
-  }, [
-    files,
-    localize,
-    provider,
-    endpoint,
-    endpointType,
-    capabilities,
-    useResponsesApi,
-    codeAllowedByAgent,
-    fileSearchAllowedByAgent,
-  ]);
+  const options = useMemo(() => getOptions(files), [getOptions, files]);
 
   if (!isVisible) {
     return null;
   }
 
   return (
-    <OGDialog open={isVisible} onOpenChange={setShowModal}>
+    <OGDialog open={isVisible} onOpenChange={(open) => !open && closeModal()}>
       <OGDialogTemplate
         title={localize('com_ui_upload_type')}
-        className="w-11/12 sm:w-[440px] md:w-[400px] lg:w-[360px]"
+        className="w-11/12 sm:w-[min(27.5rem,90vw)] md:w-[min(25rem,90vw)] lg:w-[min(22.5rem,90vw)]"
         main={
           <div className="flex flex-col gap-2">
-            {options.map(
-              (option, index) =>
-                option.condition !== false && (
-                  <button
-                    key={index}
-                    onClick={() => onOptionSelect(option.value)}
-                    className="flex items-center gap-2 rounded-lg p-2 hover:bg-surface-active-alt"
-                  >
-                    {option.icon}
-                    <span>{option.label}</span>
-                  </button>
-                ),
-            )}
+            {options.map((value) => {
+              const { label, icon } = getOptionMeta(value);
+              return (
+                <button
+                  key={value ?? 'provider'}
+                  onClick={() => {
+                    routeFiles(files, value);
+                    closeModal();
+                  }}
+                  className="hover:bg-surface-active-alt flex items-center gap-2 rounded-lg p-2"
+                >
+                  {icon}
+                  <span>{label}</span>
+                </button>
+              );
+            })}
           </div>
         }
       />

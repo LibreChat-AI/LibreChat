@@ -1,10 +1,10 @@
 import mongoose from 'mongoose';
-import type { TMessage } from 'librechat-data-provider';
 import { buildTree } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createModels } from '~/models';
-import { createMessageMethods } from './message';
+import type { TMessage } from 'librechat-data-provider';
 import type { IMessage } from '..';
+import { createMessageMethods } from './message';
+import { createModels } from '~/models';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -43,7 +43,7 @@ beforeEach(async () => {
 });
 
 describe('Conversation Structure Tests', () => {
-  test('Conversation folding/corrupting with inconsistent timestamps', async () => {
+  test('Tree stays intact when inconsistent timestamps scramble retrieval order', async () => {
     const userId = 'testUser';
     const conversationId = 'testConversation';
 
@@ -95,14 +95,22 @@ describe('Conversation Structure Tests', () => {
     // Save messages with overrideTimestamp omitted (default is false)
     await bulkSaveMessages(messages, true);
 
-    // Retrieve messages (this will sort by createdAt)
+    // Retrieve messages (this will sort by createdAt, placing message2 BEFORE its parent message1)
     const retrievedMessages = await getMessages({ conversationId, user: userId });
 
     // Build tree
     const tree = buildTree({ messages: retrievedMessages as TMessage[] });
 
-    // Check if the tree is incorrect (folded/corrupted)
-    expect(tree!.length).toBeGreaterThan(1); // Should have multiple root messages, indicating corruption
+    // buildTree is order-robust: a child sorted before its parent must still
+    // nest (the single-pass builder used to hoist it into a phantom root,
+    // folding the visible thread).
+    expect(tree!.length).toBe(1);
+    const root = tree![0];
+    expect(root.messageId).toBe('message0');
+    const message1 = root.children![0];
+    expect(message1.messageId).toBe('message1');
+    expect(message1.children!.map((child) => child.messageId)).toEqual(['message2', 'message3']);
+    expect(message1.children![0].children![0].messageId).toBe('message4');
   });
 
   test('Fix: Conversation structure maintained with more than 16 messages', async () => {
@@ -139,7 +147,7 @@ describe('Conversation Structure Tests', () => {
     expect(currentNode.children!.length).toBe(0); // Last message should have no children
   });
 
-  test('Simulate MongoDB ordering issue with more than 16 messages and close timestamps', async () => {
+  test('Tree stays intact under MongoDB ordering churn with close timestamps', async () => {
     const userId = 'testUser';
     const conversationId = 'testConversation';
 
@@ -161,7 +169,17 @@ describe('Conversation Structure Tests', () => {
     await bulkSaveMessages(messages, true);
     const retrievedMessages = await getMessages({ conversationId, user: userId });
     const tree = buildTree({ messages: retrievedMessages as TMessage[] });
-    expect(tree!.length).toBeGreaterThan(1);
+
+    // Interleaved timestamps scramble retrieval order, but the order-robust
+    // builder must still recover the single 20-message chain.
+    expect(tree!.length).toBe(1);
+    let currentNode = tree![0];
+    for (let i = 1; i < 20; i++) {
+      expect(currentNode.children!.length).toBe(1);
+      currentNode = currentNode.children![0];
+      expect(currentNode.text).toBe(`Message ${i}`);
+    }
+    expect(currentNode.children!.length).toBe(0);
   });
 
   test('Fix: Preserve order with more than 16 messages by maintaining original timestamps', async () => {

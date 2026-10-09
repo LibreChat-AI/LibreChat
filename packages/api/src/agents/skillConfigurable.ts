@@ -24,17 +24,16 @@
  * Empty/missing → no exception, the gate applies as normal and the
  * lookup uses the full ACL set.
  */
-export function enrichWithSkillConfigurable(
-  result: { loadedTools: unknown[]; configurable?: Record<string, unknown> },
-  req: { user?: { id?: string } },
-  accessibleSkillIds: unknown[],
-  codeEnvAvailable: boolean,
+export interface SkillConfigurableContext {
+  req: { user?: { id?: string } };
+  accessibleSkillIds?: unknown[];
+  codeEnvAvailable: boolean;
   /**
    * `{ [skillName]: skillIdString }` for every skill primed this turn
    * (manual or always-apply). The id pins same-name collision lookups to
    * the exact doc the resolver primed and relaxes the disable-model gate.
    */
-  skillPrimedIdsByName?: Record<string, string>,
+  skillPrimedIdsByName?: Record<string, string>;
   /**
    * Names of skills the runtime can resolve, captured at agent init by
    * `injectSkillCatalog`. Lets `read_file` decide whether a
@@ -45,17 +44,74 @@ export function enrichWithSkillConfigurable(
    * off, ephemeral badge off, or persisted `skills_enabled !== true`),
    * which is the same signal as `accessibleSkillIds.length === 0`.
    */
+  activeSkillNames?: Set<string>;
+  /** True when skills/{skillName}/... write paths are enabled for this run. */
+  skillAuthoringAvailable?: boolean;
+  /** Host file-authoring names registered by initializeAgent for this run. */
+  fileAuthoringToolNames?: Set<string>;
+}
+
+export interface SkillConfigurableLoadResult {
+  loadedTools: unknown[];
+  configurable?: Record<string, unknown>;
+}
+
+export interface EnrichWithSkillConfigurableParams {
+  result: SkillConfigurableLoadResult;
+  context: SkillConfigurableContext;
+}
+
+export function enrichWithSkillConfigurable(params: EnrichWithSkillConfigurableParams): {
+  loadedTools: unknown[];
+  configurable: Record<string, unknown>;
+};
+export function enrichWithSkillConfigurable(
+  result: SkillConfigurableLoadResult,
+  req: { user?: { id?: string } },
+  accessibleSkillIds: unknown[] | undefined,
+  codeEnvAvailable: boolean,
+  skillPrimedIdsByName?: Record<string, string>,
   activeSkillNames?: Set<string>,
+  skillAuthoringAvailable?: boolean,
+  fileAuthoringToolNames?: Set<string>,
+): { loadedTools: unknown[]; configurable: Record<string, unknown> };
+export function enrichWithSkillConfigurable(
+  first: EnrichWithSkillConfigurableParams | SkillConfigurableLoadResult,
+  req?: { user?: { id?: string } },
+  accessibleSkillIds?: unknown[],
+  codeEnvAvailable?: boolean,
+  skillPrimedIdsByName?: Record<string, string>,
+  activeSkillNames?: Set<string>,
+  skillAuthoringAvailable?: boolean,
+  fileAuthoringToolNames?: Set<string>,
 ): { loadedTools: unknown[]; configurable: Record<string, unknown> } {
+  const { result, context } =
+    'result' in first && 'context' in first
+      ? first
+      : {
+          result: first,
+          context: {
+            req: req ?? {},
+            accessibleSkillIds,
+            codeEnvAvailable: codeEnvAvailable === true,
+            skillPrimedIdsByName,
+            activeSkillNames,
+            skillAuthoringAvailable,
+            fileAuthoringToolNames,
+          },
+        };
+
   return {
     ...result,
     configurable: {
       ...result.configurable,
-      req,
-      codeEnvAvailable,
-      accessibleSkillIds,
-      skillPrimedIdsByName,
-      activeSkillNames,
+      req: context.req,
+      codeEnvAvailable: context.codeEnvAvailable,
+      accessibleSkillIds: context.accessibleSkillIds,
+      skillPrimedIdsByName: context.skillPrimedIdsByName,
+      activeSkillNames: context.activeSkillNames,
+      skillAuthoringAvailable: context.skillAuthoringAvailable,
+      fileAuthoringToolNames: context.fileAuthoringToolNames,
     },
   };
 }

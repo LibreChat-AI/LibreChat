@@ -24,7 +24,14 @@ const createLogFunction = (
   };
 };
 
-const logger = {
+const logger: {
+  log: LogFunction;
+  dir: LogFunction;
+  warn: LogFunction;
+  info: LogFunction;
+  error: LogFunction;
+  debug: LogFunction;
+} = {
   log: createLogFunction(console.log, 'log'),
   dir: createLogFunction(console.dir, 'dir'),
   warn: createLogFunction(console.warn, 'warn'),

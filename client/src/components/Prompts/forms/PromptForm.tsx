@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import debounce from 'lodash/debounce';
 import { useRecoilValue } from 'recoil';
-import { Menu, Rocket, X } from 'lucide-react';
 import { useParams } from 'react-router-dom';
+import { Menu, Rocket, X } from 'lucide-react';
 import { useForm, FormProvider } from 'react-hook-form';
 import { Button, Skeleton, useToastContext } from '@librechat/client';
 import {
@@ -21,6 +21,7 @@ import {
 } from '~/data-provider';
 import { useResourcePermissions, useHasAccess, useLocalize, useFocusTrap } from '~/hooks';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import CategorySelector from '../fields/CategorySelector';
 import PromptVariables from '../display/PromptVariables';
 import PromptVersions from '../display/PromptVersions';
@@ -30,8 +31,8 @@ import DeletePrompt from '../dialogs/DeletePrompt';
 import NoPromptGroup from '../lists/NoPromptGroup';
 import PromptEditor from '../editor/PromptEditor';
 import SkeletonForm from '../utils/SkeletonForm';
-import Description from '../fields/Description';
 import SharePrompt from '../dialogs/SharePrompt';
+import Description from '../fields/Description';
 import PromptName from '../fields/PromptName';
 import { cn, findPromptGroup } from '~/utils';
 import { PromptsEditorMode } from '~/common';
@@ -76,7 +77,7 @@ const VersionsPanel = React.memo(
               className={cn(
                 'w-full gap-1.5 transition-all duration-200',
                 isProductionVersion &&
-                  'border border-green-500/30 bg-green-50 text-green-700 hover:bg-green-100 dark:bg-green-950/30 dark:text-green-400 dark:hover:bg-green-950/50',
+                  'border-status-success-border bg-status-success-subtle text-status-success hover:bg-status-success-subtle border',
               )}
               onClick={() => {
                 if (!selectedPrompt) {
@@ -108,16 +109,16 @@ const VersionsPanel = React.memo(
           {isLoadingPrompts &&
             Array.from({ length: 6 }).map((_, index: number) => (
               <div key={index} className="my-2">
-                <Skeleton className="h-[72px] w-full" />
+                <Skeleton className="h-[4.5rem] w-full" />
               </div>
             ))}
           {!isLoadingPrompts && prompts.length > 0 && (
             <>
               <div className="mb-2 flex items-center justify-between">
-                <h2 className="text-sm font-medium text-text-secondary">
+                <h2 className="text-text-secondary text-sm font-medium">
                   {localize('com_ui_versions')}
                 </h2>
-                <span className="flex size-5 items-center justify-center rounded-full bg-surface-tertiary text-xs font-medium text-text-secondary">
+                <span className="bg-surface-tertiary text-text-secondary flex size-5 items-center justify-center rounded-full text-xs font-medium">
                   {prompts.length}
                 </span>
               </div>
@@ -159,6 +160,7 @@ const HeaderActions = React.memo(
     return (
       <div className="flex items-center gap-2">
         <CategorySelector
+          className="h-10"
           currentCategory={groupCategory}
           onValueChange={canEdit ? onCategoryChange : undefined}
         />
@@ -187,6 +189,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
   const promptId = promptIdProp || params.promptId || '';
 
   const editorMode = useRecoilValue(store.promptsEditorMode);
+  const isSmallScreen = useDrawerViewport();
   const [selectionIndex, setSelectionIndex] = useState<number>(0);
 
   const prevIsEditingRef = useRef(false);
@@ -437,7 +440,16 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
     }
 
     if (fetchedPrompt || group) {
-      return <PromptDetails group={fetchedPrompt || group} showActions={false} />;
+      return (
+        <div className="flex h-full w-full flex-col">
+          {isSmallScreen && (
+            <div className="flex shrink-0 items-center px-4 pt-3">
+              <OpenSidebar />
+            </div>
+          )}
+          <PromptDetails group={fetchedPrompt || group} showActions={false} />
+        </div>
+      );
     }
   }
 
@@ -462,8 +474,8 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
             <div className="flex h-full">
               <div className="flex-1 overflow-hidden px-4">
                 {/* Mobile Actions Row */}
-                {!isLoadingGroup && group && (
-                  <div className="mb-3 mt-2 flex items-center justify-between gap-2 sm:hidden">
+                {!isLoadingGroup && group && isSmallScreen && (
+                  <div className="mt-2 mb-3 flex items-center justify-between gap-2">
                     <OpenSidebar />
                     <HeaderActions
                       group={group}
@@ -475,7 +487,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
                   </div>
                 )}
                 {/* Header: Title + Actions */}
-                <div className="mb-3 mt-2 flex items-center justify-between gap-2">
+                <div className="mt-2 mb-3 flex items-center justify-between gap-2">
                   {isLoadingGroup ? (
                     <Skeleton className="h-9 w-48" />
                   ) : (
@@ -510,15 +522,17 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
                           </Button>
                         )}
                       </div>
-                      <div className="hidden shrink-0 sm:block">
-                        <HeaderActions
-                          group={group}
-                          canEdit={canEdit}
-                          canDelete={canDelete}
-                          selectedPromptId={selectedPromptId}
-                          onCategoryChange={handleCategoryChange}
-                        />
-                      </div>
+                      {!isSmallScreen && (
+                        <div className="shrink-0">
+                          <HeaderActions
+                            group={group}
+                            canEdit={canEdit}
+                            canDelete={canDelete}
+                            selectedPromptId={selectedPromptId}
+                            onCategoryChange={handleCategoryChange}
+                          />
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -533,7 +547,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
                       isEditing={isEditing}
                       setIsEditing={(value) => canEdit && setIsEditing(value)}
                     />
-                    <PromptVariables promptText={promptText} />
+                    <PromptVariables promptText={promptText} inset />
                     <Description
                       initialValue={group.oneliner ?? ''}
                       onValueChange={canEdit ? handleUpdateOneliner : undefined}
@@ -550,7 +564,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
 
               {/* Versions Sidebar - Advanced Mode Only */}
               {editorMode === PromptsEditorMode.ADVANCED && (
-                <div className="hidden w-72 shrink-0 border-l border-border-medium lg:block xl:w-80">
+                <div className="border-border-medium hidden w-72 shrink-0 border-l lg:block xl:w-80">
                   <VersionsPanel
                     group={group}
                     prompts={prompts}
@@ -569,7 +583,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
           <div
             aria-hidden={!showSidePanel}
             className={cn(
-              'fixed inset-0 z-[100] bg-black/20 lg:hidden',
+              'bg-scrim fixed inset-0 z-[100] lg:hidden',
               showSidePanel ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
             )}
             style={{ transition: 'opacity 300ms cubic-bezier(0.2, 0, 0, 1)' }}
@@ -587,7 +601,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
           <div
             ref={sidePanelRef}
             className={cn(
-              'fixed right-0 top-0 z-[110] flex h-full flex-col border-l border-border-medium bg-surface-primary-alt shadow-xl lg:hidden',
+              'border-border-medium bg-surface-primary-alt fixed top-0 right-0 z-[110] flex h-full flex-col border-l shadow-xl lg:hidden',
               showSidePanel ? 'translate-x-0' : 'translate-x-full',
             )}
             style={{
@@ -600,7 +614,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
             inert={!showSidePanel ? '' : undefined}
           >
             <div className="flex items-center justify-between px-4 py-2">
-              <h2 className="text-sm font-semibold text-text-primary">
+              <h2 className="text-text-primary text-sm font-semibold">
                 {localize('com_ui_versions')}
               </h2>
               <Button

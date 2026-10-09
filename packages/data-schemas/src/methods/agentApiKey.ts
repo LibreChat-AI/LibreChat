@@ -11,7 +11,22 @@ import logger from '~/config/winston';
 const API_KEY_PREFIX = 'sk-';
 const API_KEY_LENGTH = 32;
 
-export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')) {
+export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
+  createAgentApiKey: (data: AgentApiKeyCreateData) => Promise<AgentApiKeyCreateResult>;
+  validateAgentApiKey: (
+    apiKey: string,
+  ) => Promise<{ userId: Types.ObjectId; keyId: Types.ObjectId } | null>;
+  listAgentApiKeys: (userId: string | Types.ObjectId) => Promise<AgentApiKeyListItem[]>;
+  deleteAgentApiKey: (
+    keyId: string | Types.ObjectId,
+    userId: string | Types.ObjectId,
+  ) => Promise<boolean>;
+  deleteAllAgentApiKeys: (userId: string | Types.ObjectId) => Promise<number>;
+  getAgentApiKeyById: (
+    keyId: string | Types.ObjectId,
+    userId: string | Types.ObjectId,
+  ) => Promise<AgentApiKeyListItem | null>;
+} {
   async function generateApiKey(): Promise<{ key: string; keyHash: string; keyPrefix: string }> {
     const randomPart = await getRandomValues(API_KEY_LENGTH);
     const key = `${API_KEY_PREFIX}${randomPart}`;
@@ -64,7 +79,11 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')) {
         return null;
       }
 
-      await AgentApiKey.updateOne({ _id: keyDoc._id }, { $set: { lastUsedAt: new Date() } });
+      AgentApiKey.updateOne({ _id: keyDoc._id }, { $set: { lastUsedAt: new Date() } }).catch(
+        (error: unknown) => {
+          logger.error('[validateAgentApiKey] Error updating lastUsedAt:', error);
+        },
+      );
 
       return {
         userId: keyDoc.userId,

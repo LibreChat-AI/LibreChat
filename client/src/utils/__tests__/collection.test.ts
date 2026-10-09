@@ -323,7 +323,7 @@ describe('deleteData', () => {
   it('removes the matching item from its page', () => {
     const data = makeInfiniteData([{ items: [makeItem('a', 'Alpha'), makeItem('b', 'Beta')] }]);
 
-    const result = deleteData<Page, Item>(data, 'items', (page) =>
+    const result = deleteData<Page, InfiniteData<Page>>(data, 'items', (page) =>
       page.items.findIndex((i) => i.id === 'a'),
     );
 
@@ -334,7 +334,7 @@ describe('deleteData', () => {
   it('leaves data unchanged when item is not found', () => {
     const data = makeInfiniteData([{ items: [makeItem('a', 'Alpha')] }]);
 
-    const result = deleteData<Page, Item>(data, 'items', (page) =>
+    const result = deleteData<Page, InfiniteData<Page>>(data, 'items', (page) =>
       page.items.findIndex((i) => i.id === 'z'),
     );
 

@@ -1,7 +1,10 @@
 import type { InfiniteData } from '@tanstack/react-query';
+import type { RerankerTypes, SearchProviders, ScraperProviders } from '../config';
+import type { FullToolCall } from '../previews';
 import type * as p from '../accessPermissions';
 import type * as a from '../types/agents';
 import type * as s from '../schemas';
+import type { TFile } from './files';
 import type * as t from '../types';
 
 export type Conversation = {
@@ -14,16 +17,50 @@ export type Conversation = {
 
 export type ConversationListParams = {
   cursor?: string;
+  limit?: number;
   isArchived?: boolean;
-  sortBy?: 'title' | 'createdAt' | 'updatedAt';
+  pinned?: boolean;
+  sortBy?: 'title' | 'createdAt' | 'updatedAt' | 'archivedAt';
   sortDirection?: 'asc' | 'desc';
   tags?: string[];
   search?: string;
+  projectId?: string;
+  /**
+   * Absolute cutoffs rather than a named window, so the server validates one thing
+   * (a date) instead of an enum it would have to keep in step with the client, and a
+   * caller can ask for a range the menu does not offer. ISO 8601, inclusive.
+   */
+  updatedAfter?: string;
+  createdAfter?: string;
+  /** OR-matched: a conversation qualifies if it ran on any of these endpoints. */
+  endpoints?: string[];
+  /** Only conversations carrying at least one attachment. */
+  hasFiles?: boolean;
+  /** Only conversations the user is actively sharing through a link. */
+  sharedOnly?: boolean;
 };
 
 export type MinimalConversation = Pick<
   s.TConversation,
-  'conversationId' | 'endpoint' | 'title' | 'createdAt' | 'updatedAt' | 'user'
+  | 'conversationId'
+  | 'endpoint'
+  | 'title'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'archivedAt'
+  | 'isArchived'
+  | 'user'
+  | 'chatProjectId'
+  | 'pinned'
+  | 'lastResponseAt'
+  | 'lastResponseMessageId'
+  | 'lastResponseIsManual'
+  | 'isMarkedUnread'
+  | 'lastSeenAt'
+  /** Lets a row tell a code conversation, the only kind that can have a pull request. */
+  | 'codeEnvironmentMode'
+  | 'codeWorkspaces'
+  | 'codeDecisionListed'
 >;
 
 export type ConversationListResponse = {
@@ -36,6 +73,31 @@ export type ConversationUpdater = (
   data: ConversationData,
   conversation: s.TConversation,
 ) => ConversationData;
+
+export type ProjectListParams = {
+  cursor?: string;
+  limit?: number;
+  sortBy?: 'name' | 'createdAt' | 'lastConversationAt';
+  sortDirection?: 'asc' | 'desc';
+  search?: string;
+};
+
+export type ProjectListResponse = {
+  projects: t.TChatProject[];
+  nextCursor: string | null;
+};
+
+export type ProjectData = InfiniteData<ProjectListResponse>;
+export type ProjectAvailableFilesParams = {
+  cursor?: string;
+  limit?: number;
+  search?: string;
+};
+
+export type ProjectAvailableFilesResponse = {
+  files: TFile[];
+  nextCursor: string | null;
+};
 
 /* Messages */
 export type MessagesListParams = {
@@ -53,6 +115,26 @@ export type MessagesListResponse = {
   nextCursor: string | null;
 };
 
+/** Locates one tool-call part. `toolCallId` disambiguates when the part moved. */
+export type ToolCallPartParams = {
+  conversationId: string;
+  messageId: string;
+  partIndex: number;
+  toolCallId?: string;
+  /** Host run-step id; provider tool-call ids can repeat within one response. */
+  stepId?: string;
+  /** Agent that produced the part, when parallel agents share a response. */
+  agentId?: string;
+};
+
+export type ToolCallPartResponse = {
+  conversationId: string;
+  messageId: string;
+  /** Index of the part in the stored message, which may differ from the requested one. */
+  partIndex: number;
+  tool_call: FullToolCall;
+};
+
 /* Shared Links */
 export type SharedMessagesResponse = Omit<s.TSharedLink, 'messages'> & {
   messages: s.TMessage[];
@@ -60,7 +142,6 @@ export type SharedMessagesResponse = Omit<s.TSharedLink, 'messages'> & {
 
 export interface SharedLinksListParams {
   pageSize: number;
-  isPublic: boolean;
   sortBy: 'title' | 'createdAt';
   sortDirection: 'asc' | 'desc';
   search?: string;
@@ -70,8 +151,7 @@ export interface SharedLinksListParams {
 export type SharedLinkItem = {
   shareId: string;
   title: string;
-  isPublic: boolean;
-  createdAt: Date;
+  createdAt: string;
   conversationId: string;
 };
 
@@ -106,12 +186,19 @@ export type MCPTool = {
   name: string;
   pluginKey: string;
   description: string;
+  /** Raw upstream tool name when the model-facing key stripped a redundant
+   *  server-name prefix — gates the agent editor's legacy id migration. */
+  serverToolName?: string;
 };
 
 export type MCPServer = {
   name: string;
   icon: string;
   authenticated: boolean;
+  /** Passive discovery found that stored OAuth authorization must be renewed. */
+  authorizationState?: 'reauth_required';
+  /** Shared credential/catalog generation observed by passive discovery. */
+  authorizationGeneration?: string;
   authConfig: s.TPluginAuthConfig[];
   tools: MCPTool[];
 };
@@ -125,6 +212,9 @@ export type VerifyToolAuthResponse = {
   authenticated: boolean;
   message?: string | s.AuthType;
   authTypes?: [string, s.AuthType][];
+  searchProvider?: SearchProviders;
+  scraperProvider?: ScraperProviders;
+  rerankerType?: RerankerTypes;
 };
 
 export type GetToolCallParams = { conversationId: string };
@@ -132,10 +222,20 @@ export type ToolCallResults = a.ToolCallResult[];
 
 /* Memories */
 export type TUserMemory = {
+  /** Stable stored record identifier retained when content fields are redacted. */
+  _id?: string;
   key: string;
   value: string;
+  /** Optional generated or legacy summary content. */
+  summary?: string;
   updated_at: string;
   tokenCount?: number;
+  /** Agent partition this memory belongs to; absent = shared personal pool */
+  agentId?: string;
+  /** Display name of the partition's agent, resolved server-side when available */
+  agentName?: string;
+  /** Current policy removed one or more memory content fields from this response. */
+  contentFilterBlocked?: boolean;
 };
 
 export type MemoriesResponse = {
@@ -143,6 +243,15 @@ export type MemoriesResponse = {
   totalTokens: number;
   tokenLimit: number | null;
   usagePercentage: number | null;
+};
+
+export type UpdateMemoryResponse = {
+  updated: boolean;
+  memory: TUserMemory;
+};
+
+export type DeleteMemoryResponse = {
+  deleted: boolean;
 };
 
 export type PrincipalSearchParams = {
@@ -181,19 +290,37 @@ export type ListRolesResponse = {
 
 export interface MCPServerStatus {
   requiresOAuth: boolean;
+  /** The server connects only inside a chat request because its config reads BODY placeholders. */
+  requestScoped?: boolean;
+  /** Whether all declared per-user variables are present for an on-demand connection. */
+  configurationState?: 'configured' | 'needs_configuration';
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
+  authorizationState?:
+    | 'not_required'
+    | 'authorizing'
+    | 'authorized'
+    | 'needs_authorization'
+    | 'error';
+  /** Shared credential/catalog generation observed by the status endpoint. */
+  authorizationGeneration?: string;
 }
 
 export interface MCPConnectionStatusResponse {
   success: boolean;
   connectionStatus: Record<string, MCPServerStatus>;
+  /** Server-configured OAuth completion window in ms (`MCP_OAUTH_HANDLING_TIMEOUT`) */
+  oauthTimeout?: number;
 }
 
 export interface MCPServerConnectionStatusResponse {
   success: boolean;
   serverName: string;
   requiresOAuth: boolean;
+  requestScoped?: boolean;
+  configurationState?: MCPServerStatus['configurationState'];
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
+  authorizationState?: MCPServerStatus['authorizationState'];
+  authorizationGeneration?: string;
 }
 
 export interface MCPAuthValuesResponse {
@@ -212,8 +339,18 @@ export type TUserFavorite = {
   model?: string;
   endpoint?: string;
   spec?: string;
-  /** Phase 2 — skill favoriting isn't persisted yet, but the shape is reserved. */
-  skillId?: string;
+};
+
+/**
+ * Tool favorites — starred marketplace items (built-in capabilities, plugin
+ * tools, MCP servers, skills). Identity is the compound (itemType, itemId)
+ * pair, matching the marketplace `itemKey` format `itemType:itemId`.
+ */
+export type TToolFavoriteType = 'builtin' | 'tool' | 'mcp' | 'skill';
+
+export type TToolFavorite = {
+  itemType: TToolFavoriteType;
+  itemId: string;
 };
 
 /* SharePoint Graph API Token */

@@ -1,4 +1,4 @@
-const { logger } = require('@librechat/data-schemas');
+const { logger, buildRetentionVisibilityFilter } = require('@librechat/data-schemas');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -26,7 +26,10 @@ async function batchResetMeiliFlags(collection) {
   try {
     while (hasMore) {
       const docs = await collection
-        .find({ expiredAt: null, _meiliIndex: { $ne: false } }, { projection: { _id: 1 } })
+        .find(
+          { ...buildRetentionVisibilityFilter(), _meiliIndex: { $ne: false } },
+          { projection: { _id: 1 } },
+        )
         .limit(BATCH_SIZE)
         .toArray();
 

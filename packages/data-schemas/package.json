@@ -1,22 +1,32 @@
 {
   "name": "@librechat/data-schemas",
-  "version": "0.0.50",
+  "version": "0.0.74",
   "description": "Mongoose schemas and models for LibreChat",
   "type": "module",
   "main": "dist/index.cjs",
-  "module": "dist/index.es.js",
-  "types": "./dist/types/index.d.ts",
+  "module": "dist/index.mjs",
+  "types": "./dist/index.d.cts",
   "sideEffects": false,
   "exports": {
     ".": {
-      "import": "./dist/index.es.js",
-      "require": "./dist/index.cjs",
-      "types": "./dist/types/index.d.ts"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./capabilities": {
-      "import": "./dist/admin/capabilities.es.js",
-      "require": "./dist/admin/capabilities.cjs",
-      "types": "./dist/types/admin/capabilities.d.ts"
+      "import": {
+        "types": "./dist/capabilities.d.mts",
+        "default": "./dist/admin/capabilities.mjs"
+      },
+      "require": {
+        "types": "./dist/capabilities.d.cts",
+        "default": "./dist/admin/capabilities.cjs"
+      }
     }
   },
   "files": [
@@ -24,44 +34,45 @@
   ],
   "scripts": {
     "clean": "rimraf dist",
-    "build": "npm run clean && rollup -c --silent --bundleConfigAsCjs",
-    "build:watch": "rollup -c -w",
+    "build": "npm run clean && tsdown",
+    "build:watch": "tsdown --watch",
     "test": "jest --coverage --watch",
     "test:ci": "jest --coverage --ci",
     "verify": "npm run test:ci",
     "b:clean": "bun run rimraf dist",
-    "b:build": "bun run b:clean && bun run rollup -c --silent --bundleConfigAsCjs"
+    "b:build": "bun run b:clean && bun run tsdown"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/danny-avila/LibreChat"
+    "url": "https://github.com/LibreChat-AI/LibreChat"
   },
   "author": "",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
+  "dependencies": {
+    "mdast-util-directive": "^3.0.0",
+    "mdast-util-from-markdown": "^2.0.1",
+    "mdast-util-gfm": "^3.0.0",
+    "mdast-util-math": "^3.0.0",
+    "micromark-extension-directive": "^3.0.1",
+    "micromark-extension-gfm": "^3.0.0",
+    "micromark-extension-llm-math": "^3.1.0",
+    "micromark-util-decode-string": "^2.0.0"
+  },
   "devDependencies": {
-    "@rollup/plugin-alias": "^5.1.0",
-    "@rollup/plugin-commonjs": "^29.0.0",
-    "@rollup/plugin-json": "^6.1.0",
-    "@rollup/plugin-node-resolve": "^15.1.0",
-    "@rollup/plugin-replace": "^5.0.5",
-    "@rollup/plugin-terser": "^1.0.0",
-    "@rollup/plugin-typescript": "^12.1.2",
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.2",
-    "@types/node": "^20.3.0",
+    "@types/node": "^24.12.4",
     "jest": "^30.2.0",
-    "jest-junit": "^16.0.0",
+    "jest-junit": "^17.0.0",
     "mongodb-memory-server": "^11.0.1",
     "rimraf": "^6.1.3",
-    "rollup": "^4.34.9",
-    "rollup-plugin-peer-deps-external": "^2.2.4",
-    "rollup-plugin-typescript2": "^0.37.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.0.4"
+    "tsdown": "^0.22.2",
+    "typescript": "^5.9.3"
   },
   "peerDependencies": {
     "jsonwebtoken": "^9.0.2",
@@ -69,8 +80,8 @@
     "librechat-data-provider": "*",
     "lodash": "^4.17.23",
     "meilisearch": "^0.38.0",
-    "mongoose": "^8.12.1",
-    "nanoid": "^3.3.7",
+    "mongoose": "^8.24.1",
+    "nanoid": "^3.3.18",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"
   },

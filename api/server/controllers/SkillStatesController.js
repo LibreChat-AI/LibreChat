@@ -5,6 +5,8 @@ const {
   toSkillStatesRecord,
   validateSkillStatesPayload,
   pruneOrphanSkillStates,
+  getDeploymentSkillIds,
+  mergeDeploymentSkillIds,
 } = require('@librechat/api');
 const { ResourceType, PermissionBits } = require('librechat-data-provider');
 const { findAccessibleResources } = require('~/server/services/PermissionService');
@@ -21,15 +23,20 @@ function buildPruneDeps(user) {
       const existing = await Skill.find({ _id: { $in: validIds } })
         .select('_id')
         .lean();
-      return existing.map((doc) => doc._id.toString());
+      const deploymentIds = getDeploymentSkillIds()
+        .map((id) => id.toString())
+        .filter((id) => validIds.includes(id));
+      return [...existing.map((doc) => doc._id.toString()), ...deploymentIds];
     },
-    findAccessibleSkillIds: () =>
-      findAccessibleResources({
-        userId: user.id,
-        role: user.role,
-        resourceType: ResourceType.SKILL,
-        requiredPermissions: PermissionBits.VIEW,
-      }),
+    findAccessibleSkillIds: async () =>
+      mergeDeploymentSkillIds(
+        await findAccessibleResources({
+          userId: user.id,
+          role: user.role,
+          resourceType: ResourceType.SKILL,
+          requiredPermissions: PermissionBits.VIEW,
+        }),
+      ),
   };
 }
 

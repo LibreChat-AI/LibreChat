@@ -132,6 +132,19 @@ describe('timestamps', () => {
 
       expect(localStorage.getItem(regularKey)).toBe('value');
     });
+
+    it('should purge stale memory toggle entries', () => {
+      const key = `${LocalStorageKeys.LAST_MEMORY_TOGGLE_}convo-321`;
+      const oldTimestamp = Date.now() - 3 * 24 * 60 * 60 * 1000; // 3 days ago
+
+      localStorage.setItem(key, 'true');
+      localStorage.setItem(`${key}_TIMESTAMP`, oldTimestamp.toString());
+
+      cleanupTimestampedStorage();
+
+      expect(localStorage.getItem(key)).toBeNull();
+      expect(localStorage.getItem(`${key}_TIMESTAMP`)).toBeNull();
+    });
   });
 
   describe('migrateExistingEntries', () => {

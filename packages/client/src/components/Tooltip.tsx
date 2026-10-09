@@ -1,15 +1,29 @@
+import {
+  memo,
+  forwardRef,
+  useCallback,
+  useMemo,
+  RefAttributes,
+  ForwardRefExoticComponent,
+} from 'react';
 import DOMPurify from 'dompurify';
 import * as Ariakit from '@ariakit/react';
-import { memo, forwardRef, useCallback, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import type { FocusOutline } from './Focus';
+import { useDialogDepth, usePopoverZIndex } from './OriginalDialog';
+import { focusOutlineVariants } from './Focus';
 import { cn } from '~/utils';
 import './Tooltip.css';
 
 interface TooltipAnchorProps extends Ariakit.TooltipAnchorProps {
+  focusOutline?: FocusOutline;
   role?: string;
   className?: string;
   description: string;
   enableHTML?: boolean;
+  portalElement?: Ariakit.TooltipProps['portalElement'];
+  /** Overrides the popup's z-index, for anchors inside a host layer above the default. */
+  zIndex?: number;
   side?: 'top' | 'bottom' | 'left' | 'right';
 }
 
@@ -21,13 +35,23 @@ const TooltipPopup = memo(function TooltipPopup({
   store,
   description,
   enableHTML,
+  portalElement,
+  zIndex,
 }: {
   store: Ariakit.TooltipStore;
   description: string;
   enableHTML: boolean;
+  portalElement?: Ariakit.TooltipProps['portalElement'];
+  zIndex?: number;
 }) {
   const mounted = Ariakit.useStoreState(store, (state) => state.mounted);
   const placement = Ariakit.useStoreState(store, (state) => state.placement);
+  /** Tooltips portal to body at z-150, which nested dialogs (z 200+) cover —
+   * inside a dialog, borrow the popover's depth-aware z-index; outside, keep
+   * the stylesheet default so tooltips never outrank freshly opened dialogs. */
+  const dialogDepth = useDialogDepth();
+  const popoverZIndex = usePopoverZIndex();
+  const resolvedZIndex = zIndex ?? (dialogDepth > 0 ? popoverZIndex : undefined);
 
   const sanitizer = useMemo(() => {
     const instance = DOMPurify();
@@ -79,9 +103,11 @@ const TooltipPopup = memo(function TooltipPopup({
         <Ariakit.Tooltip
           gutter={4}
           alwaysVisible
+          portalElement={portalElement}
           className="tooltip"
           render={
             <motion.div
+              style={resolvedZIndex != null ? { zIndex: resolvedZIndex } : undefined}
               initial={{ opacity: 0, x, y }}
               animate={{ opacity: 1, x: 0, y: 0 }}
               exit={{ opacity: 0, x, y }}
@@ -104,20 +130,53 @@ const TooltipPopup = memo(function TooltipPopup({
   );
 });
 
-export const TooltipAnchor = forwardRef<HTMLDivElement, TooltipAnchorProps>(function TooltipAnchor(
-  { description, side = 'top', className, role, enableHTML = false, ...props },
+export const TooltipAnchor: ForwardRefExoticComponent<
+  Omit<TooltipAnchorProps, 'ref'> & RefAttributes<HTMLDivElement>
+> = forwardRef<HTMLDivElement, TooltipAnchorProps>(function TooltipAnchor(
+  {
+    description,
+    side = 'top',
+    className,
+    focusOutline,
+    role,
+    enableHTML = false,
+    portalElement,
+    zIndex,
+    onKeyDown,
+    tabIndex,
+    ...props
+  },
   ref,
 ) {
   const tooltip = Ariakit.useTooltipStore({ placement: side });
 
+  /**
+   * `role="button"` renders a plain element with no native activation, so Enter and
+   * Space must both be handled to match a real button (WCAG 2.1.1). Space is always
+   * preventDefault'd (including key-repeat) to suppress page scroll. Activation
+   * ignores event.repeat so a held Space does not fire click() repeatedly.
+   *
+   * Default tabIndex to 0 for role="button" so keyboard users can reach consumers
+   * that forget an explicit tabIndex (e.g. MCP card actions). Explicit values win.
+   */
+  const resolvedTabIndex = role === 'button' ? (tabIndex ?? 0) : tabIndex;
+
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (role === 'button' && event.key === 'Enter') {
-        event.preventDefault();
-        (event.target as HTMLDivElement).click();
+      onKeyDown?.(event);
+      if (role !== 'button' || event.defaultPrevented) {
+        return;
       }
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
+      event.preventDefault();
+      if (event.repeat) {
+        return;
+      }
+      event.currentTarget.click();
     },
-    [role],
+    [role, onKeyDown],
   );
 
   return (
@@ -126,10 +185,17 @@ export const TooltipAnchor = forwardRef<HTMLDivElement, TooltipAnchorProps>(func
         {...props}
         ref={ref}
         role={role}
+        tabIndex={resolvedTabIndex}
         onKeyDown={handleKeyDown}
-        className={cn('cursor-pointer', className)}
+        className={cn('cursor-pointer', focusOutlineVariants({ focusOutline }), className)}
       />
-      <TooltipPopup store={tooltip} description={description} enableHTML={enableHTML} />
+      <TooltipPopup
+        store={tooltip}
+        description={description}
+        enableHTML={enableHTML}
+        portalElement={portalElement}
+        zIndex={zIndex}
+      />
     </Ariakit.TooltipProvider>
   );
 });

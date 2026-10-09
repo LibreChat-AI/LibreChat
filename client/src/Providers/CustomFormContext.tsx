@@ -31,6 +31,11 @@ function createFormContext<TFieldValues extends FieldValues>() {
     return value;
   };
 
+  /** Non-throwing variant for components that may render outside the provider
+   *  (e.g. message content in Share/search views). */
+  const useOptionalCustomFormContext = (): FormContextValue<TFieldValues> | undefined =>
+    useContext(context);
+
   const CustomFormProvider = ({
     register,
     control,
@@ -49,7 +54,7 @@ function createFormContext<TFieldValues extends FieldValues>() {
     return <context.Provider value={value}>{children}</context.Provider>;
   };
 
-  return { CustomFormProvider, useCustomFormContext };
+  return { CustomFormProvider, useCustomFormContext, useOptionalCustomFormContext };
 }
 
 export type { FormContextValue };

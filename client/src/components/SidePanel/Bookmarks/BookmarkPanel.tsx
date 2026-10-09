@@ -1,14 +1,14 @@
-import { useConversationTagsQuery } from '~/data-provider';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
+import { useConversationTagsQuery } from '~/data-provider';
 import BookmarkTable from './BookmarkTable';
 
 const BookmarkPanel = () => {
-  const { data } = useConversationTagsQuery();
+  const { data, isLoading } = useConversationTagsQuery();
 
   return (
-    <div className="h-auto max-w-full overflow-x-visible pt-2">
+    <div className="flex h-full w-full flex-col overflow-hidden pt-2">
       <BookmarkContext.Provider value={{ bookmarks: data || [] }}>
-        <BookmarkTable />
+        <BookmarkTable isLoading={isLoading} />
       </BookmarkContext.Provider>
     </div>
   );

@@ -6,7 +6,7 @@
     "noImplicitAny": true,
     "outDir": "./types",
     "target": "es2015",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "lib": ["es2017", "dom", "ES2021.String", "ES2021.WeakRef"],
     "allowJs": true,
@@ -19,7 +19,11 @@
     "noEmit": true,
     "sourceMap": true,
     "paths": {
-      "~/*": ["./src/*"]
+      "~/*": ["./src/*"],
+      // @librechat/agents ships declaration files that import its internal "@/" alias, which
+      // package exports cannot map; resolve them into its published types until the SDK
+      // rewrites the aliases at build time.
+      "@/*": ["../../node_modules/@librechat/agents/dist/types/*"]
     }
   },
   "ts-node": {

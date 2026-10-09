@@ -1,7 +1,8 @@
 //ThemeContext.js
 // source: https://plainenglish.io/blog/light-and-dark-mode-in-react-web-application-with-tailwind-css-89674496b942
-import { useSetAtom } from 'jotai';
 import React, { createContext, useState, useEffect } from 'react';
+import { useSetAtom } from 'jotai';
+import { JSX } from 'react/jsx-runtime';
 import { getInitialTheme, applyFontSize } from '~/utils';
 import { fontSizeAtom } from '~/store';
 
@@ -24,7 +25,8 @@ export const isDark = (theme: string): boolean => {
   return theme === 'dark';
 };
 
-export const ThemeContext = createContext<ProviderValue>(defaultContextValue);
+export const ThemeContext: React.Context<ProviderValue> =
+  createContext<ProviderValue>(defaultContextValue);
 
 export const ThemeProvider = ({
   initialTheme,
@@ -32,7 +34,7 @@ export const ThemeProvider = ({
 }: {
   initialTheme?: string;
   children: React.ReactNode;
-}) => {
+}): JSX.Element => {
   const [theme, setTheme] = useState(getInitialTheme);
   const setFontSize = useSetAtom(fontSizeAtom);
 

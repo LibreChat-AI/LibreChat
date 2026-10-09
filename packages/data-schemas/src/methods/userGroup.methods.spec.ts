@@ -716,10 +716,7 @@ describe('UserGroup Methods - Detailed Tests', () => {
         memberIds: ['m1', 'm2', 'm3'],
       });
 
-      const updated = await methods.removeMemberById(
-        group._id as mongoose.Types.ObjectId,
-        'm2',
-      );
+      const updated = await methods.removeMemberById(group._id as mongoose.Types.ObjectId, 'm2');
 
       expect(updated).toBeDefined();
       expect(updated?.memberIds).toEqual(['m1', 'm3']);

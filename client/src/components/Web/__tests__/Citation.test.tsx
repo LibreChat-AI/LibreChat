@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type { SearchResultData } from 'librechat-data-provider';
-import { Citation, CompositeCitation } from '~/components/Web/Citation';
+import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
 import { CitationContext } from '~/components/Web/Context';
 import { SearchContext } from '~/Providers';
 
@@ -29,9 +29,19 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileId, fileName }: { open: boolean; fileId?: string; fileName: string }) =>
+  default: ({
+    open,
+    fileId,
+    fileName,
+    fileSource,
+  }: {
+    open: boolean;
+    fileId?: string;
+    fileName: string;
+    fileSource?: string;
+  }) =>
     open ? (
-      <div data-testid="file-preview-dialog" data-file-id={fileId}>
+      <div data-testid="file-preview-dialog" data-file-id={fileId} data-file-source={fileSource}>
         {fileName}
       </div>
     ) : null,
@@ -64,6 +74,19 @@ function renderWithProviders(
 }
 
 describe('Citation', () => {
+  it('uses the semantic active surface for a highlighted passage', () => {
+    const highlightedPassage = 'Highlighted passage';
+    render(
+      <CitationContext.Provider
+        value={{ hoveredCitationId: 'cite-highlight', setHoveredCitationId: jest.fn() }}
+      >
+        <HighlightedText citationId="cite-highlight">{highlightedPassage}</HighlightedText>
+      </CitationContext.Provider>,
+    );
+
+    expect(screen.getByText(highlightedPassage)).toHaveClass('bg-surface-active');
+  });
+
   it('renders composite file citations as buttons and opens the preview dialog', () => {
     const searchResults = {
       '0': {
@@ -76,6 +99,7 @@ describe('Citation', () => {
             metadata: {
               fileBytes: 2048,
               fileType: 'application/pdf',
+              storageType: 'text',
             },
             pageRelevance: { 1: 0.92 },
             pages: [1],
@@ -107,6 +131,7 @@ describe('Citation', () => {
     fireEvent.click(fileButton);
 
     expect(screen.getByTestId('file-preview-dialog')).toHaveAttribute('data-file-id', 'file-123');
+    expect(screen.getByTestId('file-preview-dialog')).toHaveAttribute('data-file-source', 'text');
   });
 
   it('keeps standalone web citations as links', () => {
