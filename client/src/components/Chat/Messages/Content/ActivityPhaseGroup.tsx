@@ -33,7 +33,6 @@ import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import { getOutcomeStatus, isSpanFailed, summarizeSpan } from './outcome';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
-import { AttachmentGroup } from './Parts';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { MCPAppViews } from '~/components/MCPUIResource';
@@ -45,6 +44,7 @@ import { StackedToolIcons } from './ToolOutput';
 import useTimeTick from '~/hooks/useTimeTick';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
+import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
 
 /** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
