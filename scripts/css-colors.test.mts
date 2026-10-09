@@ -192,6 +192,12 @@ test('reads math function channels in a custom property triplet', () => {
     'calc(1e2) calc(pi * 10) 2.5E1',
   ]);
   assert.deepEqual(literals('a { --brand: calc(min(var(--r), max(0, 255))) 0 0; }'), []);
+  assert.deepEqual(literals('a { --brand: round(down, 255) round(to-zero, 2.5, 1) 0; }'), [
+    'round(down, 255) round(to-zero, 2.5, 1) 0',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) calc(255) 0 0); }'), [
+    'rgb(from var(--base) calc(255)',
+  ]);
   assert.deepEqual(literals('a { --size: calc(1em + 1in) 0 0; }'), []);
   assert.deepEqual(literals('a { --brand: calc(var(--r)) 0 0; }'), []);
   assert.deepEqual(literals('a { --brand: calc(var(--r) * 2) 0 0; }'), []);
