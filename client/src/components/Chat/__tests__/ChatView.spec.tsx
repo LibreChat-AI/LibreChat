@@ -1,11 +1,13 @@
 import React from 'react';
 import '@testing-library/jest-dom';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { render, screen } from 'test/layout-test-utils';
 import ChatView from '../ChatView';
 
 const mockParams = jest.fn();
 const mockConversation = jest.fn();
 const mockChatFormProps = jest.fn();
+const mockAskHostSaveDrafts = jest.fn();
 
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
@@ -56,6 +58,7 @@ jest.mock('../Input/ChatForm', () => ({
   __esModule: true,
   default: (props: Record<string, unknown>) => {
     mockChatFormProps(props);
+    mockAskHostSaveDrafts(jest.requireActual('../ask/state').useAskAnswerHost());
     return <div />;
   },
 }));
@@ -189,5 +192,24 @@ describe('ChatView composer column', () => {
 
     expect(composerColumn).toHaveClass('[view-transition-name:chat-form]');
     expect(composerColumn).toHaveClass('relative', 'z-10');
+  });
+});
+
+describe('ChatView draft saving', () => {
+  beforeEach(() => {
+    mockParams.mockReturnValue({});
+    mockConversation.mockReturnValue(null);
+    mockAskHostSaveDrafts.mockReset();
+  });
+
+  /** A host that supplies its own chat settings drives ask-answer draft saving too. */
+  test.each([true, false])('hands the host saveDrafts=%s to ask-answer drafts', (saveDrafts) => {
+    render(
+      <ChatSettingsContext.Provider value={{ ...defaultChatSettings, saveDrafts }}>
+        <ChatView />
+      </ChatSettingsContext.Provider>,
+    );
+
+    expect(mockAskHostSaveDrafts).toHaveBeenLastCalledWith(saveDrafts);
   });
 });
