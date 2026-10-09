@@ -174,15 +174,19 @@ describe('theme cache storage', () => {
  * `librechat` and `clickhouse`, the definitions that can enter the cache (the boot script never
  * replays one under high contrast), and for generated definitions:
  * - every color, brand and appearance role overridden alone, theme-wide, in light only and in
- *   dark only (the other mode absent), plus a `none` sample for each shadow-like role;
+ *   dark only (the other mode absent), with each enum literal, `none` in either case and each
+ *   spelling of zero the role accepts as further samples;
  * - every role the resolver derives from others, found by diffing its resolved output against the
- *   bare theme, with all of its sources named together and again with the role named as well, theme-wide and per mode, so
- *   fallback precedence and opting out are covered without listing the chains by hand;
+ *   bare theme and then against its other sources named together, so a source that acts only
+ *   beside another joins too; each is generated with all of its sources named, with every pair of
+ *   them, and with the role named as well, every named role taking its own value, so fallback
+ *   precedence and opting out are covered without listing the chains by hand;
  * - every brand set theme-wide, in light and in dark with conflicting values;
+ * - every pair of candidates for roles validated together;
  * - definitions with one or both mode blocks absent.
  * A new role, or a new fallback, joins by construction.
  */
-const PIN = { fingerprint: '1.3.fgvuqz', digest: '16q8y55' };
+const PIN = { fingerprint: '1.3.fgvuqz', digest: '82mvtk' };
 
 const digestOf = (text: string): string => {
   let hash = 5381;
@@ -195,26 +199,50 @@ const digestOf = (text: string): string => {
 /** Locale-independent, so the digest does not depend on the collation Jest runs under. */
 const byCodePoint = (a: string, b: string): number => (a < b ? -1 : Number(a > b));
 
-const APPEARANCE_CANDIDATES = [
-  '0.5rem',
-  '1.25rem',
+/**
+ * Values a role may switch on or canonicalize: every enum literal an appearance validator names,
+ * `none` in either case for the composable shadows, and zero written more than one way. The
+ * validators are predicates, so these are listed, not read from them.
+ */
+const SPECIAL_CANDIDATES = [
   'soft',
   'dim',
   'fill',
-  '600',
-  '0.5',
-  '150ms',
-  '9rem',
-  '0 1px 2px 0 rgb(0 0 0 / 0.2)',
-  'ui-sans-serif, sans-serif',
-  '1.5',
+  'transparent',
+  'inherit',
   'ring',
   'border',
   'none',
+  'None',
+  '0',
+  '.0',
+  '0.0',
 ];
+
+const APPEARANCE_CANDIDATES = [
+  ...SPECIAL_CANDIDATES,
+  '0.5rem',
+  '1rem',
+  '1.25rem',
+  '2rem',
+  '9rem',
+  '24px',
+  '40px',
+  '600',
+  '0.5',
+  '150ms',
+  '0 1px 2px 0 rgb(0 0 0 / 0.2)',
+  'ui-sans-serif, sans-serif',
+  'Georgia, serif',
+  '1.5',
+].sort(byCodePoint);
+
+/** Roles the validator checks together, so a pair can be rejected though each side is valid alone. */
+const JOINTLY_VALIDATED: ReadonlyArray<[string, string]> = [['switchWidth', 'switchHeight']];
 
 type Scope = 'both' | 'light' | 'dark';
 type Mode = 'light' | 'dark';
+type Kind = 'colors' | 'appearance';
 type Overrides = {
   colors?: Record<string, string>;
   appearance?: Record<string, string>;
@@ -248,26 +276,44 @@ const define = (
     ),
   }) as ThemeDefinition;
 
-const BARE = define('bare', () => ({}), 'both');
 const isValid = (theme: ThemeDefinition): boolean => validateThemeDefinition(theme).length === 0;
+const isValidAppearance = (appearance: Record<string, string>): boolean =>
+  isValid(define('probe', () => ({ appearance }), 'both'));
 
-/** Every candidate the validator accepts for each appearance role, pinned so a narrowing or widening shows. */
+/**
+ * Every candidate the validator accepts for each appearance role, keyed in code point order so
+ * reordering the validators changes nothing, and pinned so a narrowing or widening shows.
+ */
 const ACCEPTED: Record<string, string[]> = Object.fromEntries(
-  themeAppearanceTokens.map((token) => [
-    token,
-    APPEARANCE_CANDIDATES.filter((value) =>
-      isValid(define(token, () => ({ appearance: { [token]: value } }), 'both')),
+  [...themeAppearanceTokens]
+    .sort(byCodePoint)
+    .map((token) => [
+      token,
+      APPEARANCE_CANDIDATES.filter((value) => isValidAppearance({ [token]: value })),
+    ]),
+);
+
+/** Every pair of candidates the validator accepts for each jointly validated pair of roles. */
+const ACCEPTED_PAIRS: Record<string, Array<[string, string]>> = Object.fromEntries(
+  JOINTLY_VALIDATED.map(([first, second]) => [
+    `${first}+${second}`,
+    APPEARANCE_CANDIDATES.flatMap((a) =>
+      APPEARANCE_CANDIDATES.filter((b) => isValidAppearance({ [first]: a, [second]: b })).map(
+        (b): [string, string] => [a, b],
+      ),
     ),
   ]),
 );
 
-/** The first sample the validator accepts for an appearance role, and `none` when it takes it. */
+const SPECIAL = new Set(SPECIAL_CANDIDATES);
+
+/** The first sample the validator accepts for an appearance role, and every special one it takes. */
 function appearanceSamples(token: string): string[] {
   const accepted = ACCEPTED[token];
   if (accepted.length === 0) {
     throw new Error(`Add a valid sample for the appearance role ${token} to APPEARANCE_CANDIDATES`);
   }
-  return [...new Set([accepted[0], ...accepted.filter((value) => value === 'none')])];
+  return [...new Set([accepted[0], ...accepted.filter((value) => SPECIAL.has(value))])];
 }
 
 const SAMPLES = Object.fromEntries(
@@ -277,43 +323,73 @@ const SAMPLES = Object.fromEntries(
 const colorOverrides = (tokens: readonly string[], mode: Mode): Record<string, string> =>
   Object.fromEntries(tokens.map((token, index) => [token, COLOR_SENTINEL[mode](index)]));
 
+/**
+ * Each role takes the accepted value at its position, so roles sharing a validator, such as
+ * `fontFamily` and `displayFontFamily`, carry distinct values and a role inheriting one of them
+ * shows which it read.
+ */
 const appearanceOverrides = (tokens: readonly string[]): Record<string, string> =>
-  Object.fromEntries(tokens.map((token) => [token, SAMPLES[token][0]]));
+  Object.fromEntries(
+    tokens.map((token, index) => [token, ACCEPTED[token][index % ACCEPTED[token].length]]),
+  );
 
-/** Role to the roles whose single override changes it, read from the resolver. */
-function derivedRoles(): { colors: Map<string, string[]>; appearance: Map<string, string[]> } {
-  const base = MODES.map((mode) => resolveTheme(BARE, mode));
-  const found = {
-    colors: new Map<string, Set<string>>(),
-    appearance: new Map<string, Set<string>>(),
-  };
-  const note = (kind: 'colors' | 'appearance', source: string, theme: ThemeDefinition) =>
-    MODES.forEach((mode, index) => {
-      const resolved = resolveTheme(theme, mode);
-      const before = base[index][kind] as Record<string, unknown>;
-      const after = resolved[kind] as Record<string, unknown>;
-      Object.keys(after)
-        .filter((key) => key !== source && after[key] !== before[key])
-        .forEach((key) => found[kind].set(key, (found[kind].get(key) ?? new Set()).add(source)));
-    });
-  themeColorTokens.forEach((token) =>
-    note(
-      'colors',
-      token,
-      define(token, (mode) => ({ colors: colorOverrides([token], mode) }), 'both'),
-    ),
+const OVERRIDES: Record<Kind, (tokens: readonly string[], mode: Mode) => Overrides> = {
+  colors: (tokens, mode) => ({ colors: colorOverrides(tokens, mode) }),
+  appearance: (tokens) => ({ appearance: appearanceOverrides(tokens) }),
+};
+
+const TOKENS: Record<Kind, readonly string[]> = {
+  colors: themeColorTokens,
+  appearance: themeAppearanceTokens,
+};
+
+/** The resolved roles of one kind in each mode, with `tokens` named. */
+const resolvedRoles = (kind: Kind, tokens: readonly string[]): Array<Record<string, unknown>> =>
+  MODES.map(
+    (mode) =>
+      resolveTheme(
+        define('probe', (current) => OVERRIDES[kind](tokens, current), 'both'),
+        mode,
+      )[kind] as Record<string, unknown>,
   );
-  themeAppearanceTokens.forEach((token) =>
-    note(
-      'appearance',
-      token,
-      define(token, () => ({ appearance: appearanceOverrides([token]) }), 'both'),
-    ),
+
+const differs = (
+  before: Array<Record<string, unknown>>,
+  after: Array<Record<string, unknown>>,
+  key: string,
+): boolean => before.some((roles, index) => roles[key] !== after[index][key]);
+
+/**
+ * Role to the roles that change it, read from the resolver: first each role named alone, then each
+ * further role named beside a derived role's sources, which finds a source that only acts jointly.
+ */
+function findDerived(kind: Kind): Map<string, string[]> {
+  const base = resolvedRoles(kind, []);
+  const found = new Map<string, Set<string>>();
+  TOKENS[kind].forEach((source) => {
+    const after = resolvedRoles(kind, [source]);
+    Object.keys(after[0])
+      .filter((key) => key !== source && differs(base, after, key))
+      .forEach((key) => found.set(key, (found.get(key) ?? new Set()).add(source)));
+  });
+  found.forEach((sources, target) => {
+    const named = [...sources];
+    const before = resolvedRoles(kind, named);
+    TOKENS[kind]
+      .filter((token) => token !== target && !named.includes(token))
+      .filter((token) => differs(before, resolvedRoles(kind, [...named, token]), target))
+      .forEach((token) => sources.add(token));
+  });
+  return new Map(
+    [...found].map(([key, sources]) => [key, [...sources].sort(byCodePoint)] as [string, string[]]),
   );
-  const sorted = (map: Map<string, Set<string>>) =>
-    new Map([...map].map(([key, sources]) => [key, [...sources].sort()] as [string, string[]]));
-  return { colors: sorted(found.colors), appearance: sorted(found.appearance) };
 }
+
+let derived: Record<Kind, Map<string, string[]>> | undefined;
+const derivedRoles = (): Record<Kind, Map<string, string[]>> => {
+  derived ??= { colors: findDerived('colors'), appearance: findDerived('appearance') };
+  return derived;
+};
 
 function roleFixtures(): Fixture[] {
   const colors = themeColorTokens.flatMap((token) =>
@@ -342,9 +418,9 @@ function roleFixtures(): Fixture[] {
     },
   ]);
   const appearance = themeAppearanceTokens.flatMap((token) =>
-    SAMPLES[token].flatMap((value, index) =>
+    SAMPLES[token].flatMap((value) =>
       SCOPES.map((scope) => ({
-        key: `appearance:${token}:${index}:${scope}`,
+        key: `appearance:${token}:${value}:${scope}`,
         theme: define(token, () => ({ appearance: { [token]: value } }), scope),
       })),
     ),
@@ -352,32 +428,44 @@ function roleFixtures(): Fixture[] {
   return [...colors, ...brands, ...appearance];
 }
 
-/** Each derived role with all of its sources named together, then with the role named as well. */
+/**
+ * Each derived role with all of its sources named together, with every pair of them, and with the
+ * role named as well.
+ */
 function derivedFixtures(): Fixture[] {
-  const { colors, appearance } = derivedRoles();
-  const fixtures = (
-    kind: 'color' | 'appearance',
-    chains: Map<string, string[]>,
-    overrides: (tokens: string[], mode: Mode) => Overrides,
-  ) =>
-    [...chains].flatMap(([target, sources]) =>
-      SCOPES.flatMap((scope) => [
-        {
-          key: `derived:${kind}:${target}:sources:${scope}`,
-          theme: define(target, (mode) => overrides(sources, mode), scope),
-        },
-        {
-          key: `derived:${kind}:${target}:named:${scope}`,
-          theme: define(target, (mode) => overrides([...sources, target], mode), scope),
-        },
-      ]),
-    );
-  return [
-    ...fixtures('color', colors, (tokens, mode) => ({ colors: colorOverrides(tokens, mode) })),
-    ...fixtures('appearance', appearance, (tokens) => ({
-      appearance: appearanceOverrides(tokens),
+  const roles = derivedRoles();
+  return (['colors', 'appearance'] as const).flatMap((kind) =>
+    [...roles[kind]].flatMap(([target, sources]) => {
+      const named = (tokens: string[], scope: Scope) =>
+        define(target, (mode) => OVERRIDES[kind](tokens, mode), scope);
+      const pairs = sources.flatMap((first, index) =>
+        sources.slice(index + 1).map((second) => ({
+          key: `derived:${kind}:${target}:pair:${first}+${second}`,
+          theme: named([first, second], 'both'),
+        })),
+      );
+      return [
+        ...SCOPES.flatMap((scope) => [
+          { key: `derived:${kind}:${target}:sources:${scope}`, theme: named(sources, scope) },
+          {
+            key: `derived:${kind}:${target}:named:${scope}`,
+            theme: named([...sources, target], scope),
+          },
+        ]),
+        ...pairs,
+      ];
+    }),
+  );
+}
+
+/** Every accepted pair of the jointly validated roles. */
+function jointFixtures(): Fixture[] {
+  return JOINTLY_VALIDATED.flatMap(([first, second]) =>
+    ACCEPTED_PAIRS[`${first}+${second}`].map(([a, b]) => ({
+      key: `joint:${first}:${a}:${second}:${b}`,
+      theme: define(first, () => ({ appearance: { [first]: a, [second]: b } }), 'both'),
     })),
-  ];
+  );
 }
 
 /** Mode blocks that are missing or empty, on a bare theme and on a bundled one. */
@@ -407,6 +495,7 @@ const persistedOutput = () => {
     { key: 'a:clickhouse', theme: clickHouseTheme },
     ...roleFixtures(),
     ...derivedFixtures(),
+    ...jointFixtures(),
     ...modeFixtures(),
   ].sort((a, b) => byCodePoint(a.key, b.key));
   return fixtures.map(({ key, theme }) => {
@@ -431,7 +520,13 @@ describe('resolver output pin', () => {
   it('matches the persisted output of every cacheable definition and generated fixture', () => {
     const status = pinStatus({
       fingerprint: themeRoleFingerprint(),
-      digest: digestOf(JSON.stringify({ accepted: ACCEPTED, output: persistedOutput() })),
+      digest: digestOf(
+        JSON.stringify({
+          accepted: ACCEPTED,
+          acceptedPairs: ACCEPTED_PAIRS,
+          output: persistedOutput(),
+        }),
+      ),
     });
     expect(status).toBe('');
   });
@@ -441,6 +536,34 @@ describe('resolver output pin', () => {
     expect(colors.get('rgb-surface-code')).toContain('rgb-surface-primary-alt');
     expect(colors.get('rgb-link-prose')).toContain('rgb-link');
     expect(appearance.get('menuShadow')).toContain('shadowLg');
+  });
+
+  it('finds a source that acts only beside another', () => {
+    expect(derivedRoles().colors.get('rgb-series-8')).toEqual(
+      expect.arrayContaining(['rgb-series-1', 'rgb-text-secondary']),
+    );
+  });
+
+  it('gives roles sharing a validator distinct values', () => {
+    const named = appearanceOverrides(['fontFamily', 'displayFontFamily']);
+    expect(named.fontFamily).not.toBe(named.displayFontFamily);
+    expect(derivedRoles().appearance.get('dialogTitleFontFamily')).toEqual(
+      expect.arrayContaining(['displayFontFamily', 'fontFamily']),
+    );
+  });
+
+  it('samples every enum literal, both cases of none and each spelling of zero', () => {
+    expect(SAMPLES.fieldFillStyle).toEqual(expect.arrayContaining(['fill', 'transparent']));
+    expect(SAMPLES.labelFontWeight).toContain('inherit');
+    expect(SAMPLES.shadowLg).toEqual(expect.arrayContaining(['none', 'None']));
+    expect(SAMPLES.chromeBorderAlpha).toEqual(expect.arrayContaining(['0', '.0', '0.0']));
+  });
+
+  it('pins the pairs a joint rule accepts, not only each side alone', () => {
+    const pairs = ACCEPTED_PAIRS['switchWidth+switchHeight'];
+    expect(pairs).toContainEqual(['1rem', '0.5rem']);
+    expect(pairs).not.toContainEqual(['0.5rem', '1rem']);
+    expect(ACCEPTED.switchWidth).not.toContain('1rem');
   });
 
   it('tells a version change from an output change', () => {
