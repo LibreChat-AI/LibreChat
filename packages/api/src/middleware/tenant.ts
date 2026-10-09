@@ -1,9 +1,11 @@
+import { randomUUID } from 'crypto';
 import { unlink } from 'fs/promises';
 import { isMainThread } from 'worker_threads';
 import { tenantStorage, logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { TenantContext } from '@librechat/data-schemas';
 import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
+import { buildSafeRequestLogContext } from './auth';
 
 type ContextUser = {
   tenantId?: string;
@@ -11,15 +13,22 @@ type ContextUser = {
   _id?: { toString: () => string };
 } | null;
 
-type ContextRequest = {
+export type ContextRequest = {
   headers: ServerRequest['headers'];
   tenantId?: string;
   user?: ContextUser;
   id?: string;
   requestId?: string;
+  method?: string;
+  path?: string;
+  originalUrl?: string;
+  url?: string;
+  baseUrl?: string;
+  route?: {
+    path?: string | RegExp | readonly (string | RegExp)[];
+  };
 };
 
-const REQUEST_ID_HEADERS = ['x-request-id', 'x-correlation-id'] as const;
 const SYSTEM_TENANT_REJECTION_MESSAGE = 'System tenant is not allowed for request-scoped routes';
 
 let _checkedThread = false;
@@ -40,30 +49,18 @@ function normalizeContextValue(value?: string): string | undefined {
   return trimmed || undefined;
 }
 
-function getHeaderValue(value: string | string[] | undefined): string | undefined {
-  return normalizeContextValue(Array.isArray(value) ? value[0] : value);
-}
-
-function getRequestId(req: ContextRequest): string | undefined {
-  const requestId = normalizeContextValue(req.requestId) ?? normalizeContextValue(req.id);
-  if (requestId) {
-    return requestId;
-  }
-  for (const header of REQUEST_ID_HEADERS) {
-    const value = getHeaderValue(req.headers[header]);
-    if (value) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
 function getUserId(user: ContextUser): string | undefined {
   return normalizeContextValue(user?.id) ?? normalizeContextValue(user?._id?.toString());
 }
 
 function hasTenantContext(context: TenantContext): boolean {
-  return Boolean(context.tenantId || context.userId || context.requestId);
+  return Boolean(
+    context.tenantId ||
+      context.userId ||
+      context.requestId ||
+      context.requestMethod ||
+      context.requestPath,
+  );
 }
 
 export function buildTenantContext(
@@ -71,10 +68,37 @@ export function buildTenantContext(
   tenantId: string | undefined = req.tenantId ?? req.user?.tenantId,
 ): TenantContext {
   return {
+    ...buildRequestContext(req),
     tenantId: normalizeContextValue(tenantId),
     userId: getUserId(req.user ?? null),
-    requestId: getRequestId(req),
   };
+}
+
+export function buildRequestContext(req: ContextRequest): TenantContext {
+  const requestContext = buildSafeRequestLogContext(req);
+
+  return {
+    requestId: requestContext.request_id,
+    requestMethod: requestContext.request_method,
+    requestPath: requestContext.request_path,
+  };
+}
+
+/**
+ * Establishes safe, request-level correlation before authentication. It carries
+ * no tenant or user identity, so strict tenant isolation remains fail-closed.
+ */
+export function requestContextMiddleware(
+  req: ContextRequest,
+  _res: Response,
+  next: NextFunction,
+): void {
+  const context = buildRequestContext(req);
+  if (!context.requestId) {
+    context.requestId = randomUUID();
+  }
+  req.requestId = context.requestId;
+  runWithTenantContext(context, next);
 }
 
 export function runWithTenantContext(context: TenantContext, next: NextFunction): void {

@@ -14,7 +14,7 @@ export default function MessagesView({
   const [currentEditId, setCurrentEditId] = useState<number | string | null>(-1);
   return (
     <div className="min-h-0 flex-1 overflow-hidden" data-testid="messages-view">
-      <div className="dark:gpt-dark-gray relative h-full">
+      <div className="relative h-full">
         <div
           style={{
             height: '100%',
@@ -22,9 +22,9 @@ export default function MessagesView({
             width: '100%',
           }}
         >
-          <div className="flex flex-col pb-16 text-sm dark:bg-transparent">
+          <div className="flex flex-col pb-16 text-sm">
             {(_messagesTree && _messagesTree.length === 0) || _messagesTree === null ? (
-              <div className="flex w-full items-center justify-center gap-1 bg-gray-50 p-3 text-sm text-gray-500 dark:border-gray-800/50 dark:bg-gray-800 dark:text-gray-300">
+              <div className="bg-surface-secondary text-text-tertiary flex w-full items-center justify-center gap-1 p-3 text-sm">
                 {localize('com_ui_nothing_found')}
               </div>
             ) : (
@@ -40,7 +40,7 @@ export default function MessagesView({
                 </div>
               </>
             )}
-            <div className="dark:gpt-dark-gray group h-0 w-full flex-shrink-0 dark:border-gray-800/50" />
+            <div className="group h-0 w-full shrink-0" />
           </div>
         </div>
       </div>

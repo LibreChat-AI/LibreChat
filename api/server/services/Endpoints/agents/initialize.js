@@ -1,18 +1,60 @@
 const { logger } = require('@librechat/data-schemas');
-const { createContentAggregator } = require('@librechat/agents');
+const { createContentAggregator, GraphNodeKeys } = require('@librechat/agents');
 const {
+  resolveSender,
+  copyToolApprovalAdmissionMetadata,
+  resolveRunConversation,
+  resolveAdmittedCodeEnvironmentDecision,
+  createConcurrencyLimiter,
   loadSkillStates,
+  resolveInitializationProjectContext,
   initializeAgent,
-  primeInvokedSkills,
+  primeInvokedSkillsForProfiles,
   validateAgentModel,
   extractManualSkills,
   GenerationJobManager,
   getCustomEndpointConfig,
+  getProviderConfig,
   discoverConnectedAgents,
   resolveAgentTokenConfig,
   resolveAgentScopedSkillIds,
   resolveModelSpecSkillIds,
+  getAgentStartupTelemetry,
+  isContentFilterError,
   buildAgentContextAttachmentsByAgentId,
+  collectCodeExecutionProfileRoutes,
+  getLazySubagentConfigId,
+  createRoutedGraphMemberLoader,
+  createViewableSubagentLoader,
+  resolveAgentCodeFlags,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
+  resolveCodeExecutionWorkspaceSelections,
+  resolveCodeExecutionWorkspaceContext,
+  resolveSubagentCodeWorkspaceInheritance,
+  resolveSubagentCodeAvailability,
+  guardRoutableSubagent,
+  buildSubagentThreadTaskConfig,
+  backgroundCompletionWakeupsEnabled,
+  createLazyAgentHistoryResolver,
+  resolveToolRoleGrants,
+  createChatRunFileBindings,
+  createAxiosInstance,
+  getCodeApiAuthHeaders,
+  getCodeExecutionBaseUrl,
+  getAuthorizedRunFileSnapshot,
+  isRunFileSharingRequested,
+  encodeAndFormatDocuments,
+  encodeAndFormatAudios,
+  encodeAndFormatVideos,
+  extractFileContext,
+  createScheduleUpstreamTokenProviderResolver,
+  initializeWithScheduledMCPBearer,
+  initializeWithScheduleMCPExecution,
+  retainScheduleMCPCompletion,
+  getScheduleMCPExecution,
+  getMCPRequestContext,
+  createSubagentCodeRouting,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -20,16 +62,28 @@ const {
   PermissionBits,
   MAX_SUBAGENT_DEPTH,
   isAgentsEndpoint,
-  getResponseSender,
   AgentCapabilities,
+  normalizeServerName,
+  Tools,
+  VisionModes,
   MAX_SUBAGENT_GRAPH_NODES,
+  MAX_SUBAGENT_RUN_CONFIGS,
   isEphemeralAgentId,
+  resolveAllowedStatefulCodeEnvironments,
 } = require('librechat-data-provider');
 const {
   createToolEndCallback,
+  createAttachmentEmitter,
+  createPtcProgressEmitter,
+  createBackgroundCodeResultHandler,
   getDefaultHandlers,
 } = require('~/server/controllers/agents/callbacks');
-const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
+const {
+  loadAgentTools,
+  loadToolsForExecution,
+  getAccessibleMcpServerNames,
+  isFatalAgentInitializationError,
+} = require('~/server/services/ToolService');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const {
   getSkillToolDeps,
@@ -37,27 +91,61 @@ const {
   canAuthorSkillFiles,
   withDeploymentSkillIds,
   buildAgentToolContext,
+  resolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext,
 } = require('./skillDeps');
+const {
+  loadCodeApiKey,
+  provisionToCodeEnv,
+  provisionToVectorDB,
+  checkSessionsAlive,
+} = require('~/server/services/Files/provision');
+const { createProvisionFilesCallback } = require('~/server/services/Files/provisionCallback');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const AgentClient = require('~/server/controllers/agents/client');
 const { processAddedConvo } = require('./addedConvo');
+const { getLinkedInstructionsResolver } = require('./linkedInstructions');
+const subagentThreadTaskStore = require('./subagentThreadStore');
+const {
+  preregisterBackgroundToolCompletion,
+  pendingBackgroundToolCompletions,
+  createBackgroundToolResultPersistence,
+  claimBackgroundToolResult,
+  createDeadBackgroundToolClaimRecovery,
+} = require('./backgroundCompletion');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
+const { getAppConfig } = require('~/server/services/Config');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+const { encodeAndFormat } = require('~/server/services/Files/images/encode');
+const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
+const { determineFileType } = require('~/server/utils');
+
+const SUBAGENT_GRAPH_LOAD_CONCURRENCY = 4;
 
 /**
  * Creates a tool loader function for the agent.
+ * @param {ServerRequest} req - Request-backed tool adapter input
+ * @param {ServerResponse} res - Response-backed tool adapter input
  * @param {AbortSignal} signal - The abort signal
  * @param {string | null} [streamId] - The stream ID for resumable mode
  * @param {boolean} [definitionsOnly=false] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
+ * @param {number} [jobCreatedAt] - The generation epoch that owns emitted tool events
  */
-function createToolLoader(signal, streamId = null, definitionsOnly = false) {
+function createToolLoader(
+  req,
+  res,
+  signal,
+  streamId = null,
+  definitionsOnly = false,
+  jobCreatedAt,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
+) {
   /**
    * @param {object} params
-   * @param {ServerRequest} params.req
-   * @param {ServerResponse} params.res
    * @param {string} params.agentId
    * @param {string[]} params.tools
    * @param {string} params.provider
@@ -72,14 +160,16 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
    * } | undefined>}
    */
   return async function loadTools({
-    req,
-    res,
     tools,
     model,
     agentId,
     provider,
     tool_options,
     tool_resources,
+    requestBody,
+    codeExecutionContext,
+    attachedEnvironmentOptOut,
+    accessibleMcpServerNames,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
     try {
@@ -89,10 +179,20 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
         agent,
         signal,
         streamId,
+        jobCreatedAt,
+        requestBody,
         tool_resources,
+        codeExecutionContext,
+        attachedEnvironmentOptOut,
         definitionsOnly,
+        accessibleMcpServerNames,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
       });
     } catch (error) {
+      if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
+        throw error;
+      }
       logger.error('Error loading tools for agent ' + agentId, error);
     }
   };
@@ -105,12 +205,54 @@ function createToolLoader(signal, streamId = null, definitionsOnly = false) {
  * @param {Express.Response} params.res
  * @param {AbortSignal} params.signal
  * @param {Object} params.endpointOption
+ * @param {number} [params.jobCreatedAt]
+ * @param {string} [params.checkpointNamespace] Immutable saver-level generation scope
+ * @param {string} [params.foregroundRunId] Canonical response identity for foreground execution
+ * @param {import('@librechat/api').MCPRuntimeRequestBody} [params.requestBody]
+ * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
+ * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
+ * @param {boolean} [params.isResume] Whether this initialization is replaying an
+ *   already-in-flight turn (a resumed stream), rather than starting a new one.
+ *   Resolution of every agent's `instructionsPrompt` link still runs, cache-first,
+ *   but usage is not recorded again for the same turn.
  */
-const initializeClient = async ({ req, res, signal, endpointOption }) => {
+const initializeClientWithProvider = async ({
+  req,
+  res,
+  signal,
+  endpointOption,
+  jobCreatedAt,
+  checkpointNamespace,
+  foregroundRunId,
+  requestBody,
+  toolTimingReplayEvents,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
+  isResume,
+}) => {
   if (!endpointOption) {
     throw new Error('Endpoint option not provided');
   }
   const appConfig = req.config;
+  const completionWakeupsEnabled = backgroundCompletionWakeupsEnabled(
+    appConfig?.endpoints?.[EModelEndpoint.agents],
+  );
+  const ordinaryToolCancellationEnabled =
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.backgroundTasks?.ordinaryToolCancellation ===
+    true;
+  const backgroundCompletionResultMaxChars =
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.backgroundTasks?.completionResultMaxChars;
+  /** The normal controller resolves this once for timestamp anchoring. Reuse
+   * that trusted document for child-thread execution policy; resume and direct
+   * callers fall back to the same owner-scoped lookup. */
+  let runtimeRequestBody = requestBody ?? req.body;
+  const conversationId = runtimeRequestBody?.conversationId;
+  const requestConversationPromise = resolveRunConversation({
+    request: req,
+    conversationId,
+    loadConversation: (conversationId) => db.getConvo(req.user.id, conversationId),
+  });
+  const startupTelemetry = getAgentStartupTelemetry(req);
 
   /** @type {string | null} */
   const streamId = req._resumableStreamId || null;
@@ -131,8 +273,16 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
   const collectedThoughtSignatures = {};
   /** @type {ArtifactPromises} */
   const artifactPromises = [];
-  const { contentParts, aggregateContent } = createContentAggregator();
-  const toolEndCallback = createToolEndCallback({ req, res, artifactPromises, streamId });
+  /** @type {Map<string, import('@librechat/api').ToolInputValidationError>} */
+  const toolInputValidationErrors = new Map();
+  const { contentParts, aggregateContent, stepMap } = createContentAggregator();
+  const artifactToolEndCallback = createToolEndCallback({
+    req,
+    res,
+    artifactPromises,
+    streamId,
+    jobCreatedAt,
+  });
 
   /** Query accessible skill IDs once per run (shared across all agents).
    *  Skills activate under strict opt-in semantics — see
@@ -144,38 +294,103 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
    *      allowlist with the toggle on = full accessible catalog. */
   const enabledCapabilities = new Set(appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities);
   const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
-  const codeEnvAvailable = enabledCapabilities.has(AgentCapabilities.execute_code);
+  const codeCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.execute_code);
+  const fileSearchCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.file_search);
+  /** Started here but joined into the startup `Promise.all` below rather than
+   *  awaited inline: neither flag is read until agent construction, so the role
+   *  lookup overlaps the memory, skill and conversation queries instead of
+   *  delaying them. Skipped entirely when the deployment has both capabilities
+   *  off, since both flags are false either way. One lookup answers both. */
+  const toolRoleGrantsPromise =
+    codeCapabilityEnabled || fileSearchCapabilityEnabled
+      ? resolveToolRoleGrants({ req, getRoleByName: db.getRoleByName, context: 'initializeClient' })
+      : null;
+  const backgroundToolsAvailable = enabledCapabilities.has(AgentCapabilities.run_in_background);
+  const toolIntentsAvailable = enabledCapabilities.has(AgentCapabilities.tool_intents);
+  /** Resolves any agent's `instructionsPrompt` link this run encounters — primary,
+   *  handoff, subagent, or added-conversation agent. A resumed turn records no
+   *  usage at all, including for a lazy subagent spawned for the first time
+   *  during that resumed turn: only a fresh turn records usage. */
+  const resolveLinkedInstructions = getLinkedInstructionsResolver();
+  const recordLinkedPromptUsage = !isResume;
+  const deferredToolsAvailable = enabledCapabilities.has(AgentCapabilities.deferred_tools);
+  const programmaticToolsAvailable = enabledCapabilities.has(AgentCapabilities.programmatic_tools);
+  const statefulSessionsAvailable = enabledCapabilities.has(
+    AgentCapabilities.stateful_code_sessions,
+  );
+  const allowedStatefulCodeEnvironments = resolveAllowedStatefulCodeEnvironments(
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowedEnvironments,
+  );
   const ephemeralSkillsToggle = req.body?.ephemeralAgent?.skills === true;
   const skillDbMethods = getSkillDbMethods();
 
-  const accessibleSkillIds = skillsCapabilityEnabled
-    ? withDeploymentSkillIds(
-        await findAccessibleResources({
-          userId: req.user.id,
-          role: req.user.role,
-          resourceType: ResourceType.SKILL,
-          requiredPermissions: PermissionBits.VIEW,
-        }),
-      )
-    : [];
-  const editableSkillIds = skillsCapabilityEnabled
-    ? await findAccessibleResources({
+  if (!endpointOption.agent) {
+    throw new Error('No agent promise provided');
+  }
+
+  /** Run-level gate for inline memory tools: the `memory` capability must be
+   *  enabled, memory must be configured, and the user must not have opted out.
+   *  Requires the memory WRITE permissions (CREATE + UPDATE) — both inline tools
+   *  mutate memory — so the tools aren't registered (and shown to the model) for
+   *  read-only-memory roles that the runtime loader would then refuse to build.
+   *  Agents (or the ephemeral memory badge) opt in per-agent via the `memory`
+   *  marker on `tools`. */
+  const memoryAvailablePromise = resolveMemoryAvailability({
+    enabledCapabilities,
+    memoryConfig: appConfig?.memory,
+    user: req.user,
+    getRoleByName: db.getRoleByName,
+  });
+
+  const accessibleSkillIdsPromise = skillsCapabilityEnabled
+    ? findAccessibleResources({
+        userId: req.user.id,
+        role: req.user.role,
+        resourceType: ResourceType.SKILL,
+        requiredPermissions: PermissionBits.VIEW,
+      }).then(withDeploymentSkillIds)
+    : Promise.resolve([]);
+  const editableSkillIdsPromise = skillsCapabilityEnabled
+    ? findAccessibleResources({
         userId: req.user.id,
         role: req.user.role,
         resourceType: ResourceType.SKILL,
         requiredPermissions: PermissionBits.EDIT,
       })
-    : [];
-  const skillCreateAllowed = skillsCapabilityEnabled
-    ? await getSkillToolDeps().canCreateSkill({ req })
-    : false;
+    : Promise.resolve([]);
+  const skillCreateAllowedPromise = skillsCapabilityEnabled
+    ? getSkillToolDeps().canCreateSkill({ req })
+    : Promise.resolve(false);
+  const skillStatesPromise = accessibleSkillIdsPromise.then((accessibleSkillIds) =>
+    loadSkillStates({
+      userId: req.user.id,
+      appConfig,
+      getUserById: db.getUserById,
+      accessibleSkillIds,
+    }),
+  );
+  const primaryAgentPromise = endpointOption.agent;
+  const modelsConfigPromise = getModelsConfig(req);
+  const validatedPrimaryAgentPromise = Promise.all([primaryAgentPromise, modelsConfigPromise]).then(
+    async ([primaryAgent, modelsConfig]) => {
+      if (!primaryAgent) {
+        throw new Error('Agent not found');
+      }
 
-  const { skillStates, defaultActiveOnShare } = await loadSkillStates({
-    userId: req.user.id,
-    appConfig,
-    getUserById: db.getUserById,
-    accessibleSkillIds,
-  });
+      const validationResult = await validateAgentModel({
+        req,
+        res,
+        modelsConfig,
+        logViolation,
+        agent: primaryAgent,
+      });
+      if (!validationResult.isValid) {
+        throw new Error(validationResult.error?.message);
+      }
+
+      return { primaryAgent, modelsConfig };
+    },
+  );
 
   /**
    * Agent context store - populated after initialization, accessed by callback via closure.
@@ -190,26 +405,123 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
    * }>}
    */
   const agentToolContexts = new Map();
+  /** Per-call subagent machine routing; assigned once the request's code inputs are known. */
+  let subagentCodeRouting;
+  const getRoutedToolContext = (agentId, executionContext) =>
+    subagentCodeRouting?.getToolContext(agentId, executionContext);
+  let runFileBindings;
+  const resolveMcpServerName = (toolName, agentId) => {
+    if (typeof toolName !== 'string' || typeof agentId !== 'string') {
+      return undefined;
+    }
+    const context = agentToolContexts.get(agentId);
+    const registered = context?.toolRegistry?.get?.(toolName);
+    if (typeof registered?.mcpRawServerName === 'string') {
+      return normalizeServerName(registered.mcpRawServerName);
+    }
+    for (const [serverName, tools] of Object.entries(context?.mcpAvailableTools ?? {})) {
+      if (tools?.[toolName]?.function) {
+        return normalizeServerName(serverName);
+      }
+    }
+    return undefined;
+  };
+  /** Attach only the host-resolved route for the actually executing agent.
+   * Runnable metadata is transport data and may contain caller-controlled
+   * keys, so discard any incoming route context before resolving from the
+   * server-owned per-agent map. This covers both traditional TOOL_END events
+   * and event-driven ON_TOOL_EXECUTE callbacks. */
+  const toolEndCallback = async (data, metadata = {}) => {
+    /** Event-actor action receipt: recorded in graph context at execution time
+     * so fork classification never races the asynchronously populated run-step
+     * collection. Observational only — a recorder failure must not disturb the
+     * tool result path. */
+    if (typeof req._agentEventActionObserver === 'function') {
+      try {
+        req._agentEventActionObserver(data);
+      } catch (observerError) {
+        logger.warn('[toolEndCallback] Event actor action observer failed', observerError);
+      }
+    }
+    /** Policy-withheld outputs exist solely as execution evidence for the
+     * observer above; nothing may flow to artifact processing. */
+    if (data?.outputFiltered === true) {
+      return;
+    }
+    const node = typeof metadata.langgraph_node === 'string' ? metadata.langgraph_node : '';
+    const nodeAgentId = node.startsWith(GraphNodeKeys.TOOLS)
+      ? node.slice(GraphNodeKeys.TOOLS.length)
+      : undefined;
+    const executingAgentId =
+      metadata.executingAgentId ?? metadata.agentId ?? metadata.agent_id ?? nodeAgentId;
+    const soleContext =
+      agentToolContexts.size === 1 ? agentToolContexts.values().next().value : null;
+    const trustedContext =
+      getRoutedToolContext(executingAgentId, metadata.executionContext) ??
+      (typeof executingAgentId === 'string' ? agentToolContexts.get(executingAgentId) : null) ??
+      soleContext;
+    const callbackMetadata = { ...metadata };
+    delete callbackMetadata.codeExecutionContext;
+    if (trustedContext?.codeExecutionContext) {
+      callbackMetadata.codeExecutionContext = trustedContext.codeExecutionContext;
+    }
+    return runFileBindings.deliverToolEnd(artifactToolEndCallback, data, callbackMetadata);
+  };
+  /** @type {Map<string, import('@librechat/api').EndpointTokenConfig | undefined>} */
+  const endpointTokenConfigByAgentId = new Map();
 
+  const invokedSkillIdentities = new Map();
   const toolExecuteOptions = {
-    loadTools: async (toolNames, agentId) => {
-      const ctx = agentToolContexts.get(agentId) ?? {};
+    scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(req, res)),
+    // Keep foreground cancellation owned by this request even when the agents
+    // SDK rebuilds a graph for approval resume. The SDK event's breaker signal
+    // is composed with this authoritative job signal by the handler.
+    runSignal: signal,
+    foregroundRunId,
+    attachedCommandStepIds: new Set(),
+    ordinaryToolCancellation: ordinaryToolCancellationEnabled,
+    backgroundCompletionResultMaxChars,
+    loadTools: async (
+      toolNames,
+      agentId,
+      _configurable,
+      callerCapabilityProjection,
+      runSignal,
+      executionContext,
+    ) => {
+      const ctx =
+        getRoutedToolContext(agentId, executionContext) ??
+        runFileBindings.getContext(agentId, executionContext) ??
+        {};
       logger.debug(`[ON_TOOL_EXECUTE] ctx found: ${!!ctx.userMCPAuthMap}, agent: ${ctx.agent?.id}`);
       logger.debug(`[ON_TOOL_EXECUTE] toolRegistry size: ${ctx.toolRegistry?.size ?? 'undefined'}`);
 
       const result = await loadToolsForExecution({
         req,
         res,
-        signal,
+        signal: runSignal ?? signal,
         streamId,
+        conversationId,
+        requestBody: runtimeRequestBody,
         toolNames,
         agent: ctx.agent,
+        runFileCodeExecutionContext: runFileBindings.getCodeExecutionContext(
+          agentId,
+          executionContext,
+        ),
         toolRegistry: ctx.toolRegistry,
+        callerCapabilityProjection,
+        backgroundToolNames: ctx.backgroundToolNames,
+        intentToolNames: ctx.intentToolNames,
         mcpAvailableTools: ctx.mcpAvailableTools,
         requestScopedConnections: ctx.requestScopedConnections,
         userMCPAuthMap: ctx.userMCPAuthMap,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
         tool_resources: ctx.tool_resources,
         actionsEnabled: ctx.actionsEnabled,
+        accessibleMcpServerNames: ctx.accessibleMcpServerNames,
+        jobCreatedAt,
       });
 
       logger.debug(`[ON_TOOL_EXECUTE] loaded ${result.loadedTools?.length ?? 0} tools`);
@@ -225,7 +537,59 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       });
     },
     toolEndCallback,
+    /** Bound later by request.js once the authenticated Event Actor owner and
+     * generation fence are known. Ordinary background calls remain unchanged. */
+    eventActorDetachedAction: {
+      reserve: (input) =>
+        req._agentEventDetachedActionLifecycle?.reserve(input) ??
+        Promise.resolve({ status: 'ignored' }),
+      markRunning: (input) =>
+        req._agentEventDetachedActionLifecycle?.markRunning(input) ?? Promise.resolve(false),
+      settle: (input) =>
+        req._agentEventDetachedActionLifecycle?.settle(input) ?? Promise.resolve(false),
+      wake: (input) => req._agentEventDetachedActionLifecycle?.wake(input) ?? Promise.resolve(),
+    },
+    persistBackgroundCodeResult: createBackgroundCodeResultHandler({
+      req,
+      streamId,
+      jobCreatedAt,
+      updateToolCallResult: db.updateToolCallResult,
+    }),
+    backgroundToolCompletion: {
+      ...(completionWakeupsEnabled ? { preregister: preregisterBackgroundToolCompletion } : {}),
+      /** Deliveries admitted before wake-ups were disabled still drain and still count. */
+      pending: pendingBackgroundToolCompletions,
+      persist: createBackgroundToolResultPersistence({
+        req,
+        updateToolCallResult: db.updateToolCallResult,
+      }),
+      claim: (input) => claimBackgroundToolResult(db, input),
+      recoverDeadClaim: createDeadBackgroundToolClaimRecovery(
+        db.releaseBackgroundToolResultClaims,
+        (conversationId) => GenerationJobManager.getJob(conversationId),
+        ({ userId, conversationId, claimId }) =>
+          GenerationJobManager.fenceGenerationClaimForRecovery(
+            userId,
+            claimId,
+            conversationId,
+            conversationId,
+          ),
+      ),
+    },
+    emitAttachment: createAttachmentEmitter({ res, streamId, jobCreatedAt }),
+    emitPtcProgress: createPtcProgressEmitter({ res, streamId, jobCreatedAt }),
+    onSkillResolved: (skill, { agentId }) => {
+      if (agentId === primaryConfig.id) {
+        invokedSkillIdentities.set(skill.id, skill);
+      }
+    },
     ...getSkillToolDeps(),
+    provisionFiles: createProvisionFilesCallback({
+      req,
+      agentToolContexts,
+      resolvePrimaryAgentId: () => primaryConfig?.id,
+      resolveExecutionContext: getRoutedToolContext,
+    }),
   };
 
   const summarizationOptions =
@@ -256,58 +620,99 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
   /** Latest visible context snapshot + every emitted usage payload for this
    *  response, captured by the handlers and persisted on the response message's
    *  metadata so the breakdown and branch/total cost survive a reload.
-   *  @type {{ latest: import('librechat-data-provider').TContextUsageEvent | null, count: number }} */
+   *  `onSnapshot` is installed by the client to publish run state after each snapshot.
+   *  @type {{ latest: import('librechat-data-provider').TContextUsageEvent | null, count: number, onSnapshot?: () => void }} */
   const contextUsageSink = { latest: null, count: 0 };
   /** @type {Array<import('librechat-data-provider').TTokenUsageEvent>} */
   const usageEmitSink = [];
 
-  const eventHandlers = getDefaultHandlers({
-    res,
-    toolExecuteOptions,
-    summarizationOptions,
-    aggregateContent,
-    toolEndCallback,
-    collectedUsage,
-    collectedThoughtSignatures,
-    streamId,
-    subagentAggregatorsByToolCallId,
-    usageCost,
-    contextUsageSink,
-    usageEmitSink,
-  });
+  const chatProjectContextPromise = resolveInitializationProjectContext(
+    { req, endpointOption, conversationId, conversationPromise: requestConversationPromise },
+    {
+      getConvo: db.getConvo,
+      getChatProject: db.getChatProject,
+      getProjectFiles: db.getProjectFiles,
+    },
+  );
 
-  if (!endpointOption.agent) {
-    throw new Error('No agent promise provided');
+  const [
+    memoryAvailable,
+    accessibleSkillIds,
+    editableSkillIds,
+    skillCreateAllowed,
+    { skillStates, defaultActiveOnShare },
+    { primaryAgent, modelsConfig },
+    requestConversation,
+    chatProjectContext,
+    toolRoleGrants,
+  ] = await Promise.all([
+    memoryAvailablePromise,
+    accessibleSkillIdsPromise,
+    editableSkillIdsPromise,
+    skillCreateAllowedPromise,
+    skillStatesPromise,
+    validatedPrimaryAgentPromise,
+    requestConversationPromise,
+    chatProjectContextPromise,
+    toolRoleGrantsPromise,
+  ]);
+  /** Preserve the owner-scoped fallback for loaders that share this request. */
+  req.resolvedConversation = requestConversation;
+  req.chatProjectContext = chatProjectContext;
+  req.chatProjectContextEnabled = true;
+  const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
+    await resolveAdmittedCodeEnvironmentDecision({
+      appConfig,
+      conversation: requestConversation,
+      conversationId,
+      requestedMode: runtimeRequestBody?.codeEnvironmentMode,
+      requestedSelections: runtimeRequestBody?.codeWorkspaces,
+      readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(req.user.id, id),
+    });
+  req.resolvedConversation = admittedConversation;
+  /** Trusted, normalized pair used by every persistence path, including init failures. */
+  req._codeEnvironmentDecision = codeEnvironmentDecision;
+  runtimeRequestBody = {
+    ...runtimeRequestBody,
+    codeEnvironmentMode: codeEnvironmentDecision.mode,
+    codeWorkspaces: codeEnvironmentDecision.codeWorkspaces,
+  };
+  req.body.codeEnvironmentMode = codeEnvironmentDecision.mode;
+  if (codeEnvironmentDecision.codeWorkspaces == null) {
+    delete req.body.codeWorkspaces;
+  } else {
+    req.body.codeWorkspaces = codeEnvironmentDecision.codeWorkspaces;
   }
-
-  const primaryAgent = await endpointOption.agent;
   delete endpointOption.agent;
-  if (!primaryAgent) {
-    throw new Error('Agent not found');
-  }
 
-  const modelsConfig = await getModelsConfig(req);
-  const validationResult = await validateAgentModel({
-    req,
-    res,
-    modelsConfig,
-    logViolation,
-    agent: primaryAgent,
-  });
-
-  if (!validationResult.isValid) {
-    throw new Error(validationResult.error?.message);
-  }
+  /** The deployment switch AND the role grant. `initializeAgent` rebuilds
+   *  `bash_tool`, `read_file` and the workspace file tools from this flag after
+   *  the tool loader has already dropped `execute_code` for a denied role, and
+   *  forwards the code-environment context to their handlers — so the grant has
+   *  to travel with the flag, not just with the tool list. */
+  const codeEnvAvailable = codeCapabilityEnabled && toolRoleGrants?.runCode === true;
+  /** The same pairing for the other gated tool. Read only by the resend-file
+   *  priming inside `initializeAgent`: `false` skips re-hydrating prior-turn
+   *  `file_search` files, whose usage counters would otherwise be bumped and
+   *  whose resources primed for a tool the loader is about to drop. */
+  const fileSearchAvailable = fileSearchCapabilityEnabled && toolRoleGrants?.fileSearch === true;
 
   const agentConfigs = new Map();
   const allowedProviders = new Set(appConfig?.endpoints?.[EModelEndpoint.agents]?.allowedProviders);
 
   /** Event-driven mode: only load tool definitions, not full instances */
-  const loadTools = createToolLoader(signal, streamId, true);
+  const loadTools = createToolLoader(
+    req,
+    res,
+    signal,
+    streamId,
+    true,
+    jobCreatedAt,
+    upstreamTokenProvider,
+    upstreamTokenProviderResolver,
+  );
   /** @type {Array<MongoFile>} */
   const requestFiles = req.body.files ?? [];
-  /** @type {string} */
-  const conversationId = req.body.conversationId;
   /** @type {string | undefined} */
   const parentMessageId = req.body.parentMessageId;
   /**
@@ -341,13 +746,12 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       const resolvedSkillIds = await resolveModelSpecSkillIds({
         names: selectedModelSpec.skills,
         accessibleSkillIds,
-        getSkillByName: db.getSkillByName,
+        getSkillByName: skillDbMethods.getSkillByName,
       });
       primaryAgent.skills_enabled = true;
       primaryAgent.skills = resolvedSkillIds.map((id) => id.toString());
     }
   }
-
   const primaryScopedSkillIds = resolveAgentScopedSkillIds({
     agent: primaryAgent,
     accessibleSkillIds,
@@ -367,15 +771,16 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
     skillsCapabilityEnabled,
     ephemeralSkillsToggle,
   });
-
   const primaryConfig = await initializeAgent(
     {
+      useChatProjectContext: true,
       req,
       res,
       loadTools,
       requestFiles,
       conversationId,
       parentMessageId,
+      requestBody: runtimeRequestBody,
       agent: primaryAgent,
       endpointOption,
       allowedProviders,
@@ -383,24 +788,42 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       accessibleSkillIds: primaryScopedSkillIds,
       skillAuthoringAvailable: primarySkillAuthoringAvailable,
       codeEnvAvailable,
+      fileSearchAvailable,
+      resolveLinkedInstructions,
+      recordLinkedPromptUsage,
+      backgroundToolsAvailable,
+      toolIntentsAvailable,
+      statefulSessionsAvailable,
+      allowedStatefulCodeEnvironments,
+      memoryAvailable,
       skillStates,
       defaultActiveOnShare,
       manualSkills,
+      signal,
     },
     {
+      getProjectFiles: db.getProjectFiles,
       getFiles: db.getFiles,
       getUserKey: db.getUserKey,
       getMessages: db.getMessages,
       getConvoFiles: db.getConvoFiles,
+      getAccessibleMcpServerNames,
       updateFilesUsage: db.updateFilesUsage,
       getUserKeyValues: db.getUserKeyValues,
       getUserCodeFiles: db.getUserCodeFiles,
+      getDeferredProvisionFiles: db.getDeferredProvisionFiles,
       getToolFilesByIds: db.getToolFilesByIds,
       getCodeGeneratedFiles: db.getCodeGeneratedFiles,
       filterFilesByAgentAccess,
       listSkillsByAccess: skillDbMethods.listSkillsByAccess,
       listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
       getSkillByName: skillDbMethods.getSkillByName,
+      provisionToCodeEnv,
+      provisionToVectorDB,
+      checkSessionsAlive,
+      loadCodeApiKey,
+      updateFile: db.updateFile,
+      getRoleByName: db.getRoleByName,
     },
   );
 
@@ -426,6 +849,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
     {
       req,
       res,
+      signal,
       primaryConfig,
       agent_ids: primaryConfig.agent_ids,
       endpointOption,
@@ -435,6 +859,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       requestFiles,
       conversationId,
       parentMessageId,
+      requestBody: runtimeRequestBody,
       computeAccessibleSkillIds: (agent) =>
         resolveAgentScopedSkillIds({
           agent,
@@ -458,25 +883,42 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       skillStates,
       defaultActiveOnShare,
       codeEnvAvailable,
+      fileSearchAvailable,
+      resolveLinkedInstructions,
+      recordLinkedPromptUsage,
+      backgroundToolsAvailable,
+      toolIntentsAvailable,
+      statefulSessionsAvailable,
+      allowedStatefulCodeEnvironments,
+      memoryAvailable,
     },
     {
       getAgent: db.getAgent,
       checkPermission,
       logViolation,
       db: {
+        getProjectFiles: db.getProjectFiles,
         getFiles: db.getFiles,
         getUserKey: db.getUserKey,
         getMessages: db.getMessages,
         getConvoFiles: db.getConvoFiles,
+        getAccessibleMcpServerNames,
         updateFilesUsage: db.updateFilesUsage,
         getUserKeyValues: db.getUserKeyValues,
         getUserCodeFiles: db.getUserCodeFiles,
+        getDeferredProvisionFiles: db.getDeferredProvisionFiles,
         getToolFilesByIds: db.getToolFilesByIds,
         getCodeGeneratedFiles: db.getCodeGeneratedFiles,
         filterFilesByAgentAccess,
         listSkillsByAccess: skillDbMethods.listSkillsByAccess,
         listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
         getSkillByName: skillDbMethods.getSkillByName,
+        provisionToCodeEnv,
+        provisionToVectorDB,
+        checkSessionsAlive,
+        loadCodeApiKey,
+        updateFile: db.updateFile,
+        getRoleByName: db.getRoleByName,
       },
       // The callback fires during BFS, before the helper prunes agents
       // whose edges end up filtered. Don't populate `agentConfigs` here —
@@ -519,6 +961,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
     userMCPAuthMap,
     conversationId,
     parentMessageId,
+    requestBody: runtimeRequestBody,
     allowedProviders,
     primaryAgentId: primaryConfig.id,
     accessibleSkillIds,
@@ -529,12 +972,20 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
     skillStates,
     defaultActiveOnShare,
     codeEnvAvailable,
+    fileSearchAvailable,
+    resolveLinkedInstructions,
+    recordLinkedPromptUsage,
+    backgroundToolsAvailable,
+    toolIntentsAvailable,
+    statefulSessionsAvailable,
+    memoryAvailable,
+    signal,
   });
 
   if (updatedMCPAuthMap) {
     userMCPAuthMap = updatedMCPAuthMap;
   }
-
+  userMCPAuthMap ??= {};
   for (const [agentId, config] of agentConfigs) {
     if (agentToolContexts.has(agentId)) {
       continue;
@@ -546,165 +997,25 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
   // further normalization is needed before handing this to `createRun`.
   primaryConfig.edges = edges;
 
-  // Subagents: load any explicit subagent configs. Subagents run in isolated
-  // context windows and are invoked via a dedicated spawn tool (not handoff
-  // edges). An agent that is ONLY referenced as a subagent is dropped from
-  // `agentConfigs` so the LangGraph pipeline doesn't treat it as a
-  // parallel/handoff node, but it is KEPT in `agentToolContexts` — the child's
-  // `ON_TOOL_EXECUTE` dispatches resolve tool execution context (agent,
-  // tool_resources, skill ACLs, ...) from that map, so removing it would leave
-  // action tools skipped and resource-scoped tools running without their
-  // configured resources.
+  // Subagents run in isolated context windows and are invoked via a dedicated
+  // spawn tool, not handoff edges. Explicit children are advertised as inert,
+  // VIEW-checked descriptors; model, tool, MCP, file, and skill initialization
+  // happens only when the SDK selects one.
+  const atSubagentThreadDepthLimit = !subagentThreadTaskStore.canCreateChildThread(
+    requestConversation?.subagentThread?.depth ?? 0,
+  );
   const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+  const subagentsAvailableForRun = subagentsCapabilityEnabled && !atSubagentThreadDepthLimit;
   /** Track skipped ids locally so repeated failures short-circuit within
    *  the subagent loading loop. Seeded from the discovery helper's skip
    *  list so agents that already failed handoff loading don't get retried. */
   const skippedAgentIds = new Set(discoveredSkippedIds ?? []);
 
-  /** All agent ids referenced on any edge (source OR target). Used by
-   *  `loadSubagentsFor` to decide whether an agent that's only a subagent
-   *  can be safely dropped from `agentConfigs` — LangGraph doesn't treat
-   *  pure subagents as parallel/handoff nodes. */
-  const edgeAgentIds = new Set([primaryConfig.id]);
-  for (const edge of edges ?? []) {
-    const sources = Array.isArray(edge.from) ? edge.from : [edge.from];
-    const targets = Array.isArray(edge.to) ? edge.to : [edge.to];
-    for (const id of sources) {
-      if (typeof id === 'string') edgeAgentIds.add(id);
-    }
-    for (const id of targets) {
-      if (typeof id === 'string') edgeAgentIds.add(id);
-    }
-  }
-
-  /** Lazy per-id agent loader used for subagents that weren't reachable
-   *  via the handoff edge graph (so `discoverConnectedAgents` didn't
-   *  initialize them). Mirrors the helper's internal `processAgent`:
-   *  DB lookup + VIEW check + `initializeAgent`, then inserts into
-   *  `agentConfigs` and `agentToolContexts`. Returns `null` on any
-   *  failure so the caller can skip gracefully. */
-  const loadAgentById = async (agentId) => {
-    if (skippedAgentIds.has(agentId)) return null;
-    const existing = agentConfigs.get(agentId);
-    if (existing) return existing;
-
-    try {
-      const agent = await db.getAgent({ id: agentId });
-      if (!agent) {
-        skippedAgentIds.add(agentId);
-        return null;
-      }
-      const userId = req.user?.id;
-      if (!userId) {
-        skippedAgentIds.add(agentId);
-        return null;
-      }
-      const hasAccess = await checkPermission({
-        userId,
-        role: req.user?.role,
-        resourceType: ResourceType.AGENT,
-        resourceId: agent._id,
-        requiredPermission: PermissionBits.VIEW,
-      });
-      if (!hasAccess) {
-        logger.warn(
-          `[processAgent] User ${userId} lacks VIEW access to subagent ${agentId}, skipping`,
-        );
-        skippedAgentIds.add(agentId);
-        return null;
-      }
-      const validation = await validateAgentModel({
-        req,
-        res,
-        agent,
-        modelsConfig,
-        logViolation,
-      });
-      if (!validation.isValid) {
-        logger.warn(
-          `[processAgent] Subagent ${agentId} failed model validation: ${validation.error?.message}`,
-        );
-        skippedAgentIds.add(agentId);
-        return null;
-      }
-      const scopedSkillIds = resolveAgentScopedSkillIds({
-        agent,
-        accessibleSkillIds,
-        skillsCapabilityEnabled,
-        ephemeralSkillsToggle,
-      });
-      const scopedEditableSkillIds = resolveAgentScopedSkillIds({
-        agent,
-        accessibleSkillIds: editableSkillIds,
-        skillsCapabilityEnabled,
-        ephemeralSkillsToggle,
-      });
-      const config = await initializeAgent(
-        {
-          req,
-          res,
-          agent,
-          loadTools,
-          requestFiles,
-          conversationId,
-          parentMessageId,
-          endpointOption: { ...endpointOption, endpoint: EModelEndpoint.agents },
-          allowedProviders,
-          accessibleSkillIds: scopedSkillIds,
-          skillAuthoringAvailable: canAuthorSkillFiles({
-            agent,
-            scopedEditableSkillIds,
-            skillCreateAllowed,
-            skillsCapabilityEnabled,
-            ephemeralSkillsToggle,
-          }),
-          /** Match the primary / handoff / addedConvo paths: forward the
-           *  endpoint-level admin flag so `initializeAgent` can compute the
-           *  per-agent narrowing (admin AND agent.tools includes
-           *  execute_code) into `InitializedAgent.codeEnvAvailable`. Without
-           *  this, a code-enabled subagent loaded only through
-           *  `subagentAgentConfigs` initializes with `codeEnvAvailable:
-           *  false`, so `bash_tool` / `read_file` sandbox fallback are
-           *  silently gated off even though the seed walk found it. */
-          codeEnvAvailable,
-          skillStates,
-          defaultActiveOnShare,
-        },
-        {
-          getFiles: db.getFiles,
-          getUserKey: db.getUserKey,
-          getMessages: db.getMessages,
-          getConvoFiles: db.getConvoFiles,
-          updateFilesUsage: db.updateFilesUsage,
-          getUserKeyValues: db.getUserKeyValues,
-          getUserCodeFiles: db.getUserCodeFiles,
-          getToolFilesByIds: db.getToolFilesByIds,
-          getCodeGeneratedFiles: db.getCodeGeneratedFiles,
-          filterFilesByAgentAccess,
-          listSkillsByAccess: skillDbMethods.listSkillsByAccess,
-          listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
-          getSkillByName: skillDbMethods.getSkillByName,
-        },
-      );
-      agentConfigs.set(agentId, config);
-      agentToolContexts.set(agentId, buildAgentToolContext({ agent, config }));
-      return config;
-    } catch (err) {
-      logger.error(`[processAgent] Error processing subagent ${agentId}:`, err);
-      skippedAgentIds.add(agentId);
-      return null;
-    }
-  };
-
-  /** Collected during resolution; applied to `agentConfigs` only after
-   *  every config has had its subagents resolved. Eager pruning would
-   *  hide pure-subagent ids from the subsequent `loadSubagentsFor`
-   *  loop, which would leave *their* `subagentAgentConfigs` empty and
-   *  silently break nested delegation like A → B → C where B is only
-   *  a subagent of A. */
-  const pureSubagentIds = new Set();
+  const lazyMetadataByAgentId = new Map();
+  const lazyMetadataLoadsByAgentId = new Map();
+  const resolveLazyMetadata = createConcurrencyLimiter(SUBAGENT_GRAPH_LOAD_CONCURRENCY);
   const subagentGraphIds = new Set();
-  const loadedSubagentConfigIds = new Set();
+  const expandedSubagentDescriptorState = { configCount: 0, rootAgentIds: [] };
 
   const assertSubagentGraphRoom = (agentId) => {
     if (subagentGraphIds.has(agentId)) {
@@ -723,140 +1034,846 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
     }
   };
 
-  /**
-   * Loads `subagentAgentConfigs` for a single agent config. Shared
-   * between the primary agent and handoff-target agents (and pure
-   * subagents, transitively) so an agent used via handoff or
-   * nested-subagent that has its own explicit `subagents.agent_ids`
-   * gets them honored at runtime. Self-spawn works regardless (no DB
-   * lookup needed). Pruning decisions are deferred to `pureSubagentIds`.
-   */
-  const loadSubagentsFor = async (config, depth = 0) => {
-    const sub = config.subagents;
-    if (!subagentsCapabilityEnabled || !sub?.enabled) {
-      config.subagentAgentConfigs = [];
+  const countExpandedSubagentDescriptor = (agentId) => {
+    expandedSubagentDescriptorState.configCount += 1;
+    if (expandedSubagentDescriptorState.configCount <= MAX_SUBAGENT_RUN_CONFIGS) {
       return;
     }
+    logger.warn('[initializeClient] Subagent run configuration limit exceeded', {
+      agentId,
+      expandedConfigCount: expandedSubagentDescriptorState.configCount,
+      maxSubagentRunConfigs: MAX_SUBAGENT_RUN_CONFIGS,
+      rootAgentIds: expandedSubagentDescriptorState.rootAgentIds,
+    });
+    throw new Error(
+      `Subagent run configuration exceeds the maximum of ${MAX_SUBAGENT_RUN_CONFIGS} expanded entries.`,
+    );
+  };
 
-    if (loadedSubagentConfigIds.has(config.id)) {
-      if ((config.subagentAgentConfigs?.length ?? 0) > 0 && depth >= MAX_SUBAGENT_DEPTH) {
-        logger.warn('[initializeClient] Subagent graph depth limit exceeded', {
-          agentId: config.id,
-          primaryAgentId: primaryConfig.id,
-          depth,
-          maxSubagentDepth: MAX_SUBAGENT_DEPTH,
-          childCount: config.subagentAgentConfigs.length,
-        });
-        throw new Error(
-          `Subagent graph exceeds the maximum depth of ${MAX_SUBAGENT_DEPTH} at agent ${config.id}.`,
+  const userId = req.user?.id;
+  const userRole = req.user?.role;
+
+  const throwIfAborted = (abortSignal) => {
+    if (!abortSignal?.aborted) return;
+    throw abortSignal.reason instanceof Error
+      ? abortSignal.reason
+      : new Error('Subagent resolution was aborted.');
+  };
+
+  const waitForAbort = (promise, abortSignal) => {
+    throwIfAborted(abortSignal);
+    if (!abortSignal) return promise;
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        reject(
+          abortSignal.reason instanceof Error
+            ? abortSignal.reason
+            : new Error('Subagent resolution was aborted.'),
         );
+      };
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      if (abortSignal.aborted) {
+        onAbort();
       }
-      return;
-    }
+      promise.then(resolve, reject).finally(() => {
+        abortSignal.removeEventListener('abort', onAbort);
+      });
+    });
+  };
 
-    /** Dedupe and filter in one pass — a crafted payload could
-     *  legitimately include the same ID twice; the backend shouldn't
-     *  create duplicate SubagentConfig entries for the LLM to see as
-     *  separate spawn targets. */
-    const explicitSubagentIds = Array.from(
+  const hasSubagentViewAccess = async (agent, agentId, abortSignal) => {
+    throwIfAborted(abortSignal);
+    if (!userId) return false;
+    const hasAccess = await waitForAbort(
+      checkPermission({
+        userId,
+        role: userRole,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        requiredPermission: PermissionBits.VIEW,
+      }),
+      abortSignal,
+    );
+    throwIfAborted(abortSignal);
+    if (!hasAccess) {
+      logger.warn(
+        `[processAgent] User ${userId} lacks VIEW access to subagent ${agentId}, skipping`,
+      );
+    }
+    return hasAccess;
+  };
+
+  const getIncludeReasoningHistory = (agent) => {
+    if (!agent.provider) return undefined;
+    try {
+      return getProviderConfig({ provider: agent.provider, appConfig }).customEndpointConfig
+        ?.customParams?.includeReasoningHistory;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const getExplicitSubagentIds = (agent) =>
+    Array.from(
       new Set(
-        Array.isArray(sub.agent_ids)
-          ? sub.agent_ids.filter((id) => typeof id === 'string' && id && id !== config.id)
+        Array.isArray(agent.subagents?.agent_ids)
+          ? agent.subagents.agent_ids.filter(
+              (id) => typeof id === 'string' && id && id !== agent.id,
+            )
           : [],
       ),
     );
 
-    if (explicitSubagentIds.length > 0 && depth >= MAX_SUBAGENT_DEPTH) {
+  const lazyHistoryResolver = createLazyAgentHistoryResolver({
+    accessibleSkillIds,
+    editableSkillIds,
+    skillsCapabilityEnabled,
+    ephemeralSkillsToggle,
+    userId,
+    userRole,
+    skillStates,
+    defaultActiveOnShare,
+    maxCatalogSkills: appConfig?.endpoints?.[EModelEndpoint.agents]?.skills?.maxCatalogSkills,
+    listSkillsByAccess: skillDbMethods.listSkillsByAccess,
+    listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
+    getAccessibleMcpServerNames,
+    configuredMcpServerNames: Object.keys(appConfig?.mcpConfig ?? {}),
+    canAuthorSkillFiles: ({ agent, scopedEditableSkillIds }) =>
+      canAuthorSkillFiles({
+        agent,
+        scopedEditableSkillIds,
+        skillCreateAllowed,
+        skillsCapabilityEnabled,
+        ephemeralSkillsToggle,
+      }),
+    deferredToolsAvailable,
+    programmaticToolsAvailable,
+    backgroundToolsAvailable,
+  });
+
+  subagentCodeRouting = createSubagentCodeRouting({
+    codeEnvironmentMode: runtimeRequestBody?.codeEnvironmentMode,
+    allowEnvironmentSelection:
+      appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    persistedSelections: admittedConversation?.codeWorkspaces,
+    requestedSelections: runtimeRequestBody?.codeWorkspaces,
+    environments: appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments,
+    userId,
+    conversationId,
+    getAppConfig,
+    getInheritedEnvironments: () => req.codeWorkspaceInheritance,
+    sharedRunFiles: isRunFileSharingRequested({
+      policy: appConfig.endpoints?.agents?.fileSharing,
+      agent: primaryConfig,
+    }),
+  });
+
+  /** Inputs the shared per-agent code rule reads for a subagent in this request. */
+  const getSubagentCodeParams = (agent) =>
+    withRequestCodeInputs({
+      req,
+      agent,
+      requestBody: runtimeRequestBody,
+      codeExecutionAvailable: codeEnvAvailable === true,
+      statefulSessionsAvailable: statefulSessionsAvailable === true,
+      allowedStatefulCodeEnvironments,
+      conversationId,
+    });
+
+  /** The code flags a lazy subagent runs with in this request. */
+  const getSubagentCodeFlags = (agent) => {
+    const flags = resolveAgentCodeFlags(getSubagentCodeParams(agent));
+    return {
+      lazyCodeEnvAvailable: flags.codeEnvAvailable,
+      statefulCodeSessions: flags.statefulSessions,
+      statefulCodeEnvironment: flags.statefulCodeEnvironment,
+    };
+  };
+
+  const toLazySubagentMetadata = async (agent) => {
+    const { lazyCodeEnvAvailable, statefulCodeSessions, statefulCodeEnvironment } =
+      getSubagentCodeFlags(agent);
+    const codeAvailability = await resolveSubagentCodeAvailability({
+      agentId: agent.id,
+      codeEnvAvailable: lazyCodeEnvAvailable,
+      statefulCodeSessions,
+      resolveContext: async () => {
+        if (!lazyCodeEnvAvailable) return undefined;
+        const params = getSubagentCodeParams(agent);
+        return resolveCodeExecutionWorkspaceContext({
+          context: resolveAgentCodeExecution(params).context,
+          requestedSelections: runtimeRequestBody?.codeWorkspaces,
+          persistedSelections: admittedConversation?.codeWorkspaces,
+          environments: params.environments,
+          getAppConfig,
+        });
+      },
+    });
+    const { codeExecutionContext } = codeAvailability;
+    const [
+      {
+        alwaysApplySkillPrimes,
+        historicalToolNames,
+        historicalMcpServerNames,
+        skillAuthoringAvailable,
+      },
+      { subagentHostArgs, codeExecutionChoices },
+    ] = await Promise.all([
+      lazyHistoryResolver.resolve({
+        agent,
+        codeExecutionAvailable: lazyCodeEnvAvailable,
+        memoryAvailable,
+      }),
+      waitForAbort(
+        subagentCodeRouting.describe(
+          agent,
+          { statefulCodeSessions, statefulCodeEnvironment },
+          signal,
+        ),
+        signal,
+      ),
+    ]);
+    return copyToolApprovalAdmissionMetadata(
+      {
+        id: agent.id,
+        name: agent.name,
+        description: agent.description,
+        provider: agent.provider,
+        model: agent.model,
+        model_parameters: { model: agent.model_parameters?.model },
+        recursion_limit: agent.recursion_limit,
+        memory_scope: agent.memory_scope,
+        memoryToolsRegistered:
+          memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
+        subagents: agent.subagents,
+        configId: getLazySubagentConfigId(agent),
+        ...codeAvailability,
+        statefulCodeEnvironment,
+        codeSessionKey: codeExecutionContext?.codeSessionKey,
+        subagentHostArgs,
+        codeExecutionChoices,
+        subagentCodeFlags: { statefulCodeSessions, statefulCodeEnvironment },
+        includeReasoningHistory: getIncludeReasoningHistory(agent),
+        alwaysApplySkillPrimes,
+        historicalToolNames,
+        historicalMcpServerNames,
+        skillAuthoringAvailable: skillAuthoringAvailable === true,
+      },
+      agent,
+      {
+        skillPrimes: alwaysApplySkillPrimes,
+        rawMcpServerNames: historicalMcpServerNames,
+        toolsAvailable: enabledCapabilities.has(AgentCapabilities.tools),
+      },
+    );
+  };
+
+  const loadViewableSubagent = createViewableSubagentLoader({
+    getAgent: (agentId) => db.getAgentWithVersionCount({ id: agentId }),
+    canView: (agent, agentId) => hasSubagentViewAccess(agent, agentId),
+  });
+
+  const loadSubagentMetadata = async (agentId) => {
+    if (skippedAgentIds.has(agentId)) return null;
+    const cached = lazyMetadataByAgentId.get(agentId);
+    if (cached) return cached;
+    let loading = lazyMetadataLoadsByAgentId.get(agentId);
+    if (!loading) {
+      loading = resolveLazyMetadata(async () => {
+        const agent = await loadViewableSubagent(agentId);
+        if (!agent) {
+          skippedAgentIds.add(agentId);
+          return null;
+        }
+        const metadata = await toLazySubagentMetadata(agent);
+        lazyMetadataByAgentId.set(agentId, metadata);
+        return metadata;
+      });
+      lazyMetadataLoadsByAgentId.set(agentId, loading);
+    }
+    try {
+      return await loading;
+    } catch (error) {
+      if (isFatalAgentInitializationError(error, { signal })) {
+        throw error;
+      }
+      logger.error(`[initializeClient] Error loading subagent metadata ${agentId}:`, error);
+      skippedAgentIds.add(agentId);
+      return null;
+    } finally {
+      if (lazyMetadataLoadsByAgentId.get(agentId) === loading) {
+        lazyMetadataLoadsByAgentId.delete(agentId);
+      }
+    }
+  };
+
+  const loadGraphMemberCapabilityMetadata = async (agent) => {
+    if (!agent.subagents?.enabled) return [];
+    const memberIds = Array.from(
+      new Set((agent.subagents.graphs ?? []).flatMap((graph) => graph.agent_ids ?? [])),
+    ).filter(
+      (memberId) =>
+        memberId !== agent.id && memberId !== primaryConfig.id && !agentConfigs.has(memberId),
+    );
+    const stagedMemberIds = memberIds.filter((memberId) => !subagentGraphIds.has(memberId));
+    if (subagentGraphIds.size + stagedMemberIds.length > MAX_SUBAGENT_GRAPH_NODES) {
+      logger.warn('[initializeClient] Subagent graph node limit exceeded', {
+        agentId: stagedMemberIds[0],
+        primaryAgentId: primaryConfig.id,
+        loadedSubagentCount: subagentGraphIds.size,
+        stagedSubagentCount: stagedMemberIds.length,
+        maxSubagentGraphNodes: MAX_SUBAGENT_GRAPH_NODES,
+      });
+      throw new Error(
+        `Subagent graph exceeds the maximum of ${MAX_SUBAGENT_GRAPH_NODES} unique agents.`,
+      );
+    }
+    for (const memberId of stagedMemberIds) {
+      subagentGraphIds.add(memberId);
+    }
+    const memberMetadata = await Promise.all(memberIds.map(loadSubagentMetadata));
+    return memberMetadata.filter(Boolean);
+  };
+
+  /**
+   * Resolves the selected descriptor inside the foreground request. The
+   * legacy initializer requires request/response objects for tool and MCP
+   * setup, so this intentionally remains request-scoped until AI-1597 gives
+   * child execution a durable runtime context.
+   */
+  const initializeLoadedSubagent = async ({
+    agent,
+    agentId,
+    configId,
+    context,
+    lazyChildren,
+    codeFlags,
+    codeWorkspaceUnavailable,
+    viewAccessChecked = false,
+  }) => {
+    throwIfAborted(context.signal);
+    if (!agent || getLazySubagentConfigId(agent) !== configId) {
+      throw new Error(`Subagent ${agentId} changed before it could be initialized.`);
+    }
+    if (!viewAccessChecked && !(await hasSubagentViewAccess(agent, agentId, context.signal))) {
+      throw new Error(`You no longer have access to subagent ${agentId}.`);
+    }
+    const validation = await waitForAbort(
+      validateAgentModel({ req, res, agent, modelsConfig, logViolation }),
+      context.signal,
+    );
+    throwIfAborted(context.signal);
+    if (!validation.isValid) {
+      throw new Error(validation.error?.message ?? `Subagent ${agentId} failed model validation.`);
+    }
+    const placement = await waitForAbort(
+      subagentCodeRouting.place({
+        agent,
+        flags: codeFlags ?? {},
+        context,
+        unavailableReason: codeWorkspaceUnavailable,
+      }),
+      context.signal,
+    );
+    throwIfAborted(context.signal);
+    const routedAgent = placement.agent;
+    const scopedSkillIds = resolveAgentScopedSkillIds({
+      agent,
+      accessibleSkillIds,
+      skillsCapabilityEnabled,
+      ephemeralSkillsToggle,
+    });
+    const scopedEditableSkillIds = resolveAgentScopedSkillIds({
+      agent,
+      accessibleSkillIds: editableSkillIds,
+      skillsCapabilityEnabled,
+      ephemeralSkillsToggle,
+    });
+    const config = await waitForAbort(
+      subagentCodeRouting.settle(
+        placement,
+        initializeAgent(
+          {
+            req,
+            res,
+            agent: routedAgent,
+            loadTools: createToolLoader(
+              req,
+              res,
+              context.signal,
+              streamId,
+              true,
+              jobCreatedAt,
+              upstreamTokenProvider,
+              upstreamTokenProviderResolver,
+            ),
+            requestFiles,
+            authorizedRunFiles: getAuthorizedRunFileSnapshot({
+              policy: appConfig.endpoints?.agents?.fileSharing,
+              agent: primaryConfig,
+              files: primaryConfig.currentRequestAttachments,
+            }),
+            conversationId,
+            parentMessageId,
+            requestBody: runtimeRequestBody,
+            endpointOption: { ...endpointOption, endpoint: EModelEndpoint.agents },
+            allowedProviders,
+            accessibleSkillIds: scopedSkillIds,
+            skillAuthoringAvailable: canAuthorSkillFiles({
+              agent,
+              scopedEditableSkillIds,
+              skillCreateAllowed,
+              skillsCapabilityEnabled,
+              ephemeralSkillsToggle,
+            }),
+            codeEnvAvailable,
+            fileSearchAvailable,
+            resolveLinkedInstructions,
+            recordLinkedPromptUsage,
+            backgroundToolsAvailable,
+            toolIntentsAvailable,
+            statefulSessionsAvailable,
+            allowedStatefulCodeEnvironments,
+            memoryAvailable,
+            skillStates,
+            defaultActiveOnShare,
+            signal: context.signal,
+          },
+          {
+            getProjectFiles: db.getProjectFiles,
+            getFiles: db.getFiles,
+            getUserKey: db.getUserKey,
+            getMessages: db.getMessages,
+            getConvoFiles: db.getConvoFiles,
+            getAccessibleMcpServerNames,
+            updateFilesUsage: db.updateFilesUsage,
+            getUserKeyValues: db.getUserKeyValues,
+            getUserCodeFiles: db.getUserCodeFiles,
+            getDeferredProvisionFiles: db.getDeferredProvisionFiles,
+            getToolFilesByIds: db.getToolFilesByIds,
+            getCodeGeneratedFiles: db.getCodeGeneratedFiles,
+            filterFilesByAgentAccess,
+            listSkillsByAccess: skillDbMethods.listSkillsByAccess,
+            listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
+            getSkillByName: skillDbMethods.getSkillByName,
+            provisionToCodeEnv,
+            provisionToVectorDB,
+            checkSessionsAlive,
+            loadCodeApiKey,
+            updateFile: db.updateFile,
+            getRoleByName: db.getRoleByName,
+          },
+        ),
+      ),
+      context.signal,
+    );
+    throwIfAborted(context.signal);
+    config.lazySubagentConfigs = lazyChildren;
+    if (config.userMCPAuthMap) {
+      Object.assign(userMCPAuthMap, config.userMCPAuthMap);
+    }
+    subagentCodeRouting.attach(agentToolContexts, {
+      agentId,
+      context,
+      placement,
+      codeExecutionContext: config.codeExecutionContext,
+      toolContext: buildAgentToolContext({ agent: routedAgent, config }),
+    });
+    endpointTokenConfigByAgentId.set(agentId, config.endpointTokenConfig);
+    return config;
+  };
+  const initializeLazySubagent = async ({
+    agentId,
+    configId,
+    context,
+    lazyChildren,
+    codeFlags,
+    codeWorkspaceUnavailable,
+  }) => {
+    throwIfAborted(context.signal);
+    const agent = await waitForAbort(db.getAgentWithVersionCount({ id: agentId }), context.signal);
+    return initializeLoadedSubagent({
+      agent,
+      agentId,
+      configId,
+      context,
+      lazyChildren,
+      codeFlags,
+      codeWorkspaceUnavailable,
+    });
+  };
+
+  const buildLazySubagentDescriptors = async (agent, depth = 0, ancestors = new Set()) => {
+    if (!subagentsAvailableForRun || !agent.subagents?.enabled) {
+      return [];
+    }
+    if (agent.subagents.allowSelf !== false) {
+      countExpandedSubagentDescriptor(agent.id);
+    }
+    const subagentIds = getExplicitSubagentIds(agent);
+    if (subagentIds.length > 0 && depth >= MAX_SUBAGENT_DEPTH) {
       logger.warn('[initializeClient] Subagent graph depth limit exceeded', {
-        agentId: config.id,
+        agentId: agent.id,
         primaryAgentId: primaryConfig.id,
         depth,
         maxSubagentDepth: MAX_SUBAGENT_DEPTH,
-        childCount: explicitSubagentIds.length,
       });
       throw new Error(
-        `Subagent graph exceeds the maximum depth of ${MAX_SUBAGENT_DEPTH} at agent ${config.id}.`,
+        `Subagent graph exceeds the maximum depth of ${MAX_SUBAGENT_DEPTH} at agent ${agent.id}.`,
       );
     }
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(agent.id);
+    const descriptors = await Promise.all(
+      subagentIds.map(async (subagentId) => {
+        if (skippedAgentIds.has(subagentId) || nextAncestors.has(subagentId)) return null;
+        const existing =
+          subagentId === primaryConfig.id ? primaryConfig : agentConfigs.get(subagentId);
+        if (existing) {
+          if (subagentId !== primaryConfig.id) {
+            assertSubagentGraphRoom(subagentId);
+            subagentGraphIds.add(subagentId);
+          }
+          countExpandedSubagentDescriptor(subagentId);
+          /** Every initialized config is expanded independently in `rootSubagentConfigs`.
+           *  Descend here only to enforce path-sensitive depth and size limits; mutating the
+           *  shared object from this ancestor-specific walk would race its root expansion. */
+          await buildLazySubagentDescriptors(existing, depth + 1, nextAncestors);
+          return existing;
+        }
+        const metadata = await loadSubagentMetadata(subagentId);
+        if (!metadata) return null;
+        if (subagentId !== primaryConfig.id) {
+          assertSubagentGraphRoom(subagentId);
+          subagentGraphIds.add(subagentId);
+        }
+        countExpandedSubagentDescriptor(subagentId);
+        const childDescriptors = await buildLazySubagentDescriptors(
+          metadata,
+          depth + 1,
+          nextAncestors,
+        );
+        const lazyChildren = childDescriptors.filter((child) => child.configId);
+        const eagerChildren = childDescriptors.filter((child) => !child.configId);
+        const subagentGraphMemberMetadata = await loadGraphMemberCapabilityMetadata(metadata);
+        return copyToolApprovalAdmissionMetadata(
+          {
+            id: metadata.id,
+            name: metadata.name,
+            description: metadata.description,
+            provider: metadata.provider,
+            model: metadata.model,
+            model_parameters: metadata.model_parameters,
+            recursion_limit: metadata.recursion_limit,
+            memory_scope: metadata.memory_scope,
+            memoryToolsRegistered: metadata.memoryToolsRegistered,
+            subagents: metadata.subagents,
+            configId: metadata.configId,
+            codeEnvAvailable: metadata.codeEnvAvailable,
+            statefulCodeSessions: metadata.statefulCodeSessions,
+            statefulCodeEnvironment: metadata.statefulCodeEnvironment,
+            codeExecutionContext: metadata.codeExecutionContext,
+            codeSessionKey: metadata.codeSessionKey,
+            subagentHostArgs: metadata.subagentHostArgs,
+            codeExecutionChoices: metadata.codeExecutionChoices,
+            includeReasoningHistory: metadata.includeReasoningHistory,
+            skillAuthoringAvailable: metadata.skillAuthoringAvailable,
+            alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
+            historicalToolNames: metadata.historicalToolNames,
+            historicalMcpServerNames: metadata.historicalMcpServerNames,
+            lazySubagentConfigs: lazyChildren,
+            subagentAgentConfigs: eagerChildren,
+            subagentGraphMemberMetadata,
+            settle: (context, resolveInputs) =>
+              subagentCodeRouting.settleExecution(context, resolveInputs, {
+                onCommit: () => publishSharedConfig(context),
+              }),
+            ...guardRoutableSubagent({
+              description: metadata.description,
+              codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
+              subagentHostArgs: metadata.subagentHostArgs,
+              resolve: async (context) => {
+                const config = await initializeLazySubagent({
+                  agentId: metadata.id,
+                  configId: metadata.configId,
+                  context,
+                  lazyChildren,
+                  codeFlags: metadata.subagentCodeFlags,
+                  codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
+                });
+                config.subagentAgentConfigs = eagerChildren;
+                if (!subagentCodeRouting.isRouted(context.executionId)) {
+                  sharedConfigByCall.set(context, config);
+                }
+                await resolveGraphSubagentsFor(
+                  config,
+                  context.signal,
+                  subagentCodeRouting.routesChildren(context.executionId)
+                    ? context.executionId
+                    : undefined,
+                );
+                return config;
+              },
+            }),
+          },
+          metadata,
+        );
+      }),
+    );
+    return descriptors.filter(Boolean);
+  };
 
-    loadedSubagentConfigIds.add(config.id);
+  const resolveSubagentTrees = async (rootConfigs) => {
+    expandedSubagentDescriptorState.rootAgentIds = rootConfigs
+      .filter((config) => config?.id)
+      .map((config) => config.id);
+    await Promise.all(
+      rootConfigs.map(async (config) => {
+        if (!config?.id) return;
+        const descriptors = await buildLazySubagentDescriptors(config);
+        config.lazySubagentConfigs = descriptors.filter((child) => child.configId);
+        config.subagentAgentConfigs = descriptors.filter((child) => !child.configId);
+      }),
+    );
+  };
 
-    /** @type {Array<Object>} */
-    const resolved = [];
-    for (const subagentId of explicitSubagentIds) {
-      if (skippedAgentIds.has(subagentId)) continue;
+  const rootSubagentConfigs = [primaryConfig, ...agentConfigs.values()];
+  const statefulCodeSessionsConfig =
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions;
+  req.codeWorkspaceInheritance = subagentsAvailableForRun
+    ? await resolveSubagentCodeWorkspaceInheritance({
+        selections: resolveCodeExecutionWorkspaceSelections({
+          conversation: admittedConversation,
+          request: runtimeRequestBody,
+        }),
+        roots: rootSubagentConfigs.filter((config) => config?.id),
+        loadSubagent: (agentId) => resolveLazyMetadata(() => loadViewableSubagent(agentId)),
+        environments: statefulCodeSessionsConfig?.environments,
+        allowEnvironmentSelection: statefulCodeSessionsConfig?.allowEnvironmentSelection,
+        codeExecutionAvailable: codeEnvAvailable === true && statefulSessionsAvailable === true,
+      })
+    : undefined;
+  await resolveSubagentTrees(rootSubagentConfigs);
 
-      /** Cycle guard: a configuration like A ↔ B (B lists A as its
-       *  subagent) would otherwise trigger `loadAgentById` on the
-       *  primary — inserting a second config for the same primary id,
-       *  which downstream duplicates in the agent array. Reuse the
-       *  existing primary config when a subagent ref points back at it. */
-      if (subagentId === primaryConfig.id) {
-        resolved.push(primaryConfig);
+  const graphMemberConfigsById = new Map(
+    rootSubagentConfigs.filter((config) => config?.id).map((config) => [config.id, config]),
+  );
+  /** A lazy call's config joins the shared graph cache only once its route commits. */
+  const sharedConfigByCall = new WeakMap();
+  const publishSharedConfig = (context) => {
+    const config = sharedConfigByCall.get(context);
+    if (config != null && !graphMemberConfigsById.has(config.id)) {
+      graphMemberConfigsById.set(config.id, config);
+    }
+  };
+  const graphMemberLoadsById = new Map();
+  const initializeGraphMember = createConcurrencyLimiter(SUBAGENT_GRAPH_LOAD_CONCURRENCY);
+  const loadGraphMemberOnce = async (memberId) => {
+    throwIfAborted(signal);
+    const cached = graphMemberConfigsById.get(memberId);
+    if (cached) return cached;
+    if (skippedAgentIds.has(memberId)) return null;
+    assertSubagentGraphRoom(memberId);
+    subagentGraphIds.add(memberId);
+    const agent = await waitForAbort(db.getAgentWithVersionCount({ id: memberId }), signal);
+    if (!agent || !(await hasSubagentViewAccess(agent, memberId, signal))) {
+      skippedAgentIds.add(memberId);
+      return null;
+    }
+    try {
+      const config = await initializeLoadedSubagent({
+        agent,
+        agentId: memberId,
+        configId: getLazySubagentConfigId(agent),
+        context: { signal },
+        lazyChildren: [],
+        codeFlags: getSubagentCodeFlags(agent),
+        viewAccessChecked: true,
+      });
+      graphMemberConfigsById.set(memberId, config);
+      return config;
+    } catch (error) {
+      if (isFatalAgentInitializationError(error, { signal })) {
+        throw error;
+      }
+      logger.error(`[initializeClient] Error initializing graph member ${memberId}:`, error);
+      skippedAgentIds.add(memberId);
+      return null;
+    }
+  };
+  const loadGraphMember = async (memberId, graphSignal = signal) => {
+    throwIfAborted(graphSignal);
+    const cached = graphMemberConfigsById.get(memberId);
+    if (cached) return cached;
+    let pending = graphMemberLoadsById.get(memberId);
+    if (!pending) {
+      pending = loadGraphMemberOnce(memberId);
+      graphMemberLoadsById.set(memberId, pending);
+      pending.then(
+        () => {
+          if (graphMemberLoadsById.get(memberId) === pending) {
+            graphMemberLoadsById.delete(memberId);
+          }
+        },
+        () => {
+          if (graphMemberLoadsById.get(memberId) === pending) {
+            graphMemberLoadsById.delete(memberId);
+          }
+        },
+      );
+    }
+    return waitForAbort(pending, graphSignal);
+  };
+
+  const loadRoutedGraphMember = createRoutedGraphMemberLoader({
+    getShared: (memberId) => graphMemberConfigsById.get(memberId),
+    isSkipped: (memberId) => skippedAgentIds.has(memberId),
+    skip: (memberId) => skippedAgentIds.add(memberId),
+    getAgent: (memberId, graphSignal) =>
+      waitForAbort(db.getAgentWithVersionCount({ id: memberId }), graphSignal),
+    canView: (agent, memberId, graphSignal) => hasSubagentViewAccess(agent, memberId, graphSignal),
+    initialize: ({ agent, memberId, context }) =>
+      initializeLoadedSubagent({
+        agent,
+        agentId: memberId,
+        configId: getLazySubagentConfigId(agent),
+        context,
+        lazyChildren: [],
+        codeFlags: getSubagentCodeFlags(agent),
+        viewAccessChecked: true,
+      }),
+    isFatal: (error, graphSignal) =>
+      isFatalAgentInitializationError(error, { signal: graphSignal }),
+  });
+
+  async function resolveGraphSubagentsFor(config, graphSignal = signal, routedParentRunId) {
+    throwIfAborted(graphSignal);
+    const definitions =
+      subagentsAvailableForRun && config.subagents?.enabled === true
+        ? (config.subagents.graphs ?? [])
+        : [];
+    const resolvedGraphs = [];
+    for (const definition of definitions) {
+      const memberIds = [...new Set(definition.agent_ids ?? [])];
+      const unloadedMemberIds = memberIds.filter(
+        (memberId) => !graphMemberConfigsById.has(memberId) && !subagentGraphIds.has(memberId),
+      );
+      if (subagentGraphIds.size + unloadedMemberIds.length > MAX_SUBAGENT_GRAPH_NODES) {
+        const overflowIndex = MAX_SUBAGENT_GRAPH_NODES - subagentGraphIds.size;
+        logger.warn('[initializeClient] Subagent graph node limit exceeded', {
+          agentId: unloadedMemberIds[Math.max(overflowIndex, 0)],
+          primaryAgentId: primaryConfig.id,
+          loadedSubagentCount: subagentGraphIds.size,
+          stagedSubagentCount: unloadedMemberIds.length,
+          maxSubagentGraphNodes: MAX_SUBAGENT_GRAPH_NODES,
+        });
         continue;
       }
-
-      assertSubagentGraphRoom(subagentId);
-      const subagentConfig = await loadAgentById(subagentId);
-      if (!subagentConfig) continue;
-
-      subagentGraphIds.add(subagentConfig.id ?? subagentId);
-      resolved.push(subagentConfig);
-
-      if (!edgeAgentIds.has(subagentId)) {
-        pureSubagentIds.add(subagentId);
+      for (const memberId of unloadedMemberIds) {
+        subagentGraphIds.add(memberId);
       }
-    }
-
-    config.subagentAgentConfigs = resolved;
-  };
-
-  const maxResolvedDepthByConfigId = new Map();
-
-  /** BFS across subagent trees so nested chains like A → B → C get
-   *  resolved before any pruning. Agent configs are loaded once, but
-   *  overlapping roots can still be revisited at deeper path depths so
-   *  the depth guard observes the deepest reachable subagent path. */
-  const resolveSubagentTrees = async (rootConfigs) => {
-    const pending = rootConfigs.map((cfg) => ({ cfg, depth: 0 }));
-    for (let index = 0; index < pending.length; index++) {
-      const { cfg, depth } = pending[index];
-      if (!cfg?.id) continue;
-      const previousDepth = maxResolvedDepthByConfigId.get(cfg.id);
-      if (previousDepth != null && previousDepth >= depth) continue;
-      maxResolvedDepthByConfigId.set(cfg.id, depth);
-      await loadSubagentsFor(cfg, depth);
-      for (const child of cfg.subagentAgentConfigs ?? []) {
-        const childDepth = depth + 1;
-        const previousChildDepth = child?.id ? maxResolvedDepthByConfigId.get(child.id) : undefined;
-        if (child?.id && (previousChildDepth == null || previousChildDepth < childDepth)) {
-          pending.push({ cfg: child, depth: childDepth });
-        }
+      const memberConfigs = await Promise.all(
+        memberIds.map((memberId) =>
+          memberId === config.id
+            ? config
+            : initializeGraphMember(() =>
+                routedParentRunId == null
+                  ? loadGraphMember(memberId, graphSignal)
+                  : loadRoutedGraphMember(memberId, routedParentRunId, graphSignal),
+              ),
+        ),
+      );
+      throwIfAborted(graphSignal);
+      if (memberConfigs.some((member) => member == null)) {
+        logger.warn('[initializeClient] Skipping incomplete graph subagent', {
+          parentAgentId: config.id,
+          graphType: definition.type,
+          expectedMemberCount: memberIds.length,
+          resolvedMemberCount: memberConfigs.filter(Boolean).length,
+        });
+        continue;
       }
+      resolvedGraphs.push({ definition, memberConfigs });
     }
-  };
-
-  await resolveSubagentTrees([primaryConfig, ...agentConfigs.values()]);
-
-  /** Drop pure-subagent entries now that every reachable config has
-   *  had its subagents resolved. They stay in `agentToolContexts` so
-   *  their tools still execute with the right scoping. */
-  for (const id of pureSubagentIds) {
-    agentConfigs.delete(id);
+    config.subagentGraphConfigs = resolvedGraphs;
   }
 
-  primaryConfig.subagents = subagentsCapabilityEnabled ? primaryConfig.subagents : undefined;
+  for (const config of rootSubagentConfigs) {
+    await resolveGraphSubagentsFor(config);
+  }
 
-  /** If the capability is off at the endpoint level, strip `subagents` on
-   *  every loaded config — not just the primary. `run.ts` calls
+  /** Build detached execution only for an attributable owner/thread. New
+   * tasks still require a spawnable child, while an existing registered live
+   * task keeps its poll/control seam after agent configuration changes. The
+   * SDK receives only this trusted host scope; models can select a child
+   * `threadId`, never the owner or parent-thread namespace. */
+  const hasSpawnableSubagent = rootSubagentConfigs.some(
+    (config) =>
+      config.subagents?.enabled === true &&
+      (config.subagents.allowSelf !== false ||
+        (config.subagentAgentConfigs?.length ?? 0) > 0 ||
+        (config.lazySubagentConfigs?.length ?? 0) > 0 ||
+        (config.subagentGraphConfigs?.length ?? 0) > 0),
+  );
+  const trustedSubagentTasks =
+    backgroundToolsAvailable &&
+    typeof req.user?.id === 'string' &&
+    req.user.id !== '' &&
+    typeof conversationId === 'string' &&
+    conversationId !== ''
+      ? buildSubagentThreadTaskConfig(
+          subagentThreadTaskStore,
+          {
+            userId: req.user.id,
+            parentConversationId: conversationId,
+            ...(typeof req.user.tenantId === 'string' && req.user.tenantId !== ''
+              ? { tenantId: req.user.tenantId }
+              : {}),
+          },
+          {
+            completionWakeups: completionWakeupsEnabled,
+            scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+          },
+        )
+      : undefined;
+  let hasExistingSubagentTask = false;
+  if (trustedSubagentTasks != null && !(subagentsAvailableForRun && hasSpawnableSubagent)) {
+    try {
+      hasExistingSubagentTask = await trustedSubagentTasks.store.hasTasks(
+        trustedSubagentTasks.scopeId,
+      );
+    } catch (error) {
+      /** Keep the poll/control tool visible when the owner directory is briefly
+       * unavailable. The tool then returns an honest `unavailable` status
+       * instead of making a live task look nonexistent. */
+      logger.warn('[initializeClient] Failed to inspect routed subagent tasks', error);
+      hasExistingSubagentTask = true;
+    }
+  }
+  const subagentTasks =
+    trustedSubagentTasks != null &&
+    ((subagentsAvailableForRun && hasSpawnableSubagent) || hasExistingSubagentTask)
+      ? trustedSubagentTasks
+      : undefined;
+  if (subagentTasks != null) {
+    toolExecuteOptions.subagentTasks = subagentTasks;
+  }
+
+  primaryConfig.subagents = subagentsAvailableForRun ? primaryConfig.subagents : undefined;
+
+  /** If the capability is off or this durable child is at the depth limit,
+   *  strip `subagents` on every loaded config — not just the primary. `run.ts` calls
    *  `buildSubagentConfigs` for every agent in the array, so a handoff
    *  agent with `subagents.enabled: true` persisted on its document would
-   *  otherwise still expose self-spawn at runtime even though the admin
-   *  has disabled the capability globally. */
-  if (!subagentsCapabilityEnabled) {
+   *  otherwise still expose self-spawn at runtime. */
+  if (!subagentsAvailableForRun) {
+    primaryConfig.lazySubagentConfigs = undefined;
+    primaryConfig.subagentGraphConfigs = undefined;
     for (const config of agentConfigs.values()) {
       config.subagents = undefined;
       config.subagentAgentConfigs = undefined;
+      config.lazySubagentConfigs = undefined;
+      config.subagentGraphConfigs = undefined;
     }
   }
 
@@ -874,33 +1891,44 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       });
     } catch (err) {
       logger.error(
-        '[api/server/controllers/agents/client.js #titleConvo] Error getting custom endpoint config',
+        '[/api/server/services/Endpoints/agents/initialize.js] Error getting custom endpoint config',
         err,
       );
     }
   }
 
-  const sender =
-    primaryAgent.name ??
-    getResponseSender({
+  const sender = resolveSender({
+    agent: primaryConfig,
+    specLabel: selectedModelSpec?.label,
+    endpointOption: {
       ...endpointOption,
       model: endpointOption.model_parameters.model,
       modelDisplayLabel: endpointConfig?.modelDisplayLabel,
       modelLabel: endpointOption.model_parameters.modelLabel,
-    });
+    },
+  });
 
   /** History priming uses the user's full ACL-accessible skill set (not
    *  per-agent scoped) because prior turns may reference skills no longer
-   *  in any active agent's scope; the ACL check is the security gate.
-   *  `codeEnvAvailable` comes from `primaryConfig` — @see
-   *  `InitializedAgent.codeEnvAvailable` for the per-agent narrowing. */
+   *  in any active agent's scope; the ACL check is the security gate. Each
+   *  selected Code API deployment receives its own upload, and only session
+   *  partitions routed to that deployment receive those storage pointers. */
+  const codeExecutionProfiles = collectCodeExecutionProfileRoutes(
+    [primaryConfig, ...agentConfigs.values()],
+    {
+      userId: req.user.id,
+      conversationId,
+    },
+  );
   const handlePrimeInvokedSkills = skillsCapabilityEnabled
-    ? (payload) =>
-        primeInvokedSkills({
+    ? (payload, skillNames) =>
+        primeInvokedSkillsForProfiles({
           req,
           payload,
+          skillNames,
+          signal,
           accessibleSkillIds,
-          codeEnvAvailable: primaryConfig.codeEnvAvailable === true,
+          executionProfiles: codeExecutionProfiles,
           ...getSkillToolDeps(),
         })
     : undefined;
@@ -914,7 +1942,6 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
    *  known non-custom agent (built-in pricing) from an untagged/unknown one
    *  (primary fallback).
    *  @type {Map<string, import('@librechat/api').EndpointTokenConfig | undefined>} */
-  const endpointTokenConfigByAgentId = new Map();
   for (const [agentId, ctx] of agentToolContexts) {
     endpointTokenConfigByAgentId.set(agentId, ctx?.endpointTokenConfig);
   }
@@ -927,11 +1954,101 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       fallback: usageCost.endpointTokenConfig,
     });
 
+  const eventTaskId = req._agentEventTaskId;
+  const eventChildActivity =
+    req._agentEventBindingParentConversationId != null &&
+    typeof conversationId === 'string' &&
+    conversationId !== '' &&
+    typeof eventTaskId === 'string' &&
+    eventTaskId !== ''
+      ? {
+          runId: streamId ?? eventTaskId,
+          parentRunId: req._agentEventBindingParentConversationId,
+          subagentRunId: eventTaskId,
+          subagentType: primaryConfig.id,
+          subagentAgentId: primaryConfig.id,
+          parentAgentId: req._agentEventBindingParentAgentId,
+          publish: (event) =>
+            subagentThreadTaskStore.publishTaskActivity(conversationId, eventTaskId, event),
+        }
+      : null;
+
+  runFileBindings = createChatRunFileBindings({
+    req,
+    contexts: agentToolContexts,
+    createdAt: jobCreatedAt,
+    requestFiles,
+    audit: (event) => logger.info('[agents:run-files]', event),
+    getInputs: () => primaryConfig.currentRequestAttachments,
+    loadFiles: (fileIds) => db.getRunFileCandidates(fileIds, req.user.tenantId),
+    filterFiles: filterFilesByAgentAccess,
+    listPublications: db.listRunArtifacts,
+    provisioning: {
+      provisionToCodeEnv,
+      provisionToVectorDB,
+      updateFile: db.updateFile,
+      updateCodeEnvRef: db.updateFileCodeEnvRef,
+      addEmbeddedEntity: db.addFileEmbeddedEntity,
+    },
+    fileMethods: {
+      claimRunArtifactFile: db.claimRunArtifactFile,
+      publishRunArtifactFile: db.publishRunArtifactFile,
+      findRunArtifactFile: db.findRunArtifactFile,
+    },
+    processCodeOutput,
+    snapshotAdapter: {
+      request: createAxiosInstance(),
+      getAuthHeaders: getCodeApiAuthHeaders,
+      getBaseURL: getCodeExecutionBaseUrl,
+      determineFileType,
+    },
+    finalize: runPreviewFinalize,
+    getStrategyFunctions,
+    artifactPromises,
+    emitAttachment: createAttachmentEmitter({ res, streamId, jobCreatedAt }),
+    encoder: {
+      getAgent: (agentId) => agentToolContexts.get(agentId)?.fileEncodingAgent,
+      encodeImages: (request, files, params) =>
+        encodeAndFormat(request, files, params, VisionModes.agents),
+      encodeDocuments: encodeAndFormatDocuments,
+      encodeAudios: encodeAndFormatAudios,
+      encodeVideos: encodeAndFormatVideos,
+      extractText: extractFileContext,
+    },
+  });
+  toolExecuteOptions.runFiles = runFileBindings.session;
+  toolExecuteOptions.provisionFiles = runFileBindings.wrapProvision(
+    toolExecuteOptions.provisionFiles,
+  );
+
+  const eventHandlers = getDefaultHandlers({
+    res,
+    contentParts,
+    stepMap,
+    toolInputValidationErrors,
+    toolExecuteOptions,
+    summarizationOptions,
+    aggregateContent,
+    toolEndCallback,
+    collectedUsage,
+    collectedThoughtSignatures,
+    streamId,
+    jobCreatedAt,
+    subagentAggregatorsByToolCallId,
+    usageCost,
+    contextUsageSink,
+    usageEmitSink,
+    eventChildActivity,
+    resolveMcpServerName,
+    toolTimingReplayEvents,
+  });
+
   const client = new AgentClient({
     req,
     res,
     sender,
     contentParts,
+    stepMap,
     agentConfigs,
     eventHandlers,
     collectedUsage,
@@ -939,17 +2056,22 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
     aggregateContent,
     artifactPromises,
     primeInvokedSkills: handlePrimeInvokedSkills,
+    invokedSkillIdentities,
     agent: primaryConfig,
     spec: endpointOption.spec,
+    traceContext: { modelLabel: endpointOption.model_parameters?.modelLabel },
     iconURL: endpointOption.iconURL,
     chatProjectId: endpointOption.chatProjectId,
     attachments: primaryConfig.requestAttachments ?? primaryConfig.attachments,
     agentContextAttachmentsByAgentId,
     endpointType: endpointOption.endpointType,
     resendFiles: primaryConfig.resendFiles ?? true,
+    imageDetail: primaryConfig.imageDetail,
     maxContextTokens: primaryConfig.maxContextTokens,
     endpoint: isEphemeralAgentId(primaryConfig.id) ? primaryConfig.endpoint : EModelEndpoint.agents,
     subagentAggregatorsByToolCallId,
+    subagentTasks,
+    runFiles: runFileBindings.session,
     /** Resolved endpoint token/pricing config so spending and cost reflect
      *  configured rates for custom-endpoint agents instead of defaults. */
     endpointTokenConfig: primaryConfig.endpointTokenConfig,
@@ -961,13 +2083,79 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
      *  them to persist the breakdown + usage rollup on the response message. */
     contextUsageSink,
     usageEmitSink,
+    startupTelemetry,
+    toolInputValidationErrors,
+    jobCreatedAt,
+    checkpointNamespace,
+    mcpRequestBody: runtimeRequestBody,
   });
 
   if (streamId) {
-    GenerationJobManager.setCollectedUsage(streamId, collectedUsage);
+    GenerationJobManager.setCollectedUsage(streamId, collectedUsage, jobCreatedAt);
   }
 
   return { client, userMCPAuthMap };
 };
 
-module.exports = { initializeClient };
+/**
+ * Creates an agent initializer whose host may resolve renewable credentials at
+ * the execution boundary. The resolver returns a provider closure rather than
+ * token material so refresh remains owned by the host integration.
+ *
+ * @param {object} [dependencies]
+ * @param {import('@librechat/api').HostUpstreamTokenProviderResolver} [dependencies.resolveUpstreamTokenProvider]
+ * @param {import('@librechat/api').ScheduledMCPBearerHost} [dependencies.scheduledBearerHost]
+ */
+function createInitializeClient(dependencies = {}) {
+  return async (params) => {
+    const upstreamTokenProviderResolver = createScheduleUpstreamTokenProviderResolver(
+      params.req,
+      dependencies.resolveUpstreamTokenProvider,
+      params.signal,
+      params.scheduledTokenContext,
+    );
+    return initializeWithScheduleMCPExecution(
+      {
+        req: params.req,
+        signal: params.signal,
+        context: require('~/server/services/MCPRequestContext').getMCPRequestContext(
+          params.req,
+          params.res,
+        ),
+        restoredContext: params.scheduledTokenContext,
+        restoredJob: params.scheduleJobIdentity,
+      },
+      () => require('~/server/services/Schedules/consent'),
+      () =>
+        initializeWithScheduledMCPBearer(
+          {
+            req: params.req,
+            context: getMCPRequestContext(params.req),
+            restoredContext: params.scheduledTokenContext,
+            host: dependencies.scheduledBearerHost,
+            signal: params.signal,
+            streamId: params.req._resumableStreamId,
+            jobCreatedAt: params.jobCreatedAt,
+            recordFailure: (input) =>
+              require('~/server/services/Schedules').recordMCPToolAuthFailure(input),
+            registerSettlement: (input) =>
+              require('~/server/services/Schedules').registerMCPSettlement(input),
+          },
+          () => initializeClientWithProvider({ ...params, upstreamTokenProviderResolver }),
+        ),
+      (identity) =>
+        retainScheduleMCPCompletion(
+          identity,
+          {
+            streamId: params.req._resumableStreamId,
+            createdAt: params.jobCreatedAt,
+          },
+          GenerationJobManager.getJobStore(),
+        ),
+    );
+  };
+}
+
+const initializeClient = createInitializeClient();
+
+module.exports = { createInitializeClient, initializeClient };

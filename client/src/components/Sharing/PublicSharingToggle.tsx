@@ -4,6 +4,7 @@ import { ResourceType } from 'librechat-data-provider';
 import { Switch, InfoHoverCard, ESide, Label } from '@librechat/client';
 import type { AccessRoleIds } from 'librechat-data-provider';
 import AccessRolesPicker from './AccessRolesPicker';
+import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -16,9 +17,11 @@ interface PublicSharingToggleProps {
   className?: string;
 }
 
-const accessDescriptions: Record<
-  ResourceType,
-  'com_ui_agent' | 'com_ui_prompt' | 'com_ui_mcp_server' | 'com_ui_skill' | 'com_ui_shared_link'
+const accessDescriptions: Partial<
+  Record<
+    ResourceType,
+    'com_ui_agent' | 'com_ui_prompt' | 'com_ui_mcp_server' | 'com_ui_skill' | 'com_ui_shared_link'
+  >
 > = {
   [ResourceType.AGENT]: 'com_ui_agent',
   [ResourceType.PROMPTGROUP]: 'com_ui_prompt',
@@ -46,7 +49,7 @@ export default function PublicSharingToggle({
   );
 
   return (
-    <div className={cn('space-y-4', className)}>
+    <div className={className}>
       {/* Main toggle section */}
       <div className="group relative rounded-lg">
         <div className="flex items-center justify-between">
@@ -54,7 +57,7 @@ export default function PublicSharingToggle({
             <div
               className={cn(
                 'transition-colors duration-200',
-                isPublic ? 'text-blue-600 dark:text-blue-500' : 'text-text-secondary',
+                isPublic ? 'text-status-info' : 'text-text-secondary',
               )}
             >
               <Globe className="size-5" />
@@ -70,7 +73,8 @@ export default function PublicSharingToggle({
                 side={ESide.Top}
                 text={localize('com_ui_share_everyone_description_var', {
                   resource:
-                    localize(accessDescriptions[resourceType]) || localize('com_ui_resource'),
+                    localize(accessDescriptions[resourceType] ?? 'com_ui_resource') ||
+                    localize('com_ui_resource'),
                 })}
               />
             </div>
@@ -84,65 +88,29 @@ export default function PublicSharingToggle({
         </div>
       </div>
 
-      {/* Permission level section with smooth animation */}
-      <div
-        className={cn(
-          'transition-all duration-300 ease-in-out',
-          isPublic ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0',
-        )}
-        style={{ overflow: isPublic ? 'visible' : 'hidden' }}
-        aria-hidden={!isPublic}
-        ref={(el) => {
-          if (!el) {
-            return;
-          }
-          if (isPublic) {
-            el.removeAttribute('inert');
-          } else {
-            el.setAttribute('inert', '');
-          }
-        }}
-      >
-        <div
-          className={cn(
-            'rounded-lg transition-all duration-300',
-            isPublic ? 'bg-surface-secondary/50 translate-y-0' : '-translate-y-2',
-          )}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  'transition-all duration-300',
-                  isPublic
-                    ? 'scale-100 text-blue-600 dark:text-blue-500'
-                    : 'scale-95 text-text-secondary',
-                )}
-              >
-                <Shield className="size-5" />
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <Label htmlFor="permission-level" className="text-sm font-medium text-text-primary">
-                  {localize('com_ui_everyone_permission_level')}
-                </Label>
-              </div>
+      <Collapse open={isPublic} overflowVisibleWhenOpen className="pt-4">
+        <div className="flex items-center justify-between bg-transparent">
+          <div className="flex items-center gap-3">
+            <div className="text-status-info">
+              <Shield className="size-5" />
             </div>
-            <div
-              className={cn(
-                'relative z-50 transition-all duration-300',
-                isPublic ? 'scale-100 opacity-100' : 'scale-95 opacity-0',
-              )}
-            >
-              <AccessRolesPicker
-                id="permission-level"
-                resourceType={resourceType}
-                selectedRoleId={publicRole}
-                onRoleChange={onPublicRoleChange}
-              />
+            <div className="flex flex-col gap-0.5">
+              <Label htmlFor="permission-level" className="text-sm font-medium text-text-primary">
+                {localize('com_ui_everyone_permission_level')}
+              </Label>
             </div>
           </div>
+          <div className="relative z-50">
+            <AccessRolesPicker
+              id="permission-level"
+              ariaLabel={localize('com_ui_everyone_permission_level')}
+              resourceType={resourceType}
+              selectedRoleId={publicRole}
+              onRoleChange={onPublicRoleChange}
+            />
+          </div>
         </div>
-      </div>
+      </Collapse>
     </div>
   );
 }

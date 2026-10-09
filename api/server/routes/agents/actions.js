@@ -9,6 +9,7 @@ const {
   validateActionOAuthMetadata,
   ACTION_CREDENTIAL_REFRESH_MESSAGE,
   buildActionOAuthTokenDeleteQueries,
+  blockFilteredActionProjection,
 } = require('@librechat/api');
 const {
   Permissions,
@@ -20,8 +21,14 @@ const {
   validateActionDomain,
   validateAndParseOpenAPISpec,
 } = require('librechat-data-provider');
-const { encryptMetadata, domainParser } = require('~/server/services/ActionService');
+const {
+  decryptMetadata,
+  encryptMetadata,
+  domainParser,
+} = require('~/server/services/ActionService');
 const { findAccessibleResources } = require('~/server/services/PermissionService');
+const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
+const { instructionsPromptAccess } = require('~/server/services/Agents/instructionsPrompt');
 const db = require('~/models');
 const { canAccessAgentResource } = require('~/server/middleware');
 
@@ -62,9 +69,13 @@ router.get('/', async (req, res) => {
 
     const editableAgentIds = agentsResponse.data.map((agent) => agent.id);
     const actions =
-      editableAgentIds.length > 0
-        ? await db.getActions({ agent_id: { $in: editableAgentIds } })
-        : [];
+      editableAgentIds.length > 0 ? await db.getActions({ agentId: editableAgentIds }) : [];
+
+    for (const action of actions) {
+      if (blockFilteredActionProjection(req.config?.filters, res, action)) {
+        return;
+      }
+    }
 
     res.json(actions);
   } catch (error) {
@@ -96,6 +107,15 @@ router.post(
       const { functions, action_id: _action_id, metadata: _metadata } = req.body;
       if (!functions.length) {
         return res.status(400).json({ message: 'No functions provided' });
+      }
+
+      if (
+        blockFilteredActionProjection(req.config?.filters, res, {
+          functions,
+          metadata: _metadata,
+        })
+      ) {
+        return;
       }
 
       const metadata = await encryptMetadata(removeNullishValues(_metadata, true));
@@ -150,7 +170,7 @@ router.post(
       // Permissions already validated by middleware - load agent directly
       initialPromises.push(db.getAgent({ id: agent_id }));
       if (requestedActionId) {
-        initialPromises.push(db.getActions({ action_id: requestedActionId }, true));
+        initialPromises.push(db.getActions({ actionId: requestedActionId }, true));
       }
 
       /** @type {[Agent, [Action|undefined]]} */
@@ -179,6 +199,15 @@ router.post(
         previousLegacyDomain: legacyActionDomainEncode(storedAction?.metadata?.domain),
         storedAction,
       });
+
+      if (
+        blockFilteredActionProjection(req.config?.filters, res, {
+          functions: plannedUpdate.tools.map((name) => ({ function: { name } })),
+          metadata: await decryptMetadata(plannedUpdate.metadata),
+        })
+      ) {
+        return;
+      }
 
       if (plannedUpdate.requiresCredentialRefresh) {
         return res.status(400).json({
@@ -209,6 +238,7 @@ router.post(
           forceVersion: true,
         },
       );
+      await attachOwnerContacts([updatedAgent]);
 
       // Only update user field for new actions
       const actionUpdateData = {
@@ -223,7 +253,7 @@ router.post(
 
       /** @type {Action} */
       const updatedAction = await db.updateAction(
-        { action_id: requestedActionId ?? action_id, agent_id },
+        { actionId: requestedActionId ?? action_id, agentId: agent_id },
         actionUpdateData,
       );
 
@@ -234,7 +264,16 @@ router.post(
         }
       }
 
-      res.json([updatedAgent, updatedAction]);
+      /** `updatedAgent` is the same EDIT-scoped, `versions[]`-carrying shape returned by
+       *  `controllers/agents/v1.js`'s write handlers, and the client writes this response
+       *  into the expanded agent cache — an unrelated action edit must not leak a link the
+       *  caller cannot VIEW. */
+      const presentedAgent = await instructionsPromptAccess.presentForEditor({
+        user: req.user,
+        agent: updatedAgent,
+      });
+
+      res.json([presentedAgent, updatedAction]);
     } catch (error) {
       const message = 'Trouble updating the Agent Action';
       logger.error(message, error);
@@ -292,7 +331,7 @@ router.delete(
         { tools: updatedTools, actions: updatedActions },
         { updatingUserId: req.user.id, forceVersion: true },
       );
-      const deleted = await db.deleteAction({ action_id, agent_id });
+      const deleted = await db.deleteAction({ actionId: action_id, agentId: agent_id });
       if (!deleted) {
         logger.warn('[Agent Action Delete] No matching action document found', {
           action_id,

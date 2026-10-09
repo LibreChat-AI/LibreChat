@@ -1,0 +1,484 @@
+import { Constants } from '@librechat/agents';
+import {
+  CODE_APPROVAL_MODES,
+  CodeApprovalModeError,
+  getAllowedCodeApprovalModes,
+  resolveCodeApprovalMode,
+  resolveCodePermissionDecision,
+} from 'librechat-data-provider';
+import type {
+  Agents,
+  CodeApprovalMode,
+  CodeEnvironmentPermissionDecision,
+  CodeEnvironmentUserConfigSchema,
+  CodeEnvironmentUserSettings,
+} from 'librechat-data-provider';
+import type { HookCallback } from '@librechat/agents';
+import type { ResolvedToolApprovalHook } from './hooks';
+import {
+  CREATE_FILE_TOOL_NAME,
+  EDIT_FILE_TOOL_NAME,
+  FILE_AUTHORING_TOOL_NAMES,
+  isCodeSessionToolName,
+} from '~/agents/tools';
+import { isSkillFilePath } from '~/agents/skills';
+
+const BYOM_FILE_WRITE_TOOLS = new Set<string>([
+  Constants.WRITE_FILE,
+  Constants.EDIT_FILE,
+  CREATE_FILE_TOOL_NAME,
+  EDIT_FILE_TOOL_NAME,
+]);
+
+const BYOM_COMMAND_EXECUTION_TOOLS = new Set<string>([
+  Constants.BASH_TOOL,
+  Constants.EXECUTE_CODE,
+  Constants.PROGRAMMATIC_TOOL_CALLING,
+  Constants.BASH_PROGRAMMATIC_TOOL_CALLING,
+  Constants.COMPILE_CHECK,
+]);
+
+/** Exact built-in tool names whose execution can touch a stateful code target. */
+export function isStatefulCodeEnvironmentToolName(name: string): boolean {
+  return (
+    name === Constants.READ_FILE ||
+    BYOM_FILE_WRITE_TOOLS.has(name) ||
+    BYOM_COMMAND_EXECUTION_TOOLS.has(name) ||
+    isCodeSessionToolName(name, FILE_AUTHORING_TOOL_NAMES)
+  );
+}
+
+export type AttachedCodeEnvironmentPolicySettings = {
+  configSchema?: CodeEnvironmentUserConfigSchema;
+  settings?: CodeEnvironmentUserSettings;
+  skillAuthoringAvailable?: boolean;
+};
+
+type PermissionCategory = 'fileWrite' | 'commandExecution';
+
+type CodeEnvironmentPolicyAgent = {
+  id?: string;
+  skillAuthoringAvailable?: boolean;
+  toolDefinitions?: readonly { name?: string; toolType?: string }[];
+  toolRegistry?: ReadonlyMap<string, { name?: string; toolType?: string }>;
+  codeExecutionContext?: {
+    environmentType?: string;
+    codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
+    codeEnvironmentSettings?: CodeEnvironmentUserSettings;
+  };
+  /** Machines a parent may route this subagent to per call. */
+  codeExecutionChoices?:
+    | readonly {
+        environmentType?: string;
+        codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
+        codeEnvironmentSettings?: CodeEnvironmentUserSettings;
+      }[]
+    | null;
+  subagentAgentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
+  lazySubagentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
+  subagentGraphMemberMetadata?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
+  subagentGraphConfigs?: readonly {
+    memberConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
+  }[];
+};
+
+function collectCodeEnvironmentPolicyAgents(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): CodeEnvironmentPolicyAgent[] {
+  const agents: CodeEnvironmentPolicyAgent[] = [];
+  const visited = new Set<CodeEnvironmentPolicyAgent>();
+  const pending = [...roots];
+  for (let index = 0; index < pending.length; index++) {
+    const agent = pending[index];
+    if (agent == null || visited.has(agent)) {
+      continue;
+    }
+    visited.add(agent);
+    agents.push(agent);
+    pending.push(...(agent.subagentAgentConfigs ?? []));
+    pending.push(...(agent.lazySubagentConfigs ?? []));
+    pending.push(...(agent.subagentGraphMemberMetadata ?? []));
+    for (const graph of agent.subagentGraphConfigs ?? []) {
+      pending.push(...(graph.memberConfigs ?? []));
+    }
+  }
+  return agents;
+}
+
+/**
+ * Mark code-specific approval previews only when the initialized server tool
+ * graph proves the effective name belongs exclusively to LibreChat's native
+ * code tools. A same-name user/MCP/action definition makes the name ambiguous
+ * and deliberately falls back to the generic argument preview.
+ */
+export function markNativeCodeToolApprovalRequests(
+  payload: Agents.ToolApprovalInterruptPayload,
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Agents.ToolApprovalInterruptPayload {
+  const provenance = new Map<string, { native: boolean; conflicting: boolean }>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    const definitions = [...(agent.toolDefinitions ?? []), ...(agent.toolRegistry?.values() ?? [])];
+    for (const definition of definitions) {
+      const name = definition.name;
+      if (typeof name !== 'string' || !isStatefulCodeEnvironmentToolName(name)) {
+        continue;
+      }
+      const current = provenance.get(name) ?? { native: false, conflicting: false };
+      if (definition.toolType === 'builtin') {
+        current.native = true;
+      } else {
+        current.conflicting = true;
+      }
+      provenance.set(name, current);
+    }
+  }
+  return {
+    ...payload,
+    action_requests: payload.action_requests.map((request) => {
+      const source = provenance.get(request.name);
+      if (source?.native !== true || source.conflicting) {
+        const genericRequest = { ...request };
+        delete genericRequest.source;
+        return genericRequest;
+      }
+      return { ...request, source: 'librechat_code' };
+    }),
+  };
+}
+
+/** Scope native edit normalization to the executing agent, never a same-name external tool. */
+export function collectNativeEditFileAgentIds(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Set<string> {
+  const agentIds = new Set<string>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    if (!agent.id) continue;
+    let native = false;
+    let conflicting = false;
+    for (const definition of [
+      ...(agent.toolDefinitions ?? []),
+      ...(agent.toolRegistry?.values() ?? []),
+    ]) {
+      if (definition.name !== EDIT_FILE_TOOL_NAME) continue;
+      if (definition.toolType === 'builtin') native = true;
+      else conflicting = true;
+    }
+    if (native && !conflicting) agentIds.add(agent.id);
+  }
+  return agentIds;
+}
+
+export class AttachedCodeEnvironmentApprovalError extends Error {
+  readonly code = 'BYOM_TOOL_APPROVAL_UNSUPPORTED';
+
+  constructor() {
+    super('Attached code environments require a tool-approval capable client');
+    this.name = 'AttachedCodeEnvironmentApprovalError';
+  }
+}
+
+/** Prevent an approval-gated BYOM tool from running on an ingress that cannot resume it. */
+export function assertAttachedCodeEnvironmentApprovalSupported({
+  hasAttachedCodeEnvironment,
+  hitlCapable,
+  approvalExplicitlyDisabled,
+}: {
+  hasAttachedCodeEnvironment: boolean;
+  hitlCapable: boolean;
+  approvalExplicitlyDisabled: boolean;
+}): void {
+  if (hasAttachedCodeEnvironment && !hitlCapable && !approvalExplicitlyDisabled) {
+    throw new AttachedCodeEnvironmentApprovalError();
+  }
+}
+
+/** Collect the SDK agent identities whose execution route targets an attached VM. */
+export function collectAttachedCodeEnvironmentAgentIds(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Set<string> {
+  const attachedAgentIds = new Set<string>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    const routable =
+      agent.codeExecutionChoices?.some((choice) => choice.environmentType === 'attached') === true;
+    if (agent.id && (agent.codeExecutionContext?.environmentType === 'attached' || routable)) {
+      attachedAgentIds.add(agent.id);
+    }
+  }
+  return attachedAgentIds;
+}
+
+export function collectAttachedCodeEnvironmentPolicySettings(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Map<string, AttachedCodeEnvironmentPolicySettings> {
+  const settingsByAgentId = new Map<string, AttachedCodeEnvironmentPolicySettings>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    if (agent.id && agent.codeExecutionContext?.environmentType === 'attached') {
+      settingsByAgentId.set(agent.id, {
+        configSchema: agent.codeExecutionContext.codeEnvironmentConfigSchema,
+        settings: agent.codeExecutionContext.codeEnvironmentSettings,
+        skillAuthoringAvailable: agent.skillAuthoringAvailable === true,
+      });
+    }
+  }
+  return settingsByAgentId;
+}
+
+/**
+ * Each agent's attached-machine policies: its default route and every machine a parent may route
+ * it to per call. Preflight decisions use all of them, since the call picks the machine later.
+ */
+export function collectAttachedCodeRoutePolicies(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Map<string, AttachedCodeEnvironmentPolicySettings[]> {
+  const policiesByAgentId = new Map<string, AttachedCodeEnvironmentPolicySettings[]>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    const policies = [agent.codeExecutionContext, ...(agent.codeExecutionChoices ?? [])]
+      .filter((context) => context?.environmentType === 'attached')
+      .map((context) => ({
+        configSchema: context?.codeEnvironmentConfigSchema,
+        settings: context?.codeEnvironmentSettings,
+        skillAuthoringAvailable: agent.skillAuthoringAvailable === true,
+      }));
+    if (agent.id && policies.length > 0) {
+      policiesByAgentId.set(agent.id, [...(policiesByAgentId.get(agent.id) ?? []), ...policies]);
+    }
+  }
+  return policiesByAgentId;
+}
+
+/** Every attached-machine policy the run may execute under, for validating the requested mode. */
+export function collectAttachedCodeApprovalPolicies(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): AttachedCodeEnvironmentPolicySettings[] {
+  return [...collectAttachedCodeRoutePolicies(roots).values()].flat();
+}
+
+function permissionDecision(
+  policy: AttachedCodeEnvironmentPolicySettings | undefined,
+  category: PermissionCategory,
+  mode?: CodeApprovalMode,
+): CodeEnvironmentPermissionDecision {
+  const field = policy?.configSchema?.permissions?.[category];
+  const configuredDecision = policy?.settings?.permissions?.[category];
+  const decision =
+    configuredDecision != null && field?.allowed.includes(configuredDecision) === true
+      ? configuredDecision
+      : (field?.default ?? 'ask');
+  const effectiveMode = getAllowedCodeApprovalModes({
+    environment: 'attached',
+    allowedModes: CODE_APPROVAL_MODES,
+    configSchema: policy?.configSchema,
+    settings: policy?.settings,
+  }).includes(mode ?? 'ask')
+    ? mode
+    : undefined;
+  return resolveCodePermissionDecision({ mode: effectiveMode, category, decision });
+}
+
+function isCodeApprovalMode(value: unknown): value is CodeApprovalMode {
+  return CODE_APPROVAL_MODES.some((mode) => mode === value);
+}
+
+/**
+ * Validates a requested approval mode against every attached target the turn can run on.
+ * A turn with no attached target has nothing for the mode to govern, so any known mode is
+ * accepted there and resolves to `ask`: a target discovered later still starts gated, and a
+ * stale preference from another workspace never fails a turn that cannot use it.
+ */
+export function resolveAttachedCodeApprovalMode(
+  requested: unknown,
+  policies: Iterable<AttachedCodeEnvironmentPolicySettings>,
+  approvalsEnabled = true,
+): CodeApprovalMode | undefined {
+  if (!approvalsEnabled) {
+    if (requested === 'ask') {
+      return undefined;
+    }
+    return resolveCodeApprovalMode(requested, {
+      environment: 'attached',
+      allowedModes: [],
+      enabled: false,
+    });
+  }
+  const targets = [...policies];
+  if (targets.length === 0) {
+    if (requested == null) return undefined;
+    if (!isCodeApprovalMode(requested)) throw new CodeApprovalModeError();
+    return 'ask';
+  }
+  let resolved: CodeApprovalMode | undefined;
+  let rejection: Error | undefined;
+  for (const policy of targets) {
+    try {
+      resolved = resolveCodeApprovalMode(requested, {
+        environment: 'attached',
+        allowedModes: CODE_APPROVAL_MODES,
+        configSchema: policy.configSchema,
+        settings: policy.settings,
+      });
+    } catch (error) {
+      /** Unattended execution requires every known target to permit the mode. */
+      if (requested === 'fullAccess') throw error;
+      rejection = error as Error;
+    }
+  }
+  if (resolved == null && rejection != null) throw rejection;
+  return resolved;
+}
+
+/** Approvals are on and no agent the turn can reach runs, or may be routed, on an attached
+ *  machine. */
+function makesNoCodeApprovalDecision(
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
+  approvalsEnabled: boolean,
+): boolean {
+  return approvalsEnabled && policies.length === 0;
+}
+
+/**
+ * The approval mode a turn records on its conversation: the mode it validated against its
+ * attached targets. A turn without one still rejects a value that is not an approval mode, but
+ * records nothing; `getCodeApprovalPreservedFields` keeps the stored mode through its writes.
+ */
+export function resolvePersistedCodeApprovalMode({
+  requested,
+  policies,
+  approvalsEnabled = true,
+}: {
+  requested: unknown;
+  /** Every attached-machine policy the run may execute under (`collectAttachedCodeApprovalPolicies`). */
+  policies: readonly AttachedCodeEnvironmentPolicySettings[];
+  approvalsEnabled?: boolean;
+}): CodeApprovalMode | undefined {
+  const effective = resolveAttachedCodeApprovalMode(requested, policies, approvalsEnabled);
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? undefined : effective;
+}
+
+/**
+ * Conversation fields a turn's writes keep as stored although its save options omit them. A turn
+ * with no attached target makes no approval decision, so the mode stored on whichever
+ * conversation it is saved under, including an `overrideConvoId` target, stays as it is: leaving
+ * a workspace for a turn and returning keeps the reader's pick, and a chat that stores none keeps
+ * offering the remembered one. A kept mode grants nothing on its own and is validated again
+ * against the targets of whichever later turn uses it.
+ */
+export function getCodeApprovalPreservedFields(
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
+  approvalsEnabled = true,
+): Array<'codeApprovalMode'> {
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? ['codeApprovalMode'] : [];
+}
+
+function exactToolMatcher(toolNames: ReadonlySet<string>): string {
+  return `^(?:${Array.from(toolNames, (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`;
+}
+
+/** Describe only the BYOM hook branches that can actually return `ask` during admission. */
+export function buildAttachedCodeEnvironmentAdmissionHooks(
+  attachedAgentIds: ReadonlySet<string>,
+  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
+  mode?: CodeApprovalMode,
+  /** Machines a parent may route an agent to per call; any of them that asks can pause. */
+  routePoliciesByAgentId: ReadonlyMap<
+    string,
+    readonly AttachedCodeEnvironmentPolicySettings[]
+  > = new Map(),
+): ResolvedToolApprovalHook[] {
+  const hook = createAttachedCodeEnvironmentPolicyHook(attachedAgentIds, settingsByAgentId, mode);
+  const hooks: ResolvedToolApprovalHook[] = [];
+  const askFileAgents = new Set<string>();
+  const askCommandAgents = new Set<string>();
+  const skillAuthoringAgents = new Set<string>();
+  for (const agentId of attachedAgentIds) {
+    const routePolicies = routePoliciesByAgentId.get(agentId) ?? [];
+    const policies = routePolicies.length > 0 ? routePolicies : [settingsByAgentId.get(agentId)];
+    const asks = (category: PermissionCategory): boolean =>
+      policies.some((policy) => permissionDecision(policy, category, mode) === 'ask');
+    if (asks('fileWrite')) askFileAgents.add(agentId);
+    if (asks('commandExecution')) askCommandAgents.add(agentId);
+    if (policies.some((policy) => policy?.skillAuthoringAvailable === true)) {
+      skillAuthoringAgents.add(agentId);
+    }
+  }
+  if (askFileAgents.size > 0) {
+    hooks.push({
+      hook,
+      matcher: exactToolMatcher(BYOM_FILE_WRITE_TOOLS),
+      agentIds: askFileAgents,
+      toolNames: [...BYOM_FILE_WRITE_TOOLS],
+    });
+  }
+  if (askCommandAgents.size > 0) {
+    hooks.push({
+      hook,
+      matcher: exactToolMatcher(BYOM_COMMAND_EXECUTION_TOOLS),
+      agentIds: askCommandAgents,
+      toolNames: [...BYOM_COMMAND_EXECUTION_TOOLS],
+    });
+  }
+  if (skillAuthoringAgents.size > 0) {
+    hooks.push({
+      hook,
+      matcher: exactToolMatcher(new Set([CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME])),
+      agentIds: skillAuthoringAgents,
+      toolNames: [CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME],
+    });
+  }
+  return hooks;
+}
+
+/**
+ * Safe default for user-operated code environments. Read-only file and search
+ * operations fall through to the run-wide policy; actions that can execute code
+ * or modify the workspace require approval for the agent that owns the BYOM route.
+ */
+export function createAttachedCodeEnvironmentPolicyHook(
+  attachedAgentIds: ReadonlySet<string>,
+  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
+  mode?: CodeApprovalMode,
+): HookCallback<'PreToolUse'> {
+  return async (input) => {
+    let category: PermissionCategory | undefined;
+    if (BYOM_FILE_WRITE_TOOLS.has(input.toolName)) {
+      category = 'fileWrite';
+    } else if (BYOM_COMMAND_EXECUTION_TOOLS.has(input.toolName)) {
+      category = 'commandExecution';
+    }
+    if (
+      category == null ||
+      (input.executingAgentId != null && !attachedAgentIds.has(input.executingAgentId))
+    ) {
+      return {};
+    }
+    if (
+      category === 'fileWrite' &&
+      (input.toolName === CREATE_FILE_TOOL_NAME || input.toolName === EDIT_FILE_TOOL_NAME) &&
+      typeof input.toolInput?.path === 'string' &&
+      isSkillFilePath(input.toolInput.path) &&
+      settingsByAgentId.get(input.executingAgentId ?? '')?.skillAuthoringAvailable !== false
+    ) {
+      return {
+        decision: 'ask',
+        reason: `${input.toolName} can modify a persistent LibreChat skill`,
+      };
+    }
+    if (input.executingAgentId == null) {
+      return {
+        decision: 'deny',
+        reason: `${input.toolName} could not be attributed to an attached code environment`,
+      };
+    }
+    const decision = permissionDecision(
+      settingsByAgentId.get(input.executingAgentId),
+      category,
+      mode,
+    );
+    if (decision === 'allow') {
+      return { decision };
+    }
+    return {
+      decision,
+      reason: `${input.toolName} can modify your attached code environment`,
+    };
+  };
+}

@@ -1,10 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Copy, CopyCheck } from 'lucide-react';
+import { Copy, CopyCheck } from 'lucide';
+import {
+  SystemRoles,
+  Permissions,
+  ResourceType,
+  PermissionBits,
+  PermissionTypes,
+} from 'librechat-data-provider';
 import {
   Label,
   Input,
   Button,
   Spinner,
+  MorphIcon,
   TrashIcon,
   useToastContext,
   OGDialog,
@@ -14,13 +22,6 @@ import {
   OGDialogContent,
   OGDialogTemplate,
 } from '@librechat/client';
-import {
-  SystemRoles,
-  Permissions,
-  ResourceType,
-  PermissionBits,
-  PermissionTypes,
-} from 'librechat-data-provider';
 import { useAuthContext, useHasAccess, useResourcePermissions, MCPServerDefinition } from '~/hooks';
 import { GenericGrantAccessDialog } from '~/components/Sharing';
 import { useMCPServerForm } from './hooks/useMCPServerForm';
@@ -164,14 +165,14 @@ export default function MCPServerDialog({
                   variant="outline"
                   onClick={() => {
                     if (isCopying) return;
+                    if (!copyLink(setIsCopying)) return;
                     showToast({ message: localize('com_ui_copied_to_clipboard') });
-                    copyLink(setIsCopying);
                   }}
-                  disabled={isCopying}
+                  disabled={isCopying || !redirectUri}
                   className="p-0"
                   aria-label={localize('com_ui_copy_link')}
                 >
-                  {isCopying ? <CopyCheck className="size-4" /> : <Copy className="size-4" />}
+                  <MorphIcon icon={isCopying ? CopyCheck : Copy} className="size-4" />
                 </Button>
               </div>
             </div>

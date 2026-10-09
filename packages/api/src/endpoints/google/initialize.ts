@@ -2,10 +2,10 @@ import path from 'path';
 import { Providers } from '@librechat/agents';
 import { EModelEndpoint, AuthKeys } from 'librechat-data-provider';
 import type {
-  BaseInitializeParams,
   InitializeResultBase,
   GoogleConfigOptions,
   GoogleCredentials,
+  ProviderInitializeParams,
 } from '~/types';
 import {
   isEnabled,
@@ -14,6 +14,7 @@ import {
   mergeHeaders,
   resolveHeaders,
 } from '~/utils';
+import { resolveEndpointRuntime } from '~/types';
 import { getGoogleConfig } from './llm';
 
 /**
@@ -24,23 +25,23 @@ import { getGoogleConfig } from './llm';
  * @returns Promise resolving to Google configuration options
  * @throws Error if no valid credentials are provided
  */
-export async function initializeGoogle({
-  req,
-  endpoint,
-  model_parameters,
-  db,
-}: BaseInitializeParams): Promise<InitializeResultBase> {
-  const appConfig = req.config;
+export async function initializeGoogle(
+  params: ProviderInitializeParams,
+): Promise<InitializeResultBase> {
+  const { endpoint, model_parameters, db } = params;
+  const { appConfig, user, requestBody } = resolveEndpointRuntime(params);
   const { GOOGLE_KEY, GOOGLE_REVERSE_PROXY, GOOGLE_AUTH_HEADER, PROXY } = process.env;
   const isUserProvided = GOOGLE_KEY === 'user_provided';
   const isVertexEndpoint = endpoint === Providers.VERTEXAI;
   const useUserProvidedGoogleKey = !isVertexEndpoint && isUserProvided;
-  const { key: expiresAt } = req.body;
+  const { key: expiresAt } = requestBody;
 
   let userKey = null;
   if (expiresAt && useUserProvidedGoogleKey) {
     checkUserKeyExpiry(expiresAt, EModelEndpoint.google);
-    userKey = await db.getUserKey({ userId: req.user?.id ?? '', name: EModelEndpoint.google });
+  }
+  if (useUserProvidedGoogleKey) {
+    userKey = await db.getUserKey({ userId: user?.id ?? '', name: EModelEndpoint.google });
   }
 
   let serviceKey: Record<string, unknown> = {};
@@ -84,7 +85,7 @@ export async function initializeGoogle({
     clientOptions.titleModel = googleConfig.titleModel;
   }
 
-  if (allConfig) {
+  if (allConfig?.streamRate != null) {
     clientOptions.streamRate = allConfig.streamRate;
   }
 
@@ -95,12 +96,18 @@ export async function initializeGoogle({
    * admin templates here — before that key-derived header is added — keeps the
    * key out of placeholder/env expansion (a user-provided `${ENV}` key can't leak
    * server env) while still resolving admin headers (env, user, conversationId).
-   * `req.body` lacks the assistant message id at init, so `{{LIBRECHAT_BODY_MESSAGEID}}`
+   * The initialization request body lacks the assistant message id, so
+   * `{{LIBRECHAT_BODY_MESSAGEID}}`
    * is the one body placeholder unavailable here.
    */
   const mergedHeaders = mergeHeaders(allConfig?.headers, googleConfig?.headers);
   const headers = mergedHeaders
-    ? resolveHeaders({ headers: mergedHeaders, user: req.user, body: req.body })
+    ? resolveHeaders({
+        headers: mergedHeaders,
+        user,
+        body: requestBody,
+        stripUnresolved: true,
+      })
     : undefined;
 
   clientOptions = {
@@ -119,5 +126,11 @@ export async function initializeGoogle({
     ...clientOptions,
   };
 
-  return getGoogleConfig(credentials, clientOptions);
+  const result = getGoogleConfig(credentials, clientOptions);
+
+  if (clientOptions.streamRate != null) {
+    result.llmConfig._lc_stream_delay = clientOptions.streamRate;
+  }
+
+  return result;
 }

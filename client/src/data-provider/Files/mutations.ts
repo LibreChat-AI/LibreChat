@@ -8,8 +8,10 @@ import {
   defaultOrderQuery,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
-import type * as t from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
+import type * as t from 'librechat-data-provider';
+import { invalidateRecentFiles } from '~/utils/files';
+import { useGetStartupConfig } from '../Endpoints';
 import { useLocalize } from '~/hooks';
 
 export const useUploadFileMutation = (
@@ -21,6 +23,8 @@ export const useUploadFileMutation = (
   FormData, // request
   unknown // context
 > => {
+  const { data: startupConfig } = useGetStartupConfig();
+  const sseEnabled = startupConfig?.fileUploadSseEnabled === true;
   const queryClient = useQueryClient();
   const { onSuccess, ...options } = _options || {};
   return useMutation([MutationKeys.fileUpload], {
@@ -30,21 +34,32 @@ export const useUploadFileMutation = (
       const version = body.get('version') ?? '';
       const endpoint = (body.get('endpoint') ?? '') as string;
       if (isAssistantsEndpoint(endpoint) && version === '2') {
-        return dataService.uploadFile(body, signal);
+        return dataService.uploadFile(body, signal, sseEnabled);
       }
 
       if (width !== '' && height !== '') {
-        return dataService.uploadImage(body, signal);
+        return dataService.uploadImage(body, signal, sseEnabled);
       }
 
-      return dataService.uploadFile(body, signal);
+      return dataService.uploadFile(body, signal, sseEnabled);
     },
     ...options,
     onSuccess: (data, formData, context) => {
+      /** `temp_file_id` is the server's echo of the `file_id` the request was sent
+       * with, and that request id is what every client-side handle for the upload
+       * is keyed by — the composer's file map, the draft it saves, the delayed
+       * toast timer. A record cached under an echo that disagrees cannot be
+       * correlated back to the draft, so the attachment is silently dropped on the
+       * next conversation switch or reload. Normalize once, on the way in. */
+      const requestFileId = (formData.get('file_id') as string | null) ?? data.temp_file_id;
+      const file =
+        data.temp_file_id === requestFileId ? data : { ...data, temp_file_id: requestFileId };
+
       queryClient.setQueryData<t.TFile[] | undefined>([QueryKeys.files], (_files) => [
-        data,
+        file,
         ...(_files ?? []),
       ]);
+      invalidateRecentFiles(queryClient);
 
       const endpoint = formData.get('endpoint');
       const message_file = formData.get('message_file');
@@ -53,7 +68,7 @@ export const useUploadFileMutation = (
       const tool_resource = (formData.get('tool_resource') as string | undefined) ?? '';
 
       if (message_file === 'true') {
-        onSuccess?.(data, formData, context);
+        onSuccess?.(file, formData, context);
         return;
       }
 
@@ -89,7 +104,7 @@ export const useUploadFileMutation = (
       }
 
       if (!assistant_id) {
-        onSuccess?.(data, formData, context);
+        onSuccess?.(file, formData, context);
         return;
       }
 
@@ -133,8 +148,24 @@ export const useUploadFileMutation = (
           };
         },
       );
-      onSuccess?.(data, formData, context);
+      onSuccess?.(file, formData, context);
     },
+  });
+};
+
+/**
+ * Owner-scoped usage touch for uploads entering the client-side queue, so the
+ * upload-window TTL cannot reap them while the message waits out a long run.
+ * Fire-and-forget: failures are tolerated (send-time marking is the backstop).
+ */
+export const useMarkFilesUsageMutation = (): UseMutationResult<
+  t.TFilesUsageResponse, // response data
+  unknown, // error
+  t.TFilesUsageBody, // request
+  unknown // context
+> => {
+  return useMutation([MutationKeys.fileUsage], {
+    mutationFn: (body: t.TFilesUsageBody) => dataService.markFilesUsage(body),
   });
 };
 
@@ -149,12 +180,12 @@ export const useDeleteFilesMutation = (
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
   const localize = useLocalize();
-  const { onSuccess, onError, ...options } = _options || {};
+  const { onSuccess, onError, silent = false, ...options } = _options || {};
   return useMutation([MutationKeys.fileDelete], {
     mutationFn: (body: t.DeleteFilesBody) => dataService.deleteFiles(body),
     ...options,
     onError: (error, vars, context) => {
-      if (error && typeof error === 'object' && 'response' in error) {
+      if (!silent && error && typeof error === 'object' && 'response' in error) {
         const errorWithResponse = error as { response?: { status?: number } };
         if (errorWithResponse.response?.status === 403) {
           showToast({
@@ -166,21 +197,33 @@ export const useDeleteFilesMutation = (
       onError?.(error, vars, context);
     },
     onSuccess: (data, vars, context) => {
+      /** Only a reported failure leaves a record on disk, so everything else the request named
+       * is gone. Reading it the other way around would strand a row the server never had: a
+       * file another tab already deleted matches no record, and the route answers that with
+       * both id lists empty. Failed ids stay cached so the retry can still find them. */
+      const failed = new Set(data?.failedFileIds ?? []);
       queryClient.setQueryData<t.TFile[] | undefined>([QueryKeys.files], (cachefiles) => {
         const { files: filesDeleted } = vars;
-
-        const fileMap = filesDeleted.reduce((acc, file) => {
-          acc.set(file.file_id, file);
+        const requested = filesDeleted.reduce((acc, file) => {
+          acc.add(file.file_id);
           return acc;
-        }, new Map<string, t.BatchFile>());
+        }, new Set<string>());
 
-        return (cachefiles ?? []).filter((file) => !fileMap.has(file.file_id));
+        return (cachefiles ?? []).filter(
+          (file) => !requested.has(file.file_id) || failed.has(file.file_id),
+        );
       });
+      invalidateRecentFiles(queryClient);
 
-      showToast({
-        message: localize('com_ui_delete_success'),
-        status: 'success',
-      });
+      /** A storage failure still answers 200, so reporting success off the status alone would
+       * tell the user a file is gone while it is sitting on disk and back in their list. */
+      if (!silent) {
+        showToast(
+          failed.size > 0
+            ? { message: localize('com_ui_delete_partial_failure'), status: 'error' }
+            : { message: localize('com_ui_delete_success'), status: 'success' },
+        );
+      }
 
       onSuccess?.(data, vars, context);
       if (vars.agent_id != null && vars.agent_id) {

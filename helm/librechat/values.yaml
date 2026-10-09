@@ -16,6 +16,10 @@ global:
    # - JWT_REFRESH_SECRET
    # - MEILI_MASTER_KEY
   librechat:
+    # A named Secret is required to exist; a typo must not generate pod-local credentials.
+    # Set to "" only when all LibreChat credentials are supplied through configEnv (strings)
+    # or global.librechat.env (supports valueFrom.secretKeyRef).
+    # Bundled Meilisearch still requires its separate auth.existingMasterKeySecret.
     existingSecretName: "librechat-credentials-env"
     # Used for Setting the Right Key, can be something like AZURE_API_KEY, if Azure OpenAI is used
     existingSecretApiKey: OPENAI_API_KEY
@@ -40,11 +44,8 @@ librechat:
   adminPanelUrl: ""
 
   configEnv:
-    # IMPORTANT -- GENERATE your own: openssl rand -hex 32 and openssl rand -hex 16 for CREDS_IV. Best Practise: Put into Secret. See global.librechat.existingSecretName
-    CREDS_KEY: 9e95d9894da7e68dd69c0046caf5343c8b1e80c89609b5a1e40e6568b5b23ce6
-    CREDS_IV: ac028c86ba23f4cd48165e0ca9f2c683
-    JWT_SECRET: 16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef
-    JWT_REFRESH_SECRET: eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418
+    # Set unique, persistent values in global.librechat.existingSecretName before production use.
+    # If omitted, LibreChat generates temporary values in .env.temp when the container filesystem is persistent.
     # Set Config Params here
     # ENV_NAME: env-value
 
@@ -123,7 +124,7 @@ librechat-rag-api:
 
 
 image:
-  repository: danny-avila/librechat
+  repository: librechat-ai/librechat
   registry: registry.librechat.ai
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
@@ -147,7 +148,7 @@ serviceAccount:
   name: ""
 
 lifecycle: {}
-# # base for adding a custom banner // see https://github.com/danny-avila/LibreChat/pull/3952 for an example
+# # base for adding a custom banner // see https://github.com/LibreChat-AI/LibreChat/pull/3952 for an example
 #   postStart:
 #     exec:
 #       command: ["/bin/sh", "-c", "npm run update-banner <displayFrom(Format: yyyy-mm-ddTHH:MM:SSZ)> <displayTo(Format: yyyy-mm-ddTHH:MM:SSZ)> <message> <isPublic(true/false)>"]
@@ -284,6 +285,77 @@ dnsConfig: {}
 updateStrategy:
   type: RollingUpdate
 
+langfuseFanout:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: librechat-langfuse-fanout
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  otelCollector:
+    receiverEndpoint: 127.0.0.1:4319
+    image:
+      repository: otel/opentelemetry-collector-contrib
+      tag: "0.143.0"
+      pullPolicy: IfNotPresent
+    resources: {}
+  service:
+    type: ClusterIP
+    port: 4318
+    annotations: {}
+  central:
+    baseUrl: https://cloud.langfuse.com
+    authHeaderSecret:
+      name: ""
+      key: LANGFUSE_FANOUT_CENTRAL_AUTH_HEADER
+  metrics:
+    secret:
+      # Optional bearer token secret for scraping the gateway's /metrics endpoint.
+      # When omitted, /metrics returns 401.
+      name: ""
+      key: METRICS_SECRET
+  redis:
+    # Redis stores short-lived Langfuse media upload plans so multiple gateway
+    # replicas can handle create/upload requests. If empty and redis.enabled is
+    # true, the chart derives the bundled Redis service URI.
+    uri: ""
+    username: ""
+    passwordSecret:
+      name: ""
+      key: REDIS_PASSWORD
+    keyPrefix: langfuse-fanout
+  tenant:
+    # Destination map keys are emitted by LibreChat as trace attributes and
+    # matched by the gateway. Use lowercase keys matching ^[a-z][a-z0-9_-]*$.
+    destinations:
+      eu:
+        baseUrl: https://cloud.langfuse.com
+      us:
+        baseUrl: https://us.cloud.langfuse.com
+      jp:
+        baseUrl: https://jp.cloud.langfuse.com
+  upstreamTimeout: 30s
+  # Optional override for one-time media upload URLs returned by the gateway.
+  # When empty, the chart derives the internal fanout Service URL.
+  publicUrl: ""
+  traceCollectorUrl: http://127.0.0.1:4319
+  memoryLimitMiB: 256
+  memorySpikeLimitMiB: 64
+  batchTimeout: 1s
+  batchSendSize: 128
+  metadataCardinalityLimit: 1000
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 4318
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: 4318
+  resources: {}
+  podAnnotations: {}
+  podLabels: {}
+
 # Extra ConfigMaps to be created alongside the main ones
 additionalConfigMaps: {}
 #   custom: # suffix of the ConfigMap name
@@ -317,7 +389,8 @@ meilisearch:
   image:
     tag: "v1.7.3"
   auth:
-    # Use an existing Kubernetes secret for the MEILI_MASTER_KEY
+    # Separate from global.librechat.existingSecretName, even when that reference is cleared.
+    # Must contain MEILI_MASTER_KEY matching the value supplied to LibreChat.
     existingMasterKeySecret: "librechat-credentials-env"
 
 # Redis Parameters

@@ -1,18 +1,23 @@
 import { logger } from '@librechat/data-schemas';
-import { Constants } from 'librechat-data-provider';
+import { Constants, normalizeServerName, stripServerNamePrefixes } from 'librechat-data-provider';
 import type { JsonSchemaType } from '@librechat/data-schemas';
 import type { MCPConnection } from '~/mcp/connection';
 import type * as t from '~/mcp/types';
 import {
   hasCustomUserVars,
+  applyRequestHeaders,
   hasRuntimeContextPlaceholders,
   hasRuntimeUrlPlaceholders,
+  toCatalogConnectionConfig,
   isUserSourced,
 } from '~/mcp/utils';
 import { isMCPDomainAllowed, extractMCPServerDomain } from '~/auth/domain';
+import { normalizeJsonSchema, resolveJsonSchemaRefs } from '~/mcp/zod';
+import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCPDomainNotAllowedError } from '~/mcp/errors';
 import { detectOAuthRequirement } from '~/mcp/oauth';
+import { isToolHiddenFromModel } from '~/mcp/apps';
 import { isEnabled } from '~/utils';
 
 /**
@@ -72,18 +77,28 @@ export class MCPServerInspector {
     this.warnOnUnrestrictedRuntimeUrl();
     await this.detectOAuth();
 
+    /** Startup inspection is catalog work with no chat request, so the chat-only
+     *  headers come off before BOTH the eligibility gate and the probe. Left on,
+     *  a `{{LIBRECHAT_BODY_*}}` placeholder there fails
+     *  `hasRuntimeContextPlaceholders` and skips inspection altogether — the
+     *  very outcome `requestHeaders` exists to avoid. */
+    const catalogConfig = toCatalogConnectionConfig(this.config);
     if (
       this.config.startup !== false &&
       !this.config.requiresOAuth &&
       !hasCustomUserVars(this.config) &&
-      !hasRuntimeContextPlaceholders(this.config) &&
+      // user-provided API key is supplied per-user at connect time; an unauthenticated
+      // probe here would 401 against a bearer server and fail inspection
+      this.config.apiKey?.source !== 'user' &&
+      !hasRuntimeContextPlaceholders(catalogConfig) &&
       !this.config.obo
     ) {
       let tempConnection = false;
       if (!this.connection) {
         tempConnection = true;
         this.connection = await MCPConnectionFactory.create({
-          serverConfig: this.config,
+          serverConfig: catalogConfig,
+          serverDefinition: this.config,
           serverName: this.serverName,
           dbSourced: isUserSourced(this.config),
           useSSRFProtection: this.useSSRFProtection,
@@ -119,6 +134,11 @@ export class MCPServerInspector {
   }
 
   private async detectOAuth(): Promise<void> {
+    if (isDirectOpenIDBearerRecoveryEnabled(applyRequestHeaders(this.config))) {
+      this.config.requiresOAuth = false;
+      this.config.oauthMetadata = null;
+      return;
+    }
     if (this.config.requiresOAuth != null) return;
     if (hasRuntimeUrlPlaceholders(this.config)) return;
     if (this.config.url == null || this.config.startup === false) {
@@ -126,8 +146,11 @@ export class MCPServerInspector {
       return;
     }
 
-    // Admin-provided API key means no OAuth flow is needed
-    if (this.config.apiKey?.source === 'admin') {
+    // API key auth (admin- or user-provided) is API-key, not OAuth. A credential-less
+    // probe of a bearer server returns the same 401 challenge as an OAuth server, so
+    // detection would misclassify it; trust the configured auth method. An explicit
+    // `oauth` block still wins if both are somehow set.
+    if (this.config.apiKey != null && this.config.oauth == null) {
       this.config.requiresOAuth = false;
       return;
     }
@@ -143,7 +166,7 @@ export class MCPServerInspector {
 
   private async fetchServerInstructions(): Promise<void> {
     if (isEnabled(this.config.serverInstructions)) {
-      this.config.serverInstructions = this.connection!.client.getInstructions();
+      this.config.resolvedInstructions = this.connection!.client.getInstructions();
     }
   }
 
@@ -155,37 +178,61 @@ export class MCPServerInspector {
   }
 
   private async fetchToolFunctions(): Promise<void> {
-    this.config.toolFunctions = await MCPServerInspector.getToolFunctions(
-      this.serverName,
-      this.connection!,
-    );
+    this.config.toolFunctions = (
+      await MCPServerInspector.getToolCatalog(this.serverName, this.connection!)
+    ).tools;
   }
 
   /**
-   * Converts server tools to LibreChat-compatible tool functions format.
+   * Converts server tools to LibreChat-compatible tool functions format, keeping the ordering
+   * reserved before the `tools/list` that produced them. App-level publishers need that
+   * revision — a catalog write that cannot be ordered against concurrent replicas is dropped.
    * @param serverName - The name of the server
    * @param connection - The MCP connection
-   * @returns Tool functions formatted for LibreChat
    */
-  public static async getToolFunctions(
+  public static async getToolCatalog(
     serverName: string,
     connection: MCPConnection,
-  ): Promise<t.LCAvailableTools> {
-    const tools = await connection.fetchTools();
+    deadlineMs?: number,
+    signal?: AbortSignal,
+  ): Promise<{ tools: t.LCAvailableTools; publicationRevision?: string }> {
+    const snapshot = await connection.fetchOrderedToolsSnapshot(deadlineMs, signal);
+    if (!snapshot.complete) {
+      throw new Error(`Incomplete tools/list snapshot for MCP server ${serverName}`);
+    }
+    const { tools } = snapshot;
 
     const toolFunctions: t.LCAvailableTools = {};
+    /** Model-facing key: must match the runtime instance name, which embeds
+     *  the normalized server name (see `createToolInstance` in MCP.js). */
+    const keyServerName = normalizeServerName(serverName);
+    const keyToolNames = stripServerNamePrefixes(
+      tools.map((tool) => tool.name),
+      keyServerName,
+    );
     tools.forEach((tool) => {
-      const name = `${tool.name}${Constants.mcp_delimiter}${serverName}`;
+      if (isToolHiddenFromModel(tool)) {
+        return;
+      }
+      const keyToolName = keyToolNames.get(tool.name) ?? tool.name;
+      const name = `${keyToolName}${Constants.mcp_delimiter}${keyServerName}`;
       toolFunctions[name] = {
         type: 'function',
+        ...(keyToolName !== tool.name && { serverToolName: tool.name }),
         ['function']: {
           name,
           description: tool.description,
-          parameters: tool.inputSchema as JsonSchemaType,
+          // Normalize before persisting: resolves `$ref`s and strips
+          // `$`-prefixed keywords (e.g. a spec-compliant `$schema`), which
+          // MongoDB rejects as field names and would otherwise crash storage
+          // of this `parameters` blob during server registration.
+          parameters: normalizeJsonSchema(
+            resolveJsonSchemaRefs(tool.inputSchema as Record<string, unknown>),
+          ) as JsonSchemaType,
         },
       };
     });
 
-    return toolFunctions;
+    return { tools: toolFunctions, publicationRevision: snapshot.publicationRevision };
   }
 }

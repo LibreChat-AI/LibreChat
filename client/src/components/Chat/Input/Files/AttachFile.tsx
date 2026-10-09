@@ -45,7 +45,7 @@ const AttachFile = ({
             aria-keyshortcuts={ariaKey}
             disabled={isUploadDisabled}
             className={cn(
-              'flex size-9 items-center justify-center rounded-full p-1 transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-opacity-50',
+              'size-theme-control rounded-theme-control-round duration-theme-fast hover:bg-surface-composer-hover focus-visible:ring-text-primary/50 flex items-center justify-center p-1 transition-colors focus-visible:ring-2 focus-visible:outline-hidden',
             )}
             onKeyDownCapture={(e) => {
               if (!inputRef.current) {

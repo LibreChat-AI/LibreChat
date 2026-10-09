@@ -17,6 +17,7 @@ interface GetCacheMultiplierParams {
   cacheType: 'write' | 'read';
   model?: string;
   endpointTokenConfig?: EndpointTokenConfig;
+  inputTokenCount?: number;
 }
 
 export interface PricingFns {
@@ -124,11 +125,19 @@ function calculateStructuredTokenValue(
       inputTokenCount,
     });
     const writeMultiplier =
-      pricing.getCacheMultiplier({ cacheType: 'write', model, endpointTokenConfig }) ??
-      inputMultiplier;
+      pricing.getCacheMultiplier({
+        cacheType: 'write',
+        model,
+        endpointTokenConfig,
+        inputTokenCount,
+      }) ?? inputMultiplier;
     const readMultiplier =
-      pricing.getCacheMultiplier({ cacheType: 'read', model, endpointTokenConfig }) ??
-      inputMultiplier;
+      pricing.getCacheMultiplier({
+        cacheType: 'read',
+        model,
+        endpointTokenConfig,
+        inputTokenCount,
+      }) ?? inputMultiplier;
 
     const inputAbs = Math.abs(txData.inputTokens ?? 0);
     const writeAbs = Math.abs(txData.writeTokens ?? 0);

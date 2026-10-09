@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Pencil, Check, Loader2, X } from 'lucide-react';
+import { Input, TooltipAnchor } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
 type Props = {
@@ -53,7 +54,8 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
         setNewName(name);
         setIsEditing(false);
       }
-      if (e.key === 'Enter') {
+      // Ignore the Enter that commits an IME composition (see useTextarea.ts).
+      if (e.key === 'Enter' && !(e.nativeEvent.isComposing || e.keyCode === 229)) {
         e.preventDefault();
         skipBlurRef.current = true;
         commitName();
@@ -97,10 +99,31 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
     };
   }, []);
 
+  const displayButton = (
+    <button
+      type="button"
+      onClick={() => {
+        if (!isLoading && saveStatus !== 'saving') {
+          setIsEditing(true);
+        }
+      }}
+      className="text-text-primary hover:text-text-secondary h-8 min-w-0 flex-1 cursor-text truncate pl-2 text-left text-base font-semibold transition-colors focus:outline-hidden"
+      aria-label={localize('com_ui_edit') + ': ' + (newName ?? '')}
+    >
+      {newName}
+    </button>
+  );
+
+  const readView = newName ? (
+    <TooltipAnchor description={newName} render={displayButton} />
+  ) : (
+    displayButton
+  );
+
   return (
     <div className="group/title relative mr-2 flex h-8 min-w-0 flex-1 items-center">
       {isEditing ? (
-        <input
+        <Input
           ref={inputRef}
           type="text"
           value={newName ?? ''}
@@ -108,46 +131,34 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
           onKeyDown={handleKeyDown}
           onBlur={saveName}
           disabled={isLoading}
-          className="h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent pl-2 pr-0 text-base font-semibold text-text-primary outline-none focus:border-border-medium focus:outline-none disabled:opacity-60"
+          className="text-text-primary focus:border-border-medium h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent pr-0 pl-2 text-base font-semibold disabled:opacity-60"
           aria-label={localize('com_ui_name')}
         />
       ) : (
-        <button
-          type="button"
-          onClick={() => {
-            if (!isLoading && saveStatus !== 'saving') {
-              setIsEditing(true);
-            }
-          }}
-          className="h-8 min-w-0 flex-1 cursor-text truncate pl-2 text-left text-base font-semibold text-text-primary transition-colors hover:text-text-secondary focus:outline-none"
-          title={newName}
-          aria-label={localize('com_ui_edit') + ': ' + (newName ?? '')}
-        >
-          {newName}
-        </button>
+        readView
       )}
       <div className="ml-1.5 flex shrink-0 items-center justify-center">
         {saveStatus === 'saving' && (
           <Loader2
-            className="size-4 animate-spin text-text-secondary"
+            className="text-text-secondary size-4 animate-spin"
             aria-label={localize('com_ui_saving')}
           />
         )}
         {saveStatus === 'saved' && (
           <Check
-            className="size-4 text-green-500 transition-opacity duration-300"
+            className="text-status-success size-4 transition-opacity duration-300"
             aria-label={localize('com_ui_saved')}
           />
         )}
         {saveStatus === 'error' && (
           <X
-            className="size-4 text-red-500 transition-opacity duration-300"
+            className="text-text-destructive size-4 transition-opacity duration-300"
             aria-label={localize('com_ui_error')}
           />
         )}
         {saveStatus === 'idle' && !isEditing && (
           <Pencil
-            className="size-3.5 text-text-secondary opacity-0 transition-opacity group-hover/title:opacity-100"
+            className="text-text-secondary size-3.5 opacity-0 transition-opacity group-hover/title:opacity-100"
             aria-hidden="true"
           />
         )}

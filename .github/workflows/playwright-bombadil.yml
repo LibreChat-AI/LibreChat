@@ -1,0 +1,183 @@
+name: Bombadil Property Exploration
+
+on:
+  pull_request:
+    paths:
+      - '**'
+      - '!**.md'
+      - '!.github/workflows/**'
+      - '.github/workflows/playwright-bombadil.yml'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual trigger'
+        required: false
+        default: 'Manual Bombadil run'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playwright-bombadil-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: '--max-old-space-size=${{ secrets.NODE_MAX_OLD_SPACE_SIZE || 6144 }}'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  bombadil:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request != null &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association))
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BOMBADIL_TIME_LIMIT: '300s'
+      E2E_CHROMIUM_CHANNEL: chrome
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+            packages/api/node_modules
+            api/node_modules
+          key: node-modules-e2e-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Restore data-provider build cache
+        id: cache-data-provider
+        uses: actions/cache@v4
+        with:
+          path: packages/data-provider/dist
+          key: build-data-provider-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-provider
+        if: steps.cache-data-provider.outputs.cache-hit != 'true'
+        run: npm run build:data-provider
+
+      - name: Restore data-schemas build cache
+        id: cache-data-schemas
+        uses: actions/cache@v4
+        with:
+          path: packages/data-schemas/dist
+          key: build-data-schemas-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-schemas
+        if: steps.cache-data-schemas.outputs.cache-hit != 'true'
+        run: npm run build:data-schemas
+
+      - name: Restore api build cache
+        id: cache-api
+        uses: actions/cache@v4
+        with:
+          path: packages/api/dist
+          key: build-api-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/api/src/**', 'packages/api/tsconfig*.json', 'packages/api/tsdown.config.mjs', 'packages/api/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json') }}
+
+      - name: Build api
+        if: steps.cache-api.outputs.cache-hit != 'true'
+        run: npm run build:api
+
+      - name: Restore client-package build cache
+        id: cache-client-package
+        uses: actions/cache@v4
+        with:
+          path: packages/client/dist
+          key: build-client-package-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/client/src/**', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build client-package
+        if: steps.cache-client-package.outputs.cache-hit != 'true'
+        run: npm run build:client-package
+
+      - name: Restore client app build cache
+        id: cache-client-app
+        uses: actions/cache@v4
+        with:
+          path: client/dist
+          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build client app
+        if: steps.cache-client-app.outputs.cache-hit != 'true'
+        run: npm run build:client
+
+      - name: Verify Chrome is present
+        run: google-chrome --version
+
+      # Optional fonts only — see the note in playwright-mock.yml's e2e_shards job.
+      - name: Install optional Playwright font dependencies (best effort)
+        timeout-minutes: 4
+        continue-on-error: true
+        run: .github/scripts/install-playwright-fonts.sh
+
+      - name: Run five-minute Bombadil exploration
+        id: bombadil
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p e2e/.generated
+          npx playwright test \
+            --config=e2e/playwright.config.bombadil.ts \
+            --reporter=line,html \
+            2>&1 | tee e2e/.generated/bombadil-ci.log
+        env:
+          CI: 'true'
+          PLAYWRIGHT_HTML_OPEN: 'never'
+          PLAYWRIGHT_HTML_OUTPUT_DIR: e2e/playwright-report-bombadil
+
+      - name: Upload Bombadil reproduction trace
+        id: bombadil-reproduction
+        if: steps.bombadil.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombadil-reproduction-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e/.generated/bombadil-output/**
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Bombadil diagnostics
+        id: bombadil-diagnostics
+        if: steps.bombadil.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombadil-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            e2e/.generated/bombadil-ci.log
+            e2e/playwright-report-bombadil/**
+            e2e/specs/.test-results/**
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Report non-blocking Bombadil failure
+        if: steps.bombadil.outcome == 'failure'
+        run: |
+          echo "::warning title=Bombadil property violation::The five-minute exploration failed. Download the reproduction and diagnostics artifacts for this run."
+          {
+            echo "### Bombadil property exploration"
+            echo
+            echo "The exploration failed, but this job does not block merge."
+            echo
+            echo "Reproduction: ${{ steps.bombadil-reproduction.outputs.artifact-url }}"
+            echo
+            echo "Diagnostics: ${{ steps.bombadil-diagnostics.outputs.artifact-url }}"
+          } >> "$GITHUB_STEP_SUMMARY"

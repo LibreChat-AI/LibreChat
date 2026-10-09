@@ -1,18 +1,28 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { useCreatePresetMutation } from 'librechat-data-provider/react-query';
-import { OGDialogTemplate, OGDialog, Input, Label, useToastContext } from '@librechat/client';
+import {
+  OGDialogTemplate,
+  OGDialog,
+  Button,
+  Input,
+  Label,
+  useToastContext,
+} from '@librechat/client';
 import type { TEditPresetProps } from '~/common';
-import { cn, removeFocusOutlines, cleanupPreset, defaultTextProps } from '~/utils';
 import { NotificationSeverity } from '~/common';
+import { cleanupPreset } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 const SaveAsPresetDialog = ({ open, onOpenChange, preset }: TEditPresetProps) => {
-  const [title, setTitle] = useState<string>(preset.title ?? 'My Preset');
+  const localize = useLocalize();
+  const formId = useId();
+  const inputId = `${formId}-name`;
+  const [title, setTitle] = useState<string>(preset.title ?? localize('com_endpoint_my_preset'));
   const createPresetMutation = useCreatePresetMutation();
   const { showToast } = useToastContext();
-  const localize = useLocalize();
 
-  const submitPreset = () => {
+  const submitPreset = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     const _preset = cleanupPreset({
       preset: {
         ...preset,
@@ -40,52 +50,48 @@ const SaveAsPresetDialog = ({ open, onOpenChange, preset }: TEditPresetProps) =>
   };
 
   useEffect(() => {
-    setTitle(preset.title ?? localize('com_endpoint_my_preset'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  // Handle Enter key press
-  const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      submitPreset();
+    if (open) {
+      setTitle(preset.title ?? localize('com_endpoint_my_preset'));
     }
-  };
+  }, [localize, open, preset.title]);
 
   return (
     <OGDialog open={open} onOpenChange={onOpenChange}>
       <OGDialogTemplate
         title={localize('com_endpoint_save_as_preset')}
-        className="z-[90] w-11/12 sm:w-1/4"
+        className="z-[90] w-11/12 max-w-md"
         overlayClassName="z-[80]"
         showCloseButton={false}
         main={
-          <div className="flex w-full flex-col items-center gap-2">
+          <form
+            id={formId}
+            onSubmit={submitPreset}
+            className="flex w-full flex-col items-center gap-2"
+          >
             <div className="grid w-full items-center gap-2">
-              <Label htmlFor="preset-custom-name" className="text-left text-sm font-medium">
+              <Label htmlFor={inputId} className="text-left text-sm font-medium">
                 {localize('com_endpoint_preset_name')}
               </Label>
               <Input
-                id="preset-custom-name"
+                id={inputId}
                 value={title || ''}
                 onChange={(e) => setTitle(e.target.value || '')}
-                onKeyDown={handleKeyDown}
                 placeholder={localize('com_endpoint_preset_custom_name_placeholder')}
-                aria-label={localize('com_endpoint_preset_name')}
-                className={cn(
-                  defaultTextProps,
-                  'flex h-10 max-h-10 w-full resize-none border-border-medium px-3 py-2',
-                  removeFocusOutlines,
-                )}
+                className="flex h-10 max-h-10 w-full resize-none rounded-theme-control border-border-medium px-3 py-2"
               />
             </div>
-          </div>
+          </form>
         }
-        selection={{
-          selectHandler: submitPreset,
-          selectClasses: 'bg-green-500 hover:bg-green-600 dark:hover:bg-green-600 text-white',
-          selectText: localize('com_ui_save'),
-        }}
+        buttons={
+          <Button
+            type="submit"
+            form={formId}
+            variant="submit"
+            disabled={createPresetMutation.isLoading}
+          >
+            {localize('com_ui_save')}
+          </Button>
+        }
       />
     </OGDialog>
   );

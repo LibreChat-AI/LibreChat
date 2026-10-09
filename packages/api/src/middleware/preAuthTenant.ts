@@ -1,6 +1,7 @@
 import { logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction } from 'express';
-import { buildTenantContext, runWithTenantContext } from './tenant';
+import { buildRequestContext, runWithTenantContext } from './tenant';
+import { isEnabled } from '~/utils';
 
 /**
  * Pre-authentication tenant context middleware for unauthenticated routes.
@@ -19,7 +20,8 @@ import { buildTenantContext, runWithTenantContext } from './tenant';
  * **How the header gets set**: The deployment's reverse proxy, auth gateway,
  * or OpenID strategy sets `X-Tenant-Id` based on subdomain, path, or OIDC claim.
  * This middleware does NOT resolve tenants from subdomains or tokens — that is
- * the responsibility of the deployment layer.
+ * the responsibility of the deployment layer. Header-based resolution is disabled
+ * unless the operator explicitly sets `TRUST_TENANT_HEADER=true`.
  *
  * **Design**: Intentionally minimal. No subdomain parsing, no OIDC claim
  * extraction, no YAML-driven strategy. Multi-tenant deployments can:
@@ -35,9 +37,9 @@ const VALID_TENANT_ID = /^[-a-zA-Z0-9_.]+$/;
 
 export function preAuthTenantMiddleware(req: Request, res: Response, next: NextFunction): void {
   const raw = req.headers['x-tenant-id'];
-  const requestContext = buildTenantContext({ headers: req.headers });
+  const requestContext = buildRequestContext(req);
 
-  if (!raw || typeof raw !== 'string') {
+  if (!raw || typeof raw !== 'string' || !isEnabled(process.env.TRUST_TENANT_HEADER)) {
     runWithTenantContext(requestContext, next);
     return;
   }
@@ -72,5 +74,5 @@ export function preAuthTenantMiddleware(req: Request, res: Response, next: NextF
     return;
   }
 
-  runWithTenantContext(buildTenantContext({ headers: req.headers }, tenantId), next);
+  runWithTenantContext({ ...requestContext, tenantId }, next);
 }

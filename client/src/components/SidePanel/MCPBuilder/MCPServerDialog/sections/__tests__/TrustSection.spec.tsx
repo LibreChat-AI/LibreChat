@@ -1,8 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { FormProvider, useForm } from 'react-hook-form';
 import type { ChangeEvent, ReactNode } from 'react';
-import TrustSection from '../TrustSection';
 import type { MCPServerFormData } from '../../hooks/useMCPServerForm';
+import TrustSection from '../TrustSection';
 
 type LocalizedValue = string | Record<string, string>;
 
@@ -43,31 +43,27 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
-jest.mock(
-  '@librechat/client',
-  () => {
-    const React = jest.requireActual<typeof import('react')>('react');
-    return {
-      Checkbox: ({
+jest.mock('@librechat/client', () => {
+  const React = jest.requireActual<typeof import('react')>('react');
+  return {
+    Checkbox: ({
+      checked,
+      onCheckedChange,
+      ...props
+    }: {
+      checked: boolean;
+      onCheckedChange: (checked: boolean) => void;
+    }) =>
+      React.createElement('input', {
+        type: 'checkbox',
         checked,
-        onCheckedChange,
-        ...props
-      }: {
-        checked: boolean;
-        onCheckedChange: (checked: boolean) => void;
-      }) =>
-        React.createElement('input', {
-          type: 'checkbox',
-          checked,
-          onChange: (event: ChangeEvent<HTMLInputElement>) => onCheckedChange(event.target.checked),
-          ...props,
-        }),
-      Label: ({ children, ...props }: { children: ReactNode }) =>
-        React.createElement('label', props, children),
-    };
-  },
-  { virtual: true },
-);
+        onChange: (event: ChangeEvent<HTMLInputElement>) => onCheckedChange(event.target.checked),
+        ...props,
+      }),
+    Label: ({ children, ...props }: { children: ReactNode }) =>
+      React.createElement('label', props, children),
+  };
+});
 
 function createDefaultValues(): MCPServerFormData {
   return {

@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef } from 'react';
-import type { DynamicSettingProps } from 'librechat-data-provider';
 import { Label, Input, HoverCard, HoverCardTrigger, Tag, useToastContext } from '@librechat/client';
+import type { DynamicSettingProps } from 'librechat-data-provider';
 import { TranslationKeys, useLocalize, useParameterEffects } from '~/hooks';
 import { useChatContext } from '~/Providers';
 import OptionHover from './OptionHover';
@@ -106,7 +106,7 @@ function DynamicTags({
       }`}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           <div className="flex w-full justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-input`}
@@ -114,7 +114,7 @@ function DynamicTags({
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40">
+                <small className="high-contrast:opacity-100 opacity-40">
                   (
                   {typeof defaultValue === 'undefined' || !(defaultValue as string).length
                     ? localize('com_endpoint_default_blank')
@@ -125,7 +125,7 @@ function DynamicTags({
             </Label>
           </div>
           <div>
-            <div className="mb-2 flex flex-wrap break-all rounded-lg border border-border-light bg-surface-secondary">
+            <div className="border-border-light bg-surface-secondary flex flex-wrap rounded-lg border break-all">
               {currentTags && currentTags.length > 0 && (
                 <div className="flex w-full gap-1 p-1">
                   {currentTags.map((tag: string, index: number) => (
@@ -155,7 +155,8 @@ function DynamicTags({
                   if (e.key === 'Backspace' && !tagText) {
                     onTagRemove(currentTags.length - 1);
                   }
-                  if (e.key === 'Enter') {
+                  // Ignore the Enter that commits an IME composition (see useTextarea.ts).
+                  if (e.key === 'Enter' && !(e.nativeEvent.isComposing || e.keyCode === 229)) {
                     onTagAdd();
                   }
                 }}
@@ -165,7 +166,7 @@ function DynamicTags({
                     ? (localize(placeholder as TranslationKeys) ?? placeholder)
                     : placeholder
                 }
-                className={cn('flex h-9 max-h-9 border-none bg-surface-secondary px-3 py-2')}
+                className={cn('bg-surface-secondary flex h-9 max-h-9 border-none px-3 py-2')}
               />
             </div>
           </div>

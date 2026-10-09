@@ -1,15 +1,13 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/extend-expect';
-import MemoryInfo from '../MemoryInfo';
 import type { MemoryArtifact } from 'librechat-data-provider';
+import MemoryInfo from '../MemoryInfo';
 
 // Mock the localize hook
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, params?: Record<string, any>) => {
     const translations: Record<string, string> = {
-      com_ui_memory_updated_items: 'Updated Memories',
-      com_ui_memory_deleted_items: 'Deleted Memories',
       com_ui_memory_already_exceeded: `Memory storage already full - exceeded by ${params?.tokens || 0} tokens. Delete existing memories before adding new ones.`,
       com_ui_memory_would_exceed: `Cannot save - would exceed limit by ${params?.tokens || 0} tokens. Delete existing memories to make space.`,
       com_ui_memory_deleted: 'This memory has been deleted',
@@ -99,31 +97,6 @@ describe('MemoryInfo', () => {
         ),
       ).toBeInTheDocument();
     });
-
-    test('applies correct styling to error messages', () => {
-      const memoryArtifacts: MemoryArtifact[] = [
-        {
-          type: 'error',
-          key: 'system',
-          value: JSON.stringify({ errorType: 'would_exceed', tokenCount: 50 }),
-        },
-      ];
-
-      render(<MemoryInfo memoryArtifacts={memoryArtifacts} />);
-
-      const errorMessage = screen.getByText(
-        'Cannot save - would exceed limit by 50 tokens. Delete existing memories to make space.',
-      );
-      const errorContainer = errorMessage.closest('div');
-
-      expect(errorContainer).toHaveClass('rounded-md');
-      expect(errorContainer).toHaveClass('bg-red-50');
-      expect(errorContainer).toHaveClass('p-3');
-      expect(errorContainer).toHaveClass('text-sm');
-      expect(errorContainer).toHaveClass('text-red-800');
-      expect(errorContainer).toHaveClass('dark:bg-red-900/20');
-      expect(errorContainer).toHaveClass('dark:text-red-400');
-    });
   });
 
   describe('Mixed Memory Types', () => {
@@ -140,9 +113,9 @@ describe('MemoryInfo', () => {
 
       render(<MemoryInfo memoryArtifacts={memoryArtifacts} />);
 
-      // Check all sections are present
-      expect(screen.getByText('Updated Memories')).toBeInTheDocument();
-      expect(screen.getByText('Deleted Memories')).toBeInTheDocument();
+      // Entries render without section headings; only the error section keeps one
+      expect(screen.queryByText('Updated Memories')).not.toBeInTheDocument();
+      expect(screen.queryByText('Deleted Memories')).not.toBeInTheDocument();
       expect(screen.getByText('Memory Storage Full')).toBeInTheDocument();
 
       // Check content
@@ -244,7 +217,7 @@ describe('MemoryInfo', () => {
 
       render(<MemoryInfo memoryArtifacts={memoryArtifacts} />);
 
-      expect(screen.getByText('Updated Memories')).toBeInTheDocument();
+      expect(screen.queryByText('Updated Memories')).not.toBeInTheDocument();
       expect(screen.getByText('preferences')).toBeInTheDocument();
       expect(screen.getByText('User prefers dark mode')).toBeInTheDocument();
       expect(screen.getByText('location')).toBeInTheDocument();
@@ -259,7 +232,7 @@ describe('MemoryInfo', () => {
 
       render(<MemoryInfo memoryArtifacts={memoryArtifacts} />);
 
-      expect(screen.getByText('Deleted Memories')).toBeInTheDocument();
+      expect(screen.queryByText('Deleted Memories')).not.toBeInTheDocument();
       expect(screen.getByText('old_preference')).toBeInTheDocument();
       expect(screen.getByText('outdated_info')).toBeInTheDocument();
     });

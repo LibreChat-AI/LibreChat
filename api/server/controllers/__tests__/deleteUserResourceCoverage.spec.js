@@ -12,6 +12,7 @@ const { ResourceType } = require('librechat-data-provider');
  */
 const HANDLED_RESOURCE_TYPES = {
   [ResourceType.AGENT]: 'deleteUserAgents',
+  [ResourceType.CODE_ENVIRONMENT]: 'deleteUserCodeEnvironments',
   [ResourceType.REMOTE_AGENT]: 'deleteUserAgents',
   [ResourceType.PROMPTGROUP]: 'deleteUserPrompts',
   [ResourceType.MCPSERVER]: 'deleteUserMcpServers',

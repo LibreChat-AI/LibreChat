@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { EToolResources, mergeFileConfig, getEndpointFileConfig } from 'librechat-data-provider';
 import type { AssistantsEndpoint } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
-import FileRow from '~/components/Chat/Input/Files/FileRow';
+import FileRow, { FileRowWrapper } from '~/components/Chat/Input/Files/FileRow';
 import { useGetFileConfig } from '~/data-provider';
 import { useFileHandling } from '~/hooks/Files';
 import { useChatContext } from '~/Providers';
@@ -60,7 +60,7 @@ export default function CodeFiles({
   return (
     <div className="mb-2 w-full">
       <div className="flex flex-col gap-4">
-        <div className="rounded-lg text-xs text-text-secondary">
+        <div className="text-text-secondary rounded-lg text-xs">
           {localize('com_assistants_code_interpreter_files')}
         </div>
         <FileRow
@@ -69,13 +69,13 @@ export default function CodeFiles({
           assistant_id={assistant_id}
           tool_resource={tool_resource}
           setFilesLoading={setFilesLoading}
-          Wrapper={({ children }) => <div className="flex flex-wrap gap-2">{children}</div>}
+          Wrapper={FileRowWrapper}
         />
         <div>
           <button
             type="button"
             disabled={!assistant_id}
-            className="btn btn-neutral border-token-border-light relative h-9 w-full rounded-lg font-medium"
+            className="btn btn-neutral border-border-light relative h-9 w-full rounded-lg font-medium"
             onClick={handleButtonClick}
           >
             <div className="flex w-full items-center justify-center gap-2">

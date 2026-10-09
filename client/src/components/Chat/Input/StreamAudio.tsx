@@ -1,14 +1,18 @@
-import { useParams } from 'react-router-dom';
 import { useEffect, useCallback } from 'react';
-import { QueryKeys } from 'librechat-data-provider';
+import { useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, getSpeechText } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
-import { useCustomAudioRef, MediaSourceAppender, usePauseGlobalAudio } from '~/hooks/Audio';
-import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
-import { getLatestText, logger } from '~/utils';
+import {
+  useCustomAudioRef,
+  useAutoplayTrigger,
+  MediaSourceAppender,
+  usePauseGlobalAudio,
+} from '~/hooks/Audio';
 import { useAuthContext } from '~/hooks';
 import { globalAudioId } from '~/common';
+import { logger } from '~/utils';
 import store from '~/store';
 
 function timeoutPromise(ms: number, message?: string) {
@@ -27,15 +31,13 @@ export default function StreamAudio({ index = 0 }) {
   const playbackRate = useRecoilValue(store.playbackRate);
 
   const voice = useRecoilValue(store.voice);
-  const activeRunId = useRecoilValue(store.activeRunFamily(index));
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
-  const latestMessage = useLatestMessage(index);
   const setIsPlaying = useSetRecoilState(store.globalAudioPlayingFamily(index));
-  const [audioRunId, setAudioRunId] = useRecoilState(store.audioRunFamily(index));
+  const setAudioRunId = useSetRecoilState(store.audioRunFamily(index));
   const [isFetching, setIsFetching] = useRecoilState(store.globalAudioFetchingFamily(index));
   const [globalAudioURL, setGlobalAudioURL] = useRecoilState(store.globalAudioURLFamily(index));
 
+  const { shouldPlay, activeRunId, latestMessage } = useAutoplayTrigger(index);
   const { audioRef } = useCustomAudioRef({ setIsPlaying });
   const { pauseGlobalAudio } = usePauseGlobalAudio();
 
@@ -49,28 +51,13 @@ export default function StreamAudio({ index = 0 }) {
   );
 
   useEffect(() => {
-    const latestText = getLatestText(latestMessage);
-
-    const shouldFetch = !!(
-      token != null &&
-      automaticPlayback &&
-      !isSubmitting &&
-      latestMessage &&
-      !latestMessage.isCreatedByUser &&
-      latestText &&
-      latestMessage.messageId &&
-      !latestMessage.messageId.includes('_') &&
-      !isFetching &&
-      activeRunId != null &&
-      activeRunId !== audioRunId
-    );
-
-    if (!shouldFetch) {
+    if (!(token != null && automaticPlayback && shouldPlay && !isFetching)) {
       return;
     }
 
     async function fetchAudio() {
       setIsFetching(true);
+      let mediaSource: MediaSourceAppender | undefined;
 
       try {
         if (audioRef.current) {
@@ -79,7 +66,9 @@ export default function StreamAudio({ index = 0 }) {
           setGlobalAudioURL(null);
         }
 
-        let cacheKey = latestMessage?.text ?? '';
+        /** Keyed by the spoken text, as manual playback is, so audio cached from an
+         *  unfiltered message (reasoning included) is never replayed. */
+        let cacheKey = latestMessage ? getSpeechText(latestMessage) : '';
         const cache = await caches.open('tts-responses');
         const cachedResponse = await cache.match(cacheKey);
 
@@ -112,11 +101,14 @@ export default function StreamAudio({ index = 0 }) {
         const type = 'audio/mpeg';
         const browserSupportsType =
           typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(type);
-        let mediaSource: MediaSourceAppender | undefined;
         if (browserSupportsType) {
           mediaSource = new MediaSourceAppender(type);
           setGlobalAudioURL(mediaSource.mediaSourceUrl);
         }
+
+        /** Browsers without MSE support for the type (Safari, for one) can only be handed the
+         *  audio once it is fully read, so that path always buffers — caching opts MSE in too. */
+        const shouldBufferChunks = cacheTTS || !browserSupportsType;
 
         let done = false;
         const chunks: ArrayBuffer[] = [];
@@ -128,7 +120,7 @@ export default function StreamAudio({ index = 0 }) {
             timeoutPromise(maxPromiseTime, promiseTimeoutMessage),
           ])) as ReadableStreamReadResult<ArrayBuffer>;
 
-          if (cacheTTS && value) {
+          if (shouldBufferChunks && value) {
             chunks.push(value);
           }
           if (value && mediaSource) {
@@ -137,39 +129,37 @@ export default function StreamAudio({ index = 0 }) {
           done = readerDone;
         }
 
+        mediaSource?.close();
+
         if (chunks.length) {
-          logger.log('Adding audio to cache');
-          const latestMessages = getMessages() ?? [];
-          const targetMessage = latestMessages.find(
-            (msg) => msg.messageId === latestMessage?.messageId,
-          );
-          cacheKey = targetMessage?.text ?? '';
-          if (!cacheKey) {
-            throw new Error('Cache key not found');
-          }
           const audioBlob = new Blob(chunks, { type });
-          const cachedResponse = new Response(audioBlob);
-          await cache.put(cacheKey, cachedResponse);
           if (!browserSupportsType) {
-            const unconsumedResponse = await cache.match(cacheKey);
-            if (!unconsumedResponse) {
-              throw new Error('Failed to fetch audio from cache');
-            }
-            const audioBlob = await unconsumedResponse.blob();
-            const blobUrl = URL.createObjectURL(audioBlob);
-            setGlobalAudioURL(blobUrl);
+            setGlobalAudioURL(URL.createObjectURL(audioBlob));
           }
-          setIsFetching(false);
+          if (cacheTTS) {
+            const latestMessages = getMessages() ?? [];
+            const targetMessage = latestMessages.find(
+              (msg) => msg.messageId === latestMessage?.messageId,
+            );
+            cacheKey = targetMessage ? getSpeechText(targetMessage) : '';
+            if (!cacheKey) {
+              logger.warn('Cache key not found, skipping audio cache');
+            } else {
+              logger.log('Adding audio to cache');
+              await cache.put(cacheKey, new Response(audioBlob));
+            }
+          }
         }
 
         logger.log('Audio stream reading ended');
       } catch (error) {
-        if (error?.['message'] !== promiseTimeoutMessage) {
+        if (error?.['message'] === promiseTimeoutMessage) {
           logger.log(promiseTimeoutMessage);
+          /** Let whatever was already appended finish playing instead of stalling forever */
+          mediaSource?.close();
           return;
         }
         logger.error('Error fetching audio:', error);
-        setIsFetching(false);
         setGlobalAudioURL(null);
       } finally {
         setIsFetching(false);
@@ -183,11 +173,10 @@ export default function StreamAudio({ index = 0 }) {
     setAudioRunId,
     setIsFetching,
     latestMessage,
-    isSubmitting,
     activeRunId,
     getMessages,
+    shouldPlay,
     isFetching,
-    audioRunId,
     cacheTTS,
     audioRef,
     voice,

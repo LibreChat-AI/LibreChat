@@ -30,7 +30,8 @@ export function extractMCPServers(agent: AgentWithTools): string[] {
   if (agent?.tools?.length) {
     for (const tool of agent.tools) {
       if (tool instanceof DynamicStructuredTool && tool.name.includes(Constants.mcp_delimiter)) {
-        const serverName = tool.name.split(Constants.mcp_delimiter).pop();
+        const carried = (tool as { mcpRawServerName?: string }).mcpRawServerName;
+        const serverName = carried ?? tool.name.split(Constants.mcp_delimiter).pop();
         if (serverName) {
           mcpServers.add(serverName);
         }
@@ -42,7 +43,7 @@ export function extractMCPServers(agent: AgentWithTools): string[] {
   if (agent?.toolDefinitions?.length) {
     for (const toolDef of agent.toolDefinitions) {
       if (toolDef.name?.includes(Constants.mcp_delimiter)) {
-        const serverName = toolDef.name.split(Constants.mcp_delimiter).pop();
+        const serverName = toolDef.serverName ?? toolDef.name.split(Constants.mcp_delimiter).pop();
         if (serverName) {
           mcpServers.add(serverName);
         }
@@ -75,12 +76,14 @@ export async function getMCPInstructionsForServers(
       configServers,
     );
     if (mcpInstructions && logger) {
-      logger.debug('[AgentContext] Fetched MCP instructions for servers:', mcpServers);
+      logger.debug('[AgentContext] Fetched MCP instructions', {
+        serverCount: mcpServers.length,
+      });
     }
     return mcpInstructions || '';
-  } catch (error) {
+  } catch {
     if (logger) {
-      logger.error('[AgentContext] Failed to get MCP instructions:', error);
+      logger.error('[AgentContext] Failed to get MCP instructions');
     }
     return '';
   }
@@ -175,9 +178,9 @@ export async function applyContextToAgent({
     });
 
     if (agentId && logger) {
-      logger.debug(`[AgentContext] Applied context to agent: ${agentId}`);
+      logger.debug('[AgentContext] Applied context to agent');
     }
-  } catch (error) {
+  } catch {
     agent.instructions = buildAgentInstructions({
       baseInstructions,
       mcpInstructions: '',
@@ -188,10 +191,7 @@ export async function applyContextToAgent({
     });
 
     if (logger) {
-      logger.error(
-        `[AgentContext] Failed to apply context to agent${agentId ? ` ${agentId}` : ''}, using base instructions only:`,
-        error,
-      );
+      logger.error('[AgentContext] Failed to apply context; using base instructions only');
     }
   }
 }

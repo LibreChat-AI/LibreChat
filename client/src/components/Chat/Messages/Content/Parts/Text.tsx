@@ -1,10 +1,10 @@
 import { memo, useMemo, ReactElement } from 'react';
-import { useRecoilValue } from 'recoil';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Markdown from '~/components/Chat/Messages/Content/Markdown';
-import { useMessageContext } from '~/Providers';
+import CollapsibleText from './CollapsibleText';
 import { cn } from '~/utils';
-import store from '~/store';
 
 type TextPartProps = {
   text: string;
@@ -18,9 +18,16 @@ type ContentType =
   | ReactElement;
 
 const TextPart = memo(function TextPart({ text, isCreatedByUser, showCursor }: TextPartProps) {
-  const { isSubmitting = false, isLatestMessage = false } = useMessageContext();
-  const enableUserMsgMarkdown = useRecoilValue(store.enableUserMsgMarkdown);
-  const showCursorState = useMemo(() => showCursor && isSubmitting, [showCursor, isSubmitting]);
+  const { useMessage, useUserTextPreferences } = useMessagePartsHost();
+  const { isSubmitting = false, isLatestMessage = false } = useMessage();
+  const { enableUserMsgMarkdown, collapseLongUserMessages } = useUserTextPreferences();
+  const smoothStreaming = useSmoothStreaming();
+  // The word fade itself indicates streaming, so the trailing block cursor
+  // only shows when the fade is unavailable (setting off or reduced motion).
+  const showCursorState = useMemo(
+    () => showCursor && isSubmitting && !(smoothStreaming && !isCreatedByUser),
+    [showCursor, isSubmitting, smoothStreaming, isCreatedByUser],
+  );
 
   const content: ContentType = useMemo(() => {
     if (!isCreatedByUser) {
@@ -33,17 +40,19 @@ const TextPart = memo(function TextPart({ text, isCreatedByUser, showCursor }: T
   }, [isCreatedByUser, enableUserMsgMarkdown, text, isLatestMessage]);
 
   return (
-    <div
-      className={cn(
-        isSubmitting ? 'submitting' : '',
-        showCursorState && !!text.length ? 'result-streaming' : '',
-        'markdown prose message-content dark:prose-invert light w-full break-words',
-        isCreatedByUser && !enableUserMsgMarkdown && 'whitespace-pre-wrap',
-        isCreatedByUser ? 'dark:text-gray-20' : 'dark:text-gray-100',
-      )}
-    >
-      {content}
-    </div>
+    <CollapsibleText enabled={isCreatedByUser && collapseLongUserMessages}>
+      <div
+        className={cn(
+          isSubmitting ? 'submitting' : '',
+          showCursorState && !!text.length ? 'result-streaming' : '',
+          'markdown prose message-content dark:prose-invert light w-full break-words',
+          isCreatedByUser && !enableUserMsgMarkdown && 'whitespace-pre-wrap',
+          'text-text-primary',
+        )}
+      >
+        {content}
+      </div>
+    </CollapsibleText>
   );
 });
 TextPart.displayName = 'TextPart';

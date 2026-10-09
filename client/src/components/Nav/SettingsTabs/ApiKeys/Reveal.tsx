@@ -17,14 +17,9 @@ export default function Reveal({ createdKey, onDone }: RevealProps) {
 
   return (
     <div className="min-w-0 space-y-4">
-      <div className="flex gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3">
-        <TriangleAlert
-          className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-500"
-          aria-hidden="true"
-        />
-        <p className="text-sm text-amber-700 dark:text-amber-300">
-          {localize('com_ui_api_key_warning')}
-        </p>
+      <div className="flex gap-2.5 rounded-lg border border-status-warning-border bg-status-warning-subtle p-3">
+        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-text-warning" aria-hidden="true" />
+        <p className="text-sm text-text-warning">{localize('com_ui_api_key_warning')}</p>
       </div>
       <div className="space-y-2">
         <Label htmlFor="reveal-api-key">{localize('com_ui_your_api_key')}</Label>

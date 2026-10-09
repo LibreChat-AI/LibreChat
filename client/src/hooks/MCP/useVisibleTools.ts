@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Constants } from 'librechat-data-provider';
+import { Constants, splitMCPToolKey, buildServerNameAliases } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
 import type { MCPServerInfo } from '~/common';
 
@@ -23,15 +23,22 @@ export function useVisibleTools(
   mcpServersMap: Map<string, MCPServerInfo>,
 ): VisibleToolsResult {
   return useMemo(() => {
+    const knownServerNames = Array.from(mcpServersMap.keys());
+    /** Tool ids embed the normalized server name while the servers map is
+     *  keyed by the raw config name — resolve either spelling back to raw so
+     *  an attached special-character server is not misread as an unknown
+     *  orphan (legacy documents may still carry raw-keyed ids). */
+    const aliases = buildServerNameAliases(knownServerNames);
+    const candidates = [...knownServerNames, ...aliases.keys()];
     const mcpServers = new Set<string>();
     const regularToolIds: string[] = [];
 
     for (const toolId of selectedToolIds ?? []) {
       // MCP tools/servers
       if (toolId.includes(Constants.mcp_delimiter)) {
-        const serverName = toolId.split(Constants.mcp_delimiter)[1];
+        const [, serverName] = splitMCPToolKey(toolId, candidates);
         if (serverName) {
-          mcpServers.add(serverName);
+          mcpServers.add(aliases.get(serverName) ?? serverName);
         }
       }
       // Legacy MCP server check (just server name)

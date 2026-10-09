@@ -1,6 +1,14 @@
+const mongoose = require('mongoose');
 const { CacheKeys } = require('librechat-data-provider');
 const { AppService, logger } = require('@librechat/data-schemas');
-const { createAppConfigService, clearMcpConfigCache } = require('@librechat/api');
+const {
+  createAppConfigService,
+  clearMcpConfigCache,
+  createCodeEnvironmentRegistry,
+  mergeAccessibleCodeEnvironments,
+  cacheConfig,
+  standardCache,
+} = require('@librechat/api');
 const { setCachedTools, invalidateCachedTools } = require('./getCachedTools');
 const { loadAndFormatTools } = require('~/server/services/start/tools');
 const loadCustomConfig = require('./loadCustomConfig');
@@ -8,9 +16,26 @@ const getLogStores = require('~/cache/getLogStores');
 const paths = require('~/config/paths');
 const db = require('~/models');
 
-const loadBaseConfig = async () => {
+let codeEnvironmentRegistry;
+
+function getCodeEnvironmentRegistry() {
+  if (codeEnvironmentRegistry == null) {
+    codeEnvironmentRegistry = createCodeEnvironmentRegistry(mongoose, {
+      configurationCache: cacheConfig.USE_REDIS
+        ? standardCache('CODE_ENVIRONMENT_CONFIG')
+        : undefined,
+    });
+  }
+  return codeEnvironmentRegistry;
+}
+
+async function invalidateCodeEnvironmentConfigCache(tenantId) {
+  await getCodeEnvironmentRegistry().invalidateAccessibleConfigurations(tenantId);
+}
+
+const loadBaseConfig = async (mode) => {
   /** @type {TCustomConfig} */
-  const config = (await loadCustomConfig()) ?? {};
+  const config = (await loadCustomConfig(true, { mode })) ?? {};
   /** @type {Record<string, FunctionTool>} */
   const systemTools = loadAndFormatTools({
     adminFilter: config.filteredTools,
@@ -27,7 +52,24 @@ const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfi
   cacheKeys: CacheKeys,
   getApplicableConfigs: db.getApplicableConfigs,
   getUserPrincipals: db.getUserPrincipals,
+  augmentConfig: ({ appConfig, baseConfig, principals, options }) => {
+    if (!options.userId) return appConfig;
+    return mergeAccessibleCodeEnvironments({
+      appConfig,
+      deploymentConfig: baseConfig,
+      actor: {
+        userId: options.userId,
+        role: options.role ?? null,
+        idOnTheSource: options.idOnTheSource ?? null,
+        principals,
+      },
+      registry: getCodeEnvironmentRegistry(),
+    });
+  },
 });
+
+// Config owns the reader; models never import this module to obtain it.
+db.initializeMessageBudget(getAppConfig);
 
 /**
  * Invalidate all config-related caches after an admin config mutation.
@@ -58,5 +100,8 @@ async function invalidateConfigCaches(tenantId) {
 module.exports = {
   getAppConfig,
   clearAppConfigCache,
+  clearOverrideCache,
   invalidateConfigCaches,
+  getCodeEnvironmentRegistry,
+  invalidateCodeEnvironmentConfigCache,
 };

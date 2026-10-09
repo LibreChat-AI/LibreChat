@@ -13,7 +13,7 @@
  * the current SCAN+GET implementation.
  */
 import { expect } from '@playwright/test';
-import type { RedisClientType } from 'redis';
+import type { RedisClientType } from '@redis/client';
 import type { ParsedServerConfig } from '~/mcp/types';
 
 describe('ServerConfigsCacheRedis Performance Benchmark', () => {
@@ -63,8 +63,8 @@ describe('ServerConfigsCacheRedis Performance Benchmark', () => {
   async function cleanupKeys(pattern: string): Promise<void> {
     if (!keyvRedisClient || !('scanIterator' in keyvRedisClient)) return;
     const keys: string[] = [];
-    for await (const key of keyvRedisClient.scanIterator({ MATCH: pattern })) {
-      keys.push(key);
+    for await (const page of keyvRedisClient.scanIterator({ MATCH: pattern })) {
+      keys.push(...page);
     }
     if (keys.length > 0) {
       await Promise.all(keys.map((key) => keyvRedisClient!.del(key)));
@@ -104,10 +104,10 @@ describe('ServerConfigsCacheRedis Performance Benchmark', () => {
           // Phase 1: SCAN only (key discovery)
           const scanStart = Date.now();
           const keys: string[] = [];
-          for await (const key of (keyvRedisClient as RedisClientType).scanIterator({
+          for await (const page of (keyvRedisClient as RedisClientType).scanIterator({
             MATCH: pattern,
           })) {
-            keys.push(key);
+            keys.push(...page);
           }
           const scanMs = Date.now() - scanStart;
 
@@ -169,10 +169,10 @@ describe('ServerConfigsCacheRedis Performance Benchmark', () => {
         // Measure SCAN with noise
         const scanStart = Date.now();
         const keys: string[] = [];
-        for await (const key of (keyvRedisClient as RedisClientType).scanIterator({
+        for await (const page of (keyvRedisClient as RedisClientType).scanIterator({
           MATCH: pattern,
         })) {
-          keys.push(key);
+          keys.push(...page);
         }
         const scanMs = Date.now() - scanStart;
 
@@ -298,17 +298,18 @@ describe('ServerConfigsCacheRedis Performance Benchmark', () => {
     it('should compare raw MGET vs Keyv GET for value retrieval', async () => {
       const ns = `${PREFIX}-mget`;
       const configCount = 30;
-      const cache = await populateCache(ns, configCount);
+      await populateCache(ns, configCount);
 
       try {
         // First, discover keys via SCAN (same for both approaches)
         const pattern = `*MCP::ServersRegistry::Servers::${ns}:*`;
         const keys: string[] = [];
-        for await (const key of (keyvRedisClient as RedisClientType).scanIterator({
+        for await (const page of (keyvRedisClient as RedisClientType).scanIterator({
           MATCH: pattern,
         })) {
-          keys.push(key);
+          keys.push(...page);
         }
+        expect(keys.length).toBeGreaterThan(0);
 
         // Approach 1: Keyv batch GET (current implementation)
         const keyvCache = standardCache(`MCP::ServersRegistry::Servers::${ns}`);

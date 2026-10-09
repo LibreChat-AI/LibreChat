@@ -1,12 +1,16 @@
 jest.mock('@librechat/data-schemas', () => ({
-  logger: { error: jest.fn(), debug: jest.fn() },
+  logger: { error: jest.fn(), debug: jest.fn(), info: jest.fn() },
 }));
-jest.mock('@librechat/api', () => ({
-  sendEvent: jest.fn(),
-  emitEvent: jest.fn(),
-  createToolExecuteHandler: jest.fn(),
-  markSummarizationUsage: (usage) => usage,
-}));
+jest.mock('@librechat/api', () => {
+  const { getModelRefusalInfo } = jest.requireActual('@librechat/api');
+  return {
+    sendEvent: jest.fn(),
+    emitEvent: jest.fn(),
+    createToolExecuteHandler: jest.fn(),
+    markSummarizationUsage: (usage) => usage,
+    getModelRefusalInfo,
+  };
+});
 jest.mock('~/server/services/Files/Citations', () => ({
   processFileCitations: jest.fn(),
 }));
@@ -18,7 +22,7 @@ jest.mock('~/server/services/Files/process', () => ({
   saveBase64Image: jest.fn(),
 }));
 
-const { ModelEndHandler } = require('../callbacks');
+const { ModelEndHandler, contextualizeModelUsage } = require('../callbacks');
 
 const buildGraph = () => ({
   getAgentContext: () => ({
@@ -28,6 +32,46 @@ const buildGraph = () => ({
 });
 
 describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 follow-up)', () => {
+  it('leaves usage usable when graph context is unavailable', () => {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+
+    expect(contextualizeModelUsage(usage, undefined, undefined)).toEqual(usage);
+    expect(contextualizeModelUsage(usage, undefined, null)).toEqual(usage);
+  });
+
+  it('prefers the actually invoked fallback provider and model', () => {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+    const result = contextualizeModelUsage(
+      usage,
+      {
+        __invoked_provider: 'anthropic',
+        __invoked_model: 'claude-fallback',
+      },
+      {
+        provider: 'bedrock',
+        agentId: 'agent-1',
+        clientOptions: { model: 'configured-model' },
+      },
+    );
+
+    expect(result).toEqual({
+      ...usage,
+      provider: 'anthropic',
+      model: 'claude-fallback',
+      agentId: 'agent-1',
+    });
+  });
+
+  it('prefers provider-reported model metadata over the invoked fallback model', () => {
+    expect(
+      contextualizeModelUsage(
+        { input_tokens: 10, output_tokens: 5 },
+        { ls_model_name: 'reported-model', __invoked_model: 'fallback-model' },
+        { clientOptions: { model: 'configured-model' } },
+      ).model,
+    ).toBe('reported-model');
+  });
+
   it('maps non-empty signatures onto tool_call_ids in order', async () => {
     const collectedUsage = [];
     const collectedThoughtSignatures = {};
@@ -170,6 +214,8 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
     );
 
     expect(collectedUsage[0].agentId).toBe('agent_sub');
+    expect(collectedUsage[0].provider).toBe('openai');
+    expect(collectedUsage[0].model).toBe('gpt-4');
     expect(emitUsage).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'agent_sub' }));
   });
 

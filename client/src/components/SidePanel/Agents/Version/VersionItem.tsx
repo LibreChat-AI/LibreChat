@@ -1,5 +1,17 @@
-import { useLocalize } from '~/hooks';
+import { useState } from 'react';
+import { formatDistanceToNow } from 'date-fns';
+import { Check, RotateCcw, Circle } from 'lucide-react';
+import {
+  Label,
+  Button,
+  OGDialog,
+  OGDialogTrigger,
+  OGDialogTemplate,
+  TooltipAnchor,
+} from '@librechat/client';
 import type { VersionRecord } from './types';
+import { useLocalize, useClockFormat } from '~/hooks';
+import { cn } from '~/utils';
 
 type VersionItemProps = {
   version: VersionRecord;
@@ -9,6 +21,22 @@ type VersionItemProps = {
   onRestore: (index: number) => void;
 };
 
+function getTimestampDate(version: VersionRecord): Date | null {
+  const value = version.updatedAt ?? version.createdAt;
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+}
+
+function countItems(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
 export default function VersionItem({
   version,
   index,
@@ -17,51 +45,211 @@ export default function VersionItem({
   onRestore,
 }: VersionItemProps) {
   const localize = useLocalize();
+  const hour12 = useClockFormat();
+  const [open, setOpen] = useState(false);
 
-  const getVersionTimestamp = (version: VersionRecord): string => {
-    const timestamp = version.updatedAt || version.createdAt;
+  const versionNumber = versionsLength - index;
+  const isLatest = index === 0;
+  const isLast = index === versionsLength - 1;
 
-    if (timestamp) {
-      try {
-        const date = new Date(timestamp);
-        if (isNaN(date.getTime()) || date.toString() === 'Invalid Date') {
-          return localize('com_ui_agent_version_unknown_date');
-        }
-        return date.toLocaleString();
-      } catch (error) {
-        return localize('com_ui_agent_version_unknown_date');
-      }
-    }
+  const date = getTimestampDate(version);
+  const hasUpdatedAt = version.updatedAt != null;
+  const hasCreatedAt = version.createdAt != null;
+  const fallbackDateLabel = localize(
+    hasUpdatedAt || hasCreatedAt
+      ? 'com_ui_agent_version_unknown_date'
+      : 'com_ui_agent_version_no_date',
+  );
+  const relativeLabel = date ? formatDistanceToNow(date, { addSuffix: true }) : fallbackDateLabel;
+  const absoluteLabel = date ? date.toLocaleString(undefined, { hour12 }) : relativeLabel;
 
-    return localize('com_ui_agent_version_no_date');
-  };
+  const toolsCount = countItems(version.tools);
+  const capabilitiesCount = countItems(version.capabilities);
+  const summaryChips: Array<{ key: string; label: string }> = [];
+  if (toolsCount > 0) {
+    summaryChips.push({
+      key: 'tools',
+      label: localize(toolsCount === 1 ? 'com_ui_tools_count_one' : 'com_ui_tools_count', {
+        count: toolsCount,
+      }),
+    });
+  }
+  if (capabilitiesCount > 0) {
+    summaryChips.push({
+      key: 'capabilities',
+      label: localize(
+        capabilitiesCount === 1 ? 'com_ui_capabilities_count_one' : 'com_ui_capabilities_count',
+        { count: capabilitiesCount },
+      ),
+    });
+  }
+
+  const versionName = typeof version.name === 'string' ? version.name : null;
+  const versionTitle = localize('com_ui_agent_version_title', { versionNumber });
 
   return (
-    <div className="rounded-md border border-border-light p-3">
-      <div className="flex items-center justify-between font-medium">
-        <span>
-          {localize('com_ui_agent_version_title', { versionNumber: versionsLength - index })}
-        </span>
-        {isActive && (
-          <span className="rounded-full border border-green-600 bg-green-600/20 px-2 py-0.5 text-xs font-medium text-green-700 dark:border-green-500 dark:bg-green-500/30 dark:text-green-300">
-            {localize('com_ui_agent_version_active')}
-          </span>
+    <li className="relative flex items-stretch" aria-current={isActive ? 'true' : undefined}>
+      {/* Timeline rail */}
+      <div className="relative flex w-6 shrink-0 justify-center">
+        {!isLast && (
+          <div
+            className={cn(
+              'absolute top-0 -bottom-3 w-px',
+              isActive ? 'bg-status-success-strong' : 'bg-border-light',
+            )}
+          />
         )}
-      </div>
-      <div className="text-sm text-text-secondary">{getVersionTimestamp(version)}</div>
-      {!isActive && (
-        <button
-          className="mt-2 text-sm text-blue-500 hover:text-blue-600"
-          onClick={() => {
-            if (window.confirm(localize('com_ui_agent_version_restore_confirm'))) {
-              onRestore(index);
-            }
-          }}
-          aria-label={localize('com_ui_agent_version_restore')}
+        <div
+          className={cn(
+            'relative z-10 mt-4 flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors',
+            isActive
+              ? 'border-status-success-strong bg-status-success-strong text-text-on-status'
+              : 'border-border-medium bg-surface-primary text-text-secondary',
+          )}
+          aria-hidden="true"
         >
-          {localize('com_ui_agent_version_restore')}
-        </button>
-      )}
-    </div>
+          {isActive ? (
+            <Check className="size-3" strokeWidth={3} />
+          ) : (
+            <Circle className="size-1.5" fill="currentColor" />
+          )}
+        </div>
+      </div>
+
+      {/* Card */}
+      <div
+        className={cn(
+          'group relative mb-2 ml-2 flex flex-1 flex-col rounded-xl border p-3 transition-colors',
+          isActive
+            ? 'border-status-success-border bg-status-success-subtle'
+            : 'border-border-light hover:border-border-medium hover:bg-surface-secondary bg-transparent',
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-col">
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  'truncate text-sm font-semibold',
+                  isActive ? 'text-status-success' : 'text-text-primary',
+                )}
+              >
+                {versionTitle}
+              </span>
+              {isActive && (
+                <span className="bg-status-success-subtle text-status-success inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
+                  <span
+                    className="bg-status-success-strong size-1.5 rounded-full"
+                    aria-hidden="true"
+                  />
+                  {localize('com_ui_agent_version_current')}
+                </span>
+              )}
+              {!isActive && isLatest && (
+                <span className="bg-surface-tertiary text-text-secondary rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
+                  {localize('com_ui_latest')}
+                </span>
+              )}
+            </div>
+            {versionName && (
+              <span className="text-text-secondary mt-0.5 truncate text-xs" title={versionName}>
+                {versionName}
+              </span>
+            )}
+          </div>
+          {!isActive && (
+            <OGDialog open={open} onOpenChange={setOpen}>
+              <OGDialogTrigger asChild>
+                <TooltipAnchor
+                  description={localize('com_ui_agent_version_restore')}
+                  side="left"
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={localize('com_ui_agent_version_restore')}
+                      className="border-border-light text-text-secondary hover:border-border-medium size-7 shrink-0 rounded-lg border opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
+                    </Button>
+                  }
+                />
+              </OGDialogTrigger>
+              <OGDialogTemplate
+                title={localize('com_ui_agent_version_restore_confirm')}
+                className="max-w-[28.125rem]"
+                main={
+                  <div className="flex w-full flex-col gap-3 text-sm">
+                    <Label className="text-text-primary text-left font-medium">
+                      {localize('com_ui_agent_version_restore_description')}
+                    </Label>
+                    <div className="border-border-light bg-surface-secondary rounded-lg border px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-text-primary text-sm font-semibold">
+                          {versionTitle}
+                        </span>
+                        <time
+                          className="text-text-secondary text-xs"
+                          dateTime={date?.toISOString()}
+                        >
+                          {absoluteLabel}
+                        </time>
+                      </div>
+                      {versionName && (
+                        <div className="text-text-secondary mt-1 truncate text-xs">
+                          {versionName}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                }
+                selection={{
+                  selectHandler: () => onRestore(index),
+                  selectClasses:
+                    'bg-surface-submit hover:bg-surface-submit-hover text-text-on-status',
+                  selectText: localize('com_ui_agent_version_restore'),
+                }}
+              />
+            </OGDialog>
+          )}
+        </div>
+
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+          {date ? (
+            <TooltipAnchor
+              description={absoluteLabel}
+              side="bottom"
+              render={
+                <time
+                  dateTime={date.toISOString()}
+                  className="text-text-secondary cursor-help text-xs"
+                >
+                  {relativeLabel}
+                </time>
+              }
+            />
+          ) : (
+            <span className="text-text-secondary text-xs">{relativeLabel}</span>
+          )}
+          {summaryChips.length > 0 && (
+            <>
+              <span aria-hidden="true" className="text-text-tertiary">
+                ·
+              </span>
+              {summaryChips.map((chip, i) => (
+                <span key={chip.key} className="flex items-center gap-1.5">
+                  {i > 0 && (
+                    <span aria-hidden="true" className="text-text-tertiary">
+                      ·
+                    </span>
+                  )}
+                  <span className="text-text-secondary text-xs">{chip.label}</span>
+                </span>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+    </li>
   );
 }

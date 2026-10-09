@@ -80,6 +80,10 @@ export interface AnthropicConfigOptions {
   proxy?: string | null;
   /** URL for a reverse proxy, if used */
   reverseProxyUrl?: string | null;
+  /** Whether the reverse proxy URL came from a user-stored credential */
+  baseURLIsUserProvided?: boolean;
+  /** Admin-approved internal host:port exemptions for user-provided base URLs */
+  allowedAddresses?: string[] | null;
   /** Default parameters to apply only if fields are undefined */
   defaultParams?: Record<string, unknown>;
   /** Additional parameters to add to the configuration */
@@ -103,7 +107,7 @@ export interface AnthropicConfigOptions {
 export type AnthropicLLMConfigResult = LLMConfigResult<
   AnthropicClientOptions & {
     clientOptions?: {
-      fetchOptions?: { dispatcher: Dispatcher };
+      fetchOptions?: { dispatcher?: Dispatcher; redirect?: RequestRedirect };
     };
     stream?: boolean;
   }

@@ -51,9 +51,84 @@ interface CodeEnvRefBase {
   id: string;
   storage_session_id: string;
   file_id: string;
+  /** Code API deployment that owns this storage pointer. Legacy refs omit
+   *  the field and are treated as `default`; new writes always persist it. */
+  executionProfile?: CodeExecutionProfile;
+  /** Deployment-specific namespace. Configured stateful environments share
+   * the same wire profile, so this key prevents their file IDs from being
+   * reused against a different Code API server. */
+  executionRouteKey?: string;
+  /** Epoch ms when the file was uploaded to the code env; drives the liveness
+   *  fast-path (distinct from the usage-bumped `updatedAt`). */
+  provisionedAt?: number;
+  /** Actual destination used when uploading this storage object. */
+  sandboxFilename?: string;
 }
+
+export type CodeExecutionProfile = 'default' | 'stateful';
 
 export type CodeEnvRef =
   | (CodeEnvRefBase & { kind: 'skill'; version: number })
   | (CodeEnvRefBase & { kind: 'agent' })
   | (CodeEnvRefBase & { kind: 'user' });
+
+/** Deployment-local pointers for a resource that may be used by both Code API profiles. */
+export type CodeEnvRefMap = Partial<Record<string, CodeEnvRef>>;
+
+export interface CodeEnvReferenceSet {
+  /** Compatibility pointer for readers that have not adopted profile-aware refs yet. */
+  codeEnvRef?: CodeEnvRef;
+  /** Canonical deployment-local pointers, keyed by trusted execution profile. */
+  codeEnvRefs?: CodeEnvRefMap;
+}
+
+export function getCodeEnvRefForProfile(
+  refs: CodeEnvReferenceSet | null | undefined,
+  routeKey: string,
+): CodeEnvRef | undefined {
+  const profileRef = refs?.codeEnvRefs?.[routeKey];
+  if (profileRef) {
+    return profileRef;
+  }
+  const legacyRef = refs?.codeEnvRef;
+  if (
+    legacyRef &&
+    (legacyRef.executionRouteKey ?? legacyRef.executionProfile ?? 'default') === routeKey
+  ) {
+    return legacyRef;
+  }
+  return undefined;
+}
+
+/** Adds one profile pointer without discarding the other profile's storage object. */
+export function mergeCodeEnvRef(
+  refs: CodeEnvReferenceSet | null | undefined,
+  ref: CodeEnvRef,
+): Required<Pick<CodeEnvReferenceSet, 'codeEnvRef' | 'codeEnvRefs'>> {
+  const codeEnvRefs: CodeEnvRefMap = { ...refs?.codeEnvRefs };
+  const legacyRef = refs?.codeEnvRef;
+  if (legacyRef) {
+    codeEnvRefs[legacyRef.executionRouteKey ?? legacyRef.executionProfile ?? 'default'] ??=
+      legacyRef;
+  }
+  const routeKey = ref.executionRouteKey ?? ref.executionProfile ?? 'default';
+  codeEnvRefs[routeKey] = ref;
+  return {
+    codeEnvRef: codeEnvRefs.default ?? codeEnvRefs.stateful ?? ref,
+    codeEnvRefs,
+  };
+}
+
+/** Enumerates every deployment-local pointer, including legacy single-pointer records. */
+export function getCodeEnvRefs(
+  refs: CodeEnvReferenceSet | null | undefined,
+): Array<[string, CodeEnvRef]> {
+  const merged: CodeEnvRefMap = { ...refs?.codeEnvRefs };
+  const legacyRef = refs?.codeEnvRef;
+  if (legacyRef) {
+    merged[legacyRef.executionRouteKey ?? legacyRef.executionProfile ?? 'default'] ??= legacyRef;
+  }
+  return Object.entries(merged).flatMap(([routeKey, ref]) =>
+    ref ? [[routeKey, ref] as [string, CodeEnvRef]] : [],
+  );
+}

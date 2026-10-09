@@ -3,6 +3,7 @@ const request = require('supertest');
 
 jest.mock('passport', () => ({
   authenticate: jest.fn(() => (req, res, next) => next()),
+  _strategy: jest.fn(),
 }));
 
 jest.mock('openid-client', () => ({
@@ -22,6 +23,7 @@ jest.mock('@librechat/data-schemas', () => ({
   DEFAULT_SESSION_EXPIRY: 60000,
   SystemCapabilities: { ACCESS_ADMIN: 'ACCESS_ADMIN' },
   getTenantId: jest.fn(() => undefined),
+  tenantStorage: { run: jest.fn((ctx, fn) => fn()) },
 }));
 
 jest.mock('@librechat/api', () => {
@@ -43,6 +45,7 @@ jest.mock('@librechat/api', () => {
     tenantContextMiddleware: jest.fn((req, res, next) => next()),
     preAuthTenantMiddleware: jest.fn((req, res, next) => next()),
     applyAdminRefresh: jest.fn(),
+    applyGoogleAdminRefresh: jest.fn(),
     AdminRefreshError,
     buildOpenIDRefreshParams: jest.fn(() => {
       const params = {};
@@ -57,8 +60,9 @@ jest.mock('@librechat/api', () => {
   };
 });
 
+const mockAdminLoginController = jest.fn((req, res) => res.status(200).end());
 jest.mock('~/server/controllers/auth/LoginController', () => ({
-  loginController: jest.fn((req, res) => res.status(200).end()),
+  loginController: (...args) => mockAdminLoginController(...args),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
@@ -95,17 +99,27 @@ jest.mock('~/strategies', () => ({
 
 jest.mock('~/server/middleware', () => ({
   logHeaders: jest.fn((req, res, next) => next()),
+  requireSameOrigin: jest.fn((req, res, next) => next()),
   loginLimiter: jest.fn((req, res, next) => next()),
   checkBan: jest.fn((req, res, next) => next()),
+  validateEmailLogin: jest.fn((req, res, next) => next()),
   requireLocalAuth: jest.fn((req, res, next) => next()),
   requireJwtAuth: jest.fn((req, res, next) => next()),
   checkDomainAllowed: jest.fn((req, res, next) => next()),
 }));
 
+const passport = require('passport');
 const openIdClient = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
-const { isEnabled, applyAdminRefresh, buildOpenIDRefreshParams } = require('@librechat/api');
+const {
+  isEnabled,
+  applyAdminRefresh,
+  applyGoogleAdminRefresh,
+  storeAndStripChallenge,
+  buildOpenIDRefreshParams,
+} = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies');
+const middleware = require('~/server/middleware');
 const adminAuthRouter = require('./auth');
 
 const ORIGINAL_OPENID_SCOPE = process.env.OPENID_SCOPE;
@@ -246,5 +260,414 @@ describe('admin auth OpenID refresh route', () => {
     expect(debugOutput).not.toContain('new-admin-id');
     expect(debugOutput).not.toContain('new-admin-refresh');
     expect(debugOutput).not.toContain('https://api.example.com');
+  });
+});
+
+describe('admin auth Google refresh route', () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.SESSION_EXPIRY;
+
+    app = express();
+    app.use(express.json());
+    app.use('/api/admin', adminAuthRouter);
+
+    process.env.GOOGLE_CLIENT_ID = 'google-client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
+
+    applyGoogleAdminRefresh.mockResolvedValue({
+      token: 'admin-jwt',
+      refreshToken: 'rotated-refresh',
+      user: {
+        _id: 'user-id',
+        id: 'user-id',
+        email: 'admin@example.com',
+        name: 'Admin',
+        username: 'admin',
+        role: 'ADMIN',
+        provider: 'google',
+      },
+      expiresAt: 1234567890,
+    });
+  });
+
+  it('delegates to applyGoogleAdminRefresh with route-supplied deps and options', async () => {
+    const response = await request(app).post('/api/admin/oauth/refresh').send({
+      refresh_token: 'incoming-google-refresh',
+      user_id: '6a343eb8b5025a84b6ca2767',
+      provider: 'google',
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      token: 'admin-jwt',
+      refreshToken: 'rotated-refresh',
+      user: expect.objectContaining({
+        _id: 'user-id',
+        id: 'user-id',
+        email: 'admin@example.com',
+        name: 'Admin',
+        username: 'admin',
+        role: 'ADMIN',
+        provider: 'google',
+      }),
+      expiresAt: 1234567890,
+    });
+    expect(applyGoogleAdminRefresh).toHaveBeenCalledWith(
+      expect.objectContaining({
+        findUsers: expect.any(Function),
+        getUserById: expect.any(Function),
+        canAccessAdmin: expect.any(Function),
+        mintToken: expect.any(Function),
+      }),
+      {
+        refreshToken: 'incoming-google-refresh',
+        userId: '6a343eb8b5025a84b6ca2767',
+        tenantId: undefined,
+        clientId: 'google-client-id',
+        clientSecret: 'google-client-secret',
+      },
+    );
+  });
+
+  it('forwards the tenant id from getTenantId() to the helper', async () => {
+    const { getTenantId } = require('@librechat/data-schemas');
+    getTenantId.mockReturnValueOnce('tenant-x');
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-google-refresh', provider: 'google' });
+
+    expect(response.status).toBe(200);
+    expect(applyGoogleAdminRefresh).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ tenantId: 'tenant-x' }),
+    );
+  });
+
+  it('canAccessAdmin closure calls hasCapability with the normalized user id', async () => {
+    const { hasCapability } = require('~/server/middleware/roles/capabilities');
+    let capturedDeps;
+    applyGoogleAdminRefresh.mockImplementationOnce(async (deps) => {
+      capturedDeps = deps;
+      return {
+        token: 'jwt',
+        refreshToken: 'r',
+        user: { id: 'u', _id: 'u', email: 'e@e.com', name: '', username: '', role: 'ADMIN' },
+        expiresAt: 0,
+      };
+    });
+
+    await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'google-refresh', provider: 'google' });
+
+    await capturedDeps.canAccessAdmin({ id: 'user-1', role: 'ADMIN', tenantId: 'tenant-a' });
+    expect(hasCapability).toHaveBeenCalledWith(
+      { id: 'user-1', role: 'ADMIN', tenantId: 'tenant-a' },
+      'ACCESS_ADMIN',
+    );
+  });
+
+  it('does not require OPENID_REUSE_TOKENS for the google provider', async () => {
+    isEnabled.mockReturnValue(false);
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-google-refresh', provider: 'google' });
+
+    expect(response.status).toBe(200);
+  });
+
+  it('maps AdminRefreshError thrown by the helper to the documented status and code', async () => {
+    const { AdminRefreshError } = require('@librechat/api');
+    applyGoogleAdminRefresh.mockRejectedValueOnce(
+      new AdminRefreshError('GOOGLE_NOT_CONFIGURED', 503, 'Google admin OAuth is not configured'),
+    );
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-google-refresh', provider: 'google' });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      error: 'Google admin OAuth is not configured',
+      error_code: 'GOOGLE_NOT_CONFIGURED',
+    });
+  });
+
+  it('returns 500 INTERNAL_ERROR when the helper throws a non-AdminRefreshError', async () => {
+    applyGoogleAdminRefresh.mockRejectedValueOnce(new Error('boom'));
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-google-refresh', provider: 'google' });
+
+    expect(response.status).toBe(500);
+    expect(response.body.error_code).toBe('INTERNAL_ERROR');
+  });
+
+  it('rejects unknown provider values with INVALID_PROVIDER before calling either helper', async () => {
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-refresh', provider: 'github' });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error_code).toBe('INVALID_PROVIDER');
+    expect(applyGoogleAdminRefresh).not.toHaveBeenCalled();
+    expect(applyAdminRefresh).not.toHaveBeenCalled();
+  });
+
+  it('re-runs checkBan with the resolved user identity and blocks a banned user', async () => {
+    const middleware = require('~/server/middleware');
+    let banCheckCalls = 0;
+    middleware.checkBan.mockImplementation((req, res, next) => {
+      banCheckCalls++;
+      if (banCheckCalls >= 2 && req.user) {
+        req.banned = true;
+        return res.status(403).json({ message: 'banned' });
+      }
+      return next();
+    });
+
+    const response = await request(app)
+      .post('/api/admin/oauth/refresh')
+      .send({ refresh_token: 'incoming-google-refresh', provider: 'google' });
+
+    expect(response.status).toBe(403);
+    expect(middleware.checkBan).toHaveBeenCalledTimes(2);
+    expect(middleware.checkBan.mock.calls[1][0].user).toEqual({ id: 'user-id' });
+  });
+});
+
+describe('admin auth OpenID route availability', () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    middleware.checkBan.mockImplementation((req, res, next) => next());
+
+    app = express();
+    app.use(express.json());
+    app.use('/api/admin', adminAuthRouter);
+  });
+
+  it('returns not configured for the OpenID availability check when config lookup throws', async () => {
+    getOpenIdConfig.mockImplementation(() => {
+      throw new Error('OpenID client is not initialized. Please call setupOpenId first.');
+    });
+
+    const response = await request(app).get('/api/admin/oauth/openid/check');
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({
+      error: 'OpenID configuration not found',
+      error_code: 'OPENID_NOT_CONFIGURED',
+    });
+  });
+
+  it('does not start OpenID admin login when config lookup throws', async () => {
+    getOpenIdConfig.mockImplementation(() => {
+      throw new Error('OpenID client is not initialized. Please call setupOpenId first.');
+    });
+
+    const response = await request(app).get('/api/admin/oauth/openid');
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({
+      error: 'OpenID configuration not found',
+      error_code: 'OPENID_NOT_CONFIGURED',
+    });
+    expect(storeAndStripChallenge).not.toHaveBeenCalled();
+    expect(passport.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('does not run OpenID admin callback auth when config lookup throws', async () => {
+    getOpenIdConfig.mockImplementation(() => {
+      throw new Error('OpenID client is not initialized. Please call setupOpenId first.');
+    });
+
+    const response = await request(app).get('/api/admin/oauth/openid/callback?state=state');
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({
+      error: 'OpenID configuration not found',
+      error_code: 'OPENID_NOT_CONFIGURED',
+    });
+  });
+});
+
+describe('admin auth social route availability', () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    passport._strategy.mockReturnValue(undefined);
+
+    app = express();
+    app.use(express.json());
+    app.use('/api/admin', adminAuthRouter);
+  });
+
+  const startRoutes = [
+    ['saml', 'SAML'],
+    ['google', 'Google'],
+    ['github', 'GitHub'],
+    ['discord', 'Discord'],
+    ['facebook', 'Facebook'],
+    ['apple', 'Apple'],
+  ];
+
+  it.each(startRoutes)(
+    'does not start %s admin login when the strategy is not registered',
+    async (path, provider) => {
+      const response = await request(app).get(`/api/admin/oauth/${path}`);
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({
+        error: `${provider} configuration not found`,
+        error_code: `${provider.toUpperCase()}_NOT_CONFIGURED`,
+      });
+      expect(storeAndStripChallenge).not.toHaveBeenCalled();
+      expect(passport.authenticate).not.toHaveBeenCalled();
+    },
+  );
+
+  const callbackRoutes = [
+    [
+      'saml',
+      'SAML',
+      (agent) => agent.post('/api/admin/oauth/saml/callback').send({ RelayState: 'state' }),
+    ],
+    ['google', 'Google', (agent) => agent.get('/api/admin/oauth/google/callback?state=state')],
+    ['github', 'GitHub', (agent) => agent.get('/api/admin/oauth/github/callback?state=state')],
+    ['discord', 'Discord', (agent) => agent.get('/api/admin/oauth/discord/callback?state=state')],
+    [
+      'facebook',
+      'Facebook',
+      (agent) => agent.get('/api/admin/oauth/facebook/callback?state=state'),
+    ],
+    [
+      'apple',
+      'Apple',
+      (agent) => agent.post('/api/admin/oauth/apple/callback').send({ state: 'state' }),
+    ],
+  ];
+
+  it.each(callbackRoutes)(
+    'does not run %s admin callback auth when the strategy is not registered',
+    async (path, provider, makeRequest) => {
+      const response = await makeRequest(request(app));
+
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({
+        error: `${provider} configuration not found`,
+        error_code: `${provider.toUpperCase()}_NOT_CONFIGURED`,
+      });
+    },
+  );
+
+  it('starts admin login when the strategy is registered', async () => {
+    passport._strategy.mockReturnValue({ name: 'googleAdmin' });
+    storeAndStripChallenge.mockResolvedValue(true);
+
+    await request(app).get('/api/admin/oauth/google');
+
+    expect(storeAndStripChallenge).toHaveBeenCalledTimes(1);
+    expect(passport.authenticate).toHaveBeenCalledWith(
+      'googleAdmin',
+      expect.objectContaining({ session: false }),
+    );
+  });
+});
+
+describe('admin local login route', () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    app = express();
+    app.use(express.json());
+    app.use('/api/admin', adminAuthRouter);
+  });
+
+  it('applies the email login gate before local auth', async () => {
+    const response = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(response.status).toBe(200);
+    expect(middleware.validateEmailLogin).toHaveBeenCalledTimes(1);
+    expect(middleware.requireLocalAuth).toHaveBeenCalledTimes(1);
+    expect(middleware.validateEmailLogin.mock.invocationCallOrder[0]).toBeLessThan(
+      middleware.requireLocalAuth.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('rejects cross-site submissions before rate limiting or local auth', async () => {
+    const response = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(response.status).toBe(200);
+    expect(middleware.requireSameOrigin).toHaveBeenCalledTimes(1);
+    expect(middleware.requireSameOrigin.mock.invocationCallOrder[0]).toBeLessThan(
+      middleware.loginLimiter.mock.invocationCallOrder[0],
+    );
+
+    jest.clearAllMocks();
+    middleware.requireSameOrigin.mockImplementationOnce((req, res) =>
+      res.status(403).json({ message: 'Cross-site request rejected' }),
+    );
+
+    const rejected = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(rejected.status).toBe(403);
+    expect(middleware.loginLimiter).not.toHaveBeenCalled();
+    expect(middleware.requireLocalAuth).not.toHaveBeenCalled();
+  });
+
+  it('preserves the additive required-setup response contract for admin clients', async () => {
+    mockAdminLoginController.mockImplementationOnce((req, res) =>
+      res.status(200).json({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'setup-token',
+      }),
+    );
+
+    const response = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(response.body).toEqual({
+      twoFAPending: true,
+      twoFASetupRequired: true,
+      tempToken: 'setup-token',
+    });
+  });
+
+  it('stops before local auth when the email login gate rejects the request', async () => {
+    middleware.validateEmailLogin.mockImplementationOnce((req, res) =>
+      res.status(403).json({ message: 'Email login is not allowed.' }),
+    );
+
+    const response = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ message: 'Email login is not allowed.' });
+    expect(middleware.requireLocalAuth).not.toHaveBeenCalled();
   });
 });

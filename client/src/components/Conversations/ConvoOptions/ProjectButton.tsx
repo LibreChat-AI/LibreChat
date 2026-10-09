@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useState, type RefObject } from 'react';
+import { useMemo, useState, type RefObject } from 'react';
+import { Folder } from 'lucide-react';
 import {
   Button,
-  Spinner,
+  ControlCombobox,
+  Label,
   OGDialog,
   OGDialogClose,
-  OGDialogTitle,
-  OGDialogHeader,
   OGDialogContent,
+  OGDialogHeader,
+  OGDialogTitle,
+  Spinner,
   useToastContext,
 } from '@librechat/client';
 import type { TChatProject } from 'librechat-data-provider';
+import type { OptionWithIcon } from '~/common';
 import { useAssignConversationToProjectMutation, useProjectsInfiniteQuery } from '~/data-provider';
-import { useLocalize } from '~/hooks';
 import { NotificationSeverity } from '~/common';
+import { useLocalize } from '~/hooks';
 
 type ProjectButtonProps = {
   conversationId: string;
@@ -21,6 +25,8 @@ type ProjectButtonProps = {
   setShowProjectDialog?: (value: boolean) => void;
   triggerRef?: RefObject<HTMLButtonElement>;
   setMenuOpen?: (open: boolean) => void;
+  /** Called with the new project once the assignment has landed. */
+  onAssigned?: (projectId: string) => void;
 };
 
 function ProjectConversationDialog({
@@ -28,11 +34,13 @@ function ProjectConversationDialog({
   chatProjectId,
   setMenuOpen,
   setShowProjectDialog,
+  onAssigned,
 }: {
   conversationId: string;
   chatProjectId?: string | null;
   setMenuOpen?: (open: boolean) => void;
   setShowProjectDialog: (value: boolean) => void;
+  onAssigned?: (projectId: string) => void;
 }) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
@@ -41,6 +49,7 @@ function ProjectConversationDialog({
   const { data, fetchNextPage, isFetchingNextPage } = useProjectsInfiniteQuery({
     sortBy: 'name',
     sortDirection: 'asc',
+    limit: 100,
   });
 
   const projects = useMemo<TChatProject[]>(
@@ -48,19 +57,33 @@ function ProjectConversationDialog({
     [data?.pages],
   );
   const hasNextPage = data?.pages[data.pages.length - 1]?.nextCursor != null;
-
-  useEffect(() => {
-    setSelectedProjectId(chatProjectId ?? '');
-  }, [chatProjectId]);
+  const selectedProject = projects.find((project) => project._id === selectedProjectId);
+  const projectItems = useMemo<OptionWithIcon[]>(
+    () =>
+      projects.map((project) => ({
+        label: project.name,
+        value: project._id,
+        icon: <Folder className="text-text-secondary h-4 w-4" aria-hidden="true" />,
+      })),
+    [projects],
+  );
+  const canSave =
+    Boolean(selectedProjectId) &&
+    selectedProjectId !== (chatProjectId ?? '') &&
+    !assignConversation.isLoading;
 
   const saveProject = () => {
+    if (!canSave) {
+      return;
+    }
     assignConversation.mutate(
       {
         conversationId,
-        projectId: selectedProjectId || null,
+        projectId: selectedProjectId,
       },
       {
         onSuccess: () => {
+          onAssigned?.(selectedProjectId);
           setShowProjectDialog(false);
           setMenuOpen?.(false);
           showToast({
@@ -83,44 +106,53 @@ function ProjectConversationDialog({
   return (
     <OGDialogContent
       id="project-conversation-dialog"
-      className="w-11/12 max-w-md"
+      className="w-11/12 max-w-md overflow-visible"
       showCloseButton={false}
     >
       <OGDialogHeader>
         <OGDialogTitle>{localize('com_ui_change_project')}</OGDialogTitle>
       </OGDialogHeader>
-      <label className="flex flex-col gap-2 text-sm text-text-primary">
-        {localize('com_ui_select_project')}
-        <select
-          value={selectedProjectId}
-          onChange={(event) => setSelectedProjectId(event.target.value)}
-          className="h-10 rounded-lg border border-border-light bg-surface-primary px-3 text-sm outline-none focus:ring-2 focus:ring-ring-primary"
-        >
-          <option value="">{localize('com_ui_unassigned')}</option>
-          {projects.map((project) => (
-            <option key={project._id} value={project._id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {hasNextPage && (
-        <button
-          type="button"
-          className="mt-3 text-sm text-text-secondary hover:text-text-primary"
-          onClick={() => fetchNextPage()}
-          disabled={isFetchingNextPage}
-        >
-          {isFetchingNextPage ? localize('com_ui_loading') : localize('com_ui_load_more')}
-        </button>
-      )}
-      <div className="flex justify-end gap-4 pt-4">
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="change-project-select" className="text-text-primary text-sm font-medium">
+          {localize('com_ui_select_project')}
+        </Label>
+        <ControlCombobox
+          selectId="change-project-select"
+          selectedValue={selectedProjectId}
+          displayValue={selectedProject?.name}
+          items={projectItems}
+          setValue={setSelectedProjectId}
+          SelectIcon={<Folder className="text-text-secondary h-4 w-4" aria-hidden="true" />}
+          ariaLabel={localize('com_ui_select_project')}
+          searchPlaceholder={localize('com_ui_search_projects')}
+          selectPlaceholder={localize('com_ui_select_project')}
+          isCollapsed={false}
+          showCarat={true}
+          placement="bottom-start"
+          portal={false}
+          matchTriggerWidth={true}
+          containerClassName="w-full px-0"
+          className="border-border-light bg-surface-tertiary text-text-primary hover:bg-surface-hover h-10 w-full justify-start gap-2 rounded-xl border px-3 text-sm"
+        />
+        {hasNextPage ? (
+          <Button
+            type="button"
+            variant="link"
+            className="h-auto justify-start px-0 text-sm"
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+          >
+            {isFetchingNextPage ? localize('com_ui_loading') : localize('com_ui_load_more')}
+          </Button>
+        ) : null}
+      </div>
+      <div className="flex justify-end gap-2 pt-4">
         <OGDialogClose asChild>
-          <Button aria-label="cancel" variant="outline">
+          <Button type="button" variant="outline">
             {localize('com_ui_cancel')}
           </Button>
         </OGDialogClose>
-        <Button onClick={saveProject} disabled={assignConversation.isLoading}>
+        <Button type="button" variant="submit" onClick={saveProject} disabled={!canSave}>
           {assignConversation.isLoading ? <Spinner /> : localize('com_ui_save')}
         </Button>
       </div>
@@ -135,6 +167,7 @@ export default function ProjectButton({
   showProjectDialog,
   setShowProjectDialog,
   triggerRef,
+  onAssigned,
 }: ProjectButtonProps) {
   if (showProjectDialog === undefined || setShowProjectDialog === undefined) {
     return null;
@@ -151,6 +184,7 @@ export default function ProjectButton({
         chatProjectId={chatProjectId}
         setMenuOpen={setMenuOpen}
         setShowProjectDialog={setShowProjectDialog}
+        onAssigned={onAssigned}
       />
     </OGDialog>
   );

@@ -8,6 +8,11 @@ const GENERATED_CREDS_KEY = crypto.randomBytes(32).toString('hex');
 const GENERATED_CREDS_IV = crypto.randomBytes(16).toString('hex');
 const GENERATED_JWT_SECRET = crypto.randomBytes(32).toString('hex');
 const GENERATED_JWT_REFRESH_SECRET = crypto.randomBytes(32).toString('hex');
+const DEFAULT_REDIS_URI = 'redis://127.0.0.1:6379/15';
+const DEFAULT_REDIS_CLUSTER_URI = [7001, 7002, 7003]
+  .map((port) => `redis://127.0.0.1:${port}`)
+  .join(',');
+const DEFAULT_REDIS_KEY_PREFIX = 'LibreChatE2E';
 const PASSTHROUGH_ENV_KEYS = [
   'APPDATA',
   'CI',
@@ -71,6 +76,43 @@ function getPassthroughEnv(): Record<string, string> {
   return env;
 }
 
+function getStreamStoreEnv(): Record<string, string> {
+  const streamStore = process.env.E2E_STREAM_STORE ?? 'memory';
+  if (streamStore === 'memory') {
+    return {
+      E2E_REQUIRE_REDIS_STREAMS: 'false',
+      USE_REDIS: 'false',
+      USE_REDIS_STREAMS: 'false',
+      USE_REDIS_CLUSTER: 'false',
+      REDIS_KEY_PREFIX: '',
+      REDIS_KEY_PREFIX_VAR: '',
+    };
+  }
+  if (streamStore === 'redis') {
+    return {
+      E2E_REQUIRE_REDIS_STREAMS: 'true',
+      USE_REDIS: 'true',
+      USE_REDIS_STREAMS: 'true',
+      USE_REDIS_CLUSTER: 'false',
+      REDIS_URI: process.env.REDIS_URI ?? DEFAULT_REDIS_URI,
+      REDIS_KEY_PREFIX: process.env.E2E_REDIS_KEY_PREFIX ?? DEFAULT_REDIS_KEY_PREFIX,
+      REDIS_KEY_PREFIX_VAR: '',
+    };
+  }
+  if (streamStore === 'redis-cluster') {
+    return {
+      E2E_REQUIRE_REDIS_STREAMS: 'true',
+      USE_REDIS: 'true',
+      USE_REDIS_STREAMS: 'true',
+      USE_REDIS_CLUSTER: 'true',
+      REDIS_URI: process.env.REDIS_URI ?? DEFAULT_REDIS_CLUSTER_URI,
+      REDIS_KEY_PREFIX: process.env.E2E_REDIS_KEY_PREFIX ?? DEFAULT_REDIS_KEY_PREFIX,
+      REDIS_KEY_PREFIX_VAR: '',
+    };
+  }
+  throw new Error(`Unsupported E2E_STREAM_STORE "${streamStore}"`);
+}
+
 export function getBaseE2EEnv(): Record<string, string> {
   const baseURL = getE2EBaseURL();
   const { host, port } = getE2EServerAddress(baseURL);
@@ -96,13 +138,14 @@ export function getBaseE2EEnv(): Record<string, string> {
     SESSION_EXPIRY: process.env.SESSION_EXPIRY ?? '3600000',
     ALLOW_REGISTRATION: 'true',
     REFRESH_TOKEN_EXPIRY: process.env.REFRESH_TOKEN_EXPIRY ?? '3600000',
+    ...getStreamStoreEnv(),
   };
 }
 
 export function getLocalE2EEnv(): Record<string, string> {
   return {
     ...getBaseE2EEnv(),
-    TITLE_CONVO: 'false',
+    TITLE_CONVO: process.env.E2E_TITLE_CONVO ?? 'false',
     LOGIN_VIOLATION_SCORE: '0',
     REGISTRATION_VIOLATION_SCORE: '0',
     CONCURRENT_VIOLATION_SCORE: '0',
@@ -118,9 +161,13 @@ export function getLocalE2EEnv(): Record<string, string> {
     TOOL_CALL_VIOLATION_SCORE: '0',
     CONVO_ACCESS_VIOLATION_SCORE: '0',
     ILLEGAL_MODEL_REQ_SCORE: '0',
-    LOGIN_MAX: '20',
+    /** The suite authenticates far more often than a person does: a spec that
+     *  exercises a second account logs in once per Playwright project, and the
+     *  admin-config specs log in per test. 20 per minute throttles those runs
+     *  into flakes; no spec asserts login or registration throttling. */
+    LOGIN_MAX: '200',
     LOGIN_WINDOW: '1',
-    REGISTER_MAX: '20',
+    REGISTER_MAX: '200',
     REGISTER_WINDOW: '1',
     LIMIT_CONCURRENT_MESSAGES: 'false',
     CONCURRENT_MESSAGE_MAX: '20',

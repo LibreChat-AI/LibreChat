@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useCallback, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import type { MCPServerCreateParams } from 'librechat-data-provider';
+import { useToastContext } from '@librechat/client';
+import type { MCPServerCreateParams, TokenExchangeMethodEnum } from 'librechat-data-provider';
+import type { MCPServerDefinition } from '~/hooks';
 import {
   useCreateMCPServerMutation,
   useUpdateMCPServerMutation,
   useDeleteMCPServerMutation,
 } from '~/data-provider/MCP';
-import { useToastContext } from '@librechat/client';
-import { useLocalize } from '~/hooks';
 import { extractServerNameFromUrl, isValidUrl, normalizeUrl } from '../utils/urlUtils';
-import type { MCPServerDefinition } from '~/hooks';
+import { getMCPServerErrorMessage } from '../utils/error';
+import { getOAuthConfig } from '../utils/oauth';
+import { useLocalize } from '~/hooks';
 
 // Auth type enum
 export enum AuthTypeEnum {
@@ -38,6 +40,7 @@ export interface AuthConfig {
   oauth_authorization_url?: string;
   oauth_token_url?: string;
   oauth_scope?: string;
+  oauth_token_exchange_method?: TokenExchangeMethodEnum;
   obo_scopes?: string;
   server_id?: string;
 }
@@ -108,6 +111,7 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
           oauth_authorization_url: server.config.oauth?.authorization_url || '',
           oauth_token_url: server.config.oauth?.token_url || '',
           oauth_scope: server.config.oauth?.scope || '',
+          oauth_token_exchange_method: server.config.oauth?.token_exchange_method,
           obo_scopes: 'obo' in server.config && server.config.obo ? server.config.obo.scopes : '',
           server_id: server.serverName,
         },
@@ -132,6 +136,7 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
         oauth_authorization_url: '',
         oauth_token_url: '',
         oauth_scope: '',
+        oauth_token_exchange_method: undefined,
         obo_scopes: '',
       },
       trust: false,
@@ -189,25 +194,9 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
       };
 
       // Add OAuth configuration
-      if (
-        formData.auth.auth_type === AuthTypeEnum.OAuth &&
-        (formData.auth.oauth_client_id ||
-          formData.auth.oauth_client_secret ||
-          formData.auth.oauth_authorization_url ||
-          formData.auth.oauth_token_url ||
-          formData.auth.oauth_scope)
-      ) {
-        config.oauth = {
-          ...(formData.auth.oauth_client_id && { client_id: formData.auth.oauth_client_id }),
-          ...(formData.auth.oauth_client_secret && {
-            client_secret: formData.auth.oauth_client_secret,
-          }),
-          ...(formData.auth.oauth_authorization_url && {
-            authorization_url: formData.auth.oauth_authorization_url,
-          }),
-          ...(formData.auth.oauth_token_url && { token_url: formData.auth.oauth_token_url }),
-          ...(formData.auth.oauth_scope && { scope: formData.auth.oauth_scope }),
-        };
+      const oauthConfig = getOAuthConfig(formData.auth);
+      if (oauthConfig) {
+        config.oauth = oauthConfig;
       }
 
       // Add API Key configuration
@@ -250,12 +239,9 @@ export function useMCPServerForm({ server, onSuccess, onClose }: UseMCPServerFor
 
       if (error && typeof error === 'object' && 'response' in error) {
         const axiosError = error as { response?: { data?: { error?: string } } };
-        if (axiosError.response?.data?.error === 'MCP_INSPECTION_FAILED') {
-          errorMessage = localize('com_ui_mcp_server_connection_failed');
-        } else if (axiosError.response?.data?.error === 'MCP_DOMAIN_NOT_ALLOWED') {
-          errorMessage = localize('com_ui_mcp_domain_not_allowed');
-        } else if (axiosError.response?.data?.error) {
-          errorMessage = axiosError.response.data.error;
+        const errorCode = axiosError.response?.data?.error;
+        if (errorCode) {
+          errorMessage = getMCPServerErrorMessage(errorCode, localize);
         }
       } else if (error instanceof Error) {
         errorMessage = error.message;

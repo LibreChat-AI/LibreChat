@@ -1,17 +1,27 @@
+import { omitResolvedCanonicalFileLocators } from '../protection/files';
 /// <reference types="jest" />
 import express from 'express';
 import request from 'supertest';
 import { EventEmitter } from 'events';
+import { recordAgentEventActorReceiptMetric } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import {
   createMetrics,
+  reportLocatorTraversalFailure,
   instrumentMongooseQueryMetrics,
   normalizePath,
+  recordAgentStartupMilestone,
+  recordAgentStartupResult,
   recordGenerationJob,
+  recordGenerationStreamAttachment,
+  recordGenerationStreamEarlyBufferOverflow,
+  recordGenerationStreamRecovery,
   recordGenerationStreamResumePendingEvents,
   recordGenerationStreamSubscription,
   recordOpenIDUserLookup,
+  recordRedisOperation,
   recordRumProxyRequest,
+  recordShareLinkRejection,
   setGenerationJobsInFlight,
 } from './metrics';
 
@@ -127,6 +137,119 @@ describe('createMetrics', () => {
     expect(response.text).toMatch(
       /http_request_body_bytes_sum\{method="POST",path="\/api\/files\/#id"\} 42/,
     );
+  });
+
+  it('records locator traversal reasons and count distributions without content labels', async () => {
+    process.env.METRICS_SECRET = 'test-secret';
+    createMetrics();
+    const app = express();
+    app.use('/metrics', createMetrics().metricsRouter);
+    expect(() =>
+      omitResolvedCanonicalFileLocators(
+        { file_id: 'PRIVATE-FILE', payload: new Array(4096) },
+        new Map([['PRIVATE-FILE', { file_id: 'PRIVATE-FILE' }]]),
+        { messageCount: 58, onTraversalFailure: reportLocatorTraversalFailure },
+      ),
+    ).toThrow();
+    const response = await request(app).get('/metrics').set('Authorization', 'Bearer test-secret');
+    expect(response.status).toBe(200);
+    expect(response.text).toContain(
+      'content_filter_locator_traversal_failures_total{operation="omit_resolved_file_locators",reason="array_length"} 1',
+    );
+    for (const [dimension, count] of [
+      ['visitedNodes', 2],
+      ['depth', 1],
+      ['messageCount', 58],
+      ['resolvedFileCount', 1],
+    ]) {
+      expect(response.text).toContain(
+        `content_filter_locator_traversal_size_sum{operation="omit_resolved_file_locators",reason="array_length",dimension="${dimension}"} ${count}`,
+      );
+    }
+    expect(response.text).not.toContain('PRIVATE-FILE');
+  });
+
+  it('exposes bounded event actor receipt settlement, replay, conflict, and migration metrics', async () => {
+    const app = express();
+    process.env.METRICS_SECRET = 'test-secret';
+    const { metricsRouter } = createMetrics();
+    app.use('/metrics', metricsRouter);
+
+    recordAgentEventActorReceiptMetric({
+      operation: 'settle',
+      outcome: 'success',
+      resolution: 'checkpoint_verified',
+    });
+    recordAgentEventActorReceiptMetric({
+      operation: 'read',
+      outcome: 'hit',
+      resolution: 'checkpoint_verified',
+    });
+    recordAgentEventActorReceiptMetric({
+      operation: 'settle',
+      outcome: 'conflict',
+      resolution: 'action_compensated',
+    });
+    recordAgentEventActorReceiptMetric({
+      operation: 'backfill',
+      outcome: 'success',
+      resolution: 'history_repaired',
+    });
+
+    const response = await request(app)
+      .get('/metrics')
+      .set('Authorization', 'Bearer test-secret')
+      .expect(200);
+
+    expect(response.text).toContain(
+      'agent_event_actor_receipt_operations_total{operation="settle",outcome="success",resolution="checkpoint_verified"} 1',
+    );
+    expect(response.text).toContain(
+      'agent_event_actor_receipt_operations_total{operation="read",outcome="hit",resolution="checkpoint_verified"} 1',
+    );
+    expect(response.text).toContain(
+      'agent_event_actor_receipt_operations_total{operation="settle",outcome="conflict",resolution="action_compensated"} 1',
+    );
+    expect(response.text).toContain(
+      'agent_event_actor_receipt_operations_total{operation="backfill",outcome="success",resolution="history_repaired"} 1',
+    );
+  });
+
+  it('collects truthful event actor receipt, reconciliation, retry, and TTL gauges', async () => {
+    const app = express();
+    process.env.METRICS_SECRET = 'test-secret';
+    const collectAgentEventActorStorageMetrics = jest.fn(async () => ({
+      retainedByResolution: {
+        checkpoint_verified: 7,
+        action_compensated: 2,
+        history_repaired: 1,
+      },
+      expiryEligible: 3,
+      retryDeliveries: 4,
+      deadDeliveries: 5,
+      pendingReconciliations: 6,
+      oldestPendingAgeSeconds: 91,
+    }));
+    const { metricsRouter } = createMetrics({
+      collectAgentEventActorStorageMetrics,
+    });
+    app.use('/metrics', metricsRouter);
+
+    const response = await request(app)
+      .get('/metrics')
+      .set('Authorization', 'Bearer test-secret')
+      .expect(200);
+
+    expect(response.text).toContain(
+      'agent_event_actor_receipts_retained{resolution="checkpoint_verified"} 7',
+    );
+    expect(response.text).toContain('agent_event_actor_receipts_expiry_eligible 3');
+    expect(response.text).toContain('agent_event_actor_reconciliations_pending 6');
+    expect(response.text).toContain('agent_event_actor_oldest_reconciliation_age_seconds 91');
+    expect(response.text).toContain('agent_event_actor_deliveries{state="retry"} 4');
+    expect(response.text).toContain('agent_event_actor_deliveries{state="dead"} 5');
+    await request(app).get('/metrics').set('Authorization', 'Bearer test-secret').expect(200);
+    expect(collectAgentEventActorStorageMetrics).toHaveBeenCalledTimes(1);
   });
 
   it('tracks SSE stream counts, active gauges, and stream duration', async () => {
@@ -272,6 +395,31 @@ describe('createMetrics', () => {
     expect(response.text).toMatch(/openid_user_lookup_duration_seconds_sum\{result="found"\} 0.2/);
   });
 
+  it('tracks Redis operation outcomes and latency by use case', async () => {
+    const app = express();
+    process.env.METRICS_SECRET = 'test-secret';
+    const { metricsRouter } = createMetrics();
+    app.use('/metrics', metricsRouter);
+
+    recordRedisOperation('keyv', 'auth_user_doc', 'get', 'success', 0.02);
+    recordRedisOperation('ioredis', 'rate_limit', 'eval', 'error', 0.05);
+
+    const response = await request(app)
+      .get('/metrics')
+      .set('Authorization', 'Bearer test-secret')
+      .expect(200);
+
+    expect(response.text).toMatch(
+      /redis_operations_total\{client="keyv",use_case="auth_user_doc",operation="get",status="success"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /redis_operation_duration_seconds_count\{client="ioredis",use_case="rate_limit",operation="eval",status="error"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /redis_operation_duration_seconds_sum\{client="ioredis",use_case="rate_limit",operation="eval",status="error"\} 0.05/,
+    );
+  });
+
   it('tracks RUM proxy request outcomes', async () => {
     const app = express();
     process.env.METRICS_SECRET = 'test-secret';
@@ -299,6 +447,28 @@ describe('createMetrics', () => {
     );
     expect(response.text).toMatch(
       /rum_proxy_requests_total\{endpoint="logs",result="collector_5xx"\} 1/,
+    );
+  });
+
+  it('tracks bounded shared-link rejection outcomes', async () => {
+    const app = express();
+    process.env.METRICS_SECRET = 'test-secret';
+    const { metricsRouter } = createMetrics();
+    app.use('/metrics', metricsRouter);
+
+    recordShareLinkRejection('create', 'TARGET_MESSAGE_NOT_FOUND');
+    recordShareLinkRejection('update', 'NO_MESSAGES');
+
+    const response = await request(app)
+      .get('/metrics')
+      .set('Authorization', 'Bearer test-secret')
+      .expect(200);
+
+    expect(response.text).toMatch(
+      /share_link_rejections_total\{operation="create",code="TARGET_MESSAGE_NOT_FOUND"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /share_link_rejections_total\{operation="update",code="NO_MESSAGES"\} 1/,
     );
   });
 
@@ -392,6 +562,10 @@ describe('createMetrics', () => {
     recordGenerationStreamSubscription('redis', 'resume', 'not_found');
     recordGenerationStreamSubscription('redis', 'resume_state', 'missing');
     recordGenerationStreamResumePendingEvents('memory', 3);
+    recordGenerationStreamEarlyBufferOverflow('redis');
+    recordGenerationStreamRecovery('redis', 'redis', 'success', 0.25, 5001, 12);
+    recordGenerationStreamAttachment('redis', 'attached', 4.5);
+    recordGenerationStreamAttachment('redis', 'bootstrap_slow');
 
     const response = await request(app)
       .get('/metrics')
@@ -409,5 +583,54 @@ describe('createMetrics', () => {
     expect(response.text).toMatch(
       /generation_stream_resume_pending_events_total\{store="memory"\} 3/,
     );
+    expect(response.text).toMatch(
+      /generation_stream_early_buffer_overflows_total\{store="redis"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_recoveries_total\{store="redis",method="redis",outcome="success"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_recovery_duration_seconds_sum\{store="redis",method="redis",outcome="success"\} 0.25/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_attachment_outcomes_total\{store="redis",outcome="attached"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_attachment_outcomes_total\{store="redis",outcome="bootstrap_slow"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /generation_stream_first_attachment_delay_seconds_sum\{store="redis"\} 4.5/,
+    );
+  });
+
+  it('tracks cumulative agent startup milestones and terminal results', async () => {
+    const app = express();
+    process.env.METRICS_SECRET = 'test-secret';
+    const { metricsRouter } = createMetrics();
+    app.use('/metrics', metricsRouter);
+
+    recordAgentStartupMilestone('job_created', 0.125);
+    recordAgentStartupMilestone('first_response_event_queued', 0.75);
+    recordAgentStartupResult('content_queued');
+    Reflect.apply(recordAgentStartupMilestone, undefined, ['unbounded-user-value', 1]);
+    Reflect.apply(recordAgentStartupMilestone, undefined, ['job_created', Number.NaN]);
+    Reflect.apply(recordAgentStartupResult, undefined, ['unbounded-user-value']);
+
+    const response = await request(app)
+      .get('/metrics')
+      .set('Authorization', 'Bearer test-secret')
+      .expect(200);
+
+    expect(response.text).toMatch(
+      /agent_startup_milestone_duration_seconds_count\{milestone="job_created"\} 1/,
+    );
+    expect(response.text).toMatch(
+      /agent_startup_milestone_duration_seconds_sum\{milestone="job_created"\} 0.125/,
+    );
+    expect(response.text).toMatch(
+      /agent_startup_milestone_duration_seconds_count\{milestone="first_response_event_queued"\} 1/,
+    );
+    expect(response.text).toMatch(/agent_startups_total\{result="content_queued"\} 1/);
+    expect(response.text).not.toContain('unbounded-user-value');
   });
 });

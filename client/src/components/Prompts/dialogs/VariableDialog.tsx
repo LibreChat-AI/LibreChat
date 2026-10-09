@@ -31,7 +31,7 @@ const VariableDialog: React.FC<VariableDialogProps> = ({ open, onClose, group })
 
   return (
     <OGDialog open={open} onOpenChange={handleOpenChange}>
-      <OGDialogContent className="max-h-[90vh] max-w-full overflow-y-auto bg-surface-primary text-text-primary md:max-w-[60vw]">
+      <OGDialogContent className="max-h-[90vh] max-w-full overflow-y-auto bg-surface-dialog text-text-primary md:max-w-[60vw]">
         <OGDialogTitle>{group.name}</OGDialogTitle>
         <VariableForm group={group} onClose={onClose} />
       </OGDialogContent>

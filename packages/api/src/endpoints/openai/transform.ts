@@ -4,7 +4,7 @@ import type { ClientOptions } from '@librechat/agents';
 import type * as t from '~/types';
 import { knownOpenAIParams } from './llm';
 
-const anthropicExcludeParams = new Set(['anthropicApiUrl']);
+const anthropicExcludeParams = new Set(['anthropicApiUrl', 'outputConfig']);
 const googleExcludeParams = new Set([
   'safetySettings',
   'location',
@@ -16,7 +16,7 @@ const googleExcludeParams = new Set([
 ]);
 
 /** Google-specific tool types that have no OpenAI-compatible equivalent */
-const googleToolsToFilter = new Set(['googleSearch']);
+const googleToolsToFilter = new Set(['googleSearch', 'urlContext']);
 
 export type ConfigTools = Array<Record<string, unknown>> | Array<GoogleAIToolType>;
 
@@ -93,8 +93,8 @@ export function transformToOpenAIConfig({
 
   if (addParams && typeof addParams === 'object') {
     for (const [key, value] of Object.entries(addParams)) {
-      /** Skip web_search - it's handled separately as a tool */
-      if (key === 'web_search') {
+      /** Skip web_search / url_context - handled separately as native tools */
+      if (key === 'web_search' || key === 'url_context') {
         continue;
       }
 
@@ -113,8 +113,8 @@ export function transformToOpenAIConfig({
 
   if (dropParams && Array.isArray(dropParams)) {
     dropParams.forEach((param) => {
-      /** Skip web_search - handled separately */
-      if (param === 'web_search') {
+      /** Skip web_search / url_context - handled separately */
+      if (param === 'web_search' || param === 'url_context') {
         return;
       }
 
@@ -134,11 +134,14 @@ export function transformToOpenAIConfig({
 
   /**
    * Filter out provider-specific tools that have no OpenAI equivalent.
-   * Exception: If web_search was explicitly enabled via addParams or defaultParams,
-   * preserve googleSearch tools (pass through in Google-native format).
+   * Exception: If web_search / url_context was explicitly enabled via addParams
+   * or defaultParams, preserve the matching Google-native tool (pass through in
+   * Google-native format).
    */
   const webSearchExplicitlyEnabled =
     addParams?.web_search === true || defaultParams?.web_search === true;
+  const urlContextExplicitlyEnabled =
+    addParams?.url_context === true || defaultParams?.url_context === true;
 
   const filterGoogleTool = (tool: unknown): boolean => {
     if (!isGoogle) {
@@ -148,11 +151,15 @@ export function transformToOpenAIConfig({
       return false;
     }
     const toolKeys = Object.keys(tool as Record<string, unknown>);
-    const isGoogleSpecificTool = toolKeys.some((key) => googleToolsToFilter.has(key));
     /** Preserve googleSearch if web_search was explicitly enabled */
-    if (isGoogleSpecificTool && webSearchExplicitlyEnabled) {
+    if (webSearchExplicitlyEnabled && toolKeys.includes('googleSearch')) {
       return true;
     }
+    /** Preserve urlContext if url_context was explicitly enabled */
+    if (urlContextExplicitlyEnabled && toolKeys.includes('urlContext')) {
+      return true;
+    }
+    const isGoogleSpecificTool = toolKeys.some((key) => googleToolsToFilter.has(key));
     return !isGoogleSpecificTool;
   };
 

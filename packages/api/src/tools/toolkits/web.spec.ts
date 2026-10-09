@@ -14,6 +14,13 @@ describe('web search context', () => {
     expect(context).not.toContain('{{iso_datetime}}');
   });
 
+  it('guides the model to answer directly when a search is not warranted', () => {
+    const context = buildWebSearchContext();
+
+    expect(context).toContain('respond directly without searching');
+    expect(context).toContain('current, real-time, or otherwise beyond your own knowledge');
+  });
+
   it('builds dynamic context from the supplied conversation anchor', () => {
     const context = buildWebSearchDynamicContext('2024-01-02T03:04:05.000Z');
     const secondContext = buildWebSearchDynamicContext('2024-01-02T03:04:05.000Z');

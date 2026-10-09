@@ -1,5 +1,5 @@
-import { render, screen } from 'test/layout-test-utils';
 import userEvent from '@testing-library/user-event';
+import { render, screen } from 'test/layout-test-utils';
 import PluginAuthForm from '../PluginAuthForm';
 
 describe('PluginAuthForm', () => {
@@ -48,6 +48,22 @@ describe('PluginAuthForm', () => {
     expect(urlField.parentElement?.querySelector('button')).toBeNull();
   });
 
+  it('shows a semantic warning for a recognized credential with the wrong format', async () => {
+    const openAiPlugin = {
+      pluginKey: 'dalle',
+      authConfig: [{ authField: 'DALLE3_API_KEY||DALLE_API_KEY', label: 'OpenAI API Key' }],
+    };
+    //@ts-ignore - dont need all props of plugin
+    render(<PluginAuthForm plugin={openAiPlugin} onSubmit={onSubmit} />);
+
+    const input = screen.getByLabelText('OpenAI API Key');
+    expect(input).toHaveAttribute('placeholder', 'sk-...');
+
+    await userEvent.type(input, 'invalid-key');
+
+    expect(document.getElementById('DALLE3_API_KEY-hint')).toHaveClass('text-text-warning');
+  });
+
   it('calls the onSubmit function with the form data when submitted', async () => {
     //@ts-ignore - dont need all props of plugin
     render(<PluginAuthForm plugin={plugin} onSubmit={onSubmit} />);
@@ -64,5 +80,30 @@ describe('PluginAuthForm', () => {
         secret: '1234567890',
       },
     });
+  });
+
+  it('reflects an external saving state as a disabled, in-progress submit button', () => {
+    //@ts-ignore - dont need all props of plugin
+    render(<PluginAuthForm plugin={plugin} onSubmit={onSubmit} isSaving />);
+
+    const button = screen.getByRole('button', { name: 'Saving...' });
+    expect(button).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+  });
+
+  it('renders a Cancel button when onCancel is provided and invokes it on click', async () => {
+    const onCancel = jest.fn();
+    //@ts-ignore - dont need all props of plugin
+    render(<PluginAuthForm plugin={plugin} onSubmit={onSubmit} onCancel={onCancel} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does not render a Cancel button by default', () => {
+    //@ts-ignore - dont need all props of plugin
+    render(<PluginAuthForm plugin={plugin} onSubmit={onSubmit} />);
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
   });
 });

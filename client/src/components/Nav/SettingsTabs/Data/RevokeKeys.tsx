@@ -53,7 +53,7 @@ export const RevokeKeys = ({
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_ui_revoke_keys')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <Label className="text-left text-sm font-medium">
               {localize('com_ui_revoke_keys_confirm')}
@@ -62,7 +62,7 @@ export const RevokeKeys = ({
           selection={{
             selectHandler: onClick,
             selectClasses:
-              'bg-destructive text-white transition-all duration-200 hover:bg-destructive/80',
+              'bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover',
             selectText: isLoading ? <Spinner /> : localize('com_ui_revoke'),
           }}
         />

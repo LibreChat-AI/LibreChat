@@ -1921,10 +1921,80 @@ describe('SSRF Protection', () => {
       expect(result.message).toContain('Failed to validate domain');
     });
 
-    it('validates with port numbers', () => {
+    it('preserves custom ports when the client domain omits a port', () => {
       const result = validateActionDomain('example.com', 'https://example.com:8443/api');
       expect(result.isValid).toBe(true);
       expect(result.normalizedSpecDomain).toBe('https://example.com');
+    });
+
+    it('rejects a same-host OpenAPI server on a different metadata port', () => {
+      const result = validateActionDomain(
+        'https://example.com:8443',
+        'https://example.com:9443/api',
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.message).toContain('Port mismatch');
+    });
+
+    it('rejects a different port when metadata has trailing whitespace', () => {
+      const result = validateActionDomain(
+        'https://example.com:8443 ',
+        'https://example.com:9443/api',
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.message).toContain('Port mismatch');
+    });
+
+    it.each([
+      ['an ASCII newline', '\n/path'],
+      ['an ASCII tab', '\t/path'],
+      ['a backslash', '\\path'],
+    ])('rejects a different port when metadata contains %s', (_description, suffix) => {
+      const result = validateActionDomain(
+        `https://example.com:8443${suffix}`,
+        'https://example.com:9443/api',
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.message).toContain('Port mismatch');
+    });
+
+    it('rejects reserved port zero', () => {
+      const result = validateActionDomain('https://example.com:0', 'https://example.com:0/api');
+      expect(result.isValid).toBe(false);
+      expect(result.message).toContain('Invalid port');
+    });
+
+    it('rejects a same-IPv4 OpenAPI server on a different metadata port', () => {
+      const result = validateActionDomain('http://127.0.0.1:38079', 'http://127.0.0.1:38080/api');
+      expect(result.isValid).toBe(false);
+      expect(result.message).toContain('Port mismatch');
+    });
+
+    it('rejects a same-IPv6 OpenAPI server on a different metadata port', () => {
+      const result = validateActionDomain('http://[::1]:8080', 'http://[::1]:8081/api');
+      expect(result.isValid).toBe(false);
+      expect(result.message).toContain('Port mismatch');
+    });
+
+    it('validates matching custom ports for IPv6 domains', () => {
+      const result = validateActionDomain('http://[::1]:8080', 'http://[::1]:8080/api');
+      expect(result.isValid).toBe(true);
+    });
+
+    it('matches an explicit HTTPS default port to an omitted server port', () => {
+      const result = validateActionDomain('https://example.com:443', 'https://example.com/api');
+      expect(result.isValid).toBe(true);
+    });
+
+    it('matches an explicit HTTP default port to an omitted server port', () => {
+      const result = validateActionDomain('http://example.com:80', 'http://example.com/api');
+      expect(result.isValid).toBe(true);
+    });
+
+    it('rejects an omitted server port when metadata specifies a custom port', () => {
+      const result = validateActionDomain('https://example.com:8443', 'https://example.com/api');
+      expect(result.isValid).toBe(false);
+      expect(result.message).toContain('Port mismatch');
     });
 
     it('detects port-based SSRF attempt', () => {
@@ -2503,9 +2573,8 @@ describe('SSRF Protection', () => {
 
     it('handles client domain with port and no protocol', () => {
       const result = validateActionDomain('example.com:443', 'https://example.com:443/api');
-      // Port is included in hostname comparison, causing mismatch
-      expect(result.isValid).toBe(false);
-      expect(result.normalizedClientDomain).toBe('https://example.com:443');
+      expect(result.isValid).toBe(true);
+      expect(result.normalizedClientDomain).toBe('https://example.com');
       expect(result.normalizedSpecDomain).toBe('https://example.com');
     });
 

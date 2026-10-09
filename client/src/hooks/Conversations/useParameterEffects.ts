@@ -47,8 +47,12 @@ function useParameterEffects<T = unknown>({
     }
 
     idRef.current = conversationId;
-    setInputValue(defaultValue as T);
-  }, [setInputValue, conversation?.conversationId, defaultValue]);
+    /** Seed from what the conversation already holds, falling back to the
+     *  definition default. Resetting to the default unconditionally made saved
+     *  values read as defaults until the delayed sync below corrected them, and
+     *  editing inside that window wrote the default back. */
+    setInputValue((conversation?.[settingKey] ?? defaultValue) as T);
+  }, [setInputValue, conversation, conversation?.conversationId, settingKey, defaultValue]);
 
   /** Resets the local state if presetId changed */
   useEffect(() => {
@@ -62,8 +66,8 @@ function useParameterEffects<T = unknown>({
     }
 
     presetIdRef.current = presetId;
-    setInputValue(defaultValue as T);
-  }, [setInputValue, preset?.presetId, defaultValue]);
+    setInputValue((preset?.[settingKey] ?? conversation?.[settingKey] ?? defaultValue) as T);
+  }, [setInputValue, preset, preset?.presetId, conversation, settingKey, defaultValue]);
 }
 
 export default useParameterEffects;

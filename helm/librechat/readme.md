@@ -7,7 +7,40 @@ In this Chart, LibreChat will only work with environment Variables. You can Spec
 ## Setup
 
 1. Generate Variables
-Generate `CREDS_KEY`, `JWT_SECRET`, `JWT_REFRESH_SECRET`  and `MEILI_MASTER_KEY`  using `openssl rand -hex 32` and `CREDS_IV` using openssl rand -hex 16.
+Generate unique values for `CREDS_KEY`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and `MEILI_MASTER_KEY` using `openssl rand -hex 32`, and `CREDS_IV` using `openssl rand -hex 16`. Store them in the existing Kubernetes Secret so every replica uses the same values.
+
+The Secret named by `global.librechat.existingSecretName` must exist before the
+LibreChat container can start. A missing or misspelled Secret now blocks container
+startup instead of silently falling back to temporary, pod-local credentials.
+This does not validate the keys inside the Secret: ensure it contains all four
+`CREDS_KEY`, `CREDS_IV`, `JWT_SECRET`, and `JWT_REFRESH_SECRET` values.
+
+If you supply all LibreChat credentials through alternate environment injection,
+set `global.librechat.existingSecretName: ""` to omit the LibreChat container's
+bulk Secret reference:
+
+- `librechat.configEnv` accepts string values only, serialized into ConfigMap
+  `data`. Do not put `valueFrom` or `secretKeyRef` objects there.
+- `global.librechat.env` accepts Kubernetes environment entries, including
+  `valueFrom.secretKeyRef`. Use this mechanism for per-key Secret injection.
+
+Clearing the LibreChat reference does **not** clear the bundled Meilisearch
+reference. With `meilisearch.enabled: true` (the default), also provision the
+Secret named by `meilisearch.auth.existingMasterKeySecret`, which defaults to
+`librechat-credentials-env`. It must contain `MEILI_MASTER_KEY`, and LibreChat's
+`MEILI_MASTER_KEY` must match it. If you rename that Secret, update
+`meilisearch.auth.existingMasterKeySecret` as well. Injecting a key into the
+LibreChat container does not inject it into the Meilisearch container.
+
+For deployments with bundled Meilisearch disabled (`meilisearch.enabled: false`),
+there is no bundled Meilisearch Secret dependency. Configure any external search
+service and its matching credentials separately.
+
+Prefer Kubernetes Secrets over literal config values for production. Keep the
+same existing encryption keys across upgrades and replicas; do not regenerate
+them to resolve a missing Secret. No credential PVC is needed when permanent
+credentials are injected through the environment.
+
 place them in a secret like this (If you want to change the secret name, remember to change it in your helm values):
 ```yaml
 apiVersion: v1
@@ -18,12 +51,13 @@ metadata:
 type: Opaque
 stringData:
   CREDS_KEY: <generated value>
+  CREDS_IV: <generated value>
   JWT_SECRET: <generated value>
   JWT_REFRESH_SECRET: <generated value>
   MEILI_MASTER_KEY: <generated value>
 ```
 2. Add Credentials to the Secret
-Dependant of the Model you want to use, [create Credentials in your provider](https://docs.librechat.ai/install/configuration/ai_setup.html) and add them to the Secret:
+Dependant of the Model you want to use, [create Credentials in your provider](https://www.librechat.ai/docs/configuration/pre_configured_ai) and add them to the Secret:
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -38,8 +72,11 @@ kind: Secret
 
 ## Admin Panel SSO
 
-When deploying the admin panel at a separate URL, set `librechat.adminPanelUrl`
-to the external admin panel base URL. It may include a path, but it should not
+Set `librechat.adminPanelUrl` to the admin panel base URL used for OAuth/SSO
+redirect, whether the admin panel is deployed on a separate origin
+or on the same origin under an admin subpath.
+
+It may include a path, but it should not
 end with a trailing `/` because LibreChat appends `/auth/...` callback paths.
 
 ```yaml
@@ -53,3 +90,75 @@ also register this LibreChat callback URL with your identity provider:
 ```text
 https://<librechat-domain>/api/admin/oauth/openid/callback
 ```
+
+## Generation protocol compatibility
+
+Generation protocol v2 is selected automatically; no deployment setting is
+required. Rolling upgrades must start from a v2-capable bridge release
+(LibreChat `v0.8.8-rc1` or newer, or Helm chart `2.0.8` or newer). When
+upgrading from an older release, stop the old replicas before starting the new
+image so pre-v2 and automatic-v2 binaries never share generation state in Redis.
+
+## Langfuse Fanout
+
+The chart can optionally deploy a Langfuse fanout gateway with an internal
+OpenTelemetry Collector sidecar. The gateway handles Langfuse media fanout and
+proxies traces to the collector; the collector forwards tenant-scoped Langfuse
+traces to both a central Langfuse project and the tenant Langfuse project. It is
+disabled by default.
+
+When enabled, the chart also sets `LANGFUSE_FANOUT_ENABLED` and
+`LANGFUSE_FANOUT_COLLECTOR_URL` for the LibreChat app unless those values are
+already provided in `librechat.configEnv`.
+
+Set `librechat.configEnv.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED=true` to keep
+central trace export flowing through the fanout gateway while disabling tenant trace
+and score export. When omitted, false, or blank, tenant export remains available
+if tenant keys and a known destination are configured.
+
+Langfuse tenant base URLs are selected from the startup-configured destination
+map rendered into LibreChat and the fanout gateway. Tenant API keys can still be added
+through tenant app configuration at runtime without restarting either component.
+The internal collector provides trace memory limiting, batching, tenant routing,
+and removal of LibreChat-only routing attributes before export.
+
+The fanout gateway stores one-time media upload plans in Redis so media create
+and byte-upload requests can land on different gateway replicas. Set
+`langfuseFanout.redis.uri` for an external Redis service, or enable the bundled
+Redis chart with `redis.enabled=true` and let the chart derive the internal URI.
+Scale the gateway manually with `langfuseFanout.replicaCount`; the chart does
+not create a fanout HPA.
+The internal collector receiver is bound to `127.0.0.1:4319` by default because
+only the gateway sidecar should send traces to it.
+
+The gateway exposes Prometheus metrics at `/metrics`. Configure
+`langfuseFanout.metrics.secret.name` and `.key` to pass a bearer token secret to
+the gateway; if omitted, `/metrics` returns 401. Use
+`langfuseFanout.service.annotations` for scrape annotations when your cluster
+uses annotation-based discovery. The gateway container also has configurable
+`/healthz` liveness and readiness probes under `langfuseFanout`.
+
+See [`otel/langfuse-fanout/README.md`](../../otel/langfuse-fanout/README.md)
+for the central Langfuse secret and values example.
+
+## Content Security Policy
+
+LibreChat's application-level CSP is disabled by default. Enable it through
+`librechat.configEnv` so Kubernetes rollouts can start in report-only mode
+before enforcing:
+
+```yaml
+librechat:
+  configEnv:
+    CSP_ENABLED: "true"
+    CSP_REPORT_ONLY: "true"
+    CSP_REPORT_URI: "https://reports.example.com/csp"
+```
+
+After reviewing the reports, set `CSP_REPORT_ONLY: "false"` to enforce. Use the
+`CSP_*_EXTRA` variables from `.env.example` for deployment-specific CDNs,
+analytics endpoints, or embedded frames.
+
+The chart does not set CSP at the ingress layer: the policy carries a nonce that
+has to be freshly generated for each HTML response and matched against the
+`<script>` tags in that same response, which only the app can do.

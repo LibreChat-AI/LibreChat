@@ -22,9 +22,14 @@ export function marketplaceSearchMatches(searchValue: string, localize: Localize
 export default function MarketplaceItem({
   className,
   label,
+  posInSet,
+  setSize,
 }: {
   className?: string;
   label: string;
+  /** Set when the sibling model list is virtualized; see `VirtualizedModelList`. */
+  posInSet?: number;
+  setSize?: number;
 }) {
   const navigate = useNavigate();
 
@@ -32,6 +37,8 @@ export default function MarketplaceItem({
     <MenuItem
       onClick={() => navigate('/agents')}
       aria-label={label}
+      aria-posinset={posInSet}
+      aria-setsize={setSize}
       data-testid="model-selector-marketplace-item"
       className={cn(
         'flex w-full cursor-pointer items-center justify-between rounded-lg px-2 text-sm',

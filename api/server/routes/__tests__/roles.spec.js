@@ -58,6 +58,7 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('STAFF');
     expect(mockGetRoleByName).toHaveBeenCalledWith('STAFF', '-_id -__v');
+    expect(mockHasCapability).not.toHaveBeenCalled();
   });
 
   it('returns 403 when a custom role user requests a different custom role', async () => {
@@ -85,6 +86,17 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     const res = await request(app).get(`/api/roles/${SystemRoles.USER}`);
 
     expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
+  });
+
+  it('allows a custom role user to fetch a non-admin default role without a capability probe', async () => {
+    mockGetRoleByName.mockResolvedValue(userRole);
+    const app = createApp({ id: 'u1', role: 'STAFF' });
+
+    const res = await request(app).get(`/api/roles/${SystemRoles.USER}`);
+
+    expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
   });
 
   it('returns 403 when USER requests the ADMIN role', async () => {
@@ -103,6 +115,7 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     const res = await request(app).get(`/api/roles/${SystemRoles.ADMIN}`);
 
     expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
   });
 
   it('allows any user with READ_ROLES capability to fetch any role', async () => {
@@ -114,6 +127,21 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('STAFF');
+  });
+
+  it('probes READ_ROLES with a coerced CapabilityUser for non-own-role lookups', async () => {
+    mockHasCapability.mockResolvedValue(true);
+    mockGetRoleByName.mockResolvedValue(staffRole);
+    const app = createApp({ id: 'u1', role: SystemRoles.USER });
+
+    const res = await request(app).get('/api/roles/STAFF');
+
+    expect(res.status).toBe(200);
+    expect(mockHasCapability).toHaveBeenCalledTimes(1);
+    expect(mockHasCapability).toHaveBeenCalledWith(
+      { id: 'u1', role: SystemRoles.USER, tenantId: undefined, idOnTheSource: null },
+      expect.any(String),
+    );
   });
 
   it('returns 404 when the requested role does not exist', async () => {
@@ -143,7 +171,7 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     expect(mockGetRoleByName).not.toHaveBeenCalled();
   });
 
-  it('treats hasCapability failure as no capability (does not 500)', async () => {
+  it('serves own role without probing even when hasCapability would fail', async () => {
     mockHasCapability.mockRejectedValue(new Error('capability check failed'));
     const app = createApp({ id: 'u1', role: 'STAFF' });
     mockGetRoleByName.mockResolvedValue(staffRole);
@@ -151,5 +179,16 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
     const res = await request(app).get('/api/roles/STAFF');
 
     expect(res.status).toBe(200);
+    expect(mockHasCapability).not.toHaveBeenCalled();
+  });
+
+  it('treats hasCapability failure as no capability for other roles (403, not 500)', async () => {
+    mockHasCapability.mockRejectedValue(new Error('capability check failed'));
+    const app = createApp({ id: 'u1', role: 'STAFF' });
+
+    const res = await request(app).get('/api/roles/MANAGER');
+
+    expect(res.status).toBe(403);
+    expect(mockGetRoleByName).not.toHaveBeenCalled();
   });
 });

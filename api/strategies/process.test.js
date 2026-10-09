@@ -1,5 +1,5 @@
-const { FileSources } = require('librechat-data-provider');
-const { handleExistingUser } = require('./process');
+const { FileSources, ErrorTypes } = require('librechat-data-provider');
+const { handleExistingUser, createSocialUser } = require('./process');
 
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(),
@@ -11,8 +11,9 @@ jest.mock('~/server/services/Files/images/avatar', () => ({
 
 jest.mock('~/models', () => ({
   updateUser: jest.fn(),
-  createUser: jest.fn(),
+  createUserIfAbsent: jest.fn(),
   getUserById: jest.fn(),
+  findBalanceByUser: jest.fn(),
 }));
 
 jest.mock('~/server/services/Config', () => ({
@@ -20,6 +21,7 @@ jest.mock('~/server/services/Config', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  provisionSocialUser: jest.requireActual('@librechat/api').provisionSocialUser,
   getBalanceConfig: jest.fn(() => ({
     enabled: false,
   })),
@@ -27,12 +29,51 @@ jest.mock('@librechat/api', () => ({
 
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
-const { updateUser } = require('~/models');
+const { updateUser, getUserById, createUserIfAbsent } = require('~/models');
 
 describe('handleExistingUser', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.CDN_PROVIDER = FileSources.local;
+  });
+
+  it('should not process the avatar when the provider supplies no avatarUrl (local storage)', async () => {
+    const oldUser = {
+      _id: 'user123',
+      avatar: null,
+    };
+
+    await handleExistingUser(oldUser, null);
+
+    expect(resizeAvatar).not.toHaveBeenCalled();
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('should not process the avatar when the provider supplies no avatarUrl (non-local storage)', async () => {
+    process.env.CDN_PROVIDER = FileSources.s3;
+    const oldUser = {
+      _id: 'user123',
+      avatar: null,
+    };
+
+    await handleExistingUser(oldUser, undefined);
+
+    expect(resizeAvatar).not.toHaveBeenCalled();
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('should still update the email when the provider supplies no avatarUrl', async () => {
+    process.env.CDN_PROVIDER = FileSources.s3;
+    const oldUser = {
+      _id: 'user123',
+      avatar: null,
+      email: 'old@example.com',
+    };
+
+    await handleExistingUser(oldUser, null, undefined, 'new@example.com');
+
+    expect(resizeAvatar).not.toHaveBeenCalled();
+    expect(updateUser).toHaveBeenCalledWith('user123', { email: 'new@example.com' });
   });
 
   it('should handle null avatar without throwing error', async () => {
@@ -238,5 +279,122 @@ describe('handleExistingUser', () => {
     await handleExistingUser(oldUser, avatarUrl, {});
 
     expect(updateUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('createSocialUser', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.CDN_PROVIDER = FileSources.s3;
+    createUserIfAbsent.mockResolvedValue({ ok: true, value: { _id: 'newUser123' } });
+    getUserById.mockResolvedValue({ _id: 'newUser123' });
+  });
+
+  it('should not process the avatar when the provider supplies no avatarUrl', async () => {
+    await createSocialUser({
+      email: 'user@privaterelay.appleid.com',
+      avatarUrl: null,
+      provider: 'apple',
+      providerKey: 'appleId',
+      providerId: 'apple-sub-123',
+      username: 'user',
+      name: 'User',
+      emailVerified: true,
+      lookup: {
+        findUser: jest.fn(),
+        provider: 'apple',
+        providerId: 'apple-sub-123',
+        email: 'user@privaterelay.appleid.com',
+      },
+    });
+
+    expect(resizeAvatar).not.toHaveBeenCalled();
+    expect(updateUser).not.toHaveBeenCalled();
+    expect(getUserById).toHaveBeenCalledWith('newUser123');
+  });
+
+  describe('concurrent first login', () => {
+    const params = {
+      email: 'user@example.com',
+      avatarUrl: null,
+      provider: 'google',
+      providerKey: 'googleId',
+      providerId: 'google-sub-123',
+      username: 'user',
+      name: 'User',
+      emailVerified: true,
+    };
+
+    beforeEach(() => {
+      createUserIfAbsent.mockResolvedValue({ ok: false, error: { code: 'user_exists' } });
+    });
+
+    it('handles the account the other request created as an existing user', async () => {
+      const winner = { _id: 'winner-id', provider: 'google', email: 'old@example.com' };
+
+      const findUser = jest.fn(async (query) =>
+        query.googleId === params.providerId ? winner : null,
+      );
+
+      const user = await createSocialUser({
+        ...params,
+        lookup: {
+          findUser,
+          provider: 'google',
+          providerId: params.providerId,
+          email: params.email,
+        },
+      });
+
+      expect(user).toBe(winner);
+      expect(updateUser).toHaveBeenCalledWith('winner-id', { email: 'user@example.com' });
+      expect(getUserById).not.toHaveBeenCalled();
+    });
+
+    it("fails the login when the recovered tenant account's policy rejects the email", async () => {
+      const { getAppConfig } = require('~/server/services/Config');
+      getAppConfig.mockImplementation(async (options) =>
+        options?.tenantId ? { registration: { allowedDomains: ['other.example'] } } : {},
+      );
+      const winner = { _id: 'tenant-id', provider: 'google', email: params.email, tenantId: 't' };
+      const findUser = jest.fn(async (query) =>
+        query.googleId === params.providerId ? winner : null,
+      );
+
+      const login = createSocialUser({
+        ...params,
+        lookup: {
+          findUser,
+          provider: 'google',
+          providerId: params.providerId,
+          email: params.email,
+        },
+      });
+
+      await expect(login).rejects.toMatchObject({
+        code: ErrorTypes.AUTH_FAILED,
+        message: 'Email domain not allowed',
+      });
+      expect(updateUser).not.toHaveBeenCalled();
+      getAppConfig.mockResolvedValue({});
+    });
+
+    it('fails the login when another provider took the email in the meantime', async () => {
+      const localUser = { _id: 'local-id', provider: 'local', email: params.email };
+      const findUser = jest.fn(async (query) => (query.email === params.email ? localUser : null));
+
+      const login = createSocialUser({
+        ...params,
+        lookup: {
+          findUser,
+          provider: 'google',
+          providerId: params.providerId,
+          email: params.email,
+        },
+      });
+
+      await expect(login).rejects.toMatchObject({ code: ErrorTypes.AUTH_FAILED });
+      expect(updateUser).not.toHaveBeenCalled();
+    });
   });
 });

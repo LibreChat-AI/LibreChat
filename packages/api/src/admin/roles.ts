@@ -124,6 +124,8 @@ export interface AdminRolesDeps {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
   }) => Promise<void>;
+  /** Drops cached prompt group access IDs; role deletion can remove PROMPTGROUP grants. */
+  invalidatePromptGroupAccessContext?: () => Promise<void>;
   /** Removes all system capability grants held by this principal and returns
    * the removed grants so each can be audited. */
   deleteGrantsForPrincipal: (
@@ -169,6 +171,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     deleteAclEntries,
     deleteGrantsForPrincipal,
     recordAuditEntry,
+    invalidatePromptGroupAccessContext,
   } = deps;
 
   /** Emits a `grant.removed` audit entry for each grant the role-deletion cascade
@@ -460,6 +463,10 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         if (result.status === 'rejected') {
           logger.error('[adminRoles] cascade cleanup failed for role:', name, result.reason);
         }
+      }
+      if (aclResult.status === 'fulfilled') {
+        /** The removed entries can include PROMPTGROUP grants feeding the access cache */
+        await invalidatePromptGroupAccessContext?.();
       }
       if (grantsResult.status === 'fulfilled') {
         await emitGrantRemovals(req, name, grantsResult.value);

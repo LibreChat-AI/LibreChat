@@ -6,7 +6,6 @@ import {
   FileSources,
   Capabilities,
   EModelEndpoint,
-  LocalStorageKeys,
   isImageVisionTool,
   defaultAssistantFormValues,
 } from 'librechat-data-provider';
@@ -17,19 +16,13 @@ import type {
   AssistantsEndpoint,
   AssistantCreateParams,
 } from 'librechat-data-provider';
-import type {
-  Actions,
-  ExtendedFile,
-  AssistantForm,
-  TAssistantOption,
-  LastSelectedModels,
-} from '~/common';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type { UseFormReset } from 'react-hook-form';
+import type { Actions, ExtendedFile, AssistantForm, TAssistantOption } from '~/common';
 import { useListAssistantsQuery } from '~/data-provider';
-import { useLocalize, useLocalStorage } from '~/hooks';
 import { cn, createDropdownSetter } from '~/utils';
 import { useFileMapContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 
 const keys = new Set([
   'name',
@@ -63,10 +56,6 @@ export default function AssistantSelect({
   const localize = useLocalize();
   const fileMap = useFileMapContext();
   const lastSelectedAssistant = useRef<string | null>(null);
-  const [lastSelectedModels] = useLocalStorage<LastSelectedModels | undefined>(
-    LocalStorageKeys.LAST_MODEL,
-    {} as LastSelectedModels,
-  );
 
   const toolkits = useMemo(
     () => new Set(allTools?.filter((tool) => tool.toolkit === true).map((tool) => tool.pluginKey)),
@@ -152,10 +141,7 @@ export default function AssistantSelect({
       createMutation.reset();
       if (!assistant) {
         setCurrentAssistantId(undefined);
-        return reset({
-          ...defaultAssistantFormValues,
-          model: lastSelectedModels?.[endpoint] ?? '',
-        });
+        return reset(defaultAssistantFormValues);
       }
 
       const update = {
@@ -231,15 +217,7 @@ export default function AssistantSelect({
       reset(formValues);
       setCurrentAssistantId(assistant.id);
     },
-    [
-      query.data,
-      reset,
-      setCurrentAssistantId,
-      createMutation,
-      endpoint,
-      lastSelectedModels,
-      toolkits,
-    ],
+    [query.data, reset, setCurrentAssistantId, createMutation, toolkits],
   );
 
   useEffect(() => {
@@ -266,7 +244,8 @@ export default function AssistantSelect({
   const createAssistant = localize('com_ui_create_assistant');
   return (
     <SelectDropDown
-      value={!value ? createAssistant : value}
+      value={value || null}
+      placeholder={createAssistant}
       setValue={createDropdownSetter(onSelect)}
       availableValues={
         query.data ?? [
@@ -280,25 +259,20 @@ export default function AssistantSelect({
       showAbove={false}
       showLabel={false}
       emptyTitle={true}
-      containerClassName="flex-grow"
-      searchClassName="dark:from-gray-850"
+      containerClassName="grow"
       searchPlaceholder={localize('com_assistants_search_name')}
-      optionsClass="hover:bg-gray-20/50 dark:border-gray-700"
-      optionsListClass="rounded-lg shadow-lg dark:bg-gray-850 dark:border-gray-700 dark:last:border"
-      currentValueClass={cn(
-        'text-md font-semibold text-gray-900 dark:text-white',
-        value === '' ? 'text-gray-500' : '',
-      )}
+      optionsListClass="rounded-lg shadow-lg dark:last:border"
+      currentValueClass="text-base font-semibold"
       className={cn(
-        'mt-1 rounded-md dark:border-gray-700 dark:bg-gray-850',
-        'z-50 flex h-[40px] w-full flex-none items-center justify-center px-4 hover:cursor-pointer hover:border-green-500 focus:border-gray-400',
+        'mt-1 rounded-md',
+        'z-50 flex h-[2.5rem] w-full flex-none items-center justify-center px-4 hover:cursor-pointer',
       )}
       renderOption={() => (
         <span className="flex items-center gap-1.5 truncate">
-          <span className="absolute inset-y-0 left-0 flex items-center pl-2 text-gray-800 dark:text-gray-100">
-            <Plus className="w-[16px]" />
+          <span className="text-text-primary absolute inset-y-0 left-0 flex items-center pl-2">
+            <Plus className="w-[1rem]" />
           </span>
-          <span className={cn('ml-4 flex h-6 items-center gap-1 text-gray-800 dark:text-gray-100')}>
+          <span className={cn('text-text-primary ml-4 flex h-6 items-center gap-1')}>
             {createAssistant}
           </span>
         </span>

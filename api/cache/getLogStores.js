@@ -7,8 +7,17 @@ const {
   sessionCache,
   standardCache,
   violationCache,
+  userPrincipalsCache,
   registerShutdownTask,
 } = require('@librechat/api');
+
+/** No-op store for cache namespaces that are deliberately disabled. */
+const disabledCache = {
+  get: async () => undefined,
+  set: async () => undefined,
+  delete: async () => undefined,
+  clear: async () => undefined,
+};
 
 const namespaces = {
   [ViolationTypes.GENERAL]: new Keyv({ store: logFile, namespace: 'violations' }),
@@ -21,6 +30,7 @@ const namespaces = {
   [ViolationTypes.TTS_LIMIT]: violationCache(ViolationTypes.TTS_LIMIT),
   [ViolationTypes.STT_LIMIT]: violationCache(ViolationTypes.STT_LIMIT),
   [ViolationTypes.CONVO_ACCESS]: violationCache(ViolationTypes.CONVO_ACCESS),
+  [ViolationTypes.SHARE_LIMIT]: violationCache(ViolationTypes.SHARE_LIMIT),
   [ViolationTypes.TOOL_CALL_LIMIT]: violationCache(ViolationTypes.TOOL_CALL_LIMIT),
   [ViolationTypes.FILE_UPLOAD_LIMIT]: violationCache(ViolationTypes.FILE_UPLOAD_LIMIT),
   [ViolationTypes.VERIFY_EMAIL_LIMIT]: violationCache(ViolationTypes.VERIFY_EMAIL_LIMIT),
@@ -36,6 +46,9 @@ const namespaces = {
   [CacheKeys.SAML_SESSION]: sessionCache(CacheKeys.SAML_SESSION),
 
   [CacheKeys.ROLES]: standardCache(CacheKeys.ROLES),
+  [CacheKeys.USER_PRINCIPALS]: userPrincipalsCache() ?? disabledCache,
+  /** Authorization IDs stay uncached because a failed shared invalidation cannot fail closed. */
+  [CacheKeys.PROMPT_GROUPS_ACCESS]: disabledCache,
   [CacheKeys.APP_CONFIG]: standardCache(CacheKeys.APP_CONFIG),
   [CacheKeys.CONFIG_STORE]: standardCache(CacheKeys.CONFIG_STORE),
   [CacheKeys.TOOL_CACHE]: standardCache(CacheKeys.TOOL_CACHE),
@@ -53,9 +66,17 @@ const namespaces = {
     CacheKeys.OPENID_EXCHANGED_TOKENS,
     Time.TEN_MINUTES,
   ),
+  [CacheKeys.AUTH_USER_DOC]: standardCache(CacheKeys.AUTH_USER_DOC, undefined, undefined, {
+    throwOnErrors: true,
+  }),
   [CacheKeys.ADMIN_OAUTH_EXCHANGE]: standardCache(
     CacheKeys.ADMIN_OAUTH_EXCHANGE,
     Time.THIRTY_SECONDS,
+  ),
+  [CacheKeys.PASSKEY_CHALLENGE]: standardCache(CacheKeys.PASSKEY_CHALLENGE, Time.FIVE_MINUTES),
+  [CacheKeys.AGENT_LINKED_INSTRUCTIONS]: standardCache(
+    CacheKeys.AGENT_LINKED_INSTRUCTIONS,
+    Time.FIVE_MINUTES,
   ),
 };
 

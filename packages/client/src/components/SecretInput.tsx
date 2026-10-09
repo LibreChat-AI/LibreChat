@@ -1,10 +1,13 @@
 import * as React from 'react';
 import { useState, useCallback } from 'react';
-import { Eye, EyeOff, Copy, Check } from 'lucide-react';
-import { cn } from '~/utils';
+import { Eye, EyeOff, Copy, Check } from 'lucide';
+import { cn, disabledInkClasses } from '~/utils';
+import { MorphIcon } from './MorphIcon';
+import { fieldControl } from './Field';
 
 export interface SecretInputProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type'> {
+  colorTransition?: boolean;
   /** Show the built-in copy button */
   showCopy?: boolean;
   /** Custom copy control rendered inside the input, in place of the built-in one */
@@ -29,6 +32,7 @@ const SecretInput: React.ForwardRefExoticComponent<
       id,
       label,
       className,
+      colorTransition,
       showCopy = false,
       copyButton,
       labelClassName,
@@ -80,7 +84,8 @@ const SecretInput: React.ForwardRefExoticComponent<
           id={id}
           type={isVisible ? 'text' : 'password'}
           className={cn(
-            'flex h-10 w-full rounded-lg border border-border-light bg-transparent py-2 pl-3 text-sm transition-colors placeholder:text-muted-foreground hover:border-border-medium focus-visible:border-border-heavy focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50',
+            fieldControl,
+            colorTransition && 'transition-colors',
             className ?? '',
             copyButton != null || showCopy ? 'pr-20' : 'pr-11',
           )}
@@ -111,15 +116,16 @@ const SecretInput: React.ForwardRefExoticComponent<
               onClick={handleCopy}
               disabled={disabled || !value}
               className={cn(
-                'inline-flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary [&>svg]:block',
+                'text-text-secondary focus-visible:ring-focus-control inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden [&>svg]:block',
                 disabled || !value
                   ? 'cursor-not-allowed opacity-50'
                   : 'hover:bg-surface-hover hover:text-text-primary',
+                disabledInkClasses,
                 buttonClassName,
               )}
               aria-label={isCopied ? 'Copied' : 'Copy to clipboard'}
             >
-              {isCopied ? <Check className="size-4" /> : <Copy className="size-4" />}
+              <MorphIcon icon={isCopied ? Check : Copy} className="size-4" />
             </button>
           )}
           <button
@@ -127,15 +133,16 @@ const SecretInput: React.ForwardRefExoticComponent<
             onClick={toggleVisibility}
             disabled={disabled}
             className={cn(
-              'inline-flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary [&>svg]:block',
+              'text-text-secondary focus-visible:ring-focus-control inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden [&>svg]:block',
               disabled
                 ? 'cursor-not-allowed opacity-50'
                 : 'hover:bg-surface-hover hover:text-text-primary',
+              disabledInkClasses,
               buttonClassName,
             )}
             aria-label={isVisible ? 'Hide secret' : 'Show secret'}
           >
-            {isVisible ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            <MorphIcon icon={isVisible ? EyeOff : Eye} className="size-4" />
           </button>
         </div>
       </div>

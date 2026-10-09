@@ -16,6 +16,7 @@
  *    status. Hostnames pass through; their resolved IP is checked
  *    separately by callers (e.g. `resolveHostnameSSRF`).
  */
+import { isIP } from 'node:net';
 import { isPrivateIP } from './ip';
 
 const ADDRESS_PORT_SEPARATOR = '\0';
@@ -58,13 +59,32 @@ function addressPortKey(address: string, port: string): string {
   return `${address}${ADDRESS_PORT_SEPARATOR}${port}`;
 }
 
+/**
+ * Canonicalizes an IP literal to WHATWG-URL form so allowlist entries and targets (which pass
+ * through `new URL`) compare identically, covering IPv4-mapped and expanded/ULA IPv6 forms.
+ */
+function canonicalizeIPLiteral(value: string): string {
+  const family = isIP(value);
+  if (family === 0) return value;
+  try {
+    const host = family === 6 ? `[${value}]` : value;
+    return new URL(`http://${host}`).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return value;
+  }
+}
+
 function normalizeAddressCandidate(candidate: string): string {
   const normalized = candidate
     .toLowerCase()
     .trim()
     .replace(/^\[|\]$/g, '');
   if (!normalized) return '';
-  if (isIPLiteral(normalized) && !isPrivateIP(normalized)) return '';
+  if (isIPLiteral(normalized)) {
+    const canonical = canonicalizeIPLiteral(normalized);
+    if (!isPrivateIP(canonical)) return '';
+    return canonical;
+  }
   return normalized;
 }
 

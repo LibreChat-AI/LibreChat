@@ -4,7 +4,7 @@ services:
     #   context: .
     #   dockerfile: Dockerfile.multi
     #   target: api-build
-    image: registry.librechat.ai/danny-avila/librechat-dev-api:latest
+    image: registry.librechat.ai/librechat-ai/librechat-dev-api:latest
     container_name: LibreChat-API
     ports:
       - 3080:3080
@@ -21,6 +21,7 @@ services:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongodb:27017/LibreChat
       - MEILI_HOST=http://meilisearch:7700
+      - LIBRECHAT_TEMP_CREDENTIALS_PATH=/app/data/.env.temp
       - RAG_PORT=${RAG_PORT:-8000}
       - RAG_API_URL=http://rag_api:${RAG_PORT:-8000}
       - PROXY=${PROXY:-}
@@ -39,6 +40,7 @@ services:
       - ./uploads:/app/uploads
       - ./logs:/app/api/logs
       - ./skill:/app/skill
+      - librechat-data:/app/data
 
   admin-panel:
     image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
@@ -99,7 +101,7 @@ services:
     volumes:
       - pgdata2:/var/lib/postgresql/data
   rag_api:
-    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev-lite:latest
     environment:
       - DB_HOST=vectordb
       - RAG_PORT=${RAG_PORT:-8000}
@@ -111,3 +113,4 @@ services:
 
 volumes:
   pgdata2:
+  librechat-data:

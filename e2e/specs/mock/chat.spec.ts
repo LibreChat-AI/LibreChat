@@ -9,7 +9,7 @@ import {
   replyText,
   replyPrompt,
   selectMockEndpoint,
-  sendMessage,
+  sendMessageAndWaitForCompletion,
 } from './helpers';
 
 type UploadFixture = {
@@ -42,11 +42,15 @@ const textFixture: UploadFixture = {
   buffer: Buffer.from('This text attachment should be available to the mock model.\n'),
 };
 
+// Valid 16x16 PNG. The previous 1x1 fixture had a corrupt IDAT CRC that older
+// libpng silently accepted but sharp 0.35.3's newer libpng rejects during
+// server-side image processing ("vipspng: libpng read error"). Keep this a
+// spec-conformant PNG (correct chunk CRCs).
 const imageFixture: UploadFixture = {
   name: 'provider-context.png',
   mimeType: 'image/png',
   buffer: Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+    'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAHUlEQVQ4jWNwaDjwnxLMMGrA/9EwODAaBg3DIgwACY9/HwbtciYAAAAASUVORK5CYII=',
     'base64',
   ),
 };
@@ -54,11 +58,13 @@ const imageFixture: UploadFixture = {
 const composer = (page: Page) => page.locator('form');
 
 async function openProviderFileChooser(page: Page) {
-  await page.getByRole('button', { name: 'Attach File Options' }).click();
-  await expect(page.getByText('Upload to Provider')).toBeVisible();
+  // Uploads live in the composer palette (the old AttachFileMenu is gone).
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const uploadOption = page.getByRole('button', { name: 'Upload to Provider', exact: true });
+  await expect(uploadOption).toBeVisible();
 
   const fileChooserPromise = page.waitForEvent('filechooser');
-  await page.getByText('Upload to Provider').click();
+  await uploadOption.click();
   const fileChooser = await fileChooserPromise;
   expect(await fileChooser.element().getAttribute('type')).toBe('file');
   return fileChooser;
@@ -90,7 +96,7 @@ test.describe('core chat loop', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    const response = await sendMessage(page, userMessage);
+    const response = await sendMessageAndWaitForCompletion(page, userMessage);
     expect(response.ok()).toBeTruthy();
 
     await expect(page.getByText(userMessage)).toBeVisible();
@@ -131,7 +137,7 @@ test.describe('core chat loop', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    const response = await sendMessage(page, 'E2E_MARKDOWN_REPLY');
+    const response = await sendMessageAndWaitForCompletion(page, 'E2E_MARKDOWN_REPLY');
     expect(response.ok()).toBeTruthy();
 
     const assistantMessage = messagesView(page)
@@ -165,17 +171,19 @@ test.describe('core chat loop', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    let response = await sendMessage(page, firstMessage);
+    let response = await sendMessageAndWaitForCompletion(page, firstMessage);
     expect(response.ok()).toBeTruthy();
     await expect(mockReply(page)).toBeVisible();
 
-    response = await sendMessage(page, followUpMessage);
+    response = await sendMessageAndWaitForCompletion(page, followUpMessage);
     expect(response.ok()).toBeTruthy();
     await expect(page.getByText(followUpMessage)).toBeVisible();
 
     const firstAssistantMessage = messagesView(page).locator('.message-render').nth(1);
     await firstAssistantMessage.hover();
-    const regenerateButton = firstAssistantMessage.locator('button[title="Regenerate"]').last();
+    const regenerateButton = firstAssistantMessage
+      .getByRole('button', { name: 'Regenerate', exact: true })
+      .last();
     await expect(regenerateButton).toBeVisible();
 
     const [regenerateResponse] = await Promise.all([
@@ -200,10 +208,10 @@ test.describe('core chat loop', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    let response = await sendMessage(page, firstMessage);
+    let response = await sendMessageAndWaitForCompletion(page, firstMessage);
     expect(response.ok()).toBeTruthy();
     await expect(mockReply(page).first()).toBeVisible();
-    response = await sendMessage(page, secondMessage);
+    response = await sendMessageAndWaitForCompletion(page, secondMessage);
     expect(response.ok()).toBeTruthy();
     await expect(page.getByText(secondMessage)).toBeVisible();
 
@@ -211,7 +219,9 @@ test.describe('core chat loop', () => {
     // turn does not belong to.
     const firstAssistant = messagesView(page).locator('.message-render').nth(1);
     await firstAssistant.hover();
-    const regenInitial = firstAssistant.locator('button[title="Regenerate"]').last();
+    const regenInitial = firstAssistant
+      .getByRole('button', { name: 'Regenerate', exact: true })
+      .last();
     await expect(regenInitial).toBeVisible();
     [response] = await Promise.all([
       page.waitForResponse(isAgentsStream, { timeout: 30000 }),
@@ -231,7 +241,9 @@ test.describe('core chat loop', () => {
     // original thread; the view must stay put.
     const latestAssistant = messagesView(page).locator('.message-render').last();
     await latestAssistant.hover();
-    const regenLatest = latestAssistant.locator('button[title="Regenerate"]').last();
+    const regenLatest = latestAssistant
+      .getByRole('button', { name: 'Regenerate', exact: true })
+      .last();
     await expect(regenLatest).toBeVisible();
     [response] = await Promise.all([
       page.waitForResponse(isAgentsStream, { timeout: 30000 }),
@@ -263,7 +275,7 @@ test.describe('core chat loop', () => {
     // Build a three-turn thread (the "long running thread"), waiting for each
     // turn's unique reply to render before sending the next.
     for (const turn of turns) {
-      const response = await sendMessage(page, turn.prompt);
+      const response = await sendMessageAndWaitForCompletion(page, turn.prompt);
       expect(response.ok()).toBeTruthy();
       await expect(messagesView(page).getByText(turn.reply)).toBeVisible({ timeout: 30000 });
     }
@@ -272,7 +284,9 @@ test.describe('core chat loop', () => {
     // forks a fresh root branch that does not contain the later turns.
     const earlyAssistant = messagesView(page).locator('.message-render').nth(1);
     await earlyAssistant.hover();
-    const regenEarly = earlyAssistant.locator('button[title="Regenerate"]').last();
+    const regenEarly = earlyAssistant
+      .getByRole('button', { name: 'Regenerate', exact: true })
+      .last();
     await expect(regenEarly).toBeVisible();
     let [response] = await Promise.all([
       page.waitForResponse(isAgentsStream, { timeout: 30000 }),
@@ -295,7 +309,7 @@ test.describe('core chat loop', () => {
     // long original thread; it must stay intact.
     const lateAssistant = messagesView(page).locator('.message-render').last();
     await lateAssistant.hover();
-    const regenLate = lateAssistant.locator('button[title="Regenerate"]').last();
+    const regenLate = lateAssistant.getByRole('button', { name: 'Regenerate', exact: true }).last();
     await expect(regenLate).toBeVisible();
     [response] = await Promise.all([
       page.waitForResponse(isAgentsStream, { timeout: 30000 }),

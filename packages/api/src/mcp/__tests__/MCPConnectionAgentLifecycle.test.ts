@@ -549,12 +549,13 @@ describe('MCPConnection SSE 404 handling – session-aware', () => {
     conn: MCPConnection,
     transport: ReturnType<typeof makeTransportStub>,
     code = 404,
-  ) {
+  ): Error {
     (
       conn as unknown as { setupTransportErrorHandlers: (t: unknown) => void }
     ).setupTransportErrorHandlers(transport);
     const sseError = Object.assign(new Error('Failed to open SSE stream'), { code });
     transport.onerror?.(sseError);
+    return sseError;
   }
 
   beforeEach(() => {
@@ -614,6 +615,19 @@ describe('MCPConnection SSE 404 handling – session-aware', () => {
 
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('session lost'));
     expect(emitSpy).toHaveBeenCalledWith('connectionChange', 'error');
+  });
+  it('marks an OAuth-challenged connection unusable without blindly reconnecting', async () => {
+    const conn = makeConn();
+    const transport = makeTransportStub();
+    conn.emit('connectionChange', 'connected');
+    const emitSpy = jest.spyOn(conn, 'emit');
+
+    const oauthError = fireSSEError(conn, transport, 401);
+
+    expect(emitSpy).toHaveBeenCalledWith('oauthError', expect.any(Error));
+    expect(emitSpy).not.toHaveBeenCalledWith('connectionChange', 'error');
+    expect(await conn.isConnected()).toBe(false);
+    expect(conn.getLastConnectionCheckError()).toBe(oauthError);
   });
 });
 

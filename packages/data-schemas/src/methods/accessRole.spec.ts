@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
-import { AccessRoleIds, ResourceType, PermissionBits } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { AccessRoleIds, ResourceType, PermissionBits } from 'librechat-data-provider';
 import type * as t from '~/types';
 import { createAccessRoleMethods } from './accessRole';
 import accessRoleSchema from '~/schema/accessRole';
@@ -44,6 +44,17 @@ describe('AccessRole Model Tests', () => {
       expect(role.accessRoleId).toBe(sampleRole.accessRoleId);
       expect(role.name).toBe(sampleRole.name);
       expect(role.permBits).toBe(sampleRole.permBits);
+    });
+
+    test('should create a code environment role', async () => {
+      const role = await methods.createRole({
+        accessRoleId: AccessRoleIds.CODE_ENVIRONMENT_OWNER,
+        name: 'Code Environment Owner',
+        resourceType: ResourceType.CODE_ENVIRONMENT,
+        permBits: PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE,
+      });
+
+      expect(role.resourceType).toBe(ResourceType.CODE_ENVIRONMENT);
     });
 
     test('should find a role by its ID', async () => {
@@ -197,6 +208,9 @@ describe('AccessRole Model Tests', () => {
           AccessRoleIds.AGENT_EDITOR,
           AccessRoleIds.AGENT_OWNER,
           AccessRoleIds.AGENT_VIEWER,
+          AccessRoleIds.CODE_ENVIRONMENT_EDITOR,
+          AccessRoleIds.CODE_ENVIRONMENT_OWNER,
+          AccessRoleIds.CODE_ENVIRONMENT_VIEWER,
           AccessRoleIds.PROMPTGROUP_EDITOR,
           AccessRoleIds.PROMPTGROUP_OWNER,
           AccessRoleIds.PROMPTGROUP_VIEWER,

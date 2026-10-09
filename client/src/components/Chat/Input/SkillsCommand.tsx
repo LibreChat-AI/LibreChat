@@ -1,23 +1,25 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { ScrollText } from 'lucide-react';
+import { useSetRecoilState } from 'recoil';
+import { useSetAtom, useAtomValue } from 'jotai';
 import { AutoSizer, List } from 'react-virtualized';
-import { Spinner, useCombobox } from '@librechat/client';
-import { useRecoilValue, useSetRecoilState } from 'recoil';
+import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
+import { SkillsScope, resolveAgentSkillsScope } from 'librechat-data-provider';
 import type { TSkillSummary } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
 import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
 import { useLocalize, useSkillActiveState } from '~/hooks';
-import { useAgentsMapContext } from '~/Providers';
 import { useSkillsInfiniteQuery } from '~/data-provider';
-import { isEphemeralAgent } from '~/common';
+import { showSkillsPopoverFamily } from './skillsState';
+import { useAgentsMapContext } from '~/Providers';
 import { ephemeralAgentByConvoId } from '~/store';
-import { removeCharIfLast } from '~/utils';
+import { isEphemeralAgent } from '~/common';
 import MentionItem from './MentionItem';
 import store from '~/store';
 
 const commandChar = '$';
 const ROW_HEIGHT = 44;
-const skillIcon = <ScrollText className="icon-md text-cyan-500" />;
+const skillIcon = <ScrollText className="icon-md text-status-info" />;
 
 /**
  * Determines whether a skill should appear in the `$` command popover.
@@ -50,7 +52,7 @@ export function filterSkillsForPopover(
   skills: TSkillSummary[],
   ctx: {
     agentSkillIds: string[] | null | undefined;
-    isActive: (skill: Pick<TSkillSummary, '_id' | 'author'>) => boolean;
+    isActive: (skill: Pick<TSkillSummary, '_id' | 'author' | 'source'>) => boolean;
   },
 ): TSkillSummary[] {
   const { agentSkillIds, isActive } = ctx;
@@ -87,7 +89,8 @@ function SkillsCommandContent({
   agentId?: string | null;
 }) {
   const localize = useLocalize();
-  const setShowSkillsPopover = useSetRecoilState(store.showSkillsPopoverFamily(index));
+  const remScale = useRemScale();
+  const setShowSkillsPopover = useSetAtom(showSkillsPopoverFamily(index));
   const setEphemeralAgent = useSetRecoilState(ephemeralAgentByConvoId(conversationId));
   const setPendingManualSkills = useSetRecoilState(
     store.pendingManualSkillsByConvoId(conversationId),
@@ -100,9 +103,8 @@ function SkillsCommandContent({
      `resolveAgentScopedSkillIds`: ephemeral agents always see the full
      catalog (picking any skill flips `ephemeralAgent.skills = true` and
      activates for the turn); persisted agents gate on the builder's
-     `skills_enabled` master toggle — off or unset means opt-out, on with
-     an empty allowlist means full catalog, on with a non-empty allowlist
-     means narrow to those ids. Persisted agents fail closed during the
+     `skills_enabled` master toggle and explicit catalog scope. Legacy agents
+     without a scope retain empty allowlist = full catalog. Persisted agents fail closed during the
      `agentsMap` hydration window so the user cannot pick a skill the
      backend will then refuse, and again when the map is authoritative
      but the agent isn't in it (deleted, or VIEW revoked mid-session).
@@ -122,27 +124,23 @@ function SkillsCommandContent({
     if (agent.skills_enabled !== true) {
       return [];
     }
-    return Array.isArray(agent.skills) && agent.skills.length > 0 ? agent.skills : undefined;
+    const scope = resolveAgentSkillsScope(agent.skills, agent.skills_enabled, agent.skills_scope);
+    if (scope === SkillsScope.none) {
+      return [];
+    }
+    if (scope === SkillsScope.all) {
+      return undefined;
+    }
+    return agent.skills ?? [];
   }, [agentId, agentsMap]);
 
   const { data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useSkillsInfiniteQuery({ limit: 50 });
 
-  /* Sticky circuit breaker: once any page request fails, stop auto-fetching
-     for the lifetime of the popover so a transient API error does not turn
-     into an unbounded retry loop (isError can flip back to false on the
-     next attempt, which would otherwise re-arm the auto-fetch effect). */
-  const paginationBlockedRef = useRef(false);
-  useEffect(() => {
-    if (isError) {
-      paginationBlockedRef.current = true;
-    }
-  }, [isError]);
-
   /* Auto-fetch all pages so client-side search covers the full catalog,
      not just the first page. The skills API is server-side capped. */
   useEffect(() => {
-    if (paginationBlockedRef.current || isError) {
+    if (isError) {
       return;
     }
     if (hasNextPage && !isFetchingNextPage) {
@@ -187,6 +185,7 @@ function SkillsCommandContent({
     inputRef,
     textAreaRef,
     commandChar,
+    preserveTextAfterCursor: true,
     setSearchValue,
     setOpen,
   });
@@ -200,10 +199,6 @@ function SkillsCommandContent({
       setSearchValue('');
       setOpen(false);
       setShowSkillsPopover(false);
-
-      if (textAreaRef.current) {
-        removeCharIfLast(textAreaRef.current, commandChar);
-      }
 
       setEphemeralAgent((prev) => {
         if (prev?.skills) {
@@ -291,11 +286,11 @@ function SkillsCommandContent({
 
   return (
     <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-token-border-light rounded-2xl border bg-surface-tertiary-alt p-2 shadow-lg">
-        <input
+      <div className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg">
+        <Input
           ref={initInputRef}
           placeholder={localize('com_ui_skills_command_placeholder')}
-          className="mb-1 w-full border-0 bg-surface-tertiary-alt p-2 text-sm focus:outline-none dark:text-gray-200"
+          className="bg-surface-tertiary-alt text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
           autoComplete="off"
           value={searchValue}
           onKeyDown={(e) => {
@@ -343,17 +338,17 @@ function SkillsCommandContent({
           }}
         />
         {open && (isLoading || isFetchingNextPage) && matches.length === 0 && (
-          <div className="flex h-32 items-center justify-center text-text-primary">
+          <div className="text-text-primary flex h-32 items-center justify-center">
             <Spinner />
           </div>
         )}
         {open && isError && (
-          <div className="p-4 text-center text-sm text-text-secondary">
+          <div className="text-text-secondary p-4 text-center text-sm">
             {localize('com_ui_skills_load_error')}
           </div>
         )}
         {open && !isLoading && !isFetchingNextPage && !isError && matches.length === 0 && (
-          <div className="p-4 text-center text-sm text-text-secondary">
+          <div className="text-text-secondary p-4 text-center text-sm">
             {localize(searchValue ? 'com_ui_no_skills_found' : 'com_ui_skills_empty')}
           </div>
         )}
@@ -364,11 +359,11 @@ function SkillsCommandContent({
                 <List
                   width={width}
                   overscanRowCount={5}
-                  rowHeight={ROW_HEIGHT}
+                  rowHeight={ROW_HEIGHT * remScale}
                   rowCount={matches.length}
                   rowRenderer={rowRenderer}
                   scrollToIndex={activeIndex}
-                  height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                  height={Math.min(matches.length * ROW_HEIGHT, 160) * remScale}
                 />
               )}
             </AutoSizer>
@@ -390,7 +385,7 @@ const SkillsCommand = memo(function SkillsCommand({
   conversationId: string;
   agentId?: string | null;
 }) {
-  const show = useRecoilValue(store.showSkillsPopoverFamily(index));
+  const show = useAtomValue(showSkillsPopoverFamily(index));
   if (!show) {
     return null;
   }

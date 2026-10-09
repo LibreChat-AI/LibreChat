@@ -1,9 +1,9 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom/extend-expect';
-import MemoryArtifacts from '../MemoryArtifacts';
-import type { TAttachment, MemoryArtifact } from 'librechat-data-provider';
 import { Tools } from 'librechat-data-provider';
+import type { TAttachment, MemoryArtifact } from 'librechat-data-provider';
+import MemoryArtifacts from '../MemoryArtifacts';
 
 // Mock the localize hook
 jest.mock('~/hooks', () => ({
@@ -14,6 +14,14 @@ jest.mock('~/hooks', () => ({
     };
     return translations[key] || key;
   },
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: {
+      display: 'grid',
+      gridTemplateRows: isExpanded ? '1fr' : '0fr',
+      opacity: isExpanded ? 1 : 0,
+    },
+    ref: { current: null },
+  }),
 }));
 
 // Mock the MemoryInfo component
@@ -54,10 +62,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-red-500');
-      expect(button).toHaveClass('hover:text-red-600');
-      expect(button).toHaveClass('dark:text-red-400');
-      expect(button).toHaveClass('dark:hover:text-red-500');
+      expect(button).toHaveClass('text-status-error');
     });
 
     test('displays normal styling when no errors present', () => {
@@ -69,9 +74,8 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-text-secondary-alt');
-      expect(button).toHaveClass('hover:text-text-primary');
-      expect(button).not.toHaveClass('text-red-500');
+      expect(button).toHaveClass('text-text-secondary');
+      expect(button).not.toHaveClass('text-status-error');
     });
 
     test('displays error message when errors are present', () => {
@@ -121,12 +125,53 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-red-500');
+      expect(button).toHaveClass('text-status-error');
       expect(screen.getByText('Memory Error')).toBeInTheDocument();
+    });
+
+    test('ignores attachments already rendered as an inline memory tool card', () => {
+      /** A `set_memory`/`delete_memory` call routes to `MemoryCall`, which
+       *  shows the same key, value and outcome. Counting its attachment here
+       *  too rendered one mutation twice. `toolCallId` is the discriminator. */
+      const linked = {
+        ...createMemoryAttachment('update', 'memory1'),
+        toolCallId: 'call_abc123',
+      } as TAttachment;
+
+      const { container } = render(<MemoryArtifacts attachments={[linked]} />);
+
+      expect(container).toBeEmptyDOMElement();
+    });
+
+    test('still renders a memory attachment carrying no tool call id', () => {
+      render(<MemoryArtifacts attachments={[createMemoryAttachment('update', 'memory1')]} />);
+
+      fireEvent.click(screen.getByRole('button'));
+
+      expect(screen.getByTestId('memory-artifact-update')).toBeInTheDocument();
     });
   });
 
   describe('Collapse/Expand Functionality', () => {
+    test('uses the standard tool row and expanded panel styling', () => {
+      const attachments = [createMemoryAttachment('update', 'memory1')];
+
+      render(<MemoryArtifacts attachments={attachments} />);
+
+      const button = screen.getByRole('button');
+      expect(button.parentElement).toHaveClass('my-1', 'h-5');
+      expect(button).toHaveClass('group/disclosure');
+
+      fireEvent.click(button);
+
+      expect(screen.getByTestId('memory-info').parentElement).toHaveClass(
+        'mb-2',
+        'mt-0',
+        'rounded-lg',
+        'bg-surface-secondary',
+      );
+    });
+
     test('toggles memory info visibility on button click', () => {
       const attachments = [createMemoryAttachment('update', 'memory1')];
 
@@ -190,7 +235,7 @@ describe('MemoryArtifacts', () => {
       render(<MemoryArtifacts attachments={attachments} />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('text-red-500');
+      expect(button).toHaveClass('text-status-error');
       expect(screen.getByText('Memory Error')).toBeInTheDocument();
     });
   });

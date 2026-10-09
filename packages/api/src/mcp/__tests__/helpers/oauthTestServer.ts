@@ -56,6 +56,9 @@ export function trackSockets(httpServer: http.Server): () => Promise<void> {
 }
 
 export interface OAuthTestServerOptions {
+  resourceFailure?: (
+    req: http.IncomingMessage,
+  ) => 401 | 403 | undefined | Promise<401 | 403 | undefined>;
   tokenTTLMs?: number;
   issueRefreshTokens?: boolean;
   refreshTokenTTLMs?: number;
@@ -70,6 +73,22 @@ export interface OAuthTestServerOptions {
   scopesSupported?: string[];
   /** When true, /authorize and /token reject requests that omit the MCP resource parameter. */
   requireResourceParameter?: boolean;
+  /** Number of refresh-grant access tokens the MCP resource should reject after issuance. */
+  rejectRefreshTokens?: number;
+  /** Injects an endpoint failure before redemption; undefined resumes normal refresh behavior. */
+  refreshFailure?: () => { status: number; body: string } | undefined;
+  /**
+   * Awaited after a refresh grant is recorded but before it is redeemed, so a test can hold
+   * concurrent refreshes open and observe how many redemptions the callers actually attempt.
+   */
+  refreshGate?: () => Promise<void> | undefined;
+  /** Optional test hook for controlling echo-tool completion. */
+  echoHandler?: (message: string) => string | Promise<string>;
+  /** Observes MCP resource requests, including unauthenticated and cancellation POSTs. */
+  onResourceRequest?: (request: http.IncomingMessage) => void;
+  /** Observes parsed resource RPC methods without consuming the SDK's request body. */
+  onRPCRequest?: (method: string) => void;
+  appResourceUri?: string;
 }
 
 export interface OAuthTokenRequestRecord {
@@ -91,6 +110,7 @@ export interface OAuthTestServer {
   registeredClients: Map<string, { client_id: string; client_secret: string }>;
   tokenRequests: OAuthTokenRequestRecord[];
   getAuthCode: () => Promise<string>;
+  notifyToolsChanged: () => Promise<void>;
 }
 
 async function readRequestBody(req: http.IncomingMessage): Promise<string> {
@@ -136,9 +156,15 @@ export async function createOAuthMCPServer(
     requiredScopes = [],
     scopesSupported = [...new Set([...tokenScopes, ...requiredScopes])],
     requireResourceParameter = false,
+    rejectRefreshTokens = 0,
+    echoHandler,
+    onResourceRequest,
+    refreshFailure,
+    refreshGate,
   } = options;
 
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const notifyToolsChanged = new Set<() => Promise<void>>();
   const issuedTokens = new Set<string>();
   const tokenIssueTimes = new Map<string, number>();
   const accessTokenScopes = new Map<string, string[]>();
@@ -157,6 +183,7 @@ export async function createOAuthMCPServer(
     }
   >();
   const registeredClients = new Map<string, { client_id: string; client_secret: string }>();
+  let rejectedRefreshTokensRemaining = rejectRefreshTokens;
 
   let port = 0;
   const getBaseUrl = () => `http://127.0.0.1:${port}`;
@@ -390,6 +417,14 @@ export async function createOAuthMCPServer(
       }
 
       if (grantType === 'refresh_token' && issueRefreshTokens) {
+        await refreshGate?.();
+        const failure = refreshFailure?.();
+        if (failure) {
+          res.writeHead(failure.status, { 'Content-Type': 'application/json' });
+          res.end(failure.body);
+          return;
+        }
+
         const refreshToken = params.get('refresh_token');
         if (!refreshToken || !issuedRefreshTokens.has(refreshToken)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -410,7 +445,11 @@ export async function createOAuthMCPServer(
         const scopes = params.has('scope')
           ? parseScopes(params.get('scope'))
           : (refreshTokenScopes.get(refreshToken) ?? tokenScopes);
-        issuedTokens.add(newAccessToken);
+        if (rejectedRefreshTokensRemaining > 0) {
+          rejectedRefreshTokensRemaining -= 1;
+        } else {
+          issuedTokens.add(newAccessToken);
+        }
         tokenIssueTimes.set(newAccessToken, Date.now());
         accessTokenScopes.set(newAccessToken, scopes);
 
@@ -438,6 +477,12 @@ export async function createOAuthMCPServer(
     }
 
     // All other paths require Bearer token auth
+    onResourceRequest?.(req);
+    const failure = await options.resourceFailure?.(req);
+    if (failure) {
+      writeBearerChallenge(res, failure, 'invalid_token', 'Rejected bearer');
+      return;
+    }
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       writeBearerChallenge(res, 401, 'invalid_token', 'Missing Authorization header');
@@ -475,13 +520,39 @@ export async function createOAuthMCPServer(
         sessionIdGenerator: () => randomUUID(),
       });
       const mcp = new McpServer({ name: 'oauth-test-server', version: '0.0.1' });
-      mcp.tool('echo', { message: z.string() }, async (args) => ({
-        content: [{ type: 'text' as const, text: `echo: ${args.message}` }],
-      }));
+      mcp.registerTool(
+        'echo',
+        {
+          inputSchema: { message: z.string() },
+          ...(options.appResourceUri && { _meta: { ui: { resourceUri: options.appResourceUri } } }),
+        },
+        async (args) => {
+          const text = echoHandler ? await echoHandler(args.message) : `echo: ${args.message}`;
+          return { content: [{ type: 'text' as const, text }] };
+        },
+      );
+      if (options.appResourceUri)
+        mcp.registerResource(
+          'app',
+          options.appResourceUri,
+          { mimeType: 'text/html;profile=mcp-app' },
+          async (uri) => ({
+            contents: [
+              { uri: uri.href, mimeType: 'text/html;profile=mcp-app', text: '<p>Read only</p>' },
+            ],
+          }),
+        );
       await mcp.connect(transport);
+      notifyToolsChanged.add(() => mcp.server.sendToolListChanged());
     }
 
-    await transport.handleRequest(req, res);
+    const body: unknown =
+      options.onRPCRequest && req.method === 'POST'
+        ? JSON.parse(await readRequestBody(req))
+        : undefined;
+    if (body && typeof body === 'object' && 'method' in body && typeof body.method === 'string')
+      options.onRPCRequest?.(body.method);
+    await transport.handleRequest(req, res, body);
 
     if (transport.sessionId && !sessions.has(transport.sessionId)) {
       sessions.set(transport.sessionId, transport);
@@ -503,6 +574,9 @@ export async function createOAuthMCPServer(
     issuedRefreshTokens,
     registeredClients,
     tokenRequests,
+    notifyToolsChanged: async () => {
+      await Promise.all([...notifyToolsChanged].map((notify) => notify()));
+    },
     getAuthCode: async () => {
       const authUrl = new URL(`${getBaseUrl()}/authorize`);
       authUrl.searchParams.set('redirect_uri', 'http://localhost');
@@ -536,6 +610,12 @@ export interface InMemoryToken {
 export class InMemoryTokenStore {
   private tokens: Map<string, InMemoryToken> = new Map();
 
+  private getCredentialSetId(token: InMemoryToken): unknown {
+    return token.metadata instanceof Map
+      ? token.metadata.get('credential_set_id')
+      : token.metadata?.credential_set_id;
+  }
+
   private key(filter: { userId?: string; type?: string; identifier?: string }): string {
     return `${filter.userId}:${filter.type}:${filter.identifier}`;
   }
@@ -544,12 +624,20 @@ export class InMemoryTokenStore {
     userId?: string;
     type?: string;
     identifier?: string;
+    token?: string;
+    metadataCredentialSetId?: string | null;
   }): Promise<InMemoryToken | null> => {
     for (const token of this.tokens.values()) {
       const matchUserId = !filter.userId || token.userId === filter.userId;
       const matchType = !filter.type || token.type === filter.type;
       const matchIdentifier = !filter.identifier || token.identifier === filter.identifier;
-      if (matchUserId && matchType && matchIdentifier) {
+      const matchToken = !filter.token || token.token === filter.token;
+      const matchCredentialSet =
+        filter.metadataCredentialSetId === undefined ||
+        (filter.metadataCredentialSetId === null
+          ? this.getCredentialSetId(token) == null
+          : this.getCredentialSetId(token) === filter.metadataCredentialSetId);
+      if (matchUserId && matchType && matchIdentifier && matchToken && matchCredentialSet) {
         return token;
       }
     }
@@ -579,19 +667,26 @@ export class InMemoryTokenStore {
   }) as unknown as TokenMethods['createToken'];
 
   updateToken = (async (
-    filter: { userId?: string; type?: string; identifier?: string },
+    filter: {
+      userId?: string;
+      type?: string;
+      identifier?: string;
+      token?: string;
+      metadataCredentialSetId?: string | null;
+    },
     data: {
       userId?: string;
       type?: string;
       identifier?: string;
       token?: string;
+      expiresAt?: Date;
       expiresIn?: number;
       metadata?: Record<string, unknown>;
     },
-  ): Promise<InMemoryToken> => {
+  ): Promise<InMemoryToken | null> => {
     const existing = (await this.findToken(filter)) as InMemoryToken | null;
     if (!existing) {
-      throw new Error(`Token not found for filter: ${JSON.stringify(filter)}`);
+      return null;
     }
     const existingKey = this.key(existing);
     const expiresIn =
@@ -599,7 +694,11 @@ export class InMemoryTokenStore {
     const updated: InMemoryToken = {
       ...existing,
       token: data.token ?? existing.token,
-      expiresAt: data.expiresIn ? new Date(Date.now() + expiresIn * 1000) : existing.expiresAt,
+      expiresAt:
+        data.expiresAt ??
+        (data.expiresIn !== undefined
+          ? new Date(Date.now() + expiresIn * 1000)
+          : existing.expiresAt),
       metadata: data.metadata ?? existing.metadata,
     };
     this.tokens.set(existingKey, updated);
@@ -618,13 +717,20 @@ export class InMemoryTokenStore {
     userId?: string;
     type?: string;
     identifier?: string;
+    token?: string;
+    metadataCredentialSetId?: string | null;
   }): Promise<{ acknowledged: boolean; deletedCount: number }> => {
     let deletedCount = 0;
     for (const [key, token] of this.tokens.entries()) {
       const match =
         (!query.userId || token.userId === query.userId) &&
         (!query.type || token.type === query.type) &&
-        (!query.identifier || token.identifier === query.identifier);
+        (!query.identifier || token.identifier === query.identifier) &&
+        (!query.token || token.token === query.token) &&
+        (query.metadataCredentialSetId === undefined ||
+          (query.metadataCredentialSetId === null
+            ? this.getCredentialSetId(token) == null
+            : this.getCredentialSetId(token) === query.metadataCredentialSetId));
       if (match) {
         this.tokens.delete(key);
         deletedCount++;

@@ -36,8 +36,16 @@ export default function useFocusTrap(
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        /** Only consume Escape when this trap actually acts on it. This
+         *  listener is native and sits on the container, so it runs before
+         *  every React handler rendered inside it — a trap that swallowed the
+         *  key without answering it would leave the host unable to close on
+         *  Escape at all, and nothing within able to claim the key either. */
+        if (onEscapeRef.current == null) {
+          return;
+        }
         e.preventDefault();
-        onEscapeRef.current?.();
+        onEscapeRef.current();
         return;
       }
 

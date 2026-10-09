@@ -1,17 +1,21 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import {
   OGDialog,
   OGDialogTemplate,
   Button,
+  FieldMessage,
   Label,
   Input,
   Spinner,
+  Textarea,
   useToastContext,
 } from '@librechat/client';
 import type { TUserMemory } from 'librechat-data-provider';
+import { getMemoryKeyError, getMemoryValueError, getMemoryApiErrorMessage } from '~/utils/memory';
 import { useUpdateMemoryMutation, useMemoriesQuery } from '~/data-provider';
-import { useLocalize, useHasAccess } from '~/hooks';
+import { getMemoryAddress, getMemoryUpdateAddress } from './address';
+import { useLocalize, useHasAccess, useClockFormat } from '~/hooks';
 import MemoryUsageBadge from './MemoryUsageBadge';
 
 interface MemoryEditDialogProps {
@@ -22,13 +26,14 @@ interface MemoryEditDialogProps {
   triggerRef?: React.MutableRefObject<HTMLButtonElement | null>;
 }
 
-const formatDateTime = (dateString: string): string => {
+const formatDateTime = (dateString: string, hour12?: boolean): string => {
   return new Date(dateString).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    hour12,
   });
 };
 
@@ -42,6 +47,7 @@ export default function MemoryEditDialog({
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const { data: memData } = useMemoriesQuery();
+  const hour12 = useClockFormat();
 
   const hasUpdateAccess = useHasAccess({
     permissionType: PermissionTypes.MEMORIES,
@@ -49,41 +55,19 @@ export default function MemoryEditDialog({
   });
 
   const { mutate: updateMemory, isLoading } = useUpdateMemoryMutation({
-    onMutate: () => {
-      onOpenChange(false);
-      setTimeout(() => {
-        triggerRef?.current?.focus();
-      }, 0);
-    },
     onSuccess: () => {
       showToast({
         message: localize('com_ui_saved'),
         status: 'success',
       });
+      onOpenChange(false);
+      setTimeout(() => {
+        triggerRef?.current?.focus();
+      }, 0);
     },
     onError: (error: Error) => {
-      let errorMessage = localize('com_ui_error');
-
-      if (error && typeof error === 'object' && 'response' in error) {
-        const axiosError = error as any;
-        if (axiosError.response?.data?.error) {
-          errorMessage = axiosError.response.data.error;
-
-          // Check for duplicate key error
-          if (axiosError.response?.status === 409 || errorMessage.includes('already exists')) {
-            errorMessage = localize('com_ui_memory_key_exists');
-          }
-          // Check for key validation error (lowercase and underscores only)
-          else if (errorMessage.includes('lowercase letters and underscores')) {
-            errorMessage = localize('com_ui_memory_key_validation');
-          }
-        }
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
-
       showToast({
-        message: errorMessage,
+        message: getMemoryApiErrorMessage(error, localize('com_ui_error')),
         status: 'error',
       });
     },
@@ -92,32 +76,57 @@ export default function MemoryEditDialog({
   const [key, setKey] = useState('');
   const [value, setValue] = useState('');
   const [originalKey, setOriginalKey] = useState('');
+  const [touched, setTouched] = useState({ key: false, value: false });
+  const [prevMemory, setPrevMemory] = useState<TUserMemory | null>(null);
+  const memoryAddress = memory ? getMemoryAddress(memory) : null;
+  const requiresKey =
+    memoryAddress == null || !('id' in memoryAddress) || memory?.key.trim() !== '';
 
-  useEffect(() => {
+  if (memory !== prevMemory) {
+    setPrevMemory(memory);
     if (memory) {
       setKey(memory.key);
       setValue(memory.value);
       setOriginalKey(memory.key);
+      setTouched({ key: false, value: false });
     }
-  }, [memory]);
+  }
+
+  const keyError =
+    requiresKey || key.trim() !== ''
+      ? getMemoryKeyError({
+          key,
+          memories: memData?.memories,
+          agentId: memory?.agentId,
+          originalKey,
+        })
+      : null;
+  const valueError = getMemoryValueError(value);
+  const hasErrors = keyError != null || valueError != null;
+  /** Stay quiet on a pristine empty field; validate live once there is something to judge. */
+  const showKeyError = hasUpdateAccess && (touched.key || key !== '');
+  const showValueError = hasUpdateAccess && (touched.value || value !== '');
 
   const handleSave = () => {
-    if (!hasUpdateAccess || !memory) {
+    if (!hasUpdateAccess || !memory || !memoryAddress) {
       return;
     }
 
-    if (!key.trim() || !value.trim()) {
-      showToast({
-        message: localize('com_ui_field_required'),
-        status: 'error',
-      });
+    const trimmedKey = key.trim();
+    if (keyError || valueError) {
+      setTouched({ key: true, value: true });
+      return;
+    }
+
+    const updateAddress = getMemoryUpdateAddress(memory, trimmedKey);
+    if (!updateAddress) {
       return;
     }
 
     updateMemory({
-      key: key.trim(),
+      ...updateAddress,
       value: value.trim(),
-      ...(originalKey !== key.trim() && { originalKey }),
+      agentId: memory.agentId,
     });
   };
 
@@ -143,28 +152,17 @@ export default function MemoryEditDialog({
       <OGDialogTemplate
         title={hasUpdateAccess ? localize('com_ui_edit_memory') : localize('com_ui_view_memory')}
         showCloseButton={false}
-        className="w-11/12 md:max-w-lg"
+        className="w-11/12 md:max-w-2xl"
         main={
           <div className="space-y-4">
-            {/* Memory metadata */}
+            {/* When it last changed, and what it costs. The size is the badge's to
+                state when a limit gives it something to be a share of, and a plain
+                count otherwise: two slots, so neither is stranded mid-bar. */}
             {memory && (
-              <div className="flex items-center justify-between rounded-lg border border-border-light bg-surface-secondary px-3 py-2">
-                {/* Token count - Left */}
-                {memory.tokenCount !== undefined ? (
-                  <span className="text-xs text-text-secondary">
-                    {memory.tokenCount.toLocaleString()}{' '}
-                    {localize(memory.tokenCount === 1 ? 'com_ui_token' : 'com_ui_tokens')}
-                  </span>
-                ) : (
-                  <div />
-                )}
-
-                {/* Date - Center */}
-                <span className="text-xs text-text-secondary">
-                  {formatDateTime(memory.updated_at)}
+              <div className="border-border-light bg-surface-secondary flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
+                <span className="text-text-secondary min-w-0 truncate text-xs">
+                  {formatDateTime(memory.updated_at, hour12)}
                 </span>
-
-                {/* Usage badge - Right (memory-specific) */}
                 {memoryUsage ? (
                   <MemoryUsageBadge
                     percentage={memoryUsage.percentage}
@@ -173,41 +171,62 @@ export default function MemoryEditDialog({
                     tooltipMax={memoryUsage.availableForMemory}
                   />
                 ) : (
-                  <div />
+                  memory.tokenCount !== undefined && (
+                    <span className="text-text-secondary shrink-0 text-xs">
+                      {memory.tokenCount.toLocaleString()}{' '}
+                      {localize(memory.tokenCount === 1 ? 'com_ui_token' : 'com_ui_tokens')}
+                    </span>
+                  )
                 )}
               </div>
             )}
 
             {/* Key input */}
             <div className="space-y-2">
-              <Label htmlFor="memory-key" className="text-sm font-medium text-text-primary">
+              <Label htmlFor="memory-key" className="text-text-primary text-sm font-medium">
                 {localize('com_ui_key')}
               </Label>
               <Input
                 id="memory-key"
                 value={key}
                 onChange={(e) => hasUpdateAccess && setKey(e.target.value)}
+                onBlur={() => setTouched((prev) => ({ ...prev, key: true }))}
                 onKeyDown={handleKeyPress}
                 placeholder={localize('com_ui_enter_key')}
                 className="w-full"
                 disabled={!hasUpdateAccess}
+                aria-invalid={showKeyError && keyError != null}
+                aria-describedby="memory-key-message"
+              />
+              <FieldMessage
+                id="memory-key-message"
+                message={showKeyError && keyError ? localize(keyError) : null}
+                hint={localize('com_ui_memory_key_hint')}
+                lines={2}
               />
             </div>
 
             {/* Value textarea */}
             <div className="space-y-2">
-              <Label htmlFor="memory-value" className="text-sm font-medium text-text-primary">
+              <Label htmlFor="memory-value" className="text-text-primary text-sm font-medium">
                 {localize('com_ui_value')}
               </Label>
-              <textarea
+              <Textarea
                 id="memory-value"
                 value={value}
                 onChange={(e) => hasUpdateAccess && setValue(e.target.value)}
+                onBlur={() => setTouched((prev) => ({ ...prev, value: true }))}
                 onKeyDown={handleKeyPress}
                 placeholder={localize('com_ui_enter_value')}
-                className="min-h-[100px] w-full resize-none rounded-lg border border-border-light bg-transparent px-3 py-2 text-sm text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border-heavy disabled:cursor-not-allowed disabled:opacity-50"
-                rows={4}
+                className="border-border-light text-text-primary focus-visible:ring-border-heavy max-h-[45vh] min-h-[11.25rem] w-full resize-y rounded-lg border bg-transparent px-3 py-2 text-sm focus-visible:ring-1 disabled:cursor-not-allowed disabled:opacity-50"
+                rows={8}
                 disabled={!hasUpdateAccess}
+                aria-invalid={showValueError && valueError != null}
+                aria-describedby="memory-value-message"
+              />
+              <FieldMessage
+                id="memory-value-message"
+                message={showValueError && valueError ? localize(valueError) : null}
               />
             </div>
           </div>
@@ -219,8 +238,7 @@ export default function MemoryEditDialog({
               variant="submit"
               onClick={handleSave}
               aria-label={localize('com_ui_save')}
-              disabled={isLoading || !key.trim() || !value.trim()}
-              className="text-white"
+              disabled={isLoading || !memoryAddress || hasErrors}
             >
               {isLoading ? <Spinner className="size-4" /> : localize('com_ui_save')}
             </Button>

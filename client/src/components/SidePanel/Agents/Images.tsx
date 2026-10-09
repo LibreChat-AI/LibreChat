@@ -6,7 +6,7 @@ import { useLocalize } from '~/hooks';
 
 export function NoImage() {
   return (
-    <div className="border-token-border-medium flex h-full w-full items-center justify-center rounded-full border-2 border-dashed border-black">
+    <div className="border-border-medium flex h-full w-full items-center justify-center rounded-full border-2 border-dashed">
       <svg
         stroke="currentColor"
         fill="none"
@@ -32,26 +32,26 @@ export const AgentAvatarRender = ({ url }: { url?: string }) => {
     setIsLoaded(false);
   }, [url]);
 
+  if (!url) {
+    return <div className="h-full w-full rounded-full" aria-hidden="true" />;
+  }
+
   return (
-    <div>
-      <div className="relative h-20 w-20 overflow-hidden rounded-full">
-        <img
-          src={url}
-          className="bg-token-surface-secondary dark:bg-token-surface-tertiary h-full w-full rounded-full object-cover"
-          alt="Agent avatar"
-          width="80"
-          height="80"
-          loading="lazy"
-          key={url || 'default-key'}
-          onLoad={() => setIsLoaded(true)}
-          onError={() => setIsLoaded(false)}
-          style={{
-            opacity: isLoaded ? 1 : 0,
-            transition: 'opacity 0.2s ease-in-out',
-          }}
-        />
-        {!isLoaded && <Skeleton className="absolute inset-0 rounded-full" aria-hidden="true" />}
-      </div>
+    <div className="relative h-full w-full overflow-hidden rounded-full">
+      <img
+        src={url}
+        className="bg-avatar-placeholder h-full w-full rounded-full object-cover"
+        alt="Agent avatar"
+        loading="lazy"
+        key={url}
+        onLoad={() => setIsLoaded(true)}
+        onError={() => setIsLoaded(false)}
+        style={{
+          opacity: isLoaded ? 1 : 0,
+          transition: 'opacity 0.2s ease-in-out',
+        }}
+      />
+      {!isLoaded && <Skeleton className="absolute inset-0 rounded-full" aria-hidden="true" />}
     </div>
   );
 };

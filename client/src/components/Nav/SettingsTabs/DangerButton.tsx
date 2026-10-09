@@ -1,8 +1,8 @@
 import { forwardRef } from 'react';
 import { CheckIcon } from 'lucide-react';
 import { Spinner, DialogButton, InfoHoverCard, ESide } from '@librechat/client';
-import type { TDangerButtonProps } from '~/common';
 import type { ForwardedRef } from 'react';
+import type { TDangerButtonProps } from '~/common';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -45,7 +45,7 @@ const DangerButton = (props: TDangerButtonProps, ref: ForwardedRef<HTMLButtonEle
         disabled={disabled}
         onClick={onClick}
         className={cn(
-          'btn relative border-none bg-red-500 text-white hover:bg-red-700 dark:hover:bg-red-700',
+          'btn relative border-none bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
           className,
         )}
       >

@@ -1,10 +1,10 @@
 import { memo, useMemo, useRef, useState } from 'react';
 import { useFormContext } from 'react-hook-form';
-import { AttachmentIcon } from '@librechat/client';
 import { EToolResources, EModelEndpoint, AgentCapabilities } from 'librechat-data-provider';
 import type { ExtendedFile, AgentForm } from '~/common';
 import { useFileHandlingNoChatContext } from '~/hooks/Files/useFileHandling';
 import { useAgentFileConfig, useLocalize, useLazyEffect } from '~/hooks';
+import DropzoneContent, { dropzoneClassName } from '../UploadDropzone';
 import FileRow from '~/components/Chat/Input/Files/FileRow';
 import { isEphemeralAgent } from '~/common';
 
@@ -18,7 +18,7 @@ function Files({
   files?: [string, ExtendedFile][];
 }) {
   const localize = useLocalize();
-  const { watch } = useFormContext<AgentForm>();
+  const { setValue } = useFormContext<AgentForm>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<Map<string, ExtendedFile>>(new Map());
   const fileHandlingState = useMemo(() => ({ files, setFiles, conversation: null }), [files]);
@@ -44,8 +44,18 @@ function Files({
     750,
   );
 
-  const codeChecked = watch(AgentCapabilities.execute_code);
   const isUploadDisabled = endpointFileConfig?.disabled ?? false;
+  const uploadDisabled = isEphemeralAgent(agent_id);
+
+  const enableExecuteCode = () =>
+    setValue(AgentCapabilities.execute_code, true, { shouldDirty: true });
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files.length > 0) {
+      enableExecuteCode();
+    }
+    handleFileChange(event);
+  };
 
   if (isUploadDisabled) {
     return null;
@@ -76,24 +86,24 @@ function Files({
         <div>
           <button
             type="button"
-            disabled={isEphemeralAgent(agent_id) || codeChecked === false}
-            className="btn btn-neutral border-token-border-light relative h-9 w-full rounded-lg text-sm font-medium"
+            disabled={uploadDisabled}
+            className={dropzoneClassName}
             onClick={handleButtonClick}
           >
-            <div className="flex w-full items-center justify-center gap-1">
-              <input
-                multiple={true}
-                type="file"
-                style={{ display: 'none' }}
-                tabIndex={-1}
-                ref={fileInputRef}
-                disabled={isEphemeralAgent(agent_id) || codeChecked === false}
-                onChange={handleFileChange}
-              />
-              <AttachmentIcon className="text-token-text-primary h-4 w-4" />
-              {localize('com_ui_upload_code_environment')}
-            </div>
+            <DropzoneContent
+              label={localize('com_ui_upload_code_environment')}
+              hint={localize('com_ui_upload_files_hint')}
+            />
           </button>
+          <input
+            multiple={true}
+            type="file"
+            style={{ display: 'none' }}
+            tabIndex={-1}
+            ref={fileInputRef}
+            disabled={uploadDisabled}
+            onChange={handleFileUpload}
+          />
         </div>
       </div>
     </div>

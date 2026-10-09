@@ -18,8 +18,6 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
-    env:
-      CHART_REPOSITORY: ${{ github.repository_owner }}/librechat-chart
     steps:
       - name: Resolve chart tag
         id: chart-version
@@ -41,14 +39,16 @@ jobs:
             exit 1
           fi
 
+          # OCI repository names must be lowercase, and the repository owner is not guaranteed to be.
           {
+            printf 'CHART_REPOSITORY=%s/librechat-chart\n' "${GITHUB_REPOSITORY_OWNER,,}"
             printf 'CHART_REF=refs/tags/%s\n' "$CHART_TAG"
             printf 'CHART_TAG=%s\n' "$CHART_TAG"
             printf 'CHART_VERSION=%s\n' "$CHART_VERSION"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -60,20 +60,20 @@ jobs:
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
       
       - name: Build Subchart Deps
         run: |
-          cd helm/librechat
-          helm dependency build  
-          cd ../librechat-rag-api
-          helm dependency build      
+          cd helm/librechat-rag-api
+          helm dependency build
+          cd ../librechat
+          helm dependency build
 
       # Log in to GitHub Container Registry
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -85,7 +85,7 @@ jobs:
         uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: librechat
-          repository: ${{ env.CHART_REPOSITORY }}
+          repository: ${{ steps.chart-version.outputs.CHART_REPOSITORY }}
           tag: ${{ steps.chart-version.outputs.CHART_VERSION }}
           path: helm/librechat
           registry: ghcr.io
@@ -97,7 +97,7 @@ jobs:
         uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: librechat-rag-api
-          repository: ${{ env.CHART_REPOSITORY }}
+          repository: ${{ steps.chart-version.outputs.CHART_REPOSITORY }}
           tag: ${{ steps.chart-version.outputs.CHART_VERSION }}
           path: helm/librechat-rag-api
           registry: ghcr.io

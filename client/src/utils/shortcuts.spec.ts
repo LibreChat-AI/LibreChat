@@ -1,15 +1,17 @@
-import type { ShortcutBinding } from './shortcuts';
+import type { ShortcutBinding, ComposerKeyContext } from './shortcuts';
 import {
   hasModifier,
   isCancelKey,
   bindingHash,
   normalizeKey,
   parseBinding,
+  bindingsMatch,
   isModifierKey,
   isValidBinding,
   bindingTokens,
   bindingToString,
   resolveSubmitOverrideAction,
+  resolveComposerKeyDown,
   bindingFromEvent,
   bindingDisplayKeys,
   bindingDisplayString,
@@ -72,6 +74,16 @@ describe('bindingFromEvent', () => {
     expect(bindingFromEvent(event)).toEqual(
       makeBinding({ meta: true, shift: true, key: 'Backspace' }),
     );
+  });
+
+  it('uses the physical punctuation key on non-US keyboard layouts', () => {
+    const event = new KeyboardEvent('keydown', {
+      key: ':',
+      code: 'Period',
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    expect(bindingFromEvent(event)).toEqual(makeBinding({ ctrl: true, shift: true, key: '.' }));
   });
 });
 
@@ -244,5 +256,206 @@ describe('display helpers', () => {
 
   it('labels the Meta modifier as Win on non-mac platforms', () => {
     expect(bindingDisplayString(binding, false)).toBe('Win+Shift+T');
+  });
+});
+
+describe('bindingsMatch', () => {
+  const preemptChord = makeBinding({ ctrl: true, shift: true, key: 'Enter' });
+
+  it('matches the same chord regardless of the order modifiers are written in', () => {
+    expect(bindingsMatch(preemptChord, parseBinding('Ctrl+Shift+Enter'))).toBe(true);
+    expect(bindingsMatch(parseBinding('Shift+Ctrl+Enter'), preemptChord)).toBe(true);
+  });
+
+  it('does not match a different chord or the same key with different modifiers', () => {
+    expect(bindingsMatch(preemptChord, parseBinding('Ctrl+J'))).toBe(false);
+    expect(bindingsMatch(preemptChord, parseBinding('Ctrl+Enter'))).toBe(false);
+    expect(bindingsMatch(preemptChord, parseBinding('Cmd+Shift+Enter'))).toBe(false);
+  });
+
+  it('treats an unbound, unset, or unpressed side as no match', () => {
+    expect(bindingsMatch(preemptChord, null)).toBe(false);
+    expect(bindingsMatch(preemptChord, undefined)).toBe(false);
+    expect(bindingsMatch(null, preemptChord)).toBe(false);
+    expect(bindingsMatch(null, null)).toBe(false);
+  });
+});
+
+describe('resolveComposerKeyDown', () => {
+  function keydown(init: KeyboardEventInit = {}): KeyboardEvent {
+    return new KeyboardEvent('keydown', { key: 'Enter', ...init });
+  }
+
+  const idle: ComposerKeyContext = {
+    isComposing: false,
+    isSubmitting: false,
+    allowSubmitWhileGenerating: false,
+    hasDuringRunModifier: false,
+    shortcutsEnabled: true,
+    enterToSend: true,
+    submitOverride: undefined,
+    yieldedChords: new Set<string>(),
+  };
+  const duringRun: ComposerKeyContext = {
+    ...idle,
+    isSubmitting: true,
+    allowSubmitWhileGenerating: true,
+    hasDuringRunModifier: true,
+  };
+  const boundChord = (binding: ShortcutBinding) => new Set([bindingHash(binding)]);
+
+  it('yields the entire pipeline to a chord bound to an editing-allowed shortcut during a run', () => {
+    const ctx = {
+      ...duringRun,
+      yieldedChords: boundChord(makeBinding({ ctrl: true, shift: true, key: 'Enter' })),
+    };
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), ctx)).toBe('none');
+  });
+
+  it('yields bound Alt+Enter and Ctrl+Enter chords during a run', () => {
+    const altCtx = {
+      ...duringRun,
+      yieldedChords: boundChord(makeBinding({ alt: true, key: 'Enter' })),
+    };
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), altCtx)).toBe('none');
+    const ctrlCtx = {
+      ...duringRun,
+      yieldedChords: boundChord(makeBinding({ ctrl: true, key: 'Enter' })),
+    };
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), ctrlCtx)).toBe('none');
+  });
+
+  it('yields a bound chord while idle too, instead of submitting through the tail', () => {
+    const ctx = {
+      ...idle,
+      yieldedChords: boundChord(makeBinding({ ctrl: true, shift: true, key: 'Enter' })),
+    };
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), ctx)).toBe('none');
+  });
+
+  it('preempts on an unbound Ctrl/Cmd+Shift+Enter during a run', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), duringRun)).toBe(
+      'preempt',
+    );
+    expect(resolveComposerKeyDown(keydown({ metaKey: true, shiftKey: true }), duringRun)).toBe(
+      'preempt',
+    );
+  });
+
+  it('still preempts when submit is rebound to an unrelated chord', () => {
+    const ctx = { ...duringRun, submitOverride: makeBinding({ alt: true, key: 'Enter' }) };
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), ctx)).toBe('preempt');
+  });
+
+  it('submits when submit itself is rebound to the interrupt chord', () => {
+    const ctx = {
+      ...duringRun,
+      submitOverride: makeBinding({ ctrl: true, shift: true, key: 'Enter' }),
+    };
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), ctx)).toBe('submit');
+  });
+
+  it('interrupts on Alt+Enter during a run', () => {
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), duringRun)).toBe('interrupt');
+  });
+
+  it('submits when submit itself is rebound to Alt+Enter during a run', () => {
+    const ctx = { ...duringRun, submitOverride: makeBinding({ alt: true, key: 'Enter' }) };
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), ctx)).toBe('submit');
+  });
+
+  it('still interrupts on Alt+Enter when submit is rebound elsewhere', () => {
+    const ctx = { ...duringRun, submitOverride: makeBinding({ ctrl: true, key: 'J' }) };
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), ctx)).toBe('interrupt');
+  });
+
+  it('routes Ctrl/Cmd+Enter to the alternate action during a run with default submit', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), duringRun)).toBe('other');
+    expect(
+      resolveComposerKeyDown(keydown({ ctrlKey: true }), { ...duringRun, enterToSend: false }),
+    ).toBe('submit');
+  });
+
+  it('gates during-run shortcut chords while preserving plain Enter behavior', () => {
+    const shortcutsDisabled = {
+      ...duringRun,
+      shortcutsEnabled: false,
+      submitOverride: null,
+    };
+
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), shortcutsDisabled)).toBe('newline');
+    expect(
+      resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), shortcutsDisabled),
+    ).toBe('none');
+    expect(
+      resolveComposerKeyDown(keydown({ metaKey: true, shiftKey: true }), shortcutsDisabled),
+    ).toBe('none');
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), shortcutsDisabled)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown(), shortcutsDisabled)).toBe('submit');
+    expect(resolveComposerKeyDown(keydown(), { ...shortcutsDisabled, enterToSend: false })).toBe(
+      'newline',
+    );
+  });
+
+  it('does nothing while a run disallows submission', () => {
+    expect(resolveComposerKeyDown(keydown(), { ...idle, isSubmitting: true })).toBe('none');
+  });
+
+  it('keeps idle Enter semantics', () => {
+    expect(resolveComposerKeyDown(keydown(), idle)).toBe('submit');
+    expect(resolveComposerKeyDown(keydown(), { ...idle, enterToSend: false })).toBe('newline');
+    expect(resolveComposerKeyDown(keydown({ shiftKey: true }), idle)).toBe('none');
+    expect(resolveComposerKeyDown(new KeyboardEvent('keydown', { key: 'a' }), idle)).toBe('none');
+  });
+
+  /* The modifier is the inverse of plain Enter, so whichever of the two sends,
+     the other writes a newline and neither preference leaves the user without
+     a way to break a line. */
+  it('inverts Ctrl/Cmd+Enter against the Enter-to-send preference while idle', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), idle)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown({ metaKey: true }), idle)).toBe('newline');
+    expect(
+      resolveComposerKeyDown(keydown({ ctrlKey: true }), { ...idle, enterToSend: false }),
+    ).toBe('submit');
+    expect(
+      resolveComposerKeyDown(keydown({ metaKey: true }), { ...idle, enterToSend: false }),
+    ).toBe('submit');
+  });
+
+  it('leaves both newline chords available whichever way Enter is bound', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), idle)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown({ shiftKey: true }), idle)).toBe('none');
+    const newlineOnEnter = { ...idle, enterToSend: false };
+    expect(resolveComposerKeyDown(keydown(), newlineOnEnter)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown({ shiftKey: true }), newlineOnEnter)).toBe('newline');
+  });
+
+  /* The during-run table claims Ctrl/Cmd+Enter for the alternate send action,
+     and it resolves before the idle tail, so the newline chord must not reach
+     into a live run and swallow it. */
+  it('does not let the idle newline chord displace the during-run actions', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), duringRun)).toBe('other');
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), duringRun)).toBe(
+      'preempt',
+    );
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), duringRun)).toBe('interrupt');
+  });
+
+  it('resolves through the submit override while idle', () => {
+    const ctx = { ...idle, submitOverride: makeBinding({ alt: true, key: 'Enter' }) };
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), ctx)).toBe('submit');
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), ctx)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown(), ctx)).toBe('submit');
+    expect(resolveComposerKeyDown(keydown(), { ...ctx, enterToSend: false })).toBe('newline');
+  });
+
+  it('blocks a non-shift Enter without acting mid IME composition', () => {
+    expect(resolveComposerKeyDown(keydown(), { ...idle, isComposing: true })).toBe('block');
+    expect(
+      resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), {
+        ...duringRun,
+        isComposing: true,
+      }),
+    ).toBe('none');
   });
 });

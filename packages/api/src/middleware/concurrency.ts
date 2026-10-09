@@ -1,6 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { CacheKeys, Time, ViolationTypes } from 'librechat-data-provider';
-import { standardCache, cacheConfig, ioredisClient } from '~/cache';
+import { standardCache, cacheConfig, instrumentIORedisClient, ioredisClient } from '~/cache';
 import { isEnabled, math } from '~/utils';
 
 const { USE_REDIS } = cacheConfig;
@@ -118,8 +118,9 @@ export async function checkAndIncrementPendingRequest(
   // A single EVAL round-trip atomically increments, checks, and decrements if over-limit.
   if (USE_REDIS && ioredisClient) {
     const key = buildKey(userId);
+    const redisClient = instrumentIORedisClient(ioredisClient, CacheKeys.PENDING_REQ);
     try {
-      const result = (await ioredisClient.eval(
+      const result = (await redisClient.eval(
         CHECK_AND_INCREMENT_SCRIPT,
         1,
         key,
@@ -193,8 +194,9 @@ export async function decrementPendingRequest(userId: string): Promise<void> {
     // Use atomic Lua script to decrement and clean up zero/negative keys in one round-trip
     if (USE_REDIS && ioredisClient) {
       const key = buildKey(userId);
+      const redisClient = instrumentIORedisClient(ioredisClient, CacheKeys.PENDING_REQ);
       try {
-        const newCount = (await ioredisClient.eval(DECREMENT_SCRIPT, 1, key)) as number;
+        const newCount = (await redisClient.eval(DECREMENT_SCRIPT, 1, key)) as number;
         if (newCount === 0) {
           logger.debug(`[concurrency] User ${userId} pending requests cleared`);
         } else {

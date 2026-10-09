@@ -1,32 +1,19 @@
-import { useDeferredValue, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowUpDown, Check, Folder, Plus, Search } from 'lucide-react';
-import { Input, Button, Spinner, DropdownPopup, useMediaQuery } from '@librechat/client';
+import { Ellipsis, Folder, FolderPlus, Pencil, Trash2 } from 'lucide-react';
+import { Button, Spinner, Skeleton, DropdownPopup, buttonVariants } from '@librechat/client';
 import type { TChatProject } from 'librechat-data-provider';
-import type { MenuItemProps, RenderProp } from '~/common';
-import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import type { ProjectSort } from './ProjectsSortMenu';
+import type { MenuItemProps } from '~/common';
 import { useProjectsInfiniteQuery } from '~/data-provider';
 import ProjectCreateDialog from './ProjectCreateDialog';
+import ProjectDeleteDialog from './ProjectDeleteDialog';
+import ProjectEditDialog from './ProjectEditDialog';
+import ProjectsSortMenu from './ProjectsSortMenu';
+import ProjectsNavBar from './ProjectsNavBar';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-
-type ProjectSort = 'name' | 'createdAt' | 'lastConversationAt';
-
-function renderSortMenuItem(label: string, isSelected: boolean): RenderProp {
-  return function SortMenuItem({ className, ...props }) {
-    return (
-      <div {...props} className={cn(className, 'justify-between gap-5')}>
-        <span className="truncate">{label}</span>
-        {isSelected ? (
-          <Check className="h-4 w-4 shrink-0 text-text-primary" aria-hidden="true" />
-        ) : (
-          <span className="h-4 w-4 shrink-0" aria-hidden="true" />
-        )}
-      </div>
-    );
-  };
-}
 
 function formatActivity(project: TChatProject) {
   const value = project.lastConversationAt ?? project.updatedAt ?? project.createdAt;
@@ -40,6 +27,157 @@ function formatActivity(project: TChatProject) {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function ProjectCard({
+  project,
+  onOpen,
+}: {
+  project: TChatProject;
+  onOpen: (projectId: string) => void;
+}) {
+  const localize = useLocalize();
+  const menuId = useId();
+  const editMenuRef = useRef<HTMLButtonElement>(null);
+  const deleteMenuRef = useRef<HTMLButtonElement>(null);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  /** The dialog items keep the menu open so it does not steal focus from the
+   *  dialog mounting beside it; closing the dialog closes the menu too. */
+  const closeMenuWith = (setOpen: (open: boolean) => void, open: boolean) => {
+    setOpen(open);
+    if (!open) {
+      setIsMenuOpen(false);
+    }
+  };
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const activity = formatActivity(project);
+  const menuItems = useMemo<MenuItemProps[]>(
+    () => [
+      {
+        id: `${menuId}-edit`,
+        label: localize('com_ui_edit_project'),
+        icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
+        onClick: () => setIsEditOpen(true),
+        hideOnClick: false,
+        ref: editMenuRef,
+        render: (props) => <button {...props} />,
+      },
+      {
+        id: `${menuId}-delete`,
+        label: localize('com_ui_delete'),
+        icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
+        onClick: () => setIsDeleteOpen(true),
+        hideOnClick: false,
+        ref: deleteMenuRef,
+        render: (props) => <button {...props} />,
+      },
+    ],
+    [localize, menuId],
+  );
+
+  return (
+    <article
+      className={cn(
+        'group/project border-border-light bg-surface-secondary relative flex min-h-[8.5rem] max-w-full min-w-0 flex-col rounded-2xl border',
+        'hover:border-border-medium hover:bg-surface-hover transition-colors duration-150 ease-out motion-reduce:transition-none',
+        isMenuOpen && 'bg-surface-hover',
+      )}
+    >
+      <Button
+        type="button"
+        variant="card"
+        size="tile"
+        className="min-h-[8.5rem] w-full max-w-full min-w-0 flex-1 flex-col items-stretch"
+        onClick={() => onOpen(project._id)}
+      >
+        <span className="bg-surface-tertiary text-text-secondary group-hover/project:text-text-primary flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors">
+          <Folder className="size-4" aria-hidden="true" />
+        </span>
+        <span className="text-text-primary mt-2.5 line-clamp-2 max-w-full min-w-0 text-sm font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
+          {project.name}
+        </span>
+        {project.description ? (
+          <span className="text-text-secondary mt-1 line-clamp-2 max-w-full min-w-0 text-sm leading-relaxed text-pretty wrap-anywhere">
+            {project.description}
+          </span>
+        ) : null}
+        <span className="text-text-secondary mt-auto flex max-w-full min-w-0 items-center gap-2 pt-3 text-xs tabular-nums">
+          <span>
+            {project.conversationCount === 1
+              ? localize('com_ui_project_chat_count_single')
+              : localize('com_ui_project_chat_count', {
+                  count: project.conversationCount,
+                })}
+          </span>
+          {activity ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <time dateTime={project.lastConversationAt ?? project.updatedAt ?? project.createdAt}>
+                {activity}
+              </time>
+            </>
+          ) : null}
+        </span>
+      </Button>
+      <div className="absolute top-2 right-2">
+        <DropdownPopup
+          portal={true}
+          focusLoop={true}
+          unmountOnHide={true}
+          menuId={menuId}
+          isOpen={isMenuOpen}
+          setIsOpen={setIsMenuOpen}
+          className="z-[125]"
+          minWidth="11rem"
+          iconClassName="mr-2 text-text-secondary"
+          trigger={
+            <Ariakit.MenuButton
+              aria-label={localize('com_ui_more_options')}
+              className={cn(
+                buttonVariants({ variant: 'row-action', size: 'icon-sm' }),
+                'text-text-secondary rounded-lg',
+                isMenuOpen && 'bg-surface-hover-alt text-text-primary',
+              )}
+            >
+              <Ellipsis className="h-4 w-4" aria-hidden="true" />
+            </Ariakit.MenuButton>
+          }
+          items={menuItems}
+        />
+      </div>
+      <ProjectEditDialog
+        open={isEditOpen}
+        onOpenChange={(open) => closeMenuWith(setIsEditOpen, open)}
+        project={project}
+        triggerRef={editMenuRef}
+      />
+      <ProjectDeleteDialog
+        open={isDeleteOpen}
+        onOpenChange={(open) => closeMenuWith(setIsDeleteOpen, open)}
+        project={project}
+        triggerRef={deleteMenuRef}
+      />
+    </article>
+  );
+}
+
+function ProjectGridSkeleton() {
+  return (
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3" aria-hidden="true">
+      {Array.from({ length: 6 }, (_, index) => (
+        <div
+          key={index}
+          className="bg-surface-secondary flex min-h-[8.5rem] flex-col rounded-2xl p-4"
+        >
+          <Skeleton className="size-9 rounded-xl" />
+          <Skeleton className="mt-3 h-5 w-2/3" />
+          <Skeleton className="mt-2 h-4 w-full" />
+          <Skeleton className="mt-auto h-3 w-24" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ProjectsView() {
   const localize = useLocalize();
   const navigate = useNavigate();
@@ -47,44 +185,18 @@ export default function ProjectsView() {
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<ProjectSort>('lastConversationAt');
   const [isCreating, setIsCreating] = useState(searchParams.get('new') === '1');
-  const sortMenuId = useId();
-  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
   const deferredSearch = useDeferredValue(search);
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const [pageSentinel, setPageSentinel] = useState<HTMLDivElement | null>(null);
 
-  const { data, fetchNextPage, isFetchingNextPage, isLoading } = useProjectsInfiniteQuery({
-    search: deferredSearch || undefined,
-    sortBy,
-    sortDirection: sortBy === 'name' ? 'asc' : 'desc',
-  });
+  const { data, fetchNextPage, hasNextPage, isFetching, isFetchingNextPage, isLoading } =
+    useProjectsInfiniteQuery({
+      search: deferredSearch || undefined,
+      sortBy,
+      sortDirection: sortBy === 'name' ? 'asc' : 'desc',
+    });
 
   const projects = useMemo(() => data?.pages.flatMap((page) => page.projects) ?? [], [data?.pages]);
-  const hasNextPage = data?.pages[data.pages.length - 1]?.nextCursor != null;
-  const sortOptions = useMemo(
-    () => [
-      { value: 'lastConversationAt' as const, label: localize('com_ui_latest_activity') },
-      { value: 'createdAt' as const, label: localize('com_ui_sort_created') },
-      { value: 'name' as const, label: localize('com_ui_name') },
-    ],
-    [localize],
-  );
-  const selectedSortLabel =
-    sortOptions.find((option) => option.value === sortBy)?.label ??
-    localize('com_ui_latest_activity');
-  const sortMenuItems = useMemo<MenuItemProps[]>(
-    () =>
-      sortOptions.map((option) => {
-        const isSelected = sortBy === option.value;
-        return {
-          id: `project-sort-${option.value}`,
-          ariaLabel: option.label,
-          ariaChecked: isSelected,
-          onClick: () => setSortBy(option.value),
-          render: renderSortMenuItem(option.label, isSelected),
-        };
-      }),
-    [sortBy, sortOptions],
-  );
 
   useEffect(() => {
     if (searchParams.get('new') === '1') {
@@ -101,73 +213,53 @@ export default function ProjectsView() {
     }
   };
 
-  return (
-    <main className="flex h-full min-h-0 flex-col overflow-auto bg-surface-primary text-text-primary">
-      <div className="container mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-4 py-8 md:px-6 lg:pt-12">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2.5">
-            {isSmallScreen ? <OpenSidebar /> : null}
-            <h1 className="text-2xl font-bold tracking-tight text-text-primary md:text-3xl">
-              {localize('com_ui_projects')}
-            </h1>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="hidden text-sm text-text-secondary sm:inline">
-              {localize('com_ui_sort_by')}
-            </span>
-            <DropdownPopup
-              portal={true}
-              focusLoop={true}
-              unmountOnHide={true}
-              menuId={sortMenuId}
-              isOpen={isSortMenuOpen}
-              setIsOpen={setIsSortMenuOpen}
-              className="z-[125] min-w-56"
-              trigger={
-                <Ariakit.MenuButton
-                  aria-label={localize('com_ui_sort_projects_by')}
-                  className={cn(
-                    'inline-flex h-10 items-center justify-between gap-2 whitespace-nowrap rounded-lg border border-border-medium bg-surface-secondary px-3 text-sm font-medium text-text-primary transition-colors hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary disabled:pointer-events-none disabled:opacity-50 sm:w-44',
-                    isSortMenuOpen && 'bg-surface-hover text-text-primary',
-                  )}
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <ArrowUpDown
-                      className="h-4 w-4 shrink-0 text-text-secondary"
-                      aria-hidden="true"
-                    />
-                    <span className="truncate">{selectedSortLabel}</span>
-                  </span>
-                </Ariakit.MenuButton>
-              }
-              items={sortMenuItems}
-            />
-            <Button type="button" variant="submit" size="sm" onClick={() => setIsCreating(true)}>
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              {localize('com_ui_new_project')}
-            </Button>
-          </div>
-        </div>
+  const loadMore = useCallback(() => {
+    if (hasNextPage === true && !isFetching) {
+      /** `cancelRefetch: false` so a scroll burst coalesces into one request
+       *  instead of each intersection restarting the page in flight. */
+      void fetchNextPage({ cancelRefetch: false });
+    }
+  }, [fetchNextPage, hasNextPage, isFetching]);
 
-        <div className="flex flex-col gap-5">
-          <label className="relative min-w-0 flex-1">
-            <span className="sr-only">{localize('com_ui_search_projects')}</span>
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-secondary"
-              aria-hidden="true"
-            />
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder={localize('com_ui_search_projects')}
-              className="border-border-medium bg-surface-secondary pl-9 text-text-primary placeholder:text-text-secondary focus-visible:ring-2 focus-visible:ring-ring-primary"
-            />
-          </label>
-          <div className="flex items-center">
-            <span className="rounded-full bg-surface-active-alt px-4 py-2 text-sm font-medium text-text-primary">
-              {localize('com_ui_your_projects')}
-            </span>
-          </div>
+  /** The list scrolls inside `<main>`, so the viewport root would clip the
+   *  sentinel and only report it once it is already on screen; observing the
+   *  scroll container lets `rootMargin` prefetch a page ahead of the edge. */
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (pageSentinel == null || root == null) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          loadMore();
+        }
+      },
+      { root, rootMargin: '600px 0px' },
+    );
+    observer.observe(pageSentinel);
+    return () => observer.disconnect();
+  }, [loadMore, pageSentinel]);
+
+  return (
+    <main
+      ref={scrollRef}
+      className="bg-surface-primary-alt text-text-primary flex h-full min-h-0 flex-col overflow-auto"
+    >
+      <ProjectsNavBar
+        onCreate={() => setIsCreating(true)}
+        search={search}
+        onSearchChange={setSearch}
+      />
+
+      <div className="flex w-full flex-1 flex-col px-4 pt-3 pb-10 md:px-6 md:pt-4">
+        <div className="flex min-h-8 items-center justify-between gap-3">
+          <h2 className="text-text-primary text-sm font-medium">
+            {localize('com_ui_your_projects')}
+          </h2>
+          {!isLoading && projects.length > 0 ? (
+            <ProjectsSortMenu sortBy={sortBy} onSortChange={setSortBy} />
+          ) : null}
         </div>
 
         <ProjectCreateDialog
@@ -176,67 +268,58 @@ export default function ProjectsView() {
           onCreated={(project) => navigate(`/projects/${project._id}`)}
         />
 
-        {isLoading ? (
-          <div className="flex flex-1 items-center justify-center">
-            <Spinner className="text-text-primary" />
-          </div>
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2 md:gap-4">
-            {projects.map((project) => {
-              const activity = formatActivity(project);
-              return (
-                <button
+        <div className="mt-4 flex flex-1 flex-col">
+          {isLoading && <ProjectGridSkeleton />}
+          {!isLoading && projects.length > 0 && (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3">
+              {projects.map((project) => (
+                <ProjectCard
                   key={project._id}
-                  type="button"
-                  className={cn(
-                    'group/project flex min-h-[8.5rem] flex-col rounded-xl border border-border-medium bg-surface-secondary p-4 text-left transition-colors',
-                    'hover:border-border-heavy hover:bg-surface-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary',
-                  )}
-                  onClick={() => navigate(`/projects/${project._id}`)}
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <Folder className="h-4 w-4 shrink-0 text-text-secondary" aria-hidden="true" />
-                    <span className="truncate text-base font-semibold text-text-primary">
-                      {project.name}
-                    </span>
-                  </span>
-                  {project.description ? (
-                    <span className="mt-2 line-clamp-2 text-sm leading-relaxed text-text-secondary">
-                      {project.description}
-                    </span>
-                  ) : null}
-                  <span className="mt-auto flex items-center justify-between gap-2 pt-4 text-xs text-text-secondary">
-                    <span>
-                      {project.conversationCount === 1
-                        ? localize('com_ui_project_chat_count_single')
-                        : localize('com_ui_project_chat_count', {
-                            count: project.conversationCount,
-                          })}
-                    </span>
-                    {activity ? <span className="shrink-0 truncate">{activity}</span> : null}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {!isLoading && projects.length === 0 && (
-          <div className="rounded-lg border border-border-medium bg-transparent py-16 text-center text-sm text-text-secondary">
-            {localize('com_ui_no_projects')}
-          </div>
-        )}
+                  project={project}
+                  onOpen={(projectId) => navigate(`/projects/${projectId}`)}
+                />
+              ))}
+            </div>
+          )}
+          {!isLoading && projects.length === 0 && (
+            <div className="bg-surface-secondary flex flex-1 flex-col items-center justify-center rounded-2xl px-6 py-16 text-center">
+              <span className="bg-surface-tertiary text-text-secondary flex h-14 w-14 items-center justify-center rounded-2xl">
+                <FolderPlus className="h-7 w-7" aria-hidden="true" />
+              </span>
+              <h3 className="text-text-primary mt-4 text-base font-semibold text-balance">
+                {search ? localize('com_ui_no_matching_projects') : localize('com_ui_no_projects')}
+              </h3>
+              {!search ? (
+                <>
+                  <p className="text-text-secondary mt-1 max-w-sm text-sm text-pretty">
+                    {localize('com_ui_add_first_project')}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    className="mt-5"
+                    onClick={() => setIsCreating(true)}
+                  >
+                    <FolderPlus className="h-4 w-4" aria-hidden="true" />
+                    {localize('com_ui_new_project')}
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          )}
+        </div>
 
         {hasNextPage && (
-          <Button
-            type="button"
-            variant="outline"
-            className="mx-auto"
-            onClick={() => fetchNextPage()}
-            disabled={isFetchingNextPage}
+          <div
+            ref={setPageSentinel}
+            className="text-text-primary flex h-16 shrink-0 items-center justify-center"
+            role="status"
+            aria-live="polite"
+            aria-label={localize('com_ui_loading')}
           >
-            {isFetchingNextPage ? localize('com_ui_loading') : localize('com_ui_load_more')}
-          </Button>
+            {isFetchingNextPage ? <Spinner className="size-5" /> : null}
+          </div>
         )}
       </div>
     </main>

@@ -1,14 +1,15 @@
 import { logger } from '@librechat/data-schemas';
 import type { Redis, Cluster } from 'ioredis';
-import { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
-import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { createStreamServices } from '~/stream/createStreamServices';
-import { createMockPublisher } from './helpers/publisher';
 import {
   ioredisClient as staticRedisClient,
   keyvRedisClient as staticKeyvClient,
   keyvRedisClientReady,
 } from '~/cache/redisClients';
+import { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
+import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { createStreamServices } from '~/stream/createStreamServices';
+import { createMockPublisher } from './helpers/publisher';
 
 logger.silent = true;
 
@@ -24,6 +25,11 @@ logger.silent = true;
  * Fix: Preserve stream state (callbacks, abort handlers) across reconnect cycles
  * instead of deleting it. The state is fully cleaned up by cleanup() when the
  * job completes.
+ *
+ * A second failure mode reused the conversation-scoped stream after one replica
+ * deleted its shared sequence counter. A subscriber still attached elsewhere kept
+ * the old nextSeq and rejected the new turn's restarted sequence as duplicates.
+ * Local cleanup now preserves the shared counter until its bounded Redis TTL expires.
  *
  * Run with: USE_REDIS=true npx jest reconnect-reorder-desync
  */
@@ -110,6 +116,144 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       expect(abortCallbackFired).toBe(true);
 
       sub2.unsubscribe();
+      transport.destroy();
+    });
+
+    test('stale unsubscribe cannot detach a replacement stream state', () => {
+      const mockPublisher = createMockPublisher();
+      const mockSubscriber = {
+        on: jest.fn(),
+        subscribe: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn().mockResolvedValue(undefined),
+      };
+      const transport = new RedisEventTransport(
+        mockPublisher as unknown as Redis,
+        mockSubscriber as unknown as Redis,
+      );
+      const streamId = 'stale-unsubscribe-test';
+
+      const staleSubscription = transport.subscribe(streamId, { onChunk: () => {} });
+      transport.cleanup(streamId);
+      mockSubscriber.unsubscribe.mockClear();
+
+      const currentSubscription = transport.subscribe(streamId, { onChunk: () => {} });
+      staleSubscription.unsubscribe();
+
+      expect(transport.getSubscriberCount(streamId)).toBe(1);
+      expect(mockSubscriber.unsubscribe).not.toHaveBeenCalled();
+
+      currentSubscription.unsubscribe();
+      transport.destroy();
+    });
+  });
+
+  describe('First-subscriber replay ordering (Unit)', () => {
+    test('does not deliver a buffered event twice while its Redis sequence assignment settles', async () => {
+      const mockPublisher = createMockPublisher();
+      let resolveSequence!: (sequence: number) => void;
+      let markEvalStarted!: () => void;
+      const evalStarted = new Promise<void>((resolve) => {
+        markEvalStarted = resolve;
+      });
+      mockPublisher.eval.mockImplementationOnce(
+        () =>
+          new Promise<number>((resolve) => {
+            resolveSequence = resolve;
+            markEvalStarted();
+          }),
+      );
+      // Redis has already executed INCR + PUBLISH while the command response is in flight.
+      mockPublisher.get.mockResolvedValueOnce('1');
+
+      const mockSubscriber = {
+        on: jest.fn(),
+        subscribe: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn().mockResolvedValue(undefined),
+      };
+      const transport = new RedisEventTransport(
+        mockPublisher as unknown as Redis,
+        mockSubscriber as unknown as Redis,
+      );
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore: new InMemoryJobStore(),
+        eventTransport: transport,
+        isRedis: true,
+        cleanupOnComplete: false,
+      });
+
+      const streamId = 'first-subscriber-publish-race';
+      const event = {
+        event: 'on_message_delta',
+        data: { index: 0 },
+      };
+      await manager.createJob(streamId, 'user-1');
+
+      const emitPromise = manager.emitChunk(streamId, event);
+      await evalStarted;
+
+      const received: unknown[] = [];
+      const subscribePromise = manager.subscribe(streamId, (chunk) => received.push(chunk));
+      for (
+        let attempt = 0;
+        attempt < 10 && transport.getSubscriberCount(streamId) === 0;
+        attempt++
+      ) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(transport.getSubscriberCount(streamId)).toBe(1);
+
+      const messageHandler = mockSubscriber.on.mock.calls.find(
+        (call) => call[0] === 'message',
+      )?.[1] as (channel: string, message: string) => void;
+      messageHandler(
+        `stream:{${streamId}}:events`,
+        JSON.stringify({ type: 'chunk', seq: 0, data: event }),
+      );
+      const deliveredBeforeReplay = received.length;
+
+      resolveSequence(0);
+      await Promise.all([emitPromise, subscribePromise]);
+
+      expect(deliveredBeforeReplay).toBe(0);
+      expect(received).toEqual([event]);
+
+      await manager.destroy();
+    });
+
+    test('a failed Redis sync still releases only events beyond the replay frontier', async () => {
+      const mockPublisher = createMockPublisher();
+      mockPublisher.get.mockRejectedValueOnce(new Error('GET failed'));
+      const mockSubscriber = {
+        on: jest.fn(),
+        subscribe: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn().mockResolvedValue(undefined),
+      };
+      const transport = new RedisEventTransport(
+        mockPublisher as unknown as Redis,
+        mockSubscriber as unknown as Redis,
+      );
+      const streamId = 'first-subscriber-sync-failure';
+      const chunks: unknown[] = [];
+      transport.subscribe(
+        streamId,
+        {
+          onChunk: (event) => chunks.push(event),
+        },
+        { deferSequenceDelivery: true },
+      );
+
+      const messageHandler = mockSubscriber.on.mock.calls.find(
+        (call) => call[0] === 'message',
+      )?.[1] as (channel: string, message: string) => void;
+      const channel = `stream:{${streamId}}:events`;
+      messageHandler(channel, JSON.stringify({ type: 'chunk', seq: 0, data: { index: 0 } }));
+      messageHandler(channel, JSON.stringify({ type: 'chunk', seq: 1, data: { index: 1 } }));
+      expect(chunks).toEqual([]);
+
+      await expect(transport.syncReorderBuffer(streamId, 1)).rejects.toThrow('GET failed');
+
+      expect(chunks).toEqual([{ index: 1 }]);
       transport.destroy();
     });
   });
@@ -291,6 +435,51 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
   });
 
   describe('syncReorderBuffer race: message arrives during async GET window (Unit)', () => {
+    test('stale sync cannot overwrite a replacement stream state', async () => {
+      const mockPublisher = createMockPublisher();
+      const mockSubscriber = {
+        on: jest.fn(),
+        subscribe: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn().mockResolvedValue(undefined),
+      };
+      const transport = new RedisEventTransport(
+        mockPublisher as unknown as Redis,
+        mockSubscriber as unknown as Redis,
+      );
+      const streamId = 'stale-sync-replacement-test';
+      transport.subscribe(streamId, { onChunk: () => {} });
+
+      let resolveOldSync!: (value: string | null) => void;
+      mockPublisher.get.mockImplementationOnce(
+        () =>
+          new Promise<string | null>((resolve) => {
+            resolveOldSync = resolve;
+          }),
+      );
+      const oldSync = transport.syncReorderBuffer(streamId);
+
+      transport.cleanup(streamId);
+      const replacementChunks: unknown[] = [];
+      transport.subscribe(streamId, {
+        onChunk: (event) => replacementChunks.push(event),
+      });
+
+      const messageHandler = mockSubscriber.on.mock.calls.find(
+        (call) => call[0] === 'message',
+      )?.[1] as (channel: string, message: string) => void;
+      const channel = `stream:{${streamId}}:events`;
+      messageHandler(channel, JSON.stringify({ type: 'chunk', seq: 0, data: { index: 0 } }));
+
+      // The old GET completes after cleanup with an obsolete high frontier.
+      // It must not advance the replacement state from nextSeq=1 to nextSeq=50.
+      resolveOldSync('50');
+      await oldSync;
+      messageHandler(channel, JSON.stringify({ type: 'chunk', seq: 1, data: { index: 1 } }));
+
+      expect(replacementChunks).toEqual([{ index: 0 }, { index: 1 }]);
+      transport.destroy();
+    });
+
     test('should not drop a chunk that lands in pending while GET is in-flight', async () => {
       const mockPublisher = createMockPublisher();
       const mockSubscriber = {
@@ -350,7 +539,7 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       transport.destroy();
     });
 
-    test('same-replica: should not drop a live chunk when INCR advances past earlyReplayCount during GET', async () => {
+    test('same-replica: should not drop a live chunk when INCR advances past the replay frontier during GET', async () => {
       const mockPublisher = createMockPublisher();
       const mockSubscriber = {
         on: jest.fn(),
@@ -390,7 +579,7 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
           }),
       );
 
-      // Call syncReorderBuffer with earlyReplayCount=5 (seqs 0–4 were replayed)
+      // Absolute replay frontier is 5 (seqs 0–4 were replayed).
       const syncPromise = transport.syncReorderBuffer(streamId, 5);
 
       // During GET window: LLM emits seq 5 (INCR → counter=6), subscriber receives it
@@ -401,7 +590,7 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       resolveGet('6');
       await syncPromise;
 
-      // seq 5 MUST be delivered — it's live (seq 5 >= earlyReplayCount 5), not a duplicate.
+      // seq 5 MUST be delivered — it is at the replay frontier, not below it.
       // With the old boolean pruneStaleEntries, 5 < currentSeq(6) would have pruned it.
       expect(chunks.map((c) => (c as { index: number }).index)).toContain(5);
 
@@ -463,7 +652,7 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       // Now pub/sub for seq 5 arrives AFTER sync completed
       messageHandler(channel, JSON.stringify({ type: 'chunk', seq: 5, data: { index: 5 } }));
 
-      // seq 5 must be delivered — nextSeq should have been capped at earlyReplayCount (5),
+      // seq 5 must be delivered — nextSeq should have been capped at the replay frontier (5),
       // not advanced to currentSeq (6) which would have dropped it.
       expect(chunks.map((c) => (c as { index: number }).index)).toContain(5);
 
@@ -676,6 +865,162 @@ describe('Reconnect Reorder Buffer Desync (Regression)', () => {
       }
 
       await manager.destroy();
+    });
+
+    test('early buffer replay advances to its absolute Redis sequence', async () => {
+      if (!ioredisClient) {
+        console.warn('Redis not available, skipping test');
+        return;
+      }
+
+      const manager = new GenerationJobManagerClass();
+      manager.configure(
+        createStreamServices({
+          useRedis: true,
+          redisClient: ioredisClient,
+        }),
+      );
+      manager.initialize();
+
+      const streamId = `absolute-replay-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+
+      // Redis sequences are conversation-scoped and survive across turns, so a
+      // fresh generation's early buffer can hold events whose sequences start
+      // well above zero. Seed the shared counter to model that later turn.
+      await ioredisClient.set(`stream:{${streamId}}:seq`, '5');
+
+      // These buffered events receive seqs 5 and 6. Replaying two events must
+      // therefore advance to seq=7, not to the relative count of 2.
+      await manager.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: { index: 0 },
+      });
+      await manager.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: { index: 1 },
+      });
+
+      const resumedEvents: unknown[] = [];
+      const resumedSubscription = await manager.subscribe(streamId, (event) => {
+        resumedEvents.push(event);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      await manager.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: { index: 2 },
+      });
+      // Must arrive before the 500 ms reorder timeout.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(
+        resumedEvents.map((event) => (event as { data: { index: number } }).data.index),
+      ).toEqual([0, 1, 2]);
+
+      resumedSubscription?.unsubscribe();
+      await manager.destroy();
+    });
+
+    /**
+     * A producer replica can tear down its local transport after generation 1 while a
+     * subscriber on another replica is still attached with nextSeq=10. Since stream IDs
+     * are conversation IDs, generation 2 reuses the same Redis ordering namespace. The
+     * shared counter must continue at 10 for the new attachment, while generation tags
+     * keep the abandoned generation-1 subscriber from receiving generation-2 content.
+     */
+    test('regenerated turn preserves sequence without leaking to a lingering predecessor subscriber', async () => {
+      if (!ioredisClient) {
+        console.warn('Redis not available, skipping test');
+        return;
+      }
+
+      const producer = new GenerationJobManagerClass();
+      const producerServices = createStreamServices({
+        useRedis: true,
+        redisClient: ioredisClient,
+      });
+      producer.configure(producerServices);
+      producer.initialize();
+
+      const consumer = new GenerationJobManagerClass();
+      const consumerServices = createStreamServices({
+        useRedis: true,
+        redisClient: ioredisClient,
+      });
+      consumer.configure(consumerServices);
+      consumer.initialize();
+
+      const streamId = `xrep-regen-${Date.now()}`;
+      const sequenceKey = `stream:{${streamId}}:seq`;
+      await producer.createJob(streamId, 'user-1');
+
+      const firstGeneration: unknown[] = [];
+      const lingering = await consumer.subscribe(streamId, (event) => {
+        firstGeneration.push(event);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      for (let index = 0; index < 10; index++) {
+        await producer.emitChunk(streamId, {
+          event: 'on_message_delta',
+          data: { generation: 1, index },
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(
+        firstGeneration.filter((event) => JSON.stringify(event).includes('"generation":1')),
+      ).toHaveLength(10);
+      expect(await ioredisClient.get(sequenceKey)).toBe('10');
+
+      await producer.completeJob(streamId);
+      producerServices.eventTransport.cleanup(streamId);
+
+      // Local cleanup must not reset a counter that another replica's subscriber
+      // still uses as its ordering frontier.
+      expect(await ioredisClient.get(sequenceKey)).toBe('10');
+
+      await producer.createJob(streamId, 'user-1');
+
+      // Exercise the normal POST-then-SSE path: generation can emit before its
+      // local subscriber attaches, so this event is replayed from earlyEventBuffer.
+      // Its Redis sequence is 10, not 0, because the conversation counter survived.
+      await producer.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: { generation: 2, index: 0 },
+      });
+
+      const regenerated: unknown[] = [];
+      const secondSubscription = await producer.subscribe(streamId, (event) => {
+        regenerated.push(event);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      for (let index = 1; index < 5; index++) {
+        await producer.emitChunk(streamId, {
+          event: 'on_message_delta',
+          data: { generation: 2, index },
+        });
+      }
+      // Live chunks must not wait for the 500 ms reorder-buffer force flush.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      expect(
+        regenerated
+          .filter((event) => JSON.stringify(event).includes('"generation":2'))
+          .map((event) => (event as { data: { index: number } }).data.index),
+      ).toEqual([0, 1, 2, 3, 4]);
+      expect(
+        firstGeneration
+          .filter((event) => JSON.stringify(event).includes('"generation":2'))
+          .map((event) => (event as { data: { index: number } }).data.index),
+      ).toEqual([]);
+      expect(await ioredisClient.get(sequenceKey)).toBe('15');
+
+      lingering?.unsubscribe();
+      secondSubscription?.unsubscribe();
+      await producer.destroy();
+      await consumer.destroy();
     });
   });
 });

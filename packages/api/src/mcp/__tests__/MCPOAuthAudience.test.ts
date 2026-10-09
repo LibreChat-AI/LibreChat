@@ -10,10 +10,10 @@
  * request body it receives.
  */
 
-import * as http from 'http';
 import * as net from 'net';
-import type { Socket } from 'net';
+import * as http from 'http';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
+import type { Socket } from 'net';
 import { MCPOAuthHandler } from '~/mcp/oauth';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -172,7 +172,10 @@ describe('MCP OAuth audience parameter', () => {
             client_id: 'test-client',
             client_secret: 'test-secret',
             redirect_uris: ['http://localhost/callback'],
+            token_endpoint_auth_method: 'client_secret_post',
           },
+          storedTokenEndpoint: `${recorder.url}token`,
+          storedAuthMethods: ['client_secret_post'],
         },
         {},
         {
@@ -200,7 +203,10 @@ describe('MCP OAuth audience parameter', () => {
             client_id: 'test-client',
             client_secret: 'test-secret',
             redirect_uris: ['http://localhost/callback'],
+            token_endpoint_auth_method: 'client_secret_post',
           },
+          storedTokenEndpoint: `${recorder.url}token`,
+          storedAuthMethods: ['client_secret_post'],
         },
         {},
         {
@@ -229,7 +235,10 @@ describe('MCP OAuth audience parameter', () => {
             client_id: 'test-client',
             client_secret: 'test-secret',
             redirect_uris: ['http://localhost/callback'],
+            token_endpoint_auth_method: 'client_secret_post',
           },
+          storedTokenEndpoint: `${recorder.url}token`,
+          storedAuthMethods: ['client_secret_post'],
         },
         {},
         {

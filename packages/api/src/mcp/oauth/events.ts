@@ -1,7 +1,7 @@
 import { Constants, Time } from 'librechat-data-provider';
 import { GraphEvents, StepTypes } from '@librechat/agents';
 import type * as t from '~/types';
-import { buildOAuthToolCallName } from '~/mcp/utils';
+import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
 
 export type OAuthPromptOptions = {
   expiresAt?: number;
@@ -24,7 +24,10 @@ export function getOAuthPromptExpiresAt(
     : now + Time.TWO_MINUTES;
 }
 
-export function getMCPServerNamesFromTools(tools?: unknown[] | null): Set<string> {
+export function getMCPServerNamesFromTools(
+  tools?: unknown[] | null,
+  knownServerNames?: readonly string[],
+): Set<string> {
   const serverNames = new Set<string>();
 
   for (const tool of tools ?? []) {
@@ -32,12 +35,12 @@ export function getMCPServerNamesFromTools(tools?: unknown[] | null): Set<string
       continue;
     }
 
-    const delimiterIndex = tool.indexOf(Constants.mcp_delimiter);
-    if (delimiterIndex === -1) {
+    const [, serverName] = splitMCPToolKey(tool, knownServerNames);
+    if (!serverName) {
       continue;
     }
 
-    serverNames.add(tool.slice(delimiterIndex + Constants.mcp_delimiter.length));
+    serverNames.add(serverName);
   }
 
   return serverNames;

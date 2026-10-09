@@ -5,25 +5,15 @@ export const BlinkAnimation = ({
   active: boolean;
   children: React.ReactNode;
 }) => {
-  const style = `
-  @keyframes blink-animation {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0;
-    }
-  }`;
-
   if (!active) {
     return <>{children}</>;
   }
 
-  return (
-    <>
-      <style>{style}</style>
-      <div style={{ animation: 'blink-animation 3s infinite' }}>{children}</div>
-    </>
-  );
+  /**
+   * Animation comes from the `blink` keyframes in the Tailwind config rather than an
+   * inline `<style>` tag: stylesheet text rendered into the DOM becomes part of the
+   * ancestor's `textContent` and leaks raw CSS into label readouts. `motion-reduce`
+   * honours a user's reduced-motion preference.
+   */
+  return <div className="animate-logo-blink motion-reduce:animate-none">{children}</div>;
 };

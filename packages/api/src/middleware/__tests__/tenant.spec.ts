@@ -3,6 +3,8 @@ import {
   getTenantId,
   getUserId,
   getRequestId,
+  getRequestMethod,
+  getRequestPath,
   SYSTEM_TENANT_ID,
   logger,
 } from '@librechat/data-schemas';
@@ -12,6 +14,7 @@ import type { ServerRequest } from '~/types/http';
 // excluded from the public barrel export (index.ts).
 import {
   tenantContextMiddleware,
+  requestContextMiddleware,
   restoreTenantContextFromReq,
   resolveRequestTenantId,
   _resetTenantMiddlewareStrictCache,
@@ -75,6 +78,103 @@ function runMiddlewareContext(
     tenantContextMiddleware(req, res, next);
   });
 }
+
+function runRequestContext(req: Parameters<typeof requestContextMiddleware>[0]): Promise<{
+  tenantId?: string;
+  userId?: string;
+  requestId?: string;
+  method?: string;
+  path?: string;
+}> {
+  return new Promise((resolve) => {
+    requestContextMiddleware(req, mockRes(), async () => {
+      await new Promise((nextTick) => setImmediate(nextTick));
+      resolve({
+        tenantId: getTenantId(),
+        userId: getUserId(),
+        requestId: getRequestId(),
+        method: getRequestMethod(),
+        path: getRequestPath(),
+      });
+    });
+  });
+}
+
+describe('requestContextMiddleware', () => {
+  it('generates a safe request ID when no trusted correlation ID is available', async () => {
+    const req: Parameters<typeof requestContextMiddleware>[0] = {
+      headers: {
+        'x-request-id': `${'a'.repeat(24)}.${'b'.repeat(24)}.${'c'.repeat(24)}`,
+      },
+      method: 'GET',
+      originalUrl: '/api/banner',
+    };
+
+    const context = await runRequestContext(req);
+
+    expect(context.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(req.requestId).toBe(context.requestId);
+  });
+
+  it('does not trust tenant or user identity before authentication', async () => {
+    const req: Parameters<typeof requestContextMiddleware>[0] = {
+      headers: { 'x-request-id': 'pre-auth-request' },
+      method: 'GET',
+      originalUrl: '/api/auth/me',
+      tenantId: 'untrusted-tenant',
+      user: { id: 'untrusted-user', tenantId: 'untrusted-tenant' },
+    };
+
+    const context = await runRequestContext(req);
+
+    expect(context).toEqual({
+      tenantId: undefined,
+      userId: undefined,
+      requestId: 'pre-auth-request',
+      method: 'GET',
+      path: '/api/auth',
+    });
+    expect(req.requestId).toBe('pre-auth-request');
+  });
+
+  it('keeps malformed-auth and parallel page requests independently attributable', async () => {
+    const malformedAuthRequest = {
+      headers: {
+        authorization: 'Bearer malformed-token',
+        'x-request-id': 'auth-401-request',
+      },
+      method: 'GET',
+      originalUrl: '/api/auth/me?access_token=not-logged',
+    };
+    const pageRequest = {
+      headers: { 'x-request-id': 'page-request' },
+      method: 'GET',
+      originalUrl: '/api/banner?access_token=not-logged',
+    };
+
+    const [authContext, pageContext] = await Promise.all([
+      runRequestContext(malformedAuthRequest),
+      runRequestContext(pageRequest),
+    ]);
+
+    expect(authContext).toEqual({
+      tenantId: undefined,
+      userId: undefined,
+      requestId: 'auth-401-request',
+      method: 'GET',
+      path: '/api/auth',
+    });
+    expect(pageContext).toEqual({
+      tenantId: undefined,
+      userId: undefined,
+      requestId: 'page-request',
+      method: 'GET',
+      path: '/api/banner',
+    });
+  });
+});
 
 describe('tenantContextMiddleware', () => {
   afterEach(() => {

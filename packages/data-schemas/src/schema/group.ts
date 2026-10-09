@@ -56,6 +56,6 @@ groupSchema.index(
     partialFilterExpression: { idOnTheSource: { $exists: true } },
   },
 );
-groupSchema.index({ memberIds: 1 });
+groupSchema.index({ memberIds: 1, tenantId: 1 });
 
 export default groupSchema;

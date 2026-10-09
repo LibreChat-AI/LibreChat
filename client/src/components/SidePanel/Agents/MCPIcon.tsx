@@ -1,24 +1,18 @@
-import { useState, useEffect, useRef } from 'react';
-import { SquirclePlusIcon } from '@librechat/client';
+import { useRef } from 'react';
+import { Button, SquirclePlusIcon } from '@librechat/client';
+import CustomIcon from '~/components/ui/CustomIcon';
 import { useLocalize } from '~/hooks';
 
 interface MCPIconProps {
   icon?: string;
   onIconChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  /** Id of the alert explaining a rejected pick. */
+  errorId?: string;
 }
 
-export default function MCPIcon({ icon, onIconChange }: MCPIconProps) {
-  const [previewUrl, setPreviewUrl] = useState('');
+export default function MCPIcon({ icon, onIconChange, errorId }: MCPIconProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const localize = useLocalize();
-
-  useEffect(() => {
-    if (icon) {
-      setPreviewUrl(icon);
-    } else {
-      setPreviewUrl('');
-    }
-  }, [icon]);
 
   const handleClick = () => {
     if (fileInputRef.current) {
@@ -27,43 +21,34 @@ export default function MCPIcon({ icon, onIconChange }: MCPIconProps) {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      handleClick();
-    }
-  };
-
   return (
     <div className="flex items-center gap-4">
-      <div
-        role="button"
-        tabIndex={0}
+      <Button
+        variant="ghost"
         onClick={handleClick}
-        onKeyDown={handleKeyDown}
         aria-label={localize('com_ui_upload_icon')}
-        className="bg-token-surface-secondary dark:bg-token-surface-tertiary border-token-border-medium flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center rounded-xl border-2 border-dashed focus:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+        aria-invalid={errorId != null}
+        aria-describedby={errorId}
+        className="border-border-medium bg-surface-secondary hover:bg-surface-hover flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border-2 border-dashed p-0"
       >
-        {previewUrl ? (
-          <img
-            src={previewUrl}
-            className="h-full w-full rounded-xl object-cover"
-            alt="MCP Icon"
-            width="64"
-            height="64"
+        {icon ? (
+          <CustomIcon
+            src={icon}
+            alt=""
+            className="text-text-primary h-full w-full rounded-xl object-cover"
           />
         ) : (
           <SquirclePlusIcon />
         )}
-      </div>
+      </Button>
       <div className="flex flex-col gap-1">
-        <span className="token-text-secondary text-sm">
+        <span className="text-text-secondary text-sm">
           {localize('com_ui_icon')} {localize('com_ui_optional')}
         </span>
-        <span className="text-xs text-text-secondary">{localize('com_agents_mcp_icon_size')}</span>
+        <span className="text-text-secondary text-xs">{localize('com_agents_mcp_icon_size')}</span>
       </div>
       <input
-        accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/gif,.gif,image/webp,.webp"
+        accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/gif,.gif,image/webp,.webp,image/svg+xml,.svg"
         multiple={false}
         type="file"
         style={{ display: 'none' }}

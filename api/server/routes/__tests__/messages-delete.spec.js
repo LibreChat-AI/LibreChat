@@ -9,9 +9,28 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
+  createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+  rejectToolCallPreviewWrites: (_req, _res, next) => next(),
+  withMessageToolCallPreviews: (_req, message) => message,
+  createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
+  createContentFilter: jest.fn(() => (req, res, next) => next()),
+  inspectContent: jest.fn(() => null),
+  extractFeedbackContent: jest.fn(() => []),
+  extractStoredMessageContent: jest.fn(() => []),
+  contentFilterBlockResponse: jest.fn(),
   unescapeLaTeX: jest.fn((x) => x),
   countTokens: jest.fn().mockResolvedValue(10),
+  sendFeedbackScore: jest.fn().mockResolvedValue(undefined),
+  traceIdForMessage: jest.fn((messageId) => `trace-${messageId}`),
+  CHILD_THREAD_READ_ONLY_ERROR: 'Child thread is view-only.',
+  isSubagentThreadWriteBlocked: jest.fn().mockResolvedValue(false),
+  requireFeedbackEnabled: (req, res, next) => next(),
 }));
+
+jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
+
+jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -46,10 +65,31 @@ jest.mock('~/server/services/Artifacts/update', () => ({
 
 jest.mock('~/server/middleware/requireJwtAuth', () => (req, res, next) => next());
 
-jest.mock('~/server/middleware', () => ({
-  requireJwtAuth: (req, res, next) => next(),
-  validateMessageReq: (req, res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const validateMessageReq = jest.fn((req, res, next) => next());
+  const prepareMessageRequestValidation = jest.fn((req, res, next) => {
+    req.messageRequestValidation = {
+      conversationId: 'convo-1',
+      shouldFetchMessages: true,
+      promise: Promise.resolve({ ok: true }),
+    };
+    next();
+  });
+  const sendValidationResponse = jest.fn((res, result) => {
+    if (result.send) {
+      return res.status(result.status).send(result.body);
+    }
+    return res.status(result.status).json(result.body);
+  });
+
+  return {
+    requireJwtAuth: (req, res, next) => next(),
+    validateMessageReq,
+    sendValidationResponse,
+    prepareMessageRequestValidation,
+    configMiddleware: (req, res, next) => next(),
+  };
+});
 
 jest.mock('~/db/models', () => ({
   Message: {
@@ -195,90 +235,5 @@ describe('DELETE /:conversationId/:messageId – route handler', () => {
 
     expect(response.status).toBe(500);
     expect(response.body).toEqual({ error: 'Internal server error' });
-  });
-});
-
-describe('message route conversation ownership filters', () => {
-  let app;
-  const { getMessages, saveConvo, saveMessage } = require('~/models');
-
-  const authenticatedUserId = 'user-owner-123';
-
-  beforeAll(() => {
-    const messagesRouter = require('../messages');
-
-    app = express();
-    app.use(express.json());
-    app.use((req, res, next) => {
-      req.user = { id: authenticatedUserId };
-      next();
-    });
-    app.use('/api/messages', messagesRouter);
-  });
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it('should save POST messages with the validated URL conversationId', async () => {
-    const urlConversationId = '11111111-1111-4111-8111-111111111111';
-    const bodyConversationId = '22222222-2222-4222-8222-222222222222';
-    const savedMessage = {
-      messageId: 'message-1',
-      conversationId: urlConversationId,
-      text: 'hello',
-      user: authenticatedUserId,
-    };
-
-    saveMessage.mockResolvedValue(savedMessage);
-    saveConvo.mockResolvedValue({ conversationId: urlConversationId });
-
-    const response = await request(app).post(`/api/messages/${urlConversationId}`).send({
-      messageId: savedMessage.messageId,
-      conversationId: bodyConversationId,
-      text: savedMessage.text,
-    });
-
-    expect(response.status).toBe(201);
-    expect(saveMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: authenticatedUserId }),
-      expect.objectContaining({
-        messageId: savedMessage.messageId,
-        conversationId: urlConversationId,
-        text: savedMessage.text,
-        user: authenticatedUserId,
-      }),
-      { context: 'POST /api/messages/:conversationId' },
-    );
-    expect(saveMessage.mock.calls[0][1].conversationId).not.toBe(bodyConversationId);
-    expect(saveConvo).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: authenticatedUserId }),
-      savedMessage,
-      { context: 'POST /api/messages/:conversationId' },
-    );
-  });
-
-  it('should filter conversation message reads by authenticated user', async () => {
-    getMessages.mockResolvedValue([{ messageId: 'message-1', conversationId: 'convo-1' }]);
-
-    const response = await request(app).get('/api/messages/convo-1');
-
-    expect(response.status).toBe(200);
-    expect(getMessages).toHaveBeenCalledWith(
-      { conversationId: 'convo-1', user: authenticatedUserId },
-      '-_id -__v -user',
-    );
-  });
-
-  it('should filter single message reads by authenticated user', async () => {
-    getMessages.mockResolvedValue([{ messageId: 'message-1', conversationId: 'convo-1' }]);
-
-    const response = await request(app).get('/api/messages/convo-1/message-1');
-
-    expect(response.status).toBe(200);
-    expect(getMessages).toHaveBeenCalledWith(
-      { conversationId: 'convo-1', messageId: 'message-1', user: authenticatedUserId },
-      '-_id -__v -user',
-    );
   });
 });

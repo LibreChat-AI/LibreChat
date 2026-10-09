@@ -12,7 +12,7 @@ export interface ResourceConfig {
   getCopyUrlMessage: () => string;
 }
 
-export const RESOURCE_CONFIGS: Record<ResourceType, ResourceConfig> = {
+export const RESOURCE_CONFIGS: Partial<Record<ResourceType, ResourceConfig>> = {
   [ResourceType.AGENT]: {
     resourceType: ResourceType.AGENT,
     defaultViewerRoleId: AccessRoleIds.AGENT_VIEWER,

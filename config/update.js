@@ -94,7 +94,7 @@ async function validateDockerRunning() {
     const imageName = singleCompose ? 'librechat_single' : 'librechat';
     try {
       execSync(`${sudo}docker rmi ${imageName}:latest`, { stdio: 'inherit' });
-    } catch (e) {
+    } catch (_error) {
       console.purple('Failed to remove Docker image librechat:latest. It might not exist.');
     }
     console.purple('Removing all unused dangling Docker images...');

@@ -21,7 +21,7 @@ export default function AssistantIcon({
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('text-token-secondary h-2/3 w-2/3', className)}
+      className={cn('h-2/3 w-2/3 text-text-secondary', className)}
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
     >

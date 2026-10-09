@@ -1,8 +1,12 @@
-import { ChevronLeft } from 'lucide-react';
 import { useCallback, useMemo } from 'react';
-import { useToastContext } from '@librechat/client';
-import { useGetAgentByIdQuery, useRevertAgentVersionMutation } from '~/data-provider';
-import type { AgentWithVersions, VersionContext } from './types';
+import { ChevronLeft } from 'lucide-react';
+import { Button, useToastContext } from '@librechat/client';
+import type { AgentWithVersions, VersionContext, VersionRecord } from './types';
+import {
+  useGetAgentVersionsQuery,
+  useRevertAgentVersionMutation,
+  useGetExpandedAgentByIdQuery,
+} from '~/data-provider';
 import { isActiveVersion } from './isActiveVersion';
 import { useAgentPanelContext } from '~/Providers';
 import VersionContent from './VersionContent';
@@ -16,7 +20,15 @@ export default function VersionPanel() {
 
   const selectedAgentId = agent_id ?? '';
 
-  const { data: agent, isLoading, error, refetch } = useGetAgentByIdQuery(selectedAgentId);
+  const { data: agent } = useGetExpandedAgentByIdQuery(selectedAgentId, {
+    enabled: !!selectedAgentId,
+  });
+  const {
+    data: versionsData,
+    isLoading,
+    error,
+    refetch,
+  } = useGetAgentVersionsQuery(selectedAgentId);
 
   const revertAgentVersion = useRevertAgentVersionMutation({
     onSuccess: () => {
@@ -34,7 +46,7 @@ export default function VersionPanel() {
     },
   });
 
-  const agentWithVersions = agent as AgentWithVersions;
+  const agentWithVersions = agent as AgentWithVersions | undefined;
 
   const currentAgent = useMemo(() => {
     if (!agentWithVersions) return null;
@@ -42,20 +54,23 @@ export default function VersionPanel() {
       name: agentWithVersions.name,
       description: agentWithVersions.description,
       instructions: agentWithVersions.instructions,
+      instructionsPrompt: agentWithVersions.instructionsPrompt,
       artifacts: agentWithVersions.artifacts,
       capabilities: agentWithVersions.capabilities,
       tools: agentWithVersions.tools,
+      edges: agentWithVersions.edges,
     };
   }, [agentWithVersions]);
 
+  const versionRecords = useMemo<VersionRecord[]>(() => versionsData ?? [], [versionsData]);
+
   const versions = useMemo(() => {
-    const versionsCopy = [...(agentWithVersions?.versions || [])];
-    return versionsCopy.sort((a, b) => {
+    return [...versionRecords].sort((a, b) => {
       const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
       const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
       return bTime - aTime;
     });
-  }, [agentWithVersions?.versions]);
+  }, [versionRecords]);
 
   const activeVersion = useMemo(() => {
     return versions.length > 0
@@ -73,7 +88,7 @@ export default function VersionPanel() {
 
     return versions.map((version, displayIndex) => {
       const originalIndex =
-        agentWithVersions?.versions?.findIndex(
+        versionRecords.findIndex(
           (v) =>
             v.updatedAt === version.updatedAt &&
             v.createdAt === version.createdAt &&
@@ -87,7 +102,7 @@ export default function VersionPanel() {
         isActive: displayIndex === activeVersionId,
       };
     });
-  }, [versions, currentAgent, agentWithVersions?.versions]);
+  }, [versions, currentAgent, versionRecords]);
 
   const versionContext: VersionContext = useMemo(
     () => ({
@@ -116,27 +131,44 @@ export default function VersionPanel() {
     [revertAgentVersion, selectedAgentId, versionIds],
   );
 
+  const versionCount = versionIds.length;
+  const countLabel =
+    versionCount > 0
+      ? localize(
+          versionCount === 1 ? 'com_ui_agent_version_count_one' : 'com_ui_agent_version_count',
+          { count: versionCount },
+        )
+      : null;
+
   return (
-    <div className="scrollbar-gutter-stable h-full min-h-[40vh] overflow-auto pb-12 text-sm">
-      <div className="version-panel relative flex flex-col items-center px-16 py-4 text-center">
-        <div className="absolute left-0 top-4">
-          <button
-            type="button"
-            className="btn btn-neutral relative"
-            onClick={() => {
-              setActivePanel(Panel.builder);
-            }}
-          >
-            <div className="version-panel-content flex w-full items-center justify-center gap-2">
-              <ChevronLeft />
-            </div>
-          </button>
+    <div className="h-full min-h-[40vh] scrollbar-gutter-stable overflow-auto pb-12 text-sm">
+      <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-2 pt-1 pb-2">
+        <Button
+          variant="subtle"
+          size="icon"
+          shape="theme"
+          onClick={() => setActivePanel(Panel.builder)}
+          aria-label={localize('com_ui_back_to_builder')}
+          className="text-text-secondary hover:text-text-primary shrink-0"
+        >
+          <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
+        </Button>
+        <div className="flex flex-col items-center">
+          <h2 className="text-text-primary text-base font-semibold">
+            {localize('com_ui_agent_version_history')}
+          </h2>
+          {countLabel && (
+            <p className="text-text-secondary text-xs" aria-live="polite">
+              {countLabel}
+            </p>
+          )}
         </div>
-        <div className="mb-2 mt-2 text-xl font-medium">
-          {localize('com_ui_agent_version_history')}
-        </div>
-      </div>
-      <div className="flex flex-col gap-4 px-2">
+        <span
+          aria-hidden="true"
+          className="size-theme-button min-h-theme-target min-w-theme-target"
+        />
+      </header>
+      <div className="flex flex-col px-2 pt-2">
         <VersionContent
           selectedAgentId={selectedAgentId}
           isLoading={isLoading}

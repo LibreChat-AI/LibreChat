@@ -8,10 +8,15 @@ import {
   uniqueAgentName,
   waitForPersistedAgent,
 } from './agents.helpers';
-import { MOCK_ENDPOINTS, fetchJson, getAccessToken, mockReply, sendMessage } from './helpers';
+import {
+  MOCK_ENDPOINTS,
+  fetchJson,
+  getAccessToken,
+  mockReply,
+  sendMessageAndWaitForCompletion,
+} from './helpers';
 
 const MCP_SERVER_NAME = 'e2e-memory';
-const MCP_SERVER_TITLE = 'E2E Memory';
 const MCP_TOOL_NAME = 'remember_fact';
 const MCP_SERVER_TOOL_ID = `sys__server__sys_mcp_${MCP_SERVER_NAME}`;
 const MCP_TOOL_ID = `${MCP_TOOL_NAME}_mcp_${MCP_SERVER_NAME}`;
@@ -53,30 +58,26 @@ async function waitForMCPTools(page: Page) {
 }
 
 async function addMCPServerTools(page: Page, form: Locator) {
-  await expect(form.getByText('MCP Servers', { exact: true })).toBeVisible();
-  await form.getByRole('button', { name: 'Add MCP Server Tools' }).click();
+  await expect(form.getByText('Tools', { exact: true })).toBeVisible();
+  await form.getByRole('button', { name: 'Add tools' }).click();
 
-  const dialogTitle = page.getByText('MCP Server Tools', { exact: true });
-  await expect(dialogTitle).toBeVisible();
-  await expect(page.getByText(MCP_SERVER_TITLE, { exact: true })).toBeVisible();
+  const dialog = page.getByRole('dialog', { name: 'Tool Library' });
+  await expect(dialog).toBeVisible();
 
-  await page.getByRole('button', { name: `Add ${MCP_SERVER_TITLE}` }).click();
-  await expect(page.getByRole('button', { name: `Remove ${MCP_SERVER_TITLE}` })).toBeVisible({
-    timeout: 30000,
-  });
+  await dialog.getByRole('textbox', { name: 'Search tools…' }).fill(MCP_SERVER_NAME);
+  const serverCard = dialog.getByRole('button', { name: new RegExp(MCP_SERVER_NAME) }).first();
+  await expect(serverCard).toBeVisible();
 
-  await page.getByRole('button', { name: 'Close dialog' }).click();
-  await expect(dialogTitle).toBeHidden();
+  await serverCard.click();
+  await expect(serverCard).toHaveAttribute('aria-pressed', 'true');
 
+  await dialog.getByRole('button', { name: /^Close( dialog)?$/ }).click();
+  await expect(dialog).toBeHidden();
   await expect(form.getByText(MCP_SERVER_NAME, { exact: true })).toBeVisible();
-  await form.getByText(MCP_SERVER_NAME, { exact: true }).click();
-  await expect(form.getByLabel(MCP_TOOL_NAME)).toBeVisible();
 }
 
 async function expectSelectedMCPServerTools(form: Locator) {
   await expect(form.getByText(MCP_SERVER_NAME, { exact: true })).toBeVisible();
-  await form.getByText(MCP_SERVER_NAME, { exact: true }).click();
-  await expect(form.getByLabel(MCP_TOOL_NAME)).toBeVisible();
 }
 
 test.describe('agent builder MCP tools', () => {
@@ -92,7 +93,7 @@ test.describe('agent builder MCP tools', () => {
 
       await form.getByLabel('Agent name').fill(agentName);
       await form.getByLabel('Agent description').fill(DESCRIPTION);
-      await form.getByLabel('Agent instructions').fill(INSTRUCTIONS);
+      await form.getByRole('textbox', { name: 'Instructions', exact: true }).fill(INSTRUCTIONS);
       await selectMockModel(page, true);
 
       await addMCPServerTools(page, form);
@@ -135,12 +136,14 @@ test.describe('agent builder MCP tools', () => {
 
       await expect(reopenedForm.getByLabel('Agent name')).toHaveValue(agentName);
       await expect(reopenedForm.getByLabel('Agent description')).toHaveValue(DESCRIPTION);
-      await expect(reopenedForm.getByLabel('Agent instructions')).toHaveValue(INSTRUCTIONS);
+      await expect(
+        reopenedForm.getByRole('textbox', { name: 'Instructions', exact: true }),
+      ).toHaveValue(INSTRUCTIONS);
       await expectSelectedMCPServerTools(reopenedForm);
 
       await reopenedForm.getByRole('button', { name: 'Select Agent' }).click();
 
-      const response = await sendMessage(page, `hello from ${agentName}`);
+      const response = await sendMessageAndWaitForCompletion(page, `hello from ${agentName}`);
       expect(response.ok()).toBeTruthy();
       await expect(mockReply(page)).toBeVisible({ timeout: 30000 });
     } finally {

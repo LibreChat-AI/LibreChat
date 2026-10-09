@@ -1,8 +1,8 @@
 /* eslint-disable jsx-a11y/media-has-caption */
 import { useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
-import type { TMessageAudio } from '~/common';
 import { VolumeIcon, VolumeMuteIcon, Spinner } from '@librechat/client';
+import type { TMessageAudio } from '~/common';
 import { useLocalize, useTTSBrowser, useTTSExternal } from '~/hooks';
 import { logger } from '~/utils';
 import store from '~/store';
@@ -27,14 +27,14 @@ export function BrowserTTS({
 
   const renderIcon = () => {
     if (isLoading === true) {
-      return <Spinner className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <Spinner className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
     if (isSpeaking === true) {
-      return <VolumeMuteIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <VolumeMuteIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
-    return <VolumeIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+    return <VolumeIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
   };
 
   useEffect(() => {
@@ -120,14 +120,14 @@ export function ExternalTTS({
 
   const renderIcon = () => {
     if (isLoading === true) {
-      return <Spinner className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <Spinner className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
     if (isSpeaking === true) {
-      return <VolumeMuteIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <VolumeMuteIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
-    return <VolumeIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+    return <VolumeIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
   };
 
   useEffect(() => {

@@ -2,16 +2,16 @@
   z-index: 150;
   cursor: pointer;
   pointer-events: auto;
-  border-radius: 0.275rem;
-  background-color: var(--surface-primary);
-  padding-top: 0.25rem;
-  padding-bottom: 0.25rem;
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
-  font-size: 1rem;
-  line-height: 1.5rem;
-  color: black;
-  box-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
+  border-radius: var(--theme-tooltip-radius, 0.275rem);
+  background-color: rgb(var(--surface-tooltip, var(--surface-primary)));
+  padding-top: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-bottom: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-left: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-right: var(--theme-tooltip-padding-x, 0.5rem);
+  font-size: var(--theme-tooltip-text-size, 1rem);
+  line-height: 1.5;
+  color: rgb(var(--text-tooltip, var(--text-primary)));
+  box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(0 0 0 / 0.25));
   /* Enhanced layout for longer descriptions */
   max-width: 320px;
   word-wrap: break-word;
@@ -25,7 +25,15 @@
 }
 
 .tooltip:where(.dark, .dark *) {
-  background-color: var(--surface-primary);
-  color: white;
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  box-shadow: var(--theme-tooltip-shadow, 0 1px 2px 0 rgb(0 0 0 / 0.35));
+}
+
+/* The contrast edge ships with the primitive: the app stylesheet is not part of
+ * the published package, so a consumer importing this file has to get the
+ * boundary too. In a contrast mode the `surface-primary` fill is the canvas
+ * itself, and the black shadow the tooltip otherwise leans on carries no
+ * separation against pure black. */
+html.high-contrast .tooltip {
+  border: 1px solid rgb(var(--border-medium));
+  box-shadow: none;
 }

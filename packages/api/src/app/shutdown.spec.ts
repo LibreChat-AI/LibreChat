@@ -2,7 +2,9 @@
 import http from 'http';
 import {
   setupGracefulShutdown,
+  isShutdownInProgress,
   registerShutdownTask,
+  getClusterShutdownBudgetMs,
   __resetShutdownStateForTests,
 } from './shutdown';
 
@@ -16,6 +18,52 @@ const triggerSignal = (signal: NodeJS.Signals): void => {
 };
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+describe('getClusterShutdownBudgetMs', () => {
+  it('prefers the primary force-exit deadline over the worker timer', () => {
+    expect(
+      getClusterShutdownBudgetMs({
+        deadlineAt: 14_000,
+        forceExitMs: 30_000,
+        remainingMs: 60_000,
+        elapsedMs: 1_000,
+        now: 10_000,
+      }),
+    ).toBe(4_000);
+  });
+
+  it('uses the elapsed estimate when the primary deadline was not received', () => {
+    expect(
+      getClusterShutdownBudgetMs({
+        deadlineAt: null,
+        forceExitMs: 30_000,
+        remainingMs: 60_000,
+        elapsedMs: 2_000,
+      }),
+    ).toBe(28_000);
+  });
+
+  it('honors the tighter local limit and requires an active shutdown', () => {
+    expect(
+      getClusterShutdownBudgetMs({
+        deadlineAt: 15_000,
+        forceExitMs: 30_000,
+        remainingMs: 1_000,
+        elapsedMs: 5_000,
+        now: 10_000,
+      }),
+    ).toBe(1_000);
+    expect(
+      getClusterShutdownBudgetMs({
+        deadlineAt: 15_000,
+        forceExitMs: 30_000,
+        remainingMs: null,
+        elapsedMs: 5_000,
+        now: 10_000,
+      }),
+    ).toBeNull();
+  });
+});
 
 describe('setupGracefulShutdown', () => {
   let server: http.Server;
@@ -160,6 +208,26 @@ describe('setupGracefulShutdown', () => {
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('exposes shutdown state before pre-drain work begins', async () => {
+    let observedDuringPreDrain = false;
+    jest.spyOn(server, 'close').mockImplementation(() => server);
+    registerShutdownTask(
+      'observe-shutdown',
+      () => {
+        observedDuringPreDrain = isShutdownInProgress();
+      },
+      { phase: 'pre-drain' },
+    );
+    setupGracefulShutdown(server);
+
+    expect(isShutdownInProgress()).toBe(false);
+    triggerSignal('SIGTERM');
+    await flush();
+
+    expect(observedDuringPreDrain).toBe(true);
+    expect(isShutdownInProgress()).toBe(true);
+  });
+
   it('force-exits with code 1 if shutdown exceeds the timeout', () => {
     jest.useFakeTimers();
     jest.spyOn(server, 'close').mockImplementation(() => server);
@@ -192,6 +260,35 @@ describe('setupGracefulShutdown', () => {
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 
+  it('runs pre-drain tasks while server.close is pending, then post-drain tasks', async () => {
+    const calls: string[] = [];
+    let finishClose: (() => void) | undefined;
+    jest.spyOn(server, 'close').mockImplementation((cb?: (err?: Error) => void) => {
+      calls.push('server.close');
+      finishClose = () => cb?.();
+      return server;
+    });
+    registerShutdownTask(
+      'release-held-close',
+      () => {
+        calls.push('pre-drain');
+        finishClose?.();
+      },
+      { phase: 'pre-drain' },
+    );
+    registerShutdownTask('post-drain', () => {
+      calls.push('post-drain');
+    });
+
+    setupGracefulShutdown(server);
+    triggerSignal('SIGTERM');
+    await flush();
+    await flush();
+
+    expect(calls).toEqual(['server.close', 'pre-drain', 'post-drain']);
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
   it('runs tasks in registration order', async () => {
     const order: string[] = [];
     jest.spyOn(server, 'close').mockImplementation((cb?: (err?: Error) => void) => {
@@ -212,7 +309,46 @@ describe('setupGracefulShutdown', () => {
     expect(order).toEqual(['first', 'second', 'third']);
   });
 
-  it('continues subsequent tasks and still exits if one task throws', async () => {
+  it('runs higher-priority cleanup before telemetry while preserving ties', async () => {
+    const order: string[] = [];
+    jest.spyOn(server, 'close').mockImplementation((cb?: (err?: Error) => void) => {
+      if (cb) {
+        setImmediate(() => cb());
+      }
+      return server;
+    });
+    registerShutdownTask('default-first', () => {
+      order.push('default-first');
+    });
+    registerShutdownTask(
+      'telemetry',
+      () => {
+        order.push('telemetry');
+      },
+      { priority: -100 },
+    );
+    registerShutdownTask(
+      'generation streams',
+      () => {
+        order.push('generation streams');
+      },
+      {
+        priority: 100,
+      },
+    );
+    registerShutdownTask('default-second', () => {
+      order.push('default-second');
+    });
+
+    setupGracefulShutdown(server);
+    triggerSignal('SIGTERM');
+    await flush();
+    await flush();
+
+    expect(order).toEqual(['generation streams', 'default-first', 'default-second', 'telemetry']);
+  });
+
+  it('continues subsequent tasks and exits nonzero if one task throws', async () => {
     const calls: string[] = [];
     jest.spyOn(server, 'close').mockImplementation((cb?: (err?: Error) => void) => {
       if (cb) {
@@ -235,7 +371,7 @@ describe('setupGracefulShutdown', () => {
     await flush();
     await flush();
     expect(calls).toEqual(['ok-before', 'throws', 'ok-after']);
-    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it('awaits async tasks before exiting', async () => {
@@ -257,5 +393,64 @@ describe('setupGracefulShutdown', () => {
     await flush();
     expect(calls).toEqual(['async-done']);
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+  it('disarms the force-exit timer when shutdown state is reset', async () => {
+    jest.useFakeTimers();
+    try {
+      // A drain that never settles: the server close callback is never invoked,
+      // so `shutdown` stays awaiting and never reaches its own `clearTimeout`.
+      jest.spyOn(server, 'close').mockImplementation(() => server);
+      setupGracefulShutdown(server);
+      triggerSignal('SIGTERM');
+      await Promise.resolve();
+
+      // The safety net is armed and would exit the process on its own.
+      __resetShutdownStateForTests();
+      jest.advanceTimersByTime(120_000);
+
+      // Without the reset clearing it, this timer fires long after the suite
+      // that armed it has finished, killing the run with code 1.
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("keeps a later shutdown's safety net when an earlier drain settles late", async () => {
+    // `setImmediate` stays real so the first shutdown's continuation can actually
+    // reach its `finally`; only the force-exit timer is faked.
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+    try {
+      let releaseFirstClose: (() => void) | undefined;
+      jest.spyOn(server, 'close').mockImplementation((cb?: (err?: Error) => void) => {
+        if (cb) {
+          releaseFirstClose = () => cb();
+        }
+        return server;
+      });
+      setupGracefulShutdown(server);
+      triggerSignal('SIGTERM');
+      await flush();
+
+      // A second shutdown arms its own net after the first is reset away.
+      __resetShutdownStateForTests();
+      const secondServer = http.createServer();
+      Object.defineProperty(secondServer, 'listening', { value: true, configurable: true });
+      jest.spyOn(secondServer, 'close').mockImplementation(() => secondServer);
+      setupGracefulShutdown(secondServer);
+      triggerSignal('SIGTERM');
+      await flush();
+
+      // The first drain settles only now; its `finally` must not disarm the second.
+      releaseFirstClose?.();
+      await flush();
+      await flush();
+      await flush();
+
+      jest.advanceTimersByTime(120_000);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

@@ -22,6 +22,18 @@ jest.mock('@librechat/data-schemas', () => ({
     if (value === 'encrypted-refresh-token') {
       return 'refresh-token';
     }
+    if (value === 'encrypted-encoded-client-id') {
+      return 'client%40id.com';
+    }
+    if (value === 'encrypted-encoded-client-secret') {
+      return 's%2Bcret%3D%2Fend';
+    }
+    if (value === 'encrypted-legacy-client-id') {
+      return 'legacy%value';
+    }
+    if (value === 'encrypted-legacy-client-secret') {
+      return '100%secret';
+    }
     return value;
   }),
 }));
@@ -213,6 +225,132 @@ describe('action OAuth token exchange validation', () => {
     );
 
     expect(accessConfig.httpsAgent).toBe(refreshConfig.httpsAgent);
+  });
+
+  describe('URL-encoded stored credentials', () => {
+    const encodedFields = {
+      ...baseFields,
+      encrypted_oauth_client_id: 'encrypted-encoded-client-id',
+      encrypted_oauth_client_secret: 'encrypted-encoded-client-secret',
+    };
+
+    const legacyFields = {
+      ...baseFields,
+      encrypted_oauth_client_id: 'encrypted-legacy-client-id',
+      encrypted_oauth_client_secret: 'encrypted-legacy-client-secret',
+    };
+
+    it('decodes credentials in the authorization-code exchange body', async () => {
+      await getAccessToken(
+        {
+          ...encodedFields,
+          code: 'authorization-code',
+          redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+          token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+        },
+        createTokenMethods(),
+      );
+
+      const params = new URLSearchParams(getAxiosConfig().data as string);
+
+      expect(params.get('client_id')).toBe('client@id.com');
+      expect(params.get('client_secret')).toBe('s+cret=/end');
+    });
+
+    it('decodes credentials in the authorization-code Basic auth header', async () => {
+      await getAccessToken(
+        {
+          ...encodedFields,
+          code: 'authorization-code',
+          redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+          token_exchange_method: TokenExchangeMethodEnum.BasicAuthHeader,
+        },
+        createTokenMethods(),
+      );
+
+      const headers = getAxiosConfig().headers as Record<string, string>;
+      const credentials = Buffer.from(
+        headers.Authorization.replace('Basic ', ''),
+        'base64',
+      ).toString('utf8');
+
+      expect(credentials).toBe('client@id.com:s+cret=/end');
+    });
+
+    it('decodes credentials in the refresh-token exchange body', async () => {
+      await refreshAccessToken(
+        {
+          ...encodedFields,
+          refresh_token: 'refresh-token',
+          token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+        },
+        createTokenMethods(),
+      );
+
+      const params = new URLSearchParams(getAxiosConfig().data as string);
+
+      expect(params.get('client_id')).toBe('client@id.com');
+      expect(params.get('client_secret')).toBe('s+cret=/end');
+    });
+
+    it('decodes credentials in the refresh-token Basic auth header', async () => {
+      await refreshAccessToken(
+        {
+          ...encodedFields,
+          refresh_token: 'refresh-token',
+          token_exchange_method: TokenExchangeMethodEnum.BasicAuthHeader,
+        },
+        createTokenMethods(),
+      );
+
+      const headers = getAxiosConfig().headers as Record<string, string>;
+      const credentials = Buffer.from(
+        headers.Authorization.replace('Basic ', ''),
+        'base64',
+      ).toString('utf8');
+
+      expect(credentials).toBe('client@id.com:s+cret=/end');
+    });
+
+    it('passes through legacy unencoded credentials containing a stray percent sign', async () => {
+      await expect(
+        getAccessToken(
+          {
+            ...legacyFields,
+            code: 'authorization-code',
+            redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+            token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+          },
+          createTokenMethods(),
+        ),
+      ).resolves.toEqual(tokenResponse);
+
+      const params = new URLSearchParams(getAxiosConfig().data as string);
+
+      expect(params.get('client_id')).toBe('legacy%value');
+      expect(params.get('client_secret')).toBe('100%secret');
+    });
+
+    it('passes through legacy unencoded credentials when refreshing', async () => {
+      await expect(
+        refreshAccessToken(
+          {
+            ...legacyFields,
+            refresh_token: 'refresh-token',
+            token_exchange_method: TokenExchangeMethodEnum.BasicAuthHeader,
+          },
+          createTokenMethods(),
+        ),
+      ).resolves.toEqual(tokenResponse);
+
+      const headers = getAxiosConfig().headers as Record<string, string>;
+      const credentials = Buffer.from(
+        headers.Authorization.replace('Basic ', ''),
+        'base64',
+      ).toString('utf8');
+
+      expect(credentials).toBe('legacy%value:100%secret');
+    });
   });
 
   it('allows explicitly exempted private token endpoints', async () => {

@@ -1,10 +1,11 @@
+/* `@apply` needs the theme in scope, and this file is a separate entry point imported by
+ * main.jsx rather than an `@import` of style.css. `@reference` loads that theme without
+ * emitting its CSS a second time. */
+@reference './style.css';
+
 .hover-button.active {
   display: block;
   visibility: visible;
-}
-
-.nav-close-button {
-  margin-left: 8px;
 }
 
 .nav {
@@ -24,38 +25,10 @@
   opacity: 1;
 }
 
-.nav-mask.active {
-  opacity: 0;
-  pointer-events: auto;
-}
-
 @media (max-width: 767px) {
   .nav {
-    width: calc(100% - 10px)  ;
+    width: calc(100% - 10px);
     transition: all 0.15s;
-  }
-  .nav-mask {
-    position: fixed;
-    z-index: 105;
-    left: 0;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    background-color: rgba(7, 7, 7, 0.4);
-    padding-left: 420px;
-    padding-top: 12px;
-    opacity: 0;
-    transition: all 0.5s;
-    pointer-events: none;
-  }
-
-  .nav-open-button {
-    opacity: 0;
-  }
-
-  .nav-mask.active {
-    opacity: 1;
-    pointer-events: auto;
   }
 
   .nav.active {
@@ -63,52 +36,10 @@
   }
 }
 
-@media (min-width: 1024px) {
-  .switch-container {
-    display: none;
-  }
-}
-
-
-  .switch-result {
-    display: block !important;
-    visibility: visible;
-  }
-
 @media (max-width: 1024px) {
-  /* .sibling-switch {
-        left: 114px;
-        top: unset;
-        bottom: 4px;
-        visibility: visible;
-        z-index: 2;
-    } */
-  .sibling-switch {
-    display: none;
-  }
-
   .hover-button {
     display: block;
     visibility: visible;
-  }
-}
-
-@media (max-width: 767px) {
-  .input-panel-button {
-    border: 0;
-  }
-
-  .input-panel-button svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .input-panel {
-  }
-
-  .nav-open-button
-  {
-    visibility: hidden;
   }
 }
 
@@ -122,114 +53,26 @@
   display: none; /* For WebKit browsers */
 }
 
-.gemini-gradient {
-  /* Adjust the colors and positioning as necessary to match the image */
-  background-image: radial-gradient(circle at center, #0000ff, #87cefa, #ffffff);
-  /* More styling for demonstration purposes */
-  border-radius: 50%;
-  height: 100px;
-  width: 100px;
-}
-
 @keyframes tuning {
-  0% { transform: rotate(30deg); }
-  25% { transform: rotate(110deg); }
-  50% { transform: rotate(-40deg); }
-  75% { transform: rotate(80deg) }
-  100% { transform: rotate(30deg) }
+  0% {
+    transform: rotate(30deg);
+  }
+  25% {
+    transform: rotate(110deg);
+  }
+  50% {
+    transform: rotate(-40deg);
+  }
+  75% {
+    transform: rotate(80deg);
+  }
+  100% {
+    transform: rotate(30deg);
+  }
 }
 
 .rotate {
   animation: tuning 2.1s 1;
-}
-
-@-webkit-keyframes slideUpAndFade {
-  0% {
-    opacity:0;
-    -webkit-transform:translateY(2px);
-    transform:translateY(2px)
-  }
-  to {
-    opacity:1;
-    -webkit-transform:translateY(0);
-    transform:translateY(0)
-  }
-}
-@keyframes slideUpAndFade {
-  0% {
-    opacity:0;
-    -webkit-transform:translateY(2px);
-    transform:translateY(2px)
-  }
-  to {
-    opacity:1;
-    -webkit-transform:translateY(0);
-    transform:translateY(0)
-  }
-}
-.radix-side-bottom\:animate-slideUpAndFade[data-side=bottom] {
-  -webkit-animation:slideUpAndFade .4s cubic-bezier(.16,1,.3,1);
-  animation:slideUpAndFade .4s cubic-bezier(.16,1,.3,1)
-}
-@-webkit-keyframes slideRightAndFade {
-  0% {
-    opacity:0;
-    -webkit-transform:translateX(-2px);
-    transform:translateX(-2px)
-  }
-  to {
-    opacity:1;
-    -webkit-transform:translateX(0);
-    transform:translateX(0)
-  }
-}
-@keyframes slideRightAndFade {
-  0% {
-    opacity:0;
-    -webkit-transform:translateX(-2px);
-    transform:translateX(-2px)
-  }
-  to {
-    opacity:1;
-    -webkit-transform:translateX(0);
-    transform:translateX(0)
-  }
-}
-.radix-side-left\:animate-slideRightAndFade[data-side=left] {
-  -webkit-animation:slideRightAndFade .4s cubic-bezier(.16,1,.3,1);
-  animation:slideRightAndFade .4s cubic-bezier(.16,1,.3,1)
-}
-@keyframes slideLeftAndFade {
-  0% {
-    opacity:0;
-    -webkit-transform:translateX(2px);
-    transform:translateX(2px)
-  }
-  to {
-    opacity:1;
-    -webkit-transform:translateX(0);
-    transform:translateX(0)
-  }
-}
-.radix-side-right\:animate-slideLeftAndFade[data-side=right] {
-  -webkit-animation:slideLeftAndFade .4s cubic-bezier(.16,1,.3,1);
-  animation:slideLeftAndFade .4s cubic-bezier(.16,1,.3,1)
-}
-@keyframes slideDownAndFade {
-  0% {
-    opacity:0;
-    -webkit-transform:translateY(-2px);
-    transform:translateY(-2px)
-  }
-  to {
-    opacity:1;
-    -webkit-transform:translateY(0);
-    transform:translateY(0)
-  }
-}
-.radix-side-top\:animate-slideDownAndFade[data-side=top] {
-  -webkit-animation:slideDownAndFade .4s cubic-bezier(.16,1,.3,1);
-  animation:slideDownAndFade .4s cubic-bezier(.16,1,.3,1)
 }
 
 .azure-bg-color {
@@ -237,7 +80,8 @@
 }
 
 @keyframes slowPulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -253,24 +97,24 @@
   scrollbar-gutter: stable;
 }
 
-/* Styles for Chrome scrollbar */
-.chrome-scrollbar::-webkit-scrollbar {
-  width: 12px;  /* Increase the width of the scrollbar */
-}
+/* Reserves the same band a `scrollbar-gutter: stable` container holds back, so
+   a centered column lines up with the scrolling message column. Use this, not
+   the gutter itself, wherever the column has content painted outside its box:
+   `scrollbar-gutter` only applies to scroll containers, and a scroll container
+   clips (the composer's in-flight steer overlay, a button's focus ring).
 
-.chrome-scrollbar::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.2);  /* Color of the scroll thumb */
-  border-radius: 6px;  /* Rounded corners on the scroll thumb */
-  border: 2px solid transparent;  /* Creates padding around scroll thumb */
-  background-clip: padding-box;  /* Prevents background color from leaking outside the border */
-}
-
-.chrome-scrollbar::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(0, 0, 0, 0.3);  /* Darker color when hovering */
-}
-
-.chrome-scrollbar::-webkit-scrollbar-track {
-  background-color: transparent;  /* Color of the tracking area */
+   `useScrollbarGutter` measures the band the message column really reserves and
+   publishes it here. The token is only the fallback for before that first
+   measurement: it matches the `::-webkit-scrollbar` width, which Firefox
+   ignores and an overlay scrollbar drops to nothing. */
+/* Below `sm` the composer runs edge to edge (it is squared off at the bottom and
+   carries no horizontal padding there), so holding the band back would leave a
+   dead strip down its right side instead of lining anything up. The message
+   column it aligns to only shares a centre from `sm` up. */
+@media (min-width: 640px) {
+  .scrollbar-gutter-spacer {
+    padding-inline-end: var(--message-scrollbar-gutter, var(--scrollbar-size));
+  }
 }
 
 /* Base wrapper for both preview and editor */
@@ -293,6 +137,12 @@
 /* Content elements */
 .sp-preview-iframe {
   @apply h-full w-full grow;
+  /* An unstyled artifact document inks in the browser's black over a transparent frame, which is
+   * unreadable on a dark theme. Canvas gives the frame an opaque page in the scheme the system
+   * prefers, and the document's own color-scheme decides whether it adapts to it or the browser
+   * paints it a light backdrop. */
+  color-scheme: light dark;
+  background-color: Canvas;
 }
 
 .sp-cm {
@@ -300,25 +150,52 @@
 }
 
 @keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  10%, 30%, 50%, 70%, 90% { transform: translateX(-3px); }
-  20%, 40%, 60%, 80% { transform: translateX(3px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  10%,
+  30%,
+  50%,
+  70%,
+  90% {
+    transform: translateX(-3px);
+  }
+  20%,
+  40%,
+  60%,
+  80% {
+    transform: translateX(3px);
+  }
 }
 
 .shake {
-  animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
+  animation: shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
 }
 
 .cm-content:focus {
   outline: none !important;
 }
 
-p.whitespace-pre-wrap a, li a {
+/* `p.whitespace-pre-wrap a` (0,1,2) outranked a utility under v3 too, so it stays unlayered and
+ * keeps doing so. `li a` is two element selectors: a class beat it under v3, and unlayered under
+ * v4's layers it would beat every utility instead — `no-underline` on a link inside a list stopped
+ * working. Layered, it loses to a utility again and still styles an unclassed list link. */
+p.whitespace-pre-wrap a {
   color: #0066cc;
   text-decoration: underline;
   font-weight: bold;
 }
 
-.dark p.whitespace-pre-wrap a, .dark li a {
+@layer base {
+  li a {
+    color: #0066cc;
+    text-decoration: underline;
+    font-weight: bold;
+  }
+}
+
+.dark p.whitespace-pre-wrap a,
+.dark li a {
   color: #52a0ff;
 }

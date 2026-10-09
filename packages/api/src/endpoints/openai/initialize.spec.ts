@@ -86,6 +86,15 @@ describe('initializeOpenAI – SSRF guard wiring', () => {
       EModelEndpoint.openAI,
       undefined,
     );
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'sk-test',
+      expect.objectContaining({
+        reverseProxyUrl: 'https://user-proxy.example.com/v1',
+        baseURLIsUserProvided: true,
+        allowedAddresses: undefined,
+      }),
+      EModelEndpoint.openAI,
+    );
   });
 
   it('should NOT call validateEndpointURL when OPENAI_REVERSE_PROXY is a system URL', async () => {
@@ -135,11 +144,106 @@ describe('initializeOpenAI – SSRF guard wiring', () => {
 
     expect(mockGetOpenAIConfig).not.toHaveBeenCalled();
   });
+
+  it('should not load stale user Azure values when an admin model group config is selected', async () => {
+    const params = createParams({
+      AZURE_API_KEY: AuthType.USER_PROVIDED,
+      AZURE_OPENAI_BASEURL: AuthType.USER_PROVIDED,
+    });
+    (params.db.getUserKeyValues as jest.Mock).mockResolvedValue(null);
+    params.endpoint = EModelEndpoint.azureOpenAI;
+    params.model_parameters = { model: 'gpt-4o' };
+    params.req.config = {
+      endpoints: {
+        [EModelEndpoint.azureOpenAI]: {
+          modelGroupMap: {
+            'gpt-4o': { group: 'serverless-group' },
+          },
+          groupMap: {
+            'serverless-group': {
+              apiKey: 'az-admin-key',
+              baseURL: 'https://admin-azure.example.com/openai/deployments/gpt-4o',
+              version: '2024-10-21',
+              serverless: true,
+            },
+          },
+        },
+      },
+    } as unknown as BaseInitializeParams['req']['config'];
+
+    try {
+      await initializeOpenAI(params);
+    } finally {
+      (params as unknown as { _restore: () => void })._restore();
+    }
+
+    expect(params.db.getUserKeyValues).not.toHaveBeenCalled();
+    expect(mockValidateEndpointURL).not.toHaveBeenCalled();
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'az-admin-key',
+      expect.objectContaining({
+        reverseProxyUrl: 'https://admin-azure.example.com/openai/deployments/gpt-4o',
+        baseURLIsUserProvided: false,
+      }),
+      EModelEndpoint.azureOpenAI,
+    );
+  });
+});
+
+describe('initializeOpenAI – user-provided credentials', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('loads the stored API key when a resumed request omits expiry metadata', async () => {
+    const params = createParams({ OPENAI_API_KEY: AuthType.USER_PROVIDED });
+    params.req.body = {};
+
+    try {
+      await initializeOpenAI(params);
+    } finally {
+      (params as unknown as { _restore: () => void })._restore();
+    }
+
+    expect(params.db.getUserKeyValues).toHaveBeenCalledWith({
+      userId: 'user-1',
+      name: EModelEndpoint.openAI,
+    });
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'sk-user-key',
+      expect.any(Object),
+      EModelEndpoint.openAI,
+    );
+  });
 });
 
 describe('initializeOpenAI – custom headers', () => {
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('forwards Agent model transport timeout policy to OpenAI configuration', async () => {
+    const params = createParams({ OPENAI_API_KEY: 'sk-test' });
+    (params.req.config as { endpoints: Record<string, unknown> }).endpoints = {
+      agents: {
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 120_000,
+      },
+    };
+
+    try {
+      await initializeOpenAI(params);
+    } finally {
+      (params as unknown as { _restore: () => void })._restore();
+    }
+
+    const options = mockGetOpenAIConfig.mock.calls[0][1] as {
+      transportTimeouts?: { bodyTimeout: number; headersTimeout: number };
+    };
+    expect(options.transportTimeouts).toEqual({
+      bodyTimeout: 1_800_000,
+      headersTimeout: 120_000,
+    });
   });
 
   it('forwards configured endpoint headers (merged over endpoints.all) to getOpenAIConfig', async () => {

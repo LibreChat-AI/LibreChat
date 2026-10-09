@@ -45,6 +45,21 @@ const baseEnv = {
   ALLOW_SOCIAL_LOGIN: 'false',
   ALLOW_SOCIAL_REGISTRATION: 'false',
   STREAM_KEEP_COMPLETED_JOBS: 'true',
+  /**
+   * Optional Langfuse passthrough for tracing a real run. Credentials are read
+   * from the invoking environment only (they match the credential-neutralizer
+   * pattern below, so they must be preserved explicitly) and are never written
+   * to the generated config. Absent values leave tracing disabled.
+   */
+  ...(process.env.LANGFUSE_PUBLIC_KEY
+    ? {
+        LANGFUSE_PUBLIC_KEY: process.env.LANGFUSE_PUBLIC_KEY,
+        LANGFUSE_SECRET_KEY: process.env.LANGFUSE_SECRET_KEY,
+        ...(process.env.LANGFUSE_BASE_URL
+          ? { LANGFUSE_BASE_URL: process.env.LANGFUSE_BASE_URL }
+          : {}),
+      }
+    : {}),
 };
 
 const SECRET_KEY_PATTERN = /(API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIALS|CLIENT_ID|_KEY)$/i;

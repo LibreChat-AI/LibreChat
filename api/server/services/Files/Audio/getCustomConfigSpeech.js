@@ -1,6 +1,21 @@
 const { logger } = require('@librechat/data-schemas');
 const { getAppConfig } = require('~/server/services/Config');
 
+const LEGACY_EXTERNAL_STT_ENGINES = new Set(['openai', 'azureOpenAI']);
+const LEGACY_EXTERNAL_TTS_ENGINES = new Set(['openai', 'azureOpenAI', 'elevenlabs', 'localai']);
+
+function normalizeSpeechEngine(key, value) {
+  if (key === 'engineSTT' && LEGACY_EXTERNAL_STT_ENGINES.has(value)) {
+    return 'external';
+  }
+
+  if (key === 'engineTTS' && LEGACY_EXTERNAL_TTS_ENGINES.has(value)) {
+    return 'external';
+  }
+
+  return value;
+}
+
 /**
  * This function retrieves the speechTab settings from the custom configuration
  * It first fetches the custom configuration
@@ -52,7 +67,8 @@ async function getCustomConfigSpeech(req, res) {
       } else {
         for (const key in speechTab.speechToText) {
           if (speechTab.speechToText[key] !== undefined) {
-            settings[key] = speechTab.speechToText[key];
+            const value = speechTab.speechToText[key];
+            settings[key] = normalizeSpeechEngine(key, value);
           }
         }
       }
@@ -64,7 +80,8 @@ async function getCustomConfigSpeech(req, res) {
       } else {
         for (const key in speechTab.textToSpeech) {
           if (speechTab.textToSpeech[key] !== undefined) {
-            settings[key] = speechTab.textToSpeech[key];
+            const value = speechTab.textToSpeech[key];
+            settings[key] = normalizeSpeechEngine(key, value);
           }
         }
       }

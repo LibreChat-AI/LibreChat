@@ -3,11 +3,56 @@ import {
   getEdgeKey,
   getEdgeParticipants,
   collectEdgeAgentIds,
+  replaceEdgeSourceId,
   filterOrphanedEdges,
   createEdgeCollector,
 } from './edges';
 
 describe('edges utilities', () => {
+  describe('replaceEdgeSourceId', () => {
+    it('should assign a newly created agent id to placeholder sources', () => {
+      const edges: GraphEdge[] = [
+        { from: '', to: 'agent_target', edgeType: 'handoff' },
+        { from: 'agent_other', to: 'agent_target', edgeType: 'handoff' },
+      ];
+
+      expect(replaceEdgeSourceId(edges, '', 'agent_router')).toEqual([
+        { from: 'agent_router', to: 'agent_target', edgeType: 'handoff' },
+        { from: 'agent_other', to: 'agent_target', edgeType: 'handoff' },
+      ]);
+    });
+
+    it('should rewrite copied agent ids inside multi-source edges', () => {
+      const edges: GraphEdge[] = [
+        {
+          from: ['agent_original', 'agent_peer'],
+          to: 'agent_target',
+          edgeType: 'handoff',
+        },
+      ];
+
+      expect(replaceEdgeSourceId(edges, 'agent_original', 'agent_clone')).toEqual([
+        {
+          from: ['agent_clone', 'agent_peer'],
+          to: 'agent_target',
+          edgeType: 'handoff',
+        },
+      ]);
+    });
+
+    it('should preserve untouched edge references', () => {
+      const edge: GraphEdge = {
+        from: 'agent_other',
+        to: 'agent_target',
+        edgeType: 'handoff',
+      };
+
+      const result = replaceEdgeSourceId([edge], 'agent_original', 'agent_clone');
+
+      expect(result?.[0]).toBe(edge);
+    });
+  });
+
   describe('getEdgeKey', () => {
     it('should create key from simple string from/to', () => {
       const edge: GraphEdge = { from: 'agent_a', to: 'agent_b', edgeType: 'handoff' };

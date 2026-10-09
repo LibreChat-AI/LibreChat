@@ -1,4 +1,7 @@
+import express from 'express';
+import request from 'supertest';
 import mongoose, { Types } from 'mongoose';
+import { tenantStorage } from '@librechat/data-schemas';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import {
@@ -7,13 +10,14 @@ import {
   SystemCapabilities,
   CapabilityImplications,
 } from '@librechat/data-schemas';
-import type { SystemCapability } from '@librechat/data-schemas';
+import type { SystemCapability, ConfigSection } from '@librechat/data-schemas';
 import type { AllMethods } from '@librechat/data-schemas';
 import {
   generateCapabilityCheck,
   capabilityStore,
   capabilityContextMiddleware,
 } from './capabilities';
+import { createResetToolApprovalController } from '~/agents/hitl/controller';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -222,6 +226,51 @@ describe('capabilities integration (real MongoDB)', () => {
       expect(tenantResult).toBe(true);
     });
 
+    it('personal approval reset honors manage:agents only in its tenant, without a VIEW ACL', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: regularUser.id,
+        capability: SystemCapabilities.MANAGE_AGENTS,
+        tenantId: 'tenant-a',
+      });
+      let tenantId = 'tenant-a';
+      const acl = jest.fn(async () => false);
+      const reset = jest.fn(methods.resetToolApprovalGrants);
+      const controller = createResetToolApprovalController({
+        getAgent: async () => ({ id: 'shared-agent' }),
+        hasCapability,
+        canAccessAgent: acl,
+        storage: { ...methods, resetToolApprovalGrants: reset },
+      });
+      const app = express();
+      app.use(express.json());
+      app.post('/reset', (req, res) =>
+        tenantStorage.run({ tenantId }, () =>
+          controller(Object.assign(req, { user: { ...regularUser, tenantId } }), res),
+        ),
+      );
+      await request(app)
+        .post('/reset')
+        .send({ agentId: 'shared-agent' })
+        .expect(200, { reset: true });
+      expect(acl).not.toHaveBeenCalled();
+      expect(reset).toHaveBeenCalledWith(regularUser.id, 'shared-agent', undefined);
+      expect(
+        await mongoose.models.ToolApprovalGrant.countDocuments({
+          user: regularUser.id,
+          tenantId: 'tenant-a',
+          agentId: 'shared-agent',
+        }),
+      ).toBe(1);
+      tenantId = 'tenant-b';
+      await request(app).post('/reset').send({ agentId: 'shared-agent' }).expect(403);
+      expect(acl).toHaveBeenCalled();
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ tenantId: 'tenant-b' })).toBe(
+        0,
+      );
+    });
+
     it('hasConfigCapability falls back to section-specific grant', async () => {
       await methods.grantCapability({
         principalType: PrincipalType.USER,
@@ -234,6 +283,115 @@ describe('capabilities integration (real MongoDB)', () => {
 
       const hasOtherSection = await hasConfigCapability(regularUser, 'balance');
       expect(hasOtherSection).toBe(false);
+    });
+  });
+
+  describe('getReadableConfigSections', () => {
+    let getReadableConfigSections: ReturnType<
+      typeof generateCapabilityCheck
+    >['getReadableConfigSections'];
+
+    beforeEach(() => {
+      ({ getReadableConfigSections } = generateCapabilityCheck({
+        getUserPrincipals: methods.getUserPrincipals,
+        hasCapabilityForPrincipals: methods.hasCapabilityForPrincipals,
+        getHeldCapabilities: methods.getHeldCapabilities,
+      }));
+    });
+
+    it('reports broad access for a broad read:configs holder', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: regularUser.id,
+        capability: SystemCapabilities.READ_CONFIGS,
+      });
+
+      const readable = await getReadableConfigSections(regularUser, [
+        'endpoints',
+        'balance',
+      ] as ConfigSection[]);
+      expect(readable.broad).toBe(true);
+    });
+
+    it('reports broad access for a broad manage:configs holder (manage implies read)', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: regularUser.id,
+        capability: SystemCapabilities.MANAGE_CONFIGS,
+      });
+
+      const readable = await getReadableConfigSections(regularUser, [
+        'endpoints',
+      ] as ConfigSection[]);
+      expect(readable.broad).toBe(true);
+    });
+
+    it('resolves only the sections held via section-scoped read grants', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: regularUser.id,
+        capability: 'read:configs:endpoints' as SystemCapability,
+      });
+
+      const readable = await getReadableConfigSections(regularUser, [
+        'endpoints',
+        'balance',
+      ] as ConfigSection[]);
+      expect(readable.broad).toBe(false);
+      expect(readable.sections).toEqual(new Set(['endpoints']));
+    });
+
+    it('resolves a section as readable for a caller holding only the same-section manage grant', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: regularUser.id,
+        capability: 'manage:configs:endpoints' as SystemCapability,
+      });
+
+      const readable = await getReadableConfigSections(regularUser, [
+        'endpoints',
+        'balance',
+      ] as ConfigSection[]);
+      expect(readable.broad).toBe(false);
+      expect(readable.sections).toEqual(new Set(['endpoints']));
+    });
+
+    it('resolves an empty set for a caller with no config access', async () => {
+      const readable = await getReadableConfigSections(regularUser, [
+        'endpoints',
+        'balance',
+      ] as ConfigSection[]);
+      expect(readable.broad).toBe(false);
+      expect(readable.sections.size).toBe(0);
+    });
+
+    it('resolves all sections via a single getHeldCapabilities call regardless of section count', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: regularUser.id,
+        capability: 'read:configs:endpoints' as SystemCapability,
+      });
+
+      const getHeldCapabilities = jest.fn<
+        ReturnType<AllMethods['getHeldCapabilities']>,
+        Parameters<AllMethods['getHeldCapabilities']>
+      >(methods.getHeldCapabilities);
+
+      const { getReadableConfigSections: batched } = generateCapabilityCheck({
+        getUserPrincipals: methods.getUserPrincipals,
+        hasCapabilityForPrincipals: methods.hasCapabilityForPrincipals,
+        getHeldCapabilities,
+      });
+
+      const readable = await batched(regularUser, [
+        'endpoints',
+        'balance',
+        'interface',
+        'mcpServers',
+      ] as ConfigSection[]);
+
+      expect(readable.sections).toEqual(new Set(['endpoints']));
+      expect(getHeldCapabilities).toHaveBeenCalledTimes(1);
     });
   });
 

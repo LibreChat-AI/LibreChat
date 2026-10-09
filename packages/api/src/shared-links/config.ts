@@ -1,8 +1,55 @@
+import { deploymentThemeSchema } from 'librechat-data-provider';
+import { tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { TSharedLinkStartupConfig } from 'librechat-data-provider';
+import type { Request, Response, NextFunction } from 'express';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { GetAppConfigOptions } from '../app/service';
 import { isEnabled } from '~/utils';
 
 type SharedLinkStartupEnv = NodeJS.ProcessEnv;
+
+interface SharedLinkConfigRequest extends Request {
+  config?: AppConfig;
+  shareTenantId?: string;
+}
+
+interface SharedLinkConfigMiddlewareDeps {
+  getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig>;
+  /** Reject instead of substituting the base config when the tenant's overrides fail to load. */
+  failClosed?: boolean;
+}
+
+/** Resolve shared-link policy independently of the authenticated viewer. */
+export async function resolveSharedLinkConfig(
+  getAppConfig: SharedLinkConfigMiddlewareDeps['getAppConfig'],
+  tenantId?: string,
+  failClosed?: boolean,
+): Promise<AppConfig> {
+  if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
+    return tenantStorage.run({ tenantId }, () =>
+      getAppConfig({ tenantId, ...(failClosed && { failClosed }) }),
+    );
+  }
+  return getAppConfig({ baseOnly: true });
+}
+
+export function createSharedLinkConfigMiddleware({
+  getAppConfig,
+  failClosed,
+}: SharedLinkConfigMiddlewareDeps) {
+  return async function sharedLinkConfigMiddleware(
+    req: SharedLinkConfigRequest,
+    _res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      req.config = await resolveSharedLinkConfig(getAppConfig, req.shareTenantId, failClosed);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
 
 /**
  * Whether shared links should snapshot the files referenced by the shared chat
@@ -56,11 +103,25 @@ export function buildSharedLinkStartupPayload(
     payload.customFooter = env.CUSTOM_FOOTER;
   }
 
-  const { privacyPolicy, termsOfService } = appConfig?.interfaceConfig ?? {};
-  if (privacyPolicy || termsOfService) {
+  const { privacyPolicy, termsOfService, codeHighlightThrottleMs, artifactUndocking } =
+    appConfig?.interfaceConfig ?? {};
+  const parsedTheme = deploymentThemeSchema.safeParse(appConfig?.interfaceConfig?.theme);
+  const theme = parsedTheme.success ? parsedTheme.data : undefined;
+  /* A shared conversation shows the same artifacts pane, so it needs the same
+   * answer about opening that pane in its own window. */
+  if (
+    privacyPolicy ||
+    termsOfService ||
+    codeHighlightThrottleMs != null ||
+    theme ||
+    artifactUndocking === false
+  ) {
     payload.interface = {
+      ...(codeHighlightThrottleMs != null ? { codeHighlightThrottleMs } : {}),
       ...(privacyPolicy ? { privacyPolicy } : {}),
       ...(termsOfService ? { termsOfService } : {}),
+      ...(theme ? { theme } : {}),
+      ...(artifactUndocking === false ? { artifactUndocking } : {}),
     };
   }
 

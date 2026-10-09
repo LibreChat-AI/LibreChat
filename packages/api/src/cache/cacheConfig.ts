@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'fs';
 import { logger } from '@librechat/data-schemas';
-import { CacheKeys } from 'librechat-data-provider';
+import { Time, CacheKeys } from 'librechat-data-provider';
 import { math, isEnabled } from '~/utils';
 
 // To ensure that different deployments do not interfere with each other's cache, we use a prefix for the Redis keys.
@@ -48,6 +48,12 @@ if (FORCED_IN_MEMORY_CACHE_NAMESPACES.length > 0) {
   }
 }
 
+// Violation scores expire after this long without new violations; every violation write
+// restarts the countdown. Non-positive values disable expiry, restoring the legacy
+// accumulate-forever behavior.
+const VIOLATION_SCORE_TTL_MS = math(process.env.VIOLATION_SCORE_TTL, Time.ONE_HOUR);
+const VIOLATION_SCORE_TTL = VIOLATION_SCORE_TTL_MS > 0 ? VIOLATION_SCORE_TTL_MS : undefined;
+
 /** Helper function to safely read Redis CA certificate from file
  * @returns {string|null} The contents of the CA certificate file, or null if not set or on error
  */
@@ -82,12 +88,20 @@ const cacheConfig: {
   GLOBAL_PREFIX_SEPARATOR: string;
   REDIS_MAX_LISTENERS: number;
   REDIS_PING_INTERVAL: number;
+  /** Milliseconds a heartbeat PING may go unanswered before the socket is presumed dead */
+  REDIS_PING_TIMEOUT: number;
+  /** Heartbeat interval in seconds for dedicated pub/sub subscriber connections (0 = disabled) */
+  REDIS_SUBSCRIBER_PING_INTERVAL: number;
+  /** TCP keepalive idle delay in ms for ioredis sockets (0 = kernel default idle time) */
+  REDIS_KEEP_ALIVE: number;
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: number;
   /** Max number of reconnection attempts (0 = infinite) */
   REDIS_RETRY_MAX_ATTEMPTS: number;
   /** Connection timeout in ms */
   REDIS_CONNECT_TIMEOUT: number;
+  /** Min spacing in ms between reconnects forced by READONLY replies after a failover */
+  REDIS_READONLY_RECOVERY_INTERVAL: number;
   /** Queue commands when disconnected */
   REDIS_ENABLE_OFFLINE_QUEUE: boolean;
   /** flag to modify redis connection by adding dnsLookup this is required when connecting to elasticache for ioredis
@@ -105,6 +119,13 @@ const cacheConfig: {
   CI: boolean;
   DEBUG_MEMORY_CACHE: boolean;
   BAN_DURATION: number; // 2 hours
+  /**
+   * TTL in ms for violation scores: a score expires after this long without new violations
+   * (each violation write restarts the countdown). `undefined` — from a non-positive
+   * setting — disables expiry so scores accumulate forever.
+   * @default 3600000 (1 hour)
+   */
+  VIOLATION_SCORE_TTL: number | undefined;
   /**
    * Number of keys to delete in each batch during Redis DEL operations.
    * In cluster mode, keys are deleted individually in parallel chunks to avoid CROSSSLOT errors.
@@ -152,12 +173,20 @@ const cacheConfig: {
   GLOBAL_PREFIX_SEPARATOR: '::',
   REDIS_MAX_LISTENERS: math(process.env.REDIS_MAX_LISTENERS, 40),
   REDIS_PING_INTERVAL: math(process.env.REDIS_PING_INTERVAL, 0),
+  /** Milliseconds a heartbeat PING may go unanswered before the socket is presumed dead */
+  REDIS_PING_TIMEOUT: math(process.env.REDIS_PING_TIMEOUT, 5000),
+  /** Heartbeat interval in seconds for dedicated pub/sub subscriber connections (0 = disabled) */
+  REDIS_SUBSCRIBER_PING_INTERVAL: math(process.env.REDIS_SUBSCRIBER_PING_INTERVAL, 15),
+  /** TCP keepalive idle delay in ms for ioredis sockets (0 = kernel default idle time) */
+  REDIS_KEEP_ALIVE: math(process.env.REDIS_KEEP_ALIVE, 10000),
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: math(process.env.REDIS_RETRY_MAX_DELAY, 3000),
   /** Max number of reconnection attempts (0 = infinite) */
   REDIS_RETRY_MAX_ATTEMPTS: math(process.env.REDIS_RETRY_MAX_ATTEMPTS, 10),
   /** Connection timeout in ms */
   REDIS_CONNECT_TIMEOUT: math(process.env.REDIS_CONNECT_TIMEOUT, 10000),
+  /** Min spacing in ms between reconnects forced by READONLY replies after a failover */
+  REDIS_READONLY_RECOVERY_INTERVAL: math(process.env.REDIS_READONLY_RECOVERY_INTERVAL, 5000),
   /** Queue commands when disconnected */
   REDIS_ENABLE_OFFLINE_QUEUE: isEnabled(process.env.REDIS_ENABLE_OFFLINE_QUEUE ?? 'true'),
   /** flag to modify redis connection by adding dnsLookup this is required when connecting to elasticache for ioredis
@@ -176,6 +205,7 @@ const cacheConfig: {
   DEBUG_MEMORY_CACHE: isEnabled(process.env.DEBUG_MEMORY_CACHE),
 
   BAN_DURATION: math(process.env.BAN_DURATION, 7200000), // 2 hours
+  VIOLATION_SCORE_TTL,
 
   /**
    * Number of keys to delete in each batch during Redis DEL operations.

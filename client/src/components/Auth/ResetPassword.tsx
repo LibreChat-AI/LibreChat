@@ -1,7 +1,7 @@
 import { useForm } from 'react-hook-form';
-import { Spinner, Button, SecretInput } from '@librechat/client';
 import { useOutletContext } from 'react-router-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Spinner, Button, SecretInput, Alert } from '@librechat/client';
 import { useResetPasswordMutation } from 'librechat-data-provider/react-query';
 import type { TResetPassword } from 'librechat-data-provider';
 import type { TLoginLayoutContext } from '~/common';
@@ -21,9 +21,9 @@ function ResetPassword() {
   const resetPassword = useResetPasswordMutation();
   const { setError, setHeaderText, startupConfig } = useOutletContext<TLoginLayoutContext>();
   const authInputClassName =
-    'webkit-dark-styles transition-color peer h-auto w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pr-12 pt-3 text-text-primary duration-200 hover:border-border-light focus:border-green-500 focus:outline-none focus-visible:border-green-500';
+    'webkit-dark-styles peer h-auto w-full rounded-2xl border px-3.5 pb-2.5 pr-12 pt-3 text-text-primary duration-200 focus:border-accent-primary focus-visible:border-accent-primary';
   const authLabelClassName =
-    'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-green-500 rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
+    'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-accent-primary rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
   const authSecretButtonClassName =
     'size-9 rounded-xl text-text-secondary-alt hover:bg-transparent hover:text-text-primary';
 
@@ -41,9 +41,11 @@ function ResetPassword() {
   if (resetPassword.isSuccess) {
     return (
       <>
-        <div
-          className="relative mt-6 rounded-xl border border-green-500/20 bg-green-50/50 px-6 py-4 text-green-700 shadow-sm transition-all dark:bg-green-950/30 dark:text-green-100"
-          role="alert"
+        <Alert
+          variant="success"
+          icon={false}
+          elevation="raised"
+          className="mt-6 px-6 py-4 transition-all"
         >
           <div className="flex flex-col space-y-4">
             <p>{localize('com_auth_login_with_new_password')}</p>
@@ -55,7 +57,7 @@ function ResetPassword() {
               {localize('com_auth_continue')}
             </Button>
           </div>
-        </div>
+        </Alert>
       </>
     );
   }
@@ -82,6 +84,7 @@ function ResetPassword() {
             {...register('userId', { required: 'Unable to process: No valid user id' })}
           />
           <SecretInput
+            colorTransition
             id="password"
             autoComplete="current-password"
             aria-label={localize('com_auth_password')}
@@ -107,7 +110,7 @@ function ResetPassword() {
         </div>
 
         {errors.password && (
-          <span role="alert" className="mt-1 text-sm text-red-500 dark:text-red-900">
+          <span role="alert" className="text-text-destructive mt-1 text-sm">
             {errors.password.message}
           </span>
         )}
@@ -115,6 +118,7 @@ function ResetPassword() {
       <div className="mb-2">
         <div className="relative">
           <SecretInput
+            colorTransition
             id="confirm_password"
             aria-label={localize('com_auth_password_confirm')}
             {...register('confirm_password', {
@@ -130,17 +134,17 @@ function ResetPassword() {
           />
         </div>
         {errors.confirm_password && (
-          <span role="alert" className="mt-1 text-sm text-red-500 dark:text-red-900">
+          <span role="alert" className="text-text-destructive mt-1 text-sm">
             {errors.confirm_password.message}
           </span>
         )}
         {errors.token && (
-          <span role="alert" className="mt-1 text-sm text-red-500 dark:text-red-900">
+          <span role="alert" className="text-text-destructive mt-1 text-sm">
             {errors.token.message}
           </span>
         )}
         {errors.userId && (
-          <span role="alert" className="mt-1 text-sm text-red-500 dark:text-red-900">
+          <span role="alert" className="text-text-destructive mt-1 text-sm">
             {errors.userId.message}
           </span>
         )}

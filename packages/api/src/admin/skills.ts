@@ -113,14 +113,29 @@ function isCredentialError(status: ISkillSyncStatus): boolean {
   );
 }
 
+function isPromotedSkippedSkillError(status: ISkillSyncStatus): boolean {
+  const firstSkippedSkill = status.skippedSkills?.[0];
+  return Boolean(
+    firstSkippedSkill &&
+      status.errorCode === firstSkippedSkill.errorCode &&
+      status.errorMessage === firstSkippedSkill.errorMessage,
+  );
+}
+
 function serializeErrorMessage(
   status: ISkillSyncStatus,
   { includeCredentialMetadata }: { includeCredentialMetadata: boolean },
 ): string | undefined {
-  if (includeCredentialMetadata || !isCredentialError(status)) {
+  if (includeCredentialMetadata) {
     return status.errorMessage;
   }
-  return 'GitHub skill sync credentials are not available';
+  if (isPromotedSkippedSkillError(status)) {
+    return 'One or more GitHub skills could not be synchronized';
+  }
+  if (isCredentialError(status)) {
+    return 'GitHub skill sync credentials are not available';
+  }
+  return status.errorMessage;
 }
 
 function serializeSourceStatus(
@@ -149,6 +164,13 @@ function serializeSourceStatus(
     syncedFileCount: status.syncedFileCount,
     deletedSkillCount: status.deletedSkillCount,
     deletedFileCount: status.deletedFileCount,
+    skippedSkillCount: status.skippedSkillCount ?? 0,
+    /* The per-skill entries name repository paths, so they follow the same
+       visibility rule as owner/repo/paths rather than the bare count. */
+    skippedSkills: includePrivateSourceMetadata ? status.skippedSkills : undefined,
+    skippedFileCount: status.skippedFileCount ?? 0,
+    /* Same rule: `path`/`skillPath` name repository paths, unlike the count. */
+    skippedFiles: includePrivateSourceMetadata ? status.skippedFiles : undefined,
     createdAt: toIso(status.createdAt),
     updatedAt: toIso(status.updatedAt),
   };

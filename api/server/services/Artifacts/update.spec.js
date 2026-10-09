@@ -136,6 +136,30 @@ ${ARTIFACT_END}`;
     expect(result[0].end).toBe(artifactText.length);
   });
 
+  test('should preserve markdown artifacts wrapped in longer fences with internal code blocks', () => {
+    const content = `# Title
+
+\`\`\`bash
+echo one
+\`\`\`
+Text between sections.
+## Section B
+\`\`\`bash
+echo two
+\`\`\``;
+    const artifactText = `${ARTIFACT_START}{identifier="git-cheatsheet" type="text/markdown" title="Git Cheatsheet"}
+\`\`\`\`markdown
+${content}
+\`\`\`\`
+${ARTIFACT_END}`;
+    const message = { text: `${artifactText}\ntrailer` };
+
+    const result = findAllArtifacts(message);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].end).toBe(artifactText.length);
+  });
+
   test('should preserve the first fallback close in an unclosed fence', () => {
     const firstArtifact = `${ARTIFACT_START}{identifier="first" type="text/html" title="First"}
 \`\`\`html
@@ -243,6 +267,49 @@ ${ARTIFACT_END}`;
     expect(result).not.toBeNull();
     expect(result).toContain('Updated');
     expect(result).toContain("console.log('inside');");
+  });
+
+  test('should replace markdown artifacts wrapped in longer fences with internal code blocks', () => {
+    const original = `# Notes
+
+\`\`\`bash
+echo one
+\`\`\`
+
+## More
+\`\`\`bash
+echo two
+\`\`\``;
+    const updated = original.replace('## More', '## Updated');
+    const artifactText = `${ARTIFACT_START}{identifier="notes" type="text/markdown" title="Notes"}
+\`\`\`\`markdown
+${original}
+\`\`\`\`
+${ARTIFACT_END}`;
+    const message = { text: artifactText };
+    const artifacts = findAllArtifacts(message);
+
+    const result = replaceArtifactContent(artifactText, artifacts[0], original, updated);
+
+    expect(result).not.toBeNull();
+    expect(result).toContain('## Updated');
+    expect(result).toContain('```bash');
+    expect(result).toContain('````markdown');
+  });
+
+  test('should normalize editor trailing newlines before longer closing fences', () => {
+    const original = '# Notes';
+    const artifactText = `${ARTIFACT_START}{identifier="notes" type="text/markdown" title="Notes"}
+\`\`\`\`markdown
+${original}
+\`\`\`\`
+${ARTIFACT_END}`;
+    const message = { text: artifactText };
+    const artifacts = findAllArtifacts(message);
+
+    const result = replaceArtifactContent(artifactText, artifacts[0], original, `${original}\n`);
+
+    expect(result).toBe(artifactText);
   });
 
   test('should replace unclosed artifacts with internal markers in fenced content', () => {

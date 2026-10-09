@@ -48,7 +48,6 @@ jest.mock('~/components/SharePoint', () => ({
 }));
 
 jest.mock('~/components/Chat/Input/Files/FileRow', () => () => null);
-jest.mock('../FileSearchCheckbox', () => () => null);
 
 jest.mock('@ariakit/react', () => ({
   MenuButton: ({ children, ...props }: { children: React.ReactNode }) => (
@@ -58,8 +57,12 @@ jest.mock('@ariakit/react', () => ({
 
 jest.mock('@librechat/client', () => ({
   SharePointIcon: () => <span />,
-  AttachmentIcon: () => <span />,
   DropdownPopup: () => null,
+  CircleHelpIcon: () => <span />,
+  HoverCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  HoverCardPortal: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  HoverCardContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  HoverCardTrigger: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
 function Wrapper({ provider, children }: { provider?: string; children: React.ReactNode }) {

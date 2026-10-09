@@ -14,7 +14,7 @@ export default function StopGeneratingIcon({
       viewBox="0 0 24 24"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('h-3 w-3 text-gray-600 dark:text-gray-400', className)}
+      className={cn('h-3 w-3 text-text-secondary', className)}
       height="1em"
       width="1em"
       xmlns="http://www.w3.org/2000/svg"

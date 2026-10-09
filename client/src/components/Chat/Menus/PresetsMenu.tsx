@@ -1,7 +1,8 @@
-import { useRef } from 'react';
-import { useRecoilValue } from 'recoil';
+import { useRef, useState } from 'react';
 import { Trans } from 'react-i18next';
+import { useRecoilValue } from 'recoil';
 import { BookCopy } from 'lucide-react';
+import { tConvoUpdateSchema } from 'librechat-data-provider';
 import { Content, Portal, Root, Trigger } from '@radix-ui/react-popover';
 import {
   Button,
@@ -11,14 +12,20 @@ import {
   OGDialogHeader,
   OGDialogContent,
 } from '@librechat/client';
+import type { TPreset } from 'librechat-data-provider';
 import type { FC } from 'react';
+import { SaveAsPresetDialog } from '~/components/Endpoints';
 import { EditPresetDialog, PresetItems } from './Presets';
 import { useLocalize, usePresets } from '~/hooks';
+import { useChatContext } from '~/Providers';
 import store from '~/store';
 
 const PresetsMenu: FC = () => {
   const localize = useLocalize();
   const presetsMenuTriggerRef = useRef<HTMLDivElement>(null);
+  const [saveAsDialogOpen, setSaveAsDialogOpen] = useState(false);
+  const [presetToSave, setPresetToSave] = useState<TPreset | null>(null);
+  const { conversation } = useChatContext();
   const {
     presetsQuery,
     onSetDefaultPreset,
@@ -34,7 +41,15 @@ const PresetsMenu: FC = () => {
     presetToDelete,
     confirmDeletePreset,
   } = usePresets();
-  const preset = useRecoilValue(store.presetByIndex(0));
+  const presetToEdit = useRecoilValue(store.presetByIndex(0));
+
+  const openSaveAsDialog = () => {
+    if (!conversation) {
+      return;
+    }
+    setPresetToSave(tConvoUpdateSchema.parse({ ...conversation }) as TPreset);
+    setSaveAsDialogOpen(true);
+  };
 
   const handleDeleteDialogChange = (open: boolean) => {
     setShowDeleteDialog(open);
@@ -47,7 +62,9 @@ const PresetsMenu: FC = () => {
 
   return (
     <Root>
-      <Trigger asChild>
+      {/* The open state belongs to the trigger, which stamps `data-state` on the
+       *  button it renders through, so its fill is set here rather than on the button. */}
+      <Trigger asChild className="data-[state=open]:bg-surface-active-alt">
         <TooltipAnchor
           ref={presetsMenuTriggerRef}
           description={localize('com_endpoint_examples')}
@@ -59,8 +76,7 @@ const PresetsMenu: FC = () => {
               id="presets-button"
               data-testid="presets-button"
               aria-label={localize('com_endpoint_examples')}
-              className="h-9 w-9 shrink-0 rounded-xl bg-presentation duration-0 hover:bg-surface-active-alt"
-              // className="inline-flex size-10 flex-shrink-0 items-center justify-center rounded-xl border border-border-light bg-transparent text-text-primary transition-all ease-in-out hover:bg-surface-tertiary disabled:pointer-events-none disabled:opacity-50 radix-state-open:bg-surface-tertiary"
+              className="rounded-theme-control bg-presentation hover:bg-surface-hover h-9 w-9 shrink-0 duration-0"
             >
               <BookCopy className="icon-md" aria-hidden="true" />
             </Button>
@@ -68,34 +84,34 @@ const PresetsMenu: FC = () => {
         ></TooltipAnchor>
       </Trigger>
       <Portal>
-        <div
-          style={{
-            position: 'fixed',
-            left: '0px',
-            top: '0px',
-            transform: 'translate3d(268px, 50px, 0px)',
-            minWidth: 'max-content',
-            zIndex: 'auto',
-          }}
+        <Content
+          side="bottom"
+          align="center"
+          sideOffset={8}
+          collisionPadding={16}
+          aria-label={localize('com_endpoint_examples')}
+          className="rounded-theme-surface border-border-menu bg-surface-menu text-text-primary z-50 max-h-[min(30.9375rem,80vh)] overflow-x-hidden border shadow-lg md:min-w-[min(25rem,90vw)]"
         >
-          <Content
-            side="bottom"
-            align="center"
-            className="mt-2 max-h-[495px] overflow-x-hidden rounded-lg border border-border-light bg-presentation text-text-primary shadow-lg md:min-w-[400px]"
-          >
-            <PresetItems
-              presets={presetsQuery.data}
-              onSetDefaultPreset={onSetDefaultPreset}
-              onSelectPreset={onSelectPreset}
-              onChangePreset={onChangePreset}
-              onDeletePreset={onDeletePreset}
-              clearAllPresets={clearAllPresets}
-              onFileSelected={onFileSelected}
-            />
-          </Content>
-        </div>
+          <PresetItems
+            presets={presetsQuery.data}
+            onSetDefaultPreset={onSetDefaultPreset}
+            onSelectPreset={onSelectPreset}
+            onChangePreset={onChangePreset}
+            onDeletePreset={onDeletePreset}
+            clearAllPresets={clearAllPresets}
+            onFileSelected={onFileSelected}
+            onSaveAsPreset={conversation ? openSaveAsDialog : undefined}
+          />
+        </Content>
       </Portal>
-      {preset && (
+      {presetToSave && (
+        <SaveAsPresetDialog
+          open={saveAsDialogOpen}
+          onOpenChange={setSaveAsDialogOpen}
+          preset={presetToSave}
+        />
+      )}
+      {presetToEdit && (
         <EditPresetDialog
           submitPreset={submitPreset}
           exportPreset={exportPreset}

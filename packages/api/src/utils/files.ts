@@ -2,16 +2,23 @@ import path from 'path';
 import crypto from 'node:crypto';
 import { createReadStream } from 'fs';
 import { readFile, stat } from 'fs/promises';
+import { UnsupportedProviderAudioError } from '~/files/upload/errors';
 
 const USER_FACING_UPLOAD_ERRORS = [
-  'Invalid file format',
-  'exceeds token limit',
-  'Unable to extract text from',
+  ['Invalid file format', 'Invalid file format'],
+  ['exceeds token limit', 'File content exceeds token limit'],
+  ['Unable to extract text from', 'Unable to extract text from file'],
+  ['No text found in document', 'No text found in document'],
+  ['MB document parser limit', 'File exceeds the document parser size limit'],
+  ['MB per-entry decompressed cap', 'Document entry exceeds the decompressed size limit'],
+  ['total decompressed size exceeds the', 'Document exceeds the total decompressed size limit'],
+  ['MB decompressed limit', 'Document exceeds the decompressed size limit'],
+  ['MB storage limit', 'Extracted text exceeds the storage size limit'],
 ] as const;
 
 const ASCII_FILENAME_SAFE_PATTERN = /^[a-zA-Z0-9._-]$/;
 const UNSAFE_UNICODE_FILENAME_PATTERN = /[^\p{L}\p{M}\p{N}\p{Emoji}\u200d._-]/gu;
-const FILENAME_SEGMENT_MAX_BYTES = 255;
+export const FILENAME_SEGMENT_MAX_BYTES = 255;
 
 function sanitizeFilenameSegment(segment: string): string {
   const asciiSanitized = Array.from(segment.normalize('NFC'), (char) => {
@@ -64,26 +71,51 @@ function truncateLeafWithSuffix(leaf: string, suffix: string, maxBytes: number):
 }
 
 /**
+ * Composes a leaf as `<stem><suffix><ext>`, trimming the stem so the result
+ * stays inside `maxBytes`. Unlike {@link truncateLeafWithSuffix}, whose suffix
+ * marks a truncation and is therefore only applied when one happens, this
+ * always applies the suffix — callers use it to disambiguate one name from
+ * another, so a trim that dropped the suffix would hand back the name they
+ * were trying to move away from.
+ */
+export function appendLeafSuffix(leaf: string, suffix: string, maxBytes: number): string {
+  const ext = path.extname(leaf);
+  const stem = path.basename(leaf, ext);
+  const suffixBytes = utf8ByteLength(suffix);
+  const extBytes = utf8ByteLength(ext);
+  if (extBytes + suffixBytes >= maxBytes) {
+    return truncateUtf8Bytes(`${stem}${suffix}${ext}`, maxBytes);
+  }
+  return `${truncateUtf8Bytes(stem, maxBytes - extBytes - suffixBytes)}${suffix}${ext}`;
+}
+
+/**
  * Resolves a user-facing error message from a file upload error.
- * Returns the error's own message if it matches a known user-facing pattern,
- * otherwise returns the default message.
+ * When redaction is enabled, maps known error patterns to fixed messages
+ * without exposing provider, filesystem, filename, or submitted-content details.
  */
 export function resolveUploadErrorMessage(
   error: { message?: string } | null | undefined,
   defaultMessage = 'Error processing file',
+  redactDetails = false,
 ): string {
+  if (error instanceof UnsupportedProviderAudioError) {
+    return error.message;
+  }
   const errorMessage = error?.message;
   if (!errorMessage) {
     return defaultMessage;
   }
 
   if (errorMessage.includes('file_ids')) {
-    return `${defaultMessage}: ${errorMessage}`;
+    return redactDetails
+      ? `${defaultMessage}: File limit reached`
+      : `${defaultMessage}: ${errorMessage}`;
   }
 
-  for (const fragment of USER_FACING_UPLOAD_ERRORS) {
+  for (const [fragment, userMessage] of USER_FACING_UPLOAD_ERRORS) {
     if (errorMessage.includes(fragment)) {
-      return errorMessage;
+      return redactDetails ? userMessage : errorMessage;
     }
   }
 
@@ -158,7 +190,7 @@ const ARTIFACT_PATH_TOTAL_MAX_BYTES = 512;
  * collision becomes likely, vs. the realistic ceiling of single-digit
  * artifacts per turn).
  */
-function deterministicHexSuffix(input: string): string {
+export function deterministicHexSuffix(input: string): string {
   return crypto.createHash('sha256').update(input).digest('hex').slice(0, 6);
 }
 

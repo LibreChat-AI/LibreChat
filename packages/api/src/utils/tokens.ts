@@ -1,5 +1,10 @@
 import z from 'zod';
-import { EModelEndpoint } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  supportsContext1m,
+  supportsOutput128k,
+  gptPointReleaseFamily,
+} from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
 /**
@@ -61,6 +66,12 @@ const openAIModels = {
   'gpt-5.4-nano': 400000,
   'gpt-5.5': 1050000,
   'gpt-5.5-pro': 1050000,
+  'gpt-5.6': 1050000,
+  'gpt-5.6-terra': 1050000,
+  'gpt-5.6-luna': 1050000,
+  'gpt-6-astra': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6-sol': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6-luna': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'chat-latest': 400000,
   'gpt-5-mini': 400000,
   'gpt-5-nano': 400000,
@@ -84,6 +95,11 @@ const mistralModels = {
   'mistral-nemo': 131000,
   'pixtral-large': 131000,
   codestral: 256000,
+  'mistral-medium-3': 131000,
+  'mistral-medium-3.5': 262144,
+  'mistral-medium-3-5': 262144,
+  'ministral-8b-2512': 262144,
+  'ministral-14b-2512': 262144,
 };
 
 const cohereModels = {
@@ -94,6 +110,8 @@ const cohereModels = {
   'command-text': 4086, // -10 from max
   'command-r': 127500, // -500 from max
   'command-r-plus': 127500, // -500 from max
+  'command-a': 255500, // -500 from max
+  'command-a-plus': 127500, // -500 from max
 };
 
 const googleModels = {
@@ -130,6 +148,10 @@ const googleModels = {
   'gemini-3.1': 1000000,
   'gemini-3.1-flash-lite': 1000000,
   'gemini-3.5-flash': 1048576,
+  'gemini-3.5-flash-lite': 1048576,
+  'gemini-3.6-flash': 1048576,
+  'gemini-3.7-flash': 1048576,
+  'gemini-3.8-flash': 1048576,
 };
 
 const anthropicModels = {
@@ -156,12 +178,67 @@ const anthropicModels = {
   'claude-sonnet-4': 200000,
   'claude-sonnet-4-5': 200000,
   'claude-sonnet-4-6': 1000000,
+  'claude-sonnet-4.6': 1000000,
+  'claude-sonnet-4-7': 1000000,
+  'claude-sonnet-4.7': 1000000,
+  'claude-sonnet-4-8': 1000000,
+  'claude-sonnet-4.8': 1000000,
+  'claude-sonnet-4-9': 1000000,
+  'claude-sonnet-4.9': 1000000,
+  'claude-sonnet-5': 1000000,
+  'claude-sonnet-5-5': 1000000,
+  'claude-sonnet-5.5': 1000000,
   'claude-opus-4-6': 1000000,
   'claude-opus-4-7': 1000000,
   'claude-opus-4-8': 1000000,
+  'claude-opus-5-5': 1000000,
+  'claude-opus-5.5': 1000000,
+  'claude-opus-5': 1000000,
   'claude-fable-5': 1000000,
   'claude-mythos-5': 1000000,
+  'claude-fable-5-1': 1000000,
+  'claude-mythos-5-1': 1000000,
 };
+
+const ANTHROPIC_CONTEXT_1M = 1000000;
+const ANTHROPIC_OUTPUT_128K = 128000;
+const ANTHROPIC_SONNET_4_6_PLUS_OUTPUT = 128000;
+const ANTHROPIC_SONNET_4_6_PLUS_PATTERN =
+  /(?:claude-sonnet[-.]?4[-.]?(?:[6-9]|\d{2})|claude[-.]?4[-.]?(?:[6-9]|\d{2})[-.]?sonnet)(?=$|[^0-9])/;
+
+function usesAnthropicContextMap(endpoint: EModelEndpoint): boolean {
+  return (
+    endpoint === EModelEndpoint.anthropic ||
+    endpoint === EModelEndpoint.bedrock ||
+    endpoint === EModelEndpoint.openAI ||
+    endpoint === EModelEndpoint.agents ||
+    endpoint === EModelEndpoint.custom
+  );
+}
+
+function getAnthropicContext1m(modelName: string, endpoint: EModelEndpoint): number | undefined {
+  if (!usesAnthropicContextMap(endpoint) || !supportsContext1m(modelName)) {
+    return undefined;
+  }
+  return ANTHROPIC_CONTEXT_1M;
+}
+
+function getAnthropicSonnet46PlusOutput(
+  modelName: string,
+  endpoint: EModelEndpoint,
+): number | undefined {
+  if (endpoint !== EModelEndpoint.anthropic || !ANTHROPIC_SONNET_4_6_PLUS_PATTERN.test(modelName)) {
+    return undefined;
+  }
+  return ANTHROPIC_SONNET_4_6_PLUS_OUTPUT;
+}
+
+function getAnthropicOutput128k(modelName: string, endpoint: EModelEndpoint): number | undefined {
+  if (!usesAnthropicContextMap(endpoint) || !supportsOutput128k(modelName)) {
+    return undefined;
+  }
+  return ANTHROPIC_OUTPUT_128K;
+}
 
 const deepseekModels = {
   deepseek: 128000,
@@ -170,6 +247,12 @@ const deepseekModels = {
   'deepseek.r1': 128000,
   'deepseek-r1': 128000,
   'deepseek-reasoner': 128000,
+  'deepseek-v3.1': 163840,
+  'deepseek-v3.2': 163840,
+  'deepseek-v3.2-speciale': 131072,
+  'deepseek-v4': 1048576,
+  'deepseek-v4-flash': 1048576,
+  'deepseek-v4-pro': 1048576,
 };
 
 const moonshotModels = {
@@ -199,6 +282,9 @@ const moonshotModels = {
   'kimi-k2-thinking': 262144,
   'kimi-k2-thinking-turbo': 262144,
   'kimi-k2.5': 262144,
+  'kimi-k2.6': 262144,
+  'kimi-k2.7': 262144,
+  'kimi-k3': 1048576,
   // Bedrock moonshot models
   'moonshot.kimi-k2-0711': 131072,
   'moonshot.kimi': 262144,
@@ -207,6 +293,8 @@ const moonshotModels = {
   'moonshotai.kimi': 262144,
   'moonshot.kimi-k2.5': 262144,
   'moonshotai.kimi-k2.5': 262144,
+  'moonshot.kimi-k3': 1048576,
+  'moonshotai.kimi-k3': 1048576,
 };
 
 const metaModels = {
@@ -252,13 +340,28 @@ const metaModels = {
   'llama-3.2-3b': 127500,
   'llama-3.2-11b': 127500,
   'llama-3.2-90b': 127500,
-  // Llama 3.3 (newest)
+  // Llama 3.3
   'llama3.3': 127500,
   'llama3-3': 127500,
   'llama-3.3': 127500,
   'llama3.3:70b': 127500,
   'llama3-3-70b': 127500,
   'llama-3.3-70b': 127500,
+  /* Llama 4. Scout's native ceiling is 10M, but no host serves anywhere near it,
+     so capping at 1M keeps pruning useful instead of never firing. */
+  llama4: 1048576,
+  'llama-4': 1048576,
+  'llama4-scout': 1048576,
+  'llama-4-scout': 1048576,
+  'llama4-maverick': 1048576,
+  'llama-4-maverick': 1048576,
+  // Muse (newest)
+  musespark: 1000000,
+  'muse-spark': 1000000,
+  'muse-spark-1.1': 1000000,
+  'muse-spark-1.2': 1000000,
+  'muse-glimmer': 131072,
+  'muse-glimmer-30b': 131072,
 };
 
 const qwenModels = {
@@ -285,6 +388,21 @@ const qwenModels = {
   'qwen3-coder-plus': 128000,
   'qwen3-coder-flash': 128000,
   'qwen3-next-80b-a3b': 262144,
+  'qwen3-coder-next': 262144,
+  /* Qwen3.5 onward: every open-weight size ships a 262K native window, while the
+     hosted plus/flash tiers serve 1M. */
+  'qwen3.5': 262144,
+  'qwen3.5-plus': 1000000,
+  'qwen3.5-flash': 1000000,
+  'qwen3.6': 262144,
+  'qwen3.6-plus': 1000000,
+  'qwen3.6-flash': 1000000,
+  'qwen3.7': 262144,
+  'qwen3.7-plus': 1000000,
+  'qwen3.7-flash': 1000000,
+  'qwen3.8': 262144,
+  'qwen3.8-plus': 1000000,
+  'qwen3.8-flash': 1000000,
 };
 
 const ai21Models = {
@@ -304,11 +422,20 @@ const amazonModels = {
   'nova-lite': 295000, // -5000 from max
   'nova-pro': 295000, // -5000 from max
   'nova-premier': 995000, // -5000 from max
+  'nova-2-lite': 995000, // -5000 from max
+  'nova-2-pro': 995000, // -5000 from max
 };
+
+/** Bedrock can reject near-limit GPT prompts before its published window is reached. */
+const bedrockOpenAIContext = 950000;
 
 const openAIBedrockModels = {
   'openai.gpt-oss-20b': 128000,
   'openai.gpt-oss-120b': 128000,
+  'openai.gpt-5.6': bedrockOpenAIContext,
+  'openai.gpt-6-astra': bedrockOpenAIContext,
+  'openai.gpt-6-sol': bedrockOpenAIContext,
+  'openai.gpt-6-luna': bedrockOpenAIContext,
 };
 
 const bedrockModels = {
@@ -341,6 +468,12 @@ const xAIModels = {
   'grok-4': 256000, // 256K context
   'grok-4-fast': 2000000, // 2M context
   'grok-4-1-fast': 2000000, // 2M context (covers reasoning & non-reasoning variants)
+  'grok-4.5': 500000,
+  'grok-4-5': 500000,
+  'grok-4.6': 500000,
+  'grok-4-6': 500000,
+  'grok-4.7': 500000,
+  'grok-4-7': 500000,
 };
 
 const aggregateModels = {
@@ -352,6 +485,17 @@ const aggregateModels = {
   'glm-4.5-air': 131000,
   'glm-4.5v': 66000,
   'glm-4.6': 200000,
+  'glm-4.7': 204800,
+  'glm-4.7-flash': 202752,
+  'glm-5': 204800,
+  'glm-5.1': 204800,
+  'glm-5.2': 1048576,
+  'glm-5.3': 1048576,
+  // MiniMax
+  'minimax-m1': 1000000,
+  'minimax-m2': 204800,
+  'minimax-m2.7': 204800,
+  'minimax-m3': 1048576,
   // GPT-OSS
   'gpt-oss': 131000,
   'gpt-oss:20b': 131000,
@@ -390,6 +534,12 @@ export const modelMaxOutputs = {
   'gpt-5.4-nano': 128000,
   'gpt-5.5': 128000,
   'gpt-5.5-pro': 128000,
+  'gpt-5.6': 128000,
+  'gpt-5.6-terra': 128000,
+  'gpt-5.6-luna': 128000,
+  'gpt-6-astra': 128000,
+  'gpt-6-sol': 128000,
+  'gpt-6-luna': 128000,
   'chat-latest': 128000,
   'gpt-5-mini': 128000,
   'gpt-5-nano': 128000,
@@ -407,14 +557,27 @@ const anthropicMaxOutputs = {
   'claude-3-opus': 4096,
   'claude-haiku-4-5': 64000,
   'claude-sonnet-4': 64000,
-  'claude-sonnet-4-6': 64000,
+  'claude-sonnet-4-6': 128000,
+  'claude-sonnet-4.6': 128000,
+  'claude-sonnet-4-7': 128000,
+  'claude-sonnet-4.7': 128000,
+  'claude-sonnet-4-8': 128000,
+  'claude-sonnet-4.8': 128000,
+  'claude-sonnet-4-9': 128000,
+  'claude-sonnet-4.9': 128000,
+  'claude-sonnet-5': 128000,
   'claude-opus-4': 32000,
   'claude-opus-4-5': 64000,
   'claude-opus-4-6': 128000,
   'claude-opus-4-7': 128000,
   'claude-opus-4-8': 128000,
+  'claude-opus-5-5': 128000,
+  'claude-opus-5.5': 128000,
+  'claude-opus-5': 128000,
   'claude-fable-5': 128000,
   'claude-mythos-5': 128000,
+  'claude-fable-5-1': 128000,
+  'claude-mythos-5-1': 128000,
   'claude-3.5-sonnet': 8192,
   'claude-3-5-sonnet': 8192,
   'claude-3.7-sonnet': 128000,
@@ -438,13 +601,15 @@ export const maxOutputTokensMap: Record<string, Record<string, number>> = {
   [EModelEndpoint.custom]: { ...modelMaxOutputs, ...deepseekMaxOutputs },
 };
 
-/** Finds the longest matching key in the tokens map via substring match. */
-export function findMatchingPattern(
-  modelName: string,
-  tokensMap: Record<string, number> | EndpointTokenConfig,
-): string | null {
+/**
+ * Any model-keyed map. Matching reads keys only and never inspects a value, so
+ * the value type is deliberately open rather than a union that every caller has
+ * to cast into.
+ */
+type ModelKeyedMap = Readonly<Record<string, unknown>>;
+
+function findLongestKey(lowerModelName: string, tokensMap: ModelKeyedMap): string | null {
   const keys = Object.keys(tokensMap);
-  const lowerModelName = modelName.toLowerCase();
   let bestMatch: string | null = null;
   let bestLength = 0;
   for (let i = keys.length - 1; i >= 0; i--) {
@@ -460,6 +625,43 @@ export function findMatchingPattern(
   }
 
   return bestMatch;
+}
+
+/**
+ * Finds the longest matching key in the tokens map via substring match.
+ *
+ * A vendor prefix can outrank the id it precedes: `moonshotai/kimi-k2` matched
+ * `moonshot` (8) over `kimi-k2` (7) and reported half the real window. When the
+ * whole id resolves to a prefix-only match, retry against the model segment.
+ *
+ * A key that carries the vendor itself is already the most specific answer and
+ * is kept. `EndpointTokenConfig` is an arbitrary record, and one built from
+ * OpenRouter is keyed by `org/model`, so those must still beat a bare `model`.
+ *
+ * A GPT point release with no key of its own (`gpt-6.1-sol`) resolves to its
+ * family's (`gpt-6-sol`), for context windows, output limits and pricing alike.
+ */
+export function findMatchingPattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
+  const direct = findVendorAwarePattern(modelName, tokensMap);
+  if (direct != null) {
+    return direct;
+  }
+  const family = gptPointReleaseFamily(modelName);
+  return family == null ? null : findVendorAwarePattern(family, tokensMap);
+}
+
+function findVendorAwarePattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
+  const lowerModelName = modelName.toLowerCase();
+  const slashIndex = lowerModelName.lastIndexOf('/');
+  if (slashIndex === -1) {
+    return findLongestKey(lowerModelName, tokensMap);
+  }
+
+  const fullMatch = findLongestKey(lowerModelName, tokensMap);
+  if (fullMatch != null && fullMatch.includes('/')) {
+    return fullMatch;
+  }
+  return findLongestKey(lowerModelName.slice(slashIndex + 1), tokensMap) ?? fullMatch;
 }
 
 /**
@@ -519,6 +721,10 @@ export function getModelMaxTokens(
   endpoint: EModelEndpoint = EModelEndpoint.openAI,
   endpointTokenConfig?: EndpointTokenConfig,
 ): number | undefined {
+  if (typeof modelName !== 'string') {
+    return undefined;
+  }
+
   /** A partial override only covers the models it lists; fall back to the
    *  built-in map for unlisted models instead of dropping to the default
    *  budget (matches buildTokenConfigMap and getMultiplier). */
@@ -527,6 +733,10 @@ export function getModelMaxTokens(
     if (overrideValue != null) {
       return overrideValue;
     }
+  }
+  const context1mValue = getAnthropicContext1m(modelName, endpoint);
+  if (context1mValue != null) {
+    return context1mValue;
   }
   return getModelTokenValue(modelName, maxTokensMap[endpoint as keyof typeof maxTokensMap]);
 }
@@ -550,6 +760,14 @@ export function getModelMaxOutputTokens(
     if (overrideValue != null) {
       return overrideValue;
     }
+  }
+  const output128kValue = getAnthropicOutput128k(modelName, endpoint);
+  if (output128kValue != null) {
+    return output128kValue;
+  }
+  const sonnet46PlusValue = getAnthropicSonnet46PlusOutput(modelName, endpoint);
+  if (sonnet46PlusValue != null) {
+    return sonnet46PlusValue;
   }
   return getModelTokenValue(
     modelName,
@@ -589,6 +807,12 @@ export function matchModelName(
   }
 
   const matchedPattern = findMatchingPattern(modelName, tokensMap);
+  if (
+    (matchedPattern === 'claude-sonnet-4' || matchedPattern === 'claude-4') &&
+    getAnthropicContext1m(modelName, endpoint) != null
+  ) {
+    return modelName;
+  }
   return matchedPattern || modelName;
 }
 

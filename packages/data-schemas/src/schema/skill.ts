@@ -108,9 +108,8 @@ const skillSchema: Schema<ISkillDocument> = new Schema(
     },
     /**
      * Structured YAML frontmatter bag (everything except `name`/`description`,
-     * which live as first-class columns). Validated in strict mode against
-     * `validateSkillFrontmatter` before write — unknown keys are rejected
-     * so any expansion of the allowed set is an explicit code change.
+     * which live as first-class columns). `validateSkillFrontmatter` type-checks
+     * recognized keys and bounds tolerated extension values before write.
      */
     frontmatter: {
       type: Schema.Types.Mixed,

@@ -4,6 +4,7 @@ import type {
   UseMutationResult,
   QueryObserverResult,
 } from '@tanstack/react-query';
+import type { MCPReinitializeResponse } from '../types/mcpServers';
 import { MCPServerConnectionStatusResponse } from '../types/queries';
 import { Constants, initialModelsConfig } from '../config';
 import { defaultOrderQuery } from '../types/assistants';
@@ -133,6 +134,7 @@ export const useClearConversationsMutation = (): UseMutationResult<unknown> => {
   return useMutation(() => dataService.clearAllConversations(), {
     onSuccess: () => {
       queryClient.invalidateQueries([QueryKeys.allConversations]);
+      queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
       queryClient.invalidateQueries([QueryKeys.conversationTags]);
     },
   });
@@ -334,13 +336,7 @@ export const useUpdateUserPluginsMutation = (
 };
 
 export const useReinitializeMCPServerMutation = (): UseMutationResult<
-  {
-    success: boolean;
-    message: string;
-    serverName: string;
-    oauthRequired?: boolean;
-    oauthUrl?: string;
-  },
+  MCPReinitializeResponse,
   unknown,
   string,
   unknown
@@ -478,6 +474,10 @@ export const useUpdateResourcePermissionsMutation = (): UseMutationResult<
 
       queryClient.invalidateQueries({
         queryKey: [QueryKeys.effectivePermissions, variables.resourceType, variables.resourceId],
+      });
+
+      queryClient.invalidateQueries({
+        queryKey: [QueryKeys.effectivePermissions, 'all', variables.resourceType],
       });
     },
   });

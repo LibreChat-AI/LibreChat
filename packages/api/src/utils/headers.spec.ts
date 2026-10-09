@@ -1,5 +1,37 @@
 import type { RunLLMConfig } from '~/types';
-import { mergeHeaders, resolveConfigHeaders } from './headers';
+import { mediaTypeEssence, mergeHeaders, resolveConfigHeaders } from './headers';
+
+describe('mediaTypeEssence', () => {
+  it('returns the bare type for a header with no parameters', () => {
+    expect(mediaTypeEssence('text/event-stream')).toBe('text/event-stream');
+  });
+
+  it('strips parameters', () => {
+    expect(mediaTypeEssence('text/event-stream; charset=utf-8')).toBe('text/event-stream');
+    expect(mediaTypeEssence('application/json;charset=utf-8')).toBe('application/json');
+  });
+
+  it('lowercases the type', () => {
+    expect(mediaTypeEssence('TEXT/EVENT-STREAM')).toBe('text/event-stream');
+    expect(mediaTypeEssence('Application/JSON; Charset=UTF-8')).toBe('application/json');
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(mediaTypeEssence('  text/plain  ; charset=utf-8')).toBe('text/plain');
+  });
+
+  it('does not match a type named only inside a parameter', () => {
+    expect(mediaTypeEssence('text/plain; boundary=text/event-stream')).toBe('text/plain');
+    expect(mediaTypeEssence('text/plain; x=application/json')).toBe('text/plain');
+  });
+
+  it('returns an empty string for absent or empty headers', () => {
+    expect(mediaTypeEssence(undefined)).toBe('');
+    expect(mediaTypeEssence(null)).toBe('');
+    expect(mediaTypeEssence('')).toBe('');
+    expect(mediaTypeEssence('   ')).toBe('');
+  });
+});
 
 describe('mergeHeaders', () => {
   it('returns undefined when neither side has headers', () => {
@@ -96,22 +128,24 @@ describe('resolveConfigHeaders', () => {
     });
   });
 
-  it('leaves Google customHeaders untouched (resolved at init, not request time)', () => {
+  it('resolves only tenant placeholders in Google customHeaders', () => {
     const llmConfig = {
       customHeaders: {
         'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'X-Tenant-Id': '{{LIBRECHAT_USER_TENANT_ID}}',
         Authorization: 'Bearer ${SOME_KEY}',
       },
     } as unknown as RunLLMConfig;
 
-    resolveConfigHeaders({ llmConfig, user, body });
+    resolveConfigHeaders({ llmConfig, user, tenantId: 'request-tenant', body });
 
-    // Native Google headers are resolved in initializeGoogle; resolveConfigHeaders
-    // must not re-process them (keeps the key-derived auth out of env expansion).
+    // Native Google headers are otherwise resolved in initializeGoogle. In
+    // particular, provider auth must never pass through environment expansion.
     expect(
       (llmConfig as unknown as { customHeaders: Record<string, string> }).customHeaders,
     ).toEqual({
       'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      'X-Tenant-Id': 'request-tenant',
       Authorization: 'Bearer ${SOME_KEY}',
     });
   });
@@ -147,9 +181,71 @@ describe('resolveConfigHeaders', () => {
     delete process.env.HEADERS_SPEC_GATEWAY_KEY;
   });
 
+  it('resolves model tenant aliases without exposing tenantId through the safe user', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: {
+          'X-Tenant-ID': '{{LIBRECHAT_USER_TENANT_ID}}',
+          'X-Canonical-Tenant-ID': '{{LIBRECHAT_USER_TENANTID}}',
+        },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({ llmConfig, user, tenantId: 'request-tenant', body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({
+      'X-Tenant-ID': 'request-tenant',
+      'X-Canonical-Tenant-ID': 'request-tenant',
+    });
+  });
+
+  it('blanks model tenant placeholders when the run has no tenant', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: { 'X-Tenant-ID': '{{LIBRECHAT_USER_TENANT_ID}}' },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({ llmConfig, user, body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-Tenant-ID': '' });
+  });
+
   it('leaves configs without header maps untouched', () => {
     const llmConfig = { model: 'gpt-4o', configuration: {} } as unknown as RunLLMConfig;
     expect(() => resolveConfigHeaders({ llmConfig, user, body })).not.toThrow();
     expect(llmConfig.configuration).toEqual({});
+  });
+
+  it('never forwards unresolved user placeholders when user context is missing (issue #14580)', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: {
+          'X-LibreChat-User': '{{LIBRECHAT_USER_OPENIDID}}',
+          'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        },
+      },
+    } as unknown as RunLLMConfig;
+
+    // The empty safe user produced by createSafeUser(undefined) — e.g. a disposed
+    // req racing async title generation — must not leak literal template text.
+    resolveConfigHeaders({ llmConfig, user: {} as { id: string }, body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({
+      'X-LibreChat-User': '',
+      'X-Conversation-Id': 'convo-abc',
+    });
+  });
+
+  it('strips placeholders for fields the resolved user lacks', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: { 'X-LibreChat-User': '{{LIBRECHAT_USER_OPENIDID}}' },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({ llmConfig, user, body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-LibreChat-User': '' });
   });
 });

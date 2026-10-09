@@ -92,4 +92,22 @@ describe('EndpointIcon', () => {
       EModelEndpoint.google,
     );
   });
+
+  it('resolves provider art when invoked as a plain function, as the mention list does', () => {
+    const conversation = { endpoint: EModelEndpoint.google } as TConversation;
+
+    const element = EndpointIcon({
+      conversation,
+      endpointsConfig,
+      context: 'menu-item',
+      size: 20,
+    });
+
+    render(element);
+
+    expect(screen.getByTestId('minimal-icon')).toHaveAttribute(
+      'data-endpoint',
+      EModelEndpoint.google,
+    );
+  });
 });

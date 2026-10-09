@@ -1,0 +1,71 @@
+name: Lighthouse CI
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'client/**'
+      - 'config/**'
+      - 'packages/**'
+      - 'e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/lighthouse.yml'
+      - '!**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: lighthouse-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      E2E_CHROMIUM_CHANNEL: chrome
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run e2e:prepare
+      - run: google-chrome --version
+      - name: Audit serial database latency
+        id: audit
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run lighthouse:run 2>&1 | tee lighthouse-ci.log
+      - name: Comment Lighthouse findings
+        if: ${{ failure() && steps.audit.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo 'Lighthouse CI failed. The last 80 log lines contain the measured budgets and assertion failures.'
+            echo
+            echo '```text'
+            tail -n 80 lighthouse-ci.log
+            echo '```'
+            echo
+            echo "[Open the full run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          } > lighthouse-comment.md
+          gh pr comment "$PR_NUMBER" --body-file lighthouse-comment.md
+      - name: Upload Lighthouse reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: lighthouse
+          path: |
+            .lighthouse/
+            lighthouse-ci.log
+          include-hidden-files: true
+          retention-days: 7

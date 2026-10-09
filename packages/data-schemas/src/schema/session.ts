@@ -22,4 +22,6 @@ const sessionSchema: Schema<ISession> = new Schema({
   },
 });
 
+sessionSchema.index({ user: 1, refreshTokenHash: 1 }, { unique: true });
+
 export default sessionSchema;

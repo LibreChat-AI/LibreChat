@@ -4,8 +4,10 @@ const { loadDefaultModels, loadConfigModels } = require('~/server/services/Confi
 const getModelsConfig = (req) => loadModels(req);
 
 async function loadModels(req) {
-  const defaultModelsConfig = await loadDefaultModels(req);
-  const customModelsConfig = await loadConfigModels(req);
+  const [defaultModelsConfig, customModelsConfig] = await Promise.all([
+    loadDefaultModels(req),
+    loadConfigModels(req),
+  ]);
   return { ...defaultModelsConfig, ...customModelsConfig };
 }
 

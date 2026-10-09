@@ -1,35 +1,48 @@
 import React, { useMemo, useEffect } from 'react';
-import keyBy from 'lodash/keyBy';
-import { ControlCombobox } from '@librechat/client';
 import { ChevronLeft, RotateCcw } from 'lucide-react';
+import { Alert, Button, ControlCombobox } from '@librechat/client';
 import { useFormContext, useWatch, Controller } from 'react-hook-form';
-import { componentMapping } from '~/components/SidePanel/Parameters/components';
 import {
+  Permissions,
   alternateName,
-  getSettingsKeys,
-  getEndpointField,
+  PermissionTypes,
   LocalStorageKeys,
-  SettingDefinition,
-  agentParamSettings,
-  applyModelAwareDefaults,
+  resolveModelCatalogKey,
 } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { AgentForm, AgentModelPanelProps, StringOption } from '~/common';
-import { useGetEndpointsQuery } from '~/data-provider';
+import { pruneAgentModelParameters, resolveAgentParameterSettings } from './parameters';
+import { componentMapping } from '~/components/SidePanel/Parameters/components';
+import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
-import { useLocalize } from '~/hooks';
 import { Panel } from '~/common';
 import { cn } from '~/utils';
 
+function getModelPlaceholderKey(modelsPending: boolean, provider: string) {
+  if (modelsPending) {
+    return 'com_ui_loading';
+  }
+  if (provider) {
+    return 'com_ui_select_model';
+  }
+  return 'com_ui_select_provider_first';
+}
+
 export default function ModelPanel({
   providers,
+  modelsError,
   setActivePanel,
   models: modelsData,
-}: Pick<AgentModelPanelProps, 'models' | 'providers' | 'setActivePanel'>) {
+  modelsReady,
+}: Pick<
+  AgentModelPanelProps,
+  'models' | 'modelsError' | 'modelsReady' | 'providers' | 'setActivePanel'
+>) {
   const localize = useLocalize();
   const { announcePolite } = useLiveAnnouncer();
 
-  const { control, setValue } = useFormContext<AgentForm>();
+  const { control, setValue, getValues } = useFormContext<AgentForm>();
 
   const model = useWatch({ control, name: 'model' });
   const providerOption = useWatch({ control, name: 'provider' });
@@ -43,55 +56,58 @@ export default function ModelPanel({
     return value ?? '';
   }, [providerOption]);
   const models = useMemo(
-    () => (provider ? (modelsData[provider] ?? []) : []),
+    () => (provider ? (modelsData[resolveModelCatalogKey(provider, modelsData)] ?? []) : []),
     [modelsData, provider],
   );
-
-  useEffect(() => {
-    const _model = model ?? '';
-    if (provider && _model) {
-      const modelExists = models.includes(_model);
-      if (!modelExists) {
-        const newModels = modelsData[provider] ?? [];
-        setValue('model', newModels[0] ?? '');
-      }
-      localStorage.setItem(LocalStorageKeys.LAST_AGENT_MODEL, _model);
-      localStorage.setItem(LocalStorageKeys.LAST_AGENT_PROVIDER, provider);
-    }
-
-    if (provider && !_model) {
-      setValue('model', models[0] ?? '');
-    }
-  }, [provider, models, modelsData, setValue, model]);
+  const modelsPending = !modelsReady && !modelsError;
+  const selectionDisabled = !modelsReady || modelsError;
 
   const { data: endpointsConfig = {} } = useGetEndpointsQuery();
+  const { data: startupConfig } = useGetStartupConfig();
 
   const bedrockRegions = useMemo(() => {
     return endpointsConfig?.[provider]?.availableRegions ?? [];
   }, [endpointsConfig, provider]);
 
-  const endpointType = useMemo(
-    () => getEndpointField(endpointsConfig, provider, 'type'),
-    [provider, endpointsConfig],
-  );
+  const webSearchAllowed = useHasAccess({
+    permissionType: PermissionTypes.WEB_SEARCH,
+    permission: Permissions.USE,
+  });
 
-  const parameters = useMemo((): SettingDefinition[] => {
-    const customParams = endpointsConfig[provider]?.customParams ?? {};
-    const [combinedKey, endpointKey] = getSettingsKeys(endpointType ?? provider, model ?? '');
-    const overriddenEndpointKey = customParams.defaultParamsEndpoint ?? endpointKey;
-    const defaultParams =
-      agentParamSettings[combinedKey] ?? agentParamSettings[overriddenEndpointKey] ?? [];
-    const overriddenParams = endpointsConfig[provider]?.customParams?.paramDefinitions ?? [];
-    const overriddenParamsMap = keyBy(overriddenParams, 'key');
-    const modelAwareParams = applyModelAwareDefaults(
-      defaultParams.filter((param) => param != null),
-      overriddenEndpointKey,
-      model ?? '',
-    );
-    return modelAwareParams.map(
-      (param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param,
-    );
-  }, [endpointType, endpointsConfig, model, provider]);
+  const parameterSettings = useMemo(
+    () =>
+      resolveAgentParameterSettings({
+        endpointsConfig,
+        model: model ?? '',
+        provider,
+        startupConfig,
+        webSearchAllowed,
+      }),
+    [endpointsConfig, model, provider, startupConfig, webSearchAllowed],
+  );
+  /** The rendered set omits role-gated controls; `parameterSettings.parameters`
+   *  stays complete so the pruning effect below still recognises them. */
+  const { visibleParameters: parameters } = parameterSettings;
+  const webSearchBlocked =
+    !webSearchAllowed &&
+    (modelParameters?.web_search === true ||
+      parameterSettings.parameters.some((parameter) => parameter.key === 'web_search'));
+
+  /**
+   * Prunes `model_parameters` entries that no longer have a visible control (e.g. a
+   * parameter newly added to the endpoint's `dropParams`), mirroring the conversation
+   * panel's pruning effect. Otherwise the stale value stays saved and silently reactivates
+   * if the endpoint config later stops dropping it, with no control to inspect or clear it.
+   */
+  useEffect(() => {
+    const currentParameters = getValues('model_parameters') ?? ({} as t.AgentModelParameters);
+    const prunedParameters = pruneAgentModelParameters(currentParameters, parameterSettings);
+    if (prunedParameters === currentParameters) {
+      return;
+    }
+
+    setValue('model_parameters', prunedParameters);
+  }, [parameterSettings, getValues, setValue]);
 
   const setOption = (optionKey: keyof t.AgentModelParameters) => (value: t.AgentParameterValue) => {
     setValue(`model_parameters.${optionKey}`, value);
@@ -103,34 +119,37 @@ export default function ModelPanel({
   };
 
   return (
-    <div className="mb-1 flex w-full flex-col gap-2 text-sm">
-      <div className="model-panel relative flex flex-col items-center px-16 pt-2 text-center">
-        <div className="absolute left-0 top-4">
-          <button
-            type="button"
-            className="btn btn-neutral relative"
-            onClick={() => {
-              setActivePanel(Panel.builder);
-            }}
-            aria-label={localize('com_ui_back_to_builder')}
-          >
-            <div className="model-panel-content flex w-full items-center justify-center gap-2">
-              <ChevronLeft />
-            </div>
-          </button>
-        </div>
-
-        <div className="mb-2 mt-2 text-xl font-medium">{localize('com_ui_model_parameters')}</div>
-      </div>
+    <div className="mb-1 flex w-full flex-col gap-3 text-sm">
+      <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 pt-1">
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={() => setActivePanel(Panel.builder)}
+          aria-label={localize('com_ui_back_to_builder')}
+          className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary shrink-0 rounded-xl"
+        >
+          <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
+        </Button>
+        <h2 className="text-text-primary text-center text-base font-semibold">
+          {localize('com_ui_model_parameters')}
+        </h2>
+        <span
+          aria-hidden="true"
+          className="size-theme-button min-h-theme-target min-w-theme-target"
+        />
+      </header>
       <div>
         {/* Endpoint aka Provider for Agents */}
-        <div className="mb-4">
+        <div className="mb-3" aria-busy={modelsPending}>
           <label
             id="provider-label"
-            className="text-token-text-primary model-panel-label mb-2 block text-sm font-medium"
+            className={cn(
+              'text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase',
+              modelsPending && 'opacity-60',
+            )}
             htmlFor="provider"
           >
-            {localize('com_ui_provider')} <span className="text-red-500">*</span>
+            {localize('com_ui_provider')} <span className="text-text-destructive">*</span>
           </label>
           <Controller
             name="provider"
@@ -149,22 +168,38 @@ export default function ModelPanel({
               return (
                 <>
                   <ControlCombobox
+                    selectId="provider"
                     selectedValue={value}
                     displayValue={alternateName[display] ?? display}
                     selectPlaceholder={localize('com_ui_select_provider')}
                     searchPlaceholder={localize('com_ui_select_search_provider')}
-                    setValue={field.onChange}
+                    setValue={(value) => {
+                      if (value === provider) {
+                        return;
+                      }
+                      const nextModel =
+                        modelsData[resolveModelCatalogKey(value, modelsData)]?.[0] ?? '';
+                      field.onChange(value);
+                      setValue('model', nextModel);
+                      localStorage.setItem(LocalStorageKeys.LAST_AGENT_PROVIDER, value);
+                      if (nextModel) {
+                        localStorage.setItem(LocalStorageKeys.LAST_AGENT_MODEL, nextModel);
+                      } else {
+                        localStorage.removeItem(LocalStorageKeys.LAST_AGENT_MODEL);
+                      }
+                    }}
                     items={providers.map((provider) => ({
                       label: typeof provider === 'string' ? provider : provider.label,
                       value: typeof provider === 'string' ? provider : provider.value,
                     }))}
-                    className={cn(error ? 'border-2 border-red-500' : '')}
+                    className={cn(error ? 'border-border-destructive border-2' : '')}
                     ariaLabel={localize('com_ui_provider')}
+                    disabled={selectionDisabled}
                     isCollapsed={false}
                     showCarat={true}
                   />
                   {error && (
-                    <span className="model-panel-error text-sm text-red-500 transition duration-300 ease-in-out">
+                    <span className="text-text-destructive mt-1 text-xs" role="alert">
                       {localize('com_ui_field_required')}
                     </span>
                   )}
@@ -174,16 +209,16 @@ export default function ModelPanel({
           />
         </div>
         {/* Model */}
-        <div className="model-panel-section mb-4">
+        <div className="mb-3" aria-busy={modelsPending}>
           <label
             id="model-label"
             className={cn(
-              'text-token-text-primary model-panel-label mb-2 block text-sm font-medium',
-              !provider && 'text-gray-500 dark:text-gray-400',
+              'text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase',
+              (!provider || modelsPending) && 'opacity-60',
             )}
             htmlFor="model"
           >
-            {localize('com_ui_model')} <span className="text-red-500">*</span>
+            {localize('com_ui_model')} <span className="text-text-destructive">*</span>
           </label>
           <Controller
             name="model"
@@ -193,26 +228,34 @@ export default function ModelPanel({
               return (
                 <>
                   <ControlCombobox
+                    selectId="model"
                     selectedValue={field.value || ''}
-                    selectPlaceholder={
-                      provider
-                        ? localize('com_ui_select_model')
-                        : localize('com_ui_select_provider_first')
-                    }
+                    selectPlaceholder={localize(getModelPlaceholderKey(modelsPending, provider))}
                     searchPlaceholder={localize('com_ui_select_model')}
-                    setValue={field.onChange}
+                    setValue={(value) => {
+                      field.onChange(value);
+                      localStorage.setItem(LocalStorageKeys.LAST_AGENT_PROVIDER, provider);
+                      if (value) {
+                        localStorage.setItem(LocalStorageKeys.LAST_AGENT_MODEL, value);
+                      } else {
+                        localStorage.removeItem(LocalStorageKeys.LAST_AGENT_MODEL);
+                      }
+                    }}
                     items={models.map((model) => ({
                       label: model,
                       value: model,
                     }))}
-                    disabled={!provider}
-                    className={cn('disabled:opacity-50', error ? 'border-2 border-red-500' : '')}
+                    disabled={!provider || selectionDisabled}
+                    className={cn(
+                      'disabled:opacity-50',
+                      error ? 'border-border-destructive border-2' : '',
+                    )}
                     ariaLabel={localize('com_ui_model')}
                     isCollapsed={false}
                     showCarat={true}
                   />
                   {provider && error && (
-                    <span className="text-sm text-red-500 transition duration-300 ease-in-out">
+                    <span className="text-text-destructive mt-1 text-xs" role="alert">
                       {localize('com_ui_field_required')}
                     </span>
                   )}
@@ -220,12 +263,22 @@ export default function ModelPanel({
               );
             }}
           />
+          {modelsError && (
+            <Alert variant="error" className="mt-1">
+              {localize('com_error_models_not_loaded')}
+            </Alert>
+          )}
         </div>
       </div>
+      {webSearchBlocked && (
+        <Alert variant="warning" role="status">
+          {localize('com_ui_native_web_search_denied')}
+        </Alert>
+      )}
       {/* Model Parameters */}
       {parameters && (
         <div className="h-auto max-w-full">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-3">
             {/* This is the parent element containing all settings */}
             {/* Below is an example of an applied dynamic setting, each be contained by a div with the column span specified */}
             {parameters.map((setting) => {
@@ -254,14 +307,14 @@ export default function ModelPanel({
         </div>
       )}
       {/* Reset Parameters Button */}
-      <button
-        type="button"
+      <Button
+        variant="outline"
         onClick={handleResetParameters}
-        className="btn btn-neutral my-1 flex w-full items-center justify-center gap-2 px-4 py-2 text-sm"
+        className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary mt-2 h-9 w-full rounded-xl px-4 font-medium"
       >
-        <RotateCcw className="h-4 w-4" aria-hidden="true" />
+        <RotateCcw className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
         {localize('com_ui_reset_var', { 0: localize('com_ui_model_parameters') })}
-      </button>
+      </Button>
     </div>
   );
 }

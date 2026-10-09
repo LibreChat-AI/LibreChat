@@ -1,7 +1,27 @@
 import { atom } from 'recoil';
 import { SettingsViews, LocalStorageKeys } from 'librechat-data-provider';
-import { atomWithLocalStorage } from '~/store/utils';
 import type { TOptionSettings } from '~/common';
+import { CHAT_TITLE_IN_TAB_KEY } from '~/utils/documentTitle';
+import { isDrawerViewport } from '~/utils/breakpoints';
+import { atomWithLocalStorage } from '~/store/utils';
+import { STTEndpoints } from '~/common';
+
+const VALID_SPEECH_ENGINES = new Set<string>(Object.values(STTEndpoints));
+const LEGACY_EXTERNAL_STT_ENGINES = new Set<string>(['openai', 'azureOpenAI']);
+const LEGACY_EXTERNAL_TTS_ENGINES = new Set<string>([
+  'openai',
+  'azureOpenAI',
+  'elevenlabs',
+  'localai',
+]);
+
+const normalizeSavedSpeechEngine = (
+  engine: string,
+  legacyExternalEngines: ReadonlySet<string>,
+): string => {
+  if (VALID_SPEECH_ENGINES.has(engine)) return engine;
+  return legacyExternalEngines.has(engine) ? STTEndpoints.external : STTEndpoints.browser;
+};
 
 // Static atoms without localStorage
 const staticAtoms = {
@@ -12,14 +32,21 @@ const staticAtoms = {
     default: SettingsViews.default,
   }),
   showPopover: atom<boolean>({ key: 'showPopover', default: false }),
+  speechSettingsInitialized: atom<boolean>({ key: 'speechSettingsInitialized', default: false }),
 };
 
 const localStorageAtoms = {
   // General settings
-  autoScroll: atomWithLocalStorage('autoScroll', false),
   sidebarExpanded: atomWithLocalStorage(
     'unifiedSidebarExpanded',
-    typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches ? false : true,
+    !isDrawerViewport(),
+    /**
+     * The mobile drawer covers the viewport, so a persisted open state would
+     * launch the app into the navigation instead of the conversation.
+     * Normalized during atom initialization so the closed state reaches the
+     * first paint rather than animating shut after it.
+     */
+    (saved) => (isDrawerViewport() ? false : saved),
   ),
   enableUserMsgMarkdown: atomWithLocalStorage<boolean>(
     LocalStorageKeys.ENABLE_USER_MSG_MARKDOWN,
@@ -27,6 +54,7 @@ const localStorageAtoms = {
   ),
   keepScreenAwake: atomWithLocalStorage('keepScreenAwake', true),
   newChatSwitchToHistory: atomWithLocalStorage('newChatSwitchToHistory', true),
+  chatTitleInTab: atomWithLocalStorage(CHAT_TITLE_IN_TAB_KEY, true),
 
   // Chat settings
   enterToSend: atomWithLocalStorage('enterToSend', true),
@@ -34,16 +62,41 @@ const localStorageAtoms = {
   chatDirection: atomWithLocalStorage('chatDirection', 'LTR'),
   autoExpandTools: atomWithLocalStorage(LocalStorageKeys.AUTO_EXPAND_TOOLS, false),
   saveDrafts: atomWithLocalStorage('saveDrafts', true),
+  /**
+   * Whether long user messages render collapsed to a preview with a
+   * "Show more" toggle. The clamp is visual only; the full text stays in
+   * the DOM, copyable and searchable.
+   */
+  collapseLongUserMessages: atomWithLocalStorage('collapseLongUserMessages', false),
+  /**
+   * Whether pasting a large block of text attaches it as a `.txt` file instead of
+   * flooding the composer. The text still reaches the model in full.
+   */
+  pasteLongTextAsFile: atomWithLocalStorage('pasteLongTextAsFile', true),
   showScrollButton: atomWithLocalStorage('showScrollButton', true),
   forkSetting: atomWithLocalStorage('forkSetting', ''),
   splitAtTarget: atomWithLocalStorage('splitAtTarget', false),
   rememberDefaultFork: atomWithLocalStorage(LocalStorageKeys.REMEMBER_FORK_OPTION, false),
   saveBadgesState: atomWithLocalStorage('saveBadgesState', false),
+  /** User preference for downscaling images before upload; ignored when the admin config sets it */
+  clientImageResize: atomWithLocalStorage('clientImageResize', false),
+  /**
+   * Whether copying a message also puts a rendered HTML version on the
+   * clipboard, so apps that ignore Markdown (Teams, Outlook, Word) paste the
+   * formatting instead of the raw syntax.
+   */
+  copyRichText: atomWithLocalStorage('copyRichText', false),
 
   // Beta features settings
   modularChat: atomWithLocalStorage('modularChat', true),
   LaTeXParsing: atomWithLocalStorage('LaTeXParsing', true),
   centerFormOnLanding: atomWithLocalStorage('centerFormOnLanding', true),
+  /**
+   * Whether the mobile drawer stops short of the edge, leaving a strip of the
+   * conversation visible that also closes it when tapped. Off by default: the
+   * drawer covers the screen and the swipe closes it.
+   */
+  mobileDrawerStrip: atomWithLocalStorage('mobileDrawerStrip', false),
   showFooter: atomWithLocalStorage('showFooter', true),
 
   // Commands settings
@@ -57,14 +110,18 @@ const localStorageAtoms = {
   advancedMode: atomWithLocalStorage('advancedMode', false),
 
   speechToText: atomWithLocalStorage('speechToText', true),
-  engineSTT: atomWithLocalStorage('engineSTT', 'browser'),
+  engineSTT: atomWithLocalStorage('engineSTT', 'browser', (engine) =>
+    normalizeSavedSpeechEngine(engine, LEGACY_EXTERNAL_STT_ENGINES),
+  ),
   languageSTT: atomWithLocalStorage('languageSTT', ''),
   autoTranscribeAudio: atomWithLocalStorage('autoTranscribeAudio', false),
   decibelValue: atomWithLocalStorage('decibelValue', -45),
   autoSendText: atomWithLocalStorage('autoSendText', -1),
 
   textToSpeech: atomWithLocalStorage('textToSpeech', true),
-  engineTTS: atomWithLocalStorage('engineTTS', 'browser'),
+  engineTTS: atomWithLocalStorage('engineTTS', 'browser', (engine) =>
+    normalizeSavedSpeechEngine(engine, LEGACY_EXTERNAL_TTS_ENGINES),
+  ),
   voice: atomWithLocalStorage<string | undefined>('voice', undefined),
   cloudBrowserVoices: atomWithLocalStorage('cloudBrowserVoices', false),
   languageTTS: atomWithLocalStorage('languageTTS', ''),

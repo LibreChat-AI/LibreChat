@@ -265,6 +265,30 @@ describe('ensureLinkPermissions', () => {
     expect(entries).toHaveLength(1);
   });
 
+  test('does not write when the owner grant is already in place', async () => {
+    const link = await createTestLink();
+    await ensureLinkPermissions(link._id, userId);
+    const [granted] = await AclEntry.find({ resourceId: link._id }).lean();
+
+    await ensureLinkPermissions(link._id, userId);
+
+    const [after] = await AclEntry.find({ resourceId: link._id }).lean();
+    // Rendering the badge must not keep re-granting: `grantedAt` has to stand still.
+    expect(after.grantedAt?.toISOString()).toBe(granted.grantedAt?.toISOString());
+  });
+
+  test('still runs the legacy migration when the owner grant already exists', async () => {
+    const link = await createTestLink();
+    await ensureLinkPermissions(link._id, userId);
+    // A legacy row keeps its marker until every grant it needs exists.
+    await SharedLink.updateOne({ _id: link._id }, { $set: { isPublic: true } });
+
+    await ensureLinkPermissions(link._id, userId);
+
+    const migrated = await SharedLink.findById(link._id).lean();
+    expect((migrated as { isPublic?: boolean } | null)?.isPublic).toBeUndefined();
+  });
+
   test('does not delete the SharedLink on failure', async () => {
     const link = await createTestLink();
     const AccessRole = mongoose.models.AccessRole;

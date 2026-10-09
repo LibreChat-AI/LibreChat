@@ -1,4 +1,4 @@
-import type { CodeEnvRef } from 'librechat-data-provider';
+import type { CodeEnvRef, CodeEnvRefMap } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 /**
@@ -137,6 +137,7 @@ export interface ISkillFile {
    * when the skill file is re-uploaded to storage.
    */
   codeEnvRef?: CodeEnvRef;
+  codeEnvRefs?: CodeEnvRefMap;
   createdAt?: Date;
   updatedAt?: Date;
 }

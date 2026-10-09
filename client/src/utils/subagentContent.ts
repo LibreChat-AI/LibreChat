@@ -1,5 +1,5 @@
-import { ContentTypes, ToolCallTypes } from 'librechat-data-provider';
-import type { SubagentUpdateEvent } from 'librechat-data-provider';
+import { ContentTypes, ToolCallTypes, getToolTimingDurations } from 'librechat-data-provider';
+import type { SubagentUpdateEvent, ToolTimingStamps } from 'librechat-data-provider';
 
 /**
  * Client-side helpers for rendering the live `SubagentCall` UI while
@@ -21,6 +21,9 @@ type RunStepData = {
   id?: string;
   stepDetails?: {
     type?: string;
+    message_creation?: {
+      phase?: 'commentary' | 'final_answer';
+    };
     tool_calls?: Array<{
       id?: string;
       name?: string;
@@ -32,6 +35,8 @@ type RunStepData = {
 
 type RunStepCompletedData = {
   result?: {
+    id?: string;
+    completed_at?: number;
     type?: string;
     tool_call?: {
       id?: string;
@@ -39,12 +44,35 @@ type RunStepCompletedData = {
       args?: unknown;
       output?: string;
       progress?: number;
+      inputValidationError?: true;
     };
   };
 };
 
+type RunStepClosedData = {
+  id?: string;
+};
+
+type ToolDispatchData = {
+  dispatched_at?: number;
+  toolCalls?: Array<{ id?: string; stepId?: string }>;
+};
+
+type ToolPreparationData = {
+  id?: string;
+  toolCallId?: string;
+  observed_at?: number;
+};
+
 type MessageDeltaData = {
-  delta?: { content?: Array<{ type?: string; text?: string }> };
+  id?: string;
+  delta?: {
+    content?: Array<{
+      type?: string;
+      text?: string;
+      phase?: 'commentary' | 'final_answer';
+    }>;
+  };
 };
 
 type ReasoningDeltaData = {
@@ -53,7 +81,13 @@ type ReasoningDeltaData = {
 
 type ErrorData = { message?: string };
 
-type TextPart = { type: ContentTypes.TEXT; text: string };
+type AssistantTextPhase = 'commentary' | 'final_answer';
+type TextPart = {
+  type: ContentTypes.TEXT;
+  text: string;
+  phase?: AssistantTextPhase;
+  stepId?: string;
+};
 type ThinkPart = { type: ContentTypes.THINK; think: string };
 type ToolCallPart = {
   type: ContentTypes.TOOL_CALL;
@@ -61,9 +95,19 @@ type ToolCallPart = {
     id: string;
     name: string;
     args: string;
+    /** Synthesis defaults are not observed tool fields. */
+    argsUnavailable?: true;
+    nameUnavailable?: true;
     output?: string;
     progress: number;
+    inputValidationError?: true;
     type?: string;
+    stepId?: string;
+    toolPreparationStartedAt?: number;
+    toolDispatchedAt?: number;
+    toolCompletedAt?: number;
+    toolPreparationDurationMs?: number;
+    toolExecutionDurationMs?: number;
   };
 };
 
@@ -71,15 +115,21 @@ type ToolCallPart = {
  *  matches the subset of `TMessageContentParts` a subagent run emits. */
 export type SubagentContentPart = TextPart | ThinkPart | ToolCallPart;
 
-const extractTextChunk = (data: MessageDeltaData | undefined): string => {
+const extractTextChunk = (
+  data: MessageDeltaData | undefined,
+): { text: string; phase?: AssistantTextPhase } => {
   const content = data?.delta?.content;
-  if (!Array.isArray(content)) return '';
+  if (!Array.isArray(content)) return { text: '' };
   for (const block of content) {
     if (block?.type === 'text' && typeof block.text === 'string') {
-      return block.text;
+      const phase = block.phase;
+      return {
+        text: block.text,
+        ...(phase === 'commentary' || phase === 'final_answer' ? { phase } : {}),
+      };
     }
   }
-  return '';
+  return { text: '' };
 };
 
 const extractThinkChunk = (data: ReasoningDeltaData | undefined): string => {
@@ -96,6 +146,17 @@ const extractThinkChunk = (data: ReasoningDeltaData | undefined): string => {
 const stringifyArgs = (args: unknown): string =>
   typeof args === 'string' ? args : JSON.stringify(args ?? {});
 
+const updateMessagePhase = (
+  phases: Record<string, AssistantTextPhase>,
+  stepId: string,
+  phase: AssistantTextPhase | undefined,
+): Record<string, AssistantTextPhase> => {
+  const next = { ...phases };
+  if (phase == null) delete next[stepId];
+  else next[stepId] = phase;
+  return next;
+};
+
 /**
  * Cursor carried across `foldSubagentEvent` calls so the aggregator can
  * extend an in-flight TEXT/THINK run without re-scanning earlier parts
@@ -107,6 +168,14 @@ export interface SubagentAggregatorState {
   openTextIdx: number | null;
   /** Index of the currently-open THINK part, or `null` when none. */
   openThinkIdx: number | null;
+  /**
+   * Active message-step ID to its declared text phase; graph members can
+   * overlap. Entries leave on `run_step_closed`, so the runtime's bounded
+   * concurrent graph width—not historical step count—bounds this table.
+   */
+  messagePhaseByStepId: Record<string, AssistantTextPhase>;
+  /** Compatibility phase for legacy message events that omit their step ID. */
+  idlessTextPhase?: AssistantTextPhase;
   /** `tool_call.id` → its index in `contentParts` for O(1) updates. */
   toolCallIndexById: Record<string, number>;
 }
@@ -116,6 +185,7 @@ export function initSubagentAggregatorState(): SubagentAggregatorState {
   return {
     openTextIdx: null,
     openThinkIdx: null,
+    messagePhaseByStepId: {},
     toolCallIndexById: {},
   };
 }
@@ -142,21 +212,39 @@ export function foldSubagentEvent(
   event: SubagentUpdateEvent,
 ): { parts: SubagentContentPart[]; state: SubagentAggregatorState } {
   if (event.phase === 'message_delta') {
-    const chunk = extractTextChunk(event.data as MessageDeltaData | undefined);
+    const data = event.data as MessageDeltaData | undefined;
+    const extracted = extractTextChunk(data);
+    const chunk = extracted.text;
     if (!chunk) return { parts, state };
+    const stepId = data?.id;
+    const phase =
+      extracted.phase ??
+      (typeof stepId === 'string' && stepId !== ''
+        ? state.messagePhaseByStepId[stepId]
+        : state.idlessTextPhase);
     /** Reasoning→text transition: close the open THINK so the THINK part
      *  lands BEFORE the TEXT part in chronological order. */
     const afterThinkClose = state.openThinkIdx != null ? { ...state, openThinkIdx: null } : state;
     if (afterThinkClose.openTextIdx != null) {
       const idx = afterThinkClose.openTextIdx;
       const existing = parts[idx] as TextPart;
-      const next = parts.slice();
-      next[idx] = { type: ContentTypes.TEXT, text: existing.text + chunk };
-      return { parts: next, state: afterThinkClose };
+      if (
+        (existing.phase ?? null) === (phase ?? null) &&
+        (existing.stepId ?? null) === (stepId || null)
+      ) {
+        const next = parts.slice();
+        next[idx] = { ...existing, text: existing.text + chunk };
+        return { parts: next, state: afterThinkClose };
+      }
     }
     const next = parts.slice();
     const newIdx = next.length;
-    next.push({ type: ContentTypes.TEXT, text: chunk });
+    next.push({
+      type: ContentTypes.TEXT,
+      text: chunk,
+      ...(phase == null ? {} : { phase }),
+      ...(typeof stepId === 'string' && stepId !== '' ? { stepId } : {}),
+    });
     return { parts: next, state: { ...afterThinkClose, openTextIdx: newIdx } };
   }
 
@@ -179,8 +267,29 @@ export function foldSubagentEvent(
 
   if (event.phase === 'run_step') {
     const data = event.data as RunStepData | undefined;
-    if (data?.stepDetails?.type !== 'tool_calls') return { parts, state };
-    const toolCalls = data.stepDetails.tool_calls ?? [];
+    const details = data?.stepDetails;
+    if (details?.type === 'message_creation') {
+      const phase = details.message_creation?.phase;
+      const textPhase = phase === 'commentary' || phase === 'final_answer' ? phase : undefined;
+      const stepId = data?.id;
+      if (typeof stepId === 'string' && stepId !== '') {
+        const messagePhaseByStepId = updateMessagePhase(
+          state.messagePhaseByStepId,
+          stepId,
+          textPhase,
+        );
+        return { parts, state: { ...state, messagePhaseByStepId } };
+      }
+      return {
+        parts,
+        state: {
+          ...state,
+          idlessTextPhase: textPhase,
+        },
+      };
+    }
+    if (details?.type !== 'tool_calls') return { parts, state };
+    const toolCalls = details.tool_calls ?? [];
     let next = parts;
     const toolCallIndexById = { ...state.toolCallIndexById };
     for (const tc of toolCalls) {
@@ -191,6 +300,7 @@ export function foldSubagentEvent(
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           id: tc.id,
+          ...(typeof data?.id === 'string' ? { stepId: data.id } : {}),
           name: tc.name ?? '',
           args: stringifyArgs(tc.args),
           progress: 0.1,
@@ -203,8 +313,65 @@ export function foldSubagentEvent(
      *  them — close the buffers. */
     return {
       parts: next,
-      state: { openTextIdx: null, openThinkIdx: null, toolCallIndexById },
+      state: {
+        ...state,
+        openTextIdx: null,
+        openThinkIdx: null,
+        idlessTextPhase: undefined,
+        toolCallIndexById,
+      },
     };
+  }
+
+  if (event.phase === 'tool_preparation') {
+    const data = event.data as ToolPreparationData | undefined;
+    const id = data?.toolCallId;
+    const at = data?.observed_at;
+    if (!id || typeof at !== 'number' || !Number.isFinite(at) || at < 0) return { parts, state };
+    const idx = state.toolCallIndexById[id];
+    const part = idx == null ? undefined : parts[idx];
+    if (
+      part?.type !== ContentTypes.TOOL_CALL ||
+      part.tool_call.stepId !== data.id ||
+      part.tool_call.progress >= 1
+    )
+      return { parts, state };
+    const next = parts.slice();
+    next[idx] = {
+      ...part,
+      tool_call: {
+        ...part.tool_call,
+        toolPreparationStartedAt: Math.min(part.tool_call.toolPreparationStartedAt ?? at, at),
+      },
+    };
+    return { parts: next, state };
+  }
+
+  if (event.phase === 'tool_calls_dispatched') {
+    const data = event.data as ToolDispatchData | undefined;
+    const at = data?.dispatched_at;
+    if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) return { parts, state };
+    let next = parts;
+    for (const call of data?.toolCalls ?? []) {
+      if (!call.id || !call.stepId) continue;
+      const idx = state.toolCallIndexById[call.id];
+      const part = idx == null ? undefined : next[idx];
+      if (
+        part?.type !== ContentTypes.TOOL_CALL ||
+        part.tool_call.stepId !== call.stepId ||
+        part.tool_call.progress >= 1
+      )
+        continue;
+      if (next === parts) next = parts.slice();
+      next[idx] = {
+        ...part,
+        tool_call: {
+          ...part.tool_call,
+          toolDispatchedAt: Math.min(part.tool_call.toolDispatchedAt ?? at, at),
+        },
+      };
+    }
+    return { parts: next, state };
   }
 
   if (event.phase === 'run_step_completed') {
@@ -214,13 +381,43 @@ export function foldSubagentEvent(
     const existingIdx = state.toolCallIndexById[tc.id];
     if (existingIdx != null) {
       const existing = parts[existingIdx] as ToolCallPart;
+      const completedAt = data?.result?.completed_at;
+      const completion =
+        existing.tool_call.stepId != null &&
+        data?.result?.id === existing.tool_call.stepId &&
+        typeof completedAt === 'number' &&
+        Number.isFinite(completedAt) &&
+        completedAt >= 0
+          ? { toolCompletedAt: completedAt }
+          : {};
+      const timings =
+        data?.result?.id === existing.tool_call.stepId
+          ? getToolTimingDurations({
+              observedAt: existing.tool_call.toolPreparationStartedAt,
+              dispatchedAt: existing.tool_call.toolDispatchedAt,
+              completedAt: data?.result?.completed_at,
+            })
+          : {};
       const merged: ToolCallPart = {
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           ...existing.tool_call,
-          ...(tc.name ? { name: tc.name } : {}),
-          ...(tc.args != null ? { args: stringifyArgs(tc.args) } : {}),
+          ...completion,
+          ...timings,
+          ...(tc.name
+            ? {
+                name: tc.name,
+                ...(existing.tool_call.nameUnavailable ? { nameUnavailable: undefined } : {}),
+              }
+            : {}),
+          ...(tc.args != null
+            ? {
+                args: stringifyArgs(tc.args),
+                ...(existing.tool_call.argsUnavailable ? { argsUnavailable: undefined } : {}),
+              }
+            : {}),
           ...(tc.output != null ? { output: tc.output } : {}),
+          ...(tc.inputValidationError === true ? { inputValidationError: true } : {}),
           progress: tc.progress ?? 1,
         },
       };
@@ -236,9 +433,22 @@ export function foldSubagentEvent(
       type: ContentTypes.TOOL_CALL,
       tool_call: {
         id: tc.id,
+        ...(typeof data?.result?.id === 'string' && data.result.id !== ''
+          ? {
+              stepId: data.result.id,
+              ...(typeof data.result.completed_at === 'number' &&
+              Number.isFinite(data.result.completed_at) &&
+              data.result.completed_at >= 0
+                ? { toolCompletedAt: data.result.completed_at }
+                : {}),
+            }
+          : {}),
         name: tc.name ?? '',
         args: stringifyArgs(tc.args),
+        ...(tc.args == null ? { argsUnavailable: true } : {}),
+        ...(!tc.name ? { nameUnavailable: true } : {}),
         output: tc.output,
+        ...(tc.inputValidationError === true ? { inputValidationError: true } : {}),
         progress: tc.progress ?? 1,
         type: ToolCallTypes.TOOL_CALL,
       },
@@ -246,14 +456,212 @@ export function foldSubagentEvent(
     return {
       parts: next,
       state: {
+        ...state,
         openTextIdx: null,
         openThinkIdx: null,
+        idlessTextPhase: undefined,
         toolCallIndexById: { ...state.toolCallIndexById, [tc.id]: newIdx },
       },
     };
   }
 
+  if (event.phase === 'run_step_closed') {
+    const stepId = (event.data as RunStepClosedData | undefined)?.id;
+    if (typeof stepId !== 'string' || stepId === '') return { parts, state };
+    return {
+      parts,
+      state: {
+        ...state,
+        messagePhaseByStepId: updateMessagePhase(state.messagePhaseByStepId, stepId, undefined),
+      },
+    };
+  }
+
   return { parts, state };
+}
+
+/** Recover phase metadata by the retained message step, then repair adjacent Markdown
+ * runs split by late phase discovery. The declaration is historical; closed steps stay retired. */
+export function reconcileSubagentMessagePhases(
+  parts: SubagentContentPart[],
+  state: SubagentAggregatorState,
+  events: SubagentUpdateEvent[],
+): { parts: SubagentContentPart[]; state: SubagentAggregatorState } {
+  const phases = new Map<string, AssistantTextPhase>();
+  const closed = new Set<string>();
+  for (const event of events) {
+    if (event.phase === 'run_step') {
+      const data = event.data as RunStepData | undefined;
+      const phase = data?.stepDetails?.message_creation?.phase;
+      if (
+        data?.id &&
+        data.stepDetails?.type === 'message_creation' &&
+        (phase === 'commentary' || phase === 'final_answer')
+      )
+        phases.set(data.id, phase);
+    } else if (event.phase === 'run_step_closed') {
+      const id = (event.data as RunStepClosedData | undefined)?.id;
+      if (id) closed.add(id);
+    }
+  }
+  if (phases.size === 0 && closed.size === 0) return { parts, state };
+  let next = parts;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part.type !== ContentTypes.TEXT || part.phase != null || !part.stepId) continue;
+    const phase = phases.get(part.stepId);
+    if (phase == null) continue;
+    if (next === parts) next = parts.slice();
+    next[index] = { ...part, phase };
+  }
+  let messagePhaseByStepId = state.messagePhaseByStepId;
+  for (const [id, phase] of phases) {
+    if (closed.has(id) || messagePhaseByStepId[id] === phase) continue;
+    if (messagePhaseByStepId === state.messagePhaseByStepId)
+      messagePhaseByStepId = { ...messagePhaseByStepId };
+    messagePhaseByStepId[id] = phase;
+  }
+  for (const id of closed) {
+    if (!(id in messagePhaseByStepId)) continue;
+    if (messagePhaseByStepId === state.messagePhaseByStepId)
+      messagePhaseByStepId = { ...messagePhaseByStepId };
+    delete messagePhaseByStepId[id];
+  }
+  /** Never combine different message steps or cross a tool/reasoning boundary. */
+  const joins = next.some((part, index) => {
+    const previous = next[index - 1];
+    return (
+      part.type === ContentTypes.TEXT &&
+      part.stepId != null &&
+      previous?.type === ContentTypes.TEXT &&
+      previous.stepId === part.stepId &&
+      previous.phase === part.phase
+    );
+  });
+  if (!joins)
+    return {
+      parts: next,
+      state:
+        messagePhaseByStepId === state.messagePhaseByStepId
+          ? state
+          : { ...state, messagePhaseByStepId },
+    };
+  const merged: SubagentContentPart[] = [];
+  const indices: number[] = [];
+  for (const part of next) {
+    const previous = merged[merged.length - 1];
+    if (
+      part.type === ContentTypes.TEXT &&
+      part.stepId != null &&
+      previous?.type === ContentTypes.TEXT &&
+      previous.stepId === part.stepId &&
+      previous.phase === part.phase
+    )
+      merged[merged.length - 1] = { ...previous, text: previous.text + part.text };
+    else merged.push(part);
+    indices.push(merged.length - 1);
+  }
+  return {
+    parts: merged,
+    state: {
+      ...state,
+      messagePhaseByStepId,
+      openTextIdx: state.openTextIdx == null ? null : (indices[state.openTextIdx] ?? null),
+      openThinkIdx: state.openThinkIdx == null ? null : (indices[state.openThinkIdx] ?? null),
+      toolCallIndexById: Object.fromEntries(
+        merged.flatMap((part, index) =>
+          part.type === ContentTypes.TOOL_CALL ? [[part.tool_call.id, index]] : [],
+        ),
+      ),
+    },
+  };
+}
+
+/** Replay metadata is idempotent even when the associated event was observed before
+ * its tool part existed. Recover only stamps, never append content or reopen tools. */
+export function reconcileSubagentToolTimings(
+  parts: SubagentContentPart[],
+  events: SubagentUpdateEvent[],
+): SubagentContentPart[] {
+  const stamps = new Map<string, ToolTimingStamps & { completed?: true }>();
+  const valid = (at: number | undefined): at is number =>
+    typeof at === 'number' && Number.isFinite(at) && at >= 0;
+  const key = (id: string, step: string) => JSON.stringify([id, step]);
+  const record = (
+    id: string | undefined,
+    step: string | undefined,
+    field: keyof ToolTimingStamps,
+    at: number | undefined,
+  ) => {
+    if (!id || !step || !valid(at)) return;
+    const identity = key(id, step);
+    const current = stamps.get(identity) ?? {};
+    /** A later handoff is not part of the measured invocation after its completion. */
+    if (current.completed) return;
+    const old = current[field];
+    current[field] = old == null ? at : Math.min(old, at);
+    stamps.set(identity, current);
+  };
+  for (const event of events) {
+    if (event.phase === 'tool_preparation') {
+      const data = event.data as ToolPreparationData | undefined;
+      record(data?.toolCallId, data?.id, 'observedAt', data?.observed_at);
+    } else if (event.phase === 'tool_calls_dispatched') {
+      const data = event.data as ToolDispatchData | undefined;
+      for (const call of data?.toolCalls ?? [])
+        record(call.id, call.stepId, 'dispatchedAt', data?.dispatched_at);
+    } else if (event.phase === 'run_step_completed') {
+      const result = (event.data as RunStepCompletedData | undefined)?.result;
+      const id = result?.tool_call?.id;
+      const step = result?.id;
+      record(id, step, 'completedAt', result?.completed_at);
+      if (id && step) {
+        const identity = key(id, step);
+        const current = stamps.get(identity) ?? {};
+        current.completed = true;
+        stamps.set(identity, current);
+      }
+    }
+  }
+  if (stamps.size === 0) return parts;
+  let next = parts;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part.type !== ContentTypes.TOOL_CALL || !part.tool_call.stepId) continue;
+    const recovered = stamps.get(key(part.tool_call.id, part.tool_call.stepId));
+    if (recovered == null) continue;
+    const existing = part.tool_call;
+    const earliest = (old: number | undefined, at: number | undefined) => {
+      if (old == null) return at;
+      return at == null ? old : Math.min(old, at);
+    };
+    const observedAt = earliest(existing.toolPreparationStartedAt, recovered.observedAt);
+    const dispatchedAt = earliest(existing.toolDispatchedAt, recovered.dispatchedAt);
+    const completedAt = existing.toolCompletedAt ?? recovered.completedAt;
+    const durations = getToolTimingDurations({ observedAt, dispatchedAt, completedAt });
+    if (
+      observedAt === existing.toolPreparationStartedAt &&
+      dispatchedAt === existing.toolDispatchedAt &&
+      completedAt === existing.toolCompletedAt &&
+      (durations.toolPreparationDurationMs == null ||
+        durations.toolPreparationDurationMs === existing.toolPreparationDurationMs) &&
+      (durations.toolExecutionDurationMs == null ||
+        durations.toolExecutionDurationMs === existing.toolExecutionDurationMs)
+    )
+      continue;
+    if (next === parts) next = parts.slice();
+    next[index] = {
+      ...part,
+      tool_call: {
+        ...existing,
+        ...(observedAt == null ? {} : { toolPreparationStartedAt: observedAt }),
+        ...(dispatchedAt == null ? {} : { toolDispatchedAt: dispatchedAt }),
+        ...(completedAt == null ? {} : { toolCompletedAt: completedAt }),
+        ...durations,
+      },
+    };
+  }
+  return next;
 }
 
 /**
@@ -294,8 +702,8 @@ export interface SubagentTickerState {
   textLineIdx: number | null;
   /** Index of the in-flight 'reasoning' line. */
   thinkLineIdx: number | null;
-  /** Raw message-delta accumulator — truncated into `writing.body` but
-   *  preserved so subsequent deltas extend the running preview. */
+  /** Whitespace-normalized message-delta accumulator. A trailing separator is
+   *  retained so chunk boundaries still render as one word boundary. */
   textBuffer: string;
   thinkBuffer: string;
 }
@@ -317,10 +725,18 @@ export function initSubagentTickerState(): SubagentTickerState {
  *  CSS ellipsis — double-eliding would render a stray dot character
  *  right next to the "Writing:" / "Reasoning:" label. */
 const PREVIEW_MAX_CHARS = 300;
+const PREVIEW_BUFFER_MAX_CHARS = PREVIEW_MAX_CHARS * 4;
 const truncatePreview = (input: string): string => {
   const normalized = input.replace(/\s+/g, ' ').trim();
   if (normalized.length <= PREVIEW_MAX_CHARS) return normalized;
   return normalized.slice(-PREVIEW_MAX_CHARS);
+};
+
+const appendPreviewBuffer = (buffer: string, chunk: string): string => {
+  const normalized = `${buffer}${chunk}`.replace(/\s+/g, ' ').trimStart();
+  return normalized.length <= PREVIEW_BUFFER_MAX_CHARS
+    ? normalized
+    : normalized.slice(-PREVIEW_BUFFER_MAX_CHARS);
 };
 
 const SNIPPET_MAX_CHARS = 48;
@@ -385,7 +801,7 @@ export function foldSubagentEventIntoTicker(
   event: SubagentUpdateEvent,
 ): SubagentTickerState {
   if (event.phase === 'message_delta') {
-    const chunk = extractTextChunk(event.data as MessageDeltaData | undefined);
+    const chunk = extractTextChunk(event.data as MessageDeltaData | undefined).text;
     if (!chunk) return state;
     /** Delta-type transition: close any open reasoning buffer/cursor so
      *  a later `reasoning_delta` starts a NEW line below this text,
@@ -396,7 +812,7 @@ export function foldSubagentEventIntoTicker(
       state.thinkLineIdx != null || state.thinkBuffer
         ? { ...state, thinkLineIdx: null, thinkBuffer: '' }
         : state;
-    const textBuffer = afterClose.textBuffer + chunk;
+    const textBuffer = appendPreviewBuffer(afterClose.textBuffer, chunk);
     const body = truncatePreview(textBuffer);
     const line: SubagentTickerLine = { kind: 'writing', body };
     if (afterClose.textLineIdx == null) {
@@ -416,7 +832,7 @@ export function foldSubagentEventIntoTicker(
       state.textLineIdx != null || state.textBuffer
         ? { ...state, textLineIdx: null, textBuffer: '' }
         : state;
-    const thinkBuffer = afterClose.thinkBuffer + chunk;
+    const thinkBuffer = appendPreviewBuffer(afterClose.thinkBuffer, chunk);
     const body = truncatePreview(thinkBuffer);
     const line: SubagentTickerLine = { kind: 'reasoning', body };
     if (afterClose.thinkLineIdx == null) {
@@ -447,7 +863,7 @@ export function foldSubagentEventIntoTicker(
         typeof tc?.name === 'string' && tc.name.length > 0,
     );
     if (named.length === 0) return afterClose;
-    const toolNames = named.map((tc) => tc.name);
+    const toolNames = named.slice(0, 16).map((tc) => truncateSnippet(tc.name));
     const argsSnippet = named.length === 1 ? summarizeArgs(named[0].args) : undefined;
     const line: SubagentTickerLine = {
       kind: 'using_tool',
@@ -464,7 +880,7 @@ export function foldSubagentEventIntoTicker(
     const outputSnippet = tc.output != null ? summarizeOutput(tc.output) : undefined;
     const line: SubagentTickerLine = {
       kind: 'tool_complete',
-      toolName: tc.name,
+      toolName: truncateSnippet(tc.name),
       ...(outputSnippet ? { outputSnippet } : {}),
     };
     return { ...state, lines: state.lines.concat(line) };
@@ -474,7 +890,7 @@ export function foldSubagentEventIntoTicker(
     const data = event.data as ErrorData | undefined;
     const line: SubagentTickerLine = {
       kind: 'error',
-      ...(data?.message ? { message: data.message } : {}),
+      ...(data?.message ? { message: truncatePreview(data.message) } : {}),
     };
     return { ...state, lines: state.lines.concat(line) };
   }

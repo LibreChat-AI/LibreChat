@@ -3,6 +3,10 @@ import { logger } from '@librechat/data-schemas';
 /** Token count function that can be sync or async */
 export type TokenCountFn = (text: string) => number | Promise<number>;
 
+export function normalizeString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
 /**
  * Safety buffer multiplier applied to character position estimates during truncation.
  *
@@ -93,4 +97,24 @@ export async function processTextWithTokenLimit({
     tokenCount,
     wasTruncated: true,
   };
+}
+
+/**
+ * Truncates to `maxChars` keeping head and tail around an explicit marker, so
+ * the consumer (usually a model) can tell the content was cut and by how much.
+ */
+export function truncateMiddle(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const indicator = `\n\n... [truncated: ${value.length} chars exceeded ${maxChars} limit] ...\n\n`;
+  const available = maxChars - indicator.length;
+  if (available <= 0) {
+    return value.slice(0, maxChars);
+  }
+
+  const headSize = Math.ceil(available * 0.7);
+  const tailSize = available - headSize;
+  return value.slice(0, headSize) + indicator + value.slice(value.length - tailSize);
 }

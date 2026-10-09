@@ -29,6 +29,7 @@ jest.mock('@librechat/data-schemas', () => ({
     error: jest.fn(),
     debug: jest.fn(),
   },
+  scopedCacheKey: (baseKey: string) => baseKey,
 }));
 
 // Mock ServerConfigsDB to avoid mongoose dependency
@@ -530,6 +531,43 @@ describe('MCPServersInitializer', () => {
       // Third call - still skips
       await MCPServersInitializer.initialize(testConfigs);
       expect(mockInspect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('OBO initialization without browser token reuse', () => {
+    const oboConfigs: t.MCPServers = {
+      obo_server: {
+        type: 'streamable-http',
+        url: 'https://obo.example.com/mcp',
+        obo: { scopes: 'api://obo-server/Mcp.Tools.ReadWrite' },
+      } as unknown as t.MCPOptions,
+    };
+
+    const originalReuse = process.env.OPENID_REUSE_TOKENS;
+
+    afterEach(() => {
+      if (originalReuse == null) {
+        delete process.env.OPENID_REUSE_TOKENS;
+      } else {
+        process.env.OPENID_REUSE_TOKENS = originalReuse;
+      }
+    });
+
+    it('does not declare OBO unusable because bearer-auth flows remain valid', async () => {
+      delete process.env.OPENID_REUSE_TOKENS;
+      mockInspect.mockImplementationOnce(
+        async (_n, raw) =>
+          ({
+            ...raw,
+            requiresOAuth: false,
+          }) as unknown as t.ParsedServerConfig,
+      );
+
+      await MCPServersInitializer.initialize(oboConfigs);
+
+      const warnCalls = mockLogger.warn.mock.calls.flat().join(' | ');
+      expect(warnCalls).not.toMatch(/OBO is configured/);
+      expect(await registry.getServerConfig('obo_server')).toBeDefined();
     });
   });
 });

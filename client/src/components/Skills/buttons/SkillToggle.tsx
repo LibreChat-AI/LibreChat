@@ -1,39 +1,47 @@
-import { memo } from 'react';
-import { cn } from '~/utils';
+import { memo, useId } from 'react';
+import { Label, Switch, TooltipAnchor } from '@librechat/client';
+import { useLocalize } from '~/hooks';
 
 interface SkillToggleProps {
   enabled: boolean;
   onChange: () => void;
-  ariaLabel: string;
 }
 
-function SkillToggle({ enabled, onChange, ariaLabel }: SkillToggleProps) {
+/**
+ * Controls whether the skill is injected into the agent's catalog for the
+ * current user. The label stays fixed while the switch carries the state, so
+ * flipping it cannot resize the surrounding action row.
+ */
+function SkillToggle({ enabled, onChange }: SkillToggleProps) {
+  const localize = useLocalize();
+  const switchId = useId();
+  const labelId = useId();
+
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
-      aria-label={ariaLabel}
-      onClick={(e) => {
-        e.stopPropagation();
-        onChange();
-      }}
-      className="inline-flex h-9 items-center justify-center rounded-md px-1 transition-colors hover:bg-surface-hover"
-    >
-      <span
-        className={cn(
-          'relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors duration-200',
-          enabled ? 'bg-green-500' : 'bg-border-medium',
-        )}
-      >
+    <TooltipAnchor
+      description={localize('com_ui_skill_available_hint')}
+      side="top"
+      render={
         <span
-          className={cn(
-            'pointer-events-none mt-0.5 inline-block size-4 rounded-full bg-white shadow-sm transition-transform duration-200',
-            enabled ? 'translate-x-[1.125rem]' : 'translate-x-0.5',
-          )}
-        />
-      </span>
-    </button>
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex h-9 items-center gap-2 rounded-md px-2 transition-colors hover:bg-surface-hover"
+        >
+          <Switch
+            id={switchId}
+            checked={enabled}
+            onCheckedChange={() => onChange()}
+            aria-labelledby={labelId}
+          />
+          <Label
+            id={labelId}
+            htmlFor={switchId}
+            className="cursor-pointer select-none whitespace-nowrap text-xs font-medium text-text-secondary"
+          >
+            {localize('com_ui_skill_available')}
+          </Label>
+        </span>
+      }
+    />
   );
 }
 

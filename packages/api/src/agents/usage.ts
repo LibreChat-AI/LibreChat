@@ -1,9 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import {
-  inputTokensIncludesCache,
-  reconcileContextUsage,
-  promptTokensFromUsage,
-} from 'librechat-data-provider';
+import { inputTokensIncludesCache, reconcileContextUsageFromEvent } from 'librechat-data-provider';
 import type {
   TCustomConfig,
   TResponseUsage,
@@ -11,6 +7,7 @@ import type {
   TContextUsageEvent,
   TTransactionsConfig,
 } from 'librechat-data-provider';
+import type { SubagentUsageEvent as AgentsSubagentUsageEvent } from '@librechat/agents';
 import type {
   StructuredTokenUsage,
   BulkWriteDeps,
@@ -26,12 +23,32 @@ import {
   bulkWriteTransactions,
   prepareTokenSpend,
 } from './transactions';
+import { collectDetachedSubagentUsage } from './subagentTaskContext';
+import Tokenizer, { type EncodingName } from '~/utils/tokenizer';
+import { getSafeErrorMetadata } from '~/utils/errors';
+import { countRetainedToolTokens } from './client';
 
 type SpendTokensFn = (txData: TxMetadata, tokenUsage: TokenUsage) => Promise<unknown>;
 type SpendStructuredTokensFn = (
   txData: TxMetadata,
   tokenUsage: StructuredTokenUsage,
 ) => Promise<unknown>;
+
+/**
+ * Cache-creation (write) tokens across provider shapes: langchain's
+ * `input_token_details.cache_creation`, Anthropic's `cache_creation_input_tokens`,
+ * and OpenAI GPT-5.6+'s `cache_write_tokens` (nested or top-level). Kept in one
+ * place so the completion-token and billing splits never diverge.
+ */
+function getCacheCreationTokens(usage: UsageMetadata): number {
+  return (
+    Number(usage.input_token_details?.cache_creation) ||
+    Number(usage.input_token_details?.cache_write_tokens) ||
+    Number(usage.cache_creation_input_tokens) ||
+    Number(usage.cache_write_tokens) ||
+    0
+  );
+}
 
 /**
  * Resolves `completionTokens` for billing, repairing providers whose
@@ -70,10 +87,7 @@ function resolveCompletionTokens(usage: UsageMetadata): number {
   // Subset providers fold cache into input_tokens, so their adjustment is 0.
   const cacheRead =
     Number(usage.input_token_details?.cache_read) || Number(usage.cache_read_input_tokens) || 0;
-  const cacheCreation =
-    Number(usage.input_token_details?.cache_creation) ||
-    Number(usage.cache_creation_input_tokens) ||
-    0;
+  const cacheCreation = getCacheCreationTokens(usage);
   const cacheAdjustment = inputTokensIncludesCache(usage.provider) ? 0 : cacheRead + cacheCreation;
 
   if (total > input + output + cacheAdjustment) {
@@ -93,11 +107,22 @@ interface SplitUsage {
   completion: number;
 }
 
+export interface CollectedUsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  reasoningTokens: number;
+}
+
+export interface CollectedUsageBreakdown {
+  total: CollectedUsageTotals;
+  primary: CollectedUsageTotals;
+  subagent: CollectedUsageTotals;
+}
+
 function splitUsage(usage: UsageMetadata): SplitUsage {
-  const cacheCreation =
-    Number(usage.input_token_details?.cache_creation) ||
-    Number(usage.cache_creation_input_tokens) ||
-    0;
+  const cacheCreation = getCacheCreationTokens(usage);
   const cacheRead =
     Number(usage.input_token_details?.cache_read) || Number(usage.cache_read_input_tokens) || 0;
   const rawInput = Number(usage.input_tokens) || 0;
@@ -120,11 +145,64 @@ function splitUsage(usage: UsageMetadata): SplitUsage {
   };
 }
 
+function emptyCollectedUsageTotals(): CollectedUsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+  };
+}
+
+/**
+ * Normalizes every billed model call before folding it into API response totals.
+ * The same provider-aware split used by billing keeps additive cache tokens and
+ * repaired provider output counts consistent without coupling billing to one
+ * external wire format.
+ */
+export function aggregateCollectedUsage(
+  collectedUsage: ReadonlyArray<UsageMetadata | null | undefined>,
+): CollectedUsageBreakdown {
+  const primary = emptyCollectedUsageTotals();
+  const subagent = emptyCollectedUsageTotals();
+
+  for (const usage of collectedUsage) {
+    if (usage == null) {
+      continue;
+    }
+    const { totalInput, cacheRead, completion } = splitUsage(usage);
+    const bucket = usage.usage_type === 'subagent' ? subagent : primary;
+    const reasoningTokens =
+      Number(
+        usage.output_token_details?.reasoning ?? usage.output_token_details?.reasoning_tokens,
+      ) || 0;
+    bucket.inputTokens += totalInput;
+    bucket.outputTokens += completion;
+    bucket.totalTokens += totalInput + completion;
+    bucket.cacheReadTokens += cacheRead;
+    bucket.reasoningTokens += reasoningTokens;
+  }
+
+  return {
+    total: {
+      inputTokens: primary.inputTokens + subagent.inputTokens,
+      outputTokens: primary.outputTokens + subagent.outputTokens,
+      totalTokens: primary.totalTokens + subagent.totalTokens,
+      cacheReadTokens: primary.cacheReadTokens + subagent.cacheReadTokens,
+      reasoningTokens: primary.reasoningTokens + subagent.reasoningTokens,
+    },
+    primary,
+    subagent,
+  };
+}
+
 export interface RecordUsageDeps {
   spendTokens: SpendTokensFn;
   spendStructuredTokens: SpendStructuredTokensFn;
   pricing?: PricingFns;
   bulkWriteOps?: BulkWriteDeps;
+  isPrincipalActive?: (userId: string) => Promise<boolean>;
 }
 
 /**
@@ -273,41 +351,149 @@ function finalPrimaryCall(
   return undefined;
 }
 
+const finiteNonNegativeInteger = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(value)));
+};
+
+/**
+ * Sanitizes persisted per-tool counts and drops zero entries. Null-prototype
+ * records keep tool names as data keys; the cap bounds each result-message share.
+ */
+const normalizePersistedTokenRecord = (
+  value: unknown,
+  maxTotal?: number,
+): Record<string, number> | undefined => {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized: Record<string, number> = Object.create(null);
+  let remaining = maxTotal;
+  let found = false;
+  for (const [name, rawCount] of Object.entries(value)) {
+    const count = finiteNonNegativeInteger(rawCount);
+    if (count == null) {
+      continue;
+    }
+    const bounded = remaining == null ? count : Math.min(count, remaining);
+    if (bounded === 0) {
+      continue;
+    }
+    normalized[name] = bounded;
+    found = true;
+    if (remaining != null) {
+      remaining -= bounded;
+    }
+  }
+  return found ? normalized : undefined;
+};
+
+/**
+ * The counted tool results a save path attaches to its snapshot, or `undefined`
+ * when there are none to attach.
+ *
+ * Only a turn that stopped at the tool-call limit retains any: it keeps the
+ * results of the tools its final call requested, and the snapshot describing that
+ * call precedes them with no further call to produce a new one. Every other
+ * ending leaves nothing behind — a turn that finishes normally ends on model
+ * text, and a turn whose tools ran gets another call, hence another snapshot.
+ * A result that cannot be counted exactly withdraws the whole figure rather than
+ * contributing a guess (see `countRetainedToolTokens`).
+ *
+ * `countExact` is the run's own exact counter. It defaults to the shared
+ * tokenizer for the given encoding — the same one the SDK counted the snapshot
+ * with, which is the point — and is a parameter so a caller (or a test) can
+ * supply its own without reaching into module state. `maxCountChars` is the
+ * deployment's ceiling on that work (`endpoints.agents.maxRetainedToolCountChars`).
+ */
+export function resolveRetainedToolTokens({
+  stoppedAtToolLimit,
+  contentParts,
+  priorToolCallIds,
+  encoding,
+  maxCountChars,
+  countExact = (text: string) => Tokenizer.countExactTokens(text, encoding),
+}: {
+  stoppedAtToolLimit: boolean;
+  contentParts: ReadonlyArray<unknown> | null | undefined;
+  priorToolCallIds: ReadonlySet<string> | null | undefined;
+  encoding: EncodingName;
+  maxCountChars?: number;
+  countExact?: (text: string) => number | undefined;
+}): number | undefined {
+  if (!stoppedAtToolLimit) {
+    return undefined;
+  }
+  return countRetainedToolTokens({
+    contentParts,
+    priorToolCallIds,
+    countExact,
+    maxCountChars,
+    isClaude: encoding === 'claude',
+  });
+}
+
 /**
  * Projects the latest live context snapshot into the blob persisted on
  * `responseMessage.metadata.contextUsage`. Reconciles the calibrated estimate to
  * the final call's ACTUAL prompt tokens (the SDK multiplier over-inflates
  * `messageTokens`, badly so when a provider injects server-side content like web
  * search), so a reloaded turn shows the real context — not a several×-too-high
- * number. Trims zero-valued per-tool counts (privacy/size) and records the final
- * call's output as `completedOutputTokens` so rehydration adds the same
- * post-snapshot delta the live gauge did. The client re-anchors the blob to the
- * response message id on load.
+ * number. Sanitizes malformed optional token fields, bounds each result-message
+ * share by the parent total, and records the final call's output as
+ * `completedOutputTokens` so rehydration adds the same post-snapshot delta the
+ * live gauge did. The client re-anchors the blob to the response message id on
+ * load.
+ *
+ * `retainedToolTokens` is the second post-snapshot delta: the counted tool
+ * results a turn that stopped at the tool-call limit keeps beyond its last
+ * snapshot (see `countRetainedToolTokens`). It stays a separate field rather than
+ * being folded into `breakdown.messageTokens`, which is provider-reconciled — a
+ * locally counted figure added there would silently become part of the exact
+ * accounting. Zero and malformed values are dropped, so a normal turn carries
+ * nothing new.
  */
 export function buildPersistedContextUsage(
   snapshot: TContextUsageEvent,
   usageEvents: ReadonlyArray<TTokenUsageEvent> = [],
+  options: { retainedToolTokens?: number } = {},
 ): TContextUsageEvent {
   const finalCall = finalPrimaryCall(usageEvents, snapshot.runId);
-  const completedOutputTokens = finalCall ? normalizeEventUnits(finalCall).output : 0;
-  const reconciled = finalCall
-    ? reconcileContextUsage(snapshot, promptTokensFromUsage(finalCall))
-    : snapshot;
+  const reconciled = finalCall ? reconcileContextUsageFromEvent(snapshot, finalCall) : snapshot;
   const { breakdown } = reconciled;
-  let toolTokenCounts = breakdown.toolTokenCounts;
-  if (toolTokenCounts != null) {
-    const trimmed: Record<string, number> = {};
-    for (const [name, count] of Object.entries(toolTokenCounts)) {
-      if (count > 0) {
-        trimmed[name] = count;
-      }
-    }
-    toolTokenCounts = Object.keys(trimmed).length > 0 ? trimmed : undefined;
+  const messageTokens = finiteNonNegativeInteger(breakdown.messageTokens) ?? 0;
+  const toolTokenCounts = normalizePersistedTokenRecord(breakdown.toolTokenCounts);
+  const rawToolMessageTokens = finiteNonNegativeInteger(breakdown.toolMessageTokens);
+  const toolMessageTokens =
+    rawToolMessageTokens == null ? undefined : Math.min(rawToolMessageTokens, messageTokens);
+  const toolMessageTokenCounts =
+    toolMessageTokens != null
+      ? normalizePersistedTokenRecord(breakdown.toolMessageTokenCounts, toolMessageTokens)
+      : undefined;
+  const persistedBreakdown = { ...breakdown, messageTokens };
+  if (toolTokenCounts == null) {
+    delete persistedBreakdown.toolTokenCounts;
+  } else {
+    persistedBreakdown.toolTokenCounts = toolTokenCounts;
   }
+  if (toolMessageTokens == null) {
+    delete persistedBreakdown.toolMessageTokens;
+    delete persistedBreakdown.toolMessageTokenCounts;
+  } else {
+    persistedBreakdown.toolMessageTokens = toolMessageTokens;
+    if (toolMessageTokenCounts == null) {
+      delete persistedBreakdown.toolMessageTokenCounts;
+    } else {
+      persistedBreakdown.toolMessageTokenCounts = toolMessageTokenCounts;
+    }
+  }
+  const retainedToolTokens = finiteNonNegativeInteger(options.retainedToolTokens);
   return {
     ...reconciled,
-    breakdown: { ...breakdown, toolTokenCounts },
-    ...(completedOutputTokens > 0 && { completedOutputTokens }),
+    breakdown: persistedBreakdown,
+    ...(retainedToolTokens != null && retainedToolTokens > 0 && { retainedToolTokens }),
   };
 }
 
@@ -477,6 +663,109 @@ export function resolveAgentTokenConfig({
   return fallback;
 }
 
+/**
+ * The `context` a run stamps on the usage transactions it records on exit. A stopped run
+ * still owns what it consumed — the abort route only signals — so it records under
+ * `'abort'` rather than skipping, and a completed run under `'message'`.
+ */
+export function resolveRunUsageContext(aborted: boolean): 'abort' | 'message' {
+  return aborted ? 'abort' : 'message';
+}
+
+/**
+ * Whether a run already recorded provider-reported consumption for this response.
+ * `BaseClient` falls back to text-count billing whenever the recorded usage has no
+ * positive output count, which would charge the prompt a second time after
+ * {@link recordCollectedUsage} debited it — a stopped call may report input tokens
+ * and no output. An all-zero report is treated as unreported so the estimate still applies.
+ */
+export function hasRecordedProviderUsage(
+  usage: Pick<UsageMetadata, 'input_tokens' | 'output_tokens'> | null | undefined,
+): boolean {
+  return usage != null && ((usage.input_tokens ?? 0) > 0 || (usage.output_tokens ?? 0) > 0);
+}
+
+const NON_PRIMARY_USAGE_TYPES: ReadonlySet<string> = new Set([
+  'summarization',
+  'subagent',
+  'sequential',
+]);
+
+/**
+ * Whether any primary (response) call in the collected usage reported consumption. The stream
+ * aggregate {@link recordCollectedUsage} returns takes its input from the first primary entry
+ * only, so a later cancelled call that reported input alone is billed yet invisible there.
+ */
+export function hasRecordedPrimaryUsage(
+  collectedUsage: ReadonlyArray<UsageMetadata | null | undefined> | null | undefined,
+): boolean {
+  return (
+    collectedUsage?.some(
+      (usage) =>
+        usage != null &&
+        !NON_PRIMARY_USAGE_TYPES.has(usage.usage_type ?? '') &&
+        hasRecordedProviderUsage(usage),
+    ) === true
+  );
+}
+
+export interface FallbackTokenUsageParams {
+  /** Usage the run already recorded for this response, when it recorded any. */
+  usage?:
+    | (Pick<UsageMetadata, 'input_tokens' | 'output_tokens'> & { reasoning_tokens?: number })
+    | null;
+  /** Every entry the run collected; a billed call the aggregate hides still suppresses the estimate. */
+  collectedUsage?: ReadonlyArray<UsageMetadata | null | undefined> | null;
+  promptTokens?: number;
+  completionTokens?: number;
+  /** Whether the run was stopped; labels the row when no explicit `context` is given. */
+  aborted?: boolean;
+  /** Explicit transaction label; otherwise derived from `aborted`. */
+  context?: string;
+  /** Transaction fields the caller owns: user, conversation, message, model, config. */
+  txMetadata: Omit<TxMetadata, 'context'>;
+}
+
+/**
+ * Text-count billing for a response whose provider usage was never recorded — the
+ * fallback `BaseClient` takes when the recorded usage has no positive output count.
+ * Once provider usage was recorded it is already billed, so this records nothing
+ * (see {@link hasRecordedProviderUsage}). A reasoning count the estimate cannot see is
+ * billed as its own `'reasoning'` row. Failures are logged, never thrown, so a billing
+ * error cannot fail the response that was already produced.
+ */
+export async function recordFallbackTokenUsage(
+  deps: Pick<RecordUsageDeps, 'spendTokens'>,
+  {
+    usage,
+    collectedUsage,
+    promptTokens,
+    completionTokens,
+    aborted = false,
+    context = resolveRunUsageContext(aborted),
+    txMetadata,
+  }: FallbackTokenUsageParams,
+): Promise<void> {
+  if (hasRecordedPrimaryUsage(collectedUsage) || hasRecordedProviderUsage(usage)) {
+    return;
+  }
+  try {
+    await deps.spendTokens({ ...txMetadata, context }, { promptTokens, completionTokens });
+    const reasoningTokens = usage?.reasoning_tokens;
+    if (typeof reasoningTokens === 'number') {
+      await deps.spendTokens(
+        { ...txMetadata, context: 'reasoning' },
+        { completionTokens: reasoningTokens },
+      );
+    }
+  } catch (error) {
+    logger.error(
+      '[recordFallbackTokenUsage] Error recording token usage',
+      getSafeErrorMetadata(error),
+    );
+  }
+}
+
 export interface RecordUsageParams {
   user: string;
   conversationId: string;
@@ -501,6 +790,17 @@ export interface RecordUsageParams {
 export interface RecordUsageResult {
   input_tokens: number;
   output_tokens: number;
+}
+
+export interface DetachedSubagentUsageRecorderParams {
+  user: string;
+  conversationId: string;
+  model?: string;
+  messageId?: string;
+  balance?: Partial<TCustomConfig['balance']> | null;
+  transactions?: Partial<TTransactionsConfig>;
+  endpointTokenConfig?: EndpointTokenConfig;
+  endpointTokenConfigByAgentId?: Map<string, EndpointTokenConfig | undefined>;
 }
 
 /**
@@ -680,43 +980,68 @@ export async function recordCollectedUsage(
 }
 
 /**
- * Structural mirror of the agents SDK's `SubagentUsageEvent` (added after
- * `@librechat/agents` 3.2.33). Defined locally so type-checking does not
- * depend on the unreleased SDK — replace with
- * `import type { SubagentUsageEvent } from '@librechat/agents'` once the
- * dependency is bumped.
+ * Creates an immutable, request-independent billing adapter for detached child
+ * calls. The recorder owns pricing selection and failure isolation so legacy
+ * controllers only provide their database dependencies and request snapshot.
  */
-export interface SubagentUsageEvent {
-  /** Usage metadata reported by the child's model call. */
-  usage: UsageMetadata;
-  /** Model that produced this usage (per-call, falls back to the child config's model). */
-  model?: string;
-  /** Provider enum value of the subagent's configured agent. */
-  provider?: string;
-  /** Subagent `type` identifier from the SubagentConfig. */
-  subagentType: string;
-  /** Child run ID (unique per subagent execution). */
-  subagentRunId: string;
-  /** Child agent ID assigned to this subagent execution. */
-  subagentAgentId: string;
-  /** Parent run ID under which the subagent was spawned. */
-  runId: string;
+export function createDetachedSubagentUsageRecorder(
+  deps: RecordUsageDeps,
+  params: DetachedSubagentUsageRecorderParams,
+): (usage: UsageMetadata) => Promise<void> {
+  const billing = {
+    ...params,
+    endpointTokenConfigByAgentId:
+      params.endpointTokenConfigByAgentId == null
+        ? undefined
+        : new Map(params.endpointTokenConfigByAgentId),
+  };
+  return async (usage) => {
+    try {
+      if (deps.isPrincipalActive != null && !(await deps.isPrincipalActive(billing.user))) {
+        return;
+      }
+      await recordCollectedUsage(deps, {
+        user: billing.user,
+        conversationId: billing.conversationId,
+        collectedUsage: [usage],
+        model: billing.model,
+        context: 'subagent',
+        messageId: billing.messageId,
+        balance: billing.balance,
+        transactions: billing.transactions,
+        endpointTokenConfig: billing.endpointTokenConfig,
+        resolveEndpointTokenConfig: (entry) =>
+          resolveAgentTokenConfig({
+            agentId: entry.agentId,
+            byAgentId: billing.endpointTokenConfigByAgentId,
+            fallback: billing.endpointTokenConfig,
+          }),
+      });
+    } catch (error) {
+      logger.error('[agents/usage] Failed to record detached subagent usage', error);
+    }
+  };
 }
+
+/** SDK-owned usage envelope re-exported for host billing consumers. */
+export type SubagentUsageEvent = AgentsSubagentUsageEvent;
 
 /**
  * Builds the host-side `subagentUsageSink` for `Run.create`. Subagent child
  * graphs execute outside the run's `streamEvents` loop, so their model calls
  * never reach the `CHAT_MODEL_END` handler (`ModelEndHandler`) — the SDK
  * reports them through this sink instead. Each event is tagged
- * `usage_type: 'subagent'` with the child's model/provider and pushed onto
- * the same `collectedUsage` array the handler fills, so
- * {@link recordCollectedUsage} bills child calls (transactions + balance)
- * alongside the parent's.
+ * `usage_type: 'subagent'` with the child's model/provider. Foreground child
+ * calls join the parent `collectedUsage` batch. Detached calls are recognized
+ * through their task-local context, billed immediately through
+ * `recordDetachedUsage`, and persisted with the durable child result instead
+ * of depending on a parent turn that may already have closed.
  */
 export function createSubagentUsageSink(
   collectedUsage: UsageMetadata[],
-  onUsage?: (usage: UsageMetadata) => void,
-): (event: SubagentUsageEvent) => void {
+  onUsage?: (usage: UsageMetadata) => void | Promise<void>,
+  recordDetachedUsage?: (usage: UsageMetadata) => void | Promise<void>,
+): (event: SubagentUsageEvent) => void | Promise<void> {
   return (event) => {
     if (event?.usage == null) {
       return;
@@ -731,13 +1056,45 @@ export function createSubagentUsageSink(
     /** Tag the child's agent id so the host can price this usage with the
      *  subagent's own endpoint token config (its endpoint may differ from the
      *  parent's). The same tagged object is pushed AND handed to `onUsage`. */
-    if (event.subagentAgentId != null && event.subagentAgentId !== '') {
-      usage.agentId = event.subagentAgentId;
+    const billingAgentId =
+      event.memberAgentId != null && event.memberAgentId !== ''
+        ? event.memberAgentId
+        : event.subagentAgentId;
+    if (billingAgentId != null && billingAgentId !== '') {
+      usage.agentId = billingAgentId;
+    }
+    /** Usage emission is observability/UI plumbing. It must never prevent the
+     * authoritative billing path from running when a detached child outlives
+     * its parent transport. The host emitter normally contains its own error
+     * handling; this boundary also protects custom hosts and synchronous
+     * lifecycle failures. */
+    const emitUsage = () => {
+      try {
+        const emitted = onUsage?.(usage);
+        if (emitted != null) {
+          void Promise.resolve(emitted).catch((err) => {
+            logger.warn('[createSubagentUsageSink] Failed to emit subagent usage', err);
+          });
+        }
+      } catch (err) {
+        logger.warn('[createSubagentUsageSink] Failed to emit subagent usage', err);
+      }
+    };
+    /** A detached task can finish after its parent turn's one-time billing
+     * flush. Its AsyncLocalStorage context therefore owns the usage: persist
+     * it with the child transcript and bill it immediately. Foreground child
+     * calls retain the existing parent-turn batch path. */
+    if (recordDetachedUsage != null && collectDetachedSubagentUsage(usage)) {
+      /** Emission is already retained/flushed by the host and must not add
+       * transport latency to the child model loop. Billing is the durable
+       * side effect the SDK needs to await. */
+      emitUsage();
+      return Promise.resolve(recordDetachedUsage(usage)).then(() => undefined);
     }
     collectedUsage.push(usage);
     /** Lets the host stream the billed child usage to the client (tagged
      *  `subagent`, so it folds into session cost/totals but not the live
      *  gauge) — child runs never reach ModelEndHandler's emit path. */
-    onUsage?.(usage);
+    emitUsage();
   };
 }

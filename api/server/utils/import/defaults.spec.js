@@ -18,6 +18,7 @@ jest.mock('@librechat/data-schemas', () => {
 const {
   pickFirstConfiguredModel,
   resolveImportDefaultModel,
+  resolveImportDefaultEndpoint,
   FALLBACK_MODEL_BY_ENDPOINT,
 } = require('./defaults');
 
@@ -118,5 +119,87 @@ describe('resolveImportDefaultModel', () => {
     expect(FALLBACK_MODEL_BY_ENDPOINT[EModelEndpoint.anthropic]).toBe(
       anthropicSettings.model.default,
     );
+  });
+});
+
+describe('resolveImportDefaultEndpoint', () => {
+  it('prefers OpenAI when it exposes models', async () => {
+    mockGetModelsConfig.mockResolvedValueOnce({
+      [EModelEndpoint.openAI]: ['gpt-4o'],
+      [EModelEndpoint.anthropic]: ['claude-opus-4-7'],
+    });
+
+    const result = await resolveImportDefaultEndpoint({ requestUserId: 'user-1' });
+
+    expect(result).toEqual({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' });
+  });
+
+  it('falls back to another configured endpoint when OpenAI is unavailable', async () => {
+    mockGetModelsConfig.mockResolvedValueOnce({
+      [EModelEndpoint.openAI]: [],
+      [EModelEndpoint.anthropic]: ['claude-opus-4-7'],
+    });
+
+    const result = await resolveImportDefaultEndpoint({ requestUserId: 'user-1' });
+
+    expect(result).toEqual({ endpoint: EModelEndpoint.anthropic, model: 'claude-opus-4-7' });
+  });
+
+  it('selects a custom endpoint when no preferred endpoint has models', async () => {
+    mockGetModelsConfig.mockResolvedValueOnce({
+      'my-custom': ['custom-model-1'],
+    });
+
+    const result = await resolveImportDefaultEndpoint({ requestUserId: 'user-1' });
+
+    expect(result).toEqual({ endpoint: 'my-custom', model: 'custom-model-1' });
+  });
+
+  it('skips stateful assistant endpoints and selects a stateless one', async () => {
+    mockGetModelsConfig.mockResolvedValueOnce({
+      [EModelEndpoint.assistants]: ['gpt-4o'],
+      [EModelEndpoint.azureAssistants]: ['gpt-4o'],
+      'my-custom': ['custom-model-1'],
+    });
+
+    const result = await resolveImportDefaultEndpoint({ requestUserId: 'user-1' });
+
+    expect(result).toEqual({ endpoint: 'my-custom', model: 'custom-model-1' });
+  });
+
+  it('falls back to OpenAI defaults when only assistant endpoints expose models', async () => {
+    mockGetModelsConfig.mockResolvedValueOnce({
+      [EModelEndpoint.assistants]: ['gpt-4o'],
+      [EModelEndpoint.azureAssistants]: ['gpt-4o'],
+    });
+
+    const result = await resolveImportDefaultEndpoint({ requestUserId: 'user-1' });
+
+    expect(result).toEqual({
+      endpoint: EModelEndpoint.openAI,
+      model: openAISettings.model.default,
+    });
+  });
+
+  it('falls back to OpenAI defaults when the models config is empty', async () => {
+    mockGetModelsConfig.mockResolvedValueOnce({});
+
+    const result = await resolveImportDefaultEndpoint({ requestUserId: 'user-1' });
+
+    expect(result).toEqual({
+      endpoint: EModelEndpoint.openAI,
+      model: openAISettings.model.default,
+    });
+  });
+
+  it('falls back to OpenAI defaults when getModelsConfig rejects', async () => {
+    mockGetModelsConfig.mockRejectedValueOnce(new Error('boom'));
+
+    const result = await resolveImportDefaultEndpoint({ requestUserId: 'user-1' });
+
+    expect(result).toEqual({
+      endpoint: EModelEndpoint.openAI,
+      model: openAISettings.model.default,
+    });
   });
 });

@@ -338,6 +338,51 @@ describe('image tools - agent mode ToolMessage format', () => {
       expect(contentStr).toContain('Something went wrong');
       expect(result.artifact).toBeDefined();
     });
+
+    it('routes a finetuned endpoint through generateFinetunedImage even when action is left as "generate"', async () => {
+      const flux = new FluxAPI({ isAgent: true });
+      const invokePromise = flux.invoke(
+        makeToolCall('flux', {
+          prompt: 'a box',
+          endpoint: '/v1/flux-pro-finetuned',
+          finetune_id: 'ft-abc123',
+          finetune_strength: 0.8,
+          guidance: 3,
+        }),
+      );
+      await jest.runAllTimersAsync();
+      const result = await invokePromise;
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/flux-pro-finetuned'),
+        expect.objectContaining({
+          finetune_id: 'ft-abc123',
+          finetune_strength: 0.8,
+          guidance: 3,
+        }),
+        expect.anything(),
+      );
+
+      expect(result).toBeInstanceOf(ToolMessage);
+      expect(result.artifact).toBeDefined();
+      const artifactContent = result.artifact?.content;
+      expect(Array.isArray(artifactContent)).toBe(true);
+      expect(artifactContent[0].type).toBe(ContentTypes.IMAGE_URL);
+      expect(artifactContent[0].image_url.url).toContain('base64');
+    });
+
+    it('rejects a finetuned endpoint without finetune_id even when action is left as "generate"', async () => {
+      const flux = new FluxAPI({ isAgent: true });
+
+      await expect(
+        flux.invoke(
+          makeToolCall('flux', {
+            prompt: 'a box',
+            endpoint: '/v1/flux-pro-finetuned',
+          }),
+        ),
+      ).rejects.toThrow(/finetune_id/);
+    });
   });
 
   describe('StableDiffusion', () => {

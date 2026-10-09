@@ -1,17 +1,29 @@
 import {
+  AgentCapabilities,
   EModelEndpoint,
+  chatProjectsConfigSchema,
+  filtersConfigSchema,
+  conversationListConfigSchema,
+  toolCallPreviewsConfigSchema,
+  hasActiveFiltersConfig,
   getConfigDefaults,
+  langfuseConfigSchema,
   skillSyncConfigSchema,
   summarizationConfigSchema,
 } from 'librechat-data-provider';
-import type { TCustomConfig, FileSources, DeepPartial } from 'librechat-data-provider';
+import type {
+  FileSources,
+  DeepPartial,
+  TCustomConfig,
+  TAgentsEndpoint,
+} from 'librechat-data-provider';
 import type { AppConfig, FunctionTool } from '~/types/app';
+import { loadMemoryConfig, isMemoryEnabled } from './memory';
 import { loadDefaultInterface } from './interface';
 import { loadTurnstileConfig } from './turnstile';
 import { agentsConfigSetup } from './agents';
 import { loadWebSearchConfig } from './web';
 import { processModelSpecs } from './specs';
-import { loadMemoryConfig } from './memory';
 import { loadEndpoints } from './endpoints';
 import { loadOCRConfig } from './ocr';
 import logger from '~/config/winston';
@@ -65,6 +77,61 @@ export function loadSkillSyncConfig(config: DeepPartial<TCustomConfig>): AppConf
   }
 
   return parsed.data;
+}
+
+export function loadLangfuseConfig(config: DeepPartial<TCustomConfig>): AppConfig['langfuse'] {
+  const raw = config.langfuse;
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+
+  const parsed = langfuseConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    logger.warn('[AppService] Invalid Langfuse config', parsed.error.flatten());
+    return undefined;
+  }
+
+  return parsed.data;
+}
+
+/** Resolves the list filter limits, schema defaults included; an invalid block keeps the
+ *  defaults rather than lifting a bound the operator meant to set. */
+export function loadConversationListConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['conversationList']> {
+  const parsed = conversationListConfigSchema.safeParse(config.conversationList ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid conversationList config', parsed.error.flatten());
+  return conversationListConfigSchema.parse({});
+}
+
+/** Resolves the tool-call preview bounds; an invalid block keeps the defaults. */
+export function loadToolCallPreviewsConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['toolCallPreviews']> {
+  const parsed = toolCallPreviewsConfigSchema.safeParse(config.toolCallPreviews ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid toolCallPreviews config', parsed.error.flatten());
+  return toolCallPreviewsConfigSchema.parse({});
+}
+
+export function loadFiltersConfig(config: DeepPartial<TCustomConfig>): AppConfig['filters'] {
+  const raw = config.filters;
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const parsed = filtersConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    logger.warn('[AppService] Invalid filters config', parsed.error.flatten());
+    throw new Error('Invalid filters config');
+  }
+
+  return hasActiveFiltersConfig(parsed.data) ? parsed.data : undefined;
 }
 
 export type Paths = {
@@ -122,12 +189,17 @@ export const AppService = async (params?: {
 
   const mcpServersConfig = config.mcpServers || null;
   const mcpSettings = config.mcpSettings || null;
+  const mcpAppSandbox = config.mcpAppSandbox ?? configDefaults.mcpAppSandbox;
   const actions = config.actions;
   const registration = config.registration ?? configDefaults.registration;
+  const emailChange = config.emailChange;
   const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+  const projects = chatProjectsConfigSchema.parse(config.projects ?? {});
   const turnstileConfig = loadTurnstileConfig(config, configDefaults);
   const speech = config.speech;
+  const filters = loadFiltersConfig(config);
   const messageFilter = config.messageFilter;
+  const langfuse = loadLangfuseConfig(config);
 
   const defaultConfig = {
     ocr,
@@ -139,12 +211,19 @@ export const AppService = async (params?: {
     balance,
     skillSync,
     webSearch,
+    githubCompare: config.githubCompare,
     mcpSettings,
+    mcpAppSandbox,
     fileStrategy,
+    projects,
     registration,
+    emailChange,
+    passkeys: config.passkeys,
     transactions,
     filteredTools,
     includedTools,
+    filters,
+    langfuse,
     messageFilter,
     summarization,
     availableTools,
@@ -154,9 +233,30 @@ export const AppService = async (params?: {
     mcpConfig: mcpServersConfig,
     fileStrategies: config.fileStrategies,
     cloudfront: config.cloudfront as AppConfig['cloudfront'],
+    secureImageLinks: config.secureImageLinks !== false,
+    conversationList: loadConversationListConfig(config),
+    toolCallPreviews: loadToolCallPreviewsConfig(config),
   };
 
   const agentsDefaults = agentsConfigSetup(config);
+
+  /** The `memory` capability only functions when memory is configured and
+   *  enabled. Drop it from the served capability set otherwise so the agent
+   *  builder toggle, ephemeral badge, and backend capability gate stay
+   *  consistent instead of exposing an inert memory toggle. Applied to the
+   *  final served agents config — `loadEndpoints` reparses any
+   *  `endpoints.agents` block and would otherwise restore the default
+   *  capability. */
+  const memoryDisabled = !isMemoryEnabled(memory);
+  const stripInertMemoryCapability = (agentsEndpoint?: Partial<TAgentsEndpoint>): void => {
+    if (!memoryDisabled || !agentsEndpoint || !Array.isArray(agentsEndpoint.capabilities)) {
+      return;
+    }
+    agentsEndpoint.capabilities = agentsEndpoint.capabilities.filter(
+      (capability) => capability !== AgentCapabilities.memory,
+    );
+  };
+  stripInertMemoryCapability(agentsDefaults);
 
   if (!Object.keys(config).length) {
     const appConfig = {
@@ -169,11 +269,11 @@ export const AppService = async (params?: {
   }
 
   const loadedEndpoints = loadEndpoints(config, agentsDefaults);
+  stripInertMemoryCapability(loadedEndpoints[EModelEndpoint.agents]);
 
   const appConfig: AppConfig = {
     ...defaultConfig,
     fileConfig: config?.fileConfig as AppConfig['fileConfig'],
-    secureImageLinks: config?.secureImageLinks,
     modelSpecs: processModelSpecs(config?.endpoints, config.modelSpecs, interfaceConfig),
     endpoints: loadedEndpoints,
   };

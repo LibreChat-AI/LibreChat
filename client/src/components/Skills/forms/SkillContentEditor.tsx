@@ -3,11 +3,11 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import supersub from 'remark-supersub';
+import { Check, SquarePen } from 'lucide';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
-import { EditIcon, Check } from 'lucide-react';
 import { Controller, useFormContext } from 'react-hook-form';
-import { TextareaAutosize, Button, TooltipAnchor } from '@librechat/client';
+import { TextareaAutosize, Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { RegisterOptions } from 'react-hook-form';
 import type { PluggableList } from 'unified';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
@@ -53,18 +53,16 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
     formState: { errors },
   } = useFormContext();
 
-  const EditorIcon = isEditing ? Check : EditIcon;
-
   return (
     <div className="flex max-h-[85vh] flex-col sm:max-h-[85vh]">
       <h2 className="sr-only">{localize('com_ui_skill_content')}</h2>
       <div
         className={cn(
-          'relative w-full flex-1 overflow-auto rounded-xl border border-border-medium p-3 text-left transition-all duration-200 sm:p-4',
-          isEditing ? '' : 'cursor-pointer hover:bg-surface-tertiary',
+          'border-border-medium relative w-full flex-1 overflow-auto rounded-xl border p-3 text-left transition-all duration-200 sm:p-4',
+          isEditing ? '' : 'hover:bg-surface-tertiary cursor-pointer',
         )}
       >
-        <div className="absolute right-2 top-2 z-10">
+        <div className="absolute top-2 right-2 z-10">
           <TooltipAnchor
             description={isEditing ? localize('com_ui_save') : localize('com_ui_edit')}
             render={
@@ -75,9 +73,12 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => setIsEditing((prev) => !prev)}
                 aria-label={isEditing ? localize('com_ui_save') : localize('com_ui_edit')}
-                className="size-8 p-0 hover:bg-surface-tertiary"
+                className="hover:bg-surface-tertiary size-8 p-0"
               >
-                <EditorIcon className="size-4 text-text-secondary" aria-hidden="true" />
+                <MorphIcon
+                  icon={isEditing ? Check : SquarePen}
+                  className="text-text-secondary size-4"
+                />
               </Button>
             }
           />
@@ -86,7 +87,7 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
           <button
             type="button"
             aria-label={localize('com_ui_edit')}
-            className="absolute inset-0 z-10 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+            className="focus-visible:ring-ring-primary absolute inset-0 z-10 rounded-xl focus:outline-hidden focus-visible:ring-2"
             onClick={() => setIsEditing(true)}
           />
         )}
@@ -97,10 +98,11 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
           render={({ field }) =>
             isEditing ? (
               <TextareaAutosize
+                focusOutline="hidden"
                 {...field}
                 // eslint-disable-next-line jsx-a11y/no-autofocus
                 autoFocus
-                className="w-full resize-none overflow-y-auto bg-transparent font-mono text-sm leading-relaxed text-text-primary placeholder:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary sm:text-base"
+                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-ring-primary w-full resize-none overflow-y-auto bg-transparent font-mono text-sm leading-relaxed focus-visible:ring-2 sm:text-base"
                 minRows={4}
                 maxRows={16}
                 onKeyDown={(e) => {
@@ -118,7 +120,7 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                 style={{ maxHeight: '24rem' }}
               >
                 {!field.value ? (
-                  <p className="italic text-text-secondary">{localize('com_ui_click_to_edit')}</p>
+                  <p className="text-text-secondary italic">{localize('com_ui_click_to_edit')}</p>
                 ) : (
                   <ReactMarkdown
                     /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
@@ -126,15 +128,15 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                     /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
                     rehypePlugins={REHYPE_PLUGINS}
                     components={MARKDOWN_COMPONENTS as unknown as Record<string, React.ElementType>}
-                    className="markdown prose dark:prose-invert light w-full break-words text-text-primary"
+                    className="markdown prose dark:prose-invert light text-text-primary w-full break-words"
                   >
                     {field.value}
                   </ReactMarkdown>
                 )}
                 <div className="pointer-events-none sticky bottom-1/2 z-10 flex translate-y-1/2 items-center justify-center opacity-0 transition-all duration-200 group-hover/preview:opacity-100">
-                  <div className="flex items-center gap-2 rounded-lg border border-border-light bg-surface-primary px-3 py-1.5 shadow-md">
-                    <EditIcon className="size-4 text-text-secondary" aria-hidden="true" />
-                    <span className="text-sm font-medium text-text-primary">
+                  <div className="border-border-light bg-surface-primary flex items-center gap-2 rounded-lg border px-3 py-1.5 shadow-md">
+                    <MorphIcon icon={SquarePen} className="text-text-secondary size-4" />
+                    <span className="text-text-primary text-sm font-medium">
                       {localize('com_ui_click_to_edit')}
                     </span>
                   </div>
@@ -144,7 +146,7 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
           }
         />
         {errors[name] && (
-          <p className="mt-1 text-sm text-red-500" role="alert">
+          <p className="text-text-destructive mt-1 text-sm" role="alert">
             {errors[name]?.message as string}
           </p>
         )}

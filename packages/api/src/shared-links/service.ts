@@ -188,8 +188,26 @@ export async function ensureLinkPermissions(
     return;
   }
 
+  /* A legacy row keeps its marker until every grant it needs exists, so it always goes
+   * back through the migration: the owner grant alone does not mean the public one was
+   * ever created. `autoMigrateLegacyLink` skips the grants that are already in place. */
   if ('isPublic' in rawDoc) {
     await autoMigrateLegacyLink(rawDoc as Parameters<typeof autoMigrateLegacyLink>[0]);
+    return;
+  }
+
+  /**
+   * The share badge reads the link on ordinary navigation, so the settled path has to
+   * stay read-only: re-granting on every open would turn a page load into an ACL write
+   * and reset `grantedAt`. Only a link that still has no owner grant needs one.
+   */
+  const alreadyGranted = await getAclService().checkPermission({
+    userId,
+    resourceType: ResourceType.SHARED_LINK,
+    resourceId: sharedLinkId.toString(),
+    requiredPermission: PermissionBits.DELETE,
+  });
+  if (alreadyGranted) {
     return;
   }
 

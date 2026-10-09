@@ -1,36 +1,6 @@
 import mongoose, { Schema, type Connection, type Model } from 'mongoose';
-import {
-  actionSchema,
-  agentSchema,
-  agentApiKeySchema,
-  agentCategorySchema,
-  assistantSchema,
-  balanceSchema,
-  bannerSchema,
-  conversationTagSchema,
-  convoSchema,
-  fileSchema,
-  keySchema,
-  messageSchema,
-  pluginAuthSchema,
-  presetSchema,
-  projectSchema,
-  promptSchema,
-  promptGroupSchema,
-  roleSchema,
-  sessionSchema,
-  shareSchema,
-  tokenSchema,
-  toolCallSchema,
-  transactionSchema,
-  userSchema,
-  memorySchema,
-  groupSchema,
-} from '~/schema';
-import accessRoleSchema from '~/schema/accessRole';
-import mcpServerSchema from '~/schema/mcpServer';
-import aclEntrySchema from '~/schema/aclEntry';
 import { initializeOrgCollections, createIndexesWithRetry, retryWithBackoff } from '~/utils/retry';
+import { getModelSchemas } from './schemas';
 
 /**
  * Production operations tests for FerretDB multi-tenancy:
@@ -48,43 +18,24 @@ const describeIfFerretDB = FERRETDB_URI ? describe : describe.skip;
 
 const DB_PREFIX = 'ops_test_';
 
-const MODEL_SCHEMAS: Record<string, Schema> = {
-  User: userSchema,
-  Token: tokenSchema,
-  Session: sessionSchema,
-  Balance: balanceSchema,
-  Conversation: convoSchema,
-  Message: messageSchema,
-  Agent: agentSchema,
-  AgentApiKey: agentApiKeySchema,
-  AgentCategory: agentCategorySchema,
-  MCPServer: mcpServerSchema,
-  Role: roleSchema,
-  Action: actionSchema,
-  Assistant: assistantSchema,
-  File: fileSchema,
-  Banner: bannerSchema,
-  Project: projectSchema,
-  Key: keySchema,
-  PluginAuth: pluginAuthSchema,
-  Transaction: transactionSchema,
-  Preset: presetSchema,
-  Prompt: promptSchema,
-  PromptGroup: promptGroupSchema,
-  ConversationTag: conversationTagSchema,
-  SharedLink: shareSchema,
-  ToolCall: toolCallSchema,
-  MemoryEntry: memorySchema,
-  AccessRole: accessRoleSchema,
-  AclEntry: aclEntrySchema,
-  Group: groupSchema,
-};
+const MODEL_SCHEMAS: Record<string, Schema> = getModelSchemas(mongoose);
 
 const MODEL_COUNT = Object.keys(MODEL_SCHEMAS).length;
 
-function registerModels(conn: Connection): Record<string, Model<unknown>> {
+/**
+ * Stand-in for a model added after the orgs were provisioned. It must stay
+ * absent from the registry map above, otherwise `registerModels()` creates its
+ * collection during setup and the migration test stops exercising anything.
+ */
+const NEW_MODEL = 'OrgEvent';
+const NEW_COLLECTION = 'orgevents';
+
+function registerModels(
+  conn: Connection,
+  schemas: Record<string, Schema> = MODEL_SCHEMAS,
+): Record<string, Model<unknown>> {
   const models: Record<string, Model<unknown>> = {};
-  for (const [name, schema] of Object.entries(MODEL_SCHEMAS)) {
+  for (const [name, schema] of Object.entries(schemas)) {
     models[name] = conn.models[name] || conn.model(name, schema);
   }
   return models;
@@ -149,7 +100,7 @@ async function migrateOrg(
   schemas: Record<string, Schema>,
 ): Promise<MigrationResult> {
   const t0 = Date.now();
-  const models = registerModels(conn);
+  const models = registerModels(conn, schemas);
   const existingCollections = new Set(
     (await conn.db!.listCollections().toArray()).map((c) => c.name),
   );
@@ -575,6 +526,8 @@ describeIfFerretDB('Org Operations (Production)', () => {
     }, 60_000);
 
     it('adds a new collection to all existing orgs', async () => {
+      expect(MODEL_SCHEMAS[NEW_MODEL]).toBeUndefined();
+
       const newSchema = new Schema(
         {
           orgId: { type: String, index: true },
@@ -588,22 +541,30 @@ describeIfFerretDB('Org Operations (Production)', () => {
 
       for (const orgId of migrationOrgs) {
         const conn = baseConn.useDb(`${DB_PREFIX}org_${orgId}`, { useCache: true });
-        const AuditLog = conn.models['AuditLog'] || conn.model('AuditLog', newSchema);
-        await AuditLog.createCollection();
-        await createIndexesWithRetry(AuditLog);
+        const collections = (await conn.db!.listCollections().toArray()).map((c) => c.name);
+        expect(collections).not.toContain(NEW_COLLECTION);
+
+        const OrgEvent = conn.models[NEW_MODEL] || conn.model(NEW_MODEL, newSchema);
+        await OrgEvent.createCollection();
+        await createIndexesWithRetry(OrgEvent);
       }
 
       for (const orgId of migrationOrgs) {
         const conn = baseConn.useDb(`${DB_PREFIX}org_${orgId}`, { useCache: true });
         const collections = (await conn.db!.listCollections().toArray()).map((c) => c.name);
-        expect(collections).toContain('auditlogs');
+        expect(collections).toContain(NEW_COLLECTION);
 
-        const indexes = await conn.db!.collection('auditlogs').indexes();
-        expect(indexes.length).toBeGreaterThanOrEqual(4);
+        const indexes = await conn.db!.collection(NEW_COLLECTION).indexes();
+        expect(indexes.length).toBeGreaterThanOrEqual(5);
+        const compound = indexes.some(
+          (idx: Record<string, unknown>) =>
+            JSON.stringify(idx.key) === JSON.stringify({ orgId: 1, eventType: 1, createdAt: -1 }),
+        );
+        expect(compound).toBe(true);
       }
 
       console.log(
-        `[Migration] New collection 'auditlogs' added to ${migrationOrgs.length} orgs with 4+ indexes`,
+        `[Migration] New collection '${NEW_COLLECTION}' added to ${migrationOrgs.length} orgs with its 4 declared indexes`,
       );
     }, 60_000);
 

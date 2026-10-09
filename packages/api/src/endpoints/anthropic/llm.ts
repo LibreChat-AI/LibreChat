@@ -1,8 +1,15 @@
+import { Agent } from 'undici';
 import { logger } from '@librechat/data-schemas';
 import { AnthropicClientOptions } from '@librechat/agents';
 import {
-  anthropicSettings,
+  THINKING_BINDING_BETA,
+  THINKING_DISPLAY_UPDATES_BETA,
+  requestsThinkingDisplayUpdates,
+  clampOutputConfigEffort,
   omitsSamplingParameters,
+  bindsThinkingBlocks,
+  isThinkingOffConfig,
+  anthropicSettings,
   removeNullishValues,
   ThinkingDisplay,
   AuthKeys,
@@ -26,10 +33,43 @@ import {
   isAnthropicVertexCredentials,
   getVertexDeploymentName,
 } from './vertex';
+import { createSSRFSafeUndiciConnect } from '~/auth';
 import { getProxyDispatcher } from '~/utils/proxy';
 import { mergeHeaders } from '~/utils/headers';
 
 const WEB_SEARCH_BETA = 'web-search-2025-03-05';
+
+type FetchOptions = { dispatcher?: Dispatcher; redirect?: RequestRedirect };
+
+function getEffectiveURLPort(baseURL: string): string | null {
+  try {
+    const parsed = new URL(baseURL);
+    if (parsed.port) {
+      return parsed.port;
+    }
+    if (parsed.protocol === 'http:') {
+      return '80';
+    }
+    if (parsed.protocol === 'https:') {
+      return '443';
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function mergeFetchOptions(
+  clientOptions: NonNullable<AnthropicClientOptions['clientOptions']>,
+  options: FetchOptions,
+): void {
+  const currentOptions = (clientOptions.fetchOptions ?? {}) as FetchOptions;
+  clientOptions.fetchOptions = {
+    ...currentOptions,
+    ...options,
+  } as NonNullable<AnthropicClientOptions['clientOptions']>['fetchOptions'];
+}
 
 /**
  * Parses credentials from string or object format
@@ -111,8 +151,20 @@ function getLLMConfig(
       ? ((persistedThinking as { display: string }).display as ThinkingDisplay | string)
       : undefined;
 
+  /**
+   * `thinking` may round-trip as the full Anthropic object rather than a
+   * boolean. Normalize to a flag so a persisted `{ type: 'disabled' }` (e.g. a
+   * Sonnet 5 "thinking off" config stored back into `model_parameters`) or
+   * `{ type: 'between_tools' }` (Sonnet 5.5) is treated as off — a truthy
+   * object would otherwise flip thinking back on.
+   */
+  const thinkingFlag =
+    typeof persistedThinking === 'object' && persistedThinking != null
+      ? !isThinkingOffConfig(persistedThinking)
+      : (persistedThinking ?? anthropicSettings.thinking.default);
+
   const systemOptions = {
-    thinking: options.modelOptions?.thinking ?? anthropicSettings.thinking.default,
+    thinking: thinkingFlag,
     promptCache: options.modelOptions?.promptCache ?? anthropicSettings.promptCache.default,
     promptCacheTtl:
       options.modelOptions?.promptCacheTtl ?? anthropicSettings.promptCacheTtl.default,
@@ -211,6 +263,16 @@ function getLLMConfig(
     }
   }
 
+  /**
+   * Opus 5 rejects `xhigh`/`max` effort while thinking is disabled, and Sonnet
+   * 5.5 does the same under `between_tools` (400). `configureReasoning` returns
+   * before setting effort on that path, so the value applied just above is the
+   * one that would ship — clamp it to the highest level the model accepts.
+   */
+  if (isThinkingOffConfig(requestOptions.thinking)) {
+    clampOutputConfigEffort(resolvedModel, requestOptions.invocationKwargs?.output_config);
+  }
+
   const hasActiveThinking = requestOptions.thinking != null;
   const isThinkingModel =
     /claude-3[-.]7/.test(resolvedModel) || supportsAdaptiveThinking(resolvedModel);
@@ -236,11 +298,13 @@ function getLLMConfig(
     requestOptions.clientOptions.defaultHeaders = headers;
   }
 
+  const shouldProtectUserBaseURL =
+    options.baseURLIsUserProvided === true && !!options.reverseProxyUrl;
   const proxyDispatcher = getProxyDispatcher(options.proxy);
-  if (proxyDispatcher && requestOptions.clientOptions) {
-    requestOptions.clientOptions.fetchOptions = {
+  if (proxyDispatcher && !shouldProtectUserBaseURL && requestOptions.clientOptions) {
+    mergeFetchOptions(requestOptions.clientOptions, {
       dispatcher: proxyDispatcher,
-    };
+    });
   }
 
   if (options.reverseProxyUrl && requestOptions.clientOptions) {
@@ -311,6 +375,29 @@ function getLLMConfig(
     }
   }
 
+  /** The SDK reads outputConfig, not invocationKwargs.output_config. Keep the
+   * legacy field for persisted configs and OpenAI-compatible transforms. */
+  if (
+    requestOptions.invocationKwargs?.output_config &&
+    !options.dropParams?.includes('outputConfig')
+  ) {
+    requestOptions.outputConfig = requestOptions.invocationKwargs.output_config;
+  }
+
+  /** block_binding and display `updates` are invalid without their beta headers.
+   * Honor an administrator dropping clientOptions without leaving a beta-only
+   * field in the body. */
+  if (
+    shouldDropClientOptions &&
+    requestOptions.thinking &&
+    'block_binding' in requestOptions.thinking
+  ) {
+    delete requestOptions.thinking.block_binding;
+  }
+  if (shouldDropClientOptions && requestsThinkingDisplayUpdates(requestOptions.thinking)) {
+    (requestOptions.thinking as { display?: string }).display = ThinkingDisplay.summarized;
+  }
+
   if (shouldOmitSamplingParameters) {
     delete requestOptions.temperature;
     delete requestOptions.topP;
@@ -343,8 +430,14 @@ function getLLMConfig(
     }
     requestOptions.clientOptions.defaultHeaders = appendAnthropicBetaHeader(
       requestOptions.clientOptions.defaultHeaders as Record<string, string> | undefined,
-      FINE_GRAINED_TOOL_STREAMING_BETA,
+      bindsThinkingBlocks(resolvedModel) ? THINKING_BINDING_BETA : FINE_GRAINED_TOOL_STREAMING_BETA,
     );
+    if (requestsThinkingDisplayUpdates(requestOptions.thinking)) {
+      requestOptions.clientOptions.defaultHeaders = appendAnthropicBetaHeader(
+        requestOptions.clientOptions.defaultHeaders as Record<string, string> | undefined,
+        THINKING_DISPLAY_UPDATES_BETA,
+      );
+    }
   }
 
   /**
@@ -360,6 +453,21 @@ function getLLMConfig(
       options.headers,
       requestOptions.clientOptions.defaultHeaders as Record<string, string> | undefined,
     );
+  }
+
+  if (shouldProtectUserBaseURL) {
+    if (!requestOptions.clientOptions) {
+      requestOptions.clientOptions = {};
+    }
+    mergeFetchOptions(requestOptions.clientOptions, {
+      dispatcher: new Agent({
+        connect: createSSRFSafeUndiciConnect(
+          options.allowedAddresses,
+          getEffectiveURLPort(options.reverseProxyUrl ?? ''),
+        ),
+      }),
+      redirect: 'error',
+    });
   }
 
   return {

@@ -12,9 +12,11 @@ import {
 } from './helpers';
 
 const MODEL_SPEC_LABEL = 'E2E Skill Scope';
-const ASSERTION_MARKER = 'E2E_ASSERT_MODEL_SPEC_SKILLS';
-const ASSERTION_FINAL_TEXT = 'E2E model spec skill assertion passed';
+const ASSERTION_MARKER = 'E2E_ASSERT_SKILLS:';
+const ASSERTION_FINAL_TEXT = 'E2E skill assertion passed';
 const ACCESSIBLE_SKILL_NAME = 'e2e-model-spec-allowed';
+const DEPLOYMENT_SKILL_NAME = 'e2e-deployment-skill';
+const MISSING_SKILL_NAME = 'e2e-model-spec-missing';
 const INACCESSIBLE_SKILL_NAME = 'e2e-model-spec-inaccessible';
 const ALWAYS_APPLY_BODY_MARKER = 'E2E_ALWAYS_APPLY_BODY_MARKER';
 const INACCESSIBLE_AUTHOR_ID = new ObjectId('64f000000000000000000001');
@@ -93,7 +95,15 @@ async function seedAccessibleSkill(page: Page, token: string): Promise<SkillDeta
   });
 }
 
-async function seedInaccessibleSkill() {
+async function deleteAccessibleSkill(page: Page, token: string, skillId: string) {
+  await requestJson<{ deleted: boolean }>(page, {
+    path: `/api/skills/${encodeURIComponent(skillId)}`,
+    token,
+    method: 'DELETE',
+  });
+}
+
+async function seedInaccessibleSkill(): Promise<string> {
   applyRuntimeEnv();
   if (!process.env.MONGO_URI) {
     throw new Error('MONGO_URI must be available for model-spec skill mock e2e tests');
@@ -141,7 +151,30 @@ async function seedInaccessibleSkill() {
     });
     if (skill?._id) {
       await aclEntries.deleteMany({ resourceType: 'skill', resourceId: skill._id });
+      return skill._id.toString();
     }
+    throw new Error(`Failed to seed inaccessible skill "${INACCESSIBLE_SKILL_NAME}"`);
+  } finally {
+    await client.close();
+  }
+}
+
+async function deleteInaccessibleSkill(skillId: string) {
+  applyRuntimeEnv();
+  if (!process.env.MONGO_URI) {
+    throw new Error('MONGO_URI must be available for model-spec skill mock e2e tests');
+  }
+
+  const client = new MongoClient(process.env.MONGO_URI);
+  await client.connect();
+  try {
+    const db = client.db();
+    const objectId = new ObjectId(skillId);
+    await db.collection('aclentries').deleteMany({
+      resourceType: 'skill',
+      resourceId: objectId,
+    });
+    await db.collection('skills').deleteOne({ _id: objectId });
   } finally {
     await client.close();
   }
@@ -155,21 +188,60 @@ test.describe('model spec skills', () => {
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     const token = await getAccessToken(page);
-    const skill = await seedAccessibleSkill(page, token);
-    expect(skill.alwaysApply).toBe(true);
-    await seedInaccessibleSkill();
+    let accessibleSkillId: string | undefined;
+    let inaccessibleSkillId: string | undefined;
+    let testFailure: unknown;
 
-    await selectModelSpec(page, MODEL_SPEC_LABEL);
-    const response = await sendMessage(
-      page,
-      `${ASSERTION_MARKER}\nVerify model-spec skill scope and always-apply frontmatter.`,
-    );
-    expect(response.ok()).toBeTruthy();
+    try {
+      const skill = await seedAccessibleSkill(page, token);
+      accessibleSkillId = skill._id;
+      expect(skill.alwaysApply).toBe(true);
+      inaccessibleSkillId = await seedInaccessibleSkill();
 
-    await expect(
-      page
-        .getByTestId('messages-view')
-        .getByText(`${ASSERTION_FINAL_TEXT}: ${ACCESSIBLE_SKILL_NAME}`),
-    ).toBeVisible({ timeout: 30000 });
+      await selectModelSpec(page, MODEL_SPEC_LABEL);
+      const response = await sendMessage(
+        page,
+        [
+          `${ASSERTION_MARKER}*${ACCESSIBLE_SKILL_NAME},*${DEPLOYMENT_SKILL_NAME},!${MISSING_SKILL_NAME},!${INACCESSIBLE_SKILL_NAME}`,
+          'Verify model-spec skill scope and always-apply frontmatter.',
+        ].join('\n'),
+      );
+      expect(response.ok()).toBeTruthy();
+
+      await expect(
+        page
+          .getByTestId('messages-view')
+          .getByText(`${ASSERTION_FINAL_TEXT}: ${ACCESSIBLE_SKILL_NAME}, ${DEPLOYMENT_SKILL_NAME}`),
+      ).toBeVisible({ timeout: 30000 });
+    } catch (error) {
+      testFailure = error;
+    } finally {
+      const cleanupTasks: Promise<unknown>[] = [];
+      if (accessibleSkillId) {
+        cleanupTasks.push(deleteAccessibleSkill(page, token, accessibleSkillId));
+      }
+      if (inaccessibleSkillId) {
+        cleanupTasks.push(deleteInaccessibleSkill(inaccessibleSkillId));
+      }
+      const cleanupResults = await Promise.allSettled(cleanupTasks);
+      const cleanupFailures = cleanupResults
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => result.reason);
+      if (testFailure && cleanupFailures.length > 0) {
+        testFailure = new AggregateError(
+          [testFailure, ...cleanupFailures],
+          'The model-spec skill assertion and fixture cleanup both failed',
+        );
+      } else if (cleanupFailures.length > 0) {
+        testFailure = new AggregateError(
+          cleanupFailures,
+          'Model-spec skill fixture cleanup failed',
+        );
+      }
+    }
+
+    if (testFailure) {
+      throw testFailure;
+    }
   });
 });

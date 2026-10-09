@@ -1,6 +1,8 @@
 import React from 'react';
 import { InfoIcon } from 'lucide-react';
 import type { CodeBarProps } from '~/common';
+import useDownloadCode from '~/components/Messages/Content/useDownloadCode';
+import DownloadButton from '~/components/Messages/Content/DownloadButton';
 import useCopyCode from '~/components/Messages/Content/useCopyCode';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import RunCode from '~/components/Messages/Content/RunCode';
@@ -11,8 +13,13 @@ interface FloatingCodeBarProps extends CodeBarProps {
 }
 
 const FloatingCodeBar: React.FC<FloatingCodeBarProps> = React.memo(
-  ({ lang, codeRef, blockIndex, plugin = null, allowExecution = true, isVisible }) => {
+  ({ lang, error, codeRef, blockIndex, plugin = null, allowExecution = true, isVisible }) => {
     const { isCopied, buttonRef, handleCopy } = useCopyCode(codeRef);
+    const {
+      isDownloaded,
+      buttonRef: downloadButtonRef,
+      handleDownload,
+    } = useDownloadCode(codeRef, lang);
 
     return (
       <div
@@ -27,6 +34,15 @@ const FloatingCodeBar: React.FC<FloatingCodeBarProps> = React.memo(
           <>
             {allowExecution === true && (
               <RunCode lang={lang} codeRef={codeRef} blockIndex={blockIndex} iconOnly />
+            )}
+            {error !== true && (
+              <DownloadButton
+                ref={downloadButtonRef}
+                isDownloaded={isDownloaded}
+                iconOnly
+                tabIndex={isVisible ? 0 : -1}
+                onClick={handleDownload}
+              />
             )}
             <CopyButton
               ref={buttonRef}

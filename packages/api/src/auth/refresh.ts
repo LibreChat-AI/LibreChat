@@ -66,6 +66,13 @@ export interface AdminRefreshDeps {
    */
   canAccessAdmin?: (user: IUser) => Promise<boolean>;
   /**
+   * Re-runs the deployment's `registration.allowedDomains` check against the
+   * resolved user's email. Returns true to allow refresh, false to reject.
+   * Mirrors the domain check the initial OAuth callback enforces so a domain
+   * removed from the allowlist after issuance can't refresh.
+   */
+  isEmailAllowed?: (user: IUser) => Promise<boolean>;
+  /**
    * Optional post-success hook for forks that need to do additional work
    * with the refreshed tokenset and resolved user (e.g. update a server-side
    * token cache or reconcile downstream session state). Errors thrown here
@@ -273,6 +280,14 @@ export async function applyAdminRefresh(
   const user = await resolveAdminUser(deps, openidId, expected, options);
   if (!user) {
     throw new AdminRefreshError('USER_NOT_FOUND', 401, 'No user found for the refreshed identity');
+  }
+
+  if (deps.isEmailAllowed && !(await deps.isEmailAllowed(user))) {
+    throw new AdminRefreshError(
+      'FORBIDDEN',
+      403,
+      'User email domain is not on the deployment allowlist',
+    );
   }
 
   if (deps.canAccessAdmin && !(await deps.canAccessAdmin(user))) {

@@ -7,16 +7,27 @@ on:
       - dev
       - dev-staging
       - release/*
+    # The tested modules import across packages/api (e.g. mcp/oauth pulls in
+    # flow/manager) and consume built data-provider and data-schemas, so the
+    # whole src trees must trigger — subdirectory filters silently skip
+    # regressions in imported files.
     paths:
-      - 'packages/api/src/cache/**'
-      - 'packages/api/src/cluster/**'
-      - 'packages/api/src/mcp/**'
-      - 'packages/api/src/stream/**'
+      - 'packages/api/src/**'
+      - 'packages/api/package.json'
+      - 'packages/data-provider/src/**'
+      - 'packages/data-provider/package.json'
+      - 'packages/data-schemas/src/**'
+      - 'packages/data-schemas/package.json'
       - 'redis-config/**'
       - '.github/workflows/cache-integration-tests.yml'
+      - '!**.md'
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   cache_integration_tests:
@@ -26,17 +37,37 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Use Node.js 24.16.0
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24.16.0'
 
       - name: Install Redis tools
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y redis-server redis-tools
+          # Same runner apt contention that broke the MCP job in
+          # playwright-mock.yml: apt-daily/unattended-upgrades hold
+          # /var/lib/apt/lists/lock at boot. Without a step timeout this hung
+          # until the job-level one fired, taking the whole leg with it.
+          sudo systemctl stop apt-daily.service apt-daily-upgrade.service \
+            unattended-upgrades.service 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service \
+            apt-daily-upgrade.service 2>/dev/null || true
+
+          apt_with_lock_wait() {
+            for attempt in $(seq 1 30); do
+              if sudo apt-get -o DPkg::Lock::Timeout=60 "$@"; then
+                return 0
+              fi
+              echo "apt-get $1 could not take the lock (attempt ${attempt}/30), retrying"
+              sleep 10
+            done
+            return 1
+          }
+          apt_with_lock_wait update
+          apt_with_lock_wait install -y redis-server redis-tools
 
       - name: Start Single Redis Instance
         run: |
@@ -58,7 +89,7 @@ jobs:
 
       - name: Restore node_modules cache
         id: cache-node-modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             node_modules
@@ -74,10 +105,10 @@ jobs:
 
       - name: Restore data-provider build cache
         id: cache-data-provider
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: packages/data-provider/dist
-          key: build-data-provider-${{ runner.os }}-${{ hashFiles('packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+          key: build-data-provider-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
 
       - name: Build data-provider
         if: steps.cache-data-provider.outputs.cache-hit != 'true'
@@ -85,10 +116,10 @@ jobs:
 
       - name: Restore data-schemas build cache
         id: cache-data-schemas
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: packages/data-schemas/dist
-          key: build-data-schemas-${{ runner.os }}-${{ hashFiles('packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+          key: build-data-schemas-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
 
       - name: Build data-schemas
         if: steps.cache-data-schemas.outputs.cache-hit != 'true'
@@ -96,10 +127,10 @@ jobs:
 
       - name: Restore api build cache
         id: cache-api
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: packages/api/dist
-          key: build-api-${{ runner.os }}-${{ hashFiles('packages/api/src/**', 'packages/api/tsconfig*.json', 'packages/api/tsdown.config.mjs', 'packages/api/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json') }}
+          key: build-api-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/api/src/**', 'packages/api/tsconfig*.json', 'packages/api/tsdown.config.mjs', 'packages/api/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json') }}
 
       - name: Build api
         if: steps.cache-api.outputs.cache-hit != 'true'

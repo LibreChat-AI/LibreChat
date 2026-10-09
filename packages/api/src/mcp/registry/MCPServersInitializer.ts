@@ -2,13 +2,33 @@ import { createHash } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import type * as t from '~/mcp/types';
 import { registryStatusCache as statusCache } from './cache/RegistryStatusCache';
+import { resolveServerInstructions, sanitizeUrlForLogging } from '~/mcp/utils';
 import { MCPServersRegistry } from './MCPServersRegistry';
-import { sanitizeUrlForLogging } from '~/mcp/utils';
 import { withTimeout } from '~/utils';
 import { isLeader } from '~/cluster';
 
 const DEFAULT_MCP_INIT_TIMEOUT_MS = 30_000;
 const DEFAULT_FOLLOWER_RETRY_MS = 3000;
+
+/**
+ * Bumped whenever the registry's persisted storage semantics change in a way the
+ * MCP config fingerprint cannot otherwise capture — e.g. how a server's `source`
+ * provenance is tagged. It is folded into the init fingerprint so an upgrade
+ * forces exactly one cluster-wide re-initialization even when the MCP config is
+ * unchanged.
+ *
+ * Without it, a rolling restart on a Redis-backed cluster leaves the persisted
+ * `INITIALIZED_CONFIG_HASH` matching the unchanged config, so replacement
+ * followers short-circuit on the stale status and never re-tag entries written
+ * by the previous version. Bumped to 3 so cached entries whose `serverInstructions` still holds
+ * inspector-fetched text are rewritten with the declaration preserved and the text moved to
+ * `resolvedInstructions`. Bumped to 4 so persisted `toolFunctions` are rebuilt
+ * with redundant server-name prefixes stripped and `serverToolName` recorded —
+ * otherwise a follower accepts the previous deployment's config hash and
+ * republishes pre-strip definitions into the current catalog namespace
+ * indefinitely.
+ */
+const REGISTRY_STORAGE_SCHEMA_VERSION = 4;
 
 const parseDurationMs = (
   value: string | undefined,
@@ -161,20 +181,16 @@ export class MCPServersInitializer {
     logger.info(`${prefix} Tools: ${config.tools}`);
     logger.info(
       `${prefix} Server Instructions: ${MCPServersInitializer.formatInstructionsForLogging(
-        config.serverInstructions,
+        resolveServerInstructions(config),
       )}`,
     );
     logger.info(`${prefix} Initialized in: ${config.initDuration ?? 'N/A'}ms`);
     logger.info(`${prefix} -------------------------------------------------┘`);
   }
 
-  private static formatInstructionsForLogging(instructions?: string | boolean): string {
+  private static formatInstructionsForLogging(instructions?: string): string {
     if (!instructions) {
       return 'N/A';
-    }
-
-    if (typeof instructions !== 'string') {
-      return 'configured';
     }
 
     return `configured (${instructions.length} chars)`;
@@ -188,6 +204,7 @@ export class MCPServersInitializer {
   private static configHash(rawConfigs: t.MCPServers): string {
     const registry = MCPServersRegistry.getInstance();
     const fingerprint = {
+      schemaVersion: REGISTRY_STORAGE_SCHEMA_VERSION,
       rawConfigs,
       allowedDomains: registry.getAllowedDomains() ?? null,
       allowedAddresses: registry.getAllowedAddresses() ?? null,

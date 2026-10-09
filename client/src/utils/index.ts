@@ -1,29 +1,40 @@
 import React from 'react';
 import type { UIActionResult } from '@mcp-ui/client';
-import { TAskFunction } from '~/common';
+import type { TAskFunction } from '~/common';
 import logger from './logger';
 
 export * from './map';
+export * from './policies';
 export * from './json';
 export * from './icons';
+export * from './svg';
+export * from './row';
 export * from './email';
 export * from './share';
 export * from './files';
+export * from './media';
+export * from './greeting';
 export * from './latex';
 export * from './tilde';
+export * from './morph';
 export * from './forms';
 export * from './roles';
 export * from './errors';
 export * from './agents';
 export * from './drafts';
 export * from './convos';
+export * from './queue';
 export * from './routes';
 export * from './presets';
 export * from './prompts';
+export * from './voices';
 export * from './textarea';
 export * from './messages';
+export * from './focus';
 export * from './tokens';
+export * from './balance';
 export * from './redirect';
+export * from './links';
 export * from './languages';
 export * from './conversation';
 export * from './endpoints';
@@ -38,6 +49,16 @@ export * from './previewCache';
 export * from './groupToolCalls';
 export * from './toolLabels';
 export * from './favoritesError';
+export * from './approval';
+export * from './steer';
+export * from './pane';
+export * from './activityLabels';
+export * from './agentModelSelection';
+export * from './runStepDuration';
+export * from './toolCallPhase';
+export * from './documentTitle';
+export * from './reasoningLabels';
+export * from './numbers';
 export { default as cn } from './cn';
 export { default as logger } from './logger';
 export { default as getLoginError } from './getLoginError';
@@ -78,20 +99,19 @@ export const languages = [
 ];
 
 export const removeFocusOutlines = '';
-export const removeFocusRings =
-  'focus:outline-none focus:ring-0 focus:ring-opacity-0 focus:ring-offset-0';
+export const removeFocusRings = 'focus:outline-hidden focus:ring-0 focus:ring-offset-0';
 
 export const cardStyle =
-  'transition-colors rounded-md min-w-[75px] border font-normal bg-white hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700 dark:bg-gray-800 text-black dark:text-gray-600 focus:outline-none data-[state=open]:bg-gray-50 dark:data-[state=open]:bg-gray-700';
+  'transition-colors rounded-md min-w-[4.6875rem] border border-border-medium font-normal bg-surface-secondary hover:bg-surface-hover text-text-primary focus:outline-hidden data-[state=open]:bg-surface-hover';
 
 export const defaultTextProps =
-  'rounded-md border border-gray-200 focus:border-gray-400 focus:bg-gray-50 bg-transparent text-sm shadow-[0_0_10px_rgba(0,0,0,0.05)] outline-none focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-gray-400 focus:ring-opacity-20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:border-gray-600 dark:focus:bg-gray-600 dark:focus:border-gray-600 dark:text-gray-50 dark:shadow-[0_0_15px_rgba(0,0,0,0.10)] dark:focus:outline-none';
+  'rounded-md border border-border-light focus:border-border-heavy focus:bg-surface-secondary bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.05)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden focus:ring-text-primary/20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
 
 export const optionText =
-  'p-0 shadow-none text-right pr-1 h-8 border-transparent hover:bg-gray-800/10 dark:hover:bg-white/10 dark:focus:bg-white/10 transition-colors';
+  'p-0 shadow-none text-right pr-1 h-8 border-transparent hover:bg-surface-hover transition-colors';
 
 export const defaultTextPropsLabel =
-  'rounded-md border border-gray-300 bg-transparent text-sm shadow-[0_0_10px_rgba(0,0,0,0.10)] outline-none focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-700 dark:text-gray-50 dark:shadow-[0_0_15px_rgba(0,0,0,0.10)] dark:focus:border-gray-600 dark:focus:outline-none';
+  'rounded-md border border-border-medium bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.10)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50';
 
 export function capitalizeFirstLetter(string: string) {
   return string.charAt(0).toUpperCase() + string.slice(1);
@@ -123,15 +143,9 @@ export const extractContent = (
   return '';
 };
 
+/** Converts supported legacy MCP-UI actions into the existing conversation submission path. */
 export const handleUIAction = async (result: UIActionResult, ask: TAskFunction) => {
-  const supportedTypes = ['intent', 'tool', 'prompt'];
-
   const { type, payload } = result;
-
-  if (!supportedTypes.includes(type)) {
-    return;
-  }
-
   let messageText = '';
 
   if (type === 'intent') {
@@ -167,6 +181,8 @@ ${prompt}
 
 Execute the intention of the prompt that is mentioned in the message using the tools available to you.
     `;
+  } else {
+    return;
   }
 
   logger.debug('MCP-UI', 'About to submit message:', messageText);

@@ -2121,6 +2121,50 @@ describe('normalizeJsonSchema', () => {
     expect(result.additionalProperties).toEqual({ type: 'string', enum: ['val'] });
   });
 
+  it('should drop malformed required keywords recursively', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        required: { type: 'boolean' },
+        config: {
+          type: 'object',
+          properties: { host: { type: 'string' } },
+          required: { host: true },
+        },
+      },
+      oneOf: [{ type: 'object', required: 'name' }],
+      items: { type: 'object', required: null },
+      required: {},
+    };
+
+    expect(normalizeJsonSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        required: { type: 'boolean' },
+        config: {
+          type: 'object',
+          properties: { host: { type: 'string' } },
+        },
+      },
+      oneOf: [{ type: 'object' }],
+      items: { type: 'object' },
+    });
+  });
+
+  it('should normalize required arrays to unique property names', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        age: { type: 'number' },
+      },
+      required: ['name', 42, null, 'age', 'name', { key: 'value' }],
+    };
+
+    expect(normalizeJsonSchema(schema).required).toEqual(['name', 'age']);
+    expect(normalizeJsonSchema({ type: 'object', required: [] }).required).toEqual([]);
+  });
+
   it('should handle null, undefined, and primitive inputs safely', () => {
     expect(normalizeJsonSchema(null as any)).toBeNull();
     expect(normalizeJsonSchema(undefined as any)).toBeUndefined();
@@ -2296,6 +2340,70 @@ describe('normalizeJsonSchema', () => {
     expect(result).not.toHaveProperty('$defs');
     expect(result.type).toBe('object');
     expect(result.properties.name).toEqual({ type: 'string' });
+  });
+
+  it('should strip the spec-compliant $schema keyword (MongoDB rejects $-prefixed keys)', () => {
+    const schema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+      },
+      required: ['title'],
+    } as any;
+
+    const result = normalizeJsonSchema(schema);
+    expect(result).not.toHaveProperty('$schema');
+    expect(result.type).toBe('object');
+    expect(result.properties.title).toEqual({ type: 'string' });
+    expect(result.required).toEqual(['title']);
+    // Nothing left behind that MongoDB would reject.
+    expect(Object.keys(result).some((k) => k.startsWith('$'))).toBe(false);
+  });
+
+  it('should strip $-prefixed annotation keywords at all nesting levels', () => {
+    const schema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $id: 'urn:tool:create_citation',
+      $comment: 'root comment',
+      type: 'object',
+      properties: {
+        note: {
+          type: 'string',
+          $comment: 'nested comment',
+          $anchor: 'note',
+        },
+        items: {
+          type: 'array',
+          items: { type: 'string', $id: 'urn:item' },
+        },
+      },
+    } as any;
+
+    const result = normalizeJsonSchema(schema);
+    expect(result).not.toHaveProperty('$schema');
+    expect(result).not.toHaveProperty('$id');
+    expect(result).not.toHaveProperty('$comment');
+    expect(result.properties.note).toEqual({ type: 'string' });
+    expect(result.properties.items.items).toEqual({ type: 'string' });
+  });
+
+  it('should preserve property names that begin with $', () => {
+    const schema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        $ref: { type: 'string', description: 'a property literally named $ref' },
+      },
+    } as any;
+
+    const result = normalizeJsonSchema(schema);
+    expect(result).not.toHaveProperty('$schema');
+    // A `$`-prefixed name under `properties` is a data field, not a keyword.
+    expect(result.properties.$ref).toEqual({
+      type: 'string',
+      description: 'a property literally named $ref',
+    });
   });
 
   it('should strip x-* fields inside oneOf/anyOf/allOf', () => {
@@ -2906,5 +3014,269 @@ describe('sanitizeGeminiSchema', () => {
         },
       },
     });
+  });
+
+  it('strips unresolvable `$ref` keys that survive ref resolution (Gemini rejects them)', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        recurrence: { $ref: 'https://example.com/external.json', description: 'Recurrence rule' },
+      },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        recurrence: { description: 'Recurrence rule' },
+      },
+    });
+  });
+});
+
+describe('resolveJsonSchemaRefs local pointer refs', () => {
+  it('resolves a `#/properties/...` pointer against the root schema', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        body: {
+          type: 'object' as const,
+          properties: {
+            start: {
+              type: 'object' as const,
+              properties: {
+                dateTime: { type: 'string' as const },
+                timeZone: { type: 'string' as const },
+              },
+            },
+            end: { $ref: '#/properties/body/properties/start' },
+          },
+        },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.body?.properties?.end).toEqual({
+      type: 'object',
+      properties: {
+        dateTime: { type: 'string' },
+        timeZone: { type: 'string' },
+      },
+    });
+    expect(JSON.stringify(resolved)).not.toContain('$ref');
+  });
+
+  it('resolves pointers that traverse array indices (e.g. anyOf members)', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        daysOfWeek: {
+          type: 'array' as const,
+          items: {
+            anyOf: [{ type: 'string' as const, enum: ['monday', 'tuesday'] }],
+          },
+        },
+        firstDayOfWeek: { $ref: '#/properties/daysOfWeek/items/anyOf/0' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.firstDayOfWeek).toEqual({
+      type: 'string',
+      enum: ['monday', 'tuesday'],
+    });
+  });
+
+  it('breaks mutually circular local pointers without hanging', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        a: { $ref: '#/properties/b' },
+        b: { $ref: '#/properties/a' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.a).toEqual({ type: 'object' });
+    expect(resolved.properties?.b).toEqual({ type: 'object' });
+  });
+
+  it('keeps dangling local pointers as-is', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        broken: { $ref: '#/properties/missing/nested' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.broken).toEqual({ $ref: '#/properties/missing/nested' });
+  });
+
+  it('unescapes RFC 6901 tokens (~0 → ~, ~1 → /) in pointer segments', () => {
+    const schema = {
+      type: 'object' as const,
+      properties: {
+        'a/b': { type: 'string' as const },
+        alias: { $ref: '#/properties/a~1b' },
+      },
+    };
+
+    const resolved = resolveJsonSchemaRefs(schema);
+    expect(resolved.properties?.alias).toEqual({ type: 'string' });
+  });
+});
+
+describe('normalizeJsonSchema $-key recursion', () => {
+  /** Mongo rejects `$`-prefixed field names at any depth, so a `$` keyword nested
+   *  under a schema-valued container has to be stripped too or the stored
+   *  `parameters` blob still fails to persist. */
+  const nested = (container: Record<string, unknown>) =>
+    normalizeJsonSchema({
+      type: 'object',
+      properties: { q: { type: 'string', ...container } },
+    } as Record<string, unknown>) as {
+      properties: { q: Record<string, unknown> };
+    };
+
+  it.each([
+    ['not', { not: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'null' } }],
+    ['if', { if: { $comment: 'x', type: 'string' } }],
+    ['then', { then: { $comment: 'x', type: 'string' } }],
+    ['else', { else: { $comment: 'x', type: 'string' } }],
+    ['contains', { contains: { $id: 'x', type: 'string' } }],
+    ['propertyNames', { propertyNames: { $comment: 'x', type: 'string' } }],
+  ])('strips a $ keyword nested under %s', (name, container) => {
+    const result = nested(container);
+    expect(JSON.stringify(result)).not.toContain('"$');
+    expect(result.properties.q[name]).toBeDefined();
+  });
+
+  it('strips $ keywords under patternProperties and dependentSchemas', () => {
+    const result = normalizeJsonSchema({
+      type: 'object',
+      patternProperties: { '^a': { $schema: 'x', type: 'string' } },
+      dependentSchemas: { a: { $comment: 'x', type: 'object' } },
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+
+  it('strips $ keywords under prefixItems', () => {
+    const result = normalizeJsonSchema({
+      type: 'array',
+      prefixItems: [{ $schema: 'x', type: 'string' }],
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+
+  it('preserves a $-prefixed property name, which is data rather than a keyword', () => {
+    /** `$filter` is a real argument the tool accepts; dropping it would silently
+     *  remove the parameter from the schema the model sees. Modern MongoDB accepts
+     *  `$`-prefixed field names, so this is left intact deliberately. */
+    const result = normalizeJsonSchema({
+      type: 'object',
+      properties: { $filter: { type: 'string', $comment: 'odata' } },
+    } as Record<string, unknown>) as { properties: Record<string, unknown> };
+
+    expect(result.properties.$filter).toEqual({ type: 'string' });
+  });
+});
+
+describe('normalizeJsonSchema draft-07 and 2020-12 containers', () => {
+  it('strips a $ keyword under draft-07 dependencies', () => {
+    const result = normalizeJsonSchema({
+      type: 'object',
+      dependencies: { foo: { $comment: 'x', type: 'object' } },
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+
+  it('leaves a draft-07 dependencies property-name array intact', () => {
+    /** `dependencies` is polymorphic: an array of required property names is data,
+     *  not a subschema, and must round-trip unchanged. */
+    const result = normalizeJsonSchema({
+      type: 'object',
+      dependencies: { foo: ['bar', 'baz'] },
+    } as Record<string, unknown>) as { dependencies: Record<string, unknown> };
+
+    expect(result.dependencies.foo).toEqual(['bar', 'baz']);
+  });
+
+  it('strips a $ keyword under contentSchema', () => {
+    const result = normalizeJsonSchema({
+      type: 'string',
+      contentMediaType: 'application/json',
+      contentSchema: { $schema: 'x', type: 'object' },
+    } as Record<string, unknown>);
+
+    expect(JSON.stringify(result)).not.toContain('"$');
+  });
+});
+
+describe('normalizeJsonSchema prototype-polluting map keys', () => {
+  /** An MCP server's schema arrives as JSON, and `JSON.parse` creates a real own
+   *  `__proto__` property — unlike an object literal, where it sets the prototype. */
+  const parse = (json: string) => JSON.parse(json) as Record<string, unknown>;
+
+  it('keeps a __proto__ entry in a schema map as an own property', () => {
+    const result = normalizeJsonSchema(
+      parse('{"type":"object","properties":{"__proto__":{"type":"string","$comment":"x"}}}'),
+    ) as { properties: Record<string, unknown> };
+
+    expect(Object.prototype.hasOwnProperty.call(result.properties, '__proto__')).toBe(true);
+    expect(JSON.parse(JSON.stringify(result)).properties.__proto__).toEqual({ type: 'string' });
+  });
+
+  it('keeps a __proto__ entry under dependentSchemas', () => {
+    const result = normalizeJsonSchema(
+      parse('{"type":"object","dependentSchemas":{"__proto__":{"type":"object"}}}'),
+    ) as { dependentSchemas: Record<string, unknown> };
+
+    expect(Object.prototype.hasOwnProperty.call(result.dependentSchemas, '__proto__')).toBe(true);
+  });
+});
+
+describe('resolveJsonSchemaRefs expansion safety', () => {
+  /** A remote MCP server controls this schema. Each `Dn` holding two refs to
+   *  `Dn-1` is a compact acyclic graph that expands 2^n, so registration must
+   *  stay bounded rather than exhaust memory. */
+  const fanOutSchema = (depth: number) => {
+    const $defs: Record<string, unknown> = { D0: { type: 'string' } };
+    for (let i = 1; i <= depth; i++) {
+      $defs[`D${i}`] = {
+        type: 'object',
+        properties: { a: { $ref: `#/$defs/D${i - 1}` }, b: { $ref: `#/$defs/D${i - 1}` } },
+      };
+    }
+    return { $defs, $ref: `#/$defs/D${depth}` } as Record<string, unknown>;
+  };
+
+  it('stays bounded on an exponentially-expanding reference graph', () => {
+    const start = Date.now();
+    const result = resolveJsonSchemaRefs(fanOutSchema(30));
+    const nodes = JSON.stringify(result).length;
+
+    expect(Date.now() - start).toBeLessThan(10_000);
+    expect(nodes).toBeLessThan(50_000_000);
+  });
+
+  it('still resolves an ordinary reference graph fully', () => {
+    const result = resolveJsonSchemaRefs({
+      $defs: { Name: { type: 'string' } },
+      type: 'object',
+      properties: { first: { $ref: '#/$defs/Name' } },
+    } as Record<string, unknown>) as { properties: { first: Record<string, unknown> } };
+
+    expect(result.properties.first).toEqual({ type: 'string' });
+  });
+
+  it('keeps a __proto__ argument through reference resolution', () => {
+    const parsed = JSON.parse(
+      '{"type":"object","properties":{"__proto__":{"type":"string"}}}',
+    ) as Record<string, unknown>;
+    const result = resolveJsonSchemaRefs(parsed) as { properties: Record<string, unknown> };
+
+    expect(Object.prototype.hasOwnProperty.call(result.properties, '__proto__')).toBe(true);
   });
 });

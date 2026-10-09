@@ -3,8 +3,10 @@ const { createAdminConfigHandlers } = require('@librechat/api');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const {
   hasCapability,
-  hasConfigCapability,
   requireCapability,
+  hasConfigCapability,
+  hasAnyConfigReadAccess,
+  getReadableConfigSections,
 } = require('~/server/middleware/roles/capabilities');
 const { getAppConfig, invalidateConfigCaches } = require('~/server/services/Config');
 const { requireJwtAuth } = require('~/server/middleware');
@@ -23,6 +25,8 @@ const handlers = createAdminConfigHandlers({
   unsetConfigField: db.unsetConfigField,
   deleteConfig: db.deleteConfig,
   toggleConfigActive: db.toggleConfigActive,
+  hasAnyConfigReadAccess,
+  getReadableConfigSections,
   hasConfigCapability,
   hasCapability,
   getAppConfig,

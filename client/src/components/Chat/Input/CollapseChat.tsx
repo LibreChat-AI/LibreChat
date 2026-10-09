@@ -1,6 +1,6 @@
 import React from 'react';
-import { TooltipAnchor } from '@librechat/client';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp } from 'lucide';
+import { MorphIcon, TooltipAnchor } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -37,14 +37,10 @@ const CollapseChat = ({
             className={cn(
               // 'absolute right-1.5 top-1.5',
               'z-10 size-5 rounded-full transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-opacity-50',
+              'focus-visible:ring-text-primary/50 focus-visible:ring-2 focus-visible:outline-hidden',
             )}
           >
-            {isCollapsed ? (
-              <ChevronUp className="h-full w-full" aria-hidden="true" />
-            ) : (
-              <ChevronDown className="h-full w-full" aria-hidden="true" />
-            )}
+            <MorphIcon icon={isCollapsed ? ChevronUp : ChevronDown} className="h-full w-full" />
           </button>
         }
       />

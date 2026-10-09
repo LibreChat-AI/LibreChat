@@ -3,6 +3,7 @@ import { normalizeRumPath } from './routes';
 describe('normalizeRumPath', () => {
   it('normalizes dynamic LibreChat route identifiers', () => {
     expect(normalizeRumPath('/c/65a5e0a7d1c2b3a4f5e6d789')).toBe('/c/:conversationId');
+    expect(normalizeRumPath('/c/new')).toBe('/c/new');
     expect(normalizeRumPath('/share/65a5e0a7d1c2b3a4f5e6d789')).toBe('/share/:shareId');
     expect(normalizeRumPath('/assistants/asst_123')).toBe('/assistants/:assistantId');
   });

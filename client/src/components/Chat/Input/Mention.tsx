@@ -1,8 +1,8 @@
 import { memo, useState, useRef, useEffect } from 'react';
-import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { AutoSizer, List } from 'react-virtualized';
-import { Spinner, useCombobox } from '@librechat/client';
 import { EModelEndpoint } from 'librechat-data-provider';
+import { useRecoilValue, useSetRecoilState } from 'recoil';
+import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import type { RecoilState } from 'recoil';
 import type { MentionOption, ConvoGenerator } from '~/common';
 import { useGetConversation, useLocalize, TranslationKeys } from '~/hooks';
@@ -34,6 +34,7 @@ function MentionContent({
   includeAssistants = true,
 }: Omit<MentionProps, 'index'>) {
   const localize = useLocalize();
+  const remScale = useRemScale();
   const getConversation = useGetConversation(0);
   const assistantsMap = useAssistantsMapContext();
   const setShowPopover = useSetRecoilState(popoverAtom);
@@ -129,6 +130,10 @@ function MentionContent({
   }, [open, options]);
 
   useEffect(() => {
+    setActiveIndex((prev) => Math.min(prev, Math.max(matches.length - 1, 0)));
+  }, [matches.length]);
+
+  useEffect(() => {
     return () => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
@@ -177,11 +182,11 @@ function MentionContent({
 
   return (
     <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-token-border-light rounded-2xl border bg-white p-2 shadow-lg dark:bg-gray-700">
-        <input
+      <div className="popover border-border-light bg-surface-secondary rounded-theme-popover border p-2 shadow-lg">
+        <Input
           ref={initInputRef}
           placeholder={localize(placeholder)}
-          className="mb-1 w-full border-0 bg-white p-2 text-sm focus:outline-none dark:bg-gray-700 dark:text-gray-200"
+          className="bg-surface-secondary text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
           autoComplete="off"
           value={searchValue}
           onKeyDown={(e) => {
@@ -191,10 +196,23 @@ function MentionContent({
               textAreaRef.current?.focus();
             }
             if (e.key === 'ArrowDown') {
+              if (matches.length === 0) {
+                return;
+              }
               setActiveIndex((prevIndex) => (prevIndex + 1) % matches.length);
             } else if (e.key === 'ArrowUp') {
+              if (matches.length === 0) {
+                return;
+              }
               setActiveIndex((prevIndex) => (prevIndex - 1 + matches.length) % matches.length);
             } else if (e.key === 'Enter' || e.key === 'Tab') {
+              if (matches.length === 0) {
+                e.preventDefault();
+                setOpen(false);
+                setShowPopover(false);
+                textAreaRef.current?.focus();
+                return;
+              }
               const mentionOption = matches[activeIndex] as MentionOption | undefined;
               if (mentionOption?.type === 'endpoint') {
                 e.preventDefault();
@@ -218,7 +236,7 @@ function MentionContent({
           }}
         />
         {open && isLoading && matches.length === 0 && (
-          <div className="flex h-32 items-center justify-center text-text-primary">
+          <div className="text-text-primary flex h-32 items-center justify-center">
             <Spinner />
           </div>
         )}
@@ -229,11 +247,11 @@ function MentionContent({
                 <List
                   width={width}
                   overscanRowCount={5}
-                  rowHeight={ROW_HEIGHT}
+                  rowHeight={ROW_HEIGHT * remScale}
                   rowCount={matches.length}
                   rowRenderer={rowRenderer}
                   scrollToIndex={activeIndex}
-                  height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                  height={Math.min(matches.length * ROW_HEIGHT, 160) * remScale}
                 />
               )}
             </AutoSizer>

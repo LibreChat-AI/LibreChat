@@ -17,6 +17,8 @@ export default defineConfig({
   dts: false,
   outDir: 'dist',
   sourcemap: true,
+  // Warn on module cycles at build time; CI enforces via config/circular-deps.mjs.
+  checks: { circularDependency: true },
   deps: {
     // Match the prior Rollup build: bundle nothing third-party. Externalize every
     // bare import (deps, peers, and node built-ins like `crypto`); bundle only the

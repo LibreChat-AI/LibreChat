@@ -14,7 +14,7 @@ export default function SendIcon({
       height={size}
       viewBox={'0 0 24 24'}
       fill="none"
-      className={cn('text-white dark:text-black', className)}
+      className={cn('text-text-inverted', className)}
       aria-hidden="true"
     >
       <path

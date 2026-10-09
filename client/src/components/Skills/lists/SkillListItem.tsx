@@ -1,15 +1,17 @@
 import { memo, useState, useMemo, useCallback } from 'react';
-import { ScrollText, ChevronDown, ChevronRight, Folder, Pin } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 import { FixedSizeTree } from 'react-vtree';
+import { useNavigate } from 'react-router-dom';
+import { useRemScale } from '@librechat/client';
+import { ScrollText, ChevronDown, ChevronRight, Folder, Pin } from 'lucide-react';
 import type { FixedSizeNodeData, TreeWalkerValue, TreeWalker } from 'react-vtree';
-import type { TSkill, TSkillFile } from 'librechat-data-provider';
+import type { TSkillSummary, TSkillFile } from 'librechat-data-provider';
 import { useListSkillFilesQuery } from '~/data-provider';
+import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface SkillListItemProps {
-  skill: TSkill;
+  skill: TSkillSummary;
   isActive: boolean;
   isExpanded: boolean;
   activeFile: string | null;
@@ -138,12 +140,12 @@ function FileTreeNode({
 }) {
   const isFolder = data.nodeType === 'folder';
   const isFileActive = !isFolder && treeData?.activeFile === data.path;
-  const indent = data.depth * 16 + (isFolder ? 8 : 24);
+  const indentRem = (data.depth * 16 + (isFolder ? 8 : 24)) / 16;
 
   return (
     <button
       type="button"
-      style={{ ...style, paddingLeft: `${indent}px` }}
+      style={{ ...style, paddingLeft: `${indentRem}rem` }}
       onClick={(e) => {
         e.stopPropagation();
         if (isFolder) {
@@ -155,10 +157,10 @@ function FileTreeNode({
         }
       }}
       className={cn(
-        'flex w-full select-none items-center gap-1.5 rounded-lg text-sm transition-colors',
+        'flex w-full items-center gap-1.5 rounded-lg text-sm select-none',
         isFileActive
-          ? 'bg-surface-active font-medium text-text-primary'
-          : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
+          ? 'bg-surface-active text-text-primary font-medium'
+          : 'text-text-secondary hover:bg-surface-nav-hover hover:text-text-primary',
       )}
       aria-expanded={isFolder ? isOpen : undefined}
     >
@@ -197,7 +199,8 @@ function InlineFileTree({
 
   const visibleCount = useMemo(() => countVisible(treeEntries, openIds), [treeEntries, openIds]);
 
-  const height = Math.min(visibleCount * ITEM_SIZE, MAX_HEIGHT);
+  const remScale = useRemScale();
+  const height = Math.min(visibleCount * ITEM_SIZE, MAX_HEIGHT) * remScale;
 
   const handleToggle = useCallback((id: string, isOpen: boolean) => {
     setOpenIds((prev) => {
@@ -240,7 +243,7 @@ function InlineFileTree({
   return (
     <FixedSizeTree<FileNodeData>
       treeWalker={treeWalker}
-      itemSize={ITEM_SIZE}
+      itemSize={ITEM_SIZE * remScale}
       height={height}
       width="100%"
       itemData={callbacks}
@@ -298,47 +301,46 @@ function SkillListItem({
   return (
     <div className="flex flex-col gap-px">
       {/* Skill row */}
+      {/* The row and its expander are siblings, not one inside the other: a control
+          nested in another control is unreachable for a keyboard and ambiguous for a
+          screen reader, which announces one name for two different actions. */}
       <div
-        role="button"
-        tabIndex={0}
-        onClick={handleSkillClick}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleSkillClick();
-          }
-        }}
         className={cn(
-          'flex w-full cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-1.5 text-left text-sm text-text-primary transition-colors',
+          'text-text-primary flex w-full items-center gap-1 rounded-lg pr-1 text-sm select-none',
           isActive && !activeFile && 'bg-surface-active',
-          !isActive && 'hover:bg-surface-hover',
+          !isActive && 'hover:bg-surface-nav-hover',
         )}
-        aria-current={isActive ? 'true' : undefined}
-        aria-expanded={hasFiles ? expanded : undefined}
       >
-        <span className="flex size-6 shrink-0 items-center justify-center">
-          <span className="flex size-6 items-center justify-center rounded-md border border-border-light bg-surface-primary shadow-sm">
-            <ScrollText className="size-3.5 text-text-secondary" aria-hidden="true" />
+        <button
+          type="button"
+          onClick={handleSkillClick}
+          className="focus-visible:ring-text-primary flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg py-1.5 pl-3 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
+          aria-current={isActive ? 'true' : undefined}
+        >
+          <span className="flex size-6 shrink-0 items-center justify-center">
+            <span className="bg-surface-tertiary flex size-6 items-center justify-center rounded-md">
+              <ScrollText className="text-text-secondary size-3.5" aria-hidden="true" />
+            </span>
           </span>
-        </span>
 
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className={cn('truncate', isActive && 'font-semibold')}>{skill.name}</span>
-          {skill.alwaysApply === true && (
-            <Pin
-              className="size-3 shrink-0 text-cyan-500"
-              aria-label={localize('com_ui_skills_always_apply_pin_title')}
-            />
-          )}
-        </span>
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="truncate">{skill.name}</span>
+            {skill.alwaysApply === true && (
+              <Pin
+                className="text-status-info size-3 shrink-0"
+                aria-label={localize('com_ui_skills_always_apply_pin_title')}
+              />
+            )}
+          </span>
+        </button>
 
         {hasFiles && (
           <button
             type="button"
             onClick={handleChevronClick}
-            className="-mr-1 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-text-secondary hover:text-text-primary"
-            aria-label="Toggle files"
-            tabIndex={-1}
+            className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary inline-flex size-6 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
+            aria-label={localize('com_ui_skills_toggle_files', { 0: skill.name })}
+            aria-expanded={expanded}
           >
             <ChevronDown
               className={cn(
@@ -351,16 +353,9 @@ function SkillListItem({
       </div>
 
       {/* Inline file tree */}
-      <div
-        className={cn(
-          'ml-5 overflow-hidden transition-all duration-200 ease-in-out',
-          expanded && hasFiles ? 'opacity-100' : 'max-h-0 opacity-0',
-        )}
-        style={expanded && hasFiles ? { maxHeight: `${MAX_HEIGHT}px` } : undefined}
-        inert={!expanded ? '' : undefined}
-      >
+      <Collapse open={expanded && hasFiles} className="ml-5">
         <InlineFileTree files={files} activeFile={activeFile} onFileClick={handleFileClick} />
-      </div>
+      </Collapse>
     </div>
   );
 }

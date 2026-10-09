@@ -1,4 +1,4 @@
-import type { ExtendedJsonSchema } from '../registry/definitions';
+import type { ExtendedJsonSchema } from '../registry/schema';
 
 /** Default description for Gemini image generation tool */
 const DEFAULT_GEMINI_IMAGE_GEN_DESCRIPTION =

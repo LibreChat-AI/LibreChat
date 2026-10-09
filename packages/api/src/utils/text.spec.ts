@@ -1,4 +1,4 @@
-import { processTextWithTokenLimit, TokenCountFn } from './text';
+import { normalizeString, processTextWithTokenLimit, TokenCountFn } from './text';
 import Tokenizer, { countTokens } from './tokenizer';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -8,6 +8,15 @@ jest.mock('@librechat/data-schemas', () => ({
     error: jest.fn(),
   },
 }));
+
+describe('normalizeString', () => {
+  it('trims non-empty strings and treats blank or non-string values as undefined', () => {
+    expect(normalizeString('  value  ')).toBe('value');
+    expect(normalizeString('   ')).toBeUndefined();
+    expect(normalizeString(null)).toBeUndefined();
+    expect(normalizeString(123)).toBeUndefined();
+  });
+});
 
 /**
  * OLD IMPLEMENTATION (Binary Search) - kept for comparison testing

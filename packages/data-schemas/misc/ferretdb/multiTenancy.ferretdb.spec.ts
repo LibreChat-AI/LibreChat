@@ -1,36 +1,6 @@
 import mongoose from 'mongoose';
 import { execSync } from 'child_process';
-import {
-  actionSchema,
-  agentSchema,
-  agentApiKeySchema,
-  agentCategorySchema,
-  assistantSchema,
-  balanceSchema,
-  bannerSchema,
-  conversationTagSchema,
-  convoSchema,
-  fileSchema,
-  keySchema,
-  messageSchema,
-  pluginAuthSchema,
-  presetSchema,
-  projectSchema,
-  promptSchema,
-  promptGroupSchema,
-  roleSchema,
-  sessionSchema,
-  shareSchema,
-  tokenSchema,
-  toolCallSchema,
-  transactionSchema,
-  userSchema,
-  memorySchema,
-  groupSchema,
-} from '~/schema';
-import accessRoleSchema from '~/schema/accessRole';
-import aclEntrySchema from '~/schema/aclEntry';
-import mcpServerSchema from '~/schema/mcpServer';
+import { getModelSchemas } from './schemas';
 
 /**
  * FerretDB Multi-Tenancy Benchmark
@@ -39,21 +9,22 @@ import mcpServerSchema from '~/schema/mcpServer';
  * at scale using database-per-org isolation via Mongoose useDb().
  *
  * Phases:
- *   1. useDb schema mapping — verifies per-org PostgreSQL schema creation and data isolation
- *   2. Index initialization — validates all 29 collections + 97 indexes, tests for deadlocks
- *   3. Scaling curve — measures catalog growth, init time, and query latency at 10/50/100 orgs
- *   4. Write amplification — compares update cost on high-index vs zero-index collections
- *   5. Shared-collection alternative — benchmarks orgId-discriminated shared collections
+ *   1. useDb schema mapping: verifies per-org PostgreSQL schema creation and data isolation
+ *   2. Index initialization: validates every current org-local collection + its
+ *      indexes, tests for deadlocks
+ *   3. Scaling curve: measures catalog growth, init time, and query latency at 10/50/100 orgs
+ *   4. Write amplification: compares update cost on high-index vs zero-index collections
+ *   5. Shared-collection alternative: benchmarks orgId-discriminated shared collections
  *
  * Run:
  *   FERRETDB_URI="mongodb://ferretdb:ferretdb@127.0.0.1:27020/mt_bench" \
  *     npx jest multiTenancy.ferretdb --testTimeout=600000
  *
  * Env vars:
- *   FERRETDB_URI     — Required. FerretDB connection string.
- *   PG_CONTAINER     — Docker container name for psql (default: librechat-ferretdb-postgres-1)
- *   SCALE_TIERS      — Comma-separated org counts (default: 10,50,100)
- *   WRITE_AMP_DOCS   — Number of docs for write amp test (default: 200)
+ *   FERRETDB_URI     : Required. FerretDB connection string.
+ *   PG_CONTAINER     : Docker container name for psql (default: librechat-ferretdb-postgres-1)
+ *   SCALE_TIERS      : Comma-separated org counts (default: 10,50,100)
+ *   WRITE_AMP_DOCS   : Number of docs for write amp test (default: 200)
  */
 
 const FERRETDB_URI = process.env.FERRETDB_URI;
@@ -70,42 +41,12 @@ const SCALE_TIERS: number[] = process.env.SCALE_TIERS
 
 const WRITE_AMP_DOCS = parseInt(process.env.WRITE_AMP_DOCS || '200', 10);
 
-/** All 29 LibreChat schemas by Mongoose model name */
-const MODEL_SCHEMAS: Record<string, mongoose.Schema> = {
-  User: userSchema,
-  Token: tokenSchema,
-  Session: sessionSchema,
-  Balance: balanceSchema,
-  Conversation: convoSchema,
-  Message: messageSchema,
-  Agent: agentSchema,
-  AgentApiKey: agentApiKeySchema,
-  AgentCategory: agentCategorySchema,
-  MCPServer: mcpServerSchema,
-  Role: roleSchema,
-  Action: actionSchema,
-  Assistant: assistantSchema,
-  File: fileSchema,
-  Banner: bannerSchema,
-  Project: projectSchema,
-  Key: keySchema,
-  PluginAuth: pluginAuthSchema,
-  Transaction: transactionSchema,
-  Preset: presetSchema,
-  Prompt: promptSchema,
-  PromptGroup: promptGroupSchema,
-  ConversationTag: conversationTagSchema,
-  SharedLink: shareSchema,
-  ToolCall: toolCallSchema,
-  MemoryEntry: memorySchema,
-  AccessRole: accessRoleSchema,
-  AclEntry: aclEntrySchema,
-  Group: groupSchema,
-};
+/** Org-local schema map derived from the live `createModels` registry (see ./schemas) */
+const MODEL_SCHEMAS: Record<string, mongoose.Schema> = getModelSchemas(mongoose);
 
 const MODEL_COUNT = Object.keys(MODEL_SCHEMAS).length;
 
-/** Register all 29 models on a given Mongoose Connection */
+/** Register every model in MODEL_SCHEMAS on a given Mongoose Connection */
 function registerModels(conn: mongoose.Connection): Record<string, mongoose.Model<unknown>> {
   const models: Record<string, mongoose.Model<unknown>> = {};
   for (const [name, schema] of Object.entries(MODEL_SCHEMAS)) {
@@ -234,7 +175,7 @@ describeIfFerretDB('FerretDB Multi-Tenancy Benchmark', () => {
       createdDbs.push(org1Db, org2Db);
     });
 
-    it('creates separate databases with all 29 collections via useDb()', async () => {
+    it('creates separate databases with all collections via useDb()', async () => {
       const c1 = mongoose.connection.useDb(org1Db, { useCache: true });
       const c2 = mongoose.connection.useDb(org2Db, { useCache: true });
 
@@ -332,14 +273,17 @@ describeIfFerretDB('FerretDB Multi-Tenancy Benchmark', () => {
       }
 
       const t0 = Date.now();
+      let failure: Error | undefined;
       try {
         await Promise.all(Object.values(models).map((m) => m.createIndexes()));
-        console.log(`[Phase 2] Concurrent: ${Date.now() - t0}ms — no deadlock`);
+        console.log(`[Phase 2] Concurrent: ${Date.now() - t0}ms, no deadlock`);
       } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
         console.warn(
-          `[Phase 2] Concurrent: DEADLOCKED after ${Date.now() - t0}ms — ${(err as Error).message}`,
+          `[Phase 2] Concurrent: DEADLOCKED after ${Date.now() - t0}ms: ${failure.message}`,
         );
       }
+      expect(failure).toBeUndefined();
     }, 120_000);
 
     it('verifies sparse, partial, and TTL index types on FerretDB', async () => {
@@ -353,7 +297,13 @@ describeIfFerretDB('FerretDB Multi-Tenancy Benchmark', () => {
       console.log(
         `[Phase 2] User: ${userIdxs.length} total, ${sparseCount} sparse, ${ttlCount} TTL`,
       );
-      expect(sparseCount).toBeGreaterThanOrEqual(8);
+      /**
+       * Counts are deliberately not pinned — the point is that FerretDB reports
+       * each index *type* back, and the User schema's sparse/TTL declarations
+       * change independently of this harness.
+       */
+      expect(sparseCount).toBeGreaterThanOrEqual(1);
+      expect(ttlCount).toBeGreaterThanOrEqual(1);
 
       const fileIdxs = await conn.model('File').collection.indexes();
       const partialFile = fileIdxs.find(
@@ -393,7 +343,7 @@ describeIfFerretDB('FerretDB Multi-Tenancy Benchmark', () => {
     beforeAll(() => {
       const baseline = catalogMetrics();
       console.log(
-        `[Phase 3] Baseline — collections: ${baseline.collections}, ` +
+        `[Phase 3] Baseline, collections: ${baseline.collections}, ` +
           `databases: ${baseline.databases}, catalog indexes: ${baseline.catalogIndexes}, ` +
           `data tables: ${baseline.dataTables}, pg_class: ${baseline.pgClassTotal}`,
       );
@@ -513,7 +463,7 @@ describeIfFerretDB('FerretDB Multi-Tenancy Benchmark', () => {
       createdDbs.push(db);
       const conn = mongoose.connection.useDb(db, { useCache: false });
 
-      const HighIdx = conn.model('User', userSchema);
+      const HighIdx = conn.model('User', MODEL_SCHEMAS['User']);
       await HighIdx.createCollection();
       await HighIdx.createIndexes();
 

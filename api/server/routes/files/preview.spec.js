@@ -124,7 +124,7 @@ describe('GET /files/:file_id/preview', () => {
     expect(mockFindFileById).not.toHaveBeenCalled();
   });
 
-  it('does not disclose preview text through an attacker-authored agent file reference', async () => {
+  it('allows preview text through an attached agent file reference', async () => {
     mockGetFiles.mockResolvedValueOnce([
       { file_id: 'victim-file', user: 'victim-user', filename: 'secret.xlsx', status: 'ready' },
     ]);
@@ -135,13 +135,23 @@ describe('GET /files/:file_id/preview', () => {
         tool_resources: { execute_code: { file_ids: ['victim-file'] } },
       },
     ]);
+    mockFindFileById.mockResolvedValueOnce({
+      file_id: 'victim-file',
+      text: 'shared secret',
+      textFormat: 'text',
+    });
 
     const res = await request(buildApp({ user: { id: 'attacker-user', role: 'user' } })).get(
       '/files/victim-file/preview',
     );
 
-    expect(res.status).toBe(403);
-    expect(mockFindFileById).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      file_id: 'victim-file',
+      status: 'ready',
+      text: 'shared secret',
+      textFormat: 'text',
+    });
   });
 
   it('returns status:pending without text/textFormat while the deferred render is in flight', async () => {

@@ -12,17 +12,13 @@ import type {
   TSkillListResponse,
 } from './skills';
 import {
-  Tools,
   Assistant,
   AssistantCreateParams,
   AssistantUpdateParams,
-  FunctionTool,
   AssistantDocument,
-  Agent,
-  AgentCreateParams,
-  AgentUpdateParams,
 } from './assistants';
-import { Action, ActionMetadata } from './agents';
+import { Action, ActionMetadata, Agent, AgentCreateParams, AgentUpdateParams } from './agents';
+import { Tools, FunctionTool } from './tools';
 import * as p from '../permissions';
 import * as types from '../types';
 import * as r from '../roles';
@@ -51,6 +47,8 @@ export type TGenTitleRequest = {
 
 export type TGenTitleResponse = {
   title: string;
+  titleSetByUser?: boolean;
+  titleRevision?: number;
 };
 
 export type PresetDeleteResponse = {
@@ -207,6 +205,11 @@ export type DuplicateConvoOptions = MutationOptions<
 
 export type ForkConvoOptions = MutationOptions<types.TForkConvoResponse, types.TForkConvoRequest>;
 
+export type ForkSharedConvoOptions = MutationOptions<
+  types.TForkConvoResponse,
+  types.TForkSharedConvoRequest
+>;
+
 export type CreateSharedLinkOptions = MutationOptions<
   types.TSharedLink,
   Partial<types.TSharedLink>
@@ -225,6 +228,11 @@ export type UpdateSharedLinkOptions = MutationOptions<
 export type ArchiveConvoOptions = MutationOptions<
   types.TArchiveConversationResponse,
   types.TArchiveConversationRequest
+>;
+
+export type ArchiveAllConversationsOptions = MutationOptions<
+  types.TArchiveAllConversationsResponse,
+  void
 >;
 
 export type DeleteSharedLinkContext = { previousQueries?: Map<string, TDeleteSharedLinkResponse> };

@@ -1,7 +1,17 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const { deleteRagFile } = require('@librechat/api');
+const {
+  deleteRagFile,
+  moveLocalFile,
+  stripCacheBust,
+  writeLocalFile,
+  assertRemoteFileURL,
+  getRemoteFileFetchMaxBytes,
+  getRemoteFileFetchTimeoutMs,
+  assertRemoteFileContentLength,
+  saveLocalBuffer: saveBufferToLocalPath,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { EModelEndpoint } = require('librechat-data-provider');
 const { resizeImageBuffer } = require('~/server/services/Files/images/resize');
@@ -19,17 +29,8 @@ const paths = require('~/config/paths');
  */
 async function saveLocalFile(file, outputPath, outputFilename) {
   try {
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
-
     const fileExtension = path.extname(file.originalname);
-    const filenameWithExt = outputFilename + fileExtension;
-    const outputFilePath = path.join(outputPath, filenameWithExt);
-    fs.copyFileSync(file.path, outputFilePath);
-    fs.unlinkSync(file.path);
-
-    return outputFilePath;
+    return await moveLocalFile(file.path, outputPath, outputFilename + fileExtension);
   } catch (error) {
     logger.error('[saveFile] Error while saving the file:', error);
     throw error;
@@ -65,30 +66,7 @@ const saveLocalImage = async (req, file, filename) => {
  */
 async function saveLocalBuffer({ userId, buffer, fileName, basePath = 'images' }) {
   try {
-    const { publicPath, uploads } = paths;
-
-    /**
-     * For 'images': save to publicPath/images/userId (images are served statically)
-     * For 'uploads': save to uploads/userId (files downloaded via API)
-     * */
-    const directoryPath =
-      basePath === 'images' ? path.join(publicPath, basePath, userId) : path.join(uploads, userId);
-
-    if (!fs.existsSync(directoryPath)) {
-      fs.mkdirSync(directoryPath, { recursive: true });
-    }
-
-    const resolvedDir = path.resolve(directoryPath);
-    const resolvedPath = path.resolve(resolvedDir, fileName);
-    const rel = path.relative(resolvedDir, resolvedPath);
-    if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
-      throw new Error('Path traversal detected in filename');
-    }
-    fs.writeFileSync(resolvedPath, buffer);
-
-    const filePath = path.posix.join('/', basePath, userId, fileName);
-
-    return filePath;
+    return await saveBufferToLocalPath({ paths, userId, buffer, fileName, basePath });
   } catch (error) {
     logger.error('[saveLocalBuffer] Error while saving the buffer:', error);
     throw error;
@@ -115,21 +93,25 @@ async function saveLocalBuffer({ userId, buffer, fileName, basePath = 'images' }
  */
 async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
   try {
+    const maxBytes = getRemoteFileFetchMaxBytes();
     const response = await axios({
-      url: URL,
+      url: assertRemoteFileURL(URL),
       responseType: 'arraybuffer',
+      timeout: getRemoteFileFetchTimeoutMs(),
+      maxContentLength: maxBytes,
+      maxBodyLength: maxBytes,
     });
+    assertRemoteFileContentLength(response.headers, maxBytes);
 
     const buffer = Buffer.from(response.data, 'binary');
+    if (buffer.length > maxBytes) {
+      throw new Error(`Remote file response too large: ${buffer.length} bytes`);
+    }
+
     const { bytes, type, dimensions, extension } = await getBufferMetadata(buffer);
 
     // Construct the outputPath based on the basePath and userId
     const outputPath = path.join(paths.publicPath, basePath, userId.toString());
-
-    // Check if the output directory exists, if not, create it
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
 
     // Replace or append the correct extension
     const extRegExp = new RegExp(path.extname(fileName) + '$');
@@ -138,9 +120,7 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
       fileName += `.${extension}`;
     }
 
-    // Save the file to the output path
-    const outputFilePath = path.join(outputPath, fileName);
-    fs.writeFileSync(outputFilePath, buffer);
+    await writeLocalFile(outputPath, fileName, buffer);
 
     return {
       bytes,
@@ -192,11 +172,21 @@ const isValidPath = (req, base, subfolder, filepath) => {
 /**
  * @param {string} filepath
  */
+/**
+ * A file whose bytes are still on disk must not be reported as deleted: callers use the resolved
+ * promise to decide that a record may lose its metadata and its agent references. Storage that was
+ * already gone is the one benign case, and `processDeleteRequest` treats it as deleted by design.
+ */
 const unlinkFile = async (filepath) => {
   try {
     await fs.promises.unlink(filepath);
   } catch (error) {
+    if (error?.code === 'ENOENT') {
+      logger.warn('Local file was already missing during delete:', error);
+      return;
+    }
     logger.error('Error deleting file:', error);
+    throw error;
   }
 };
 
@@ -216,8 +206,8 @@ const deleteLocalFile = async (req, file) => {
   const appConfig = req.config;
   const { publicPath, uploads } = appConfig.paths;
 
-  /** Filepath stripped of query parameters (e.g., ?manual=true) */
-  const cleanFilepath = file.filepath.split('?')[0];
+  /** Filepath stripped of query parameters (e.g., ?manual=true, ?v=<timestamp>) */
+  const cleanFilepath = stripCacheBust(file.filepath);
 
   await deleteRagFile({ userId: req.user.id, file });
 
@@ -278,14 +268,8 @@ async function uploadLocalFile({ req, file, file_id }) {
   const { uploads } = appConfig.paths;
   const userPath = path.join(uploads, req.user.id);
 
-  if (!fs.existsSync(userPath)) {
-    fs.mkdirSync(userPath, { recursive: true });
-  }
-
   const fileName = `${file_id}__${path.basename(inputFilePath)}`;
-  const newPath = path.join(userPath, fileName);
-
-  await fs.promises.writeFile(newPath, inputBuffer);
+  const newPath = await writeLocalFile(userPath, fileName, inputBuffer);
   const filepath = path.posix.join('/', 'uploads', req.user.id, path.basename(newPath));
 
   let height, width;
@@ -306,12 +290,14 @@ async function uploadLocalFile({ req, file, file_id }) {
  * Retrieves a readable stream for a file from local storage.
  *
  * @param {ServerRequest} req - The request object from Express
- * @param {string} filepath - The filepath.
+ * @param {string} requestedFilepath - The filepath, which may carry a cache-busting query string.
  * @returns {ReadableStream} A readable stream of the file.
  */
-async function getLocalFileStream(req, filepath) {
+async function getLocalFileStream(req, requestedFilepath) {
   try {
     const appConfig = req.config;
+    /** Reused code outputs persist a `?v=<timestamp>` suffix that no file on disk carries */
+    const filepath = stripCacheBust(requestedFilepath);
     if (filepath.includes('/uploads/')) {
       const basePath = filepath.split('/uploads/')[1];
 

@@ -1,11 +1,18 @@
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { Provider as JotaiProvider, createStore } from 'jotai';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, type TConversation, type TMessage } from 'librechat-data-provider';
+import {
+  useLatestMessage,
+  useLatestMessageId,
+  useLatestMessageMeta,
+  useGetLatestMessage,
+} from '~/hooks/Messages/useLatestMessage';
 import { getBranchSiblingIndexesForTarget, getMessageBranchSiblingParentIds } from '~/utils';
-import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import store from '~/store';
 
 function createQueryClient() {
@@ -64,17 +71,20 @@ function createWrapper(
   queryClient = createQueryClient(),
   initializeState?: (snapshot: MutableSnapshot) => void,
   initialEntry = '/c/conversation-1',
+  jotaiStore = createStore(),
 ) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <RecoilRoot initializeState={initializeState}>
-          <MemoryRouter initialEntries={[initialEntry]}>
-            <Routes>
-              <Route path="/c/:conversationId?" element={children} />
-            </Routes>
-          </MemoryRouter>
-        </RecoilRoot>
+        <JotaiProvider store={jotaiStore}>
+          <RecoilRoot initializeState={initializeState}>
+            <MemoryRouter initialEntries={[initialEntry]}>
+              <Routes>
+                <Route path="/c/:conversationId?" element={children} />
+              </Routes>
+            </MemoryRouter>
+          </RecoilRoot>
+        </JotaiProvider>
       </QueryClientProvider>
     );
   };
@@ -161,11 +171,17 @@ describe('useLatestMessage', () => {
       ],
     );
 
+    const jotaiStore = createStore();
+    jotaiStore.set(siblingIdxFamily(siblingKey(userMessage.messageId)), 1);
     const { result } = renderHook(() => useLatestMessage(0), {
-      wrapper: createWrapper(queryClient, ({ set }) => {
-        set(store.conversationByIndex(0), conversation);
-        set(store.messagesSiblingIdxFamily(userMessage.messageId), 1);
-      }),
+      wrapper: createWrapper(
+        queryClient,
+        ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        },
+        undefined,
+        jotaiStore,
+      ),
     });
 
     expect(result.current).toEqual(
@@ -189,11 +205,17 @@ describe('useLatestMessage', () => {
       ],
     );
 
+    const jotaiStore = createStore();
+    jotaiStore.set(siblingIdxFamily(siblingKey(userMessage.messageId)), 99);
     const { result } = renderHook(() => useLatestMessage(0), {
-      wrapper: createWrapper(queryClient, ({ set }) => {
-        set(store.conversationByIndex(0), conversation);
-        set(store.messagesSiblingIdxFamily(userMessage.messageId), 99);
-      }),
+      wrapper: createWrapper(
+        queryClient,
+        ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        },
+        undefined,
+        jotaiStore,
+      ),
     });
 
     expect(result.current).toEqual(
@@ -235,6 +257,172 @@ describe('useLatestMessage', () => {
 
     expect(result.current).toBe(firstId);
     expect(renderCount).toBe(1);
+  });
+});
+
+describe('useLatestMessageMeta', () => {
+  it('projects only messageId, error, and isCreatedByUser for the branch tail', () => {
+    const queryClient = createQueryClient();
+    const erroredAssistant = { ...assistantMessage, error: true } as TMessage;
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, conversation.conversationId],
+      [userMessage, erroredAssistant],
+    );
+
+    const { result } = renderHook(() => useLatestMessageMeta(0), {
+      wrapper: createWrapper(queryClient, ({ set }) => {
+        set(store.conversationByIndex(0), conversation);
+      }),
+    });
+
+    expect(result.current).toEqual({
+      messageId: assistantMessage.messageId,
+      error: true,
+      isCreatedByUser: false,
+    });
+  });
+
+  it('returns null when there is no active conversation', () => {
+    const { result } = renderHook(() => useLatestMessageMeta(0), {
+      wrapper: createWrapper(),
+    });
+
+    expect(result.current).toBeNull();
+  });
+
+  it('stays referentially stable and does not re-render across token-only cache writes', () => {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, conversation.conversationId],
+      [userMessage, assistantMessage],
+    );
+    let renderCount = 0;
+
+    const { result } = renderHook(
+      () => {
+        renderCount += 1;
+        return useLatestMessageMeta(0);
+      },
+      {
+        wrapper: createWrapper(queryClient, ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        }),
+      },
+    );
+
+    const firstMeta = result.current;
+    expect(firstMeta).toEqual({
+      messageId: assistantMessage.messageId,
+      error: undefined,
+      isCreatedByUser: false,
+    });
+
+    act(() => {
+      queryClient.setQueryData<TMessage[]>(
+        [QueryKeys.messages, conversation.conversationId],
+        [userMessage, { ...assistantMessage, text: 'Hi there, still streaming' }],
+      );
+    });
+
+    expect(result.current).toBe(firstMeta);
+    expect(renderCount).toBe(1);
+  });
+});
+
+describe('useGetLatestMessage', () => {
+  it('reads the current branch tail at call time', () => {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, conversation.conversationId],
+      [userMessage, assistantMessage],
+    );
+
+    const { result } = renderHook(() => useGetLatestMessage(0), {
+      wrapper: createWrapper(queryClient, ({ set }) => {
+        set(store.conversationByIndex(0), conversation);
+      }),
+    });
+
+    expect(result.current()).toEqual(
+      expect.objectContaining({ messageId: assistantMessage.messageId }),
+    );
+  });
+
+  it('keeps a stable callback and reads fresh data without re-rendering across token writes', () => {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, conversation.conversationId],
+      [userMessage, assistantMessage],
+    );
+    let renderCount = 0;
+
+    const { result } = renderHook(
+      () => {
+        renderCount += 1;
+        return useGetLatestMessage(0);
+      },
+      {
+        wrapper: createWrapper(queryClient, ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        }),
+      },
+    );
+
+    const reader = result.current;
+
+    act(() => {
+      queryClient.setQueryData<TMessage[]>(
+        [QueryKeys.messages, conversation.conversationId],
+        [userMessage, { ...assistantMessage, text: 'Streamed tail' }],
+      );
+    });
+
+    /** Call-time reader has no cache subscription: no re-render, stable identity... */
+    expect(renderCount).toBe(1);
+    expect(result.current).toBe(reader);
+    /** ...yet invoking it returns the freshly-written tail. */
+    expect(result.current()).toEqual(
+      expect.objectContaining({ messageId: assistantMessage.messageId, text: 'Streamed tail' }),
+    );
+  });
+
+  it('resolves the active branch tail from the Recoil sibling snapshot', () => {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, conversation.conversationId],
+      [
+        userMessage,
+        olderAssistantMessage,
+        olderFollowUpUserMessage,
+        olderFollowUpAssistantMessage,
+        assistantMessage,
+      ],
+    );
+
+    const jotaiStore = createStore();
+    jotaiStore.set(siblingIdxFamily(siblingKey(userMessage.messageId)), 1);
+    const { result } = renderHook(() => useGetLatestMessage(0), {
+      wrapper: createWrapper(
+        queryClient,
+        ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        },
+        undefined,
+        jotaiStore,
+      ),
+    });
+
+    expect(result.current()).toEqual(
+      expect.objectContaining({ messageId: olderFollowUpAssistantMessage.messageId }),
+    );
+  });
+
+  it('returns null when there is no active conversation', () => {
+    const { result } = renderHook(() => useGetLatestMessage(0), {
+      wrapper: createWrapper(),
+    });
+
+    expect(result.current()).toBeNull();
   });
 });
 

@@ -1,5 +1,5 @@
-import { isAfter } from 'date-fns';
 import React, { useMemo } from 'react';
+import { isAfter } from 'date-fns';
 import { imageExtRegex } from 'librechat-data-provider';
 import type { TFile, TAttachment, TAttachmentMetadata } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
@@ -181,7 +181,7 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
         </div>
       )}
       {panelAttachments.length > 0 && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mt-2 flex w-full max-w-full flex-col">
           {panelAttachments.map(({ attachment, artifact }, index) => (
             <ToolArtifactCard
               key={renderAttachmentKey('artifact', attachment, index)}
@@ -207,10 +207,10 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
           {textAttachments.map((file, index) => (
             <div
               key={renderAttachmentKey('text', file, index)}
-              className="rounded-lg bg-surface-secondary p-3"
+              className="bg-surface-secondary rounded-lg p-3"
             >
               {file.filename && (
-                <div className="mb-1 truncate text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+                <div className="text-text-secondary mb-1 truncate text-[10px] font-medium tracking-wide uppercase">
                   {file.filepath ? (
                     <LogLink
                       href={file.filepath}
@@ -226,7 +226,7 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
                   )}
                 </div>
               )}
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-text-primary">
+              <pre className="text-text-primary max-h-80 overflow-auto font-mono text-xs leading-5 break-words whitespace-pre-wrap">
                 {file.text}
               </pre>
             </div>

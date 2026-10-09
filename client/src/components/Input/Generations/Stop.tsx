@@ -8,7 +8,7 @@ export default function Stop({ onClick }: TGenButtonProps) {
 
   return (
     <Button type="stop" onClick={onClick} shortcutId="stopGenerating">
-      <StopGeneratingIcon className="text-gray-600/90 dark:text-gray-400" />
+      <StopGeneratingIcon className="text-text-secondary" />
       {localize('com_ui_stop')}
     </Button>
   );

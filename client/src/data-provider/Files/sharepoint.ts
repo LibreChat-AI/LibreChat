@@ -204,6 +204,7 @@ function getMimeTypeFromFileName(fileName: string): string {
     xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     ppt: 'application/vnd.ms-powerpoint',
     pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    potx: 'application/vnd.openxmlformats-officedocument.presentationml.template',
     txt: 'text/plain',
     csv: 'text/csv',
 

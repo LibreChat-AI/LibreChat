@@ -1,14 +1,21 @@
+import { Button } from '@librechat/client';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { TMessageProps } from '~/common';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
-type TSiblingSwitchProps = Pick<TMessageProps, 'siblingIdx' | 'siblingCount' | 'setSiblingIdx'>;
+type TSiblingSwitchProps = Pick<TMessageProps, 'siblingIdx' | 'siblingCount' | 'setSiblingIdx'> & {
+  className?: string;
+};
 
 export default function SiblingSwitch({
   siblingIdx,
   siblingCount,
   setSiblingIdx,
+  className,
 }: TSiblingSwitchProps) {
+  const localize = useLocalize();
+
   if (siblingIdx === undefined) {
     return null;
   } else if (siblingCount === undefined) {
@@ -24,45 +31,48 @@ export default function SiblingSwitch({
   };
 
   const buttonStyle = cn(
-    'hover-button rounded-lg p-1.5 text-text-secondary-alt',
+    'hover-button h-auto rounded-lg p-1.5 text-text-secondary-alt',
     'hover:text-text-primary hover:bg-surface-hover',
-    'group-hover:visible group-focus-within:visible group-[.final-completion]:visible',
-    'focus-visible:ring-2 focus-visible:ring-black dark:focus-visible:ring-white focus-visible:outline-none',
+    'group-hover:visible group-focus-visible:visible group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:visible group-[.final-completion]:visible',
+    'focus-visible:ring-2 focus-visible:ring-text-primary',
   );
 
   return siblingCount > 1 ? (
     <nav
-      className="visible flex items-center justify-center gap-2 self-center pt-0 text-xs"
-      aria-label="Sibling message navigation"
+      className={cn(
+        'visible flex items-center justify-center gap-2 self-center pt-0 text-xs',
+        className,
+      )}
+      aria-label={localize('com_ui_sibling_navigation')}
     >
-      <button
+      <Button
+        variant="ghost"
         className={buttonStyle}
-        type="button"
         onClick={previous}
         disabled={siblingIdx == 0}
-        aria-label="Previous sibling message"
+        aria-label={localize('com_ui_previous_sibling')}
         aria-disabled={siblingIdx == 0}
       >
         <ChevronLeft size="19" aria-hidden="true" />
-      </button>
+      </Button>
       <span
-        className="flex-shrink-0 flex-grow tabular-nums"
+        className="shrink-0 grow tabular-nums"
         aria-live="polite"
         aria-atomic="true"
         role="status"
       >
         {siblingIdx + 1} / {siblingCount}
       </span>
-      <button
+      <Button
+        variant="ghost"
         className={buttonStyle}
-        type="button"
         onClick={next}
         disabled={siblingIdx == siblingCount - 1}
-        aria-label="Next sibling message"
+        aria-label={localize('com_ui_next_sibling')}
         aria-disabled={siblingIdx == siblingCount - 1}
       >
         <ChevronRight size="19" aria-hidden="true" />
-      </button>
+      </Button>
     </nav>
   ) : null;
 }

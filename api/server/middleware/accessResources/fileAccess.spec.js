@@ -212,7 +212,7 @@ describe('fileAccess middleware', () => {
       });
     });
 
-    test('should deny access when user authored an agent with another user file id', async () => {
+    test('should allow access when user authored an agent with an attached file from another owner', async () => {
       await createAgent({
         id: `agent_${Date.now()}`,
         name: 'Test Agent',
@@ -229,8 +229,8 @@ describe('fileAccess middleware', () => {
       req.params.file_id = 'shared_file_via_agent';
       await fileAccess(req, res, next);
 
-      expect(next).not.toHaveBeenCalled();
-      expect(res.status).toHaveBeenCalledWith(403);
+      expect(next).toHaveBeenCalled();
+      expect(req.fileAccess).toBeDefined();
     });
 
     test('should allow access when user has VIEW permission on agent with file', async () => {
@@ -478,7 +478,7 @@ describe('fileAccess middleware', () => {
       await fileAccess(req, res, next);
 
       /**
-       * Should succeed because testUser has access to the file owner's agent,
+       * Should succeed because testUser has access to an attached agent,
        * even though a non-owner agent without access is found first.
        */
       expect(next).toHaveBeenCalled();
@@ -535,7 +535,7 @@ describe('fileAccess middleware', () => {
         grantedBy: otherUser._id,
       });
 
-      // Agent 3: same file in ocr (bad reference from a non-owner agent)
+      // Agent 3: same file in ocr on the requesting user's own agent
       await createAgent({
         id: 'agent_ocr',
         name: 'OCR Agent',
@@ -553,7 +553,7 @@ describe('fileAccess middleware', () => {
       await fileAccess(req, res, next);
 
       /**
-       * Should succeed through the file owner's execute_code agent,
+       * Should succeed through an attached agent,
        * even if other agents with the file are found first.
        */
       expect(next).toHaveBeenCalled();

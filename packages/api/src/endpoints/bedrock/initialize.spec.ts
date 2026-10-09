@@ -922,7 +922,7 @@ describe('initializeBedrock', () => {
   });
 
   describe('Opus 4.6 Adaptive Thinking', () => {
-    it('should configure adaptive thinking with no default maxTokens for Opus 4.6', async () => {
+    it('should default adaptive maxTokens to the model max output for Opus 4.6', async () => {
       const params = createMockParams({
         model_parameters: {
           model: 'anthropic.claude-opus-4-6-v1',
@@ -933,7 +933,7 @@ describe('initializeBedrock', () => {
       const amrf = result.llmConfig.additionalModelRequestFields as Record<string, unknown>;
 
       expect(amrf.thinking).toEqual({ type: 'adaptive' });
-      expect(result.llmConfig.maxTokens).toBeUndefined();
+      expect(result.llmConfig.maxTokens).toBe(128000);
       expect(amrf.anthropic_beta).toEqual(expect.arrayContaining(BEDROCK_CLAUDE_4_BETAS));
     });
 
@@ -1009,7 +1009,7 @@ describe('initializeBedrock', () => {
 
       expect(amrf.thinking).toEqual({ type: 'enabled', budget_tokens: 2000 });
       expect(amrf.output_config).toBeUndefined();
-      expect(result.llmConfig.maxTokens).toBe(8192);
+      expect(result.llmConfig.maxTokens).toBe(64000);
     });
 
     it('should not include output_config when effort is empty', async () => {
@@ -1104,5 +1104,46 @@ describe('initializeBedrock', () => {
       expect(amrf.reasoning_config).toBeUndefined();
       expect(amrf.thinking).toEqual({ type: 'adaptive' });
     });
+  });
+});
+
+describe('initializeBedrock streamRate resolution', () => {
+  beforeEach(() => {
+    process.env.BEDROCK_AWS_ACCESS_KEY_ID = 'test-access-key';
+    process.env.BEDROCK_AWS_SECRET_ACCESS_KEY = 'test-secret-key';
+    process.env.BEDROCK_AWS_DEFAULT_REGION = 'us-east-1';
+  });
+
+  async function delayFor(config: Record<string, unknown>): Promise<unknown> {
+    const result = await initializeBedrock(createMockParams({ config }));
+    return (result.llmConfig as Record<string, unknown>)._lc_stream_delay;
+  }
+
+  it('wires `endpoints.bedrock.streamRate` into llmConfig._lc_stream_delay', async () => {
+    await expect(
+      delayFor({ endpoints: { [EModelEndpoint.bedrock]: { streamRate: 25 } } }),
+    ).resolves.toBe(25);
+  });
+
+  it('preserves the endpoint streamRate when `endpoints.all` exists without one', async () => {
+    await expect(
+      delayFor({
+        endpoints: { [EModelEndpoint.bedrock]: { streamRate: 25 }, all: { activityLabel: true } },
+      }),
+    ).resolves.toBe(25);
+  });
+
+  it('lets `endpoints.all.streamRate` (including 0) override the endpoint value', async () => {
+    await expect(
+      delayFor({
+        endpoints: { [EModelEndpoint.bedrock]: { streamRate: 25 }, all: { streamRate: 0 } },
+      }),
+    ).resolves.toBe(0);
+  });
+
+  it('leaves the delay unset when neither level configures a streamRate', async () => {
+    await expect(
+      delayFor({ endpoints: { all: { activityLabel: true } } }),
+    ).resolves.toBeUndefined();
   });
 });

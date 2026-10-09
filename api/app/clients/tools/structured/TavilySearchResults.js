@@ -117,6 +117,7 @@ class TavilySearchResults extends Tool {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Client-Name': 'librechat',
       },
       body: JSON.stringify(requestBody),
     };

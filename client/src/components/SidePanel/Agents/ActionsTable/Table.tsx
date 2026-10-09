@@ -14,15 +14,15 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
   });
 
   return (
-    <table className="w-full text-sm">
+    <table className="w-full table-auto text-sm">
       <thead>
-        {table.getHeaderGroups().map((headerGroup, i) => (
-          <tr
-            key={i}
-            className="border-token-border-light text-token-text-tertiary border-b text-left text-xs"
-          >
-            {headerGroup.headers.map((header, j) => (
-              <th key={j} className="py-1 font-normal text-text-secondary-alt">
+        {table.getHeaderGroups().map((headerGroup) => (
+          <tr key={headerGroup.id}>
+            {headerGroup.headers.map((header) => (
+              <th
+                key={header.id}
+                className="border-border-light bg-surface-primary text-text-secondary sticky top-0 z-10 border-b py-2 pr-3 text-left text-[11px] font-medium tracking-wide uppercase"
+              >
                 {header.isPlaceholder
                   ? null
                   : flexRender(header.column.columnDef.header, header.getContext())}
@@ -32,10 +32,13 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
         ))}
       </thead>
       <tbody>
-        {table.getRowModel().rows.map((row, i) => (
-          <tr key={i} className="border-token-border-light border-b">
-            {row.getVisibleCells().map((cell, j) => (
-              <td key={j} className="py-2">
+        {table.getRowModel().rows.map((row) => (
+          <tr
+            key={row.id}
+            className="border-border-light hover:bg-surface-secondary border-b transition-colors last:border-0"
+          >
+            {row.getVisibleCells().map((cell) => (
+              <td key={cell.id} className="py-2 pr-3 align-middle">
                 {flexRender(cell.column.columnDef.cell, cell.getContext())}
               </td>
             ))}

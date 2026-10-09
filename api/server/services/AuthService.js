@@ -11,6 +11,7 @@ const { ErrorTypes, SystemRoles, errorsToString } = require('librechat-data-prov
 const {
   math,
   isEnabled,
+  storeOpenIdSession,
   checkEmailConfig,
   setCloudFrontCookies,
   getCloudFrontConfig,
@@ -18,7 +19,13 @@ const {
   CLOUDFRONT_SCOPE_COOKIE,
   isEmailDomainAllowed,
   shouldUseSecureCookie,
+  setRefreshTokenCookie,
+  setOpenIDMarkerCookies,
+  clearCloudFrontCookies,
+  normalizeExpiresIn,
+  createOpenIDSessionIdentity,
   resolveAppConfigForUser,
+  commitPasswordReset,
 } = require('@librechat/api');
 const {
   findUser,
@@ -32,6 +39,7 @@ const {
   deleteTokens,
   deleteSession,
   createSession,
+  upsertSession,
   generateToken,
   deleteUserById,
   generateRefreshToken,
@@ -152,6 +160,21 @@ const getPasswordResetTokenDeleteQuery = (passwordResetToken) => {
   };
 };
 
+const isExpiredOpenIDIdToken = (idToken) => {
+  if (!idToken) {
+    return false;
+  }
+
+  const decoded = jwt.decode(idToken);
+  if (!decoded || typeof decoded !== 'object' || typeof decoded.exp !== 'number') {
+    return false;
+  }
+
+  return (
+    decoded.exp <= Math.floor(Date.now() / 1000) + OPENID_SESSION_ID_TOKEN_EXPIRY_BUFFER_SECONDS
+  );
+};
+
 const getUnexpiredOpenIDSessionIdToken = (idToken) => {
   if (!idToken) {
     return;
@@ -166,6 +189,27 @@ const getUnexpiredOpenIDSessionIdToken = (idToken) => {
   ) {
     return idToken;
   }
+};
+
+const getOpenIDAppAuthToken = (tokenset, sessionIdToken) =>
+  (isExpiredOpenIDIdToken(tokenset?.id_token) ? undefined : tokenset?.id_token) ||
+  getUnexpiredOpenIDSessionIdToken(sessionIdToken) ||
+  tokenset?.access_token;
+
+const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
+  if (req.session?.openidTokens) {
+    delete req.session.openidTokens;
+  }
+  for (const name of [
+    'refreshToken',
+    'openid_access_token',
+    'openid_id_token',
+    'openid_user_id',
+    'token_provider',
+  ]) {
+    res.clearCookie?.(name);
+  }
+  clearCloudFrontCookies(res, { userId, tenantId });
 };
 
 /**
@@ -218,16 +262,17 @@ const createTokenHash = () => {
  */
 const sendVerificationEmail = async (user) => {
   const [verifyToken, hash] = createTokenHash();
+  const email = user.email.toLowerCase();
 
   const verificationLink = `${
     domains.client
-  }/verify?token=${verifyToken}&email=${encodeURIComponent(user.email)}`;
+  }/verify?token=${verifyToken}&email=${encodeURIComponent(email)}`;
   await sendEmail({
-    email: user.email,
+    email,
     subject: 'Verify your email',
     payload: {
       appName: process.env.APP_TITLE || 'LibreChat',
-      name: user.name || user.username || user.email,
+      name: user.name || user.username || email,
       verificationLink: verificationLink,
       year: new Date().getFullYear(),
     },
@@ -236,14 +281,14 @@ const sendVerificationEmail = async (user) => {
 
   await createToken({
     userId: user._id,
-    email: user.email,
+    email,
     type: AuthTokenTypes.EMAIL_VERIFICATION,
     token: hash,
     createdAt: Date.now(),
     expiresIn: 900,
   });
 
-  logger.info(`[sendVerificationEmail] Verification link issued. [Email: ${user.email}]`);
+  logger.info(`[sendVerificationEmail] Verification link issued. [Email: ${email}]`);
 };
 
 /**
@@ -368,8 +413,9 @@ const registerUser = async (user, additionalData = {}) => {
       return { status: 200, message: genericVerificationMessage };
     }
 
-    //determine if this is the first registered user (not counting anonymous_user)
-    const isFirstRegisteredUser = (await countUsers()) === 0;
+    // Only the first user in the unscoped, single-tenant deployment bootstraps ADMIN.
+    // Tenant administrators must be provisioned through a trusted administrative flow.
+    const isFirstRegisteredUser = !tenantId && (await countUsers()) === 0;
 
     const salt = bcrypt.genSaltSync(10);
     const newUserData = {
@@ -398,7 +444,10 @@ const registerUser = async (user, additionalData = {}) => {
       await updateUser(newUserId, { emailVerified: true });
     }
 
-    return { status: 200, message: genericVerificationMessage };
+    /** `userCreated` separates this from the identical 200 returned when the email is
+     * already in use, so a caller can act on an account having actually been created
+     * without the response body revealing which of the two happened. */
+    return { status: 200, message: genericVerificationMessage, userCreated: true };
   } catch (err) {
     logger.error('[registerUser] Error in registering user:', err);
     if (newUserId) {
@@ -478,6 +527,7 @@ const requestPasswordReset = async (req) => {
 
   await createToken({
     userId: user._id,
+    email: user.email.toLowerCase(),
     type: AuthTokenTypes.PASSWORD_RESET,
     token: hash,
     createdAt: Date.now(),
@@ -522,20 +572,23 @@ const requestPasswordReset = async (req) => {
  * @returns
  */
 const resetPassword = async (userId, token, password) => {
-  const passwordResetToken = await findPasswordResetToken(userId);
+  const outcome = await commitPasswordReset(
+    {
+      findResetToken: findPasswordResetToken,
+      getUserById,
+      updateUser,
+      deleteTokens,
+      compareToken: (candidate, storedHash) => bcrypt.compareSync(candidate, storedHash),
+      hashPassword: (plain) => bcrypt.hashSync(plain, 10),
+    },
+    { userId, token, password },
+  );
 
-  if (!passwordResetToken) {
+  if (!outcome.ok) {
     return new Error('Invalid or expired password reset token');
   }
 
-  const isValid = bcrypt.compareSync(token, passwordResetToken.token);
-
-  if (!isValid) {
-    return new Error('Invalid or expired password reset token');
-  }
-
-  const hash = bcrypt.hashSync(password, 10);
-  const user = await updateUser(userId, { password: hash });
+  const { user, resetToken: passwordResetToken } = outcome;
 
   if (checkEmailConfig()) {
     await sendEmail({
@@ -697,7 +750,9 @@ const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, te
     if (
       'userId' in optionsOrUserId ||
       'existingRefreshToken' in optionsOrUserId ||
-      'tenantId' in optionsOrUserId
+      'tenantId' in optionsOrUserId ||
+      'openidSubject' in optionsOrUserId ||
+      'openidIssuer' in optionsOrUserId
     ) {
       return optionsOrUserId;
     }
@@ -705,6 +760,44 @@ const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, te
   }
 
   return { userId: optionsOrUserId, existingRefreshToken, tenantId };
+};
+
+const getOpenIDTokenClaims = (tokenset) => {
+  if (typeof tokenset?.claims === 'function') {
+    try {
+      const claims = tokenset.claims();
+      return claims && typeof claims === 'object' ? claims : {};
+    } catch (error) {
+      logger.debug('[setOpenIDAuthTokens] Unable to read tokenset claims', error?.message);
+    }
+  }
+
+  if (typeof tokenset?.id_token !== 'string') {
+    return {};
+  }
+
+  const decoded = jwt.decode(tokenset.id_token);
+  return decoded && typeof decoded === 'object' ? decoded : {};
+};
+
+const getStringClaim = (claims, claim) => {
+  const value = claims?.[claim];
+  return typeof value === 'string' && value ? value : undefined;
+};
+
+const applyOpenIDSessionIdentity = (sessionOpenidTokens, identity) => {
+  if (identity.appUserId) {
+    sessionOpenidTokens.appUserId = identity.appUserId;
+  }
+  if (identity.openidSubject) {
+    sessionOpenidTokens.openidSubject = identity.openidSubject;
+  }
+  if (identity.tenantId) {
+    sessionOpenidTokens.tenantId = identity.tenantId;
+  }
+  if (identity.openidIssuer) {
+    sessionOpenidTokens.openidIssuer = identity.openidIssuer;
+  }
 };
 
 /**
@@ -721,6 +814,8 @@ const resolveOpenIDAuthTokenOptions = (optionsOrUserId, existingRefreshToken, te
  * @param {string} [options.userId] - Optional MongoDB user ID for image path validation
  * @param {string} [options.existingRefreshToken] - Optional existing refresh token to preserve
  * @param {string} [options.tenantId] - Optional tenant identifier for CloudFront cookie scoping
+ * @param {string} [options.openidSubject] - Optional OpenID subject bound to the session tokens
+ * @param {string} [options.openidIssuer] - Optional OpenID issuer bound to the session tokens
  * @returns {String} - id_token (preferred) or access_token as the app auth token
  */
 const setOpenIDAuthTokens = (
@@ -732,11 +827,8 @@ const setOpenIDAuthTokens = (
   tenantIdArg,
 ) => {
   try {
-    const { userId, existingRefreshToken, tenantId } = resolveOpenIDAuthTokenOptions(
-      optionsOrUserId,
-      existingRefreshTokenArg,
-      tenantIdArg,
-    );
+    const { userId, existingRefreshToken, tenantId, openidSubject, openidIssuer } =
+      resolveOpenIDAuthTokenOptions(optionsOrUserId, existingRefreshTokenArg, tenantIdArg);
 
     if (!tokenset) {
       logger.error('[setOpenIDAuthTokens] No tokenset found in request');
@@ -767,11 +859,22 @@ const setOpenIDAuthTokens = (
      * Falls back to access_token for providers where id_token is not available.
      */
     const sessionIdToken = req.session?.openidTokens?.idToken;
-    const appAuthToken =
-      tokenset.id_token ||
-      getUnexpiredOpenIDSessionIdToken(sessionIdToken) ||
-      tokenset.access_token;
+    /**
+     * An inline refresh carries the previous id_token forward when the IdP omits one on
+     * rotation, so `tokenset.id_token` is not necessarily freshly issued. Skip it only when it
+     * is provably expired; an id_token whose expiry cannot be read stays preferred, since
+     * access_token may be opaque or scoped to another audience and fail JWKS validation.
+     */
+    const appAuthToken = getOpenIDAppAuthToken(tokenset, sessionIdToken);
     const logoutIdToken = tokenset.id_token || sessionIdToken;
+    const claims = getOpenIDTokenClaims(tokenset);
+    const sessionIdentity = createOpenIDSessionIdentity({
+      user: req?.user,
+      userId,
+      openidSubject: openidSubject ?? getStringClaim(claims, 'sub'),
+      tenantId,
+      openidIssuer: openidIssuer ?? getStringClaim(claims, 'iss'),
+    });
 
     /**
      * Always set refresh token cookie so it survives express session expiry.
@@ -782,22 +885,34 @@ const setOpenIDAuthTokens = (
      * The refresh token is small (opaque string) so it doesn't hit the HTTP/2 header
      * size limits that motivated session storage for the larger access_token/id_token.
      */
-    res.cookie('refreshToken', refreshToken, {
-      expires: expirationDate,
-      httpOnly: true,
-      secure: shouldUseSecureCookie(),
-      sameSite: 'strict',
-    });
+    setRefreshTokenCookie(res, refreshToken, expirationDate);
 
     /** Store tokens server-side in session to avoid large cookies */
     if (req.session) {
-      req.session.openidTokens = {
+      const sessionOpenidTokens = {
         accessToken: tokenset.access_token,
         idToken: logoutIdToken,
         refreshToken: refreshToken,
+        browserRefreshToken: refreshToken,
         expiresAt: expirationDate.getTime(),
         lastRefreshedAt: Date.now(),
       };
+      applyOpenIDSessionIdentity(sessionOpenidTokens, sessionIdentity);
+      /**
+       * Capture the access-token's own expiry (unix seconds) when the IdP
+       * advertises one. Lets downstream consumers — notably the OBO inline-
+       * refresh path in `OpenIDSessionRefresh.js` — reuse opaque (non-JWT)
+       * access tokens without burning an IdP refresh on the first tool call.
+       * Without this, the very first OBO call after login or SPA refresh would
+       * always trigger a redundant inline refresh whenever the IdP issues
+       * opaque access tokens (e.g. Microsoft Graph audiences).
+       */
+      const accessTokenExpiresIn = normalizeExpiresIn(tokenset.expires_in);
+      if (accessTokenExpiresIn != null) {
+        sessionOpenidTokens.accessTokenExpiresAt =
+          Math.floor(Date.now() / 1000) + accessTokenExpiresIn;
+      }
+      req.session.openidTokens = sessionOpenidTokens;
     } else {
       logger.warn('[setOpenIDAuthTokens] No session available, falling back to cookies');
       res.cookie('openid_access_token', tokenset.access_token, {
@@ -816,25 +931,12 @@ const setOpenIDAuthTokens = (
       }
     }
 
-    /** Small cookie to indicate token provider (required for auth middleware) */
-    res.cookie('token_provider', 'openid', {
+    setOpenIDMarkerCookies(res, {
+      userId,
       expires: expirationDate,
-      httpOnly: true,
-      secure: shouldUseSecureCookie(),
-      sameSite: 'strict',
+      refreshExpiryMs: expiryInMilliseconds,
+      refreshToken,
     });
-    if (userId && isEnabled(process.env.OPENID_REUSE_TOKENS)) {
-      /** JWT-signed user ID cookie for image path validation when OPENID_REUSE_TOKENS is enabled */
-      const signedUserId = jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET, {
-        expiresIn: expiryInMilliseconds / 1000,
-      });
-      res.cookie('openid_user_id', signedUserId, {
-        expires: expirationDate,
-        httpOnly: true,
-        secure: shouldUseSecureCookie(),
-        sameSite: 'strict',
-      });
-    }
 
     setCloudFrontAuthCookies(req, res, req.user, { userId, tenantId });
 
@@ -843,6 +945,14 @@ const setOpenIDAuthTokens = (
     logger.error('[setOpenIDAuthTokens] Error in setting authentication tokens:', error);
     throw error;
   }
+};
+
+/** Stores OpenID refresh-token state independently of the shorter Express session. */
+const storeOpenIDSession = async (userId, refreshToken, tenantId, previousRefreshToken) => {
+  return storeOpenIdSession(
+    { userId, refreshToken, tenantId, previousRefreshToken },
+    { upsertSession, deleteSession },
+  );
 };
 
 /**
@@ -900,8 +1010,8 @@ const resendVerificationEmail = async (req) => {
   } catch (error) {
     logger.error(`[resendVerificationEmail] Error resending verification email: ${error.message}`);
     return {
-      status: 500,
-      message: 'Something went wrong.',
+      status: 200,
+      message: genericVerificationMessage,
     };
   }
 };
@@ -912,7 +1022,10 @@ module.exports = {
   registerUser,
   setAuthTokens,
   resetPassword,
+  clearOpenIDAuthTokens,
+  getOpenIDAppAuthToken,
   setOpenIDAuthTokens,
+  storeOpenIDSession,
   setCloudFrontAuthCookies,
   requestPasswordReset,
   resendVerificationEmail,

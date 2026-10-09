@@ -1,197 +1,45 @@
-import { X, Link2, PlusCircle } from 'lucide-react';
-import { EModelEndpoint } from 'librechat-data-provider';
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import {
-  ControlCombobox,
-  HoverCard,
-  HoverCardPortal,
-  HoverCardContent,
-  HoverCardTrigger,
-  CircleHelpIcon,
-} from '@librechat/client';
+import { ListOrdered } from 'lucide-react';
+import { Button } from '@librechat/client';
 import type { ControllerRenderProps } from 'react-hook-form';
-import type { TMessage } from 'librechat-data-provider';
-import type { AgentForm, OptionWithIcon } from '~/common';
-import MessageIcon from '~/components/Share/MessageIcon';
-import { useAgentsMapContext } from '~/Providers';
+import type { AgentForm } from '~/common';
+import OrchestrationPattern from './OrchestrationPattern';
+import { useSelectableAgents } from './AgentList';
 import { useLocalize } from '~/hooks';
-import { ESide } from '~/common';
+import { CountPill } from './ui';
 
 interface AgentChainProps {
   field: ControllerRenderProps<AgentForm, 'agent_ids'>;
   currentAgentId: string;
 }
 
-/** TODO: make configurable */
-const MAX_AGENTS = 10;
-
-const AgentChain: React.FC<AgentChainProps> = ({ field, currentAgentId }) => {
+export default function AgentChain({ field, currentAgentId }: AgentChainProps) {
   const localize = useLocalize();
-  const [newAgentId, setNewAgentId] = useState('');
-  const agentsMap = useAgentsMapContext() || {};
-  const agentIds = field.value || [];
+  const agentIds = field.value ?? [];
+  const { getAgent } = useSelectableAgents({ currentAgentId });
 
-  const agents = useMemo(() => Object.values(agentsMap), [agentsMap]);
-
-  const selectableAgents = useMemo(
-    () =>
-      agents
-        .filter((agent) => agent?.id !== currentAgentId)
-        .map(
-          (agent) =>
-            ({
-              label: agent?.name || '',
-              value: agent?.id,
-              icon: (
-                <MessageIcon
-                  message={
-                    {
-                      endpoint: EModelEndpoint.agents,
-                      isCreatedByUser: false,
-                    } as TMessage
-                  }
-                  agent={agent}
-                />
-              ),
-            }) as OptionWithIcon,
-        ),
-    [agents, currentAgentId],
-  );
-
-  const getAgentDetails = useCallback((id: string) => agentsMap[id], [agentsMap]);
-
-  useEffect(() => {
-    if (newAgentId && agentIds.length < MAX_AGENTS) {
-      field.onChange([...agentIds, newAgentId]);
-      setNewAgentId('');
-    }
-  }, [newAgentId, agentIds, field]);
-
-  const removeAgentAt = (index: number) => {
-    field.onChange(agentIds.filter((_, i) => i !== index));
-  };
-
-  const updateAgentAt = (index: number, id: string) => {
-    const updated = [...agentIds];
-    updated[index] = id;
-    field.onChange(updated);
-  };
+  if (agentIds.length === 0) {
+    return null;
+  }
 
   return (
-    <HoverCard openDelay={50}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <label className="font-semibold text-text-primary">
-            {localize('com_ui_agent_chain')}
-          </label>
-          <HoverCardTrigger>
-            <CircleHelpIcon className="h-4 w-4 text-text-tertiary" />
-          </HoverCardTrigger>
-        </div>
-        <div className="text-xs text-text-secondary">
-          {agentIds.length} / {MAX_AGENTS}
-        </div>
-      </div>
-      <div className="space-y-1">
-        {/* Current fixed agent */}
-        <div className="flex h-9 items-center justify-between rounded-md border border-border-medium bg-surface-primary-contrast px-3 py-2">
-          <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
-              <MessageIcon
-                message={
-                  {
-                    endpoint: EModelEndpoint.agents,
-                    isCreatedByUser: false,
-                  } as TMessage
-                }
-                agent={currentAgentId ? agentsMap[currentAgentId] : undefined}
-              />
-            </div>
-            <div className="font-medium text-text-primary">
-              {getAgentDetails(currentAgentId)?.name}
-            </div>
-          </div>
-        </div>
-        {<Link2 className="mx-auto text-text-secondary" size={14} />}
-        {agentIds.map((agentId, idx) => (
-          <React.Fragment key={agentId}>
-            <div className="flex h-9 items-center gap-2 rounded-md border border-border-medium bg-surface-tertiary pr-2">
-              <ControlCombobox
-                isCollapsed={false}
-                ariaLabel={localize('com_ui_agent_var', { 0: localize('com_ui_select') })}
-                selectedValue={agentId}
-                setValue={(id) => updateAgentAt(idx, id)}
-                selectPlaceholder={localize('com_ui_agent_var', { 0: localize('com_ui_select') })}
-                searchPlaceholder={localize('com_ui_agent_var', { 0: localize('com_ui_search') })}
-                items={selectableAgents}
-                displayValue={getAgentDetails(agentId)?.name ?? ''}
-                SelectIcon={
-                  <MessageIcon
-                    message={
-                      {
-                        endpoint: EModelEndpoint.agents,
-                        isCreatedByUser: false,
-                      } as TMessage
-                    }
-                    agent={agentId ? agentsMap[agentId] : undefined}
-                  />
-                }
-                className="flex-1 border-border-heavy"
-                containerClassName="px-0"
-              />
-              {/* Future Settings button? */}
-              {/* <button className="hover:bg-surface-hover p-1 rounded transition">
-                <Settings size={16} className="text-text-secondary" />
-              </button> */}
-              <button
-                className="rounded-xl p-1 transition hover:bg-surface-hover"
-                onClick={() => removeAgentAt(idx)}
-                aria-label={localize('com_ui_remove_agent_from_chain', {
-                  0: getAgentDetails(agentId)?.name || localize('com_ui_agent'),
-                })}
-              >
-                <X size={18} className="text-text-secondary" aria-hidden="true" />
-              </button>
-            </div>
-            {idx < agentIds.length - 1 && (
-              <Link2 className="mx-auto text-text-secondary" size={14} />
-            )}
-          </React.Fragment>
+    <OrchestrationPattern
+      icon={<ListOrdered className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
+      title={localize('com_ui_agent_chain')}
+      subtitle={localize('com_ui_agent_chain_deprecated')}
+      info={<p className="text-text-secondary text-sm">{localize('com_ui_agent_chain_info')}</p>}
+      trailing={<CountPill>{agentIds.length}</CountPill>}
+    >
+      <ol className="flex flex-col gap-1" aria-label={localize('com_ui_agent_chain')}>
+        {agentIds.map((agentId, index) => (
+          <li key={`${agentId}-${index}`} className="text-text-secondary text-sm">
+            {index + 1}. {getAgent(agentId)?.name ?? agentId}
+          </li>
         ))}
-
-        {agentIds.length < MAX_AGENTS && (
-          <>
-            {agentIds.length > 0 && <Link2 className="mx-auto text-text-secondary" size={14} />}
-            <ControlCombobox
-              isCollapsed={false}
-              ariaLabel={localize('com_ui_agent_var', { 0: localize('com_ui_add') })}
-              selectedValue=""
-              setValue={setNewAgentId}
-              selectPlaceholder={localize('com_ui_agent_var', { 0: localize('com_ui_add') })}
-              searchPlaceholder={localize('com_ui_agent_var', { 0: localize('com_ui_search') })}
-              items={selectableAgents}
-              className="h-9 w-full border-dashed border-border-heavy text-center text-text-secondary hover:text-text-primary"
-              containerClassName="px-0"
-              SelectIcon={<PlusCircle size={16} className="text-text-secondary" />}
-            />
-          </>
-        )}
-
-        {agentIds.length >= MAX_AGENTS && (
-          <p className="pt-1 text-center text-xs italic text-text-tertiary">
-            {localize('com_ui_agent_chain_max', { 0: MAX_AGENTS })}
-          </p>
-        )}
-      </div>
-      <HoverCardPortal>
-        <HoverCardContent side={ESide.Top} className="w-80">
-          <div className="space-y-2">
-            <p className="text-sm text-text-secondary">{localize('com_ui_agent_chain_info')}</p>
-          </div>
-        </HoverCardContent>
-      </HoverCardPortal>
-    </HoverCard>
+      </ol>
+      <p className="text-text-secondary text-sm">{localize('com_ui_agent_chain_migrate')}</p>
+      <Button type="button" variant="outline" onClick={() => field.onChange([])}>
+        {localize('com_ui_agent_chain_remove')}
+      </Button>
+    </OrchestrationPattern>
   );
-};
-
-export default AgentChain;
+}

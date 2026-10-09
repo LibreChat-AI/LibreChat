@@ -87,7 +87,7 @@ export default function MCPConfigDialog({
                   render={({ field }) => {
                     const placeholder = localize('com_ui_mcp_enter_var', { 0: details.title });
                     const className =
-                      'w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white sm:text-sm';
+                      'w-full rounded-md border-border-medium focus:border-border-heavy focus:ring-ring-primary sm:text-sm';
                     if (details.sensitive === false) {
                       return (
                         <Input
@@ -115,27 +115,25 @@ export default function MCPConfigDialog({
                 />
                 {details.description && (
                   <p
-                    className="text-xs text-text-secondary [&_a]:text-blue-500 [&_a]:hover:text-blue-600 dark:[&_a]:text-blue-400 dark:[&_a]:hover:text-blue-300"
+                    className="text-text-secondary [&_a]:text-link [&_a]:hover:text-link-hover text-xs [&_a]:underline"
                     dangerouslySetInnerHTML={{ __html: sanitize(details.description) }}
                   />
                 )}
-                {errors[key] && <p className="text-xs text-red-500">{errors[key]?.message}</p>}
+                {errors[key] && (
+                  <p className="text-text-destructive text-xs">{errors[key]?.message}</p>
+                )}
               </div>
             ))}
           </form>
         }
         selection={{
           selectHandler: handleSubmit(onFormSubmit),
-          selectClasses: 'bg-green-500 hover:bg-green-600 text-white',
+          selectClasses: 'bg-surface-submit text-text-on-status hover:bg-surface-submit-hover',
           selectText: isSubmitting ? localize('com_ui_saving') : localize('com_ui_save'),
         }}
         buttons={
           onRevoke && (
-            <Button
-              onClick={handleRevoke}
-              className="bg-red-600 text-white hover:bg-red-700 dark:hover:bg-red-800"
-              disabled={isSubmitting}
-            >
+            <Button variant="destructive" onClick={handleRevoke} disabled={isSubmitting}>
               {localize('com_ui_revoke')}
             </Button>
           )

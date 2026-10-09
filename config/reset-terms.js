@@ -21,7 +21,10 @@ const connect = require('./connect');
   }
 
   try {
-    const result = await User.updateMany({}, { $set: { termsAccepted: false } });
+    const result = await User.updateMany(
+      {},
+      { $set: { termsAccepted: false, termsAcceptedAt: null } },
+    );
     console.green(`Updated ${result.modifiedCount} user(s).`);
   } catch (error) {
     console.red('Error resetting terms acceptance:', error);

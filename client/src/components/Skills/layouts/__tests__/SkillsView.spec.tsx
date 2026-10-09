@@ -5,24 +5,22 @@ import SkillsView from '../SkillsView';
 
 const mockUseHasAccess = jest.fn((..._args: unknown[]) => true);
 const mockUseMediaQuery = jest.fn((_query: string) => false);
+const mockGetSkillByIdQuery = jest.fn(() => ({
+  isLoading: false,
+  isError: false,
+  data: null as { _id: string; name: string } | null,
+}));
 
-jest.mock(
-  'librechat-data-provider',
-  () => ({
-    PermissionTypes: { SKILLS: 'skills' },
-    Permissions: { USE: 'use', CREATE: 'create' },
-  }),
-  { virtual: true },
-);
+jest.mock('librechat-data-provider', () => ({
+  PermissionTypes: { SKILLS: 'skills' },
+  Permissions: { USE: 'use', CREATE: 'create' },
+}));
 
-jest.mock(
-  '@librechat/client',
-  () => ({
-    Spinner: () => <div data-testid="spinner" />,
-    useMediaQuery: (query: string) => mockUseMediaQuery(query),
-  }),
-  { virtual: true },
-);
+jest.mock('@librechat/client', () => ({
+  Spinner: () => <div data-testid="spinner" />,
+  useMediaQuery: (query: string) => mockUseMediaQuery(query),
+  useRemScale: () => 1,
+}));
 
 jest.mock('~/components/Chat/Menus/OpenSidebar', () => ({
   __esModule: true,
@@ -39,11 +37,7 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetSkillByIdQuery: jest.fn(() => ({
-    isLoading: false,
-    isError: false,
-    data: null,
-  })),
+  useGetSkillByIdQuery: () => mockGetSkillByIdQuery(),
 }));
 
 jest.mock('~/components/Skills/forms', () => ({
@@ -51,9 +45,13 @@ jest.mock('~/components/Skills/forms', () => ({
   SkillForm: () => <div data-testid="skill-form" />,
 }));
 
-jest.mock('~/components/Skills/display/SkillFileViewer', () => () => (
-  <div data-testid="skill-file-viewer" />
-));
+jest.mock(
+  '~/components/Skills/display/SkillFileViewer',
+  () =>
+    ({ skill, relativePath }: { skill?: { name: string }; relativePath: string }) => (
+      <div data-testid="skill-file-viewer">{`${skill?.name}:${relativePath}`}</div>
+    ),
+);
 jest.mock('~/components/Skills/display/SkillDetail', () => () => (
   <div data-testid="skill-detail" />
 ));
@@ -67,6 +65,8 @@ describe('SkillsView', () => {
     mockUseHasAccess.mockReturnValue(true);
     mockUseMediaQuery.mockReset();
     mockUseMediaQuery.mockReturnValue(false);
+    mockGetSkillByIdQuery.mockReset();
+    mockGetSkillByIdQuery.mockReturnValue({ isLoading: false, isError: false, data: null });
   });
 
   it('renders the create skill form for /skills/new', () => {
@@ -77,6 +77,23 @@ describe('SkillsView', () => {
     render(<RouterProvider router={router} />);
 
     expect(screen.getByTestId('create-skill-form')).toBeInTheDocument();
+  });
+
+  it('passes the loaded skill and selected nested file to the live viewer', () => {
+    mockGetSkillByIdQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { _id: 'skill-id', name: 'stored skill' },
+    });
+    const router = createMemoryRouter([{ path: '/skills/:skillId', element: <SkillsView /> }], {
+      initialEntries: ['/skills/skill-id?file=references%2Fqueries.md'],
+    });
+
+    render(<RouterProvider router={router} />);
+
+    expect(screen.getByTestId('skill-file-viewer')).toHaveTextContent(
+      'stored skill:references/queries.md',
+    );
   });
 
   it('renders the sidebar toggle on small screens', () => {

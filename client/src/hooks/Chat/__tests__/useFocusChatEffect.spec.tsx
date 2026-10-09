@@ -7,332 +7,122 @@ jest.mock('react-router-dom', () => ({
   useNavigate: jest.fn(),
 }));
 
-// Import the component under test and its dependencies
 import { renderHook } from '@testing-library/react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { requestChatFocus, consumeChatFocus, logger } from '~/utils';
 import useFocusChatEffect from '../useFocusChatEffect';
-import { logger } from '~/utils';
+
+const mockDesktopMedia = () => {
+  window.matchMedia = jest.fn().mockImplementation((query) => ({
+    matches: query === '(hover: hover)',
+    media: '',
+    onchange: null,
+    addListener: jest.fn(),
+    removeListener: jest.fn(),
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn(),
+    dispatchEvent: jest.fn(),
+  }));
+};
+
+const mockTouchMedia = () => {
+  window.matchMedia = jest.fn().mockImplementation((query) => ({
+    matches: query === '(pointer: coarse)',
+    media: '',
+    onchange: null,
+    addListener: jest.fn(),
+    removeListener: jest.fn(),
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn(),
+    dispatchEvent: jest.fn(),
+  }));
+};
 
 describe('useFocusChatEffect', () => {
-  // Reset mocks before each test
   beforeEach(() => {
     mockLog = jest.spyOn(logger, 'log').mockImplementation(() => {});
     jest.clearAllMocks();
+    consumeChatFocus();
     (useNavigate as jest.Mock).mockReturnValue(mockNavigate);
-
-    // Mock window.matchMedia
-    window.matchMedia = jest.fn().mockImplementation((query) => ({
-      matches: query === '(hover: hover)', // Desktop has hover capability
-      media: '',
-      onchange: null,
-      addListener: jest.fn(),
-      removeListener: jest.fn(),
-      addEventListener: jest.fn(),
-      removeEventListener: jest.fn(),
-      dispatchEvent: jest.fn(),
-    }));
-
-    // Set default location mock
+    mockDesktopMedia();
     (useLocation as jest.Mock).mockReturnValue({
+      key: 'entry-1',
       pathname: '/c/new',
       search: '',
-      state: { focusChat: true },
-    });
-
-    // Set default window.location
-    window.history.replaceState({}, '', '/c/new');
-  });
-
-  afterEach(() => {
-    window.history.replaceState({}, '', '/');
-  });
-
-  describe('Basic functionality', () => {
-    test('should focus textarea when location.state.focusChat is true', () => {
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockTextAreaRef.current.focus).toHaveBeenCalled();
-      expect(mockNavigate).toHaveBeenCalledWith('/c/new', {
-        replace: true,
-        state: {},
-      });
-      expect(mockLog).toHaveBeenCalled();
-    });
-
-    test('should not focus textarea when location.state.focusChat is false', () => {
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: '',
-        state: { focusChat: false },
-      });
-
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockTextAreaRef.current.focus).not.toHaveBeenCalled();
-      expect(mockNavigate).not.toHaveBeenCalled();
-    });
-
-    test('should not focus textarea when textAreaRef.current is null', () => {
-      const nullTextAreaRef = { current: null };
-
-      renderHook(() => useFocusChatEffect(nullTextAreaRef as any));
-
-      expect(mockNavigate).not.toHaveBeenCalled();
-    });
-
-    test('should not focus textarea on touchscreen devices', () => {
-      window.matchMedia = jest.fn().mockImplementation((query) => ({
-        matches: query === '(pointer: coarse)', // Touchscreen has coarse pointer
-        media: '',
-        onchange: null,
-        addListener: jest.fn(),
-        removeListener: jest.fn(),
-        addEventListener: jest.fn(),
-        removeEventListener: jest.fn(),
-        dispatchEvent: jest.fn(),
-      }));
-
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockTextAreaRef.current.focus).not.toHaveBeenCalled();
-      expect(mockNavigate).toHaveBeenCalled();
+      state: null,
     });
   });
 
-  describe('URL parameter handling', () => {
-    // Helper function to run tests with different URL scenarios
-    const testUrlScenario = ({
-      windowLocationSearch,
-      reactRouterSearch,
-      expectedUrl,
-      testDescription,
-    }: {
-      windowLocationSearch: string;
-      reactRouterSearch: string;
-      expectedUrl: string;
-      testDescription: string;
-    }) => {
-      test(`${testDescription}`, () => {
-        window.history.replaceState({}, '', `/c/new${windowLocationSearch}`);
+  test('focuses the textarea when a chat focus was requested before navigation', () => {
+    requestChatFocus();
 
-        // Mock React Router's location
-        (useLocation as jest.Mock).mockReturnValue({
-          pathname: '/c/new',
-          search: reactRouterSearch,
-          state: { focusChat: true },
-        });
+    renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
 
-        renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
+    expect(mockTextAreaRef.current.focus).toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockLog).toHaveBeenCalled();
+  });
 
-        expect(mockNavigate).toHaveBeenCalledWith(
-          expectedUrl,
-          expect.objectContaining({
-            replace: true,
-            state: {},
-          }),
-        );
-      });
-    };
+  test('does not focus when no chat focus was requested', () => {
+    renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
 
-    test('should use window.location.search instead of location.search', () => {
-      window.history.replaceState({}, '', '/c/new?agent_id=test_agent_id');
+    expect(mockTextAreaRef.current.focus).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
 
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: '?endpoint=openAI&model=gpt-4o-mini',
-        state: { focusChat: true },
-      });
+  test('leaves the request pending when textAreaRef.current is null', () => {
+    requestChatFocus();
+    const nullTextAreaRef = { current: null };
 
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
+    renderHook(() => useFocusChatEffect(nullTextAreaRef as any));
 
-      expect(mockNavigate).toHaveBeenCalledWith(
-        // Should use window.location.search, not location.search
-        '/c/new?agent_id=test_agent_id',
-        expect.objectContaining({
-          replace: true,
-          state: {},
-        }),
-      );
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(consumeChatFocus()).toBe(true);
+  });
+
+  test('consumes the request without focusing on touchscreen devices', () => {
+    mockTouchMedia();
+    requestChatFocus();
+
+    renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
+
+    expect(mockTextAreaRef.current.focus).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(consumeChatFocus()).toBe(false);
+  });
+
+  test('consumes the request exactly once across navigations', () => {
+    requestChatFocus();
+
+    const { rerender } = renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
+    expect(mockTextAreaRef.current.focus).toHaveBeenCalledTimes(1);
+
+    (useLocation as jest.Mock).mockReturnValue({
+      key: 'entry-2',
+      pathname: '/c/abc',
+      search: '',
+      state: null,
     });
+    rerender();
 
-    testUrlScenario({
-      windowLocationSearch: '?agent_id=agent123',
-      reactRouterSearch: '?endpoint=openAI&model=gpt-4',
-      expectedUrl: '/c/new?agent_id=agent123',
-      testDescription: 'should prioritize window.location.search with agent_id parameter',
+    expect(mockTextAreaRef.current.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test('focuses again when a new request precedes the next navigation', () => {
+    requestChatFocus();
+
+    const { rerender } = renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
+    expect(mockTextAreaRef.current.focus).toHaveBeenCalledTimes(1);
+
+    requestChatFocus();
+    (useLocation as jest.Mock).mockReturnValue({
+      key: 'entry-2',
+      pathname: '/c/abc',
+      search: '',
+      state: null,
     });
+    rerender();
 
-    testUrlScenario({
-      windowLocationSearch: '',
-      reactRouterSearch: '?endpoint=openAI&model=gpt-4',
-      expectedUrl: '/c/new',
-      testDescription: 'should use empty path when window.location.search is empty',
-    });
-
-    testUrlScenario({
-      windowLocationSearch: '?agent_id=agent123&prompt=test',
-      reactRouterSearch: '',
-      expectedUrl: '/c/new?agent_id=agent123&prompt=test',
-      testDescription: 'should use window.location.search when React Router search is empty',
-    });
-
-    testUrlScenario({
-      windowLocationSearch: '?agent_id=agent123',
-      reactRouterSearch: '?agent_id=differentAgent',
-      expectedUrl: '/c/new?agent_id=agent123',
-      testDescription:
-        'should use window.location.search even when both have agent_id but with different values',
-    });
-
-    testUrlScenario({
-      windowLocationSearch: '?agent_id=agent/with%20spaces&prompt=test%20query',
-      reactRouterSearch: '?endpoint=openAI',
-      expectedUrl: '/c/new?agent_id=agent/with%20spaces&prompt=test%20query',
-      testDescription: 'should handle URL parameters with special characters correctly',
-    });
-
-    testUrlScenario({
-      windowLocationSearch:
-        '?agent_id=agent123&prompt=test&model=gpt-4&temperature=0.7&max_tokens=1000',
-      reactRouterSearch: '?endpoint=openAI',
-      expectedUrl:
-        '/c/new?agent_id=agent123&prompt=test&model=gpt-4&temperature=0.7&max_tokens=1000',
-      testDescription: 'should handle multiple URL parameters correctly',
-    });
-
-    testUrlScenario({
-      windowLocationSearch: '?agent_id=agent123&broken=param=with=equals',
-      reactRouterSearch: '?endpoint=openAI',
-      expectedUrl: '/c/new?agent_id=agent123&broken=param=with=equals',
-      testDescription: 'should pass through malformed URL parameters unchanged',
-    });
-
-    test('should handle navigation immediately after URL parameter changes', () => {
-      window.history.replaceState({}, '', '/c/new?endpoint=openAI&model=gpt-4');
-
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: '?endpoint=openAI&model=gpt-4',
-        state: { focusChat: true },
-      });
-
-      const { rerender } = renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/c/new?endpoint=openAI&model=gpt-4',
-        expect.objectContaining({
-          replace: true,
-          state: {},
-        }),
-      );
-
-      jest.clearAllMocks();
-
-      window.history.replaceState({}, '', '/c/new?agent_id=agent123');
-
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new_changed',
-        search: '?endpoint=openAI&model=gpt-4',
-        state: { focusChat: true },
-      });
-
-      rerender();
-
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/c/new_changed?agent_id=agent123',
-        expect.objectContaining({
-          replace: true,
-          state: {},
-        }),
-      );
-    });
-
-    test('should handle undefined or null search params gracefully', () => {
-      window.history.replaceState({}, '', '/c/new');
-
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: undefined,
-        state: { focusChat: true },
-      });
-
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/c/new',
-        expect.objectContaining({
-          replace: true,
-          state: {},
-        }),
-      );
-
-      jest.clearAllMocks();
-
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: null,
-        state: { focusChat: true },
-      });
-
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/c/new',
-        expect.objectContaining({
-          replace: true,
-          state: {},
-        }),
-      );
-    });
-
-    test('should handle navigation when location.state is null', () => {
-      window.history.replaceState({}, '', '/c/new?agent_id=agent123');
-
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: '?endpoint=openAI&model=gpt-4',
-        state: null,
-      });
-
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockNavigate).not.toHaveBeenCalled();
-      expect(mockTextAreaRef.current.focus).not.toHaveBeenCalled();
-    });
-
-    test('should handle navigation when location.state.focusChat is undefined', () => {
-      window.history.replaceState({}, '', '/c/new?agent_id=agent123');
-
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: '?endpoint=openAI&model=gpt-4',
-        state: { someOtherProp: true },
-      });
-
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockNavigate).not.toHaveBeenCalled();
-      expect(mockTextAreaRef.current.focus).not.toHaveBeenCalled();
-    });
-
-    test('should handle navigation when both search params are empty', () => {
-      window.history.replaceState({}, '', '/c/new');
-
-      (useLocation as jest.Mock).mockReturnValue({
-        pathname: '/c/new',
-        search: '',
-        state: { focusChat: true },
-      });
-
-      renderHook(() => useFocusChatEffect(mockTextAreaRef as any));
-
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/c/new',
-        expect.objectContaining({
-          replace: true,
-          state: {},
-        }),
-      );
-    });
+    expect(mockTextAreaRef.current.focus).toHaveBeenCalledTimes(2);
   });
 });

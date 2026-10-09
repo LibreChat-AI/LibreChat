@@ -1,9 +1,13 @@
+import { Alert } from '@librechat/client';
+
 export const ErrorMessage = ({ children }: { children: React.ReactNode }) => (
-  <div
-    role="alert"
+  <Alert
+    variant="error"
+    icon={false}
     aria-live="assertive"
-    className="relative mt-6 rounded-xl border border-red-500/20 bg-red-50/50 px-6 py-4 text-red-700 shadow-sm transition-all dark:bg-red-950/30 dark:text-red-100"
+    elevation="raised"
+    className="mt-6 px-6 py-4 transition-all"
   >
     {children}
-  </div>
+  </Alert>
 );

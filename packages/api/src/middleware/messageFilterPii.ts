@@ -1,73 +1,124 @@
-import { logger } from '@librechat/data-schemas';
+import { RE2JS } from 're2js';
+import {
+  MAX_PII_CUSTOM_REGEX_CHARACTERS,
+  MAX_PII_CUSTOM_REGEX_INSTRUCTIONS,
+  MAX_PII_PATTERN_ID_LENGTH,
+  MAX_PII_PATTERN_LABEL_LENGTH,
+  MAX_PII_PATTERNS_PER_SOURCE,
+  MAX_PII_PATTERN_LENGTH,
+  setMessageFilterRegexValidator,
+} from 'librechat-data-provider';
 import type {
   NextFunction,
   RequestHandler,
   Request as ServerRequest,
   Response as ServerResponse,
 } from 'express';
-import type { MessageFilterPiiConfig } from 'librechat-data-provider';
-import { getReferencedQuotes, mergeQuotedText } from '../utils/quotes';
+import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
+import type { LocatorTraversalReporter } from '../protection/diagnostics';
+import type { TextContentFragment } from '../protection/types';
+import {
+  contentFilterUninspectableResponse,
+  getBlockedOpaqueFileField,
+  hasActiveFilePolicy,
+  resolveCanonicalFileReferences,
+  UninspectableFileError,
+  type CanonicalFileInspectionFile,
+  type GetCanonicalFilesForInspection,
+} from '../protection/files';
+import {
+  ContentTraversalLimitError,
+  getContentTraversalFragments,
+  isContentTraversalProtected,
+  isContentTraversalLimitError,
+} from '../protection/adapters/nested';
+import {
+  getBoundedAskUserAnswerValues,
+  serializeAskUserAnswerVariants,
+} from '../agents/hitl/resume';
+import {
+  extractFileContent,
+  extractStoredMessageContent,
+} from '../protection/adapters/submissions';
+import { createLegacyPiiInspector, toLegacyPiiMatch } from '../protection/legacy';
+import { extractMessageContent } from '../protection/adapters/messages';
+import { extractChatContent } from '../protection/adapters/chat';
+import { contentFilterBlockResponse } from './contentFilter';
+import { inspectContent } from '../protection/runtime';
 
-type CompiledPattern = { id: string; label: string; pattern: RegExp };
-
-const STARTER_PATTERNS: CompiledPattern[] = [
-  { id: 'sk_prefix', label: 'sk- prefix token', pattern: /\b(sk-)[a-zA-Z0-9_-]+/g },
-  { id: 'bearer_header', label: 'Bearer token', pattern: /\b(Bearer )[^\s"']+/gi },
-  { id: 'api_key_header', label: 'api-key header', pattern: /\b(api-key:?\s+)[^\s"']+/gi },
-];
-
-const STARTER_BY_ID = new Map(STARTER_PATTERNS.map((p) => [p.id, p]));
-
-function selectStarter(ids?: string[]): CompiledPattern[] {
-  if (ids == null) {
-    return STARTER_PATTERNS;
+function validateMessageFilterRegex(pattern: string): {
+  readonly supported: boolean;
+  readonly programSize?: number;
+} {
+  let compiled: RE2JS | undefined;
+  try {
+    compiled = RE2JS.compile(pattern);
+    return { supported: true, programSize: compiled.programSize() };
+  } catch {
+    return { supported: false };
+  } finally {
+    compiled?.reset();
   }
-  const out: CompiledPattern[] = [];
-  for (const id of ids) {
-    const entry = STARTER_BY_ID.get(id);
-    if (entry != null) {
-      out.push(entry);
-    }
-  }
-  return out;
 }
 
-const COMPILE_CACHE = new WeakMap<object, CompiledPattern[]>();
+/**
+ * Wire config parsing to the same linear-time regex engine used at runtime.
+ * This prevents an operator pattern accepted by JavaScript RegExp but unsupported
+ * by RE2 from being silently omitted when the filter is created.
+ */
+export function configureMessageFilterRegexValidator(): void {
+  setMessageFilterRegexValidator(validateMessageFilterRegex);
+}
 
-function compile(config: MessageFilterPiiConfig): CompiledPattern[] {
-  const cached = COMPILE_CACHE.get(config);
+const LEGACY_CONFIG_VALIDITY = new WeakMap<object, boolean>();
+
+function isLegacyPiiConfigValid(config: MessageFilterPiiConfig): boolean {
+  const cached = LEGACY_CONFIG_VALIDITY.get(config);
   if (cached != null) {
     return cached;
   }
-  const starter = selectStarter(config.starterPatterns);
-  const custom: CompiledPattern[] = [];
-  for (const p of config.customPatterns ?? []) {
-    try {
-      custom.push({ id: p.id, label: p.label, pattern: new RegExp(p.regex, 'g') });
-    } catch (err) {
-      logger.warn(
-        `[messageFilter.pii] dropping invalid customPattern ${JSON.stringify(p.id)}: ${(err as Error).message}`,
+  const starterPatterns = config.starterPatterns ?? [];
+  const customPatterns = config.customPatterns ?? [];
+  let regexCharacters = 0;
+  let regexInstructions = 0;
+  const valid =
+    starterPatterns.length <= MAX_PII_PATTERNS_PER_SOURCE &&
+    starterPatterns.every(
+      (pattern) => typeof pattern === 'string' && pattern.length <= MAX_PII_PATTERN_ID_LENGTH,
+    ) &&
+    customPatterns.length <= MAX_PII_PATTERNS_PER_SOURCE &&
+    customPatterns.every((pattern) => {
+      if (
+        typeof pattern?.id !== 'string' ||
+        pattern.id.length === 0 ||
+        pattern.id.length > MAX_PII_PATTERN_ID_LENGTH ||
+        typeof pattern.label !== 'string' ||
+        pattern.label.length === 0 ||
+        pattern.label.length > MAX_PII_PATTERN_LABEL_LENGTH ||
+        typeof pattern.regex !== 'string' ||
+        pattern.regex.length === 0 ||
+        pattern.regex.length > MAX_PII_PATTERN_LENGTH
+      ) {
+        return false;
+      }
+      regexCharacters += pattern.regex.length;
+      const validation = validateMessageFilterRegex(pattern.regex);
+      regexInstructions += validation.programSize ?? 0;
+      return (
+        validation.supported &&
+        regexCharacters <= MAX_PII_CUSTOM_REGEX_CHARACTERS &&
+        regexInstructions <= MAX_PII_CUSTOM_REGEX_INSTRUCTIONS
       );
-    }
-  }
-  const result = [...starter, ...custom];
-  COMPILE_CACHE.set(config, result);
-  return result;
-}
-
-function findMatch(text: string, patterns: CompiledPattern[]): CompiledPattern | null {
-  for (const p of patterns) {
-    p.pattern.lastIndex = 0;
-    if (p.pattern.test(text)) {
-      return p;
-    }
-  }
-  return null;
+    });
+  LEGACY_CONFIG_VALIDITY.set(config, valid);
+  return valid;
 }
 
 export interface PiiMatch {
   id: string;
   label: string;
+  /** Set when a configured custom pattern cannot be enforced by the runtime engine. */
+  misconfigured?: boolean;
 }
 
 type ContentPart = { type?: string; text?: string; [key: string]: unknown };
@@ -83,82 +134,148 @@ export function findPiiMatchInMessages(
   if (config == null || !Array.isArray(messages) || messages.length === 0) {
     return null;
   }
-  const patterns = compile(config);
-  if (patterns.length === 0) {
-    return null;
+  if (!isLegacyPiiConfigValid(config)) {
+    return { id: '__misconfigured__', label: 'restricted value', misconfigured: true };
   }
-  for (const msg of messages) {
-    if (msg == null) {
-      continue;
-    }
-    if (typeof msg.content === 'string') {
-      const hit = findMatch(msg.content, patterns);
-      if (hit != null) {
-        return { id: hit.id, label: hit.label };
-      }
-      continue;
-    }
-    if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part != null && typeof part.text === 'string') {
-          const hit = findMatch(part.text, patterns);
-          if (hit != null) {
-            return { id: hit.id, label: hit.label };
-          }
-        }
-      }
-    }
-  }
-  return null;
+  const inspector = createLegacyPiiInspector(config);
+  const fragments = extractMessageContent(messages);
+  return toLegacyPiiMatch(inspector?.inspect(fragments) ?? null);
 }
 
 export interface CreateMessageFilterPiiOptions {
+  readonly onTraversalFailure?: LocatorTraversalReporter;
   getConfig: (req: ServerRequest) => MessageFilterPiiConfig | undefined;
+  getFilters?: (req: ServerRequest) => FiltersConfig | undefined;
+  getFiles?: GetCanonicalFilesForInspection;
+  getPreinspectedText?: (req: ServerRequest) => string | undefined;
 }
 
 export function createMessageFilterPii(options: CreateMessageFilterPiiOptions): RequestHandler {
-  return function messageFilterPii(req: ServerRequest, res: ServerResponse, next: NextFunction) {
-    const config = options.getConfig(req);
-    if (config == null) {
+  return async function messageFilterPii(
+    req: ServerRequest,
+    res: ServerResponse,
+    next: NextFunction,
+  ) {
+    const legacyPii = options.getConfig(req);
+    const filters = options.getFilters?.(req);
+    if (legacyPii == null && filters == null) {
       next();
       return;
     }
-    /**
-     * Scan the typed text, each quoted excerpt, and — crucially — the merged
-     * blockquote+text exactly as `AgentClient` sends it to the model. Quotes are
-     * normalized via `getReferencedQuotes` first (matching `BaseClient`). Scanning
-     * the merged string catches a secret split across a quote and the typed text
-     * (each clean alone) that only matches once concatenated; scanning the raw
-     * pieces keeps anchored patterns working against un-prefixed excerpts.
-     */
-    const candidates: string[] = [];
-    const text = typeof req.body?.text === 'string' ? req.body.text : '';
-    if (text.length > 0) {
-      candidates.push(text);
-    }
-    const quotes = getReferencedQuotes(req.body?.quotes);
-    if (quotes != null) {
-      candidates.push(...quotes);
-      candidates.push(mergeQuotedText(text, quotes));
-    }
-    if (candidates.length === 0) {
-      next();
+    if (legacyPii != null && !isLegacyPiiConfigValid(legacyPii)) {
+      res.status(400).json({
+        error: 'message_filter_pii_block',
+        message: 'Message filtering is misconfigured; contact your administrator.',
+      });
       return;
     }
-    const patterns = compile(config);
-    if (patterns.length === 0) {
-      next();
-      return;
-    }
-    for (const candidate of candidates) {
-      const match = findMatch(candidate, patterns);
-      if (match != null) {
-        res.status(400).json({
-          error: 'message_filter_pii_block',
-          message: `Message contains a ${match.label}. Remove it and try again.`,
+
+    let opaqueFileInput = req.body;
+    let hydratedFiles: CanonicalFileInspectionFile[] = [];
+    if (options.getFiles != null && hasActiveFilePolicy(filters)) {
+      try {
+        const fileInspection = await resolveCanonicalFileReferences({
+          messageCount: 1,
+          onTraversalFailure: options.onTraversalFailure,
+          filters,
+          input: req.body,
+          user: (
+            req as ServerRequest & {
+              user?: { id?: string; tenantId?: string | null };
+            }
+          ).user,
+          getFiles: options.getFiles,
         });
+        opaqueFileInput = fileInspection.sanitizedInput;
+        hydratedFiles = fileInspection.hydratedFiles;
+      } catch (error) {
+        if (error instanceof UninspectableFileError) {
+          res.status(error.statusCode).json(error.body);
+          return;
+        }
+        next(error);
         return;
       }
+    }
+
+    const uninspectableField = getBlockedOpaqueFileField(filters, opaqueFileInput);
+    if (uninspectableField != null) {
+      res.status(400).json(contentFilterUninspectableResponse(uninspectableField));
+      return;
+    }
+    const fragments: TextContentFragment[] = [];
+    const traversalErrors: ContentTraversalLimitError[] = [];
+    const collect = (extract: () => Iterable<TextContentFragment>) => {
+      try {
+        fragments.push(...extract());
+        return true;
+      } catch (error) {
+        if (!isContentTraversalLimitError(error)) {
+          next(error);
+          return false;
+        }
+        fragments.push(...getContentTraversalFragments(error));
+        traversalErrors.push(error);
+        return true;
+      }
+    };
+    if (!collect(() => extractChatContent(req.body))) {
+      return;
+    }
+    if (
+      req.body?.answers != null &&
+      typeof req.body.answers === 'object' &&
+      !Array.isArray(req.body.answers)
+    ) {
+      const answers = getBoundedAskUserAnswerValues(req.body.answers);
+      const answerCandidates = [
+        ...answers.filter((answer) => answer.length > 0),
+        ...serializeAskUserAnswerVariants(req.body.answers),
+      ];
+      fragments.push(
+        ...extractMessageContent(answerCandidates.map((content) => ({ role: 'user', content }))),
+      );
+    }
+    for (const file of hydratedFiles) {
+      fragments.push(...extractFileContent(file));
+    }
+    if (filters != null && !collect(() => extractStoredMessageContent(req.body))) {
+      return;
+    }
+    const preinspectedText = options.getPreinspectedText?.(req);
+    const inspectable =
+      preinspectedText == null
+        ? fragments
+        : fragments.filter(
+            (fragment) =>
+              fragment.source !== 'message' ||
+              fragment.field !== 'text' ||
+              fragment.path !== '/text' ||
+              fragment.text !== preinspectedText,
+          );
+    const finding = inspectContent(inspectable, { filters, legacyPii });
+    if (finding != null) {
+      if (finding.detectorId !== 'legacy-pattern') {
+        res.status(400).json(contentFilterBlockResponse(finding));
+        return;
+      }
+      res.status(400).json({
+        error: 'message_filter_pii_block',
+        message: `Message contains a ${finding.label}. Remove it and try again.`,
+      });
+      return;
+    }
+    const protectedError = traversalErrors.find((error) =>
+      isContentTraversalProtected({
+        error,
+        filters,
+        legacyPii,
+        roles: [req.body?.role],
+      }),
+    );
+    if (protectedError != null) {
+      res.status(protectedError.statusCode).json(protectedError.body);
+      return;
     }
     next();
   };

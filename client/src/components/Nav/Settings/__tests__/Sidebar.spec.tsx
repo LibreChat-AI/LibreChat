@@ -9,15 +9,25 @@ const ctx: SettingsContextValue = {
   balanceEnabled: false,
   hasAnyPersonalizationFeature: false,
   hasMemoryOptOut: false,
+  hasStatefulCodeSessions: false,
   hasRemoteAgents: false,
   hasUserProvidedEndpoints: false,
   hasMultiConvo: false,
   hasPrompts: false,
   isLocalProvider: true,
+  emailEnabled: true,
+  allowEmailChange: true,
+  passkeyLoginEnabled: false,
+  isTwoFactorPolicyProvider: true,
   twoFactorEnabled: false,
   allowAccountDeletion: true,
   aboutEnabled: false,
   engineTTS: 'browser',
+  langfuseConnectionAccess: false,
+  adminPanelURL: '',
+  replyTabBadgeAllowed: true,
+  replyNotificationsAllowed: true,
+  replyNotificationSoundAllowed: true,
 };
 
 function setup(extra: Partial<SettingsContextValue> = {}, query = '') {
@@ -44,6 +54,16 @@ describe('Sidebar', () => {
   it('shows the About tab when build info is enabled', () => {
     setup({ aboutEnabled: true });
     expect(screen.getByText('About')).toBeInTheDocument();
+  });
+
+  it('shows the Langfuse tab when Langfuse is available to the user', () => {
+    setup({ langfuseConnectionAccess: true });
+    expect(screen.getByText('Langfuse')).toBeInTheDocument();
+  });
+
+  it('hides the Langfuse tab without Langfuse connection access', () => {
+    setup({ langfuseConnectionAccess: false });
+    expect(screen.queryByText('Langfuse')).not.toBeInTheDocument();
   });
 
   it('forwards typing to onQueryChange', async () => {

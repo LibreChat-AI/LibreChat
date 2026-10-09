@@ -1,0 +1,23 @@
+/**
+ * Package-local spinner animation. Ships in @librechat/client/style.css so
+ * consumers do not need the host app's Tailwind `animate-spin` utility.
+ * Keyframes live in this file (not an embedded <style> tag) so CSS text never
+ * leaks into ancestor textContent / accessible names.
+ */
+@keyframes librechat-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinner {
+  transform-origin: center;
+  overflow: visible;
+  animation: librechat-spinner-rotate var(--spinner-speed, 0.75s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}

@@ -3,7 +3,6 @@
   "com_a11y_start": "Tekoäly on aloittanut vastaamisen.",
   "com_agents_create_error": "Agentin luonnissa tapahtui virhe.",
   "com_agents_description_placeholder": "Valinnainen: Lisää tähän agentin kuvaus",
-  "com_agents_enable_file_search": "Käytä Tiedostohakua",
   "com_agents_file_context_disabled": "Agentti täytyy luoda ennen tiedostojen lataamista Tiedostokontekstiin",
   "com_agents_file_search_disabled": "Agentti täytyy luoda ennen tiedostojen lataamista Tiedostohakuun",
   "com_agents_file_search_info": "Asetuksen ollessa päällä agentti saa tiedoksi alla luetellut tiedostonimet, jolloin se voi hakea vastausten pohjaksi asiayhteyksiä tiedostojen sisällöistä.",

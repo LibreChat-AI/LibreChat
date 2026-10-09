@@ -30,7 +30,7 @@ describe('redisClients Integration Tests', () => {
     expect(result).toBe(testValue);
 
     // Test delete operation
-    const deleteResult = await client.del(testKey);
+    const deleteResult = await client.del([testKey]);
     expect(deleteResult).toBe(1);
 
     // Verify key is deleted
@@ -144,6 +144,26 @@ describe('redisClients Integration Tests', () => {
           'keyv-cluster',
           clients.keyvRedisClientReady!.then(() => undefined),
         );
+      });
+
+      test('should execute same-slot catalog scripts on the owning master', async () => {
+        process.env.USE_REDIS_CLUSTER = 'true';
+        process.env.REDIS_URI =
+          'redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003';
+
+        const clients = await import('../redisClients');
+        keyvRedisClient = clients.keyvRedisClient;
+        const hashTag = `catalog-eval-${Date.now()}`;
+        const keys = [`catalog:revision:{${hashTag}}`, `catalog:tools:{${hashTag}}`];
+
+        await expect(
+          clients.evalKeyvRedisScript(
+            "redis.call('SET', KEYS[1], ARGV[1]); redis.call('SET', KEYS[2], ARGV[1]); return 1",
+            { keys, arguments: ['published'] },
+          ),
+        ).resolves.toBe(1);
+        await expect(keyvRedisClient!.mGet(keys)).resolves.toEqual(['published', 'published']);
+        await keyvRedisClient!.del(keys);
       });
     });
   });

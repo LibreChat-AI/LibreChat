@@ -7,12 +7,14 @@ import { useLocalize } from '~/hooks';
 interface ArtifactVersionProps {
   currentIndex: number;
   totalVersions: number;
+  portalElement?: HTMLElement | null;
   onVersionChange: (index: number) => void;
 }
 
 export default function ArtifactVersion({
   currentIndex,
   totalVersions,
+  portalElement,
   onVersionChange,
 }: ArtifactVersionProps) {
   const localize = useLocalize();
@@ -51,6 +53,7 @@ export default function ArtifactVersion({
     <DropdownPopup
       menuId={menuId}
       portal
+      portalElement={portalElement}
       focusLoop
       unmountOnHide
       isOpen={isPopoverActive}
@@ -58,6 +61,7 @@ export default function ArtifactVersion({
       trigger={
         <TooltipAnchor
           description={localize('com_ui_change_version')}
+          portalElement={portalElement}
           render={
             <Button
               size="icon"

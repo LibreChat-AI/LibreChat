@@ -4,7 +4,7 @@ import { useRecoilState } from 'recoil';
 import { ThemeContext } from '@librechat/client';
 import type { ComponentType } from 'react';
 import type { TranslationKeys } from '~/hooks';
-import { ThemeSelector, LangSelector } from '../SettingsTabs/General/Selectors';
+import { ThemeSelector, LangSelector } from '~/components/Appearance';
 import ToggleSwitch from '../SettingsTabs/ToggleSwitch';
 import store from '~/store';
 
@@ -13,6 +13,7 @@ export function toggleControl(opts: {
   localizationKey: TranslationKeys;
   switchId: string;
   hoverCardText?: TranslationKeys;
+  onCheckedChange?: (value: boolean) => void;
 }): ComponentType {
   const Control = () => (
     <ToggleSwitch
@@ -20,6 +21,7 @@ export function toggleControl(opts: {
       localizationKey={opts.localizationKey}
       switchId={opts.switchId}
       hoverCardText={opts.hoverCardText}
+      onCheckedChange={opts.onCheckedChange}
     />
   );
   Control.displayName = `Toggle(${opts.switchId})`;

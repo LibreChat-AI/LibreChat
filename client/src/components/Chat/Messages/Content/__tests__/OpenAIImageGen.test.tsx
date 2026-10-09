@@ -38,8 +38,21 @@ jest.mock('../ToolOutput', () => ({
 
 jest.mock('../Parts/OpenAIImageGen/ProgressText', () => ({
   __esModule: true,
-  default: ({ progress, error }: { progress: number; error: boolean }) => (
-    <div data-testid="progress-text" data-progress={progress} data-error={String(error)} />
+  default: ({
+    progress,
+    error,
+    cancelled,
+  }: {
+    progress: number;
+    error: boolean;
+    cancelled?: boolean;
+  }) => (
+    <div
+      data-testid="progress-text"
+      data-progress={progress}
+      data-error={String(error)}
+      data-cancelled={String(cancelled === true)}
+    />
   ),
 }));
 
@@ -157,6 +170,48 @@ describe('OpenAIImageGen', () => {
 
     it('shows cancelled state when not submitting and incomplete', () => {
       render(<OpenAIImageGen {...defaultProps} isSubmitting={false} initialProgress={0.5} />);
+      const progressText = screen.getByTestId('progress-text');
+      expect(progressText).toHaveAttribute('data-cancelled', 'true');
+      expect(progressText).toHaveAttribute('data-error', 'false');
+    });
+
+    it('reports a run-step cancellation as cancelled, not failed', () => {
+      render(<OpenAIImageGen {...defaultProps} isSubmitting={true} runStepStatus="cancelled" />);
+      const progressText = screen.getByTestId('progress-text');
+      expect(progressText).toHaveAttribute('data-cancelled', 'true');
+      expect(progressText).toHaveAttribute('data-error', 'false');
+    });
+
+    it('reports a run-step failure as an error even when the output is benign', () => {
+      render(<OpenAIImageGen {...defaultProps} isSubmitting={true} runStepStatus="failed" />);
+      const progressText = screen.getByTestId('progress-text');
+      expect(progressText).toHaveAttribute('data-error', 'true');
+      expect(progressText).toHaveAttribute('data-cancelled', 'false');
+    });
+
+    it('lets an explicit cancellation outrank an error-formatted output', () => {
+      render(
+        <OpenAIImageGen
+          {...defaultProps}
+          output="Error processing tool call"
+          isSubmitting={true}
+          runStepStatus="cancelled"
+        />,
+      );
+      const progressText = screen.getByTestId('progress-text');
+      expect(progressText).toHaveAttribute('data-cancelled', 'true');
+      expect(progressText).toHaveAttribute('data-error', 'false');
+    });
+
+    it('keeps failure precedence when the legacy inference folds an error into cancellation', () => {
+      render(
+        <OpenAIImageGen
+          {...defaultProps}
+          output="Error processing tool call"
+          isSubmitting={false}
+          initialProgress={0.5}
+        />,
+      );
       const progressText = screen.getByTestId('progress-text');
       expect(progressText).toHaveAttribute('data-error', 'true');
     });

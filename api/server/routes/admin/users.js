@@ -1,9 +1,17 @@
 const express = require('express');
-const { createAdminUsersHandlers } = require('@librechat/api');
+const mongoose = require('mongoose');
+const { createAdminUsersHandlers, revokeUserCodeEnvironmentWorkers } = require('@librechat/api');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const { requireCapability } = require('~/server/middleware/roles/capabilities');
 const { requireJwtAuth } = require('~/server/middleware');
+const {
+  drainAgentTriggerDeliveriesForUser,
+  prepareAgentTriggerUserPurge,
+  cancelAgentTriggerUserPurge,
+  purgeAgentTriggerDeliveriesForUser,
+} = require('~/server/services/Agents/triggers');
 const db = require('~/models');
+const { getAppConfig, invalidateCodeEnvironmentConfigCache } = require('~/server/services/Config');
 
 const router = express.Router();
 
@@ -14,9 +22,24 @@ const requireReadUsers = requireCapability(SystemCapabilities.READ_USERS);
 const handlers = createAdminUsersHandlers({
   findUsers: db.findUsers,
   countUsers: db.countUsers,
+  beginAgentTriggerUserDeletion: db.beginAgentTriggerUserDeletion,
+  cancelAgentTriggerUserDeletion: db.cancelAgentTriggerUserDeletion,
+  drainAgentTriggerDeliveriesForUser,
+  prepareAgentTriggerUserPurge,
+  cancelAgentTriggerUserPurge,
+  purgeAgentTriggerDeliveriesForUser,
+  revokeUserCodeEnvironmentWorkers: async (userId) =>
+    revokeUserCodeEnvironmentWorkers({
+      mongoose,
+      userId,
+      appConfig: await getAppConfig({ baseOnly: true }),
+    }),
   deleteUserById: db.deleteUserById,
+  deleteUserCodeEnvironments: db.deleteUserCodeEnvironments,
+  invalidateCodeEnvironmentConfigCache,
   deleteConfig: db.deleteConfig,
   deleteAclEntries: db.deleteAclEntries,
+  deletePasskeysByUser: db.deletePasskeysByUser,
 });
 
 router.use(requireJwtAuth, requireAdminAccess);

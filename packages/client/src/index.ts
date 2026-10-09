@@ -14,6 +14,9 @@ export * from './store';
 // SVGs
 export * from './svgs';
 
+// Provider icons
+export * from './icons/provider';
+
 // Utils
 export * from './utils';
 

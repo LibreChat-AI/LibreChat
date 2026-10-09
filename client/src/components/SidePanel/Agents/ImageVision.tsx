@@ -1,4 +1,4 @@
-import { Checkbox } from '@librechat/client';
+import { Checkbox, Label } from '@librechat/client';
 import { Capabilities } from 'librechat-data-provider';
 import { useFormContext, Controller } from 'react-hook-form';
 import type { AssistantForm } from '~/common';
@@ -19,15 +19,15 @@ export default function ImageVision() {
             {...field}
             checked={field.value}
             onCheckedChange={field.onChange}
-            className="relative float-left mr-2 inline-flex h-4 w-4 cursor-pointer"
+            className="relative float-left mr-2 inline-flex cursor-pointer"
             value={field.value?.toString()}
             aria-labelledby="image-vision-label"
           />
         )}
       />
-      <label
+      <Label
         id="image-vision-label"
-        className="form-check-label text-token-text-primary w-full cursor-pointer"
+        className="cursor-pointer"
         htmlFor={Capabilities.image_vision}
         onClick={() =>
           setValue(Capabilities.image_vision, !getValues(Capabilities.image_vision), {
@@ -36,7 +36,7 @@ export default function ImageVision() {
         }
       >
         <div className="flex items-center">{localize('com_assistants_image_vision')}</div>
-      </label>
+      </Label>
     </div>
   );
 }

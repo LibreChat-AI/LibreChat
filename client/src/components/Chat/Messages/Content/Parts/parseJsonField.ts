@@ -4,7 +4,7 @@ export function areToolCallArgsComplete(args: ToolCallArgs): boolean {
   if (typeof args === 'object' && args !== null) {
     return true;
   }
-  if (typeof args !== 'string' || args.trim().length === 0) {
+  if (typeof args !== 'string' || !args.trimEnd().endsWith('}')) {
     return false;
   }
   try {
@@ -15,22 +15,85 @@ export function areToolCallArgsComplete(args: ToolCallArgs): boolean {
   }
 }
 
+const fieldRegexCache = new Map<string, RegExp>();
+
 /** Matches `"field":"value"`, tolerating a missing closing quote and a dangling escape at the end of partially streamed args. */
 function fieldRegex(field: string, flags?: string): RegExp {
+  const key = `${flags ?? ''}:${field}`;
+  const cached = fieldRegexCache.get(key);
+  if (cached) {
+    return cached;
+  }
   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`"${escaped}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(?:"|\\\\?$)`, flags);
+  const regex = new RegExp(`"${escaped}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(?:"|\\\\?$)`, flags);
+  fieldRegexCache.set(key, regex);
+  return regex;
 }
 
-function unescapeJsonString(value: string): string {
-  return value.replace(/\\(.)/g, (_, c: string) => {
-    if (c === 'n') {
-      return '\n';
+const SIMPLE_ESCAPES: Record<string, string> = {
+  n: '\n',
+  t: '\t',
+  r: '\r',
+  b: '\b',
+  f: '\f',
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+};
+
+/**
+ * Decodes the full JSON string escape set so a partially streamed value
+ * renders exactly as its settled `JSON.parse` form will — without this,
+ * `café` displays literally mid-stream and then snaps to `café` once
+ * the object becomes valid JSON. Stream-boundary incompletions (a dangling
+ * `\`, a partial `\uXX`, or the high half of a split surrogate pair) are
+ * dropped rather than shown, since the next delta completes them; unknown
+ * escapes elsewhere are preserved literally. Callers that KNOW the value is
+ * settled (its closing quote was present) pass `streaming: false` so a value
+ * genuinely ending in a lone high surrogate keeps its final code unit,
+ * matching `JSON.parse`.
+ */
+export function unescapeJsonString(value: string, streaming = true): string {
+  let out = '';
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
     }
-    if (c === '"' || c === '\\') {
-      return c;
+    const next = value[i + 1];
+    if (next === undefined) {
+      break;
     }
-    return `\\${c}`;
-  });
+    i++;
+    if (next !== 'u') {
+      out += SIMPLE_ESCAPES[next] ?? `\\${next}`;
+      continue;
+    }
+    const hex = value.slice(i + 1, i + 5);
+    if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
+      if (streaming && i + 5 > value.length) {
+        return out;
+      }
+      out += '\\u';
+      continue;
+    }
+    i += 4;
+    const code = parseInt(hex, 16);
+    if (streaming && code >= 0xd800 && code <= 0xdbff) {
+      /** Hold back a high surrogate while its low half could still be
+       *  streaming in — the remainder being any proper prefix of `\uXXXX`
+       *  (including the empty string). A complete following escape decodes
+       *  on the next iteration and composes the pair; anything else means
+       *  the lone surrogate is real data (matches `JSON.parse`). */
+      const rest = value.slice(i + 1);
+      if (/^(?:\\(?:u[0-9a-fA-F]{0,3})?)?$/.test(rest)) {
+        return out;
+      }
+    }
+    out += String.fromCharCode(code);
+  }
+  return out;
 }
 
 /** Extracts a string field from tool call args, handling object, JSON string, and partial-JSON fallback. */

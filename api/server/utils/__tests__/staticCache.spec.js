@@ -132,6 +132,19 @@ describe('staticCache', () => {
 
       expect(response.headers['cache-control']).toBe('no-store, no-cache, must-revalidate');
     });
+
+    it('should prevent shared caching when authorization marks an image private', async () => {
+      app.use((_req, res, next) => {
+        res.locals.privateImageCache = true;
+        next();
+      });
+      app.use(staticCache(testDir));
+
+      const response = await request(app).get('/test.js').expect(200);
+
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      expect(response.headers.vary).toBe('Cookie');
+    });
   });
 
   describe('cache headers in non-production', () => {

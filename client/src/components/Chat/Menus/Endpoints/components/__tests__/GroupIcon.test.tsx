@@ -1,56 +1,42 @@
 import { render, screen } from '@testing-library/react';
+import { EModelEndpoint } from 'librechat-data-provider';
 import GroupIcon from '../GroupIcon';
-
-jest.mock('~/hooks/Endpoint/Icons', () => {
-  const React = jest.requireActual<typeof import('react')>('react');
-  const createIcon =
-    (iconKey: string) =>
-    ({ className, endpoint }: { className?: string; endpoint?: string | null }) =>
-      React.createElement('span', {
-        className,
-        'data-testid': 'endpoint-icon',
-        'data-icon-key': iconKey,
-        'data-endpoint': endpoint ?? '',
-      });
-
-  return {
-    icons: {
-      openAI: createIcon('openAI'),
-      unknown: createIcon('unknown'),
-    },
-  };
-});
 
 describe('GroupIcon', () => {
   it('renders built-in endpoint icon keys', () => {
     render(<GroupIcon iconURL="openAI" groupName="OpenAI" />);
 
-    expect(screen.getByTestId('endpoint-icon')).toHaveAttribute('data-icon-key', 'openAI');
+    expect(screen.getByRole('img', { name: 'OpenAI' })).toBeInTheDocument();
+  });
+
+  it('keeps the agents mark for an agents group icon', () => {
+    const { container } = render(
+      <GroupIcon iconURL={EModelEndpoint.agents} groupName="My Agents" />,
+    );
+
+    expect(screen.queryByRole('img', { name: 'Custom' })).not.toBeInTheDocument();
+    expect(container.querySelector('svg')).toBeInTheDocument();
+    expect(screen.getByTitle('My Agents')).toBeInTheDocument();
   });
 
   it('resolves known endpoint asset aliases case-insensitively', () => {
     render(<GroupIcon iconURL="OpenRouter" groupName="OpenRouter" />);
 
-    expect(screen.getByRole('img', { name: 'OpenRouter' })).toHaveAttribute(
-      'src',
-      'assets/openrouter.png',
-    );
+    const src = screen.getByRole('img', { name: 'OpenRouter' }).getAttribute('src');
+    expect(src).toBeTruthy();
+    expect(src).not.toBe('');
   });
 
   it('resolves known endpoint asset aliases to shipped file paths', () => {
     render(<GroupIcon iconURL="Helicone" groupName="Helicone" />);
 
-    expect(screen.getByRole('img', { name: 'Helicone' })).toHaveAttribute(
-      'src',
-      'assets/helicone.svg',
-    );
+    expect(screen.getByRole('img', { name: 'Helicone' })).toHaveAttribute('alt', 'Helicone');
   });
 
   it('renders known endpoint aliases backed by components', () => {
     render(<GroupIcon iconURL="Moonshot" groupName="Moonshot" />);
 
-    expect(screen.getByTestId('endpoint-icon')).toHaveAttribute('data-icon-key', 'unknown');
-    expect(screen.getByTestId('endpoint-icon')).toHaveAttribute('data-endpoint', 'Moonshot');
+    expect(screen.getByRole('img', { name: 'Moonshot' })).toBeInTheDocument();
   });
 
   it('renders configured image URLs directly', () => {

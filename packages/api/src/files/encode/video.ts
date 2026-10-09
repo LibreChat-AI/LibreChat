@@ -1,9 +1,15 @@
 import { Providers } from '@librechat/agents';
-import { isDocumentSupportedProvider } from 'librechat-data-provider';
+import { isDocumentSupportedProvider, isOpenAILikeProvider } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, VideoResult } from '~/types';
-import { getFileStream, getConfiguredFileSizeLimit } from './utils';
+import {
+  getFileStream,
+  getConfiguredFileSizeLimit,
+  isAttachmentObjectNotFoundError,
+  isConfiguredProviderMediaType,
+} from './utils';
 import { validateVideo } from '~/files/validation';
+import { runGuardedEncode } from './memoryGuard';
 
 /**
  * Encodes and formats video files for different providers
@@ -30,11 +36,18 @@ export async function encodeAndFormatVideos(
   const result: VideoResult = { videos: [], files: [] };
 
   const results = await Promise.allSettled(
-    files.map((file) => getFileStream(req, file, encodingMethods, getStrategyFunctions)),
+    files.map((file) =>
+      runGuardedEncode(file.bytes ?? 0, () =>
+        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+      ),
+    ),
   );
 
   for (const settledResult of results) {
     if (settledResult.status === 'rejected') {
+      if (isAttachmentObjectNotFoundError(settledResult.reason)) {
+        throw settledResult.reason;
+      }
       console.error('Video processing failed:', settledResult.reason);
       continue;
     }
@@ -79,7 +92,14 @@ export async function encodeAndFormatVideos(
         mimeType: file.type,
         data: content,
       });
-    } else if (provider === Providers.OPENROUTER) {
+    } else if (
+      provider === Providers.OPENROUTER ||
+      (isOpenAILikeProvider(provider) &&
+        isConfiguredProviderMediaType(req, { provider, endpoint }, file.type))
+    ) {
+      /** OpenAI-compatible `video_url` part (OpenRouter, vLLM, and other gateways).
+       * Custom endpoints only get here when the admin listed video types in the
+       * endpoint's `supportedMimeTypes`, since not every gateway accepts video. */
       result.videos.push({
         type: 'video_url',
         video_url: {

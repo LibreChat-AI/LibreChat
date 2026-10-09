@@ -32,10 +32,14 @@ function ToolDialogs() {
       isOpen={searchDialogOpen}
       onRevoke={searchHandleRevoke}
       register={searchMethods.register}
+      setValue={searchMethods.setValue}
       onOpenChange={setSearchDialogOpen}
       handleSubmit={searchMethods.handleSubmit}
       triggerRefs={[searchMenuTriggerRef, searchBadgeTriggerRef]}
       isToolAuthenticated={webSearchAuthData?.authenticated ?? false}
+      searchProvider={webSearchAuthData?.searchProvider}
+      scraperProvider={webSearchAuthData?.scraperProvider}
+      rerankerType={webSearchAuthData?.rerankerType}
     />
   );
 }

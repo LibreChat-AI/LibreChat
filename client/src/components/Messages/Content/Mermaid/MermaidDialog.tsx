@@ -1,18 +1,20 @@
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
+import { X } from 'lucide-react';
 import copy from 'copy-to-clipboard';
-import { X, ChevronUp, ChevronDown } from 'lucide-react';
+import { Copy, Check, ChevronUp, ChevronDown } from 'lucide';
 import {
   Button,
   OGDialog,
-  Clipboard,
-  CheckMark,
+  MorphIcon,
   OGDialogClose,
   OGDialogTitle,
   OGDialogContent,
 } from '@librechat/client';
+import type { MermaidDimensions } from '~/utils/diagram/export';
 import useMermaidZoom from './useMermaidZoom';
 import ZoomControls from './ZoomControls';
 import { useLocalize } from '~/hooks';
+import MermaidExport from './Export';
 import cn from '~/utils/cn';
 
 interface MermaidDialogProps {
@@ -21,10 +23,22 @@ interface MermaidDialogProps {
   triggerRef: React.RefObject<HTMLButtonElement>;
   blobUrl: string;
   codeContent: string;
+  exportSvg: string | null;
+  exportDimensions: MermaidDimensions | null;
+  exportFilename: string;
 }
 
 const MermaidDialog: React.FC<MermaidDialogProps> = memo(
-  ({ open, onOpenChange, triggerRef, blobUrl, codeContent }) => {
+  ({
+    open,
+    onOpenChange,
+    triggerRef,
+    blobUrl,
+    codeContent,
+    exportSvg,
+    exportDimensions,
+    exportFilename,
+  }) => {
     const localize = useLocalize();
     const [showCode, setShowCode] = useState(false);
     const [isCopied, setIsCopied] = useState(false);
@@ -70,50 +84,64 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
       <OGDialog open={open} onOpenChange={onOpenChange} triggerRef={triggerRef}>
         <OGDialogContent
           showCloseButton={false}
-          className="h-[85vh] max-h-[85vh] w-[90vw] max-w-[90vw] gap-0 overflow-hidden border-border-light bg-surface-primary-alt p-0"
+          className="border-border-light bg-surface-dialog flex h-[85vh] max-h-[85vh] w-[90vw] max-w-[90vw] flex-col gap-0 overflow-hidden p-0"
         >
-          <OGDialogTitle className="flex h-10 items-center justify-between border-b border-border-light bg-surface-secondary px-4 font-sans text-xs text-text-secondary">
+          <OGDialogTitle className="border-border-light bg-surface-secondary text-text-secondary flex h-10 shrink-0 items-center justify-between border-b px-4 font-sans text-xs">
             <span>{localize('com_ui_mermaid')}</span>
-            <div className="flex gap-2">
+            <div className="flex gap-1 sm:gap-2">
+              <MermaidExport
+                svg={exportSvg}
+                dimensions={exportDimensions}
+                filename={exportFilename}
+                buttonClassName="h-8 w-8 p-0"
+              />
               <Button
                 ref={showCodeButtonRef}
                 variant="ghost"
                 size="sm"
-                className="h-auto min-w-[6rem] gap-1 rounded-sm px-1 py-0 text-xs text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy focus-visible:ring-offset-0"
+                aria-label={showCode ? localize('com_ui_hide_code') : localize('com_ui_show_code')}
+                className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
                 onClick={handleToggleCode}
               >
-                {showCode ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                {showCode ? localize('com_ui_hide_code') : localize('com_ui_show_code')}
+                <MorphIcon icon={showCode ? ChevronUp : ChevronDown} className="h-4 w-4" />
+                <span className="hidden sm:inline">
+                  {showCode ? localize('com_ui_hide_code') : localize('com_ui_show_code')}
+                </span>
               </Button>
               <Button
                 ref={copyButtonRef}
                 variant="ghost"
                 size="sm"
-                className="h-auto gap-1 rounded-sm px-1 py-0 text-xs text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy focus-visible:ring-offset-0"
+                aria-label={localize('com_ui_copy_code')}
+                className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
                 onClick={handleCopy}
               >
-                {isCopied ? <CheckMark className="h-[18px] w-[18px]" /> : <Clipboard />}
-                {localize('com_ui_copy_code')}
+                <MorphIcon icon={isCopied ? Check : Copy} size="1.125rem" />
+                <span className="hidden sm:inline">{localize('com_ui_copy_code')}</span>
               </Button>
-              <OGDialogClose className="rounded-sm p-1 text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy">
+              <OGDialogClose
+                focusOutline="hidden"
+                className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy rounded-sm p-1 focus-visible:ring-2"
+              >
                 <X className="h-4 w-4" />
                 <span className="sr-only">{localize('com_ui_close')}</span>
               </OGDialogClose>
             </div>
           </OGDialogTitle>
           {showCode && (
-            <div className="border-b border-border-light bg-surface-secondary p-4">
-              <pre className="max-h-[150px] overflow-auto whitespace-pre-wrap text-xs text-text-secondary">
+            <div className="border-border-light bg-surface-secondary shrink-0 border-b p-4">
+              {/* Capped against the viewport as well as in rem, so a scaled-up code
+                  block cannot claim the height the diagram below it needs. */}
+              <pre className="text-text-secondary max-h-[min(9.375rem,25vh)] overflow-auto text-xs whitespace-pre-wrap">
                 {codeContent}
               </pre>
             </div>
           )}
           <div
             className={cn(
-              'relative flex-1 overflow-hidden bg-surface-primary-alt p-4',
+              'bg-surface-primary-alt relative min-h-0 flex-1 overflow-hidden p-4',
               isPanning ? 'cursor-grabbing' : 'cursor-grab',
             )}
-            style={{ height: showCode ? 'calc(85vh - 200px)' : 'calc(85vh - 50px)' }}
             onWheel={handleWheel}
             onMouseDown={handleMouseDown}
           >
@@ -126,8 +154,8 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
             >
               <img
                 src={blobUrl}
-                alt="Mermaid diagram"
-                className="max-h-full max-w-full select-none object-contain"
+                alt={localize('com_ui_mermaid_diagram')}
+                className="max-h-full max-w-full object-contain select-none"
                 style={{
                   transform: `scale(${zoom})`,
                   transformOrigin: 'center center',
@@ -142,7 +170,7 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               onZoomIn={handleZoomIn}
               onZoomOut={handleZoomOut}
               onReset={handleResetZoom}
-              className="absolute bottom-4 right-4 z-10"
+              className="absolute right-4 bottom-4 z-10"
             />
           </div>
         </OGDialogContent>

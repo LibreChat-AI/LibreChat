@@ -2,8 +2,16 @@ import { AuthType, ErrorTypes } from 'librechat-data-provider';
 import type { BaseInitializeParams } from '~/types';
 
 const mockValidateEndpointURL = jest.fn();
+const mockCreateSSRFSafeUndiciConnect = jest.fn(
+  (_allowedAddresses?: string[] | null, _port?: string | number | null) => ({
+    lookup: jest.fn(),
+  }),
+);
 jest.mock('~/auth', () => ({
   validateEndpointURL: (...args: unknown[]) => mockValidateEndpointURL(...args),
+  createSSRFSafeUndiciConnect: (
+    ...args: [allowedAddresses?: string[] | null, port?: string | number | null]
+  ) => mockCreateSSRFSafeUndiciConnect(...args),
 }));
 
 const mockGetOpenAIConfig = jest.fn().mockReturnValue({
@@ -42,6 +50,7 @@ function createParams(overrides: {
   userBaseURL?: string;
   userApiKey?: string;
   expiresAt?: string;
+  headers?: Record<string, string>;
 }): BaseInitializeParams {
   const { apiKey = 'sk-test-key', baseURL = 'https://api.example.com/v1' } = overrides;
 
@@ -49,6 +58,7 @@ function createParams(overrides: {
     apiKey,
     baseURL,
     models: {},
+    headers: overrides.headers,
   });
 
   const db = {
@@ -115,6 +125,11 @@ describe('initializeCustom – Agents API user key resolution', () => {
       name: 'test-custom',
     });
     expect(checkUserKeyExpiry).not.toHaveBeenCalled();
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'sk-user-key',
+      expect.any(Object),
+      'test-custom',
+    );
   });
 
   it('should still check key expiry when expiresAt is provided (UI flow)', async () => {
@@ -159,6 +174,126 @@ describe('initializeCustom – Agents API user key resolution', () => {
 
     expect(params.db.getUserKeyValues).not.toHaveBeenCalled();
   });
+});
+
+describe('initializeCustom – OpenAI-compatible header forwarding', () => {
+  const userControlledHeaderCases: Array<{
+    headerType: string;
+    headers: Record<string, string>;
+  }> = [
+    {
+      headerType: 'Authorization',
+      headers: { Authorization: 'Bearer static-gateway-token' },
+    },
+    {
+      headerType: 'env-secret',
+      headers: { 'X-Env-Secret': '${GATEWAY_SECRET}' },
+    },
+    {
+      headerType: 'user-placeholder',
+      headers: { 'X-User-Email': '{{LIBRECHAT_USER_EMAIL}}' },
+    },
+  ];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('forwards Agent model transport timeout policy', async () => {
+    const params = createParams({
+      apiKey: 'sk-system-key',
+      baseURL: 'https://gateway.example.com/v1',
+    });
+    (params.req.config as { endpoints: Record<string, unknown> }).endpoints = {
+      agents: {
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 120_000,
+      },
+    };
+
+    await initializeCustom(params);
+
+    const clientOptions = mockGetOpenAIConfig.mock.calls[0][1] as {
+      transportTimeouts?: { bodyTimeout: number; headersTimeout: number };
+    };
+    expect(clientOptions.transportTimeouts).toEqual({
+      bodyTimeout: 1_800_000,
+      headersTimeout: 120_000,
+    });
+  });
+
+  it('preserves configured headers for admin-trusted base URLs', async () => {
+    const headers = {
+      Authorization: 'Bearer static-gateway-token',
+      'X-Env-Secret': '${GATEWAY_SECRET}',
+      'X-User-Email': '{{LIBRECHAT_USER_EMAIL}}',
+    };
+    const params = createParams({
+      apiKey: 'sk-system-key',
+      baseURL: 'https://gateway.example.com/v1',
+      headers,
+    });
+
+    await initializeCustom(params);
+
+    const clientOptions = mockGetOpenAIConfig.mock.calls[0][1] as {
+      headers?: Record<string, string>;
+    };
+    expect(clientOptions.headers).toEqual(headers);
+  });
+
+  it('uses the user API key when the user supplies the base URL', async () => {
+    const params = createParams({
+      apiKey: 'sk-system-key',
+      baseURL: AuthType.USER_PROVIDED,
+      userApiKey: 'sk-user-owned-key',
+      userBaseURL: 'https://user-controlled.example.com/v1',
+    });
+
+    await initializeCustom(params);
+
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'sk-user-owned-key',
+      expect.any(Object),
+      'test-custom',
+    );
+    expect(mockGetOpenAIConfig).not.toHaveBeenCalledWith(
+      'sk-system-key',
+      expect.any(Object),
+      'test-custom',
+    );
+  });
+
+  it('throws NO_USER_KEY when the user supplies the base URL without an API key', async () => {
+    const params = createParams({
+      apiKey: 'sk-system-key',
+      baseURL: AuthType.USER_PROVIDED,
+      userApiKey: '',
+      userBaseURL: 'https://user-controlled.example.com/v1',
+    });
+
+    await expect(initializeCustom(params)).rejects.toThrow(ErrorTypes.NO_USER_KEY);
+    expect(mockGetOpenAIConfig).not.toHaveBeenCalled();
+  });
+
+  it.each(userControlledHeaderCases)(
+    'withholds configured $headerType headers when the user supplies the base URL',
+    async ({ headers }) => {
+      const params = createParams({
+        apiKey: 'sk-system-key',
+        baseURL: AuthType.USER_PROVIDED,
+        userBaseURL: 'https://user-controlled.example.com/v1',
+        headers,
+      });
+
+      await initializeCustom(params);
+
+      const clientOptions = mockGetOpenAIConfig.mock.calls[0][1] as {
+        headers?: Record<string, string>;
+      };
+      expect(clientOptions.headers).toBeUndefined();
+    },
+  );
 });
 
 describe('initializeCustom – SSRF guard wiring', () => {
@@ -274,6 +409,7 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
         name: 'openrouter',
         headers,
         userObject: params.req.user,
+        baseURLIsUserProvided: false,
       }),
     );
   });
@@ -294,8 +430,10 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
     expect(fetchModels).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'openrouter',
+        apiKey: 'sk-user-key',
         headers: undefined,
         userObject: params.req.user,
+        baseURLIsUserProvided: true,
       }),
     );
   });
@@ -530,11 +668,23 @@ describe('initializeCustom – native Anthropic provider', () => {
       'anthropicApiUrl',
       'https://user-controlled.example.com',
     );
+    expect(options.llmConfig).toHaveProperty('apiKey', 'sk-user-key');
     const defaultHeaders = (
       options.llmConfig as { clientOptions?: { defaultHeaders?: Record<string, string> } }
     ).clientOptions?.defaultHeaders;
     expect(defaultHeaders?.Authorization).toBeUndefined();
     expect(defaultHeaders?.['X-User-Email']).toBeUndefined();
+    const fetchOptions = (
+      options.llmConfig as {
+        clientOptions?: { fetchOptions?: { dispatcher?: unknown; redirect?: string } };
+      }
+    ).clientOptions?.fetchOptions;
+    expect(fetchOptions).toEqual(
+      expect.objectContaining({
+        dispatcher: expect.any(Object),
+        redirect: 'error',
+      }),
+    );
   });
 
   it('applies customParams.paramDefinitions defaults on the native path', async () => {

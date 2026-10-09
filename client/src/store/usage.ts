@@ -3,10 +3,20 @@ import { atom, getDefaultStore } from 'jotai';
 import type { TMessage, TContextUsageEvent } from 'librechat-data-provider';
 import type { BranchTotals, BranchUsage } from '~/utils/tokens';
 import { EMPTY_BRANCH, EMPTY_USAGE } from '~/utils/tokens';
+import { createStorageAtom } from './jotai-utils';
+
+/** Sticky preference: does the context popover open with the breakdown showing?
+ *  The gauge alone is the default; a user who wants the detail sets it once. */
+export const contextBreakdownExpandedAtom = createStorageAtom<boolean>(
+  'contextBreakdownExpanded',
+  false,
+);
 
 /** Latest backend context snapshot, anchored to the run's user message for staleness checks */
 export interface ContextSnapshot extends TContextUsageEvent {
   anchorMessageId: string | null;
+  /** Response owning a live snapshot; user-message anchors are shared by siblings. */
+  responseMessageId?: string | null;
   /** Output tokens finalized after this pre-call snapshot (the last call's response) */
   completedOutputTokens?: number;
 }
@@ -65,6 +75,11 @@ export const snapshotsByAnchorFamily = atomFamily((_conversationId: string) =>
   atom<Map<string, ContextSnapshot>>(new Map()),
 );
 
+/** Response owning live usage, independent of the selected branch. */
+export const activeUsageResponseIdFamily = atomFamily((_conversationId: string) =>
+  atom<string | null>(null),
+);
+
 /** In-flight usage of the streaming response; flushed into the index at finalize. */
 export const pendingUsageFamily = atomFamily((_conversationId: string) =>
   atom<UsageTotals>(EMPTY_USAGE_TOTALS),
@@ -77,6 +92,30 @@ export const totalUsageFamily = atomFamily((_conversationId: string) =>
 
 /** Throttled in-flight output token estimate for the current model call */
 export const liveTokensFamily = atomFamily((_conversationId: string) => atom<number>(0));
+
+/**
+ * Subagent model calls COMMITTED to the conversation, accumulated from
+ * `usage_type: 'subagent'` events once their run settles. Deliberately excluded
+ * from branch/total provider usage (they bill separately and would double-count
+ * a turn), so they surface as their own Totals row. Session-scoped: not
+ * persisted, cleared on convo switch.
+ */
+export const subagentUsageFamily = atomFamily((_conversationId: string) =>
+  atom<BranchUsage>(EMPTY_USAGE),
+);
+
+/**
+ * The in-flight run's subagent share, held beside `pendingUsageFamily` and
+ * settled with it: committed into `subagentUsageFamily` when the response is
+ * finalized or a stop is attributed, discarded when the run ends with no
+ * salvageable response. Committing on arrival instead would leave a failed
+ * run's subagent tokens in the Totals after its usage was discarded from every
+ * rollup they are a subset of, and would count them twice when a resume
+ * re-folds the same events.
+ */
+export const pendingSubagentUsageFamily = atomFamily((_conversationId: string) =>
+  atom<BranchUsage>(EMPTY_USAGE),
+);
 
 /** Last known provider-vs-estimate calibration ratio for the conversation */
 export const calibrationFamily = atomFamily((_conversationId: string) => atom<number>(1));
@@ -127,14 +166,54 @@ export function clearUsageFolded(conversationId: string): void {
   foldedUsageKeys.delete(conversationId);
 }
 
+/**
+ * Per-agent/model instruction+tool overhead — the system prompt + tool-schema
+ * tokens the next call always sends — cached from the breakdown the live
+ * `ON_CONTEXT_USAGE` event emits. Keyed by agent/model (NOT per conversation),
+ * so a snapshot-less branch (import / never-generated) can reuse the overhead
+ * once the same agent has run anywhere this session, making its prune budget and
+ * gauge account for the fixed overhead the client can't otherwise know. Never
+ * cleared on convo switch; bounded by the number of distinct configs used.
+ */
+const modelOverhead = new Map<string, number>();
+
+/** Stable cache key the writer (usage handler) and reader (estimate) build
+ *  identically. An agent resolves to its real provider/model only after its data
+ *  loads, so the reader (resolved) and writer (raw `agents` submission) would key
+ *  differently — key by `agentId` when present so both agree; non-agent configs
+ *  key by endpoint:model. */
+export function overheadKey(
+  endpoint?: string | null,
+  model?: string | null,
+  agentId?: string | null,
+): string {
+  if (agentId != null && agentId !== '') {
+    return `agent:${agentId}`;
+  }
+  return `${endpoint ?? ''}::${model ?? ''}`;
+}
+
+export function setModelOverhead(key: string, tokens: number): void {
+  if (tokens > 0) {
+    modelOverhead.set(key, tokens);
+  }
+}
+
+export function getModelOverhead(key: string): number {
+  return modelOverhead.get(key) ?? 0;
+}
+
 /** Jotai atomFamily entries are never GC'd — call on conversation switch/cleanup */
 export function removeUsageAtoms(conversationId: string): void {
   branchTotalsFamily.remove(conversationId);
   contextSnapshotFamily.remove(conversationId);
   snapshotsByAnchorFamily.remove(conversationId);
   pendingUsageFamily.remove(conversationId);
+  activeUsageResponseIdFamily.remove(conversationId);
   totalUsageFamily.remove(conversationId);
   liveTokensFamily.remove(conversationId);
+  subagentUsageFamily.remove(conversationId);
+  pendingSubagentUsageFamily.remove(conversationId);
   calibrationFamily.remove(conversationId);
   foldedUsageKeys.delete(conversationId);
 }

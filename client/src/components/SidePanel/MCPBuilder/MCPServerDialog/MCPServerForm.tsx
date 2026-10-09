@@ -1,13 +1,13 @@
 import { FormProvider, useWatch } from 'react-hook-form';
 import { Permissions, PermissionTypes } from 'librechat-data-provider';
-import { useHasAccess } from '~/hooks';
 import type { useMCPServerForm, MCPServerFormData } from './hooks/useMCPServerForm';
-import { AuthTypeEnum } from './hooks/useMCPServerForm';
 import ConnectionSection from './sections/ConnectionSection';
 import BasicInfoSection from './sections/BasicInfoSection';
 import TransportSection from './sections/TransportSection';
+import { AuthTypeEnum } from './hooks/useMCPServerForm';
 import TrustSection from './sections/TrustSection';
 import AuthSection from './sections/AuthSection';
+import { useHasAccess } from '~/hooks';
 
 interface MCPServerFormProps {
   formHook: ReturnType<typeof useMCPServerForm>;
@@ -37,9 +37,11 @@ export default function MCPServerForm({ formHook }: MCPServerFormProps) {
     <FormProvider {...methods}>
       <div className="space-y-4 px-1 py-1">
         <BasicInfoSection />
+        {/* `display: contents` would drop the margin `space-y-4` puts on this fieldset,
+            collapsing the gap above the first section to zero */}
         <fieldset
           disabled={isOboLockedReadOnly}
-          className="contents space-y-4"
+          className="space-y-4"
           aria-disabled={isOboLockedReadOnly}
         >
           <ConnectionSection />

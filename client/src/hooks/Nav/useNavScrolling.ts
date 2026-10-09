@@ -1,64 +1,76 @@
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import throttle from 'lodash/throttle';
-import React, { useCallback, useEffect, useRef } from 'react';
 import type { FetchNextPageOptions, InfiniteQueryObserverResult } from '@tanstack/react-query';
 
 export default function useNavScrolling<TData>({
   nextCursor,
   isFetchingNext,
-  setShowLoading,
   fetchNextPage,
+  enabled = true,
 }: {
   nextCursor?: string | null;
   isFetchingNext: boolean;
-  setShowLoading: React.Dispatch<React.SetStateAction<boolean>>;
   fetchNextPage?: (
     options?: FetchNextPageOptions | undefined,
   ) => Promise<InfiniteQueryObserverResult<TData, unknown>>;
+  /** Set false while the list is hidden or collapsed so it stops draining pages */
+  enabled?: boolean;
 }) {
   const scrollPositionRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const stateRef = useRef({ nextCursor, isFetchingNext, enabled });
+  stateRef.current = { nextCursor, isFetchingNext, enabled };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const fetchNext = useCallback(
-    throttle(
-      () => {
-        if (fetchNextPage) {
-          return fetchNextPage();
-        }
-        return Promise.resolve();
-      },
-      750,
-      { leading: true },
-    ),
-    [fetchNextPage],
+  const maybeFetchNext = useCallback(() => {
+    const container = containerRef.current;
+    const { nextCursor: cursor, isFetchingNext: fetching, enabled: isEnabled } = stateRef.current;
+    if (!container || !isEnabled || cursor == null || fetching || !fetchNextPage) {
+      return;
+    }
+
+    const { scrollTop, clientHeight, scrollHeight } = container;
+    if (clientHeight === 0) {
+      return;
+    }
+
+    /** A list too short to scroll never fires a scroll event, so fill it first */
+    const needsFill = scrollHeight <= clientHeight;
+    const nearBottomOfList = scrollTop + clientHeight >= scrollHeight * 0.97;
+    if (needsFill || nearBottomOfList) {
+      fetchNextPage();
+    }
+  }, [fetchNextPage]);
+
+  const throttledFetchNext = useMemo(
+    () => throttle(maybeFetchNext, 750, { leading: true }),
+    [maybeFetchNext],
   );
 
-  const handleScroll = useCallback(() => {
-    if (containerRef.current) {
-      const { scrollTop, clientHeight, scrollHeight } = containerRef.current;
-      const nearBottomOfList = scrollTop + clientHeight >= scrollHeight * 0.97;
+  useEffect(() => throttledFetchNext.cancel, [throttledFetchNext]);
 
-      if (nearBottomOfList && nextCursor != null && !isFetchingNext) {
-        setShowLoading(true);
-        fetchNext();
-      } else {
-        setShowLoading(false);
-      }
-    }
-  }, [nextCursor, isFetchingNext, fetchNext, setShowLoading]);
-
+  /**
+   * The resize observer covers the case where the panel has no layout yet
+   * (`clientHeight` of 0) and only gets one once it is expanded or revealed.
+   */
   useEffect(() => {
     const container = containerRef.current;
-    if (container) {
-      container.addEventListener('scroll', handleScroll);
+    if (!container) {
+      return;
     }
 
+    container.addEventListener('scroll', throttledFetchNext, { passive: true });
+    const observer = new ResizeObserver(() => throttledFetchNext());
+    observer.observe(container);
+
     return () => {
-      if (container) {
-        container.removeEventListener('scroll', handleScroll);
-      }
+      container.removeEventListener('scroll', throttledFetchNext);
+      observer.disconnect();
     };
-  }, [handleScroll]);
+  }, [throttledFetchNext]);
+
+  useEffect(() => {
+    throttledFetchNext();
+  }, [nextCursor, enabled, throttledFetchNext]);
 
   const moveToTop = useCallback(() => {
     const container = containerRef.current;

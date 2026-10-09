@@ -293,7 +293,11 @@ class StreamRunManager {
     const deltaHandler = async (delta) => {
       for (const key in delta) {
         if (!Object.prototype.hasOwnProperty.call(data, key)) {
-          logger.warn(`Unhandled tool call key "${key}", delta: `, delta);
+          logger.warn('Unhandled tool call delta key', {
+            key,
+            toolCallType: type,
+            deltaKeys: Object.keys(delta),
+          });
           continue;
         }
 
@@ -304,7 +308,11 @@ class StreamRunManager {
 
           for (const d of delta[key]) {
             if (typeof d === 'object' && !Object.prototype.hasOwnProperty.call(d, 'index')) {
-              logger.warn("Expected an object with an 'index' for array updates but got:", d);
+              logger.warn('Tool call array delta is missing an index', {
+                key,
+                toolCallType: type,
+                valueType: typeof d,
+              });
               continue;
             }
 
@@ -407,7 +415,10 @@ class StreamRunManager {
     const { delta, id: stepId } = event.data;
 
     if (!delta.step_details) {
-      logger.warn('Undefined or unhandled run step delta:', delta);
+      logger.warn('Undefined or unhandled run step delta', {
+        stepId,
+        deltaKeys: Object.keys(delta ?? {}),
+      });
       return;
     }
 
@@ -415,7 +426,11 @@ class StreamRunManager {
     const { tool_calls } = delta.step_details;
 
     if (!tool_calls) {
-      logger.warn('Unhandled run step details', delta.step_details);
+      logger.warn('Unhandled run step details', {
+        stepId,
+        stepDetailType: delta.step_details.type,
+        detailKeys: Object.keys(delta.step_details),
+      });
       return;
     }
 

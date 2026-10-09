@@ -1,17 +1,28 @@
 import { useMemo, useState } from 'react';
-import { Copy, CopyCheck } from 'lucide-react';
+import { Copy, CopyCheck } from 'lucide';
 import { useFormContext, useWatch } from 'react-hook-form';
-import { Permissions, PermissionTypes } from 'librechat-data-provider';
-import { Label, Input, Checkbox, SecretInput, Radio, useToastContext } from '@librechat/client';
-import { AuthTypeEnum, AuthorizationTypeEnum } from '../hooks/useMCPServerForm';
+import { Permissions, PermissionTypes, TokenExchangeMethodEnum } from 'librechat-data-provider';
+import {
+  Label,
+  Input,
+  Radio,
+  Checkbox,
+  MorphIcon,
+  SecretInput,
+  useToastContext,
+} from '@librechat/client';
 import type { MCPServerFormData } from '../hooks/useMCPServerForm';
+import { AuthTypeEnum, AuthorizationTypeEnum } from '../hooks/useMCPServerForm';
 import { useLocalize, useCopyToClipboard, useHasAccess } from '~/hooks';
+import { Collapse } from '~/components/ui';
 import { cn } from '~/utils';
 
 interface AuthSectionProps {
   isEditMode: boolean;
   serverName?: string;
 }
+
+const AUTO_TOKEN_EXCHANGE_METHOD = 'auto';
 
 export default function AuthSection({ isEditMode, serverName }: AuthSectionProps) {
   const localize = useLocalize();
@@ -40,6 +51,10 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
   const authorizationType = useWatch<MCPServerFormData, 'auth.api_key_authorization_type'>({
     name: 'auth.api_key_authorization_type',
   }) as AuthorizationTypeEnum;
+
+  const tokenExchangeMethod = useWatch<MCPServerFormData, 'auth.oauth_token_exchange_method'>({
+    name: 'auth.oauth_token_exchange_method',
+  });
 
   const redirectUri = serverName
     ? `${window.location.origin}/api/mcp/${serverName}/oauth/callback`
@@ -83,7 +98,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
   );
 
   return (
-    <div className="space-y-3">
+    <div>
       {/* Auth Type Radio */}
       <fieldset className="space-y-1.5">
         <legend>
@@ -102,79 +117,83 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
       </fieldset>
 
       {/* API Key Fields */}
-      {authType === AuthTypeEnum.ServiceHttp && (
-        <div className="space-y-3 rounded-lg border border-border-light p-3">
-          {/* User provides own key checkbox */}
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="user_provides_key"
-              checked={apiKeySource === 'user'}
-              onCheckedChange={(checked) =>
-                setValue('auth.api_key_source', checked ? 'user' : 'admin')
-              }
-              aria-labelledby="user_provides_key_label"
-            />
-            <label
-              id="user_provides_key_label"
-              htmlFor="user_provides_key"
-              className="cursor-pointer text-sm"
-            >
-              {localize('com_ui_user_provides_key')}
-            </label>
+      <Collapse open={authType === AuthTypeEnum.ServiceHttp} className="pt-3">
+        <div className="bg-surface-secondary space-y-3 rounded-lg p-3">
+          {/* User provides own key checkbox + admin-provided key */}
+          <div>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="user_provides_key"
+                checked={apiKeySource === 'user'}
+                onCheckedChange={(checked) =>
+                  setValue('auth.api_key_source', checked ? 'user' : 'admin')
+                }
+                aria-labelledby="user_provides_key_label"
+              />
+              <label
+                id="user_provides_key_label"
+                htmlFor="user_provides_key"
+                className="cursor-pointer text-sm"
+              >
+                {localize('com_ui_user_provides_key')}
+              </label>
+            </div>
+
+            {/* API Key input - only when admin provides */}
+            <Collapse open={apiKeySource !== 'user'} className="pt-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="api_key" className="text-sm font-medium">
+                  {localize('com_ui_api_key')}
+                </Label>
+                <SecretInput
+                  id="api_key"
+                  placeholder="sk-..."
+                  controlsOnHover
+                  {...register('auth.api_key')}
+                />
+              </div>
+            </Collapse>
           </div>
 
-          {/* API Key input - only when admin provides */}
-          {apiKeySource !== 'user' && (
-            <div className="space-y-1.5">
-              <Label htmlFor="api_key" className="text-sm font-medium">
-                {localize('com_ui_api_key')}
-              </Label>
-              <SecretInput
-                id="api_key"
-                placeholder="sk-..."
-                controlsOnHover
-                {...register('auth.api_key')}
+          {/* Header format + custom header name */}
+          <div>
+            <fieldset className="space-y-1.5">
+              <legend>
+                <Label id="header-format-label" className="text-sm font-medium">
+                  {localize('com_ui_header_format')}
+                </Label>
+              </legend>
+              <Radio
+                options={headerFormatOptions}
+                value={authorizationType || AuthorizationTypeEnum.Bearer}
+                onChange={(val) =>
+                  setValue('auth.api_key_authorization_type', val as AuthorizationTypeEnum)
+                }
+                fullWidth
+                aria-labelledby="header-format-label"
               />
-            </div>
-          )}
+            </fieldset>
 
-          {/* Header Format Radio */}
-          <fieldset className="space-y-1.5">
-            <legend>
-              <Label id="header-format-label" className="text-sm font-medium">
-                {localize('com_ui_header_format')}
-              </Label>
-            </legend>
-            <Radio
-              options={headerFormatOptions}
-              value={authorizationType || AuthorizationTypeEnum.Bearer}
-              onChange={(val) =>
-                setValue('auth.api_key_authorization_type', val as AuthorizationTypeEnum)
-              }
-              fullWidth
-              aria-labelledby="header-format-label"
-            />
-          </fieldset>
-
-          {/* Custom header name */}
-          {authorizationType === AuthorizationTypeEnum.Custom && (
-            <div className="space-y-1.5">
-              <Label htmlFor="custom_header" className="text-sm font-medium">
-                {localize('com_ui_custom_header_name')}
-              </Label>
-              <Input
-                id="custom_header"
-                placeholder="X-Api-Key"
-                {...register('auth.api_key_custom_header')}
-              />
-            </div>
-          )}
+            {/* Custom header name */}
+            <Collapse open={authorizationType === AuthorizationTypeEnum.Custom} className="pt-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="custom_header" className="text-sm font-medium">
+                  {localize('com_ui_custom_header_name')}
+                </Label>
+                <Input
+                  id="custom_header"
+                  placeholder="X-Api-Key"
+                  {...register('auth.api_key_custom_header')}
+                />
+              </div>
+            </Collapse>
+          </div>
         </div>
-      )}
+      </Collapse>
 
       {/* OAuth Fields */}
-      {authType === AuthTypeEnum.OAuth && (
-        <div className="space-y-3 rounded-lg border border-border-light p-3">
+      <Collapse open={authType === AuthTypeEnum.OAuth} className="pt-3">
+        <div className="bg-surface-secondary space-y-3 rounded-lg p-3">
           {/* Client ID & Secret in a grid */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -200,14 +219,16 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
                 aria-describedby={
                   errors.auth?.oauth_client_id ? 'oauth-client-id-error' : undefined
                 }
-                {...register('auth.oauth_client_id', { required: !isEditMode })}
+                {...register('auth.oauth_client_id', {
+                  required: !isEditMode && authType === AuthTypeEnum.OAuth,
+                })}
                 className={cn(errors.auth?.oauth_client_id && 'border-border-destructive')}
               />
               {errors.auth?.oauth_client_id && (
                 <p
                   id="oauth-client-id-error"
                   role="alert"
-                  className="text-xs text-text-destructive"
+                  className="text-text-destructive text-xs"
                 >
                   {localize('com_ui_field_required')}
                 </p>
@@ -258,6 +279,40 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
             <Input id="oauth_scope" placeholder="read write" {...register('auth.oauth_scope')} />
           </div>
 
+          {/* Token exchange method */}
+          <fieldset className="space-y-1.5">
+            <legend>
+              <Label id="oauth-token-exchange-method-label" className="text-sm font-medium">
+                {localize('com_ui_token_exchange_method')}
+              </Label>
+            </legend>
+            <Radio
+              options={[
+                { value: AUTO_TOKEN_EXCHANGE_METHOD, label: localize('com_ui_auto') },
+                {
+                  value: TokenExchangeMethodEnum.DefaultPost,
+                  label: localize('com_ui_default_post_request'),
+                },
+                {
+                  value: TokenExchangeMethodEnum.BasicAuthHeader,
+                  label: localize('com_ui_basic_auth_header'),
+                },
+              ]}
+              value={tokenExchangeMethod ?? AUTO_TOKEN_EXCHANGE_METHOD}
+              onChange={(value) =>
+                setValue(
+                  'auth.oauth_token_exchange_method',
+                  value === AUTO_TOKEN_EXCHANGE_METHOD
+                    ? undefined
+                    : (value as TokenExchangeMethodEnum),
+                  { shouldDirty: true },
+                )
+              }
+              fullWidth
+              aria-labelledby="oauth-token-exchange-method-label"
+            />
+          </fieldset>
+
           {/* Redirect URI */}
           {isEditMode && redirectUri && (
             <div className="space-y-1.5">
@@ -270,29 +325,29 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
                   type="text"
                   readOnly
                   value={redirectUri}
-                  className="flex-1 text-xs text-text-secondary"
+                  className="text-text-secondary flex-1 text-xs"
                 />
                 <button
                   type="button"
                   onClick={() => {
                     if (isCopying) return;
+                    if (!copyLink(setIsCopying)) return;
                     showToast({ message: localize('com_ui_copied_to_clipboard') });
-                    copyLink(setIsCopying);
                   }}
-                  className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border-light text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  className="border-border-light text-text-secondary hover:bg-surface-hover hover:text-text-primary flex size-10 shrink-0 items-center justify-center rounded-lg border transition-colors"
                   aria-label={localize('com_ui_copy_link')}
                 >
-                  {isCopying ? <CopyCheck className="size-4" /> : <Copy className="size-4" />}
+                  <MorphIcon icon={isCopying ? CopyCheck : Copy} className="size-4" />
                 </button>
               </div>
             </div>
           )}
         </div>
-      )}
+      </Collapse>
 
       {/* OBO Fields */}
-      {authType === AuthTypeEnum.OBO && (
-        <div className="space-y-3 rounded-lg border border-border-light p-3">
+      <Collapse open={authType === AuthTypeEnum.OBO} className="pt-3">
+        <div className="bg-surface-secondary space-y-3 rounded-lg p-3">
           <div className="space-y-1.5">
             <Label htmlFor="obo_scopes" className="text-sm font-medium">
               {localize('com_ui_obo_scopes')}{' '}
@@ -315,22 +370,22 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
               className={cn(errors.auth?.obo_scopes && 'border-border-destructive')}
             />
             {errors.auth?.obo_scopes && (
-              <p role="alert" className="text-xs text-text-destructive">
+              <p role="alert" className="text-text-destructive text-xs">
                 {localize('com_ui_field_required')}
               </p>
             )}
             {canConfigureObo ? (
-              <p id="obo-scopes-description" className="text-xs text-text-secondary">
+              <p id="obo-scopes-description" className="text-text-secondary text-xs">
                 {localize('com_ui_obo_scopes_description')}
               </p>
             ) : (
-              <p id="obo-scopes-readonly-description" className="text-xs text-text-secondary">
+              <p id="obo-scopes-readonly-description" className="text-text-secondary text-xs">
                 {localize('com_ui_obo_readonly_no_permission')}
               </p>
             )}
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }

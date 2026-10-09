@@ -2,7 +2,7 @@ import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezonePlugin from 'dayjs/plugin/timezone.js';
 import type { ZodIssue } from 'zod';
-import type * as a from './types/assistants';
+import type * as a from './types/content';
 import type * as s from './schemas';
 import type * as t from './types';
 import {
@@ -10,6 +10,8 @@ import {
   openRouterSchema,
   googleSchema,
   EModelEndpoint,
+  isAgentsEndpoint,
+  isAssistantsEndpoint,
   Providers,
   anthropicSchema,
   assistantSchema,
@@ -380,40 +382,72 @@ export const parseCompactConvo = ({
 export function parseTextParts(
   contentParts: Array<a.TMessageContentParts | undefined>,
   skipReasoning: boolean = false,
+  options?: { includeSteer?: boolean },
 ): string {
   let result = '';
+  const append = (textValue: string) => {
+    if (
+      result.length > 0 &&
+      textValue.length > 0 &&
+      result[result.length - 1] !== ' ' &&
+      textValue[0] !== ' '
+    ) {
+      result += ' ';
+    }
+    result += textValue;
+  };
 
   for (const part of contentParts) {
     if (!part?.type) {
       continue;
     }
     if (part.type === ContentTypes.TEXT) {
-      const textValue = (typeof part.text === 'string' ? part.text : part.text?.value) || '';
-
-      if (
-        result.length > 0 &&
-        textValue.length > 0 &&
-        result[result.length - 1] !== ' ' &&
-        textValue[0] !== ' '
-      ) {
-        result += ' ';
-      }
-      result += textValue;
+      append((typeof part.text === 'string' ? part.text : part.text?.value) || '');
+    } else if (part.type === ContentTypes.STEER && options?.includeSteer === true) {
+      /** Mid-run user speech: excluded by default so generic extraction (TTS
+       *  reading assistant output) never speaks the user's own words — the
+       *  full-record surfaces (search indexing, persisted abort text) opt in. */
+      append(typeof part.steer === 'string' ? part.steer : '');
     } else if (part.type === ContentTypes.THINK && !skipReasoning) {
-      const textValue = typeof part.think === 'string' ? part.think : '';
-      if (
-        result.length > 0 &&
-        textValue.length > 0 &&
-        result[result.length - 1] !== ' ' &&
-        textValue[0] !== ' '
-      ) {
-        result += ' ';
-      }
-      result += textValue;
+      append(typeof part.think === 'string' ? part.think : '');
     }
   }
 
   return result;
+}
+
+const thinkingBlockPattern = /:::thinking([\s\S]*?):::/;
+
+/**
+ * Splits legacy plain-text reasoning from the answer exactly as the message view renders it:
+ * the first `:::thinking ... :::` block becomes the collapsible Thoughts, the rest is the answer.
+ */
+export function parseThinkingContent(text: string): {
+  thinkingContent: string;
+  regularContent: string;
+} {
+  const thinkingMatch = text.match(thinkingBlockPattern);
+  return {
+    thinkingContent: thinkingMatch ? thinkingMatch[1].trim() : '',
+    regularContent: thinkingMatch ? text.replace(thinkingBlockPattern, '').trim() : text,
+  };
+}
+
+/**
+ * The text Read Aloud speaks for a message: the answer the message view shows, never its
+ * reasoning. Covers both reasoning shapes the UI collapses into Thoughts: `think` content parts
+ * and the legacy `:::thinking ... :::` block in plain text.
+ */
+export function getSpeechText(message: {
+  content?: Array<a.TMessageContentParts | undefined> | string | null;
+  text?: string | null;
+}): string {
+  if (Array.isArray(message.content) && message.content.length > 0) {
+    return parseTextParts(message.content, true).trim();
+  }
+  const text =
+    typeof message.content === 'string' && message.content ? message.content : message.text;
+  return parseThinkingContent(text ?? '').regularContent.trim();
 }
 
 export const SEPARATORS = ['.', '?', '!', '۔', '。', '‥', ';', '¡', '¿', '\n', '```'];
@@ -489,6 +523,89 @@ export type ParsedEphemeralAgentId = {
   model: string;
   sender?: string;
   index?: number;
+};
+
+/**
+ * Resolves the display label ("sender") for an ephemeral agent:
+ * `modelLabel` (user/preset) → model spec's `label` → endpoint config's
+ * `modelDisplayLabel` → `''` (lets consumers fall back to the model name).
+ */
+export function getEphemeralSender({
+  modelLabel,
+  specLabel,
+  modelDisplayLabel,
+}: {
+  modelLabel?: string | null;
+  specLabel?: string | null;
+  modelDisplayLabel?: string | null;
+}): string {
+  return modelLabel ?? specLabel ?? modelDisplayLabel ?? '';
+}
+
+/** Built-in endpoints; anything else in `endpoint` is a custom endpoint's own name. */
+const builtInEndpoints = new Set<string>(Object.values(EModelEndpoint));
+
+/**
+ * Whether a persisted `sender` is a label someone configured rather than the
+ * model-derived name `getResponseSender` produces.
+ *
+ * The sender is the one thing that records which it was: `resolveSender` writes an
+ * agent's name, then the `getEphemeralSender` chain (`modelLabel` → a model spec's
+ * `label` → an endpoint's `modelDisplayLabel`), and falls back to `getResponseSender`
+ * only when none of those is set. Asking the message rather than the conversation
+ * settles three things a settings lookup cannot: labels that live in config a caller
+ * may not hold, labels an endpoint ignores (Anthropic keeps reading `Claude` whatever
+ * `chatGptLabel` says, and matches here), and labels changed since the message was
+ * written — its header still shows the sender it was written under.
+ *
+ * Equality is the test, so the only way to be wrong is a stored name that no longer
+ * matches what the current heuristics produce, which withholds a model rather than
+ * revealing one.
+ */
+export const isConfiguredSender = ({
+  sender,
+  endpoint,
+  endpointType,
+  model,
+  isCreatedByUser,
+}: {
+  sender?: string | null;
+  endpoint?: EModelEndpoint | string | null;
+  endpointType?: EModelEndpoint | string | null;
+  model?: string | null;
+  isCreatedByUser?: boolean | null;
+}): boolean => {
+  /** A user turn is headed by the person who wrote it, so it has no model to withhold
+   *  and its `User` sender would never match a derived name. */
+  if (isCreatedByUser === true) {
+    return false;
+  }
+  /** Agents and assistants are named by whoever authored them: the header shows that
+   *  name whether or not the response stored a sender, and `getResponseSender` has no
+   *  branch to derive one. */
+  if (isAgentsEndpoint(endpoint) || isAssistantsEndpoint(endpoint)) {
+    return true;
+  }
+  if (sender == null || sender === '') {
+    return false;
+  }
+  /** A custom endpoint carries its own configured name in `endpoint`, which
+   *  `getResponseSender` recognizes only through `endpointType`. */
+  const resolvedType =
+    endpointType ??
+    (endpoint != null && !builtInEndpoints.has(endpoint) ? EModelEndpoint.custom : undefined);
+  const derived = getResponseSender({
+    endpoint: endpoint as EModelEndpoint,
+    endpointType: resolvedType as EModelEndpoint,
+    model,
+  });
+  /** An endpoint this cannot name — an older message stored without one, say — says
+   *  nothing either way, and reading that silence as "configured" would withhold the
+   *  model from every unlabelled row it reached. */
+  if (derived === '') {
+    return false;
+  }
+  return sender !== derived;
 };
 
 /**
@@ -600,9 +717,7 @@ export function isEphemeralAgentId(agentId: string | null | undefined): boolean 
  * stripAgentIdSuffix('openAI__gpt-4o___GPT-4o____1') // => 'openAI__gpt-4o___GPT-4o'
  * stripAgentIdSuffix('agent_abc123') // => 'agent_abc123' (unchanged)
  */
-export function stripAgentIdSuffix(agentId: string): string {
-  return agentId.replace(/____\d+$/, '');
-}
+export { stripAgentIdSuffix } from './agents/identity';
 
 /**
  * Appends an index suffix (____N) to an agent ID.
@@ -612,6 +727,4 @@ export function stripAgentIdSuffix(agentId: string): string {
  * appendAgentIdSuffix('agent_abc123', 1) // => 'agent_abc123____1'
  * appendAgentIdSuffix('openAI__gpt-4o___GPT-4o', 1) // => 'openAI__gpt-4o___GPT-4o____1'
  */
-export function appendAgentIdSuffix(agentId: string, index: number): string {
-  return `${agentId}____${index}`;
-}
+export { appendAgentIdSuffix } from './agents/identity';

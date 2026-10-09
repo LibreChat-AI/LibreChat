@@ -25,3 +25,25 @@
   opacity: 1;
   transform: scale(1) translateX(0);
 }
+
+/* For a popover placed above its trigger, so it grows out of the trigger edge. */
+.animate-popover-bottom {
+  transform-origin: bottom left;
+  opacity: 0;
+  transition:
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateY(0.5rem) scale(0.96);
+}
+
+.animate-popover-bottom[data-enter] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-popover-bottom {
+    transition: none;
+    transform: none;
+  }
+}

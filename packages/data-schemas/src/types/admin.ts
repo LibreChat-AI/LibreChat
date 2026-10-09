@@ -1,40 +1,14 @@
 import type { PrincipalType, PrincipalModel, TCustomConfig } from 'librechat-data-provider';
-import type { SystemCapabilities } from '~/admin/capabilities';
 
-/* ── Capability types ───────────────────────────────────────────────── */
+/* ── Capability types (defined alongside the SystemCapabilities constant) ── */
 
-/** Base capabilities derived from the SystemCapabilities constant. */
-export type BaseSystemCapability = (typeof SystemCapabilities)[keyof typeof SystemCapabilities];
-
-/** Principal types that can receive config overrides. */
-export type ConfigAssignTarget = 'user' | 'group' | 'role';
-
-/** Top-level keys of the configSchema from librechat.yaml. */
-export type ConfigSection = string & keyof TCustomConfig;
-
-/** Section-level config capabilities derived from configSchema keys. */
-type ConfigSectionCapability = `manage:configs:${ConfigSection}` | `read:configs:${ConfigSection}`;
-
-/** Principal-scoped config assignment capabilities. */
-type ConfigAssignCapability = `assign:configs:${ConfigAssignTarget}`;
-
-/**
- * Union of all valid capability strings:
- * - Base capabilities from SystemCapabilities
- * - Section-level config capabilities (manage:configs:<section>, read:configs:<section>)
- * - Config assignment capabilities (assign:configs:<user|group|role>)
- */
-export type SystemCapability =
-  | BaseSystemCapability
-  | ConfigSectionCapability
-  | ConfigAssignCapability;
-
-/** UI grouping of capabilities for the admin panel's capability editor. */
-export type CapabilityCategory = {
-  key: string;
-  labelKey: string;
-  capabilities: BaseSystemCapability[];
-};
+export type {
+  BaseSystemCapability,
+  ConfigAssignTarget,
+  ConfigSection,
+  SystemCapability,
+  CapabilityCategory,
+} from '~/admin/capabilities';
 
 /* ── Admin API response types ───────────────────────────────────────── */
 
@@ -91,13 +65,20 @@ export type AuditCategory = (typeof AUDIT_CATEGORIES)[number];
  * action maps unambiguously to a category. The Mongoose schema enum and the
  * HTTP handler's whitelist both consume this constant so they cannot drift.
  */
-export const AUDIT_ACTIONS = ['grant.assigned', 'grant.removed'] as const;
+export const AUDIT_ACTIONS = [
+  'grant.assigned',
+  'grant.removed',
+  'permission.insights_assigned',
+  'permission.insights_removed',
+] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /** Maps each action to its category so writers never pass both. */
 export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'grant.assigned': 'grant',
   'grant.removed': 'grant',
+  'permission.insights_assigned': 'permission',
+  'permission.insights_removed': 'permission',
 };
 
 /** Result of the audited operation. Kept first-class instead of being encoded

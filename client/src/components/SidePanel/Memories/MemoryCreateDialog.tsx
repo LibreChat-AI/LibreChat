@@ -4,12 +4,15 @@ import {
   OGDialog,
   OGDialogTemplate,
   Button,
+  FieldMessage,
   Label,
   Input,
   Spinner,
+  Textarea,
   useToastContext,
 } from '@librechat/client';
-import { useCreateMemoryMutation } from '~/data-provider';
+import { getMemoryKeyError, getMemoryValueError, getMemoryApiErrorMessage } from '~/utils/memory';
+import { useCreateMemoryMutation, useMemoriesQuery } from '~/data-provider';
 import { useLocalize, useHasAccess } from '~/hooks';
 
 interface MemoryCreateDialogProps {
@@ -33,6 +36,8 @@ export default function MemoryCreateDialog({
     permission: Permissions.CREATE,
   });
 
+  const { data: memData } = useMemoriesQuery();
+
   const { mutate: createMemory, isLoading } = useCreateMemoryMutation({
     onSuccess: () => {
       showToast({
@@ -42,33 +47,14 @@ export default function MemoryCreateDialog({
       onOpenChange(false);
       setKey('');
       setValue('');
+      setTouched({ key: false, value: false });
       setTimeout(() => {
         triggerRef?.current?.focus();
       }, 0);
     },
     onError: (error: Error) => {
-      let errorMessage = localize('com_ui_error');
-
-      if (error && typeof error === 'object' && 'response' in error) {
-        const axiosError = error as any;
-        if (axiosError.response?.data?.error) {
-          errorMessage = axiosError.response.data.error;
-
-          // Check for duplicate key error
-          if (axiosError.response?.status === 409 || errorMessage.includes('already exists')) {
-            errorMessage = localize('com_ui_memory_key_exists');
-          }
-          // Check for key validation error (lowercase and underscores only)
-          else if (errorMessage.includes('lowercase letters and underscores')) {
-            errorMessage = localize('com_ui_memory_key_validation');
-          }
-        }
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
-
       showToast({
-        message: errorMessage,
+        message: getMemoryApiErrorMessage(error, localize('com_ui_error')),
         status: 'error',
       });
     },
@@ -76,17 +62,32 @@ export default function MemoryCreateDialog({
 
   const [key, setKey] = useState('');
   const [value, setValue] = useState('');
+  const [touched, setTouched] = useState({ key: false, value: false });
+  const [prevOpen, setPrevOpen] = useState(open);
+
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (!open) {
+      setKey('');
+      setValue('');
+      setTouched({ key: false, value: false });
+    }
+  }
+
+  const keyError = getMemoryKeyError({ key, memories: memData?.memories });
+  const valueError = getMemoryValueError(value);
+  const hasErrors = keyError != null || valueError != null;
+  /** Stay quiet on a pristine empty field; validate live once there is something to judge. */
+  const showKeyError = touched.key || key !== '';
+  const showValueError = touched.value || value !== '';
 
   const handleSave = () => {
     if (!hasCreateAccess) {
       return;
     }
 
-    if (!key.trim() || !value.trim()) {
-      showToast({
-        message: localize('com_ui_field_required'),
-        status: 'error',
-      });
+    if (keyError || valueError) {
+      setTouched({ key: true, value: true });
       return;
     }
 
@@ -108,35 +109,50 @@ export default function MemoryCreateDialog({
       <OGDialogTemplate
         title={localize('com_ui_create_memory')}
         showCloseButton={false}
-        className="w-11/12 md:max-w-lg"
+        className="w-11/12 md:max-w-2xl"
         main={
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="memory-key" className="text-sm font-medium text-text-primary">
+              <Label htmlFor="memory-key" className="text-text-primary text-sm font-medium">
                 {localize('com_ui_key')}
               </Label>
               <Input
                 id="memory-key"
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
+                onBlur={() => setTouched((prev) => ({ ...prev, key: true }))}
                 onKeyDown={handleKeyPress}
                 placeholder={localize('com_ui_enter_key')}
                 className="w-full"
+                aria-invalid={showKeyError && keyError != null}
+                aria-describedby="memory-key-message"
               />
-              <p className="text-xs text-text-secondary">{localize('com_ui_memory_key_hint')}</p>
+              <FieldMessage
+                id="memory-key-message"
+                message={showKeyError && keyError ? localize(keyError) : null}
+                hint={localize('com_ui_memory_key_hint')}
+                lines={2}
+              />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="memory-value" className="text-sm font-medium text-text-primary">
+              <Label htmlFor="memory-value" className="text-text-primary text-sm font-medium">
                 {localize('com_ui_value')}
               </Label>
-              <textarea
+              <Textarea
                 id="memory-value"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
+                onBlur={() => setTouched((prev) => ({ ...prev, value: true }))}
                 onKeyDown={handleKeyPress}
                 placeholder={localize('com_ui_enter_value')}
-                className="min-h-[100px] w-full resize-none rounded-lg border border-border-light bg-transparent px-3 py-2 text-sm text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border-heavy"
-                rows={4}
+                className="border-border-light text-text-primary focus-visible:ring-border-heavy max-h-[45vh] min-h-[11.25rem] w-full resize-y rounded-lg border bg-transparent px-3 py-2 text-sm focus-visible:ring-1"
+                rows={8}
+                aria-invalid={showValueError && valueError != null}
+                aria-describedby="memory-value-message"
+              />
+              <FieldMessage
+                id="memory-value-message"
+                message={showValueError && valueError ? localize(valueError) : null}
               />
             </div>
           </div>
@@ -146,8 +162,7 @@ export default function MemoryCreateDialog({
             type="button"
             variant="submit"
             onClick={handleSave}
-            disabled={isLoading || !key.trim() || !value.trim()}
-            className="text-white"
+            disabled={isLoading || hasErrors}
             aria-label={localize('com_ui_create_memory')}
           >
             {isLoading ? <Spinner className="size-4" /> : localize('com_ui_create')}

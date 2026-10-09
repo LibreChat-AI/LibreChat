@@ -173,21 +173,81 @@ function convertToZodUnion(
 }
 
 /**
- * Helper function to resolve $ref references
+ * Resolves a local JSON pointer (e.g. `#/properties/body/properties/start`)
+ * against the root schema, per RFC 6901 (`~1` → `/`, `~0` → `~`).
+ * @returns The referenced subschema, or undefined when the pointer is dangling
+ */
+function resolveLocalPointer(
+  root: Record<string, unknown>,
+  pointer: string,
+): Record<string, unknown> | undefined {
+  const segments = pointer
+    .slice(2)
+    .split('/')
+    .map((segment) => segment.replace(/~1/g, '/').replace(/~0/g, '~'));
+
+  let node: unknown = root;
+  for (const segment of segments) {
+    if (node == null || typeof node !== 'object') {
+      return undefined;
+    }
+    node = (node as Record<string, unknown>)[segment];
+  }
+
+  if (node != null && typeof node === 'object' && !Array.isArray(node)) {
+    return node as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+/**
+ * Helper function to resolve $ref references. Resolves `#/$defs/...` and
+ * `#/definitions/...` refs via the definitions map, and any other local
+ * `#/...` pointer (e.g. `#/properties/foo`) against the root schema —
+ * MCP servers with OpenAPI-derived schemas commonly emit both forms.
  * @param schema - The schema to resolve
  * @param definitions - The definitions to use
  * @param visited - The set of visited references
+ * @param root - The root schema local pointers resolve against (defaults to `schema`)
  * @returns The resolved schema
  */
+/**
+ * Caps how many nodes a single resolution may emit. A remote MCP server controls
+ * this schema, and sibling references to the same definition each re-expand, so a
+ * compact acyclic graph can blow up exponentially (`Dn` holding two refs to
+ * `Dn-1` is 2^n). Past the cap the reference is left unexpanded rather than
+ * exhausting memory during registration.
+ */
+export const MAX_RESOLVED_SCHEMA_NODES = 50_000;
+
+interface ResolveBudget {
+  remaining: number;
+}
+
+/** Assigns without invoking the inherited `__proto__` setter, which would drop a
+ *  legitimately-named argument instead of creating an own property. */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 export function resolveJsonSchemaRefs<T extends Record<string, unknown>>(
   schema: T,
   definitions?: Record<string, unknown>,
   visited: Set<string> = new Set<string>(),
+  root?: Record<string, unknown>,
+  budget: ResolveBudget = { remaining: MAX_RESOLVED_SCHEMA_NODES },
 ): T {
   // Handle null, undefined, or non-object values first
   if (!schema || typeof schema !== 'object') {
     return schema;
   }
+
+  const rootSchema = root ?? schema;
 
   // If no definitions provided, try to extract from schema.$defs or schema.definitions
   if (!definitions) {
@@ -196,8 +256,12 @@ export function resolveJsonSchemaRefs<T extends Record<string, unknown>>(
 
   // Handle arrays
   if (Array.isArray(schema)) {
-    return schema.map((item) => resolveJsonSchemaRefs(item, definitions, visited)) as unknown as T;
+    return schema.map((item) =>
+      resolveJsonSchemaRefs(item, definitions, visited, rootSchema, budget),
+    ) as unknown as T;
   }
+
+  budget.remaining -= 1;
 
   // Handle objects
   const result: Record<string, unknown> = {};
@@ -219,29 +283,46 @@ export function resolveJsonSchemaRefs<T extends Record<string, unknown>>(
 
       // Extract the reference path
       const refPath = value.replace(/^#\/(\$defs|definitions)\//, '');
-      const resolved = definitions?.[refPath];
+      let resolved = definitions?.[refPath];
 
-      if (resolved) {
+      // Fall back to resolving any other local pointer against the root schema
+      if (!resolved && value.startsWith('#/')) {
+        resolved = resolveLocalPointer(rootSchema, value);
+      }
+
+      if (resolved && budget.remaining > 0) {
         visited.add(value);
         const resolvedSchema = resolveJsonSchemaRefs(
           resolved as Record<string, unknown>,
           definitions,
           visited,
+          rootSchema,
+          budget,
         );
         visited.delete(value);
 
         // Merge the resolved schema into the result
         Object.assign(result, resolvedSchema);
       } else {
-        // If we can't resolve the reference, keep it as is
-        result[key] = value;
+        /** Unresolvable, or the expansion budget is spent: leave the reference. */
+        setOwn(result, key, value);
       }
     } else if (value && typeof value === 'object') {
       // Recursively resolve nested objects/arrays
-      result[key] = resolveJsonSchemaRefs(value as Record<string, unknown>, definitions, visited);
+      setOwn(
+        result,
+        key,
+        resolveJsonSchemaRefs(
+          value as Record<string, unknown>,
+          definitions,
+          visited,
+          rootSchema,
+          budget,
+        ),
+      );
     } else {
       // Copy primitive values as is
-      result[key] = value;
+      setOwn(result, key, value);
     }
   }
 
@@ -254,11 +335,64 @@ export function resolveJsonSchemaRefs<T extends Record<string, unknown>>(
  * Transformations applied:
  * - Converts `const` values to `enum` arrays (Gemini/Vertex AI rejects `const`)
  * - Strips vendor extension fields (`x-*` prefixed keys, e.g. `x-google-enum-descriptions`)
- * - Strips leftover `$defs`/`definitions` blocks that may survive ref resolution
+ * - Strips `definitions` and `$`-prefixed schema keywords (`$defs`, `$schema`,
+ *   `$id`, `$comment`, ...) that may survive ref resolution
+ * - Drops malformed `required` values and filters arrays to property names
+ *
+ * Beyond LLM compatibility, dropping every `$`-prefixed keyword also makes the
+ * output safe to persist: MongoDB rejects field names beginning with `$`, so a
+ * standard, spec-compliant `$schema` keyword in an MCP tool's `inputSchema`
+ * would otherwise crash storage of the tool's `parameters` blob.
  *
  * @param schema - The JSON schema to normalize
  * @returns The normalized schema
  */
+/** Keywords whose value is a single subschema. */
+const SCHEMA_KEYWORDS = new Set([
+  'items',
+  'additionalItems',
+  'unevaluatedItems',
+  'additionalProperties',
+  'unevaluatedProperties',
+  'propertyNames',
+  'contains',
+  'contentSchema',
+  'not',
+  'if',
+  'then',
+  'else',
+]);
+
+/** Keywords whose value maps names to subschemas. */
+const SCHEMA_MAP_KEYWORDS = new Set([
+  'properties',
+  'patternProperties',
+  'dependentSchemas',
+  /** draft-07, where a value is either a subschema or an array of property
+   *  names; an array round-trips unchanged through the recursion. */
+  'dependencies',
+]);
+
+/** Keywords whose value is an array of subschemas. */
+const SCHEMA_LIST_KEYWORDS = new Set(['oneOf', 'anyOf', 'allOf', 'prefixItems']);
+
+function normalizeRequired(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const required: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== 'string' || seen.has(entry)) {
+      continue;
+    }
+    seen.add(entry);
+    required.push(entry);
+  }
+  return required;
+}
+
 export function normalizeJsonSchema<T extends Record<string, unknown>>(schema: T): T {
   if (!schema || typeof schema !== 'object') {
     return schema;
@@ -279,9 +413,14 @@ export function normalizeJsonSchema<T extends Record<string, unknown>>(schema: T
       continue;
     }
 
-    // Strip leftover $defs/definitions (should already be resolved by resolveJsonSchemaRefs,
-    // but strip as a safety net for schemas that bypass ref resolution).
-    if (key === '$defs' || key === 'definitions') {
+    // Strip `definitions` and any `$`-prefixed JSON Schema keyword (`$defs`,
+    // `$schema`, `$id`, `$comment`, ...). `$defs`/`$ref` should already be
+    // resolved away by resolveJsonSchemaRefs; the remaining `$`-prefixed keys
+    // are informational annotations the LLM function schema doesn't need — and
+    // MongoDB rejects `$`-prefixed field names, so leaving them in a stored MCP
+    // tool `parameters` blob breaks persistence. Property names (which live
+    // under `properties` and are handled below) are never reached here.
+    if (key === 'definitions' || key.startsWith('$')) {
       continue;
     }
 
@@ -295,22 +434,39 @@ export function normalizeJsonSchema<T extends Record<string, unknown>>(schema: T
       continue;
     }
 
-    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+    if (key === 'required') {
+      const required = normalizeRequired(value);
+      if (required) {
+        result[key] = required;
+      }
+      continue;
+    }
+
+    if (
+      SCHEMA_MAP_KEYWORDS.has(key) &&
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
       const newProps: Record<string, unknown> = {};
       for (const [propKey, propValue] of Object.entries(value as Record<string, unknown>)) {
-        newProps[propKey] =
+        const normalized =
           propValue && typeof propValue === 'object'
             ? normalizeJsonSchema(propValue as Record<string, unknown>)
             : propValue;
+        /** These keys name instance properties, so `__proto__` is legal here.
+         *  Plain assignment would hit the prototype setter and drop the entry. */
+        Object.defineProperty(newProps, propKey, {
+          value: normalized,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
       }
       result[key] = newProps;
-    } else if (
-      (key === 'items' || key === 'additionalProperties') &&
-      value &&
-      typeof value === 'object'
-    ) {
+    } else if (SCHEMA_KEYWORDS.has(key) && value && typeof value === 'object') {
       result[key] = normalizeJsonSchema(value as Record<string, unknown>);
-    } else if ((key === 'oneOf' || key === 'anyOf' || key === 'allOf') && Array.isArray(value)) {
+    } else if (SCHEMA_LIST_KEYWORDS.has(key) && Array.isArray(value)) {
       result[key] = value.map((item) =>
         item && typeof item === 'object' ? normalizeJsonSchema(item) : item,
       );
@@ -367,6 +523,7 @@ function mergeRequired(a: unknown, b: unknown): string[] | undefined {
 const GEMINI_UNSUPPORTED_KEYS = new Set([
   'additionalProperties',
   '$schema',
+  '$ref',
   '$id',
   'id',
   '$comment',

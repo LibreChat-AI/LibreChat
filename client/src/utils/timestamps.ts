@@ -16,6 +16,7 @@ const TIMESTAMPED_KEYS = [
   LocalStorageKeys.LAST_WEB_SEARCH_TOGGLE_,
   LocalStorageKeys.LAST_FILE_SEARCH_TOGGLE_,
   LocalStorageKeys.LAST_ARTIFACTS_TOGGLE_,
+  LocalStorageKeys.LAST_MEMORY_TOGGLE_,
   LocalStorageKeys.PIN_MCP_,
 ];
 
@@ -108,10 +109,6 @@ export function cleanupTimestampedStorage(): void {
     }
 
     keysToRemove.forEach((key) => localStorage.removeItem(key));
-
-    if (keysToRemove.length > 0) {
-      console.log(`Cleaned up ${keysToRemove.length} old localStorage entries`);
-    }
   } catch (error) {
     console.error('Error during cleanup of timestamped storage:', error);
   }

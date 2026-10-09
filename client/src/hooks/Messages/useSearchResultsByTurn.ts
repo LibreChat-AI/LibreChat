@@ -11,15 +11,6 @@ interface FileSource {
   metadata?: any;
 }
 
-interface DeduplicatedSource {
-  fileId: string;
-  fileName: string;
-  pages: number[];
-  relevance: number;
-  pageRelevance: Record<string, number>;
-  metadata?: any;
-}
-
 /**
  * The `file_search` attachment is typed as {@link SearchResultData} in the
  * shared schema, but at runtime the agent file-search tool emits a
@@ -55,49 +46,13 @@ export function useSearchResultsByTurn(attachments?: TAttachment[]) {
       if (attachment.type === Tools.file_search && attachment[Tools.file_search]) {
         const sources = getFileSearchSources(attachment[Tools.file_search]);
 
-        // Deduplicate sources by fileId and merge pages
-        const deduplicatedSources = new Map<string, DeduplicatedSource>();
-
-        sources.forEach((source: FileSource) => {
-          const fileId = source.fileId;
-          if (deduplicatedSources.has(fileId)) {
-            // Merge pages for the same file
-            const existing = deduplicatedSources.get(fileId);
-            if (existing) {
-              const existingPages = existing.pages || [];
-              const newPages = source.pages || [];
-              const allPages = [...existingPages, ...newPages];
-              // Remove duplicates and sort
-              const uniquePages = [...new Set(allPages)].sort((a, b) => a - b);
-
-              // Merge page relevance mappings
-              const existingPageRelevance = existing.pageRelevance || {};
-              const newPageRelevance = source.pageRelevance || {};
-              const mergedPageRelevance = { ...existingPageRelevance, ...newPageRelevance };
-
-              existing.pages = uniquePages;
-              existing.relevance = Math.max(existing.relevance || 0, source.relevance || 0);
-              existing.pageRelevance = mergedPageRelevance;
-            }
-          } else {
-            deduplicatedSources.set(fileId, {
-              fileId: source.fileId,
-              fileName: source.fileName,
-              pages: source.pages || [],
-              relevance: source.relevance || 0.5,
-              pageRelevance: source.pageRelevance || {},
-              metadata: source.metadata,
-            });
-          }
-        });
-
         // Convert agent file sources to SearchResultData format
         const agentSearchData: SearchResultData = {
           turn: agentFileSearchTurn,
           organic: [], // Agent file search doesn't have organic web results
           topStories: [], // No top stories for file search
           images: [], // No images for file search
-          references: Array.from(deduplicatedSources.values()).map(
+          references: sources.map(
             (source) =>
               ({
                 title: source.fileName || localize('com_file_unknown'),
@@ -111,8 +66,8 @@ export function useSearchResultsByTurn(attachments?: TAttachment[]) {
                 // Store additional agent-specific data as properties on the reference
                 fileId: source.fileId,
                 fileName: source.fileName,
-                pages: source.pages,
-                pageRelevance: source.pageRelevance,
+                pages: source.pages || [],
+                pageRelevance: source.pageRelevance || {},
                 metadata: source.metadata,
               }) as any,
           ),

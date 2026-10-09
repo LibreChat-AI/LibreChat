@@ -1,5 +1,5 @@
 # Dockerfile.multi
-# v0.8.7-rc1
+# v0.8.8
 
 # Set configurable max-old-space-size with default
 ARG NODE_MAX_OLD_SPACE_SIZE=6144
@@ -17,6 +17,8 @@ RUN apk upgrade --no-cache
 RUN apk add --no-cache jemalloc
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+# Disable dependency installation analytics before any npm lifecycle scripts run.
+ENV SCARF_ANALYTICS=false
 
 WORKDIR /app
 RUN apk --no-cache add curl
@@ -83,6 +85,9 @@ COPY client ./
 COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
 COPY --from=client-package-build /app/packages/client/dist /app/packages/client/dist
 COPY --from=client-package-build /app/packages/client/src /app/packages/client/src
+COPY --from=client-package-build /app/packages/client/tailwind.preset.cjs /app/packages/client/tailwind.preset.cjs
+COPY --from=client-package-build /app/packages/client/tailwind.compat.cjs /app/packages/client/tailwind.compat.cjs
+ARG VITE_MCP_SANDBOX_URL=
 ARG NODE_MAX_OLD_SPACE_SIZE
 ENV NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}"
 RUN npm run build
@@ -91,6 +96,7 @@ RUN npm run build
 FROM base-min AS api-build
 ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
+RUN mkdir -p /app/data && chmod 1777 /app/data
 # Add `uv` for extended MCP support
 COPY --from=ghcr.io/astral-sh/uv:0.6.13 /uv /uvx /bin/
 RUN uv --version
@@ -114,6 +120,7 @@ COPY --from=data-provider-build /app/packages/data-provider/dist ./packages/data
 COPY --from=data-schemas-build /app/packages/data-schemas/dist ./packages/data-schemas/dist
 COPY --from=api-package-build /app/packages/api/dist ./packages/api/dist
 COPY --from=client-build /app/client/dist ./client/dist
+COPY --from=client-build /app/client/public/mcp-sandbox.html ./client/public/mcp-sandbox.html
 # Propagate build metadata into runtime env so /api/config can expose it.
 # Declared here (after the heavy install/copy steps) so that commit/date
 # changing on every CI run does not bust the cache for those layers.

@@ -3,14 +3,14 @@ import { usePanelRef } from 'react-resizable-panels';
 import { ResizableHandleAlt, ResizablePanel } from '@librechat/client';
 
 interface ArtifactsPanelProps {
-  artifacts: React.ReactNode | null;
+  panel: React.ReactNode | null;
   minSizeMain: string;
   shouldRender: boolean;
   onRenderChange: (shouldRender: boolean) => void;
 }
 
 const ArtifactsPanel = memo(function ArtifactsPanel({
-  artifacts,
+  panel,
   minSizeMain,
   shouldRender,
   onRenderChange,
@@ -18,7 +18,7 @@ const ArtifactsPanel = memo(function ArtifactsPanel({
   const artifactsPanelRef = usePanelRef();
 
   useEffect(() => {
-    if (artifacts != null) {
+    if (panel != null) {
       onRenderChange(true);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -28,7 +28,7 @@ const ArtifactsPanel = memo(function ArtifactsPanel({
     } else if (shouldRender) {
       onRenderChange(false);
     }
-  }, [artifacts, shouldRender, onRenderChange, artifactsPanelRef]);
+  }, [panel, shouldRender, onRenderChange, artifactsPanelRef]);
 
   if (!shouldRender) {
     return null;
@@ -36,7 +36,7 @@ const ArtifactsPanel = memo(function ArtifactsPanel({
 
   return (
     <>
-      {artifacts != null && (
+      {panel != null && (
         <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
       )}
       <ResizablePanel
@@ -48,7 +48,7 @@ const ArtifactsPanel = memo(function ArtifactsPanel({
         panelRef={artifactsPanelRef}
         id="artifacts-panel"
       >
-        <div className="h-full min-w-[400px] overflow-hidden">{artifacts}</div>
+        <div className="h-full min-w-[min(25rem,100%)] overflow-hidden">{panel}</div>
       </ResizablePanel>
     </>
   );

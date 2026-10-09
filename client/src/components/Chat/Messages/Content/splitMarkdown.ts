@@ -13,6 +13,8 @@ export type MarkdownBlock = {
   codeBlockCount: number;
   /** Artifact containers within this block. */
   artifactCount: number;
+  /** Mermaid fences within this block, which carry their own index sequence. */
+  mermaidCount: number;
 };
 
 type MdastNode = {
@@ -57,7 +59,10 @@ const containsDefinition = (node: MdastNode): boolean => {
 
 const ARTIFACT_DIRECTIVE_TYPES = new Set(['containerDirective', 'leafDirective']);
 
-const countWithin = (node: MdastNode, counts: { code: number; artifact: number }): void => {
+const countWithin = (
+  node: MdastNode,
+  counts: { code: number; artifact: number; mermaid: number },
+): void => {
   if (ARTIFACT_DIRECTIVE_TYPES.has(node.type) && node.name === 'artifact') {
     // artifactPlugin renders container (`:::artifact:::`) and leaf
     // (`::artifact{}`) artifact directives as an Artifact, each consuming one
@@ -68,8 +73,12 @@ const countWithin = (node: MdastNode, counts: { code: number; artifact: number }
     counts.artifact += 1;
     return;
   }
-  if (node.type === 'code' && isExecutableCode(node.lang ?? '')) {
-    counts.code += 1;
+  if (node.type === 'code') {
+    if (isExecutableCode(node.lang ?? '')) {
+      counts.code += 1;
+    } else if (renderedCodeLang(node.lang ?? '') === 'mermaid') {
+      counts.mermaid += 1;
+    }
   }
   if (node.children) {
     for (const child of node.children) {
@@ -83,75 +92,161 @@ const countWithin = (node: MdastNode, counts: { code: number; artifact: number }
  * render pipeline relies on (GFM tables, container directives like
  * `:::artifact:::`, and `$$` math), so top-level block boundaries match what
  * react-markdown produces. Inline-only transforms (citations, MCP-UI markers,
- * supersub) never cross a top-level block, so they are intentionally omitted.
+ * supersub, single-dollar math) never cross a top-level block, so they are
+ * intentionally omitted.
  */
 const parseToMdast = (content: string): MdastNode =>
   fromMarkdown(content, {
-    extensions: [gfm(), directive(), math()],
+    extensions: [gfm(), directive(), math({ singleDollarTextMath: false })],
     mdastExtensions: [gfmFromMarkdown(), directiveFromMarkdown(), mathFromMarkdown()],
   }) as MdastNode;
 
+type SplitResult = {
+  blocks: MarkdownBlock[];
+  /** Offset where the final two blocks start; the last boundary may still disappear. */
+  reparseStart: number;
+  /** Number of blocks before reparseStart, even after the tail merges into one block. */
+  stableBlockCount: number;
+};
+
+/** The parsed top-level nodes, returned when the text cannot be split. */
+type WholeMessage = { children: MdastNode[] };
+
+const isSplit = (result: SplitResult | WholeMessage): result is SplitResult => 'blocks' in result;
+
 /**
- * Split a markdown string into its top-level blocks, returning the exact source
- * slice for each block plus the index counts it consumes. Completed blocks
- * produce byte-identical slices (and stable counts) across streamed updates,
- * which is what makes per-block memoization effective: only the final, still-
- * growing block changes from one token to the next.
+ * Where the line holding a top-level block begins, when only indentation precedes
+ * the block on it. mdast starts a node after its indentation, but that indentation
+ * carries meaning: it is stripped from an indented fence's code lines, and it
+ * decides which list item a later indented line belongs to. A block parsed on its
+ * own has to keep it to parse the way it does inside the whole message.
+ */
+const lineStartOf = (content: string, offset: number): number => {
+  const lineStart = content.lastIndexOf('\n', offset - 1) + 1;
+  return /^[ \t]*$/.test(content.slice(lineStart, offset)) ? lineStart : offset;
+};
+
+/**
+ * Parse `text` and split it into per-node blocks. Returns the parsed nodes
+ * instead when the text cannot be rendered block-by-block and must instead
+ * render as one whole:
+ *  - reference/footnote definitions are document-scoped (and may be nested in
+ *    a blockquote or list item), so a reference would otherwise render as
+ *    literal text once severed from its definition;
+ *  - top-level raw HTML blocks are escaped to text (rehypeRaw is not enabled),
+ *    so the separator between adjacent HTML blocks would otherwise be dropped.
+ */
+const splitBlocks = (text: string): SplitResult | WholeMessage => {
+  const children = parseToMdast(text).children ?? [];
+  if (children.length === 0) {
+    return { children };
+  }
+
+  const blocks: MarkdownBlock[] = [];
+  const stableBlockCount = Math.max(0, children.length - 2);
+  let reparseStart = 0;
+
+  for (const node of children) {
+    if (node.type === 'html' || containsDefinition(node)) {
+      return { children };
+    }
+    const start = node.position?.start?.offset;
+    const end = node.position?.end?.offset;
+    if (start == null || end == null) {
+      return { children };
+    }
+    const counts = { code: 0, artifact: 0, mermaid: 0 };
+    countWithin(node, counts);
+    const rawStart = lineStartOf(text, start);
+    if (blocks.length === stableBlockCount) {
+      reparseStart = rawStart;
+    }
+    blocks.push({
+      raw: text.slice(rawStart, end),
+      codeBlockCount: counts.code,
+      artifactCount: counts.artifact,
+      mermaidCount: counts.mermaid,
+    });
+  }
+
+  return { blocks, reparseStart, stableBlockCount };
+};
+
+/**
+ * Split a markdown string into its top-level blocks by parsing it in full,
+ * returning the exact source slice for each block plus the index counts it
+ * consumes. Prefer `splitMarkdownIntoBlocks`, which reuses the previous split
+ * when the content only grew.
  *
  * Inter-block whitespace (blank lines) is not part of any node's span and is
  * dropped; block-level elements carry their own margins, so rendering each
  * slice independently is visually equivalent to rendering the whole string.
  */
-export function splitMarkdownIntoBlocks(content: string): MarkdownBlock[] {
+export function splitMarkdownIntoBlocksUncached(content: string): MarkdownBlock[] {
   if (!content) {
     return [];
   }
-
-  const tree = parseToMdast(content);
-  const children = tree.children ?? [];
-
-  if (children.length === 0) {
-    return [{ raw: content, codeBlockCount: 0, artifactCount: 0 }];
-  }
-
-  // Per-block rendering loses document-global context, so render the whole
-  // message as one block when it uses a construct that needs it:
-  //  - reference/footnote definitions are document-scoped (and may be nested in
-  //    a blockquote or list item), so a reference would otherwise render as
-  //    literal text once severed from its definition; and
-  //  - top-level raw HTML blocks are escaped to text (rehypeRaw is not enabled),
-  //    so the separator between adjacent HTML blocks would otherwise be dropped.
-  const requiresWholeMessage = children.some(
-    (node) => node.type === 'html' || containsDefinition(node),
-  );
-  if (requiresWholeMessage) {
-    return [{ raw: content, ...blockCounts(children) }];
-  }
-
-  const blocks: MarkdownBlock[] = [];
-
-  for (const node of children) {
-    const start = node.position?.start?.offset;
-    const end = node.position?.end?.offset;
-    if (start == null || end == null) {
-      return [{ raw: content, ...blockCounts(children) }];
-    }
-    const counts = { code: 0, artifact: 0 };
-    countWithin(node, counts);
-    blocks.push({
-      raw: content.slice(start, end),
-      codeBlockCount: counts.code,
-      artifactCount: counts.artifact,
-    });
-  }
-
-  return blocks;
+  const split = splitBlocks(content);
+  return isSplit(split) ? split.blocks : [{ raw: content, ...blockCounts(split.children) }];
 }
 
-const blockCounts = (children: MdastNode[]): { codeBlockCount: number; artifactCount: number } => {
-  const counts = { code: 0, artifact: 0 };
+type SplitCache = SplitResult & { content: string };
+
+export type MarkdownSplitter = (content: string) => MarkdownBlock[];
+
+/**
+ * Create an isolated splitter cache for one markdown surface. MarkdownBlocks
+ * keeps one instance per mounted message so concurrent streams cannot evict
+ * one another's active tail. The tail includes the preceding block because an
+ * unfinished marker (such as `***` or `#`) can stop interrupting it when more
+ * text arrives. Reusing that block before the boundary settles loses paragraph
+ * and lazy list/blockquote continuations.
+ */
+export function createMarkdownSplitter(): MarkdownSplitter {
+  let lastSplit: SplitCache | null = null;
+
+  return (content: string): MarkdownBlock[] => {
+    if (!content) {
+      lastSplit = null;
+      return [];
+    }
+
+    const prev = lastSplit;
+    if (prev != null && content.length > prev.content.length && content.startsWith(prev.content)) {
+      const tail = splitBlocks(content.slice(prev.reparseStart));
+      if (isSplit(tail)) {
+        lastSplit = {
+          content,
+          blocks: [...prev.blocks.slice(0, prev.stableBlockCount), ...tail.blocks],
+          reparseStart: prev.reparseStart + tail.reparseStart,
+          stableBlockCount: prev.stableBlockCount + tail.stableBlockCount,
+        };
+        return lastSplit.blocks;
+      }
+    }
+
+    const split = splitBlocks(content);
+    if (!isSplit(split)) {
+      lastSplit = null;
+      return [{ raw: content, ...blockCounts(split.children) }];
+    }
+    lastSplit = { content, ...split };
+    return split.blocks;
+  };
+}
+
+export const splitMarkdownIntoBlocks = createMarkdownSplitter();
+
+const blockCounts = (
+  children: MdastNode[],
+): { codeBlockCount: number; artifactCount: number; mermaidCount: number } => {
+  const counts = { code: 0, artifact: 0, mermaid: 0 };
   for (const node of children) {
     countWithin(node, counts);
   }
-  return { codeBlockCount: counts.code, artifactCount: counts.artifact };
+  return {
+    codeBlockCount: counts.code,
+    artifactCount: counts.artifact,
+    mermaidCount: counts.mermaid,
+  };
 };

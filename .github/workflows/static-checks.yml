@@ -1,0 +1,897 @@
+name: Static Checks
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'client/**'
+      - 'config/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'eslint.config.mjs'
+      # Both spellings: the trigger has to start the workflow for the root
+      # baseline and for a nested one outside the source trees above, which is
+      # exactly what the `suppressions` filter below and validateSuppressions()
+      # claim to cover.
+      - 'eslint-suppressions.json'
+      - '**/eslint-suppressions.json'
+      - '.github/workflows/static-checks.yml'
+      - '!**.md'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_ENV: CI
+  NODE_OPTIONS: '--max-old-space-size=${{ secrets.NODE_MAX_OLD_SPACE_SIZE || 6144 }}'
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # Full history is load-bearing: changed-file steps diff against the
+          # PR base and the ESLint regression gate reads the base ref's
+          # config via git show — a shallow checkout breaks both.
+          fetch-depth: 0
+
+      # scripts/static-checks.mts mirrors these filters to run the same checks
+      # locally on a commit's diff — keep the two in sync.
+      - name: Detect affected checks
+        id: paths
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            eslint:
+              - 'api/**'
+              - 'client/**'
+              - 'packages/**'
+              - 'eslint.config.mjs'
+              - 'eslint-suppressions.json'
+              - '.github/workflows/static-checks.yml'
+              - '!**.md'
+            eslint_config:
+              - 'eslint.config.mjs'
+              - '.github/workflows/static-checks.yml'
+            # The recorded design-rule backlog is data the lint reads, not code it
+            # lints, so a diff that only edits it matches no source file. Its own
+            # group runs the baseline validation below; it deliberately stays out
+            # of `eslint_config`, which gates the full-tree double sweep and could
+            # learn nothing from a count changing.
+            suppressions:
+              - 'eslint-suppressions.json'
+              - '**/eslint-suppressions.json'
+              - 'client/src/**'
+              - 'packages/client/src/**'
+              # The bundle the rules resolve primitives through is named by the
+              # library's manifest, produced by its build config and shaped by
+              # its compiler options.
+              - 'packages/client/package.json'
+              - 'packages/client/tsdown.config.mjs'
+              - 'packages/client/tsconfig.json'
+              - 'eslint.config.mjs'
+              # The plugin is a dependency: a bump changes what the rules
+              # classify and a removal takes them with it, and neither touches a
+              # source file.
+              - 'package.json'
+              - 'package-lock.json'
+              # The runner is the gate: `validateSuppressions` is what a recorded
+              # count is measured against, so a change to it has to run against
+              # the record — the ESLint step above only ever sees sources.
+              - 'scripts/static-checks.mts'
+              - '.github/workflows/static-checks.yml'
+              - '!**.md'
+            config:
+              - 'api/**'
+              - 'config/**'
+              - 'packages/**'
+              - '.github/workflows/static-checks.yml'
+              - '!**.md'
+            i18n:
+              - 'scripts/i18n*.mts'
+              - 'scripts/static-checks.mts'
+              - 'api/**'
+              - 'client/src/**'
+              - 'packages/client/**'
+              - 'packages/data-provider/src/**'
+              - 'packages/data-schemas/src/**'
+              - '.github/workflows/static-checks.yml'
+              - '!**.md'
+            runner:
+              - 'scripts/i18n*.mts'
+              - 'scripts/static-checks.mts'
+              - '.github/workflows/static-checks.yml'
+            unused_packages:
+              - 'api/**'
+              - 'client/**'
+              - 'packages/api/**'
+              - 'packages/client/**'
+              # Every workspace manifest the JSON validation step covers, plus
+              # the ones whose dependencies feed the unused-package calculation
+              # through api/package.json's @librechat/data-schemas entry.
+              - 'packages/data-provider/package.json'
+              - 'packages/data-schemas/package.json'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/static-checks.yml'
+              - '!**.md'
+
+      - name: Set up Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+          cache: npm
+
+      - name: Install dependencies
+        id: install_dependencies
+        continue-on-error: true
+        run: npm ci
+
+      # The @shadcn/lint design rules read each primitive's `cva` variants through
+      # the @librechat/client entry point, which resolves to packages/client/dist.
+      # Without it they classify nothing and report strictly fewer violations than
+      # the same tree does on a machine that built the package — a lint that passes
+      # for the wrong reason, and a recorded baseline that cannot be trusted.
+      - name: Build client-package for the design rules
+        id: design_rules_build
+        if: always() && (steps.paths.outputs.eslint == 'true' || steps.paths.outputs.suppressions == 'true')
+        continue-on-error: true
+        run: npm run build:client-package
+
+      # Run ESLint on changed files within the api/, client/, and packages/ directories.
+      - name: Run ESLint on changed files
+        id: eslint
+        if: always() && steps.paths.outputs.eslint == 'true'
+        continue-on-error: true
+        run: |
+          # Extract the base commit SHA from the pull_request event payload.
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          echo "Base commit SHA: $BASE_SHA"
+
+          # Get changed files (only JS/TS files in api/, client/, or packages/)
+          mapfile -d '' -t CHANGED_FILES < <(
+            git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
+              grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
+          )
+
+          # Debug output
+          echo "Changed files:"
+          printf '%s\n' "${CHANGED_FILES[@]}"
+
+          # Ensure there are files to lint before running ESLint
+          if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
+            echo "No matching files changed. Skipping ESLint."
+            exit 0
+          fi
+
+          # Run ESLint
+          # --no-warn-ignored: changed files under config-ignored paths
+          # (e.g. packages/data-schemas/misc/**) must not fail --max-warnings=0
+          # Invoke the installed binary, not `npx`: npm exec joins the whole
+          # command into one shell string, and Linux rejects a single argv
+          # string over 128 KiB (MAX_ARG_STRLEN) — past ~2,200 changed files
+          # npx dies with exit 249 and no output.
+          # --pass-on-unpruned-suppressions: the @shadcn/lint design rules run at error
+          # against a recorded backlog in eslint-suppressions.json. Fixing one of those
+          # violations leaves its suppression unused, which otherwise fails the PR that
+          # fixed it; `npm run lint:design:prune` tightens the counts.
+          node_modules/.bin/eslint --no-error-on-unmatched-pattern \
+            --config eslint.config.mjs \
+            --no-warn-ignored \
+            --max-warnings=0 \
+            --pass-on-unpruned-suppressions \
+            -- "${CHANGED_FILES[@]}"
+
+      # Run Prettier --check on the same set of changed files to catch
+      # formatting drift in PRs that bypassed the local pre-commit hook
+      # (e.g. GitHub UI edit-and-merge, `git commit --no-verify`).
+      - name: Run Prettier --check on changed files
+        id: prettier
+        if: always() && steps.paths.outputs.eslint == 'true'
+        continue-on-error: true
+        run: |
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          mapfile -d '' -t CHANGED_FILES < <(
+            git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
+              grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
+          )
+
+          if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
+            echo "No matching files changed. Skipping Prettier."
+            exit 0
+          fi
+
+          echo "Files to check:"
+          printf '%s\n' "${CHANGED_FILES[@]}"
+
+          # `prettier --check` exits non-zero if any file would be reformatted.
+          # Suggest the local fix in the failure message so contributors aren't
+          # left guessing how to resolve.
+          if ! node_modules/.bin/prettier --check --no-error-on-unmatched-pattern -- "${CHANGED_FILES[@]}"; then
+            echo ""
+            echo "::error::Prettier formatting drift detected. Fix locally with:"
+            echo "::error::  npx prettier --write <files>"
+            echo "::error::Or rely on the lint-staged pre-commit hook (do not bypass with --no-verify)."
+            exit 1
+          fi
+
+      # Verify import ordering on the same set of changed files. The script
+      # only sorts files under known source roots, so unrelated changed files
+      # (configs, etc.) are ignored. Matches the lint-staged pre-commit hook.
+      - name: Check import sorting on changed files
+        id: import_sort
+        if: always() && steps.paths.outputs.eslint == 'true'
+        continue-on-error: true
+        run: |
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          mapfile -d '' -t CHANGED_FILES < <(
+            git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
+              grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
+          )
+
+          if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
+            echo "No matching files changed. Skipping import-sort check."
+            exit 0
+          fi
+
+          echo "Files to check:"
+          printf '%s\n' "${CHANGED_FILES[@]}"
+
+          # `--check` lists offending files and exits non-zero without writing.
+          if ! node scripts/sort-imports.mts --check "${CHANGED_FILES[@]}"; then
+            echo ""
+            echo "::error::Import order drift detected. Fix locally with:"
+            echo "::error::  npm run sort-imports"
+            echo "::error::For specific files:"
+            echo "::error::  npm run sort-imports -- packages/api/src/app/metrics.ts packages/api/src/rum/proxy.ts"
+            echo "::error::To check without writing files:"
+            echo "::error::  npm run sort-imports:check"
+            echo "::error::Or rely on the lint-staged pre-commit hook (do not bypass with --no-verify)."
+            exit 1
+          fi
+
+      # The changed-file lint above never loads a changed root config: a
+      # config-only PR matches no lintable files, so even a malformed
+      # eslint.config.mjs would pass. When the config changes, gate on it
+      # loading and applying cleanly to representative sources, then run the
+      # full-tree regression gate below.
+      # Directory args, not `npm run lint`: the root brace-expansion@^5
+      # override breaks minimatch@3's brace expansion, so that script's
+      # braced glob crashes on a clean install; dir args never brace-expand.
+      # scripts/static-checks.mts runs these same checks locally from the
+      # pre-commit hook, and nothing else in this job loads it: ESLint has no
+      # flat-config match for scripts/**/*.mts. Run it against the PR's own
+      # diff so a syntax error or a broken filter fails here rather than in
+      # every contributor's next commit.
+      - name: Smoke the local static-checks runner
+        id: runner
+        if: always() && steps.paths.outputs.runner == 'true'
+        continue-on-error: true
+        run: |
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          node scripts/static-checks.mts --against "$BASE_SHA" --list
+          # An explicit target, because --list never executes a check and a
+          # script-only PR activates no group — so neither would exercise the
+          # execution path this step exists to protect.
+          node scripts/static-checks.mts package.json --only json
+
+      - name: Validate ESLint config on config changes
+        id: eslint_config
+        if: always() && steps.paths.outputs.eslint_config == 'true'
+        continue-on-error: true
+        run: |
+          node_modules/.bin/eslint --config eslint.config.mjs \
+            api/server/index.js client/src/main.jsx packages/api/src/index.ts
+
+      - name: Validate the design-rule suppressions baseline
+        id: suppressions
+        if: always() && steps.paths.outputs.suppressions == 'true'
+        continue-on-error: true
+        run: |
+          # The changed-file ESLint step above selects JS/TS sources, so a diff that
+          # only edits eslint-suppressions.json lints nothing and would otherwise
+          # merge unread. The runner owns the rules for what the baseline may say.
+          # --against the PR base, not just the baseline path: the check also asks
+          # whether the changed files still owe what they record, and that needs
+          # the diff rather than one file name.
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          node scripts/static-checks.mts --against "$BASE_SHA" --only suppressions
+
+      - name: Restore data-provider build cache
+        if: always() && steps.paths.outputs.config == 'true'
+        id: cache-data-provider
+        continue-on-error: true
+        uses: actions/cache@v5
+        with:
+          path: packages/data-provider/dist
+          key: build-data-provider-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-provider
+        id: config_data_provider
+        if: always() && steps.paths.outputs.config == 'true' && steps.cache-data-provider.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: npm run build:data-provider
+
+      - name: Restore data-schemas build cache
+        if: always() && steps.paths.outputs.config == 'true'
+        id: cache-data-schemas
+        continue-on-error: true
+        uses: actions/cache@v5
+        with:
+          path: packages/data-schemas/dist
+          key: build-data-schemas-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+
+      - name: Build data-schemas
+        id: config_data_schemas
+        if: always() && steps.paths.outputs.config == 'true' && steps.cache-data-schemas.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: npm run build:data-schemas
+
+      - name: Restore api build cache
+        if: always() && steps.paths.outputs.config == 'true'
+        id: cache-api
+        continue-on-error: true
+        uses: actions/cache@v5
+        with:
+          path: packages/api/dist
+          key: build-api-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'packages/api/src/**', 'packages/api/tsconfig*.json', 'packages/api/tsdown.config.mjs', 'packages/api/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json', 'packages/data-schemas/src/**', 'packages/data-schemas/tsconfig*.json', 'packages/data-schemas/tsdown.config.mjs', 'packages/data-schemas/package.json') }}
+
+      - name: Build api
+        id: config_api
+        if: always() && steps.paths.outputs.config == 'true' && steps.cache-api.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: npm run build:api
+
+      - name: Create empty auth.json file
+        id: config_auth
+        if: always() && steps.paths.outputs.config == 'true'
+        continue-on-error: true
+        run: |
+          mkdir -p api/data
+          echo '{}' > api/data/auth.json
+
+      - name: Prepare .env.test file
+        id: config_env
+        if: always() && steps.paths.outputs.config == 'true'
+        continue-on-error: true
+        run: cp api/test/.env.test.example api/test/.env.test
+
+      - name: Run config migration tests
+        id: config_tests
+        if: always() && steps.paths.outputs.config == 'true'
+        continue-on-error: true
+        run: npm run test:config
+
+      - name: Find unused i18next keys
+        id: find_unused_i18n
+        if: always() && steps.paths.outputs.i18n == 'true'
+        continue-on-error: true
+        run: |
+          echo "unused_keys=[]" >> "$GITHUB_ENV"
+          node --test scripts/i18n.test.mts
+          node scripts/static-checks.mts client/src/locales/en/translation.json --only i18n
+
+      - name: Fail workflow if unused keys found
+        id: i18n
+        if: >
+          always() &&
+          steps.paths.outputs.i18n == 'true' &&
+          (steps.find_unused_i18n.outcome == 'failure' || env.unused_keys != '[]')
+        continue-on-error: true
+        run: exit 1
+
+      - name: Install depcheck
+        id: install_depcheck
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        continue-on-error: true
+        run: npm install -g depcheck
+
+      - name: Validate JSON files
+        id: validate_package_json
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        continue-on-error: true
+        run: |
+          for FILE in package.json client/package.json api/package.json packages/api/package.json packages/client/package.json packages/data-provider/package.json packages/data-schemas/package.json; do
+            if [[ -f "$FILE" ]]; then
+              jq empty "$FILE" || (echo "::error title=Invalid JSON::$FILE is invalid" && exit 1)
+            fi
+          done
+
+      - name: Extract Dependencies Used in Scripts
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: extract-used-scripts
+        continue-on-error: true
+        run: |
+          extract_deps_from_scripts() {
+            local package_file=$1
+            if [[ -f "$package_file" ]]; then
+              jq -r '.scripts | to_entries[].value' "$package_file" | \
+                grep -oE '([a-zA-Z0-9_-]+)' | sort -u > used_scripts.txt
+            else
+              touch used_scripts.txt
+            fi
+          }
+
+          extract_deps_from_scripts "package.json"
+          mv used_scripts.txt root_used_deps.txt
+
+          extract_deps_from_scripts "client/package.json"
+          mv used_scripts.txt client_used_deps.txt
+
+          extract_deps_from_scripts "api/package.json"
+          mv used_scripts.txt api_used_deps.txt
+
+      - name: Extract Dependencies Used in Source Code
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: extract-used-code
+        continue-on-error: true
+        run: |
+          extract_deps_from_code() {
+            local folder=$1
+            local output_file=$2
+
+            # Initialize empty output file
+            > "$output_file"
+
+            if [[ -d "$folder" ]]; then
+              # Extract require() statements (use explicit includes for portability)
+              grep -rEho "require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)" "$folder" \
+                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
+                sed -E "s/require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)/\1/" >> "$output_file" || true
+
+              # Extract ES6 imports - import x from 'module'
+              grep -rEho "import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
+                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
+                sed -E "s/import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
+
+              # import 'module' (side-effect imports)
+              grep -rEho "import ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
+                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
+                sed -E "s/import ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
+
+              # export { x } from 'module' or export * from 'module'
+              grep -rEho "export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
+                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
+                sed -E "s/export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
+
+              # import type { x } from 'module' (TypeScript)
+              grep -rEho "import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
+                --include='*.ts' --include='*.tsx' 2>/dev/null | \
+                sed -E "s/import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
+
+              # Remove subpath imports but keep the base package
+              # For scoped packages: '@scope/pkg/subpath' -> '@scope/pkg'
+              # For regular packages: 'pkg/subpath' -> 'pkg'
+              # Scoped packages (must keep @scope/package, strip anything after)
+              sed -i -E 's|^(@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
+              # Non-scoped packages (keep package name, strip subpath)
+              sed -i -E 's|^([a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
+
+              sort -u "$output_file" -o "$output_file"
+            fi
+          }
+
+          extract_deps_from_code "." root_used_code.txt
+          extract_deps_from_code "client" client_used_code.txt
+          extract_deps_from_code "api" api_used_code.txt
+
+          # Extract dependencies used by workspace packages
+          # These packages are used in the workspace but dependencies are provided by parent package.json
+          extract_deps_from_code "packages/client" packages_client_used_code.txt
+          extract_deps_from_code "packages/api" packages_api_used_code.txt
+
+      - name: Get @librechat/client dependencies
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: get-librechat-client-deps
+        continue-on-error: true
+        run: |
+          if [[ -f "packages/client/package.json" ]]; then
+            # Get all dependencies from @librechat/client (dependencies, devDependencies, and peerDependencies)
+            DEPS=$(jq -r '.dependencies // {} | keys[]' packages/client/package.json 2>/dev/null || echo "")
+            DEV_DEPS=$(jq -r '.devDependencies // {} | keys[]' packages/client/package.json 2>/dev/null || echo "")
+            PEER_DEPS=$(jq -r '.peerDependencies // {} | keys[]' packages/client/package.json 2>/dev/null || echo "")
+
+            # Combine all dependencies
+            echo "$DEPS" > librechat_client_deps.txt
+            echo "$DEV_DEPS" >> librechat_client_deps.txt
+            echo "$PEER_DEPS" >> librechat_client_deps.txt
+
+            # Also include dependencies that are imported in packages/client
+            cat packages_client_used_code.txt >> librechat_client_deps.txt
+
+            # Remove empty lines and sort
+            grep -v '^$' librechat_client_deps.txt | sort -u > temp_deps.txt
+            mv temp_deps.txt librechat_client_deps.txt
+          else
+            touch librechat_client_deps.txt
+          fi
+
+      - name: Get @librechat/api dependencies
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: get-librechat-api-deps
+        continue-on-error: true
+        run: |
+          if [[ -f "packages/api/package.json" ]]; then
+            # Get all dependencies from @librechat/api (dependencies, devDependencies, and peerDependencies)
+            DEPS=$(jq -r '.dependencies // {} | keys[]' packages/api/package.json 2>/dev/null || echo "")
+            DEV_DEPS=$(jq -r '.devDependencies // {} | keys[]' packages/api/package.json 2>/dev/null || echo "")
+            PEER_DEPS=$(jq -r '.peerDependencies // {} | keys[]' packages/api/package.json 2>/dev/null || echo "")
+
+            # Combine all dependencies
+            echo "$DEPS" > librechat_api_deps.txt
+            echo "$DEV_DEPS" >> librechat_api_deps.txt
+            echo "$PEER_DEPS" >> librechat_api_deps.txt
+
+            # Also include dependencies that are imported in packages/api
+            cat packages_api_used_code.txt >> librechat_api_deps.txt
+
+            # Remove empty lines and sort
+            grep -v '^$' librechat_api_deps.txt | sort -u > temp_deps.txt
+            mv temp_deps.txt librechat_api_deps.txt
+          else
+            touch librechat_api_deps.txt
+          fi
+
+      - name: Extract Workspace Dependencies
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: extract-workspace-deps
+        continue-on-error: true
+        run: |
+          # Function to get dependencies from a workspace package that are used by another package
+          get_workspace_package_deps() {
+            local package_json=$1
+            local output_file=$2
+
+            # Get all workspace dependencies (starting with @librechat/)
+            if [[ -f "$package_json" ]]; then
+              local workspace_deps=$(jq -r '.dependencies // {} | to_entries[] | select(.key | startswith("@librechat/")) | .key' "$package_json" 2>/dev/null || echo "")
+
+              # For each workspace dependency, get its dependencies
+              for dep in $workspace_deps; do
+                # Convert @librechat/api to packages/api
+                local workspace_path=$(echo "$dep" | sed 's/@librechat\//packages\//')
+                local workspace_package_json="${workspace_path}/package.json"
+
+                if [[ -f "$workspace_package_json" ]]; then
+                  # Extract all dependencies from the workspace package
+                  jq -r '.dependencies // {} | keys[]' "$workspace_package_json" 2>/dev/null >> "$output_file"
+                  # Also extract peerDependencies
+                  jq -r '.peerDependencies // {} | keys[]' "$workspace_package_json" 2>/dev/null >> "$output_file"
+                fi
+              done
+            fi
+
+            if [[ -f "$output_file" ]]; then
+              sort -u "$output_file" -o "$output_file"
+            else
+              touch "$output_file"
+            fi
+          }
+
+          # Get workspace dependencies for each package
+          get_workspace_package_deps "package.json" root_workspace_deps.txt
+          get_workspace_package_deps "client/package.json" client_workspace_deps.txt
+          get_workspace_package_deps "api/package.json" api_workspace_deps.txt
+
+      - name: Run depcheck for root package.json
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: check-root
+        continue-on-error: true
+        run: |
+          if [[ -f "package.json" ]]; then
+            UNUSED=$(depcheck --json | jq -r '.dependencies | join("\n")' || echo "")
+            # Exclude dependencies used in scripts, code, and workspace packages
+            UNUSED=$(comm -23 <(echo "$UNUSED" | sort) <(cat root_used_deps.txt root_used_code.txt root_workspace_deps.txt | sort) || echo "")
+            echo "ROOT_UNUSED<<EOF" >> $GITHUB_ENV
+            echo "$UNUSED" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
+
+      - name: Run depcheck for client/package.json
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: check-client
+        continue-on-error: true
+        run: |
+          if [[ -f "client/package.json" ]]; then
+            chmod -R 755 client
+            cd client
+            UNUSED=$(depcheck --json | jq -r '.dependencies | join("\n")' || echo "")
+            # Exclude dependencies used in scripts, code, workspace packages, and @librechat/client imports
+            UNUSED=$(comm -23 <(echo "$UNUSED" | sort) <(cat ../client_used_deps.txt ../client_used_code.txt ../client_workspace_deps.txt ../packages_client_used_code.txt ../librechat_client_deps.txt 2>/dev/null | sort -u) || echo "")
+            # Filter out false positives
+            UNUSED=$(echo "$UNUSED" | grep -v "^micromark-extension-llm-math$" || echo "")
+            echo "CLIENT_UNUSED<<EOF" >> $GITHUB_ENV
+            echo "$UNUSED" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            cd ..
+          fi
+
+      - name: Run depcheck for api/package.json
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: check-api
+        continue-on-error: true
+        run: |
+          if [[ -f "api/package.json" ]]; then
+            chmod -R 755 api
+            cd api
+            UNUSED=$(depcheck --json | jq -r '.dependencies | join("\n")' || echo "")
+            # Exclude dependencies used in scripts, code, workspace packages, and @librechat/api imports
+            UNUSED=$(comm -23 <(echo "$UNUSED" | sort) <(cat ../api_used_deps.txt ../api_used_code.txt ../api_workspace_deps.txt ../packages_api_used_code.txt ../librechat_api_deps.txt 2>/dev/null | sort -u) || echo "")
+            echo "API_UNUSED<<EOF" >> $GITHUB_ENV
+            echo "$UNUSED" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            cd ..
+          fi
+
+      - name: Fail workflow if unused dependencies found
+        id: unused_packages
+        if: >
+          always() &&
+          steps.paths.outputs.unused_packages == 'true' &&
+          (env.ROOT_UNUSED != '' || env.CLIENT_UNUSED != '' || env.API_UNUSED != '')
+        continue-on-error: true
+        run: exit 1
+
+      - name: Summarize static check failures
+        if: always()
+        env:
+          INSTALL_DEPENDENCIES_OUTCOME: ${{ steps.install_dependencies.outcome }}
+          ESLINT_OUTCOME: ${{ steps.eslint.outcome }}
+          ESLINT_CONFIG_OUTCOME: ${{ steps.eslint_config.outcome }}
+          DESIGN_RULES_BUILD_OUTCOME: ${{ steps.design_rules_build.outcome }}
+          SUPPRESSIONS_OUTCOME: ${{ steps.suppressions.outcome }}
+          PRETTIER_OUTCOME: ${{ steps.prettier.outcome }}
+          IMPORT_SORT_OUTCOME: ${{ steps.import_sort.outcome }}
+          RUNNER_OUTCOME: ${{ steps.runner.outcome }}
+          CACHE_DATA_PROVIDER_OUTCOME: ${{ steps.cache-data-provider.outcome }}
+          CONFIG_DATA_PROVIDER_OUTCOME: ${{ steps.config_data_provider.outcome }}
+          CACHE_DATA_SCHEMAS_OUTCOME: ${{ steps.cache-data-schemas.outcome }}
+          CONFIG_DATA_SCHEMAS_OUTCOME: ${{ steps.config_data_schemas.outcome }}
+          CACHE_API_OUTCOME: ${{ steps.cache-api.outcome }}
+          CONFIG_API_OUTCOME: ${{ steps.config_api.outcome }}
+          CONFIG_AUTH_OUTCOME: ${{ steps.config_auth.outcome }}
+          CONFIG_ENV_OUTCOME: ${{ steps.config_env.outcome }}
+          CONFIG_TESTS_OUTCOME: ${{ steps.config_tests.outcome }}
+          FIND_I18N_OUTCOME: ${{ steps.find_unused_i18n.outcome }}
+          I18N_OUTCOME: ${{ steps.i18n.outcome }}
+          INSTALL_DEPCHECK_OUTCOME: ${{ steps.install_depcheck.outcome }}
+          VALIDATE_PACKAGE_JSON_OUTCOME: ${{ steps.validate_package_json.outcome }}
+          EXTRACT_USED_SCRIPTS_OUTCOME: ${{ steps.extract-used-scripts.outcome }}
+          EXTRACT_USED_CODE_OUTCOME: ${{ steps.extract-used-code.outcome }}
+          GET_CLIENT_DEPS_OUTCOME: ${{ steps.get-librechat-client-deps.outcome }}
+          GET_API_DEPS_OUTCOME: ${{ steps.get-librechat-api-deps.outcome }}
+          EXTRACT_WORKSPACE_DEPS_OUTCOME: ${{ steps.extract-workspace-deps.outcome }}
+          CHECK_ROOT_OUTCOME: ${{ steps.check-root.outcome }}
+          CHECK_CLIENT_OUTCOME: ${{ steps.check-client.outcome }}
+          CHECK_API_OUTCOME: ${{ steps.check-api.outcome }}
+          UNUSED_PACKAGES_OUTCOME: ${{ steps.unused_packages.outcome }}
+        run: |
+          failures=()
+
+          record_failure() {
+            if [[ "$2" == "failure" ]]; then
+              failures+=("$1")
+            fi
+          }
+
+          record_failure "Dependency installation" "$INSTALL_DEPENDENCIES_OUTCOME"
+          record_failure "ESLint" "$ESLINT_OUTCOME"
+          record_failure "ESLint config validation" "$ESLINT_CONFIG_OUTCOME"
+          record_failure "Client-package build for the design rules" "$DESIGN_RULES_BUILD_OUTCOME"
+          record_failure "Design-rule suppressions" "$SUPPRESSIONS_OUTCOME"
+          record_failure "Prettier" "$PRETTIER_OUTCOME"
+          record_failure "Import sorting" "$IMPORT_SORT_OUTCOME"
+          record_failure "Local static-checks runner" "$RUNNER_OUTCOME"
+          record_failure "Config data-provider cache" "$CACHE_DATA_PROVIDER_OUTCOME"
+          record_failure "Config data-provider build" "$CONFIG_DATA_PROVIDER_OUTCOME"
+          record_failure "Config data-schemas cache" "$CACHE_DATA_SCHEMAS_OUTCOME"
+          record_failure "Config data-schemas build" "$CONFIG_DATA_SCHEMAS_OUTCOME"
+          record_failure "Config API cache" "$CACHE_API_OUTCOME"
+          record_failure "Config API build" "$CONFIG_API_OUTCOME"
+          record_failure "Config auth preparation" "$CONFIG_AUTH_OUTCOME"
+          record_failure "Config environment preparation" "$CONFIG_ENV_OUTCOME"
+          record_failure "Config migration tests" "$CONFIG_TESTS_OUTCOME"
+          record_failure "Unused i18n scan" "$FIND_I18N_OUTCOME"
+          record_failure "Unused i18n keys" "$I18N_OUTCOME"
+          record_failure "depcheck installation" "$INSTALL_DEPCHECK_OUTCOME"
+          record_failure "Package JSON validation" "$VALIDATE_PACKAGE_JSON_OUTCOME"
+          record_failure "Package script dependency extraction" "$EXTRACT_USED_SCRIPTS_OUTCOME"
+          record_failure "Source dependency extraction" "$EXTRACT_USED_CODE_OUTCOME"
+          record_failure "Client dependency collection" "$GET_CLIENT_DEPS_OUTCOME"
+          record_failure "API dependency collection" "$GET_API_DEPS_OUTCOME"
+          record_failure "Workspace dependency extraction" "$EXTRACT_WORKSPACE_DEPS_OUTCOME"
+          record_failure "Root depcheck" "$CHECK_ROOT_OUTCOME"
+          record_failure "Client depcheck" "$CHECK_CLIENT_OUTCOME"
+          record_failure "API depcheck" "$CHECK_API_OUTCOME"
+          record_failure "Unused NPM packages" "$UNUSED_PACKAGES_OUTCOME"
+
+          if [[ "$UNUSED_PACKAGES_OUTCOME" == "failure" ]]; then
+            [[ -n "$ROOT_UNUSED" ]] && printf 'Root unused dependencies:\n%s\n' "$ROOT_UNUSED"
+            [[ -n "$CLIENT_UNUSED" ]] && printf 'Client unused dependencies:\n%s\n' "$CLIENT_UNUSED"
+            [[ -n "$API_UNUSED" ]] && printf 'API unused dependencies:\n%s\n' "$API_UNUSED"
+          fi
+
+          if [[ ${#failures[@]} -eq 0 ]]; then
+            echo "All affected static checks passed."
+            exit 0
+          fi
+
+          echo "::error::Static checks failed:"
+          printf ' - %s\n' "${failures[@]}"
+          exit 1
+
+  # Runs as its own job rather than a step inside `static-checks`. Two full
+  # type-aware sweeps of api+client+packages cost more than the rest of that
+  # job combined, and sharing one 30-minute budget with ~20 later steps meant a
+  # slow sweep starved config-migration, i18n and depcheck — the job then
+  # reported nothing at all, which is strictly worse than not running the gate.
+  eslint-sweep:
+    name: ESLint config regression sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # fetch-depth: 0 is load-bearing — the gate reads the base ref's
+          # config via `git show`, which a shallow checkout cannot resolve.
+          fetch-depth: 0
+
+      - name: Detect config changes
+        id: paths
+        uses: dorny/paths-filter@v4
+        with:
+          predicate-quantifier: 'some-with-excludes'
+          filters: |
+            eslint_config:
+              - 'eslint.config.mjs'
+              - '.github/workflows/static-checks.yml'
+
+      - name: Set up Node.js 24.16.0
+        if: steps.paths.outputs.eslint_config == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.paths.outputs.eslint_config == 'true'
+        run: npm ci
+
+      # This job has its own clean checkout, so it needs the primitive metadata
+      # the design rules read out of packages/client/dist as much as the Static
+      # checks job does: without it `shadcn/no-restyle` sees no `cva` variants
+      # and classifies fewer overrides, which would let the full-tree gate pass
+      # a component-ownership regression.
+      - name: Build client-package for the design rules
+        if: steps.paths.outputs.eslint_config == 'true'
+        run: npm run build:client-package
+
+      # Full-tree sweep that gates on regression, not cleanliness: the tree
+      # carries a pre-existing lint backlog (70 errors at time of wiring), so
+      # requiring a clean sweep would fail config PRs on unrelated debt.
+      # Instead, lint the same tree under the PR's config and under the base
+      # ref's config and fail when the PR's config (a) stops linting files
+      # the base config covered — the signature of a mis-scoped ignores — or
+      # (b) produces more diagnostics for some (file, rule, severity) triple.
+      # On an identical tree, any delta is attributable to the config change
+      # alone. Severity is part of the key so a warn->error escalation must
+      # land with the tree clean for that rule; downgrades and fixes are
+      # never penalized.
+      - name: ESLint full-sweep regression gate on config changes
+        id: eslint_sweep
+        if: steps.paths.outputs.eslint_config == 'true'
+        env:
+          # A sweep that outruns this budget yields a notice, not a failure:
+          # the gate is advisory about config scope, and an unfinished sweep is
+          # no evidence of a regression. Bounding it also keeps a pathological
+          # config from burning the whole job timeout with nothing to show.
+          ESLINT_SWEEP_BUDGET_SECONDS: '900'
+        run: |
+          run_sweep() {
+            set +e
+            # Two rules are switched off for the sweep only: `prettier/prettier`
+            # reformats every file (formatting drift is caught per changed file
+            # by the Static checks job and is not a config regression), and
+            # `import/no-cycle` walks the whole import graph from every file
+            # while config/circular-deps.mjs already owns cycle detection.
+            # Together they were ~85% of a full-tree lint.
+            timeout -k 15 "$ESLINT_SWEEP_BUDGET_SECONDS" \
+              node_modules/.bin/eslint --config "$1" api client packages -f json -o "$2" \
+                --rule 'prettier/prettier: off' \
+                --rule 'import/no-cycle: off'
+            local status=$?
+            set -e
+            # 124 = timeout sent TERM; 137 = it escalated to KILL.
+            if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+              return 124
+            fi
+            return 0
+          }
+
+          if ! run_sweep eslint.config.mjs "$RUNNER_TEMP/eslint-head.json"; then
+            echo "::notice title=ESLint sweep::Head sweep exceeded ${ESLINT_SWEEP_BUDGET_SECONDS}s; skipping the regression gate for this run."
+            exit 0
+          fi
+          if [ ! -s "$RUNNER_TEMP/eslint-head.json" ]; then
+            echo "::error title=ESLint sweep::Head-config sweep produced no report — ESLint likely crashed under the new config."
+            exit 1
+          fi
+
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "::error title=ESLint sweep::Base commit is unavailable — this gate requires the checkout above to keep fetch-depth: 0."
+            exit 1
+          fi
+          # The base config is written to the repo root, not $RUNNER_TEMP:
+          # flat-config files/ignores patterns and plugin imports resolve
+          # relative to the config's own directory, so a temp-dir copy would
+          # scope to nothing and the comparison would pass vacuously.
+          # An unchanged config cannot regress: the head sweep above already
+          # proved this workflow still runs it, so a second identical sweep
+          # would only double the job's runtime.
+          if git diff --quiet "$BASE_SHA" HEAD -- eslint.config.mjs; then
+            echo "::notice title=ESLint sweep::eslint.config.mjs is unchanged from base; skipping the regression comparison."
+            exit 0
+          fi
+          trap 'rm -f eslint.config.base.mjs' EXIT
+          if ! git show "$BASE_SHA:eslint.config.mjs" > eslint.config.base.mjs 2>/dev/null; then
+            echo "::notice title=ESLint sweep::No eslint.config.mjs at base ref; skipping regression comparison."
+            exit 0
+          fi
+          if ! run_sweep eslint.config.base.mjs "$RUNNER_TEMP/eslint-base.json"; then
+            echo "::notice title=ESLint sweep::Base sweep exceeded ${ESLINT_SWEEP_BUDGET_SECONDS}s; skipping the regression comparison."
+            exit 0
+          fi
+          if [ ! -s "$RUNNER_TEMP/eslint-base.json" ]; then
+            echo "::notice title=ESLint sweep::Base config cannot run against this tree; skipping regression comparison."
+            exit 0
+          fi
+
+          jq -r '.[].filePath' "$RUNNER_TEMP/eslint-head.json" | sort > "$RUNNER_TEMP/head.files"
+          jq -r '.[].filePath' "$RUNNER_TEMP/eslint-base.json" | sort > "$RUNNER_TEMP/base.files"
+          LOST=$(comm -23 "$RUNNER_TEMP/base.files" "$RUNNER_TEMP/head.files")
+          if [ -n "$LOST" ]; then
+            LOST_COUNT=$(printf '%s\n' "$LOST" | wc -l)
+            echo "::error title=ESLint coverage regression::The config change stops linting $LOST_COUNT file(s) the base config covered (showing up to 20):"
+            printf '%s\n' "$LOST" | head -20
+            exit 1
+          fi
+
+          fingerprints() {
+            jq -r '.[] | .filePath as $f | .messages[] | "\($f)\t\(.ruleId // "parse-error")\t\(.severity)"' "$1" |
+              sort | uniq -c | sed -E 's/^ *([0-9]+) /\1\t/'
+          }
+          fingerprints "$RUNNER_TEMP/eslint-head.json" > "$RUNNER_TEMP/head.fp"
+          fingerprints "$RUNNER_TEMP/eslint-base.json" > "$RUNNER_TEMP/base.fp"
+
+          REGRESSIONS=$(awk -F'\t' '
+            NR==FNR { base[$2 FS $3 FS $4] = $1; next }
+            {
+              if ($1 > base[$2 FS $3 FS $4] + 0) {
+                sev = ($4 == 2) ? "error" : "warn"
+                printf "%s  %s (%s): %d -> %d\n", $2, $3, sev, base[$2 FS $3 FS $4] + 0, $1
+              }
+            }
+          ' "$RUNNER_TEMP/base.fp" "$RUNNER_TEMP/head.fp")
+
+          if [ -n "$REGRESSIONS" ]; then
+            echo "::error title=ESLint config regression::The config change introduces new diagnostics (file  rule (severity): base -> head):"
+            echo "$REGRESSIONS"
+            exit 1
+          fi
+          echo "No coverage loss and no new diagnostics versus the base config."

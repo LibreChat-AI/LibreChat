@@ -1,4 +1,5 @@
 import {
+  AUTH_USER_DOC_BY_ID_PREFIX,
   CacheKeys,
   SystemRoles,
   roleDefaults,
@@ -6,7 +7,7 @@ import {
   removeNullishValues,
 } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
-import type { IRole, IUser } from '~/types';
+import type { CacheStore, IRole, IUser } from '~/types';
 import { scopedCacheKey, getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { escapeRegExp } from '~/utils/string';
 import logger from '~/config/winston';
@@ -18,6 +19,10 @@ function isSystemRoleName(name: string): boolean {
   return systemRoleValues.has(name.toUpperCase());
 }
 
+function isAuthUserDocCacheEnabled(): boolean {
+  return process.env.AUTH_USER_CACHE_MODE === 'on';
+}
+
 export class RoleConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -27,10 +32,7 @@ export class RoleConflictError extends Error {
 
 export interface RoleDeps {
   /** Returns a cache store for the given key. Injected from getLogStores. */
-  getCache?: (key: string) => {
-    get: (k: string) => Promise<unknown>;
-    set: (k: string, v: unknown) => Promise<void>;
-  };
+  getCache?: (key: string) => CacheStore | undefined;
 }
 
 export function createRoleMethods(
@@ -75,6 +77,30 @@ export function createRoleMethods(
     const Role = mongoose.models.Role;
 
     for (const roleName of [SystemRoles.ADMIN, SystemRoles.USER]) {
+      // Strict mode hides off-schema SHARED_GLOBAL and won't $unset it on save; migrate it via the raw driver.
+      // eslint-disable-next-line no-restricted-syntax -- Role is a global (non-tenant) collection; raw read is required to see the off-schema field.
+      const legacyDoc = await Role.collection.findOne({ name: roleName });
+      if (legacyDoc?.permissions) {
+        const set: Record<string, unknown> = {};
+        const unset: Record<string, ''> = {};
+        for (const permType of ['PROMPTS', 'AGENTS']) {
+          const block = legacyDoc.permissions[permType];
+          if (block && 'SHARED_GLOBAL' in block) {
+            if (!('SHARE' in block)) {
+              set[`permissions.${permType}.SHARE`] = block.SHARED_GLOBAL;
+            }
+            unset[`permissions.${permType}.SHARED_GLOBAL`] = '';
+          }
+        }
+        if (Object.keys(unset).length) {
+          const update: Record<string, unknown> = { $unset: unset };
+          if (Object.keys(set).length) {
+            update.$set = set;
+          }
+          // eslint-disable-next-line no-restricted-syntax -- Role is a global (non-tenant) collection; raw $unset is required to drop the off-schema field.
+          await Role.collection.updateOne({ name: roleName }, update);
+        }
+      }
       let role = await Role.findOne({ name: roleName });
       const defaultPerms = roleDefaults[roleName].permissions;
 
@@ -87,9 +113,22 @@ export function createRoleMethods(
         const permissions = role.toObject()?.permissions ?? {};
         role.permissions = role.permissions || {};
         for (const permType of Object.keys(defaultPerms)) {
-          if (permissions[permType] == null || Object.keys(permissions[permType]).length === 0) {
-            role.permissions[permType] = defaultPerms[permType as keyof typeof defaultPerms];
+          const defaultBlock = defaultPerms[permType as keyof typeof defaultPerms] as Record<
+            string,
+            unknown
+          >;
+          const existingBlock = permissions[permType] as Record<string, unknown> | null | undefined;
+          if (existingBlock == null) {
+            role.permissions[permType] = defaultBlock;
+            continue;
           }
+          const mergedBlock: Record<string, unknown> = { ...existingBlock };
+          for (const field of Object.keys(defaultBlock)) {
+            if (mergedBlock[field] == null) {
+              mergedBlock[field] = defaultBlock[field];
+            }
+          }
+          role.permissions[permType] = mergedBlock;
         }
       }
       await role.save();
@@ -536,7 +575,9 @@ export function createRoleMethods(
     }
     const Role = mongoose.models.Role;
     const User = mongoose.models.User as Model<IUser>;
+    const affectedUserIds = await findUserIdsByRole(roleName);
     await User.updateMany({ role: roleName }, { $set: { role: SystemRoles.USER } });
+    await invalidateAuthUserDocCache(affectedUserIds);
     const deleted = await Role.findOneAndDelete({ name: roleName }).lean();
     try {
       const cache = deps.getCache?.(CacheKeys.ROLES);
@@ -554,7 +595,9 @@ export function createRoleMethods(
 
   async function updateUsersByRole(oldRole: string, newRole: string): Promise<void> {
     const User = mongoose.models.User as Model<IUser>;
+    const affectedUserIds = await findUserIdsByRole(oldRole);
     await User.updateMany({ role: oldRole }, { $set: { role: newRole } });
+    await invalidateAuthUserDocCache(affectedUserIds);
   }
 
   async function findUserIdsByRole(roleName: string): Promise<string[]> {
@@ -569,6 +612,34 @@ export function createRoleMethods(
     }
     const User = mongoose.models.User as Model<IUser>;
     await User.updateMany({ _id: { $in: userIds } }, { $set: { role: newRole } });
+    await invalidateAuthUserDocCache(userIds);
+  }
+
+  async function invalidateAuthUserDocCache(userIds: string[]): Promise<void> {
+    if (!isAuthUserDocCacheEnabled() || userIds.length === 0) {
+      return;
+    }
+    const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
+    if (!cache?.get || !cache?.delete) {
+      return;
+    }
+    try {
+      const uniqueUserIds = [...new Set(userIds.map((userId) => userId.toString()))];
+      await Promise.all(
+        uniqueUserIds.map(async (userId) => {
+          const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+          const cachedKeys = await cache.get(indexKey);
+          if (Array.isArray(cachedKeys)) {
+            await Promise.all(
+              cachedKeys.map((key) => (typeof key === 'string' ? cache.delete?.(key) : undefined)),
+            );
+          }
+          await cache.delete?.(indexKey);
+        }),
+      );
+    } catch (cacheError) {
+      logger.error('[roleMethods] auth user doc cache invalidation failed:', cacheError);
+    }
   }
 
   async function listUsersByRole(

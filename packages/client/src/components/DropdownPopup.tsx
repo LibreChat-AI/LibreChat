@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import type * as t from '~/common';
-import { cn } from '~/utils';
+import { usePopoverZIndex } from './OriginalDialog';
+import { cn, disabledInkClasses } from '~/utils';
 import './Dropdown.css';
 
 interface DropdownProps {
@@ -14,16 +15,21 @@ interface DropdownProps {
   iconClassName?: string;
   itemClassName?: string;
   sameWidth?: boolean;
+  /** Preferred CSS minimum width, capped to the space available to the menu. */
+  minWidth?: string;
   anchor?: { x: string; y: string };
   gutter?: number;
   modal?: boolean;
   portal?: boolean;
+  portalElement?: Ariakit.MenuProps['portalElement'];
   preserveTabOrder?: boolean;
   focusLoop?: boolean;
   menuId: string;
   mountByState?: boolean;
   unmountOnHide?: boolean;
   finalFocus?: React.RefObject<HTMLElement>;
+  autoFocusOnShow?: Ariakit.MenuProps['autoFocusOnShow'];
+  getAnchorRect?: Ariakit.MenuProps['getAnchorRect'];
 }
 
 type MenuProps = Omit<
@@ -38,21 +44,27 @@ const DropdownPopup: React.FC<DropdownProps> = ({
   setIsOpen,
   focusLoop,
   mountByState,
+  autoFocusOnShow,
   ...props
 }) => {
   const menu = Ariakit.useMenuStore({ open: isOpen, setOpen: setIsOpen, focusLoop });
+  useEffect(() => {
+    if (isOpen && autoFocusOnShow === true) {
+      menu.setAutoFocusOnShow(true);
+    }
+  }, [isOpen, autoFocusOnShow, menu]);
   if (mountByState) {
     return (
       <Ariakit.MenuProvider store={menu}>
         {trigger}
-        {isOpen && <Menu {...props} />}
+        {isOpen && <Menu {...props} autoFocusOnShow={autoFocusOnShow} />}
       </Ariakit.MenuProvider>
     );
   }
   return (
     <Ariakit.MenuProvider store={menu}>
       {trigger}
-      <Menu {...props} />
+      <Menu {...props} autoFocusOnShow={autoFocusOnShow} />
     </Ariakit.MenuProvider>
   );
 };
@@ -67,14 +79,17 @@ const Menu: React.FC<MenuProps> = ({
   modal,
   portal,
   sameWidth,
+  minWidth,
   gutter = 8,
   finalFocus,
   unmountOnHide,
   preserveTabOrder,
+  style,
   ...props
 }) => {
   const menuStore = Ariakit.useMenuStore();
   const menu = Ariakit.useMenuContext();
+  const zIndex = usePopoverZIndex();
   return (
     <Ariakit.Menu
       id={menuId}
@@ -85,7 +100,19 @@ const Menu: React.FC<MenuProps> = ({
       finalFocus={finalFocus}
       unmountOnHide={unmountOnHide}
       preserveTabOrder={preserveTabOrder}
-      className={cn('popover-ui z-40', className)}
+      style={{
+        zIndex,
+        minWidth:
+          minWidth == null
+            ? undefined
+            : `min(${minWidth}, calc(100vw - 1rem), var(--popover-available-width, 100vw))`,
+        ...style,
+      }}
+      /* Portaled menus land beside modal OGDialog layers, which set
+         `pointer-events: none` on body and re-enable it only on their own
+         content. Without `pointer-events-auto` the menu inherits `none` and its
+         items become hit-transparent (danny-avila/LibreChat#14487). */
+      className={cn('popover-ui pointer-events-auto', className)}
       {...props}
     >
       {items
@@ -93,7 +120,7 @@ const Menu: React.FC<MenuProps> = ({
         .map((item, index) => {
           const { subItems } = item;
           if (item.separate === true) {
-            return <Ariakit.MenuSeparator key={index} className="my-1 h-px border-border-medium" />;
+            return <Ariakit.MenuSeparator key={index} className="border-border-medium my-1 h-px" />;
           }
           if (subItems && subItems.length > 0) {
             return (
@@ -103,7 +130,8 @@ const Menu: React.FC<MenuProps> = ({
               >
                 <Ariakit.MenuButton
                   className={cn(
-                    'group flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm text-text-primary outline-none hover:bg-surface-hover focus:bg-surface-hover md:px-2.5 md:py-2',
+                    'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+                    disabledInkClasses,
                     itemClassName,
                   )}
                   disabled={item.disabled}
@@ -114,7 +142,10 @@ const Menu: React.FC<MenuProps> = ({
                 >
                   <span className="flex items-center gap-2">
                     {item.icon != null && (
-                      <span className={cn('mr-2 size-4', iconClassName)} aria-hidden="true">
+                      <span
+                        className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
+                        aria-hidden="true"
+                      >
                         {item.icon}
                       </span>
                     )}
@@ -138,7 +169,8 @@ const Menu: React.FC<MenuProps> = ({
               key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
               id={item.id}
               className={cn(
-                'group flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm text-text-primary outline-none hover:bg-surface-hover focus:bg-surface-hover md:px-2.5 md:py-2',
+                'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+                disabledInkClasses,
                 itemClassName,
                 item.className,
               )}
@@ -163,13 +195,16 @@ const Menu: React.FC<MenuProps> = ({
               }}
             >
               {item.icon != null && (
-                <span className={cn('mr-2 size-4', iconClassName)} aria-hidden="true">
+                <span
+                  className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
+                  aria-hidden="true"
+                >
                   {item.icon}
                 </span>
               )}
               {item.label}
               {item.kbd != null && (
-                <kbd className="ml-auto hidden font-sans text-xs text-black/50 group-hover:inline group-focus:inline dark:text-white/50">
+                <kbd className="text-text-tertiary ml-auto hidden font-sans text-xs group-hover:inline group-focus:inline">
                   ⌘{item.kbd}
                 </kbd>
               )}

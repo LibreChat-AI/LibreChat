@@ -2,6 +2,16 @@ import { z } from 'zod';
 import { TokenExchangeMethodEnum } from './types/agents';
 import { extractEnvVariable } from './utils';
 
+/**
+ * Upper bound on a stored MCP `iconPath` (URL or data URI). Enforced by
+ * `sanitizeMcpIconPath`, not a schema `.max()`, so re-submitting a server whose
+ * stored icon predates the cap clears the icon instead of rejecting the update.
+ */
+export const MAX_MCP_ICON_PATH_LENGTH = 256 * 1024;
+
+/** Keep persistence admission waits below the shared lease's 15-minute lifetime. */
+export const MAX_MCP_OAUTH_PERSISTENCE_WAIT_MS = 14 * 60_000;
+
 const validateOAuthClientCredentials = (
   oauth: {
     client_id?: string;
@@ -102,6 +112,27 @@ const OAuthOptionsBaseSchema = z.object({
    * Ignored when `audience` itself is not configured.
    */
   forward_audience_on_refresh: z.boolean().optional(),
+  /**
+   * Whether to send the RFC 8707 `resource` parameter on `/authorize`, the
+   * `authorization_code` exchange and the `refresh_token` grant. The value is the
+   * canonical resource identifier from the MCP server's Protected Resource Metadata
+   * (RFC 9728), never an operator-supplied string.
+   *
+   * Default: `true`. RFC 8707 makes `resource` OPTIONAL, and authorization servers
+   * that reject it cannot complete a flow that sends it: Microsoft Entra ID v2.0
+   * fails an `/authorize` request carrying both `resource` and `scope` with
+   * `AADSTS9010010`. Set to `false` for those providers, and rely on `scope` (or
+   * `audience` above) to obtain an API-scoped token.
+   *
+   * Opting out suppresses the parameter only. Protected Resource Metadata is still
+   * discovered, still validated against the MCP server URL (RFC 9728 §3.3), and
+   * still recorded on the stored client binding, so scope discovery, authorization
+   * server discovery and re-authentication checks are unaffected.
+   *
+   * This field is only accepted from trusted/admin MCP configuration and is rejected
+   * from user-managed servers.
+   */
+  send_resource_parameter: z.boolean().optional(),
   /** OAuth revocation endpoint (optional - can be auto-discovered) */
   revocation_endpoint: z
     .string()
@@ -138,6 +169,7 @@ const userOAuthEndpointUrlSchema = z
 const UserOAuthOptionsSchema = OAuthOptionsBaseSchema.omit({
   audience: true,
   forward_audience_on_refresh: true,
+  send_resource_parameter: true,
 })
   .extend({
     authorization_url: userOAuthEndpointUrlSchema.optional(),
@@ -146,6 +178,7 @@ const UserOAuthOptionsSchema = OAuthOptionsBaseSchema.omit({
     revocation_endpoint: userOAuthEndpointUrlSchema.optional(),
     audience: z.never().optional(),
     forward_audience_on_refresh: z.never().optional(),
+    send_resource_parameter: z.never().optional(),
   })
   .superRefine(validateOAuthClientCredentials);
 
@@ -154,12 +187,16 @@ const OboOptionsSchema = z.object({
   scopes: z.string().min(1),
 });
 
+export const MCP_SERVER_TITLE_PATTERN = new RegExp(
+  "^[\\p{L}\\p{N}][\\p{L}\\p{N}\\p{M}'’ -]*$",
+  'u',
+);
+export const MCP_SERVER_TITLE_ERROR =
+  'Title must start with a letter or number and can include spaces, hyphens, and apostrophes';
+
 const BaseOptionsSchema = z.object({
-  /** Display name for the MCP server - only letters, numbers, and spaces allowed */
-  title: z
-    .string()
-    .regex(/^[a-zA-Z0-9 ]+$/, 'Title can only contain letters, numbers, and spaces')
-    .optional(),
+  /** Display name for the MCP server */
+  title: z.string().regex(MCP_SERVER_TITLE_PATTERN, MCP_SERVER_TITLE_ERROR).optional(),
   /** Description of the MCP server */
   description: z.string().optional(),
   /**
@@ -174,7 +211,34 @@ const BaseOptionsSchema = z.object({
   /** Timeout (ms) for the long-lived SSE GET stream body before undici aborts it. Default: 300_000 (5 min). */
   sseReadTimeout: z.number().int().positive().optional(),
   initTimeout: z.number().int().nonnegative().optional(),
-  /** Controls visibility in chat dropdown menu (MCPSelect) */
+  /**
+   * How long (ms) a replica waits for another replica's in-flight OAuth refresh-token redemption
+   * before failing the attempt as retryable. Raise it for a slow token endpoint; lower it to fail
+   * faster. Default when unset: 15_000. Clamped to 30_000, half the window after which a
+   * redemption aborts itself, because this wait runs inside the redemption that window governs.
+   *
+   * Positive rather than non-negative: zero would mean "never wait for a peer", which fails every
+   * contended refresh instead of adopting the rotation a peer is about to store, and that is the
+   * common case this wait exists to serve. Omit the field to take the default.
+   */
+  oauthRefreshWaitTimeout: z.number().int().positive().optional(),
+  /** Enable only after every replica has upgraded to the coordinated OAuth writer protocol. Default: false. */
+  oauthRefreshCoordination: z.boolean().optional(),
+  /** Wait (ms) for callback/adoption persistence and publication. Default: 15_000; maximum: 840_000. */
+  oauthPersistenceWaitTimeout: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_MCP_OAUTH_PERSISTENCE_WAIT_MS)
+    .optional(),
+  /**
+   * Whether the server is offered in chat.
+   *
+   * `false` hides it from the chat dropdown (MCPSelect) AND bars it from the
+   * chat selection a request carries, so a stale or hand-written request cannot
+   * reach it either. It does not restrict agents, nor a server a model spec
+   * pins through `mcpServers` — both are the operator's own choice.
+   */
   chatMenu: z.boolean().optional(),
   /**
    * Controls server instruction behavior:
@@ -249,6 +313,33 @@ const ProxyUrlSchema = z
     },
   );
 
+const PROCESS_MCP_SERVER_FIELDS = new Set(['command', 'args', 'env', 'cwd', 'stderr']);
+
+export function isProcessMCPServerField(field: string): boolean {
+  return PROCESS_MCP_SERVER_FIELDS.has(field);
+}
+
+export function isProcessMCPServerConfig(value: unknown): boolean {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  const config = value as Record<string, unknown>;
+  if (config.type === 'stdio') {
+    return true;
+  }
+
+  return Object.keys(config).some(isProcessMCPServerField);
+}
+
+export function hasProcessMCPServerConfig(value: unknown): boolean {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.values(value).some(isProcessMCPServerConfig);
+}
+
 export const StdioOptionsSchema = BaseOptionsSchema.extend({
   type: z.literal('stdio').default('stdio'),
   obo: z.undefined().optional(),
@@ -288,6 +379,11 @@ export const StdioOptionsSchema = BaseOptionsSchema.extend({
   stderr: z
     .union([z.enum(['pipe', 'ignore', 'inherit']), z.number().int().nonnegative()])
     .optional(),
+  /**
+   * Working directory for the spawned process. Supplied by Agent Plugins
+   * packages, which resolve and contain the path before it reaches this schema.
+   */
+  cwd: z.string().optional(),
 });
 
 export const WebSocketOptionsSchema = BaseOptionsSchema.extend({
@@ -311,6 +407,13 @@ export const WebSocketOptionsSchema = BaseOptionsSchema.extend({
 export const SSEOptionsSchema = BaseOptionsSchema.extend({
   type: z.literal('sse').default('sse'),
   headers: z.record(z.string(), z.string()).optional(),
+  /**
+   * Headers resolved from the live chat request and merged over `headers`.
+   * Omitted during catalog discovery, which has no request context, so a
+   * `{{LIBRECHAT_BODY_*}}` placeholder here does not block tool listing.
+   * On a duplicate header name the resolved `requestHeaders` value wins.
+   */
+  requestHeaders: z.record(z.string(), z.string()).optional(),
   /**
    * On-Behalf-Of (OBO) token exchange configuration.
    * When configured, LibreChat exchanges the logged-in user's federated access token
@@ -339,6 +442,13 @@ export const SSEOptionsSchema = BaseOptionsSchema.extend({
 export const StreamableHTTPOptionsSchema = BaseOptionsSchema.extend({
   type: z.union([z.literal('streamable-http'), z.literal('http')]),
   headers: z.record(z.string(), z.string()).optional(),
+  /**
+   * Headers resolved from the live chat request and merged over `headers`.
+   * Omitted during catalog discovery, which has no request context, so a
+   * `{{LIBRECHAT_BODY_*}}` placeholder here does not block tool listing.
+   * On a duplicate header name the resolved `requestHeaders` value wins.
+   */
+  requestHeaders: z.record(z.string(), z.string()).optional(),
   /**
    * On-Behalf-Of (OBO) token exchange configuration.
    * When configured, LibreChat exchanges the logged-in user's federated access token
@@ -384,6 +494,9 @@ const omitServerManagedFields = <T extends z.ZodObject<z.ZodRawShape>>(schema: T
     timeout: true,
     sseReadTimeout: true,
     initTimeout: true,
+    oauthRefreshWaitTimeout: true,
+    oauthRefreshCoordination: true,
+    oauthPersistenceWaitTimeout: true,
     chatMenu: true,
     serverInstructions: true,
     requiresOAuth: true,

@@ -14,6 +14,7 @@ beforeAll(async () => {
   if (!mongoose.models.Config) {
     mongoose.model<IConfig>('Config', configSchema);
   }
+  await mongoose.models.Config.init();
   methods = createConfigMethods(mongoose);
 });
 

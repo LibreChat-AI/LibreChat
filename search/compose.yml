@@ -1,0 +1,151 @@
+# Search stack PoC infrastructure (Track 1).
+#
+# Stands up the four services the new chat-search architecture needs, all
+# isolated from the production compose files at the repo root:
+#   - ferretdb-postgres  the DocumentDB-flavored PostgreSQL backing FerretDB
+#   - ferretdb           the Mongo wire-protocol bridge LibreChat talks to
+#   - chat_search_db     a NEW, dedicated PostgreSQL 17 + pgvector service
+#                         (NOT the existing `vectordb` used by rag_api file
+#                         search - see PLAN.md decision 3 / finding R1/R2)
+#   - clickhouse         the additive historical-search tier
+#
+# Image tags verified against their registries on 2026-08-07 (see
+# search/README.md "Image tags verified" for the curl evidence):
+#   ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
+#   ghcr.io/ferretdb/ferretdb:2.7.0
+#   pgvector/pgvector:0.8.6-pg17-trixie
+#   clickhouse/clickhouse-server:26.3.17.110 (26.3 is the current ClickHouse
+#     LTS line per endoflife.date; 26.3.17.110 is its latest published patch)
+#
+# Host ports are chosen to avoid every port used by docker-compose.yml,
+# deploy-compose.yml, rag.yml, utils/docker/test-compose.yml,
+# docker-compose.override.yml(.example), and
+# packages/data-schemas/misc/ferretdb/docker-compose.ferretdb.yml - see the
+# port map in search/README.md. All are overridable via search/.env.
+#
+# Usage: cp search/.env.example search/.env, fill in real credentials, then
+# from the search/ directory run `docker compose up -d`.
+
+name: librechat-search-poc
+
+services:
+  ferretdb-postgres:
+    image: ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
+    container_name: search-ferretdb-postgres
+    restart: on-failure
+    # wal_level=logical is required by the Spike B ClickPipes-over-DocumentDB
+    # CDC go/no-go (see PLAN.md "ClickPipes disposition"); it is not consumed
+    # by anything in this track, only reserved for that later spike.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+    environment:
+      POSTGRES_USER: ${FERRETDB_PG_USER:?set in search/.env, see .env.example}
+      POSTGRES_PASSWORD: ${FERRETDB_PG_PASSWORD:?set in search/.env, see .env.example}
+      POSTGRES_DB: ${FERRETDB_PG_DB:-postgres}
+    ports:
+      - "${FERRETDB_PG_HOST_PORT:-5434}:5432"
+    volumes:
+      - search_ferretdb_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # FerretDB 2.x delegates all authentication to PostgreSQL: the credentials
+  # embedded in FERRETDB_POSTGRESQL_URL are also the Mongo-wire credentials
+  # clients authenticate with. No default is supplied for either - unlike the
+  # differential-test harness at
+  # packages/data-schemas/misc/ferretdb/docker-compose.ferretdb.yml, this
+  # stack holds real projected chat content, so the compose file must not be
+  # runnable without operator-supplied credentials. FERRETDB_AUTH defaults to
+  # true in 2.x; set explicitly here for clarity.
+  ferretdb:
+    image: ghcr.io/ferretdb/ferretdb:2.7.0
+    container_name: search-ferretdb
+    restart: on-failure
+    depends_on:
+      ferretdb-postgres:
+        condition: service_healthy
+    ports:
+      - "${FERRETDB_HOST_PORT:-27021}:27017"
+      - "${FERRETDB_DEBUG_HOST_PORT:-8089}:8088"
+    environment:
+      FERRETDB_POSTGRESQL_URL: postgres://${FERRETDB_PG_USER:?set in search/.env, see .env.example}:${FERRETDB_PG_PASSWORD:?set in search/.env, see .env.example}@ferretdb-postgres:5432/${FERRETDB_PG_DB:-postgres}
+      FERRETDB_AUTH: "true"
+    # The FerretDB image ships its own HEALTHCHECK (`ferretdb ping`); no
+    # override needed here.
+
+  # New, dedicated PostgreSQL 17 + pgvector service. Deliberately NOT the
+  # `vectordb` service used by rag_api file search (pinned pg15, superuser
+  # bootstrap credential, live pgdata2 volume) - see PLAN.md decision 3.
+  chat_search_db:
+    image: pgvector/pgvector:0.8.6-pg17-trixie
+    container_name: search-chat-search-db
+    restart: on-failure
+    environment:
+      POSTGRES_DB: ${CHAT_SEARCH_DB:-chat_search}
+      POSTGRES_USER: ${CHAT_SEARCH_BOOTSTRAP_USER:?set in search/.env, see .env.example}
+      POSTGRES_PASSWORD: ${CHAT_SEARCH_BOOTSTRAP_PASSWORD:?set in search/.env, see .env.example}
+      CHAT_SEARCH_OWNER_PASSWORD: ${CHAT_SEARCH_OWNER_PASSWORD:?set in search/.env, see .env.example}
+      CHAT_SEARCH_WRITER_PASSWORD: ${CHAT_SEARCH_WRITER_PASSWORD:?set in search/.env, see .env.example}
+      CHAT_SEARCH_READER_PASSWORD: ${CHAT_SEARCH_READER_PASSWORD:?set in search/.env, see .env.example}
+    ports:
+      - "${CHAT_SEARCH_DB_HOST_PORT:-5435}:5432"
+    volumes:
+      - search_chat_search_pgdata:/var/lib/postgresql/data
+      - ./init/chat-search-roles.sh:/docker-entrypoint-initdb.d/01-chat-search-roles.sh:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3.17.110
+    container_name: search-clickhouse
+    restart: on-failure
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-chat_search}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-chat_search}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in search/.env, see .env.example}
+      # The default account otherwise gets full admin rights; the outbox
+      # consumer (track 6) should provision a scoped user instead of relying
+      # on this one once real ingestion lands.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 0
+    ports:
+      - "${CLICKHOUSE_HTTP_HOST_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_HOST_PORT:-9000}:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - search_clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  search_ferretdb_pgdata:
+  search_chat_search_pgdata:
+  search_clickhouse_data:

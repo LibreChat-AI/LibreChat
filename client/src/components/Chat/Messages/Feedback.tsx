@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { memo, useState, useCallback, useMemo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { TFeedback, TFeedbackTag, getTagsForRating } from 'librechat-data-provider';
 import {
@@ -14,11 +14,14 @@ import {
 import {
   Button,
   OGDialog,
+  Textarea,
   OGDialogContent,
   OGDialogTitle,
+  TooltipAnchor,
   ThumbUpIcon,
   ThumbDownIcon,
 } from '@librechat/client';
+import { hoverButtonClasses } from './styles';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -55,19 +58,19 @@ function FeedbackOptionButton({
   const label = localize(tag.label as Parameters<typeof localize>[0]);
 
   return (
-    <button
+    <Button
+      variant="ghost"
       className={cn(
-        'flex w-full items-center gap-3 rounded-xl p-2 text-text-secondary transition-colors duration-200 hover:bg-surface-hover hover:text-text-primary',
-        active && 'bg-surface-hover font-semibold text-text-primary',
+        'text-text-secondary hover:bg-surface-hover hover:text-text-primary h-auto w-full justify-start gap-3 rounded-xl p-2 transition-colors duration-200',
+        active && 'bg-surface-hover text-text-primary font-semibold',
       )}
       onClick={onClick}
-      type="button"
       aria-label={label}
       aria-pressed={active}
     >
-      <Icon size="19" bold={active} aria-hidden="true" />
+      <Icon size="1.1875rem" bold={active} aria-hidden="true" />
       <span>{label}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -146,16 +149,17 @@ function FeedbackButtons({
       <Ariakit.PopoverAnchor
         store={upStore}
         render={
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             className={buttonClasses(feedback?.rating === 'thumbsUp', isLast)}
             onClick={handleThumbsUpClick}
-            type="button"
             title={localize('com_ui_feedback_positive')}
             aria-pressed={feedback?.rating === 'thumbsUp'}
             aria-haspopup="menu"
           >
-            <ThumbUpIcon size="19" bold={feedback?.rating === 'thumbsUp'} />
-          </button>
+            <ThumbUpIcon size="1.1875rem" bold={feedback?.rating === 'thumbsUp'} />
+          </Button>
         }
       />
       <Ariakit.Popover
@@ -163,7 +167,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate flex w-auto flex-col gap-1.5 overflow-hidden rounded-2xl border border-border-medium bg-surface-secondary p-1.5 shadow-lg"
+        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
       >
         <div className="flex flex-col items-stretch justify-center">
           {positiveTags.map((tag) => (
@@ -180,16 +184,17 @@ function FeedbackButtons({
       <Ariakit.PopoverAnchor
         store={downStore}
         render={
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             className={buttonClasses(feedback?.rating === 'thumbsDown', isLast)}
             onClick={handleThumbsDownClick}
-            type="button"
             title={localize('com_ui_feedback_negative')}
             aria-pressed={feedback?.rating === 'thumbsDown'}
             aria-haspopup="menu"
           >
-            <ThumbDownIcon size="19" bold={feedback?.rating === 'thumbsDown'} />
-          </button>
+            <ThumbDownIcon size="1.1875rem" bold={feedback?.rating === 'thumbsDown'} />
+          </Button>
         }
       />
       <Ariakit.Popover
@@ -197,7 +202,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate flex w-auto flex-col gap-1.5 overflow-hidden rounded-2xl border border-border-medium bg-surface-secondary p-1.5 shadow-lg"
+        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
       >
         <div className="flex flex-col items-stretch justify-center">
           {negativeTags.map((tag) => (
@@ -214,23 +219,10 @@ function FeedbackButtons({
   );
 }
 
-function buttonClasses(isActive: boolean, isLast: boolean) {
-  return cn(
-    'hover-button rounded-lg p-1.5 text-text-secondary-alt',
-    'hover:text-text-primary hover:bg-surface-hover',
-    'group-hover:visible group-focus-within:visible group-[.final-completion]:visible',
-    !isLast &&
-      'group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:hover)]:opacity-0',
-    'focus-visible:ring-2 focus-visible:ring-black dark:focus-visible:ring-white focus-visible:outline-none',
-    isActive && 'active text-text-primary bg-surface-hover',
-  );
-}
+const buttonClasses = (isActive: boolean, isLast: boolean) =>
+  hoverButtonClasses({ isActive, isLast });
 
-export default function Feedback({
-  isLast = false,
-  handleFeedback,
-  feedback: initialFeedback,
-}: FeedbackProps) {
+function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }: FeedbackProps) {
   const localize = useLocalize();
   const [openDialog, setOpenDialog] = useState(false);
   const [feedback, setFeedback] = useState<TFeedback | undefined>(initialFeedback);
@@ -284,21 +276,27 @@ export default function Feedback({
       ? localize('com_ui_feedback_positive')
       : localize('com_ui_feedback_negative');
     return (
-      <button
-        className={buttonClasses(true, isLast)}
-        onClick={() => {
-          if (isThumbsUp) {
-            handleButtonFeedback(undefined);
-          } else {
-            setOpenDialog(true);
-          }
-        }}
-        type="button"
-        title={label}
-        aria-pressed="true"
-      >
-        <Icon size="19" bold />
-      </button>
+      <TooltipAnchor
+        description={label}
+        render={
+          <Button
+            variant="ghost"
+            size="icon"
+            className={buttonClasses(true, isLast)}
+            onClick={() => {
+              if (isThumbsUp) {
+                handleButtonFeedback(undefined);
+              } else {
+                setOpenDialog(true);
+              }
+            }}
+            aria-label={label}
+            aria-pressed="true"
+          >
+            <Icon size="1.1875rem" bold />
+          </Button>
+        }
+      />
     );
   };
 
@@ -316,11 +314,11 @@ export default function Feedback({
       )}
       <OGDialog open={openDialog} onOpenChange={setOpenDialog}>
         <OGDialogContent className="w-11/12 max-w-lg">
-          <OGDialogTitle className="text-token-text-primary text-lg font-semibold leading-6">
+          <OGDialogTitle className="text-lg leading-6 font-semibold">
             {localize('com_ui_feedback_more_information')}
           </OGDialogTitle>
-          <textarea
-            className="w-full rounded-xl border border-border-light bg-transparent p-2 text-text-primary"
+          <Textarea
+            className="border-border-light h-auto w-full rounded-xl p-2"
             value={feedback?.text || ''}
             onChange={handleTextChange}
             rows={4}
@@ -340,3 +338,6 @@ export default function Feedback({
     </>
   );
 }
+
+/** Memoized: a send re-renders every row's toolbar, and nothing here depends on it. */
+export default memo(Feedback);

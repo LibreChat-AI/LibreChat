@@ -9,6 +9,8 @@
  */
 
 import { logger } from '@librechat/data-schemas';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { MCPConnection } from '~/mcp/connection';
 import { mcpConfig } from '~/mcp/mcpConfig';
 
@@ -48,13 +50,17 @@ const makeTool = (name: string) => ({
 });
 
 /** Build a bare MCPConnection (no real transport) with an injected, controllable client. */
-function createConnectionWithListTools(listTools: jest.Mock): MCPConnection {
+function createConnectionWithListTools(
+  listTools: jest.Mock,
+  directBearerRecoveryEnabled = false,
+): MCPConnection {
   const conn = new MCPConnection({
     serverName: 'pagination-test',
     serverConfig: { type: 'streamable-http', url: 'http://localhost/mcp' },
     useSSRFProtection: false,
+    directBearerRecoveryEnabled,
   });
-  conn.client = { listTools } as unknown as MCPConnection['client'];
+  conn.client.listTools = listTools;
   return conn;
 }
 
@@ -81,6 +87,16 @@ describe('MCPConnection.fetchTools pagination', () => {
     mcpConfig.TOOLS_LIST_TIMEOUT_MS = 30000;
   });
 
+  it('does not queue tool-list retries when the server has no tools capability', async () => {
+    const listTools = jest.fn();
+    const conn = createConnectionWithListTools(listTools);
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ resources: {} });
+
+    await conn.refreshToolList();
+
+    expect(listTools).not.toHaveBeenCalled();
+  });
+
   it('returns the tools from a single page and makes one request when there is no nextCursor', async () => {
     const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('a'), makeTool('b')] });
     const conn = createConnectionWithListTools(listTools);
@@ -92,6 +108,87 @@ describe('MCPConnection.fetchTools pagination', () => {
     expectListToolsCall(listTools, 1, undefined);
     expect(mockLogger.warn).not.toHaveBeenCalled();
   });
+
+  it('returns the notification snapshot when a request snapshot races list_changed', async () => {
+    let releaseStale: ((value: { tools: ReturnType<typeof makeTool>[] }) => void) | undefined;
+    const stale = new Promise<{ tools: ReturnType<typeof makeTool>[] }>((resolve) => {
+      releaseStale = resolve;
+    });
+    const listTools = jest
+      .fn()
+      .mockReturnValueOnce(stale)
+      .mockResolvedValueOnce({ tools: [makeTool('current')] });
+    const conn = createConnectionWithListTools(listTools);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({
+      tools: { listChanged: true },
+    });
+
+    const requested = conn.fetchOrderedToolsSnapshot();
+    await Promise.resolve();
+    const notified = conn.refreshToolList();
+    await notified;
+    releaseStale?.({ tools: [makeTool('stale')] });
+
+    await expect(requested).resolves.toEqual({
+      tools: [makeTool('current')],
+      complete: true,
+    });
+  });
+
+  it.each([
+    { notificationFirst: true, interruption: 'none' },
+    { notificationFirst: false, interruption: 'none' },
+    { notificationFirst: true, interruption: 'abort' },
+    { notificationFirst: true, interruption: 'disconnect' },
+  ])(
+    'orders auth rejection with notificationFirst=$notificationFirst, interruption=$interruption',
+    async ({ notificationFirst, interruption }) => {
+      let releaseStale!: (value: { tools: ReturnType<typeof makeTool>[] }) => void;
+      let rejectRefresh!: (error: Error) => void;
+      const stale = new Promise<{ tools: ReturnType<typeof makeTool>[] }>((resolve) => {
+        releaseStale = resolve;
+      });
+      const refresh = new Promise<never>((_, reject) => {
+        rejectRefresh = reject;
+      });
+      const listTools = jest.fn().mockReturnValueOnce(stale).mockReturnValueOnce(refresh);
+      const conn = createConnectionWithListTools(listTools, true);
+      Reflect.set(conn, 'connectionState', 'connected');
+      jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+      const authenticationError = Object.assign(new Error('Unauthorized'), { status: 401 });
+
+      const controller = new AbortController();
+      const requested = conn.fetchOrderedToolsSnapshot(undefined, controller.signal);
+      await Promise.resolve();
+      const notified = conn.refreshToolList();
+      if (notificationFirst) {
+        rejectRefresh(authenticationError);
+        await notified;
+        if (interruption === 'abort') {
+          controller.abort();
+        } else if (interruption === 'disconnect') {
+          await conn.disconnect();
+        }
+        releaseStale({ tools: [makeTool('stale')] });
+      } else {
+        releaseStale({ tools: [makeTool('stale')] });
+        await Promise.resolve();
+        rejectRefresh(authenticationError);
+        await notified;
+      }
+
+      if (interruption === 'none') {
+        await expect(requested).resolves.toEqual(
+          expect.objectContaining({ complete: false, authenticationError }),
+        );
+      } else {
+        await expect(requested).resolves.toEqual({ tools: [], complete: false });
+      }
+      expect(listTools).toHaveBeenCalledTimes(2);
+      await conn.disconnect();
+    },
+  );
 
   it('follows nextCursor across pages, concatenating every tool and passing the cursor back', async () => {
     const listTools = jest.fn(async (params?: { cursor?: string }) => {
@@ -183,7 +280,7 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('size budget'));
   });
 
-  it('stops at the elapsed-time budget before requesting another page', async () => {
+  it('marks a time-truncated snapshot incomplete before requesting another page', async () => {
     mcpConfig.TOOLS_LIST_TIMEOUT_MS = 1;
     const listTools = jest.fn(async () => ({ tools: [makeTool('a')], nextCursor: 'c1' }));
     const conn = createConnectionWithListTools(listTools);
@@ -193,9 +290,10 @@ describe('MCPConnection.fetchTools pagination', () => {
       .mockReturnValueOnce(1000)
       .mockReturnValueOnce(1001);
 
-    const tools = await conn.fetchTools();
+    const snapshot = await conn.fetchToolsSnapshot();
 
-    expect(tools.map((t) => t.name)).toEqual(['a']);
+    expect(snapshot.tools.map((t) => t.name)).toEqual(['a']);
+    expect(snapshot.complete).toBe(false);
     expect(listTools).toHaveBeenCalledTimes(1);
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('time budget'));
     dateNow.mockRestore();
@@ -221,18 +319,153 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(options.timeout).toBeGreaterThan(0);
     expect(options.timeout).toBeLessThanOrEqual(25);
     expect(options.maxTotalTimeout).toBe(options.timeout);
-    expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('Request timed out'));
+    expect(mockLogger.error).toHaveBeenCalledWith('[MCP] Failed to fetch tools');
+    expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain('Request timed out');
+  });
+
+  it('caps the request timeout by a caller deadline shorter than the global budget', async () => {
+    mcpConfig.TOOLS_LIST_TIMEOUT_MS = 30000;
+    const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('a')] });
+    const conn = createConnectionWithListTools(listTools);
+
+    const snapshot = await conn.fetchToolsSnapshot(Date.now() + 40);
+
+    expect(snapshot.complete).toBe(true);
+    const options = listTools.mock.calls[0][1]!;
+    expect(options.timeout).toBeGreaterThan(0);
+    expect(options.timeout).toBeLessThanOrEqual(40);
+  });
+
+  it('keeps the global budget when the caller deadline is further out', async () => {
+    mcpConfig.TOOLS_LIST_TIMEOUT_MS = 25;
+    const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('a')] });
+    const conn = createConnectionWithListTools(listTools);
+
+    await conn.fetchToolsSnapshot(Date.now() + 10_000);
+
+    const options = listTools.mock.calls[0][1]!;
+    expect(options.timeout).toBeLessThanOrEqual(25);
+  });
+
+  it('stops paginating and reports incomplete when the caller deadline expires mid-walk', async () => {
+    mcpConfig.TOOLS_LIST_TIMEOUT_MS = 30000;
+    const listTools = jest.fn(async () => ({ tools: [makeTool('a')], nextCursor: 'c1' }));
+    const conn = createConnectionWithListTools(listTools);
+    const deadline = Date.now() + 20;
+    const dateNow = jest
+      .spyOn(Date, 'now')
+      .mockReturnValueOnce(deadline - 20)
+      .mockReturnValueOnce(deadline - 20)
+      .mockReturnValueOnce(deadline - 20)
+      .mockReturnValue(deadline + 1);
+
+    const snapshot = await conn.fetchToolsSnapshot(deadline);
+
+    expect(snapshot.tools.map((t) => t.name)).toEqual(['a']);
+    expect(snapshot.complete).toBe(false);
+    expect(listTools).toHaveBeenCalledTimes(1);
+    dateNow.mockRestore();
+  });
+
+  it('returns an incomplete empty snapshot without a request or a reservation when the deadline has passed', async () => {
+    const listTools = jest.fn();
+    const conn = createConnectionWithListTools(listTools);
+    const reserve = jest.spyOn(conn, 'reserveToolsPublicationRevision');
+
+    const snapshot = await conn.fetchToolsSnapshot(Date.now() - 1);
+
+    expect(snapshot.tools).toEqual([]);
+    expect(snapshot.complete).toBe(false);
+    expect(listTools).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('detaches a completed SDK page request from its caller signal', async () => {
+    const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('a')] });
+    const conn = createConnectionWithListTools(listTools);
+    const controller = new AbortController();
+
+    await conn.fetchToolsSnapshot(Date.now() + 5000, controller.signal);
+
+    const options = listTools.mock.calls[0][1]!;
+    expect(options.signal === controller.signal).toBe(false);
+    expect(options.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(options.signal?.aborted).toBe(false);
+  });
+
+  it('makes no request and no reservation when the signal is already aborted', async () => {
+    const listTools = jest.fn();
+    const conn = createConnectionWithListTools(listTools);
+    const reserve = jest.spyOn(conn, 'reserveToolsPublicationRevision');
+    const controller = new AbortController();
+    controller.abort();
+
+    const snapshot = await conn.fetchToolsSnapshot(undefined, controller.signal);
+
+    expect(snapshot.complete).toBe(false);
+    expect(listTools).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('stops waiting on an in-flight refresh that outlasts the caller deadline', async () => {
+    mcpConfig.TOOLS_LIST_TIMEOUT_MS = 30000;
+    const conn = createConnectionWithListTools(jest.fn());
+    const mutable = conn as unknown as {
+      toolListChangeGeneration: number;
+      toolListRefreshPromise: Promise<unknown> | null;
+    };
+    /** A `list_changed` lands mid-fetch, so the ordered read must wait on a refresh... */
+    const listTools = jest.fn(async () => {
+      mutable.toolListChangeGeneration = 1;
+      return { tools: [makeTool('a')] };
+    });
+    conn.client.listTools = listTools;
+    /** ...and that refresh never settles, standing in for one on the connection's own budget. */
+    mutable.toolListRefreshPromise = new Promise<void>(() => {});
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+
+    const start = Date.now();
+    const snapshot = await conn.fetchOrderedToolsSnapshot(Date.now() + 30);
+
+    expect(snapshot.complete).toBe(false);
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it('stops waiting on an in-flight refresh when the caller signal aborts, without a deadline', async () => {
+    mcpConfig.TOOLS_LIST_TIMEOUT_MS = 30000;
+    const conn = createConnectionWithListTools(jest.fn());
+    const mutable = conn as unknown as {
+      toolListChangeGeneration: number;
+      toolListRefreshPromise: Promise<unknown> | null;
+    };
+    const listTools = jest.fn(async () => {
+      mutable.toolListChangeGeneration = 1;
+      return { tools: [makeTool('a')] };
+    });
+    conn.client.listTools = listTools;
+    mutable.toolListRefreshPromise = new Promise<void>(() => {});
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+
+    const start = Date.now();
+    const snapshot = await conn.fetchOrderedToolsSnapshot(undefined, controller.signal);
+
+    expect(snapshot.complete).toBe(false);
+    expect(Date.now() - start).toBeLessThan(2000);
   });
 
   it('stops and warns when the server repeats a cursor instead of looping forever', async () => {
     const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('x')], nextCursor: 'same' });
     const conn = createConnectionWithListTools(listTools);
 
-    const tools = await conn.fetchTools();
+    const snapshot = await conn.fetchToolsSnapshot();
 
     expect(listTools).toHaveBeenCalledTimes(2);
     // The second page's tools are collected before the repeated cursor is detected, hence two copies.
-    expect(tools.map((t) => t.name)).toEqual(['x', 'x']);
+    expect(snapshot.tools.map((tool) => tool.name)).toEqual(['x', 'x']);
+    expect(snapshot.complete).toBe(false);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('repeated tools/list cursor'),
     );
@@ -269,6 +502,36 @@ describe('MCPConnection.fetchTools pagination', () => {
     expectListToolsCall(listTools, 2, { cursor: '' });
   });
 
+  it.each(['consent_revoked', 'rbac_denied'] as const)(
+    'propagates %s from a later page instead of returning a partial required catalog',
+    async (reason) => {
+      const denial = new ScheduledMCPBearerError(reason, 'Files', 'child');
+      const listTools = jest
+        .fn()
+        .mockResolvedValueOnce({ tools: [makeTool('first')], nextCursor: 'next' })
+        .mockRejectedValueOnce(denial);
+      const conn = createConnectionWithListTools(listTools);
+      await expect(conn.fetchOrderedToolsSnapshot()).rejects.toBe(denial);
+      expect(listTools).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('retains a notification authority denial for an owner without retry or tool publication', async () => {
+    const denial = new ScheduledMCPBearerError('consent_revoked', 'Files');
+    const listTools = jest.fn().mockRejectedValue(denial);
+    const conn = createConnectionWithListTools(listTools);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+    const publish = jest.fn();
+    conn.on('toolsChanged', publish);
+    await expect(conn.refreshToolList()).rejects.toBe(denial);
+    await expect(conn.refreshToolList()).rejects.toBe(denial);
+    expect(listTools).toHaveBeenCalledTimes(1);
+    expect(publish).not.toHaveBeenCalled();
+    expect(Reflect.get(conn, 'toolListRefreshRetryTimer')).toBeNull();
+    await conn.disconnect();
+  });
+
   it('returns the pages already fetched when a later page fails, without throwing', async () => {
     const listTools = jest.fn(async (params?: { cursor?: string }) => {
       if (params?.cursor == null) {
@@ -294,5 +557,134 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(tools).toEqual([]);
     expect(listTools).toHaveBeenCalledTimes(1);
     expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('Failed to fetch tools'));
+  });
+
+  it('preserves an authentication rejection without scheduling a health retry', async () => {
+    const authError = Object.assign(new Error('unauthorized'), { status: 401 });
+    const listTools = jest.fn().mockRejectedValue(authError);
+    const conn = createConnectionWithListTools(listTools, true);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+
+    const snapshot = await conn.refreshToolList();
+
+    expect(snapshot?.authenticationError).toBe(authError);
+    expect(Reflect.get(conn, 'toolListRefreshFailures')).toBe(0);
+    expect(Reflect.get(conn, 'toolListRefreshRetryTimer')).toBeNull();
+    expect(Reflect.get(conn, 'toolListRefreshSuspended')).toBe(true);
+    await Promise.resolve();
+    expect(listTools).toHaveBeenCalledTimes(1);
+
+    const ownerSnapshot = await conn.refreshToolList();
+    expect(ownerSnapshot?.authenticationError).toBe(authError);
+    expect(listTools).toHaveBeenCalledTimes(1);
+
+    conn.emit('connectionChange', 'disconnected');
+    expect(await conn.refreshToolList()).toBeUndefined();
+    listTools.mockResolvedValue({ tools: [makeTool('recovered')] });
+    conn.emit('connectionChange', 'connected');
+    const recoveredSnapshot = await conn.refreshToolList();
+    expect(recoveredSnapshot?.complete).toBe(true);
+    expect(recoveredSnapshot?.authenticationError).toBeUndefined();
+  });
+
+  it('cancels an owned catalog read without retrying it in the background', async () => {
+    const controller = new AbortController();
+    const listTools = jest.fn(
+      (_params, options) =>
+        new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+            once: true,
+          });
+        }),
+    );
+    const conn = createConnectionWithListTools(listTools, true);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+    const read = conn.refreshToolList(controller.signal);
+    const outcome = read.catch((error: Error) => error);
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(new Error('request stopped'));
+    await expect(outcome).resolves.toMatchObject({ message: 'request stopped' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(listTools).toHaveBeenCalledTimes(1);
+    expect(Reflect.get(conn, 'toolListRefreshRetryTimer')).toBeNull();
+  });
+
+  it('does not treat a JSON-RPC catalog error mentioning auth as transport rejection', async () => {
+    const conn = createConnectionWithListTools(
+      jest
+        .fn()
+        .mockRejectedValue(
+          new McpError(ErrorCode.InternalError, 'downstream HTTP 401 invalid_token'),
+        ),
+      true,
+    );
+    expect((await conn.fetchToolsSnapshot()).authenticationError).toBeUndefined();
+  });
+
+  it('keeps ordinary authentication modes eligible for tool-list retry', async () => {
+    const authError = Object.assign(new Error('unauthorized'), { status: 401 });
+    const listTools = jest.fn().mockRejectedValue(authError);
+    const conn = createConnectionWithListTools(listTools);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+
+    await conn.refreshToolList();
+
+    expect(Reflect.get(conn, 'toolListRefreshSuspended')).toBe(false);
+    expect(Reflect.get(conn, 'toolListRefreshFailures')).toBe(1);
+    const retryTimer = Reflect.get(conn, 'toolListRefreshRetryTimer') as NodeJS.Timeout;
+    expect(retryTimer).toBeDefined();
+    clearTimeout(retryTimer);
+  });
+
+  it('does not classify an ordinary tools/list failure as authentication rejection', async () => {
+    const conn = createConnectionWithListTools(jest.fn().mockRejectedValue(new Error('boom')));
+
+    const snapshot = await conn.fetchToolsSnapshot();
+
+    expect(snapshot.authenticationError).toBeUndefined();
+  });
+
+  it('scopes authentication rejection to the exact concurrent snapshot that observed it', async () => {
+    const authError = Object.assign(new Error('unauthorized'), { status: 401 });
+    let rejectFirst: ((error: unknown) => void) | undefined;
+    const firstPage = new Promise<never>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const listTools = jest
+      .fn()
+      .mockReturnValueOnce(firstPage)
+      .mockResolvedValueOnce({ tools: [makeTool('healthy')] });
+    const conn = createConnectionWithListTools(listTools);
+
+    const rejected = conn.fetchToolsSnapshot();
+    await Promise.resolve();
+    const healthy = conn.fetchToolsSnapshot();
+    rejectFirst?.(authError);
+
+    await expect(healthy).resolves.toMatchObject({ complete: true });
+    await expect(rejected).resolves.toMatchObject({
+      complete: false,
+      authenticationError: authError,
+    });
+    expect((await healthy).authenticationError).toBeUndefined();
+  });
+});
+
+describe('MCPConnection.usesOAuth', () => {
+  it.each([
+    [{ type: 'streamable-http', url: 'https://example.com/mcp', requiresOAuth: true }, true],
+    [{ type: 'streamable-http', url: 'https://example.com/mcp', oauth: {} }, true],
+    [{ type: 'streamable-http', url: 'https://example.com/mcp', requiresOAuth: false }, false],
+  ] as const)('reports OAuth from the resolved connection config', (serverConfig, expected) => {
+    const connection = new MCPConnection({
+      serverName: 'oauth-status-test',
+      serverConfig,
+      useSSRFProtection: false,
+    });
+
+    expect(connection.usesOAuth()).toBe(expected);
   });
 });

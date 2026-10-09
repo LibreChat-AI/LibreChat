@@ -19,10 +19,24 @@ data:
   USE_REDIS: "true"
   {{- end }}
   {{- if and (not (dig "configEnv" "REDIS_URI" "" .Values.librechat)) .Values.redis.enabled }}
-  REDIS_URI: redis://{{ include "common.names.fullname" .Subcharts.redis }}-master.{{ .Release.Namespace | lower }}.svc.cluster.local:6379
+  REDIS_URI: {{ include "librechat.bundledRedisURI" . }}
   {{- end }}
   {{- if and $adminPanelUrl (not $configAdminPanelUrl) }}
   ADMIN_PANEL_URL: {{ $adminPanelUrl | quote }}
+  {{- end }}
+  {{- if and .Values.langfuseFanout.enabled (not (hasKey $configEnv "LANGFUSE_FANOUT_ENABLED")) }}
+  LANGFUSE_FANOUT_ENABLED: "true"
+  {{- end }}
+  {{- if and .Values.langfuseFanout.enabled (not (hasKey $configEnv "LANGFUSE_FANOUT_COLLECTOR_URL")) }}
+  LANGFUSE_FANOUT_COLLECTOR_URL: http://{{ include "librechat.langfuseFanout.fullname" . }}.{{ .Release.Namespace | lower }}.svc.cluster.local:{{ .Values.langfuseFanout.service.port }}
+  {{- end }}
+  {{- if and .Values.langfuseFanout.enabled (not (hasKey $configEnv "LANGFUSE_FANOUT_TENANT_DESTINATIONS")) }}
+  {{- include "librechat.langfuseFanout.validateDestinationKeys" . }}
+  {{- $tenantDestinations := list }}
+  {{- range $name, $destination := .Values.langfuseFanout.tenant.destinations }}
+  {{- $tenantDestinations = append $tenantDestinations (printf "%s=%s" $name $destination.baseUrl) }}
+  {{- end }}
+  LANGFUSE_FANOUT_TENANT_DESTINATIONS: {{ join "," $tenantDestinations | quote }}
   {{- end }}
   {{- if $configEnv }}
   {{- $renderedConfigEnv := $configEnv }}

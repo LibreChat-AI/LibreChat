@@ -313,6 +313,35 @@ describe('useHasData', () => {
     expect(screen.getByTestId('result')).toHaveTextContent('no-data');
   });
 
+  it('detects empty data array (AgentListResponse) as no data', () => {
+    render(
+      <TestComponent
+        data={{ object: 'list', data: [], first_id: '', last_id: '', has_more: false }}
+      />,
+    );
+    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
+  });
+
+  it('detects non-empty data array (AgentListResponse) as has data', () => {
+    render(
+      <TestComponent
+        data={{
+          object: 'list',
+          data: [{ id: 'agent_1', name: 'Test Agent' }],
+          first_id: 'agent_1',
+          last_id: 'agent_1',
+          has_more: false,
+        }}
+      />,
+    );
+    expect(screen.getByTestId('result')).toHaveTextContent('has-data');
+  });
+
+  it('detects invalid data property as no data', () => {
+    render(<TestComponent data={{ data: 'not-array' }} />);
+    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
+  });
+
   it('detects empty agents array as no data', () => {
     render(<TestComponent data={{ agents: [] }} />);
     expect(screen.getByTestId('result')).toHaveTextContent('no-data');

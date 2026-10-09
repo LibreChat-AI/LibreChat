@@ -10,8 +10,45 @@ import type { TModelsConfig, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/types';
 import type { FetchModelsParams } from '~/endpoints/models';
+import type { GetAppConfigOptions } from '~/app/service';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
+import { getAppConfigOptionsFromUser } from '~/app/service';
+
+/**
+ * Built-in endpoints whose configured `models` list replaces their `*_MODELS`
+ * environment list. Read per request, so principal overrides can narrow them.
+ */
+type ConfiguredModelListEndpoint =
+  | EModelEndpoint.openAI
+  | EModelEndpoint.google
+  | EModelEndpoint.anthropic
+  | EModelEndpoint.bedrock;
+
+const CONFIGURED_MODEL_LIST_ENDPOINTS: readonly ConfiguredModelListEndpoint[] = [
+  EModelEndpoint.openAI,
+  EModelEndpoint.google,
+  EModelEndpoint.anthropic,
+  EModelEndpoint.bedrock,
+];
+
+/**
+ * The model list configured for a built-in endpoint in the resolved config, or
+ * `undefined` when none is set. A configured list replaces the environment list
+ * and makes provider discovery unnecessary.
+ */
+export function configuredModelList(
+  appConfig: AppConfig | null | undefined,
+  endpoint: ConfiguredModelListEndpoint,
+): string[] | undefined {
+  const models = appConfig?.endpoints?.[endpoint]?.models;
+  if (!Array.isArray(models)) {
+    return undefined;
+  }
+  return models.filter((model): model is string => typeof model === 'string');
+}
+import { resolveConfigSecret } from '~/admin/secrets';
+import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
 import { isUserProvided } from '~/utils';
 
@@ -42,11 +79,7 @@ interface ResolvedEndpoint {
 }
 
 export interface LoadConfigModelsDeps {
-  getAppConfig: (params: {
-    role?: string;
-    userId?: string;
-    tenantId?: string;
-  }) => Promise<AppConfig>;
+  getAppConfig: (params: GetAppConfigOptions) => Promise<AppConfig>;
   getUserKeyValues: GetUserKeyValuesFunction;
   fetchModels?: (params: FetchModelsParams) => Promise<string[]>;
 }
@@ -55,13 +88,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   const { getAppConfig, getUserKeyValues, fetchModels = defaultFetchModels } = deps;
 
   return async function loadConfigModels(req: ServerRequest): Promise<TModelsConfig> {
-    const appConfig =
-      req.config ??
-      (await getAppConfig({
-        role: req.user?.role,
-        userId: req.user?.id,
-        tenantId: req.user?.tenantId,
-      }));
+    const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     if (!appConfig) {
       return {};
     }
@@ -78,9 +105,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       modelsConfig[EModelEndpoint.azureAssistants] = azureConfig.assistantModels;
     }
 
-    const bedrockConfig = appConfig.endpoints?.[EModelEndpoint.bedrock];
-    if (bedrockConfig?.models && Array.isArray(bedrockConfig.models)) {
-      modelsConfig[EModelEndpoint.bedrock] = bedrockConfig.models;
+    for (const endpoint of CONFIGURED_MODEL_LIST_ENDPOINTS) {
+      const models = configuredModelList(appConfig, endpoint);
+      if (models) {
+        modelsConfig[endpoint] = models;
+      }
     }
 
     if (!Array.isArray(appConfig.endpoints?.[EModelEndpoint.custom])) {
@@ -114,7 +143,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       endpointsMap[name] = endpoint;
       modelsConfig[name] = [];
 
-      const resolvedApiKey = extractEnvVariable(apiKey);
+      const resolvedApiKey = resolveConfigSecret(apiKey) ?? '';
       const resolvedBaseURL = extractEnvVariable(baseURL);
       const entry: ResolvedEndpoint = {
         name,
@@ -189,6 +218,8 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             name,
             apiKey: API_KEY,
             baseURL: BASE_URL,
+            baseURLIsUserProvided: false,
+            allowedAddresses: appConfig.endpoints?.allowedAddresses,
             user: req.user?.id,
             userObject: req.user,
             headers: endpointHeaders,
@@ -204,32 +235,44 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
 
       if (models?.fetch && userKeyMap.has(name)) {
         const userKeyValues = userKeyMap.get(name);
-        const resolvedApiKey = apiKeyIsUserProvided ? userKeyValues?.apiKey : API_KEY;
+        const resolvedApiKey =
+          apiKeyIsUserProvided || baseURLIsUserProvided ? userKeyValues?.apiKey : API_KEY;
         const resolvedBaseURL = baseURLIsUserProvided ? userKeyValues?.baseURL : BASE_URL;
 
         if (resolvedApiKey && resolvedBaseURL) {
           const userFetchKey = `user:${req.user?.id}:${name}`;
           fetchPromisesMap[userFetchKey] =
             fetchPromisesMap[userFetchKey] ||
-            fetchModels({
-              name,
-              apiKey: resolvedApiKey,
-              baseURL: resolvedBaseURL,
-              user: req.user?.id,
-              userObject: req.user,
-              // Do not forward header overrides when the base URL is
-              // user-supplied: configured templates such as
-              // {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve and be
-              // sent to a destination the user controls, leaking the user's
-              // identity token. Header overrides are only safe for endpoints
-              // whose base URL is admin-trusted.
-              headers: baseURLIsUserProvided ? undefined : endpointHeaders,
-              direct: endpoint.directEndpoint,
-              userIdQuery: models.userIdQuery,
-              skipCache: true,
-              /** Fetched with the user's key/URL — always user-scoped */
-              tokenKey: getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId),
-            });
+            (async () => {
+              if (baseURLIsUserProvided) {
+                await validateEndpointURL(
+                  resolvedBaseURL,
+                  name,
+                  appConfig.endpoints?.allowedAddresses,
+                );
+              }
+              return fetchModels({
+                name,
+                apiKey: resolvedApiKey,
+                baseURL: resolvedBaseURL,
+                baseURLIsUserProvided,
+                allowedAddresses: appConfig.endpoints?.allowedAddresses,
+                user: req.user?.id,
+                userObject: req.user,
+                // Do not forward header overrides when the base URL is
+                // user-supplied: configured templates such as
+                // {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve and be
+                // sent to a destination the user controls, leaking the user's
+                // identity token. Header overrides are only safe for endpoints
+                // whose base URL is admin-trusted.
+                headers: baseURLIsUserProvided ? undefined : endpointHeaders,
+                direct: endpoint.directEndpoint,
+                userIdQuery: models.userIdQuery,
+                skipCache: true,
+                /** Fetched with the user's key/URL — always user-scoped */
+                tokenKey: getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId),
+              });
+            })();
           uniqueKeyToEndpointsMap[userFetchKey] = uniqueKeyToEndpointsMap[userFetchKey] || [];
           uniqueKeyToEndpointsMap[userFetchKey].push(name);
           continue;

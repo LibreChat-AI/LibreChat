@@ -1,6 +1,13 @@
 const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
-const { checkAccess, loadWebSearchAuth } = require('@librechat/api');
+const {
+  checkAccess,
+  assertDirectToolOutputAllowed,
+  loadWebSearchAuth,
+  isContentFilterError,
+  isActiveExpirationDate,
+  getConversationExpirationDate,
+} = require('@librechat/api');
 const {
   Tools,
   AuthType,
@@ -12,6 +19,7 @@ const { getRoleByName, createToolCall, getToolCallsByConvo, getMessage } = requi
 const { processFileURL, uploadImageBuffer } = require('~/server/services/Files/process');
 const { getRetentionExpiry } = require('~/server/services/Files/retention');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
+const { preflightCodeOutputBatch } = require('~/server/services/Files/Code/preflight');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { loadTools } = require('~/app/clients/tools/util');
 
@@ -50,6 +58,9 @@ const verifyWebSearchAuth = async (req, res) => {
     return res.status(200).json({
       authenticated: result.authenticated,
       authTypes: result.authTypes,
+      searchProvider: result.authResult.searchProvider,
+      scraperProvider: result.authResult.scraperProvider,
+      rerankerType: result.authResult.rerankerType,
     });
   } catch (error) {
     console.error('Error in verifyWebSearchAuth:', error);
@@ -106,7 +117,7 @@ const callTool = async (req, res) => {
       return;
     }
 
-    const { partIndex, blockIndex, messageId, conversationId, ...args } = req.body;
+    const { partIndex, blockIndex, messageId, conversationId: _conversationId, ...args } = req.body;
     if (!messageId) {
       logger.warn(`[${toolId}/call] User ${req.user.id} attempted call without message ID`);
       res.status(400).json({ message: 'Message ID required' });
@@ -114,15 +125,27 @@ const callTool = async (req, res) => {
     }
 
     const message = await getMessage({ user: req.user.id, messageId });
-    if (!message) {
+    const sourceExpiration = getConversationExpirationDate(message);
+    if (!message || (sourceExpiration != null && !isActiveExpirationDate(sourceExpiration))) {
       logger.debug(`[${toolId}/call] User ${req.user.id} attempted call with invalid message ID`);
       res.status(404).json({ message: 'Message not found' });
       return;
     }
+    const conversationId = message.conversationId;
+    req.body.conversationId = conversationId;
+    req.fileRetentionSource = {
+      isTemporary: message.isTemporary,
+      expiredAt: message.expiredAt,
+    };
+    const retentionExpiryPromise = getRetentionExpiry(req);
     logger.debug(`[${toolId}/call] User: ${req.user.id}`);
     let hasAccess = true;
     if (toolAccessPermType[toolId]) {
+      /** `req` is what puts this read in the request cache, so the shared
+       *  `loadTools` gate below resolves the same grant for free instead of
+       *  issuing a second serial role lookup before the sandbox call. */
       hasAccess = await checkAccess({
+        req,
         user: req.user,
         permissionType: toolAccessPermType[toolId],
         permissions: [Permissions.USE],
@@ -160,6 +183,11 @@ const callTool = async (req, res) => {
     });
 
     const { content, artifact } = result;
+    assertDirectToolOutputAllowed(appConfig?.filters, toolId, content);
+    const hasGeneratedArtifacts = toolId === Tools.execute_code && Array.isArray(artifact?.files);
+    const generatedFiles = hasGeneratedArtifacts
+      ? await preflightCodeOutputBatch({ req, artifact })
+      : [];
     const toolCallData = {
       toolId,
       messageId,
@@ -168,10 +196,10 @@ const callTool = async (req, res) => {
       conversationId,
       result: content,
       user: req.user.id,
-      ...(await getRetentionExpiry(req)),
+      ...(await retentionExpiryPromise),
     };
 
-    if (!artifact || !artifact.files || toolId !== Tools.execute_code) {
+    if (!hasGeneratedArtifacts) {
       createToolCall(toolCallData).catch((error) => {
         logger.error(`Error creating tool call: ${error.message}`);
       });
@@ -180,53 +208,44 @@ const callTool = async (req, res) => {
       });
     }
 
-    const artifactPromises = [];
-    for (const file of artifact.files) {
-      /* Files flagged `inherited` by codeapi are unchanged passthroughs of
-       * inputs the caller already owns (skill files, prior downloaded inputs,
-       * inherited .dirkeep markers). Re-downloading them is wasted work and
-       * 403s when the file is scoped to a different entity (e.g. skill
-       * entity_id) than the user's session key. They remain available for
-       * subsequent tool calls via primeInvokedSkills / session inheritance. */
-      if (file.inherited) {
-        continue;
-      }
+    const attachments = [];
+    for (const { file, sessionId, preparedBuffer, downloadFallback } of generatedFiles) {
       const { id, name } = file;
-      artifactPromises.push(
-        (async () => {
-          const result = await processCodeOutput({
-            req,
-            id,
-            name,
-            messageId,
-            toolCallId,
-            conversationId,
-            session_id: artifact.session_id,
-          });
-          const fileMetadata = result?.file ?? null;
-          const finalize = result?.finalize;
-          if (!fileMetadata) {
-            return null;
-          }
-          /* This endpoint is non-streaming and its contract is "give
-           * me the artifacts" — return the persisted record immediately
-           * (with `status: 'pending'` for office buckets) and run the
-           * preview render in the background. The client polls
-           * `/api/files/:file_id/preview` for the resolved record.
-           * No `onResolved` — there's no live stream to write to here. */
-          runPreviewFinalize({
-            finalize,
-            fileId: fileMetadata.file_id,
-            previewRevision: result?.previewRevision,
-          });
-          return fileMetadata;
-        })().catch((error) => {
-          logger.error('Error processing code output:', error);
-          return null;
-        }),
-      );
+      try {
+        const result = await processCodeOutput({
+          req,
+          id,
+          name,
+          messageId,
+          toolCallId,
+          conversationId,
+          session_id: sessionId,
+          preparedBuffer,
+          downloadFallback,
+        });
+        const fileMetadata = result?.file ?? null;
+        const finalize = result?.finalize;
+        if (!fileMetadata) {
+          attachments.push(null);
+          continue;
+        }
+        /* This endpoint is non-streaming and its contract is "give
+         * me the artifacts" — return the persisted record immediately
+         * (with `status: 'pending'` for office buckets) and run the
+         * preview render in the background. The client polls
+         * `/api/files/:file_id/preview` for the resolved record.
+         * No `onResolved` — there's no live stream to write to here. */
+        runPreviewFinalize({
+          finalize,
+          fileId: fileMetadata.file_id,
+          previewRevision: result?.previewRevision,
+        });
+        attachments.push(fileMetadata);
+      } catch {
+        logger.error('Error processing code output');
+        attachments.push(null);
+      }
     }
-    const attachments = await Promise.all(artifactPromises);
     toolCallData.attachments = attachments;
     createToolCall(toolCallData).catch((error) => {
       logger.error(`Error creating tool call: ${error.message}`);
@@ -236,6 +255,10 @@ const callTool = async (req, res) => {
       attachments,
     });
   } catch (error) {
+    if (isContentFilterError(error)) {
+      res.status(error.statusCode).json(error.body);
+      return;
+    }
     logger.error('Error calling tool', error);
     res.status(500).json({ message: 'Error calling tool' });
   }

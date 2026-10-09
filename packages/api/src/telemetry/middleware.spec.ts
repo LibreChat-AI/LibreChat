@@ -1,10 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { CacheKeys } from 'librechat-data-provider';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import type { NextFunction, Response } from 'express';
 import type { Span } from '@opentelemetry/api';
 import type { ServerRequest } from '~/types';
-import { getTelemetryRequestSpan } from './sdk';
 import { telemetryErrorMiddleware, telemetryMiddleware } from './middleware';
+import { observeRedisOperation } from '~/cache/redisTelemetry';
+import { getTelemetryRequestSpan } from './sdk';
 
 jest.mock('./sdk', () => ({
   getTelemetryRequestSpan: jest.fn(),
@@ -114,6 +116,33 @@ describe('telemetryMiddleware', () => {
         'http.route': '/api/messages/:conversationId',
       }),
     );
+  });
+
+  it('adds aggregated Redis activity to the stored request span', async () => {
+    const requestSpan = createSpan();
+    const res = createResponse(200);
+    let operation: Promise<string> | undefined;
+    mockGetTelemetryRequestSpan.mockReturnValue(requestSpan);
+
+    telemetryMiddleware(createRequest(), res as Response, () => {
+      operation = observeRedisOperation('keyv', CacheKeys.AUTH_USER_DOC, 'get', async () =>
+        Promise.resolve('cached-user'),
+      );
+    });
+    await operation;
+    res.emit('finish');
+
+    const attributes = Object.assign(
+      {},
+      ...requestSpan.setAttributes.mock.calls.map(([value]) => value),
+    );
+    expect(attributes).toMatchObject({
+      'librechat.redis.calls': 1,
+      'librechat.redis.errors': 0,
+      'librechat.redis.operations': ['get'],
+      'librechat.redis.use_cases': ['auth_user_doc'],
+      'librechat.redis.auth_user_doc.calls': 1,
+    });
   });
 
   it('records safe route and identity attributes without body content', () => {
@@ -309,15 +338,25 @@ describe('telemetryErrorMiddleware', () => {
     jest.restoreAllMocks();
   });
 
-  it('records exceptions and forwards the error', () => {
+  it('records safe exception metadata and forwards the original error', () => {
     const span = createSpan();
-    const error = new TypeError('boom');
+    const error = new TypeError('Bearer exception-token-canary');
+    error.name = 'refresh_token=error-name-canary';
+    Object.defineProperty(error, 'constructor', {
+      value: { name: 'client_secret=constructor-canary' },
+    });
     const next = jest.fn();
     jest.spyOn(trace, 'getActiveSpan').mockReturnValue(span);
 
     telemetryErrorMiddleware(error, createRequest(), createResponse() as Response, next);
 
-    expect(span.recordException).toHaveBeenCalledWith(error);
+    expect(span.recordException).toHaveBeenCalledWith({
+      message: 'Error details withheld',
+      name: 'TypeError',
+    });
+    expect(JSON.stringify(span.recordException.mock.calls)).not.toContain('exception-token-canary');
+    expect(JSON.stringify(span.recordException.mock.calls)).not.toContain('error-name-canary');
+    expect(JSON.stringify(span.recordException.mock.calls)).not.toContain('constructor-canary');
     expect(span.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR });
     expect(span.setAttributes).toHaveBeenCalledWith({
       'enduser.id': 'user-1',
@@ -327,6 +366,24 @@ describe('telemetryErrorMiddleware', () => {
       'error.type': 'TypeError',
       'http.route': '/api/messages/:conversationId',
     });
+    expect(next).toHaveBeenCalledWith(error);
+  });
+
+  it('falls back to Error for untrusted custom error prototypes', () => {
+    const span = createSpan();
+    const SecretNamedError = class refresh_token_supersecret extends Error {};
+    const error = new SecretNamedError('client_secret=message-canary');
+    const next = jest.fn();
+    jest.spyOn(trace, 'getActiveSpan').mockReturnValue(span);
+
+    telemetryErrorMiddleware(error, createRequest(), createResponse() as Response, next);
+
+    expect(span.recordException).toHaveBeenCalledWith({
+      message: 'Error details withheld',
+      name: 'Error',
+    });
+    expect(JSON.stringify(span.recordException.mock.calls)).not.toContain('supersecret');
+    expect(JSON.stringify(span.recordException.mock.calls)).not.toContain('message-canary');
     expect(next).toHaveBeenCalledWith(error);
   });
 
@@ -342,7 +399,10 @@ describe('telemetryErrorMiddleware', () => {
 
     expect(trace.getActiveSpan).not.toHaveBeenCalled();
     expect(activeSpan.recordException).not.toHaveBeenCalled();
-    expect(requestSpan.recordException).toHaveBeenCalledWith(error);
+    expect(requestSpan.recordException).toHaveBeenCalledWith({
+      message: 'Error details withheld',
+      name: 'TypeError',
+    });
     expect(requestSpan.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR });
     expect(next).toHaveBeenCalledWith(error);
   });
@@ -352,9 +412,18 @@ describe('telemetryErrorMiddleware', () => {
     const next = jest.fn();
     jest.spyOn(trace, 'getActiveSpan').mockReturnValue(span);
 
-    telemetryErrorMiddleware('boom', createRequest(), createResponse() as Response, next);
+    telemetryErrorMiddleware(
+      'refresh_token=non-error-token-canary',
+      createRequest(),
+      createResponse() as Response,
+      next,
+    );
 
-    expect(span.recordException).toHaveBeenCalledWith('boom');
+    expect(span.recordException).toHaveBeenCalledWith({
+      message: 'Error details withheld',
+      name: 'string',
+    });
+    expect(JSON.stringify(span.recordException.mock.calls)).not.toContain('non-error-token-canary');
     expect(span.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR });
     expect(span.setAttributes).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -362,7 +431,7 @@ describe('telemetryErrorMiddleware', () => {
         'http.route': '/api/messages/:conversationId',
       }),
     );
-    expect(next).toHaveBeenCalledWith('boom');
+    expect(next).toHaveBeenCalledWith('refresh_token=non-error-token-canary');
   });
 
   it('handles null error values without throwing', () => {

@@ -12,13 +12,13 @@ const VersionButton = ({ setActivePanel }: VersionButtonProps) => {
 
   return (
     <Button
-      size={'sm'}
-      variant={'outline'}
-      className="btn btn-neutral border-token-border-light relative h-9 w-full gap-1 rounded-lg font-medium"
+      variant="subtle"
+      shape="theme"
       onClick={() => setActivePanel(Panel.version)}
       aria-label={localize('com_ui_agent_version')}
+      className="h-9 w-full px-3"
     >
-      <History className="h-4 w-4 cursor-pointer" aria-hidden="true" />
+      <History className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
       {localize('com_ui_agent_version')}
     </Button>
   );

@@ -117,6 +117,7 @@ const initializeClient = async ({ req, res, version, endpointOption, initAppClie
         'OpenAI-Beta': `assistants=${version}`,
       },
       user: req.user,
+      stripUnresolved: true,
     });
     opts.model = azureOptions.azureOpenAIApiDeploymentName;
 

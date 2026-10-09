@@ -1,5 +1,5 @@
 import { Schema } from 'mongoose';
-import { REFILL_INTERVAL_UNITS } from 'librechat-data-provider';
+import { BALANCE_REFILL_MODES, REFILL_INTERVAL_UNITS } from 'librechat-data-provider';
 import type * as t from '~/types';
 
 const balanceSchema: Schema<t.IBalance> = new Schema<t.IBalance>({
@@ -37,9 +37,41 @@ const balanceSchema: Schema<t.IBalance> = new Schema<t.IBalance>({
     type: Number,
     default: 0,
   },
+  refillMode: {
+    type: String,
+    enum: BALANCE_REFILL_MODES,
+    default: 'add',
+  },
   tenantId: {
     type: String,
     index: true,
+  },
+  /** Credits held by in-flight requests; released when each request settles, or pruned once expired */
+  reservations: {
+    type: [
+      {
+        _id: false,
+        id: { type: String, required: true },
+        amount: { type: Number, required: true },
+        expiresAt: { type: Date, required: true },
+      },
+    ],
+    default: undefined,
+    select: false,
+  },
+  reservedCredits: {
+    type: Number,
+    select: false,
+  },
+  pendingRefill: {
+    type: {
+      transactionId: { type: Schema.Types.ObjectId, required: true },
+      rawAmount: { type: Number, required: true },
+      context: { type: String, enum: ['autoRefill', 'balanceReset'] },
+    },
+    _id: false,
+    default: undefined,
+    select: false,
   },
 });
 

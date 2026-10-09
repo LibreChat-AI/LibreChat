@@ -14,7 +14,11 @@ describe('cacheConfig', () => {
     delete process.env.USE_REDIS_CLUSTER;
     delete process.env.REDIS_CLUSTER_SAFE_DELETE;
     delete process.env.REDIS_PING_INTERVAL;
+    delete process.env.REDIS_PING_TIMEOUT;
+    delete process.env.REDIS_SUBSCRIBER_PING_INTERVAL;
+    delete process.env.REDIS_KEEP_ALIVE;
     delete process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES;
+    delete process.env.VIOLATION_SCORE_TTL;
 
     // Clear module cache
     jest.resetModules();
@@ -221,6 +225,26 @@ describe('cacheConfig', () => {
     });
   });
 
+  describe('Redis dead-socket detection configuration', () => {
+    test('defaults the heartbeat deadline, subscriber interval, and keepalive', async () => {
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.REDIS_PING_TIMEOUT).toBe(5000);
+      expect(cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL).toBe(15);
+      expect(cacheConfig.REDIS_KEEP_ALIVE).toBe(10000);
+    });
+
+    test('reads the provided values, including zero to disable', async () => {
+      process.env.REDIS_PING_TIMEOUT = '2500';
+      process.env.REDIS_SUBSCRIBER_PING_INTERVAL = '0';
+      process.env.REDIS_KEEP_ALIVE = '0';
+
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.REDIS_PING_TIMEOUT).toBe(2500);
+      expect(cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL).toBe(0);
+      expect(cacheConfig.REDIS_KEEP_ALIVE).toBe(0);
+    });
+  });
+
   describe('FORCED_IN_MEMORY_CACHE_NAMESPACES validation', () => {
     test('should parse comma-separated cache keys correctly', async () => {
       process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES = ' ROLES, MESSAGES ';
@@ -261,6 +285,41 @@ describe('cacheConfig', () => {
 
       const { cacheConfig } = await import('../cacheConfig');
       expect(cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES).toEqual(['CONFIG_STORE', 'APP_CONFIG']);
+    });
+  });
+
+  describe('VIOLATION_SCORE_TTL configuration', () => {
+    test('should default to one hour when not set', async () => {
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.VIOLATION_SCORE_TTL).toBe(3600000);
+    });
+
+    test('should evaluate math expressions from the environment', async () => {
+      process.env.VIOLATION_SCORE_TTL = '1000 * 60 * 60 * 24';
+
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.VIOLATION_SCORE_TTL).toBe(86400000);
+    });
+
+    test('should disable expiry when set to 0', async () => {
+      process.env.VIOLATION_SCORE_TTL = '0';
+
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.VIOLATION_SCORE_TTL).toBeUndefined();
+    });
+
+    test('should disable expiry for negative values', async () => {
+      process.env.VIOLATION_SCORE_TTL = '-1000';
+
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.VIOLATION_SCORE_TTL).toBeUndefined();
+    });
+
+    test('should fall back to the default on invalid input', async () => {
+      process.env.VIOLATION_SCORE_TTL = 'not-a-duration';
+
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.VIOLATION_SCORE_TTL).toBe(3600000);
     });
   });
 });

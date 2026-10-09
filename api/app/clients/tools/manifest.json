@@ -21,12 +21,12 @@
       {
         "authField": "GOOGLE_CSE_ID",
         "label": "Google CSE ID",
-        "description": "This is your Google Custom Search Engine ID. For instructions on how to obtain this, see <a href='https://github.com/danny-avila/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
+        "description": "This is your Google Custom Search Engine ID. For instructions on how to obtain this, see <a href='https://github.com/LibreChat-AI/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
       },
       {
         "authField": "GOOGLE_SEARCH_API_KEY",
         "label": "Google API Key",
-        "description": "This is your Google Custom Search API Key. For instructions on how to obtain this, see <a href='https://github.com/danny-avila/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
+        "description": "This is your Google Custom Search API Key. For instructions on how to obtain this, see <a href='https://github.com/LibreChat-AI/LibreChat/blob/main/docs/features/plugins/google_search.md'>Our Docs</a>."
       }
     ]
   },
@@ -84,10 +84,24 @@
     ]
   },
   {
+    "name": "GitHub Compare",
+    "pluginKey": "github_compare",
+    "description": "Compare frozen commit ancestry in a public GitHub repository without a workspace.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
     "name": "Calculator",
     "pluginKey": "calculator",
     "description": "Perform simple and complex mathematical calculations.",
     "icon": "assets/calculator.svg",
+    "authConfig": []
+  },
+  {
+    "name": "Ask User",
+    "pluginKey": "ask_user_question",
+    "description": "Let the agent pause mid-run to ask you a clarifying question and wait for your answer.",
+    "agentsOnly": true,
     "authConfig": []
   },
   {

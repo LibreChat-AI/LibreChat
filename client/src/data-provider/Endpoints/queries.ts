@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { QueryKeys, dataService } from 'librechat-data-provider';
 import type { QueryObserverResult, UseQueryOptions } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
+import { normalizeStartupConfigModelSpecs } from '~/utils';
 import store from '~/store';
 
 export const useGetEndpointsQuery = <TData = t.TEndpointsConfig>(
@@ -42,45 +43,6 @@ export const useTokenConfigQuery = (
 };
 
 /**
- * Server-side context-usage projection for the viewed branch + resolved config
- * (agents SDK, no model call). Keyed on the fields that change what the next
- * call would send — branch tail, endpoint/model/agent, window — so a branch or
- * model/window switch refetches. Disabled until a branch tail is known.
- */
-export const useContextProjectionQuery = (
-  params: t.TContextProjectionRequest | null,
-  config?: UseQueryOptions<t.TContextUsageEvent | null>,
-): QueryObserverResult<t.TContextUsageEvent | null> => {
-  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
-  return useQuery<t.TContextUsageEvent | null>(
-    [
-      QueryKeys.contextProjection,
-      params?.conversationId,
-      params?.messageId,
-      params?.endpoint,
-      params?.model,
-      params?.agentId,
-      params?.maxContextTokens,
-      params?.revision,
-    ],
-    () => dataService.getContextProjection(params as t.TContextProjectionRequest),
-    {
-      staleTime: Infinity,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
-      ...config,
-      enabled:
-        (config?.enabled ?? true) === true &&
-        queriesEnabled &&
-        params != null &&
-        (params.conversationId?.length ?? 0) > 0 &&
-        (params.messageId?.length ?? 0) > 0,
-    },
-  );
-};
-
-/**
  * Auth-aware query key so unauthenticated (login page) and authenticated
  * (chat page) configs are cached independently, preventing stale
  * unauthenticated config from persisting after login.
@@ -99,7 +61,14 @@ export const useGetStartupConfig = (
   const user = useRecoilValue<t.TUser | undefined>(store.user);
   return useQuery<t.TStartupConfig>(
     startupConfigKey(!!user, options?.context),
-    () => dataService.getStartupConfig({ context: options?.context }),
+    /**
+     * Normalized at the query boundary — once per fetch, cached — so every
+     * consumer of `modelSpecs.list` reads complete specs without per-site guards.
+     */
+    () =>
+      dataService
+        .getStartupConfig({ context: options?.context })
+        .then(normalizeStartupConfigModelSpecs),
     {
       staleTime: Infinity,
       refetchOnWindowFocus: false,

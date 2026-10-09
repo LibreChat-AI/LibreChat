@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { googleSettings, AuthKeys, removeNullishValues } from 'librechat-data-provider';
 import type { GoogleClientOptions, VertexAIClientOptions } from '@librechat/agents';
 import type { GoogleAIToolType } from '@librechat/agents/langchain/google-common';
@@ -12,14 +13,50 @@ type GoogleThinkingConfig = {
   thinkingLevel?: GoogleThinkingLevel;
 };
 
-const GEMINI_3_5_FLASH = 'gemini-3.5-flash';
-const GEMINI_3_5_FLASH_DEFAULT_THINKING_LEVEL: GoogleThinkingLevel = 'MEDIUM';
-const gemini35FlashLegacyParams = [
+type GeminiFlashThinkingRule = {
+  /** Model id, matched exactly or as a `${id}-` prefix for versioned aliases */
+  id: string;
+  /** Thinking level applied when the request doesn't set one */
+  default: GoogleThinkingLevel;
+  /** Levels the model rejects, mapped to the nearest level it accepts */
+  substitutions?: Partial<Record<GoogleThinkingLevel, GoogleThinkingLevel>>;
+};
+
+/**
+ * Gemini Flash models (3.5+) that drop the deprecated sampling parameters
+ * (`temperature`/`topP`/`topK`) and `thinkingBudget` in favor of the qualitative
+ * `thinkingLevel`, and that reject the penalty parameters
+ * (`presencePenalty`/`frequencyPenalty`) with HTTP 400 ("Penalty is not enabled
+ * for this model"). We strip all of these and apply each model's documented
+ * default thinking level when the request doesn't set one. Ordered
+ * most-specific-first so `gemini-3.5-flash-lite` resolves before the
+ * `gemini-3.5-flash` prefix.
+ *
+ * Gemini 3.7 and 3.8 Flash support only `low`/`medium`/`high` and error on
+ * `minimal`, so an explicit `minimal` is substituted with the nearest supported
+ * level.
+ * @see https://ai.google.dev/gemini-api/docs/latest-model#api-changes-and-parameter-updates
+ * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash
+ * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
+ */
+const geminiFlashThinkingRules: ReadonlyArray<GeminiFlashThinkingRule> = [
+  { id: 'gemini-3.8-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
+  { id: 'gemini-3.7-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
+  { id: 'gemini-3.6-flash', default: 'MEDIUM' },
+  { id: 'gemini-3.5-flash-lite', default: 'MINIMAL' },
+  { id: 'gemini-3.5-flash', default: 'MEDIUM' },
+];
+
+const geminiFlashLegacyParams = [
   'temperature',
   'topP',
   'topK',
   'top_p',
   'top_k',
+  'presencePenalty',
+  'presence_penalty',
+  'frequencyPenalty',
+  'frequency_penalty',
   'thinkingBudget',
   'thinking_budget',
 ] as const;
@@ -129,10 +166,60 @@ function normalizeGoogleThinkingLevel(value: unknown): GoogleThinkingLevel | und
   return normalized;
 }
 
-function isGemini35Flash(model: string) {
+function getGeminiFlashThinkingRule(model: string): GeminiFlashThinkingRule | undefined {
   const normalized = model.toLowerCase();
   const modelId = normalized.split('/').pop() ?? normalized;
-  return modelId === GEMINI_3_5_FLASH || modelId.startsWith(`${GEMINI_3_5_FLASH}-`);
+  for (const rule of geminiFlashThinkingRules) {
+    if (modelId === rule.id || modelId.startsWith(`${rule.id}-`)) {
+      return rule;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Removes the parameters a Gemini Flash model rejects (see
+ * {@link geminiFlashLegacyParams}) from a params object. Used by the
+ * Google-compatible custom-endpoint path (`getOpenAIConfig`), where `addParams`
+ * is re-applied by `transformToOpenAIConfig` after `getGoogleConfig` has already
+ * stripped `llmConfig` — without this the strip is undone and the deprecated
+ * sampling / rejected penalty params reach the provider again. No-op for
+ * non-Flash models and when there is nothing to strip.
+ */
+export function stripGeminiFlashBlockedParams<T extends Record<string, unknown> | undefined>(
+  params: T,
+  model: string | undefined,
+): T {
+  if (params == null || getGeminiFlashThinkingRule(model ?? '') == null) {
+    return params;
+  }
+  const sanitized = { ...params };
+  geminiFlashLegacyParams.forEach((key) => delete sanitized[key]);
+  return sanitized as T;
+}
+
+const urlContextModelRegex = /gemini-(\d+)(?:\.(\d+))?/i;
+const urlContextExcludedModalityRegex = /(?:^|-)(?:image|live|tts|audio)(?:-|$)/;
+
+/**
+ * The native URL Context tool is supported only on text Gemini 2.5+ and 3.x models
+ * (https://ai.google.dev/gemini-api/docs/url-context#supported_models). Modality-specific
+ * variants (image, live, TTS) do not accept it, mirroring the Google tool-combination exclusion.
+ * Enabling it on an unsupported model returns a provider-side error, so we skip the tool there.
+ */
+function supportsUrlContext(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  const modelId = normalized.split('/').pop() ?? normalized;
+  if (urlContextExcludedModalityRegex.test(modelId)) {
+    return false;
+  }
+  const match = urlContextModelRegex.exec(modelId);
+  if (!match) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? '0');
+  return major > 2 || (major === 2 && minor >= 5);
 }
 
 function getVertexMultiRegionEndpoint(location: string): string | undefined {
@@ -147,7 +234,7 @@ function sanitizeModelOptions(modelOptions: Partial<t.GoogleParameters> | undefi
   return sanitizedOptions;
 }
 
-function applyGemini35FlashOverrides({
+function applyGeminiFlashOverrides({
   config,
   provider,
   thinking,
@@ -160,11 +247,15 @@ function applyGemini35FlashOverrides({
 }) {
   const mutableConfig = config as Record<string, unknown>;
   const model = mutableConfig.model;
-  if (typeof model !== 'string' || !isGemini35Flash(model)) {
+  if (typeof model !== 'string') {
+    return;
+  }
+  const thinkingRule = getGeminiFlashThinkingRule(model);
+  if (!thinkingRule) {
     return;
   }
 
-  gemini35FlashLegacyParams.forEach((param) => {
+  geminiFlashLegacyParams.forEach((param) => {
     delete mutableConfig[param];
   });
 
@@ -194,8 +285,14 @@ function applyGemini35FlashOverrides({
     thinkingConfig.includeThoughts = true;
   }
 
-  if (!shouldDropThinkingLevel && !thinkingConfig.thinkingLevel) {
-    thinkingConfig.thinkingLevel = GEMINI_3_5_FLASH_DEFAULT_THINKING_LEVEL;
+  if (!shouldDropThinkingLevel) {
+    if (!thinkingConfig.thinkingLevel) {
+      thinkingConfig.thinkingLevel = thinkingRule.default;
+    }
+    const substitute = thinkingRule.substitutions?.[thinkingConfig.thinkingLevel];
+    if (substitute) {
+      thinkingConfig.thinkingLevel = substitute;
+    }
   }
 
   if (Object.keys(thinkingConfig).length > 0) {
@@ -361,6 +458,7 @@ export function getGoogleConfig(
 
   const {
     web_search,
+    url_context,
     thinkingLevel,
     thinking = googleSettings.thinking.default,
     thinkingBudget = googleSettings.thinkingBudget.default,
@@ -368,6 +466,7 @@ export function getGoogleConfig(
   } = sanitizeModelOptions(options.modelOptions);
 
   let enableWebSearch = web_search;
+  let enableUrlContext = url_context;
 
   const llmConfig = removeNullishValues(
     {
@@ -514,6 +613,14 @@ export function getGoogleConfig(
         continue;
       }
 
+      /** Handle url_context separately - resolved to a native tool, not config */
+      if (key === 'url_context') {
+        if (enableUrlContext === undefined && typeof value === 'boolean') {
+          enableUrlContext = value;
+        }
+        continue;
+      }
+
       if (knownGoogleParams.has(key)) {
         /** Route known Google params to llmConfig only if undefined */
         applyDefaultParams(llmConfig as Record<string, unknown>, { [key]: value });
@@ -536,6 +643,14 @@ export function getGoogleConfig(
         continue;
       }
 
+      /** Handle url_context separately - resolved to a native tool, not config */
+      if (key === 'url_context') {
+        if (typeof value === 'boolean') {
+          enableUrlContext = value;
+        }
+        continue;
+      }
+
       if (knownGoogleParams.has(key)) {
         /** Route known Google params to llmConfig */
         (llmConfig as Record<string, unknown>)[key] = value;
@@ -552,6 +667,11 @@ export function getGoogleConfig(
     options.dropParams.forEach((param) => {
       if (param === 'web_search') {
         enableWebSearch = false;
+        return;
+      }
+
+      if (param === 'url_context') {
+        enableUrlContext = false;
         return;
       }
 
@@ -586,7 +706,7 @@ export function getGoogleConfig(
       googleSettings.maxOutputTokens.reset(resolvedModel);
   }
 
-  applyGemini35FlashOverrides({
+  applyGeminiFlashOverrides({
     config: llmConfig,
     provider,
     thinking,
@@ -601,6 +721,17 @@ export function getGoogleConfig(
 
   if (enableWebSearch) {
     tools.push({ googleSearch: {} });
+  }
+
+  if (enableUrlContext) {
+    const urlContextModel = ((llmConfig as { model?: string }).model || modelName) ?? '';
+    if (supportsUrlContext(urlContextModel)) {
+      tools.push({ urlContext: {} });
+    } else {
+      logger.debug(
+        `[getGoogleConfig] url_context enabled but model "${urlContextModel}" does not support the URL Context tool (Gemini 2.5+ only); skipping.`,
+      );
+    }
   }
 
   // Return the final shape

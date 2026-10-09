@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import { Spinner, useToastContext, SelectDropDown } from '@librechat/client';
 import { useForm, FormProvider, Controller, useWatch } from 'react-hook-form';
@@ -7,19 +7,26 @@ import {
   Capabilities,
   isActionTool,
   ImageVisionTool,
+  LocalStorageKeys,
   defaultAssistantFormValues,
 } from 'librechat-data-provider';
 import type { FunctionTool, TConfig } from 'librechat-data-provider';
-import type { AssistantForm, AssistantPanelProps } from '~/common';
+import type { AssistantForm, AssistantPanelProps, LastSelectedModels } from '~/common';
 import {
   useCreateAssistantMutation,
   useUpdateAssistantMutation,
   useAvailableAgentToolsQuery,
 } from '~/data-provider';
-import { cn, cardStyle, defaultTextProps, removeFocusOutlines } from '~/utils';
+import {
+  cn,
+  cardStyle,
+  defaultTextProps,
+  getAvailableModelSelection,
+  removeFocusOutlines,
+} from '~/utils';
 import AssistantConversationStarters from './AssistantConversationStarters';
 import AssistantToolsDialog from '~/components/Tools/AssistantToolsDialog';
-import { useSelectAssistant, useLocalize } from '~/hooks';
+import { useSelectAssistant, useLocalize, useLocalStorage } from '~/hooks';
 import { useAssistantsMapContext } from '~/Providers';
 import AppendDateCheckbox from './AppendDateCheckbox';
 import CapabilitiesForm from './CapabilitiesForm';
@@ -31,10 +38,10 @@ import Knowledge from './Knowledge';
 import { Panel } from '~/common';
 import Action from './Action';
 
-const labelClass = 'mb-2 text-token-text-primary block font-medium';
+const labelClass = 'mb-2 text-text-primary block font-medium';
 const inputClass = cn(
   defaultTextProps,
-  'flex w-full px-3 py-2 dark:border-gray-800 dark:bg-gray-800 rounded-xl mb-2',
+  'flex w-full px-3 py-2 bg-surface-secondary rounded-xl mb-2',
   removeFocusOutlines,
 );
 
@@ -50,7 +57,13 @@ export default function AssistantPanel({
   assistantsConfig,
   version,
 }: AssistantPanelProps & { assistantsConfig?: TConfig | null }) {
-  const modelsQuery = useGetModelsQuery();
+  const modelsQuery = useGetModelsQuery({ refetchOnMount: 'always' });
+  const models = useMemo(() => modelsQuery.data?.[endpoint] ?? [], [endpoint, modelsQuery.data]);
+  const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
+  const [lastSelectedModels] = useLocalStorage<LastSelectedModels | undefined>(
+    LocalStorageKeys.LAST_MODEL,
+    {} as LastSelectedModels,
+  );
   const assistantMap = useAssistantsMapContext();
 
   const { data: allTools = [] } = useAvailableAgentToolsQuery();
@@ -64,10 +77,41 @@ export default function AssistantPanel({
 
   const [showToolDialog, setShowToolDialog] = useState(false);
 
-  const { control, handleSubmit, reset, setValue, getValues } = methods;
+  const {
+    control,
+    handleSubmit,
+    reset,
+    setValue,
+    getValues,
+    formState: { dirtyFields },
+  } = methods;
   const assistant = useWatch({ control, name: 'assistant' });
   const functions = useWatch({ control, name: 'functions' });
   const assistant_id = useWatch({ control, name: 'id' });
+  const model = useWatch({ control, name: 'model' });
+
+  useEffect(() => {
+    if (!modelsReady || !modelsQuery.isSuccess || current_assistant_id || assistant_id) {
+      return;
+    }
+
+    const candidate = dirtyFields.model === true ? model : (lastSelectedModels?.[endpoint] ?? '');
+    const nextModel = getAvailableModelSelection(candidate, models);
+    if (nextModel !== model) {
+      setValue('model', nextModel, { shouldDirty: false });
+    }
+  }, [
+    assistant_id,
+    current_assistant_id,
+    dirtyFields.model,
+    endpoint,
+    lastSelectedModels,
+    model,
+    models,
+    modelsQuery.isSuccess,
+    modelsReady,
+    setValue,
+  ]);
 
   const activeModel = useMemo(() => {
     return assistantMap?.[endpoint]?.[assistant_id]?.model;
@@ -215,7 +259,7 @@ export default function AssistantPanel({
     <FormProvider {...methods}>
       <form
         onSubmit={handleSubmit(onSubmit)}
-        className="h-auto w-full flex-shrink-0 overflow-x-hidden pt-2"
+        className="h-auto w-full shrink-0 overflow-x-hidden pt-2"
       >
         <div className="flex w-full flex-wrap">
           <Controller
@@ -237,7 +281,7 @@ export default function AssistantPanel({
           {/* Select Button */}
           {assistant_id && (
             <button
-              className="btn btn-primary focus:shadow-outline mx-2 mt-1 h-[40px] rounded bg-green-500 px-4 py-2 font-semibold text-white hover:bg-green-400 focus:border-green-500 focus:outline-none focus:ring-0"
+              className="btn bg-surface-submit text-text-on-status hover:bg-surface-submit-hover focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary mx-2 mt-1 h-[2.5rem] rounded px-4 py-2 font-semibold focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2"
               type="button"
               disabled={!assistant_id}
               onClick={(e) => {
@@ -249,7 +293,7 @@ export default function AssistantPanel({
             </button>
           )}
         </div>
-        <div className="bg-surface-50 h-auto px-4 pb-8 pt-3 dark:bg-transparent">
+        <div className="bg-surface-primary h-auto px-4 pt-3 pb-8">
           {/* Avatar & Name */}
           <div className="mb-4">
             <AssistantAvatar
@@ -281,7 +325,7 @@ export default function AssistantPanel({
               name="id"
               control={control}
               render={({ field }) => (
-                <p className="h-3 text-xs italic text-text-secondary">{field.value}</p>
+                <p className="text-text-secondary h-3 text-xs italic">{field.value}</p>
               )}
             />
           </div>
@@ -320,7 +364,7 @@ export default function AssistantPanel({
                   {...field}
                   value={field.value ?? ''}
                   {...{ max: 32768 }}
-                  className={cn(inputClass, 'min-h-[100px] resize-y')}
+                  className={cn(inputClass, 'min-h-[6.25rem] resize-y')}
                   id="instructions"
                   placeholder={localize('com_assistants_instructions_placeholder')}
                   rows={3}
@@ -363,17 +407,21 @@ export default function AssistantPanel({
                     emptyTitle={true}
                     value={field.value}
                     setValue={field.onChange}
-                    availableValues={modelsQuery.data?.[endpoint] ?? []}
+                    availableValues={models}
+                    disabled={!modelsReady}
                     showAbove={false}
                     showLabel={false}
                     className={cn(
                       cardStyle,
-                      'flex h-[40px] w-full flex-none items-center justify-center px-4 hover:cursor-pointer',
+                      'flex h-[2.5rem] w-full flex-none items-center justify-center px-4 hover:cursor-pointer',
                     )}
-                    containerClassName={cn('rounded-md', error ? 'border-red-500 border-2' : '')}
+                    containerClassName={cn(
+                      'rounded-md',
+                      error ? 'border-border-destructive border-2' : '',
+                    )}
                   />
                   {error && (
-                    <span className="text-sm text-red-500 transition duration-300 ease-in-out">
+                    <span className="text-text-destructive text-sm transition duration-300 ease-in-out">
                       {localize('com_ui_field_required')}
                     </span>
                   )}
@@ -397,7 +445,7 @@ export default function AssistantPanel({
           <div className="mb-6">
             <label className={labelClass}>
               {`${toolsEnabled === true ? localize('com_ui_tools') : ''}
-              ${toolsEnabled === true && actionsEnabled === true ? ' + ' : ''}
+              ${toolsEnabled === true && actionsEnabled === true ? '+ ' : ''}
               ${actionsEnabled === true ? localize('com_assistants_actions') : ''}`}
             </label>
             <div className="space-y-2">
@@ -419,7 +467,7 @@ export default function AssistantPanel({
                   <button
                     type="button"
                     onClick={() => setShowToolDialog(true)}
-                    className="btn btn-neutral border-token-border-light relative h-8 w-full rounded-lg font-medium"
+                    className="btn btn-neutral border-border-light relative h-8 w-full rounded-lg font-medium"
                   >
                     <div className="flex w-full items-center justify-center gap-2">
                       {localize('com_assistants_add_tools')}
@@ -439,7 +487,7 @@ export default function AssistantPanel({
                       }
                       setActivePanel(Panel.actions);
                     }}
-                    className="btn btn-neutral border-token-border-light relative h-8 w-full rounded-lg font-medium"
+                    className="btn btn-neutral border-border-light relative h-8 w-full rounded-lg font-medium"
                   >
                     <div className="flex w-full items-center justify-center gap-2">
                       {localize('com_assistants_add_actions')}
@@ -460,7 +508,7 @@ export default function AssistantPanel({
             />
             {/* Submit Button */}
             <button
-              className="btn btn-primary focus:shadow-outline flex w-full items-center justify-center px-4 py-2 font-semibold text-white hover:bg-green-600 focus:border-green-500"
+              className="btn bg-surface-submit text-text-on-status hover:bg-surface-submit-hover focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary flex w-full items-center justify-center px-4 py-2 font-semibold focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2"
               type="submit"
             >
               {submitContext}

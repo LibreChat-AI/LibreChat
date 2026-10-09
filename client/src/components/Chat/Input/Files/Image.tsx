@@ -16,8 +16,11 @@ const Image = ({
   source?: FileSources;
 }) => {
   return (
-    <div className="group relative inline-block text-sm text-black/70 dark:text-white/90">
-      <div className="relative overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-600">
+    <div className="group text-text-secondary relative inline-block text-sm">
+      {/* `flex`, so the button inside is not laid out on a text baseline: the
+          descender space added ~5px under every thumbnail, which is what left
+          them sitting higher than the file cards beside them. */}
+      <div className="border-border-medium relative flex overflow-hidden rounded-2xl border">
         <ImagePreview source={source} imageBase64={imageBase64} url={url} progress={progress} />
       </div>
       <RemoveFile onRemove={onDelete} />

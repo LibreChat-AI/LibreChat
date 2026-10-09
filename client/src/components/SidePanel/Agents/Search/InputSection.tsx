@@ -1,8 +1,8 @@
-import * as Menu from '@ariakit/react/menu';
 import { ChevronDown } from 'lucide-react';
+import * as Menu from '@ariakit/react/menu';
 import { Input, Label, SecretInput, DropdownPopup } from '@librechat/client';
-import type { SearchApiKeyFormData } from '~/hooks/Plugins/useAuthSearchTool';
 import type { UseFormRegister } from 'react-hook-form';
+import type { SearchApiKeyFormData } from '~/hooks/Plugins/useAuthSearchTool';
 import type { MenuItemProps } from '~/common';
 
 interface InputConfig {
@@ -52,7 +52,7 @@ export default function InputSection({
   return (
     <div className="mb-6">
       <div className="mb-2 flex items-center justify-between">
-        <Label className="text-md w-fit font-medium">{title}</Label>
+        <Label className="w-fit text-base font-medium">{title}</Label>
         {showDropdown ? (
           <DropdownPopup
             menuId={`${dropdownKey}-dropdown`}
@@ -103,7 +103,7 @@ export default function InputSection({
                   href={config.link.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+                  className="text-link underline hover:text-link-hover"
                 >
                   {config.link.text}
                 </a>

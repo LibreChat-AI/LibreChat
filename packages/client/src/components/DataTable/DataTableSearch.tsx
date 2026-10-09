@@ -1,5 +1,5 @@
-import { startTransition } from 'react';
-import { memo, MemoExoticComponent } from 'react';
+import { memo, startTransition, useId, type MemoExoticComponent } from 'react';
+import { Search } from 'lucide-react';
 import { JSX } from 'react/jsx-runtime';
 import type { DataTableSearchProps } from './DataTable.types';
 import { useLocalize } from '~/hooks';
@@ -17,25 +17,34 @@ export const DataTableSearch: MemoExoticComponent<
     disabled = false,
   }: DataTableSearchProps): JSX.Element => {
     const localize = useLocalize();
+    const searchId = useId();
+    const descriptionId = `${searchId}-description`;
 
     return (
       <div className="relative flex-1">
-        <label htmlFor="table-search" className="sr-only">
+        <label htmlFor={searchId} className="sr-only">
           {localize('com_ui_search_table')}
         </label>
+        <Search
+          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-tertiary"
+          aria-hidden="true"
+        />
         <Input
-          id="table-search"
+          id={searchId}
           value={value}
           onChange={(e) => {
             startTransition(() => onChange(e.target.value));
           }}
           disabled={disabled}
           aria-label={localize('com_ui_search_table')}
-          aria-describedby="search-description"
+          aria-describedby={descriptionId}
           placeholder={placeholder || localize('com_ui_search')}
-          className={cn('h-10 rounded-b-none border-0 bg-surface-secondary md:h-12', className)}
+          className={cn(
+            'h-11 rounded-none border-0 bg-transparent pl-9 text-sm placeholder:text-text-tertiary focus-visible:ring-inset',
+            className,
+          )}
         />
-        <span id="search-description" className="sr-only">
+        <span id={descriptionId} className="sr-only">
           {localize('com_ui_search_table_description')}
         </span>
       </div>

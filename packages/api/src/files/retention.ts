@@ -1,5 +1,5 @@
-import { RetentionMode } from 'librechat-data-provider';
 import { createFallbackRetentionDate } from '@librechat/data-schemas';
+import { isAllDataRetention, isForcedTemporaryRetention } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 
 type InterfaceConfig = AppConfig['interfaceConfig'];
@@ -13,10 +13,13 @@ const retentionExpiryCache = new WeakMap<
 >();
 
 export type RetentionConversation = {
+  isTemporary?: boolean | null;
   expiredAt?: Date | string | number | null;
 };
 
 export type RetentionRequest = {
+  /** Owner-authenticated source row for operations attached to an existing message. */
+  fileRetentionSource?: RetentionConversation;
   user?: {
     id?: string;
     tenantId?: string;
@@ -49,7 +52,7 @@ export type RetentionDependencies = {
     userId: string,
     conversationId: string,
   ) => Promise<RetentionConversation | null | undefined>;
-  createExpirationDate: (interfaceConfig?: InterfaceConfig) => Date;
+  createExpirationDate: (interfaceConfig?: InterfaceConfig, isTemporary?: boolean) => Date;
   logger?: RetentionLogger;
 };
 
@@ -58,7 +61,7 @@ export type SharedLinkRetentionDependencies = {
     userId: string,
     conversationId: string,
   ) => Promise<RetentionConversation | null | undefined>;
-  createExpirationDate: (interfaceConfig?: InterfaceConfig) => Date;
+  createExpirationDate: (interfaceConfig?: InterfaceConfig, isTemporary?: boolean) => Date;
   logger?: RetentionLogger;
 };
 
@@ -82,9 +85,10 @@ export const isActiveExpirationDate = (expiredAt: Date, now: Date = new Date()):
 const createRetentionExpiry = (
   req: RetentionRequest | null | undefined,
   { createExpirationDate, logger }: RetentionDependencies,
+  isTemporary = isBooleanOrStringTrue(req?.body?.isTemporary),
 ): RetentionExpiry => {
   try {
-    return { expiredAt: createExpirationDate(req?.config?.interfaceConfig) };
+    return { expiredAt: createExpirationDate(req?.config?.interfaceConfig, isTemporary) };
   } catch (err) {
     logger?.error('[getRetentionExpiry] Error creating file expiration date:', err);
     return { expiredAt: createFallbackRetentionDate() };
@@ -94,21 +98,48 @@ const createRetentionExpiry = (
 const getRetentionCacheKey = (req: RetentionRequest): string =>
   [
     req.config?.interfaceConfig?.retentionMode ?? '',
+    req.config?.interfaceConfig?.temporaryChatRetention ?? '',
+    req.config?.interfaceConfig?.generalChatRetention ?? '',
     req.user?.id ?? '',
     req.body?.conversationId ?? '',
     String(req.body?.isTemporary ?? ''),
+    String(req.fileRetentionSource?.expiredAt ?? ''),
+    String(req.fileRetentionSource?.isTemporary ?? ''),
+    String(req.fileRetentionSource != null),
   ].join('|');
 
 async function computeRetentionExpiry(
   req: RetentionRequest | null | undefined,
   dependencies: RetentionDependencies,
 ): Promise<RetentionExpiry> {
-  if (req?.config?.interfaceConfig?.retentionMode === RetentionMode.ALL) {
-    return createRetentionExpiry(req, dependencies);
-  }
-
+  const interfaceConfig = req?.config?.interfaceConfig;
+  const isForcedTemporary = isForcedTemporaryRetention(interfaceConfig?.retentionMode);
+  const isRetentionAll = isAllDataRetention(interfaceConfig?.retentionMode);
   const conversationId = req?.body?.conversationId;
   const userId = req?.user?.id;
+  /** A source message's stored deadline wins in every mode, so a file attached late in a
+   *  chat never outlives the message and conversation that reference it. */
+  if (req?.fileRetentionSource != null) {
+    const source = req.fileRetentionSource;
+    const expiredAt = getConversationExpirationDate(source);
+    if (expiredAt != null) {
+      return { expiredAt };
+    }
+    const isTemporary = isForcedTemporary || source.isTemporary === true;
+    return isRetentionAll || isTemporary
+      ? createRetentionExpiry(req, dependencies, isTemporary)
+      : {};
+  }
+  if (isForcedTemporary) {
+    return createRetentionExpiry(req, dependencies, true);
+  }
+  if (
+    isRetentionAll &&
+    (interfaceConfig?.generalChatRetention === undefined ||
+      (req?.body?.isTemporary != null && !(conversationId && userId)))
+  ) {
+    return createRetentionExpiry(req, dependencies);
+  }
 
   if (conversationId && userId) {
     try {
@@ -116,8 +147,8 @@ async function computeRetentionExpiry(
       if (convo) {
         const expiredAt = getConversationExpirationDate(convo);
         if (expiredAt == null) {
-          if (isBooleanOrStringTrue(req?.body?.isTemporary)) {
-            return createRetentionExpiry(req, dependencies);
+          if (isRetentionAll || isBooleanOrStringTrue(req?.body?.isTemporary)) {
+            return createRetentionExpiry(req, dependencies, convo.isTemporary === true);
           }
           return {};
         }
@@ -126,21 +157,29 @@ async function computeRetentionExpiry(
           return { expiredAt };
         }
 
-        return createRetentionExpiry(req, dependencies);
+        return createRetentionExpiry(req, dependencies, convo.isTemporary !== false);
       }
     } catch (err) {
       dependencies.logger?.error(
         '[getRetentionExpiry] Error checking conversation retention:',
         err,
       );
+      if (isRetentionAll) {
+        const temporaryExpiry = createRetentionExpiry(req, dependencies, true).expiredAt;
+        const generalExpiry = createRetentionExpiry(req, dependencies, false).expiredAt;
+        if (temporaryExpiry && generalExpiry) {
+          return { expiredAt: temporaryExpiry < generalExpiry ? temporaryExpiry : generalExpiry };
+        }
+        return { expiredAt: temporaryExpiry ?? generalExpiry };
+      }
       if (isBooleanOrStringTrue(req?.body?.isTemporary)) {
-        return createRetentionExpiry(req, dependencies);
+        return createRetentionExpiry(req, dependencies, true);
       }
       return {};
     }
   }
 
-  if (!isBooleanOrStringTrue(req?.body?.isTemporary)) {
+  if (!isRetentionAll && !isBooleanOrStringTrue(req?.body?.isTemporary)) {
     return {};
   }
 
@@ -179,7 +218,7 @@ const shouldRetainPersistentAgentFile = ({
   const interfaceConfig = req?.config?.interfaceConfig;
   return (
     isPersistentAgentResourceUpload({ messageAttachment, toolResource }) &&
-    (interfaceConfig?.retentionMode !== RetentionMode.ALL ||
+    (!isAllDataRetention(interfaceConfig?.retentionMode) ||
       interfaceConfig?.retainAgentFiles === true)
   );
 };
@@ -218,7 +257,7 @@ export async function getSharedLinkExpiration(
     return undefined;
   }
 
-  const isRetentionAll = req?.config?.interfaceConfig?.retentionMode === RetentionMode.ALL;
+  const isRetentionAll = isAllDataRetention(req?.config?.interfaceConfig?.retentionMode);
   const convo = await dependencies.getConvo(userId, conversationId);
   if (!convo) {
     return undefined;
@@ -234,7 +273,10 @@ export async function getSharedLinkExpiration(
   }
 
   try {
-    return dependencies.createExpirationDate(req?.config?.interfaceConfig);
+    return dependencies.createExpirationDate(
+      req?.config?.interfaceConfig,
+      convo.isTemporary === true || (convo.isTemporary == null && conversationExpiredAt != null),
+    );
   } catch (err) {
     dependencies.logger?.error('[getSharedLinkExpiration] Error creating expiration date:', err);
     return null;
@@ -249,6 +291,7 @@ export const createMinimalRetentionRequest = (
   }
 
   return {
+    fileRetentionSource: req.fileRetentionSource,
     user: req.user
       ? {
           id: req.user.id,
