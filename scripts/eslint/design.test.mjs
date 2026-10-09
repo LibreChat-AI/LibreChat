@@ -24,6 +24,8 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn(disabled ? 'opacity-50' : '', disabled ? disabledFillClasses : '')",
     "cn('disabled:opacity-50', 'px-2 ' + disabledFillClasses, clsx(disabledInkClasses))",
     "cn('data-[state=not-disabled]:opacity-50 aria-[state=non-disabled]:opacity-40')",
+    "cn({ disabled: { true: 'opacity-50' } })",
+    "const metadata = { disabled: true, class: 'opacity-50' };",
     "cn(disabled ? '' : (active ? 'opacity-50' : ''))",
     "cn('disabled:opacity-50 theme-disabled:opacity-100!')",
     "cn('disabled:opacity-100!')",

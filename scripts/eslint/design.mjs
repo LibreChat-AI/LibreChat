@@ -190,7 +190,9 @@ const isDisabledName = (name) =>
   typeof name === 'string' && /disabled/i.test(name) && !/(?:not|non)_?disabled/i.test(name);
 
 const keyName = (property) =>
-  property.computed ? undefined : (property.key.name ?? String(property.key.value));
+  property?.type !== 'Property' || property.computed
+    ? undefined
+    : (property.key.name ?? String(property.key.value));
 
 /** The sense of a `cva` option chosen by a boolean `disabled` variant: the `true` option of a
  *  `disabled` group in `variants`, or the class of a `compoundVariants` entry that sets
@@ -204,11 +206,14 @@ function cvaDisabledSense(property) {
     group?.type === 'Property' &&
     group.value === owner &&
     isDisabledName(keyName(group)) &&
-    keyName(group.parent?.parent ?? {}) === 'variants'
+    keyName(group.parent?.parent) === 'variants'
   ) {
     return name === 'true';
   }
-  if (name === 'class' || name === 'className') {
+  const compound =
+    owner?.parent?.type === 'ArrayExpression' &&
+    keyName(owner.parent.parent) === 'compoundVariants';
+  if (compound && (name === 'class' || name === 'className')) {
     const flag = owner.properties.find(
       (entry) =>
         entry.type === 'Property' &&
