@@ -466,6 +466,10 @@ const appearanceValidators = {
    *  field's edge color. */
   fieldHeight: isLength,
   fieldHeightLg: isTargetSize,
+  /** The sign-in field and submit button heights, each a pointer target, and their corner. */
+  authFieldHeight: isTargetSize,
+  authButtonHeight: isTargetSize,
+  authControlRadius: isLength,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
   /** Whether a field stays transparent or paints `field-fill`. */

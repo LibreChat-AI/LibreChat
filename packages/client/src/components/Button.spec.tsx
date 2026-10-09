@@ -425,7 +425,9 @@ describe('Button', () => {
   });
 
   it('offers the sign-in sizes, shape and link variants as roles rather than caller classes', () => {
-    expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-2xl');
+    expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-theme-auth-control');
+    expect(cn(buttonVariants({ shape: 'soft' }))).not.toContain('rounded-lg');
+    expect(cn(buttonVariants({ size: 'auth' }))).toContain('h-theme-auth-button');
     expect(cn(buttonVariants({ size: 'snug' }))).toContain('p-1');
     expect(cn(buttonVariants({ size: 'wide' }))).toContain('px-8');
     expect(cn(buttonVariants({ size: 'bare' }))).toContain('p-0');

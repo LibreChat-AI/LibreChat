@@ -526,6 +526,16 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       '3.6876rem: the title field is content-sized like fieldHeight, a 3rem line (typography.font.sizes.6 at line-height 1.5), field.space.y (0.2813rem) twice and a 1px stroke each side',
   },
+  authFieldHeight: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one field size, so the sign-in field matches fieldHeight',
+  },
+  authButtonHeight: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one button size, so the sign-in button matches buttonHeight',
+  },
   fieldFocusStyle: {
     value: 'border',
     status: 'match',
@@ -593,6 +603,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   popoverRadius: 'click.genericMenu.panel.radii.all',
   menuPanelRadius: 'click.genericMenu.panel.radii.all',
   composerActionRadius: 'click.button.radii.all',
+  authControlRadius: 'click.button.radii.all',
   inlineCodeWeight: 'typography.font.weights.2',
   tooltipRadius: 'click.tooltip.radii.all',
   tooltipPaddingX: 'click.tooltip.space.x',

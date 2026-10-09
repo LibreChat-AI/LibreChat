@@ -29,6 +29,9 @@ module.exports = {
         /** A form field's height, and the large `title` field's. */
         'theme-field': 'var(--theme-field-height, 2.5rem)',
         'theme-field-lg': 'var(--theme-field-height-lg, 3rem)',
+        /** The sign-in form's floating-label field and submit button. */
+        'theme-auth-field': 'var(--theme-auth-field-height, 2.75rem)',
+        'theme-auth-button': 'var(--theme-auth-button-height, 3rem)',
         /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
          *  smaller. */
         'theme-target': '24px',
@@ -139,6 +142,7 @@ module.exports = {
         'theme-popover': 'var(--theme-popover-radius, 1rem)',
         'theme-menu-panel': 'var(--theme-menu-panel-radius, 0.75rem)',
         'theme-composer-action': 'var(--theme-composer-action-radius, 9999px)',
+        'theme-auth-control': 'var(--theme-auth-control-radius, 1rem)',
         'theme-surface-lg': 'var(--theme-large-surface-radius, 1.5rem)',
         'theme-tab': 'var(--theme-tab-radius, 0.185rem)',
       },

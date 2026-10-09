@@ -525,6 +525,11 @@ const clickHouseShape = {
   fieldHeight: '2rem',
   fieldHeightLg: '3.6876rem', // content-sized like fieldHeight: the 3rem title line (2rem at 1.5), field.space.y twice, a 1px stroke each side
   fieldPaddingY: '0.2813rem', // field.space.y
+  /** Click UI draws one field and one button size, so the sign-in form's controls take them and
+   *  the button's square corner instead of LibreChat's taller, rounder sign-in pair. */
+  authFieldHeight: '2rem',
+  authButtonHeight: '2rem',
+  authControlRadius: '0.25rem', // button.radii.all
   fieldFocusStyle: 'border' as const,
   /** Click UI fills its fields in `field.color.background.default`. */
   fieldFillStyle: 'fill' as const,

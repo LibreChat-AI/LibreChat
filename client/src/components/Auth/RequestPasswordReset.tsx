@@ -129,7 +129,8 @@ function RequestPasswordReset() {
           disabled={!!errors.email || isLoading}
           variant="submit"
           shape="soft"
-          className="h-12 w-full"
+          size="auth"
+          className="w-full"
         >
           {isLoading ? <Spinner /> : localize('com_auth_continue')}
         </Button>

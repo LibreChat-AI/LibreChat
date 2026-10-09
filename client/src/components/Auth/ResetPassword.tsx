@@ -139,7 +139,8 @@ function ResetPassword() {
           disabled={!!errors.password || !!errors.confirm_password || isSubmitting}
           variant="submit"
           shape="soft"
-          className="h-12 w-full"
+          size="auth"
+          className="w-full"
         >
           {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
         </Button>
