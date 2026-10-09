@@ -60,8 +60,14 @@ function topologyOf(variant) {
   if (/^group-/.test(variant)) return 'group';
   if (/^\[(?!&)/.test(variant)) return 'group';
   if (/^has-|:has\(/.test(variant)) return 'within';
-  return 'self';
+  return SELF_MARKERS.test(variant) ? 'self' : 'group';
 }
+
+/** The disabled markers `theme-disabled` matches (`:disabled`, `[data-disabled]`,
+ *  `[aria-disabled='true']`); a self variant spelled with another marker, such as
+ *  `data-[state=disabled]`, is one no recipe restores. */
+const SELF_MARKERS =
+  /^(?:disabled|aria-disabled|data-disabled|data-\[disabled(?:=["']?true["']?)?\]|aria-\[disabled=["']?true["']?\]|\[&:disabled\]|\[&\[data-disabled\]\]|\[&\[aria-disabled=["']?true["']?\]\])$/;
 
 const TOPOLOGY_ORDER = ['group', 'peer', 'within', 'self'];
 
@@ -212,6 +218,17 @@ const keyName = (property) =>
 /** The sense of a `cva` option chosen by a boolean `disabled` variant: the `true` option of a
  *  `disabled` group in `variants`, or the class of a `compoundVariants` entry that sets
  *  `disabled: true`. */
+/** The boolean a compound-variant value selects: `true`, `false`, or an array of only one of
+ *  them (`[true]`); a mixed or dynamic value says nothing. */
+function booleanSelection(value) {
+  if (value.type === 'Literal' && typeof value.value === 'boolean') return value.value;
+  if (value.type !== 'ArrayExpression' || value.elements.length === 0) return undefined;
+  const values = value.elements.map((element) =>
+    element?.type === 'Literal' && typeof element.value === 'boolean' ? element.value : undefined,
+  );
+  return values.every((entry) => entry === values[0]) ? values[0] : undefined;
+}
+
 function cvaDisabledSense(property) {
   const name = keyName(property);
   const owner = property.parent;
@@ -230,13 +247,9 @@ function cvaDisabledSense(property) {
     keyName(owner.parent.parent) === 'compoundVariants';
   if (compound && (name === 'class' || name === 'className')) {
     const flag = owner.properties.find(
-      (entry) =>
-        entry.type === 'Property' &&
-        isDisabledName(keyName(entry)) &&
-        entry.value.type === 'Literal' &&
-        typeof entry.value.value === 'boolean',
+      (entry) => entry.type === 'Property' && isDisabledName(keyName(entry)),
     );
-    return flag ? flag.value.value : undefined;
+    return flag ? booleanSelection(flag.value) : undefined;
   }
   return undefined;
 }
@@ -252,6 +265,18 @@ function chosenByDisabled(start, source, known) {
   }
   const parent = node.parent;
   if (parent?.type === 'ConditionalExpression' && parent.test !== node) {
+    /** Reaching the alternate of `a || b` proves every operand false, so an operand that holds
+     *  only while enabled (`!disabled`) proves the control disabled. */
+    if (
+      parent.alternate === node &&
+      parent.test.type === 'LogicalExpression' &&
+      parent.test.operator === '||' &&
+      [parent.test.left, parent.test.right].some(
+        (operand) => disabledSense(operand, source, known) === false,
+      )
+    ) {
+      return true;
+    }
     const sense = disabledSense(parent.test, source, known);
     if (sense === undefined) return chosenByDisabled(parent, source, known);
     return sense === (parent.consequent === node);
@@ -320,11 +345,15 @@ const isCva = (call) => call.type === 'CallExpression' && call.callee.name === '
 /** The helpers that join their arguments into one class list; another call's result is not
  *  known to carry what it was given. */
 const CLASS_CALLS = new Set(['cn', 'clsx', 'cx', 'classNames', 'twMerge', 'twJoin', 'cva']);
-const isClassCall = (call) =>
-  call.type === 'CallExpression' &&
-  CLASS_CALLS.has(
-    call.callee.type === 'MemberExpression' ? call.callee.property.name : call.callee.name,
-  );
+const isClassCall = (call, source) => {
+  if (call.type !== 'CallExpression') return false;
+  const { callee } = call;
+  if (callee.type === 'MemberExpression') return CLASS_CALLS.has(callee.property.name);
+  if (callee.type !== 'Identifier' || !CLASS_CALLS.has(callee.name)) return false;
+  /** An imported helper is trusted; a local function that merely shares the name is not. */
+  const variable = findVariable(source.getScope(call), callee.name);
+  return !variable || variable.defs[0]?.type === 'ImportBinding';
+};
 
 /** Reads, for one class list, what a recipe reference resolves to and which strings and
  *  expressions always emit one. */
@@ -395,7 +424,9 @@ function recipeReader(context) {
           const [base] = node.arguments;
           return base !== undefined && always(base, topology);
         }
-        return isClassCall(node) && node.arguments.some((argument) => always(argument, topology));
+        return (
+          isClassCall(node, source) && node.arguments.some((argument) => always(argument, topology))
+        );
       case 'ArrayExpression':
         return node.elements.some((element) => element && always(element, topology));
       case 'ConditionalExpression':
@@ -465,7 +496,7 @@ function recipeReader(context) {
           const [base] = parent.arguments;
           return child !== base && base !== undefined && always(base, topology);
         }
-        if (!isClassCall(parent)) return false;
+        if (!isClassCall(parent, source)) return false;
         return parent.arguments.some(
           (argument) => argument !== child && alongside(argument, child, start, topology),
         );
@@ -628,12 +659,42 @@ const disabledRecipe = {
       const picked = known.get(STATIC) === true || chosenByDisabled(node, source, known);
       const chosen = picked ? bareDim(value, bareTopology) : undefined;
       const dims = [...variantDims(value), ...(chosen ? [chosen] : [])];
-      if (dims.length === 0 || isPrimitive(element)) return;
+      if (dims.length === 0) return;
+      /** A primitive's own recipe restores a plain fade of the control itself; an important one,
+       *  or one on another element, still needs the caller's recipe. */
+      const coveredByPrimitive = (need) =>
+        !need.important && (need.topology === 'self' || need.topology === 'any');
+      if (isPrimitive(element) && dims.every(coveredByPrimitive)) return;
       const missing = dims.find((need) => !restored(node, list, need));
       if (!missing) return;
       context.report({ node: reported, messageId: 'missing', data: { dim: missing.dim } });
     };
+    /** A constant class string the element names (`const faded = 'opacity-50'` then
+     *  `<button disabled className={faded} />`): read where it is used, since the literal on its
+     *  own carries no disabled context. */
+    const checkReference = (attribute) => {
+      if (attribute.name.name !== 'className') return;
+      const expression =
+        attribute.value?.type === 'JSXExpressionContainer' ? attribute.value.expression : undefined;
+      if (expression?.type !== 'Identifier') return;
+      const element = attribute.parent;
+      if (disabledExpressions(element, source).get(STATIC) !== true) return;
+      const variable = findVariable(source.getScope(expression), expression.name);
+      const declarator = variable?.defs[0]?.node;
+      if (declarator?.type !== 'VariableDeclarator' || declarator.parent.kind !== 'const') return;
+      const init = declarator.init;
+      let value = init?.type === 'Literal' ? init.value : undefined;
+      if (init?.type === 'TemplateLiteral' && init.expressions.length === 0) {
+        value = init.quasis[0].value.cooked;
+      }
+      if (typeof value !== 'string') return;
+      const dim = bareDim(value, 'self');
+      if (!dim || (isPrimitive(element) && !dim.important)) return;
+      context.report({ node: expression, messageId: 'missing', data: { dim: dim.dim } });
+    };
+
     return {
+      JSXAttribute: checkReference,
       Literal(node) {
         check(node, node.value);
       },

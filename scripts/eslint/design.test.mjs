@@ -25,6 +25,10 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn(disabled && { 'opacity-50': true }, disabledFillClasses)",
     "cn(disabled && 'opacity-50', disabled && disabledFillClasses)",
     "cn(disabled ? 'opacity-50' : '', disabled ? disabledFillClasses : '')",
+    "cn('data-[disabled]:opacity-50 aria-[disabled=true]:opacity-40', disabledFillClasses)",
+    "cva('', { variants: { size: { sm: 'px-2' } }, compoundVariants: [{ disabled: [true, false], class: 'opacity-50' }] })",
+    "import { cn } from '~/utils'; cn('disabled:opacity-50', disabledFillClasses)",
+    "const faded = 'opacity-50'; <button className={faded} />",
     "cn('disabled:opacity-50', 'px-2 ' + disabledFillClasses, clsx(disabledInkClasses))",
     "cn('data-[state=not-disabled]:opacity-50 aria-[state=non-disabled]:opacity-40')",
     "cn({ disabled: { true: 'opacity-50' } })",
@@ -77,7 +81,7 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn(disabled ? 'opacity-50' : '', disabledFillClasses)",
     "const label = 'disabled';",
     "cn('not-disabled:opacity-100 opacity-0')",
-    "cn('data-[state=disabled]:opacity-50', utils.disabledInkClasses)",
+    "cn('data-[disabled]:opacity-50', utils.disabledInkClasses)",
     "cva('rounded', { variants: { size: { sm: cn('disabled:opacity-50', disabledFillClasses) } } })",
     "cn({ 'disabled:opacity-50': true, [disabledFillClasses]: true })",
     "cn(disabled ? '' : 'opacity-50')",
@@ -265,6 +269,31 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "cn('disabled:group-disabled:opacity-50', disabledFillClasses)",
       errors: [missing('disabled:group-disabled:opacity-50')],
+    },
+    {
+      code: '<Button disabled className="disabled:opacity-60!" />',
+      options: [{ primitives: ['Button'] }],
+      errors: [missing('disabled:opacity-60!')],
+    },
+    {
+      code: "cn('data-[state=disabled]:opacity-50', disabledFillClasses)",
+      errors: [missing('data-[state=disabled]:opacity-50')],
+    },
+    {
+      code: "cn(!disabled || !active ? '' : 'opacity-50')",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cva('', { variants: { size: { sm: 'px-2' } }, compoundVariants: [{ disabled: [true], class: 'opacity-50' }] })",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "const faded = 'opacity-50'; <button disabled className={faded} />",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "const cn = (first) => first; cn('disabled:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:opacity-50')],
     },
     {
       code: "cn('disabled:opacity-60!')",
