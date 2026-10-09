@@ -23,7 +23,7 @@ const REACT_ARTIFACT = [
   ':::artifact{identifier="e2e-short-react" type="react" title="Sum"}',
   'export default function App() {',
   '  const total = [2, 3].reduce((sum, value) => sum + value, 0);',
-  '  return <h1>{`Sum is ${total}`}</h1>;',
+  '  return <h1>Sum is {total}</h1>;',
   '}',
   ':::',
 ].join('\n');
