@@ -114,6 +114,24 @@ async function attachShot(dialog: Locator, name: string) {
   await test.info().attach(name, { path, contentType: 'image/png' });
 }
 
+/** Titles are literal so each `@scenario` tag is findable in the source. */
+const CASES: Array<{ mode: Mode; clickhouse: string; unchanged: string }> = [
+  {
+    mode: 'light',
+    clickhouse:
+      'ClickHouse light checkboxes take the Click UI fill and corner @scenario:clickhouse-checkbox-light',
+    unchanged:
+      'default light checkboxes stay clear on the small corner @scenario:default-checkbox-light-unchanged',
+  },
+  {
+    mode: 'dark',
+    clickhouse:
+      'ClickHouse dark checkboxes take the Click UI fill and corner @scenario:clickhouse-checkbox-dark',
+    unchanged:
+      'default dark checkboxes stay clear on the small corner @scenario:default-checkbox-dark-unchanged',
+  },
+];
+
 const rgb = (triplet: string | undefined) => `rgb(${(triplet ?? '').split(' ').join(', ')})`;
 
 test.describe('theme checkbox', () => {
@@ -122,10 +140,8 @@ test.describe('theme checkbox', () => {
     await installThemeBridge(page);
   });
 
-  for (const mode of ['light', 'dark'] as Mode[]) {
-    test(`ClickHouse ${mode} checkboxes take the Click UI fill and corner @scenario:clickhouse-checkbox-${mode}`, async ({
-      page,
-    }) => {
+  for (const { mode, clickhouse, unchanged } of CASES) {
+    test(clickhouse, async ({ page }) => {
       const dialog = await openFiles(page, 'clickhouse', mode);
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
       const colors = clickHouseTheme.modes[mode]?.colors ?? {};
@@ -143,9 +159,7 @@ test.describe('theme checkbox', () => {
       await attachShot(dialog, `clickhouse-${mode}-checked`);
     });
 
-    test(`default ${mode} checkboxes stay clear on the small corner @scenario:default-checkbox-${mode}-unchanged`, async ({
-      page,
-    }) => {
+    test(unchanged, async ({ page }) => {
       const dialog = await openFiles(page, 'default', mode);
       const row = dialog.locator('tbody').getByRole('checkbox').first();
 
