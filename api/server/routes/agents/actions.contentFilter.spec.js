@@ -34,6 +34,9 @@ jest.mock('~/models', () => ({
 jest.mock('~/server/middleware', () => ({
   canAccessAgentResource: jest.fn(() => (_req, _res, next) => next()),
 }));
+jest.mock('~/server/services/Config', () => ({
+  getAppConfig: jest.fn(),
+}));
 
 const router = require('./actions');
 const db = require('~/models');

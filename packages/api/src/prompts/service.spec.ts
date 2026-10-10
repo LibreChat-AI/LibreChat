@@ -1,13 +1,19 @@
 import mongoose, { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { logger, createModels, createMethods } from '@librechat/data-schemas';
 import { AccessRoleIds, PrincipalType, ResourceType } from 'librechat-data-provider';
+import {
+  logger,
+  createModels,
+  createMethods,
+  BASE_CONFIG_PRINCIPAL_ID,
+} from '@librechat/data-schemas';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type {
   PromptRecord,
   PromptDatabase,
   PromptGroupRecord,
   CreatePromptGroupInput,
+  LangfuseResolvedPrompt,
 } from './types';
 import type { PromptServiceDependencies, PromptService } from './service';
 import { createPromptServiceFromAdapters, createPromptService } from './service';
@@ -26,6 +32,7 @@ const filters: FiltersConfig = {
 let mongo: MongoMemoryServer;
 let db: PromptDatabase;
 let grantPermission: jest.MockedFunction<PromptServiceDependencies['grantPermission']>;
+let getAppConfig: jest.MockedFunction<PromptServiceDependencies['getAppConfig']>;
 let service: PromptService;
 let group: PromptGroupRecord;
 let production: PromptRecord;
@@ -41,7 +48,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   grantPermission = jest.fn().mockResolvedValue(undefined);
-  service = createPromptService({ db, grantPermission });
+  getAppConfig = jest.fn();
+  service = createPromptService({ db, grantPermission, getAppConfig });
   const created = await service.createPromptGroup({
     prompt: { prompt: 'Production prompt', type: 'text' },
     group: { name: 'Service group' },
@@ -52,7 +60,7 @@ beforeEach(async () => {
     throw new Error('Test group was not created');
   }
   production = created.value.prompt;
-  group = (await createNativePromptAdapter(db).getPromptGroup(
+  group = (await createPromptCatalogStore(db).getPromptGroup(
     production.groupId,
   )) as PromptGroupRecord;
   grantPermission.mockClear();
@@ -89,6 +97,7 @@ describe('createPromptService', () => {
       ).resolves.toEqual({
         ok: true,
         value: {
+          source: 'native',
           groupId: group._id,
           promptId: production._id,
           prompt: 'Production prompt',
@@ -125,6 +134,97 @@ describe('createPromptService', () => {
         ok: false,
         error: { type: 'unavailable_selection', reason: 'production' },
       });
+    });
+
+    it('reads the group once when none is loaded', async () => {
+      const read = jest.spyOn(db, 'getPromptGroup');
+
+      await expect(
+        service.resolvePrompt({ groupId: group._id, selection: { type: 'production' } }),
+      ).resolves.toMatchObject({ ok: true, value: { promptId: production._id } });
+      expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads when the loaded group differs', async () => {
+      const read = jest.spyOn(db, 'getPromptGroup');
+      const otherGroup = { ...group, _id: missingId() };
+
+      await expect(
+        service.resolvePrompt({
+          groupId: group._id,
+          selection: { type: 'production' },
+          loadedGroup: otherGroup,
+        }),
+      ).resolves.toMatchObject({ ok: true, value: { promptId: production._id } });
+      expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not prefetch a revision for a production selection', async () => {
+      const revisionRead = jest.spyOn(db, 'getPrompt');
+
+      await expect(
+        service.resolvePrompt({ groupId: group._id, selection: { type: 'production' } }),
+      ).resolves.toMatchObject({ ok: true, value: { promptId: production._id } });
+      expect(revisionRead).not.toHaveBeenCalled();
+    });
+
+    it('reads a missing exact revision exactly once', async () => {
+      const revisionRead = jest.spyOn(db, 'getPrompt');
+
+      await expect(
+        service.resolvePrompt({
+          groupId: group._id,
+          selection: { type: 'exact', promptId: missingId() },
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { type: 'unavailable_selection', reason: 'revision' },
+      });
+      expect(revisionRead).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves an exact revision for an unloaded group', async () => {
+      const groupRead = jest.spyOn(db, 'getPromptGroup');
+
+      await expect(
+        service.resolvePrompt({
+          groupId: group._id,
+          selection: { type: 'exact', promptId: production._id },
+        }),
+      ).resolves.toEqual({
+        ok: true,
+        value: {
+          source: 'native',
+          groupId: group._id,
+          promptId: production._id,
+          prompt: 'Production prompt',
+          type: 'text',
+        },
+      });
+      expect(groupRead).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws a PromptStoreError when the group read fails', async () => {
+      const native = createNativePromptAdapter(db);
+      const catalog = createPromptCatalogStore(db);
+      jest.spyOn(catalog, 'getPromptGroup').mockRejectedValue(new Error('group read failed'));
+      const routed = createPromptServiceFromAdapters({
+        native,
+        langfuse: { resolvePrompt: jest.fn() },
+        catalog,
+        grantCreatorOwnership: jest.fn(),
+        logger: { error: jest.fn() },
+      });
+
+      const rejection: unknown = await routed
+        .resolvePrompt({
+          groupId: group._id,
+          selection: { type: 'exact', promptId: production._id },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(rejection).toBeInstanceOf(PromptStoreError);
+      expect((rejection as PromptStoreError).stage).toBe('read');
     });
   });
 
@@ -588,10 +688,11 @@ describe('createPromptService', () => {
         savePrompt: _save,
         makePromptProduction: _promote,
         deletePrompt: _delete,
-        ...source
+        ...native
       } = createNativePromptAdapter(db);
       const readOnly = createPromptServiceFromAdapters({
-        source,
+        native,
+        langfuse: { resolvePrompt: jest.fn() },
         catalog: createPromptCatalogStore(db),
         grantCreatorOwnership: jest.fn(),
         logger: { error: jest.fn() },
@@ -608,6 +709,296 @@ describe('createPromptService', () => {
         readOnly.deletePrompt({ groupId: group._id, promptId: production._id }),
       ).resolves.toEqual({ ok: false, error: { type: 'unsupported', operation: 'deletePrompt' } });
       await expect(readOnly.getPrompts({ groupId: group._id })).resolves.toHaveLength(1);
+    });
+  });
+
+  describe('routing by source', () => {
+    function makeLangfuseGroup(overrides: Partial<PromptGroupRecord> = {}): PromptGroupRecord {
+      return {
+        _id: missingId(),
+        name: 'Langfuse group',
+        author,
+        authorName: 'Author',
+        source: 'langfuse',
+        sourcePromptName: 'langfuse-prompt',
+        ...overrides,
+      };
+    }
+
+    function makeLangfuseResolved(
+      overrides: Partial<LangfuseResolvedPrompt> & { readonly groupId: string },
+    ): LangfuseResolvedPrompt {
+      return {
+        source: 'langfuse',
+        prompt: 'Langfuse prompt text',
+        type: 'text',
+        version: 3,
+        labels: ['production'],
+        ...overrides,
+      };
+    }
+
+    it('dispatches a Langfuse group to the Langfuse adapter', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const resolved = makeLangfuseResolved({ groupId: langfuseGroup._id });
+      const resolvePrompt = jest.fn().mockResolvedValue({ ok: true, value: resolved });
+      const routed = createPromptServiceFromAdapters({
+        native: createNativePromptAdapter(db),
+        langfuse: { resolvePrompt },
+        catalog: createPromptCatalogStore(db),
+        grantCreatorOwnership: jest.fn(),
+        logger: { error: jest.fn() },
+      });
+
+      await expect(
+        routed.resolvePrompt({
+          groupId: langfuseGroup._id,
+          selection: { type: 'production' },
+          loadedGroup: langfuseGroup,
+        }),
+      ).resolves.toEqual({ ok: true, value: resolved });
+      expect(resolvePrompt).toHaveBeenCalledWith({
+        group: langfuseGroup,
+        selection: { type: 'production' },
+        loadedRevision: undefined,
+      });
+    });
+
+    it('rejects a disallowed source before calling the adapter', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const resolvePrompt = jest.fn();
+      const routed = createPromptServiceFromAdapters({
+        native: createNativePromptAdapter(db),
+        langfuse: { resolvePrompt },
+        catalog: createPromptCatalogStore(db),
+        grantCreatorOwnership: jest.fn(),
+        logger: { error: jest.fn() },
+      });
+
+      await expect(
+        routed.resolvePrompt({
+          groupId: langfuseGroup._id,
+          selection: { type: 'production' },
+          loadedGroup: langfuseGroup,
+          allowedSources: ['native'],
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { type: 'unsupported_source', source: 'langfuse' },
+      });
+      expect(resolvePrompt).not.toHaveBeenCalled();
+    });
+
+    it('content-filters a resolved Langfuse prompt the same as native content', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const resolved = makeLangfuseResolved({
+        groupId: langfuseGroup._id,
+        prompt: 'Contains PRIVATE-VALUE',
+      });
+      const resolvePrompt = jest.fn().mockResolvedValue({ ok: true, value: resolved });
+      const routed = createPromptServiceFromAdapters({
+        native: createNativePromptAdapter(db),
+        langfuse: { resolvePrompt },
+        catalog: createPromptCatalogStore(db),
+        grantCreatorOwnership: jest.fn(),
+        logger: { error: jest.fn() },
+      });
+
+      await expect(
+        routed.resolvePrompt({
+          groupId: langfuseGroup._id,
+          selection: { type: 'production' },
+          loadedGroup: langfuseGroup,
+          filters,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { type: 'blocked_content' } });
+    });
+
+    it('returns unsupported for savePrompt on a Langfuse group', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+
+      await expect(
+        service.savePrompt({
+          groupId: langfuseGroup._id,
+          prompt: { prompt: 'Text', type: 'text' },
+          author,
+          loadedGroup: langfuseGroup,
+        }),
+      ).resolves.toEqual({ ok: false, error: { type: 'unsupported', operation: 'savePrompt' } });
+    });
+
+    it('returns unsupported_selection for a version selection on a native group', async () => {
+      await expect(
+        service.resolvePrompt({
+          groupId: group._id,
+          selection: { type: 'version', version: 2 },
+          loadedGroup: group,
+        }),
+      ).resolves.toEqual({ ok: false, error: { type: 'unsupported_selection', source: 'native' } });
+    });
+
+    it('rejects a disallowed source for an exact selection with nothing preloaded', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const catalog = createPromptCatalogStore(db);
+      jest.spyOn(catalog, 'getPromptGroup').mockResolvedValue(langfuseGroup);
+      const native = createNativePromptAdapter(db);
+      const revisionRead = jest.spyOn(native, 'getPrompt');
+      const resolvePrompt = jest.fn();
+      const routed = createPromptServiceFromAdapters({
+        native,
+        langfuse: { resolvePrompt },
+        catalog,
+        grantCreatorOwnership: jest.fn(),
+        logger: { error: jest.fn() },
+      });
+
+      await expect(
+        routed.resolvePrompt({
+          groupId: langfuseGroup._id,
+          selection: { type: 'exact', promptId: production._id },
+          allowedSources: ['native'],
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { type: 'unsupported_source', source: 'langfuse' },
+      });
+      expect(resolvePrompt).not.toHaveBeenCalled();
+      expect(revisionRead).not.toHaveBeenCalled();
+    });
+
+    it('returns unsupported_selection for an exact selection dispatched to the Langfuse adapter', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const catalog = createPromptCatalogStore(db);
+      jest.spyOn(catalog, 'getPromptGroup').mockResolvedValue(langfuseGroup);
+      const resolvePrompt = jest.fn().mockResolvedValue({
+        ok: false,
+        error: { type: 'unsupported_selection', source: 'langfuse' },
+      });
+      const routed = createPromptServiceFromAdapters({
+        native: createNativePromptAdapter(db),
+        langfuse: { resolvePrompt },
+        catalog,
+        grantCreatorOwnership: jest.fn(),
+        logger: { error: jest.fn() },
+      });
+
+      await expect(
+        routed.resolvePrompt({
+          groupId: langfuseGroup._id,
+          selection: { type: 'exact', promptId: production._id },
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { type: 'unsupported_selection', source: 'langfuse' },
+      });
+      expect(resolvePrompt).toHaveBeenCalledWith({
+        group: langfuseGroup,
+        selection: { type: 'exact', promptId: production._id },
+        loadedRevision: undefined,
+      });
+    });
+
+    it('returns no revisions for a Langfuse group', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+
+      await expect(service.getPrompts({ groupId: langfuseGroup._id })).resolves.toEqual([]);
+    });
+
+    it('treats a stored group with no source field as native', async () => {
+      // A group with no `source` field at all, not a `native` value.
+      // `toPromptGroupRecord` is the only place that defaults it, so routing,
+      // `allowedSources` and `savePrompt` must all agree the default is native
+      // rather than treating the absence as unresolved.
+      await mongoose.models.PromptGroup.collection.updateOne(
+        { _id: new Types.ObjectId(group._id) },
+        { $unset: { source: '' } },
+      );
+
+      await expect(
+        service.resolvePrompt({ groupId: group._id, selection: { type: 'production' } }),
+      ).resolves.toMatchObject({ ok: true, value: { source: 'native', promptId: production._id } });
+      await expect(
+        service.resolvePrompt({
+          groupId: group._id,
+          selection: { type: 'production' },
+          allowedSources: ['native'],
+        }),
+      ).resolves.toMatchObject({ ok: true, value: { source: 'native' } });
+      await expect(
+        service.savePrompt({
+          groupId: group._id,
+          prompt: { prompt: 'Mixed-version revision', type: 'text' },
+          author,
+        }),
+      ).resolves.toMatchObject({ ok: true });
+    });
+  });
+
+  describe('the always-built Langfuse adapter', () => {
+    const originalPromptSyncFlag = process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE;
+
+    afterEach(() => {
+      if (originalPromptSyncFlag === undefined) {
+        delete process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE;
+      } else {
+        process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = originalPromptSyncFlag;
+      }
+    });
+
+    function makeLangfuseGroup(overrides: Partial<PromptGroupRecord> = {}): PromptGroupRecord {
+      return {
+        _id: missingId(),
+        name: 'Langfuse group',
+        author,
+        authorName: 'Author',
+        source: 'langfuse',
+        sourcePromptName: 'langfuse-prompt',
+        ...overrides,
+      };
+    }
+
+    it('routes a Langfuse group to the Langfuse adapter, whose resolver reads the base config by role', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const langfuseGroup = makeLangfuseGroup();
+      const findConfigByPrincipal = jest.spyOn(db, 'findConfigByPrincipal');
+      const withLangfuse = createPromptService({ db, grantPermission, getAppConfig });
+
+      // No stored base config, so the resolver's own `promptSync.enabled` check fails
+      // the request as `disabled`.
+      await expect(
+        withLangfuse.resolvePrompt({
+          groupId: langfuseGroup._id,
+          selection: { type: 'production' },
+          loadedGroup: langfuseGroup,
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { type: 'source_unavailable', source: 'langfuse', reason: 'disabled' },
+      });
+      expect(findConfigByPrincipal).toHaveBeenCalledWith(
+        PrincipalType.ROLE,
+        BASE_CONFIG_PRINCIPAL_ID,
+      );
+    });
+
+    it('rejects a Langfuse group excluded by allowedSources without reading config', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const findConfigByPrincipal = jest.spyOn(db, 'findConfigByPrincipal');
+      const nativeOnly = createPromptService({ db, grantPermission, getAppConfig });
+
+      await expect(
+        nativeOnly.resolvePrompt({
+          groupId: langfuseGroup._id,
+          selection: { type: 'production' },
+          loadedGroup: langfuseGroup,
+          allowedSources: ['native'],
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { type: 'unsupported_source', source: 'langfuse' },
+      });
+      expect(findConfigByPrincipal).not.toHaveBeenCalled();
+      expect(getAppConfig).not.toHaveBeenCalled();
     });
   });
 });

@@ -431,6 +431,9 @@ export const getCustomConfigSpeech = () => `${speech()}/config/get`;
 
 export const getPromptGroup = (_id: string) => `${prompts()}/groups/${_id}`;
 
+export const resolvePromptGroup = (_id: string, version?: number) =>
+  `${getPromptGroup(_id)}/resolve${buildQuery({ version })}`;
+
 export const getPromptGroupsWithFilters = (filter: object) => {
   let url = `${prompts()}/groups`;
   // Filter out undefined/null values
