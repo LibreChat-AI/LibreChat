@@ -1,5 +1,6 @@
 import type {
   TPayload,
+  TMessage,
   ChatEvent,
   TConversation,
   TPendingSteer,
@@ -85,6 +86,11 @@ export type ChatAbortRequest = {
   /** The {@link ChatStream.generationCreatedAt} of the run to stop; a newer run is left running. */
   generationCreatedAt?: number;
   endpoint: string;
+  /**
+   * `conversationId:responseMessageId` of a run with no resumable stream (Assistants), which the
+   * endpoint's own abort route addresses instead of a stream id.
+   */
+  abortKey?: string;
 };
 
 /** What the server did with a stop request. */
@@ -101,10 +107,53 @@ export type ChatAbortResult = {
   error?: string;
 };
 
+/** Text folded into the running generation at its next injection boundary. */
+export type ChatSteerRequest = {
+  conversationId: string;
+  /** The generation being steered; a steer for a finished generation is refused. */
+  generationCreatedAt?: number;
+  /** Correlates terminal events that can arrive before the steer is acknowledged. */
+  clientSteerId?: string;
+  text: string;
+  files?: TMessage['files'];
+  /** Quoted excerpts sent with the text, merged into the turn at the injection boundary. */
+  quotes?: string[];
+  /** Asks to interrupt the running step instead of waiting for a tool boundary. */
+  preempt?: boolean;
+};
+
+/** The server queued the steer; `settled` and `leftover` mark a receipt replayed after the run ended. */
+export type ChatSteerResult = {
+  status: 'queued';
+  steerId: string;
+  position: number;
+  conversationId: string;
+  preempt?: boolean;
+  preemptRevision?: number;
+  /** Whether the server kept the quotes; when absent they are restored to the composer. */
+  quotesAccepted?: boolean;
+  settled?: boolean;
+  leftover?: boolean;
+  replayed?: boolean;
+};
+
+/** Identifies a queued steer of one generation. */
+export type ChatSteerTarget = {
+  conversationId: string;
+  steerId: string;
+  generationCreatedAt?: number;
+};
+
+/** `removed: false` means the cancel lost its race with the injection or the run's end. */
+export type ChatCancelSteerResult = { removed?: boolean };
+
+/** `armed: false` means the steer already injected, was cancelled, or cannot interrupt here. */
+export type ChatArmSteerResult = { armed?: boolean; code?: string; preemptRevision?: number };
+
 /**
  * The wire a chat runs over. AI SDK: `ChatTransport`, with LibreChat's two-step run underneath:
  * a turn is started by a POST and then attached to, so `reconnectToStream` can reattach to a
- * generation the server kept running. The queue methods are optional capabilities; a chat
+ * generation the server kept running. The steer and queue methods are optional capabilities; a chat
  * reports them as unsupported when the transport leaves them out.
  */
 export interface ChatTransport {
@@ -115,6 +164,14 @@ export interface ChatTransport {
   /** Stops the running generation; its stream then reports the abort, unless the result says it settled first. */
   abort(request: ChatAbortRequest): Promise<ChatAbortResult>;
   close?(): void;
+  /** Folds text into the running generation. */
+  steer?(request: ChatSteerRequest): Promise<ChatSteerResult>;
+  /** Withdraws a steer that has not been injected yet. */
+  cancelSteer?(
+    request: ChatSteerTarget & { clientSteerId?: string },
+  ): Promise<ChatCancelSteerResult>;
+  /** Escalates a queued steer to interrupt the running step. */
+  armSteer?(request: ChatSteerTarget): Promise<ChatArmSteerResult>;
   listQueued?(
     conversationId: string,
     clientRequestIds?: string[],

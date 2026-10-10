@@ -59,6 +59,10 @@ const chatPackageRestrictions = [
     message:
       '@librechat/chat holds no Recoil state; per-pane run state is Jotai in the React binding.',
   },
+  {
+    group: ['@librechat/chat', '@librechat/chat/*'],
+    message: '@librechat/chat imports its own modules by relative path, not through its entries.',
+  },
 ];
 
 /**
@@ -67,7 +71,12 @@ const chatPackageRestrictions = [
  * cannot hold a slash, so `\x2F` stands for one.
  */
 const restrictedLoads = (pattern, message) => ({
-  selector: `ImportExpression[source.value=/${pattern}/], CallExpression[callee.name='require'][arguments.0.value=/${pattern}/]`,
+  selector: [
+    `ImportExpression[source.value=/${pattern}/]`,
+    `ImportExpression[source.quasis.0.value.cooked=/${pattern}/]`,
+    `CallExpression[callee.name='require'][arguments.0.value=/${pattern}/]`,
+    `CallExpression[callee.name='require'][arguments.0.quasis.0.value.cooked=/${pattern}/]`,
+  ].join(', '),
   message,
 });
 
@@ -77,7 +86,20 @@ const chatPackageLoads = [
     chatPackageRestrictions[0].message,
   ),
   restrictedLoads('^recoil(\\x2F|$)', chatPackageRestrictions[1].message),
+  restrictedLoads('^@librechat\\x2Fchat(\\x2F|$)', chatPackageRestrictions[2].message),
 ];
+
+/** Attributes a person reads or hears; a literal in one ships untranslated copy. */
+const chatLiteralAttributeNames =
+  '/^(title|alt|placeholder|label|aria-label|aria-description|aria-placeholder|aria-roledescription|aria-valuetext)$/';
+const chatLiteralAttributes = {
+  selector: [
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}][value.type='Literal'][value.value=/[A-Za-z]/]`,
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}] > JSXExpressionContainer > Literal[value=/[A-Za-z]/]`,
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}] > JSXExpressionContainer > TemplateLiteral[expressions.length=0][quasis.0.value.cooked=/[A-Za-z]/]`,
+  ].join(', '),
+  message: 'Localize user-facing attribute text with useLocalize().',
+};
 
 /** The core entry runs without a UI framework, so a non-React host or a worker can drive a chat. */
 const chatCoreRestrictions = [
@@ -704,6 +726,7 @@ export default [
           'should-validate-template': true,
         },
       ],
+      'no-restricted-syntax': ['error', ...chatPackageLoads, chatLiteralAttributes],
     },
   },
   {

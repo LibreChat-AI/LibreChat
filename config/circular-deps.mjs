@@ -57,8 +57,13 @@ const targets = [
     name: '@librechat/chat',
     dir: 'packages/chat',
     entries: ['src/index.ts', 'src/react.ts', 'src/components.ts'],
-    alias: {},
-    internal: [],
+    /** A self-import through the package name crosses an entry; resolve it so the scan sees it. */
+    alias: {
+      '@librechat/chat/components': 'src/components.ts',
+      '@librechat/chat/react': 'src/react.ts',
+      '@librechat/chat': 'src/index.ts',
+    },
+    internal: ['@librechat/chat'],
     minModules: 3,
   },
   {

@@ -79,6 +79,13 @@ COPY packages/client ./
 COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
 RUN npm run build
 
+# Build `chat` package
+FROM base AS chat-package-build
+WORKDIR /app/packages/chat
+COPY packages/chat ./
+COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
+RUN npm run build
+
 # Client build
 FROM base AS client-build
 WORKDIR /app/client
@@ -88,6 +95,9 @@ COPY --from=client-package-build /app/packages/client/dist /app/packages/client/
 COPY --from=client-package-build /app/packages/client/src /app/packages/client/src
 COPY --from=client-package-build /app/packages/client/tailwind.preset.cjs /app/packages/client/tailwind.preset.cjs
 COPY --from=client-package-build /app/packages/client/tailwind.compat.cjs /app/packages/client/tailwind.compat.cjs
+# The client's Tailwind content scans the chat sources, and the app resolves the package's dist.
+COPY --from=chat-package-build /app/packages/chat/dist /app/packages/chat/dist
+COPY --from=chat-package-build /app/packages/chat/src /app/packages/chat/src
 ARG VITE_MCP_SANDBOX_URL=
 ARG NODE_MAX_OLD_SPACE_SIZE
 ENV NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}"

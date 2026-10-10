@@ -34,7 +34,13 @@ const restrictedLoad = (relativePath: string, specifier: string): string[] =>
   messagesFor(
     lintStdin(
       relativePath,
-      `export const load = () => import('${specifier}');\nexport const sync = () => require('${specifier}');\n`,
+      [
+        `export const load = () => import('${specifier}');`,
+        `export const sync = () => require('${specifier}');`,
+        `export const template = () => import(\`${specifier}\`);`,
+        `export const templateSync = () => require(\`${specifier}\`);`,
+        '',
+      ].join('\n'),
     ),
     'no-restricted-syntax',
   );
@@ -76,7 +82,7 @@ test.describe('the @librechat/chat package boundary', () => {
       '../components',
     ]) {
       expect(restrictedLoad('packages/chat/src/core/probe.ts', specifier), specifier).toHaveLength(
-        2,
+        4,
       );
     }
     expect(restrictedLoad('packages/chat/src/core/probe.ts', 'librechat-data-provider')).toEqual(
@@ -94,6 +100,7 @@ test.describe('the @librechat/chat package boundary', () => {
       "import { useAuthContext } from '../../../../client/src/hooks';\nexport const h = useAuthContext;\n",
       "import { useRecoilValue } from 'recoil';\nexport const r = useRecoilValue;\n",
       "export { showFilesDialogAtom } from '@librechat/frontend/src/store/filesDialog';\n",
+      "export * from '@librechat/chat/components';\n",
     ];
     for (const path of [
       'packages/chat/src/react/probe.ts',
@@ -107,8 +114,9 @@ test.describe('the @librechat/chat package boundary', () => {
         '../../../../client/src/hooks',
         'recoil',
         '@librechat/frontend/src/store/filesDialog',
+        '@librechat/chat/components',
       ]) {
-        expect(restrictedLoad(path, specifier), `${path}\n${specifier}`).toHaveLength(2);
+        expect(restrictedLoad(path, specifier), `${path}\n${specifier}`).toHaveLength(4);
       }
     }
   });
@@ -118,6 +126,17 @@ test.describe('the @librechat/chat package boundary', () => {
     const path = 'packages/chat/src/components/Probe.tsx';
     const literal = lintStdin(path, 'export function Probe() {\n  return <p>Hello world</p>;\n}\n');
     expect(messagesFor(literal, 'i18next/no-literal-string')).toHaveLength(1);
+
+    const labels = lintStdin(
+      path,
+      'export function Probe() {\n  return <button title="Stop generating" aria-label={`Stop generating`} />;\n}\n',
+    );
+    expect(messagesFor(labels, 'no-restricted-syntax')).toHaveLength(2);
+    const props = lintStdin(
+      path,
+      'export function Probe() {\n  return <img alt="" className="size-4" role="presentation" />;\n}\n',
+    );
+    expect(messagesFor(props, 'no-restricted-syntax')).toEqual([]);
 
     const localized = lintStdin(
       path,
