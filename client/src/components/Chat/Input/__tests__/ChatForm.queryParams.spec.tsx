@@ -72,6 +72,7 @@ function Harness({
       messagesKey: 'new',
       latestMessageId: undefined,
       latestMessageDepth: undefined,
+      useLiveAttachments: () => ({}),
       feedbackEnabled: false,
       setMessages: () => undefined,
       ask: onAsk,

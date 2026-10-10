@@ -1,10 +1,10 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { useAtomValue, getDefaultStore } from 'jotai';
-import { QueryKeys, request } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Tools, QueryKeys, ContentTypes, request } from 'librechat-data-provider';
 import type {
   TEnqueueAgentQueuedTurnRequest,
   TSubmission,
@@ -662,6 +662,64 @@ describe('chat transport boundary', () => {
       await waitFor(() => expect(statusReads()).toBe(2));
       expect([...store.get(resumeRequestsAtom)]).toEqual(['convo-2']);
       store.set(resumeRequestsAtom, new Set<string>());
+    });
+
+    it('resolves a tool part against an attachment streamed mid-run', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      await waitFor(() => expect(statusReads()).toBe(1));
+      /** The run has a memory call whose output reads as a success; its error artifact has not
+       *  arrived, and the message cache keeps no attachments until the final. */
+      const running = runningStatus();
+      running.resumeState = {
+        ...running.resumeState,
+        aggregatedContent: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'mem-1',
+              type: 'tool_call',
+              name: 'set_memory',
+              args: '{"key":"k","value":"v"}',
+              output: 'Memory set for key "k"',
+              progress: 1,
+            },
+          },
+        ],
+      } as StreamStatusResponse['resumeState'];
+      status = running;
+      await act(async () => {
+        await result.current.resumeStream();
+      });
+      await waitFor(() => expect(fake.streams).toHaveLength(1));
+      act(() =>
+        fake.streams[0].options.onEvent({
+          type: 'sync',
+          data: { sync: true, resumeState: running.resumeState, pendingEvents: [] },
+        }),
+      );
+
+      const toolPart = () =>
+        result.current.messages.find((message) => message.id === 'resp-1')?.parts[0];
+      await waitFor(() => expect(toolPart()).toMatchObject({ state: 'output-available' }));
+
+      act(() =>
+        fake.streams[0].options.onEvent({
+          type: 'attachment',
+          data: {
+            messageId: 'resp-1',
+            conversationId: 'convo-1',
+            toolCallId: 'mem-1',
+            type: Tools.memory,
+            [Tools.memory]: { type: 'error', key: 'k', value: 'v' },
+          },
+        }),
+      );
+
+      await waitFor(() =>
+        expect(toolPart()).toMatchObject({ type: 'tool-set_memory', state: 'output-error' }),
+      );
+      expect(result.current.status).not.toBe('ready');
     });
 
     it('reports a reattached stream that fails as an error', async () => {

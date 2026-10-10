@@ -30,6 +30,9 @@ const response = (overrides: Partial<TMessage> = {}): TMessage => ({
   ...overrides,
 });
 
+/** No attachment has arrived outside the message cache; one map, so every read is the same. */
+const noLiveAttachments = {};
+
 const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => {
   const noop = jest.fn();
   return {
@@ -47,6 +50,7 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     setSiblingIdx: noop,
     latestMessageId: 'user-1',
     latestMessageDepth: 0,
+    useLiveAttachments: () => noLiveAttachments,
     ask: jest.fn(),
     regenerate: jest.fn(),
     isSubmitting: false,
@@ -435,6 +439,44 @@ describe('useChat', () => {
     const { result } = renderChat(turn([userMessage, repeated], true));
 
     expect(result.current.messages[1].parts[1]).toMatchObject({ state: 'input-available' });
+  });
+
+  it('resolves a tool part against an attachment that reached only the live map', () => {
+    const memoryCall = response({
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'mem-1',
+            type: 'tool_call',
+            name: 'set_memory',
+            args: '{}',
+            output: 'Memory set for key "k"',
+            progress: 1,
+          },
+        },
+      ],
+    });
+    const memoryError = {
+      conversationId: 'convo-1',
+      messageId: 'response-1',
+      toolCallId: 'mem-1',
+      type: 'memory',
+      memory: { type: 'error', key: 'k', value: 'v' },
+    } as unknown as NonNullable<TMessage['attachments']>[number];
+    const running = turn([userMessage, memoryCall], true);
+    const { result, update } = renderChat(running);
+    const userView = result.current.messages[0];
+    expect(result.current.messages[1].parts[0]).toMatchObject({ state: 'output-available' });
+
+    const live = { 'response-1': [memoryError] };
+    update({ ...running, useLiveAttachments: () => live });
+
+    expect(result.current.messages[1].parts[0]).toMatchObject({
+      type: 'tool-set_memory',
+      state: 'output-error',
+    });
+    expect(result.current.messages[0]).toBe(userView);
   });
 
   it('joins an inserted message to the conversation under the one before it', () => {
