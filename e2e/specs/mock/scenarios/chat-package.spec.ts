@@ -39,6 +39,7 @@ test.describe('the @librechat/chat package boundary', () => {
     const core = restricted('packages/chat/src/core/probe.ts', source);
     expect(core.join('\n')).toContain("'react' import is restricted");
     expect(restricted('packages/chat/src/index.ts', source)).toHaveLength(1);
+    expect(restricted('packages/chat/src/core/Probe.tsx', source)).toHaveLength(1);
     expect(
       restricted(
         'packages/chat/src/core/probe.ts',

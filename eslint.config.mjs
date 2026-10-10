@@ -655,8 +655,8 @@ export default [
     },
   },
   {
-    files: ['packages/chat/src/index.ts', 'packages/chat/src/core/**/*.ts'],
-    ignores: ['**/*.spec.ts', '**/*.test.ts'],
+    files: ['packages/chat/src/index.ts', 'packages/chat/src/core/**/*.{ts,tsx}'],
+    ignores: ['**/*.{spec,test}.{ts,tsx}'],
     rules: {
       'no-restricted-imports': ['error', { patterns: chatCoreRestrictions }],
     },

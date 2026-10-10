@@ -54,6 +54,14 @@ const targets = [
     minModules: 100,
   },
   {
+    name: '@librechat/chat',
+    dir: 'packages/chat',
+    entries: ['src/index.ts', 'src/react.ts', 'src/components.ts'],
+    alias: {},
+    internal: [],
+    minModules: 3,
+  },
+  {
     name: 'api server',
     dir: 'api',
     entries: ['server/index.js'],
