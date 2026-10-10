@@ -53,6 +53,7 @@ function createParams(overrides: {
   userApiKey?: string;
   expiresAt?: string;
   headers?: Record<string, string>;
+  externalToolExecution?: { enabled: boolean; acceptedProviders?: string[] };
 }): BaseInitializeParams {
   const { apiKey = 'sk-test-key', baseURL = 'https://api.example.com/v1' } = overrides;
 
@@ -61,6 +62,7 @@ function createParams(overrides: {
     baseURL,
     models: {},
     headers: overrides.headers,
+    externalToolExecution: overrides.externalToolExecution,
   });
 
   const db = {
@@ -81,6 +83,28 @@ function createParams(overrides: {
     db,
   };
 }
+
+describe('initializeCustom – external tool execution', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('passes endpoint-scoped external execution configuration to the OpenAI client', async () => {
+    const params = createParams({
+      externalToolExecution: {
+        enabled: true,
+        acceptedProviders: ['remote-runtime'],
+      },
+    });
+
+    const result = await initializeCustom(params);
+
+    expect(result.llmConfig.externalToolExecution).toEqual({
+      enabled: true,
+      acceptedProviders: ['remote-runtime'],
+    });
+  });
+});
 
 describe('initializeCustom – Agents API user key resolution', () => {
   beforeEach(() => {

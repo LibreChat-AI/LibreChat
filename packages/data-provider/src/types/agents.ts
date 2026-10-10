@@ -80,6 +80,12 @@ export namespace Agents {
 
   export type MessageContent = string | MessageContentComplex[];
 
+  /** Execution owner for a tool call. Omitted values use LibreChat's local executor. */
+  export type ToolExecution = {
+    mode: 'local' | 'external';
+    provider?: string;
+  };
+
   /**
    * A call to a tool.
    */
@@ -95,6 +101,8 @@ export namespace Agents {
     /** The arguments to the tool call */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     args?: string | Record<string, any>;
+    /** Execution ownership metadata for an externally executed call. */
+    execution?: ToolExecution;
 
     /** If provided, an identifier associated with the tool call */
     id?: string;

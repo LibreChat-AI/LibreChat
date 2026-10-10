@@ -206,6 +206,40 @@ describe('ToolCall', () => {
     });
   });
 
+  describe('external execution presentation', () => {
+    it('keeps the original name visible while an external tool is running', () => {
+      renderWithRecoil(
+        <ToolCall
+          {...mockProps}
+          name="external_tool"
+          output=""
+          initialProgress={0.1}
+          isSubmitting={true}
+          externalExecution={true}
+        />,
+      );
+
+      expect(screen.getByTestId('progress-text')).toHaveTextContent('external_tool');
+      expect(screen.getByTestId('progress-text')).not.toHaveTextContent('Running external_tool');
+    });
+
+    it('completes an external tool when submission ends without local output', () => {
+      renderWithRecoil(
+        <ToolCall
+          {...mockProps}
+          name="external_tool"
+          output=""
+          initialProgress={0.1}
+          isSubmitting={false}
+          externalExecution={true}
+        />,
+      );
+
+      expect(screen.getByTestId('progress-text')).toHaveTextContent('external_tool');
+      expect(screen.getByTestId('progress-text')).not.toHaveTextContent('Cancelled');
+    });
+  });
+
   describe('intent label', () => {
     it('renders a streaming intent as the live label before args are complete', () => {
       renderWithRecoil(

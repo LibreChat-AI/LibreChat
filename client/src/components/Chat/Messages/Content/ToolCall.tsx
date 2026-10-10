@@ -43,6 +43,7 @@ export default function ToolCall({
   auth,
   hideAttachments = false,
   onExpand,
+  externalExecution = false,
   runStepStatus,
   runStepDurationMs,
   toolPreparationStartedAt,
@@ -61,6 +62,7 @@ export default function ToolCall({
   auth?: string;
   hideAttachments?: boolean;
   onExpand?: () => void;
+  externalExecution?: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
   toolPreparationStartedAt?: PartMetadata['toolPreparationStartedAt'];
@@ -124,15 +126,18 @@ export default function ToolCall({
   }, [name, parsedAuthUrl, mcpServerNames]);
 
   const toolIconType = useMemo(() => getToolIconType(name), [name]);
-  const displayFunctionName = useMemo(
-    () =>
-      /** `function_name` has already had the MCP delimiter and server stripped
-       *  above, so re-parsing it would classify an MCP function that happens to
-       *  share a built-in's name (`read_file`, `set_memory`) as that native
-       *  tool and show, and announce, an unrelated label. */
-      isMCPToolCall ? function_name : getToolDisplayLabel(function_name, localize, mcpServerNames),
-    [function_name, isMCPToolCall, localize, mcpServerNames],
-  );
+  const displayFunctionName = useMemo(() => {
+    if (externalExecution) {
+      return function_name;
+    }
+    /** `function_name` has already had the MCP delimiter and server stripped
+     *  above, so re-parsing it would classify an MCP function that happens to
+     *  share a built-in's name (`read_file`, `set_memory`) as that native
+     *  tool and show, and announce, an unrelated label. */
+    return isMCPToolCall
+      ? function_name
+      : getToolDisplayLabel(function_name, localize, mcpServerNames);
+  }, [externalExecution, function_name, isMCPToolCall, localize, mcpServerNames]);
   const mcpIconMap = useMCPIconMap();
   const mcpIconUrl = isMCPToolCall ? mcpIconMap.get(mcpServerName) : undefined;
 
@@ -209,7 +214,9 @@ export default function ToolCall({
    * its 200ms interval, and masking the result makes the terminal value
    * observable on the same render rather than after the hook settles.
    */
-  const rawProgress = useProgress(isClosed ? 1 : initialProgress);
+  const rawProgress = useProgress(
+    isClosed || (externalExecution && !isSubmitting) ? 1 : initialProgress,
+  );
   /**
    * One resolution, read by the label, the live region, the icon and the
    * shimmer alike. It also unifies two inputs that had drifted apart: the
@@ -219,7 +226,7 @@ export default function ToolCall({
   const phase = resolveToolCallPhase({
     runStepStatus,
     displayProgress: rawProgress,
-    reportedProgress: initialProgress,
+    reportedProgress: externalExecution && !isSubmitting ? 1 : initialProgress,
     isSubmitting,
     hasError,
   });

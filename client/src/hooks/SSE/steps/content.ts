@@ -320,6 +320,7 @@ export function updateContent(
       id,
       name,
       args,
+      execution: contentPart.tool_call.execution ?? existingToolCall?.execution,
       stepId: getNonEmptyValue([contentPart.tool_call.stepId, existingToolCall?.stepId]),
       type: ToolCallTypes.TOOL_CALL,
       auth: contentPart.tool_call.auth,
