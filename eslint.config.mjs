@@ -72,8 +72,8 @@ const chatCoreRestrictions = [
       'The @librechat/chat core has no UI dependency; React and Jotai belong in the /react entry.',
   },
   {
-    group: ['../react', '../react/**', '../components', '../components/**'],
-    message: 'The core cannot import the /react or /components entries; they build on the core.',
+    group: ['**/components', '**/components/**'],
+    message: 'The core cannot import the /components entry; it builds on the core.',
   },
 ];
 
