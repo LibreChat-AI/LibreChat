@@ -124,6 +124,8 @@ describe('readBundledThemeBoot', () => {
       expect(readBundledThemeBoot(dist)).toEqual({});
       fs.writeFileSync(path.join(dist, THEME_BOOT_FILE), JSON.stringify(bundled));
       expect(readBundledThemeBoot(dist)).toEqual(bundled);
+      fs.writeFileSync(path.join(dist, THEME_BOOT_FILE), 'null');
+      expect(readBundledThemeBoot(dist)).toEqual({});
     } finally {
       fs.rmSync(dist, { recursive: true, force: true });
     }

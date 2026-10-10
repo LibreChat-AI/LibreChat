@@ -17,7 +17,8 @@ const TENANT_HEADER = 'X-Tenant-Id';
  */
 export function readBundledThemeBoot(distPath: string): BundledThemeBoot {
   try {
-    return JSON.parse(fs.readFileSync(path.join(distPath, THEME_BOOT_FILE), 'utf8'));
+    const bundled = JSON.parse(fs.readFileSync(path.join(distPath, THEME_BOOT_FILE), 'utf8'));
+    return typeof bundled === 'object' && bundled !== null ? bundled : {};
   } catch {
     return {};
   }

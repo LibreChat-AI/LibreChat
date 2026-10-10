@@ -553,9 +553,12 @@ describe('DeploymentTheme cache', () => {
 
     it('yields to the answer once it arrives', async () => {
       embed('clickhouse');
-      getStartupConfig.mockResolvedValue(configWith(undefined));
+      let answer: (config: TStartupConfig) => void = () => undefined;
+      getStartupConfig.mockReturnValue(new Promise((resolve) => (answer = resolve)));
       renderTheme(queryClient, user);
+      expect(root().dataset.theme).toBe('clickhouse');
 
+      await act(async () => answer(configWith(undefined)));
       await waitFor(() => expect(root().dataset.theme).toBeUndefined());
       expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
     });
