@@ -8,11 +8,13 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: {
     debug: jest.fn(),
     warn: jest.fn(),
+    info: jest.fn(),
+    error: jest.fn(),
   },
 }));
 
 import { handleRateLimits } from './limits';
-import { checkWebSearchConfig } from './checks';
+import { checkVariables, checkWebSearchConfig, validateHexSecret } from './checks';
 import { logger } from '@librechat/data-schemas';
 import { extractVariableName as extract } from 'librechat-data-provider';
 
@@ -366,5 +368,186 @@ describe('handleRateLimits', () => {
 
     expect(process.env.AGENT_EVENT_USER_MAX).toEqual('80');
     expect(process.env.AGENT_EVENT_USER_WINDOW).toEqual('2');
+  });
+});
+
+describe('validateHexSecret', () => {
+  const validKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
+  it('should return null for a valid 64-character hex key', () => {
+    expect(validateHexSecret('CREDS_KEY', validKey, 32)).toBeNull();
+  });
+
+  it('should return null for a valid 32-character hex IV', () => {
+    expect(validateHexSecret('CREDS_IV', '0123456789abcdef0123456789abcdef', 16)).toBeNull();
+  });
+
+  it('should accept uppercase hex', () => {
+    expect(validateHexSecret('CREDS_KEY', validKey.toUpperCase(), 32)).toBeNull();
+  });
+
+  it('should report 0 bytes for a passphrase', () => {
+    const result = validateHexSecret('CREDS_KEY', 'my-secret-passphrase', 32);
+
+    expect(result).toContain('CREDS_KEY');
+    expect(result).toContain('decodes to 0 bytes');
+    expect(result).toContain('Invalid key length');
+  });
+
+  it('should report the decoded prefix length for partially valid hex', () => {
+    const result = validateHexSecret('CREDS_KEY', 'abc123XYZabc', 32);
+
+    expect(result).toContain('decodes to 3 bytes');
+  });
+
+  it('should report 4 bytes for hex interrupted by invalid characters', () => {
+    const result = validateHexSecret('CREDS_KEY', 'deadbeefZZdeadbeef', 32);
+
+    expect(result).toContain('decodes to 4 bytes');
+  });
+
+  it('should report 31 bytes for a 63-character hex string', () => {
+    const result = validateHexSecret('CREDS_KEY', validKey.slice(0, 63), 32);
+
+    expect(result).toContain('decodes to 31 bytes');
+    expect(result).toContain('Invalid key length');
+  });
+
+  it('should warn about the legacy AES-128 downgrade and v3 failure for a 32-character hex key', () => {
+    const result = validateHexSecret('CREDS_KEY', '0123456789abcdef0123456789abcdef', 32);
+
+    expect(result).toContain('decodes to 16 bytes');
+    expect(result).toContain('silently use AES-128');
+    expect(result).toContain('AES-256');
+    expect(result).toContain('v3 encryption');
+    expect(result).toContain('expected 32 bytes, got 16 bytes');
+  });
+
+  it('should warn about the legacy AES-192 downgrade and v3 failure for a 48-character hex key', () => {
+    const result = validateHexSecret('CREDS_KEY', validKey.slice(0, 48), 32);
+
+    expect(result).toContain('decodes to 24 bytes');
+    expect(result).toContain('silently use AES-192');
+    expect(result).toContain('expected 32 bytes, got 24 bytes');
+  });
+
+  it('should not claim a downgrade or failure when a trailing-garbage prefix decodes to the expected length', () => {
+    const result = validateHexSecret('CREDS_KEY', `${validKey}"`, 32);
+
+    expect(result).toContain('decodes to 32 bytes');
+    expect(result).toContain('Encryption currently works');
+    expect(result).not.toContain('silently use');
+    expect(result).not.toContain('Invalid key length');
+  });
+
+  it('should report the IV constraint failure for a 32-character CREDS_IV mismatch', () => {
+    const result = validateHexSecret('CREDS_IV', validKey, 16);
+
+    expect(result).toContain('CREDS_IV');
+    expect(result).toContain('decodes to 32 bytes');
+    expect(result).toContain('algorithm.iv must contain exactly 16 bytes');
+    expect(result).not.toContain('Invalid key length');
+  });
+
+  it('should report unset values distinctly', () => {
+    const result = validateHexSecret('CREDS_KEY', undefined, 32);
+
+    expect(result).toContain('CREDS_KEY is not set');
+    expect(result).not.toContain('decodes to');
+  });
+
+  it('should report empty values as unset', () => {
+    expect(validateHexSecret('CREDS_KEY', '', 32)).toContain('CREDS_KEY is not set');
+  });
+
+  it('should never include the secret value in the message', () => {
+    const secret = 'supersecretvalue';
+    const result = validateHexSecret('CREDS_KEY', secret, 32);
+
+    expect(result).not.toContain(secret);
+  });
+
+  it('should include remediation guidance', () => {
+    const result = validateHexSecret('CREDS_KEY', 'bad', 32);
+
+    expect(result).toContain('https://www.librechat.ai/toolkit/creds_generator');
+    expect(result).toContain('openssl rand -hex 32');
+  });
+});
+
+describe('checkVariables - hex secret validation', () => {
+  const validKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const validIv = '0123456789abcdef0123456789abcdef';
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = process.env;
+    process.env = { ...originalEnv };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('should not log an error when both secrets are valid', () => {
+    process.env.CREDS_KEY = validKey;
+    process.env.CREDS_IV = validIv;
+
+    checkVariables();
+
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('should log an error mentioning CREDS_KEY when it is a passphrase', () => {
+    process.env.CREDS_KEY = 'not-a-hex-key';
+    process.env.CREDS_IV = validIv;
+
+    checkVariables();
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('CREDS_KEY'));
+  });
+
+  it('should log an error mentioning CREDS_IV when it is invalid', () => {
+    process.env.CREDS_KEY = validKey;
+    process.env.CREDS_IV = 'nope';
+
+    checkVariables();
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('CREDS_IV'));
+  });
+
+  it('should log errors for both secrets when both are unset', () => {
+    delete process.env.CREDS_KEY;
+    delete process.env.CREDS_IV;
+
+    checkVariables();
+
+    expect(logger.error).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('CREDS_KEY is not set'));
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('CREDS_IV is not set'));
+  });
+
+  it('should log the AES downgrade warning for a 32-character CREDS_KEY', () => {
+    process.env.CREDS_KEY = validIv;
+    process.env.CREDS_IV = validIv;
+
+    checkVariables();
+
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('silently use AES-128'));
+  });
+
+  it('should not log an error for the documented default secrets (shape is valid)', () => {
+    process.env.CREDS_KEY = 'f34be427ebb29de8d88c107a71546019685ed8b241d8f2ed00c3df97ad2566f0';
+    process.env.CREDS_IV = 'e2341419ec3dd3d19b13a1a87fafcbfb';
+
+    checkVariables();
+
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Legacy default value for CREDS_KEY is being used. Generate and configure a unique value.',
+    );
   });
 });

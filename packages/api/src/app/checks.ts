@@ -21,6 +21,11 @@ interface CredentialMetadata {
   createdAt: Date;
 }
 
+const hexSecrets = [
+  { key: 'CREDS_KEY', expectedBytes: 32 },
+  { key: 'CREDS_IV', expectedBytes: 16 },
+];
+
 const deprecatedVariables = [
   {
     key: 'CHECK_BALANCE',
@@ -106,6 +111,65 @@ function checkPasswordReset() {
   }
 }
 
+/** AES key lengths (in bytes) that WebCrypto accepts, silently downgrading the cipher. */
+const validAesKeyBytes = new Set([16, 24, 32]);
+
+/**
+ * Describes the runtime consequence of a misconfigured hex secret.
+ * A key that decodes to another valid AES length is accepted by WebCrypto for the legacy
+ * cipher (silent downgrade) but rejected by the strict 32-byte v3 methods, and a
+ * wrong-length IV fails with the WebCrypto IV constraint rather than "Invalid key length".
+ */
+function describeConsequence(name: string, decodedBytes: number, expectedBytes: number): string {
+  if (decodedBytes === expectedBytes) {
+    return 'Encryption currently works because the leading hex prefix decodes to the expected length, but the trailing non-hex characters should be removed.';
+  }
+
+  if (name === 'CREDS_KEY' && validAesKeyBytes.has(decodedBytes)) {
+    return `Legacy credential encryption will silently use AES-${decodedBytes * 8} instead of the intended AES-${expectedBytes * 8}, and v3 encryption (admin secrets, two-factor enrollment) will fail with "Invalid key length: expected 32 bytes, got ${decodedBytes} bytes".`;
+  }
+
+  if (name === 'CREDS_IV') {
+    return 'Credential encryption/decryption will fail at runtime with "algorithm.iv must contain exactly 16 bytes".';
+  }
+
+  return 'Credential encryption/decryption will fail at runtime with "Invalid key length".';
+}
+
+/**
+ * Validates that a secret is a well-formed hex string decoding to an exact byte length.
+ * Returns an actionable error message when invalid, or `null` when valid.
+ * The secret value itself is never included in the message.
+ */
+export function validateHexSecret(
+  name: string,
+  value: string | undefined,
+  expectedBytes: number,
+): string | null {
+  const expectedChars = expectedBytes * 2;
+  const isWellFormed = value != null && value.length > 0 && /^[0-9a-fA-F]+$/.test(value);
+
+  if (isWellFormed && value.length === expectedChars) {
+    return null;
+  }
+
+  /** `Buffer.from(…, 'hex')` truncates at the first invalid character but decodes a valid prefix. */
+  const decodedBytes = Buffer.from(value ?? '', 'hex').length;
+  const finding =
+    value == null || value.length === 0
+      ? `❗ ${name} is not set (a ${expectedChars}-character hex string is required).`
+      : `❗ ${name} is not a valid ${expectedChars}-character hex string (decodes to ${decodedBytes} bytes, expected ${expectedBytes}).`;
+
+  return `${finding}
+
+    ${describeConsequence(name, decodedBytes, expectedBytes)}
+
+    Generate a valid value with this tool:
+    https://www.librechat.ai/toolkit/creds_generator
+
+    Or run: openssl rand -hex ${expectedBytes}`;
+}
+
 /**
  * Checks environment variables for default secrets and deprecated variables.
  * Logs warnings for any default secret values being used and for usage of deprecated variables.
@@ -156,6 +220,13 @@ export function checkVariables(): void {
       '[credentials] Temporary credentials could not be persisted. Existing sessions and encrypted data may become inaccessible after restart.',
     );
   }
+
+  hexSecrets.forEach(({ key, expectedBytes }) => {
+    const error = validateHexSecret(key, process.env[key], expectedBytes);
+    if (error) {
+      logger.error(error);
+    }
+  });
 
   deprecatedVariables.forEach(({ key, description }) => {
     if (process.env[key]) {
