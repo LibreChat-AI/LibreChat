@@ -2,7 +2,6 @@ import { useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Constants, isForcedTemporaryRetention } from 'librechat-data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { useGetStartupConfig } from '~/data-provider';
 import store from '~/store';
 
 export type UseTemporaryChatResult = {
@@ -17,11 +16,10 @@ export type UseTemporaryChatResult = {
 };
 
 export default function useTemporaryChat(): UseTemporaryChatResult {
-  const { data: startupConfig } = useGetStartupConfig();
-  const { isTemporary, setIsTemporary } = useChatSettings();
+  const { isTemporary, setIsTemporary, config } = useChatSettings();
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
-  const isEnforced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
+  const isEnforced = isForcedTemporaryRetention(config.retentionMode);
 
   const toggle = useCallback(() => {
     if (isEnforced) {

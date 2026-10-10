@@ -3,11 +3,8 @@ import { useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
 import { DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS } from 'librechat-data-provider';
-import {
-  supportsGenerationProtocolV2,
-  useArmSteerMutation,
-  useGetStartupConfig,
-} from '~/data-provider';
+import { supportsGenerationProtocolV2, useArmSteerMutation } from '~/data-provider';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { escalatingSteerFamily } from '~/store/steer';
 import useLocalize from '~/hooks/useLocalize';
 import store from '~/store';
@@ -50,10 +47,9 @@ export default function useSteerEscalate(conversationId: string) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const { mutateAsync: armSteer } = useArmSteerMutation();
-  const { data: startupConfig } = useGetStartupConfig();
+  const { config } = useChatSettings();
   const armConfirmTimeoutMs =
-    startupConfig?.interface?.steerArmConfirmationTimeoutMs ??
-    DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS;
+    config.steerArmConfirmationTimeoutMs ?? DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS;
   const setEscalating = useSetAtom(escalatingSteerFamily(conversationId));
   const activeGenerationCreatedAt = useRecoilValue(
     store.activeGenerationCreatedAtByConvoId(conversationId),
