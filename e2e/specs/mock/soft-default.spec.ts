@@ -25,10 +25,14 @@ const uniqueName = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Mat
 
 const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Select a model' }).first();
 
-/** Reset selection state so the test starts as a fresh instance (auth stays in cookies). */
+/** Reset selection state so the test starts as a fresh instance (auth stays in cookies).
+ *  The Enter opt-in from global setup is restored because `sendMessage` presses Enter. */
 async function startFresh(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await page.evaluate(() => localStorage.clear());
+  await page.evaluate(() => {
+    localStorage.clear();
+    localStorage.setItem('enterToSend', 'true');
+  });
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
 }
 
@@ -198,7 +202,10 @@ test.describe('soft default model spec', () => {
     await expect(modelTrigger(page)).toContainText(agentName, { timeout: 15000 });
 
     // The soft default still owns the fresh-instance landing under this allow-list.
-    await page.evaluate(() => localStorage.clear());
+    await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem('enterToSend', 'true');
+    });
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await expect(modelTrigger(page)).toContainText(SOFT_DEFAULT_LABEL, { timeout: 15000 });
   });

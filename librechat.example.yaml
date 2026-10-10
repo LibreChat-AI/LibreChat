@@ -1418,7 +1418,7 @@ endpoints:
 #   # Users can toggle this in Settings > Chat. Setting `enabled` here overrides
 #   # that choice for everyone and locks the toggle; omit it to leave users in control.
 #   clientImageResize:
-#     enabled: false  # Enable/disable client-side image resizing (default: false)
+#     enabled: false  # Force resizing on (true) or off (false) for everyone; omit it and each user decides, with resizing on by default
 #     maxWidth: 1900  # Maximum width for resized images (default: 1900)
 #     maxHeight: 1900  # Maximum height for resized images (default: 1900)
 #     quality: 0.92  # JPEG quality for compression (0.0-1.0, default: 0.92)

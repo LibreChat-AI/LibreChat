@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { NEW_CHAT_PATH, messagesView, replyPrompt, replyText, sendMessage } from '../helpers';
+import { NEW_CHAT_PATH, isAgentsStream, messagesView, replyPrompt, replyText } from '../helpers';
 
 /**
  * A browser that denies Web Storage by policy throws a `SecurityError` from the
@@ -71,7 +71,14 @@ test.describe('denied web storage', () => {
     await denyWebStorage(page);
     await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
 
-    await sendMessage(page, replyPrompt('denied-storage'));
+    /** No stored preference can load, so Enter writes a newline by default and
+     *  Ctrl/Cmd+Enter sends. `sendMessage` relies on the stored Enter opt-in. */
+    const input = page.getByRole('textbox', { name: 'Message input' });
+    await input.fill(replyPrompt('denied-storage'));
+    await Promise.all([
+      page.waitForResponse(isAgentsStream, { timeout: 30000 }),
+      input.press('ControlOrMeta+Enter'),
+    ]);
     await expect(messagesView(page).getByText(replyText('denied-storage'))).toBeVisible({
       timeout: 30000,
     });
