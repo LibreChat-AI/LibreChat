@@ -57,12 +57,17 @@ describe('MessageRow', () => {
     const heading = screen.getByRole('heading', { name: 'System' });
 
     expect(row).toHaveClass('items-start');
-    expect(row.querySelector('.agent-turn')).not.toHaveClass('items-end');
+    expect(row.querySelector('[data-system-turn]')).not.toHaveClass('items-end');
     expect(messageSurface).toHaveClass('w-full');
     expect(messageSurface).not.toHaveClass('bg-surface-user-message');
     expect(heading).not.toHaveClass('sr-only');
     expect(screen.queryByText('You')).not.toBeInTheDocument();
     expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+  });
+
+  it('excludes System output from the assistant code shortcut selector', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+    expect(screen.getByLabelText('User message').querySelector('.agent-turn')).toBeNull();
   });
 
   it('keeps System events on the transcript side', () => {

@@ -125,9 +125,11 @@ export default function MessageRow({
       )}
     >
       <div
+        data-system-turn={isSystem || undefined}
         className={cn(
           'relative flex min-w-0 flex-col',
-          isUserSide ? 'user-turn' : 'agent-turn',
+          isUserSide && 'user-turn',
+          !isUserSide && !isSystem && 'agent-turn',
           (hasParallelContent || isEditing) && 'w-full',
           !hasParallelContent &&
             isUserSide &&
