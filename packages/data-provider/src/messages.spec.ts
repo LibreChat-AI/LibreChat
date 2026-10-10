@@ -2,7 +2,16 @@ import type { SummaryContentPart } from './types/content';
 import type { ParentMessage } from './messages';
 import type { TFile } from './types/files';
 import type { TMessage } from './types';
-import { buildTree, findMessageById, isCompactedLeaf, isUserInitiatedCompaction } from './messages';
+import {
+  buildTree,
+  findMessageById,
+  isCompactedLeaf,
+  isFileAttachment,
+  isFileContentPart,
+  messageCarriesFiles,
+  hasContentPartFiles,
+  isUserInitiatedCompaction,
+} from './messages';
 import { ContentTypes } from './types/runs';
 
 const msg = (messageId: string, parentMessageId: string, over: Partial<TMessage> = {}): TMessage =>
@@ -285,5 +294,62 @@ describe('isUserInitiatedCompaction', () => {
     ['no content', undefined],
   ])('is false for %s', (_label, content) => {
     expect(isUserInitiatedCompaction({ content } as TMessage)).toBe(false);
+  });
+});
+
+type Content = NonNullable<TMessage['content']>;
+
+describe('messageCarriesFiles', () => {
+  it('finds uploads, file-backed attachments and file references in content', () => {
+    expect(messageCarriesFiles({ files: [{ file_id: 'upload' }] })).toBe(true);
+    expect(
+      messageCarriesFiles({
+        attachments: [{ file_id: 'chart', toolCallId: 't' }] as TMessage['attachments'],
+      }),
+    ).toBe(true);
+    expect(
+      messageCarriesFiles({
+        content: [
+          { type: ContentTypes.STEER, steer: 'use this', files: [{ file_id: 'steered' }] },
+        ] as Content,
+      }),
+    ).toBe(true);
+    expect(
+      messageCarriesFiles({
+        content: [{ type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'img' } }] as Content,
+      }),
+    ).toBe(true);
+  });
+
+  it('ignores empty lists, search sources and plain content', () => {
+    expect(messageCarriesFiles({ files: [] })).toBe(false);
+    expect(
+      messageCarriesFiles({
+        attachments: [{ type: 'web_search', toolCallId: 't' }] as TMessage['attachments'],
+      }),
+    ).toBe(false);
+    expect(
+      messageCarriesFiles({
+        content: [
+          { type: ContentTypes.TEXT, text: 'hello' },
+          { type: ContentTypes.STEER, steer: 'and this', files: [] },
+        ] as Content,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('file reference predicates', () => {
+  it('recognizes each locator shape replay reads', () => {
+    expect(isFileContentPart({ type: 'file', file: { file_id: 'f' } } as Content[number])).toBe(
+      true,
+    );
+    expect(isFileContentPart({ type: 'input_file', file_id: 'f' } as Content[number])).toBe(true);
+    expect(isFileContentPart({ type: ContentTypes.TEXT, text: 'x' } as Content[number])).toBe(
+      false,
+    );
+    expect(isFileContentPart(undefined)).toBe(false);
+    expect(hasContentPartFiles(null)).toBe(false);
+    expect(isFileAttachment(undefined)).toBe(false);
   });
 });

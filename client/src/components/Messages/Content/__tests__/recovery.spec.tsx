@@ -27,7 +27,9 @@ const catalog = translation as Record<string, string>;
 const mockNavigateToConvo = jest.fn();
 const mockShowToast = jest.fn();
 const mockForkMutate = jest.fn();
-let mockForkOptions: { onSuccess?: (data: { conversation: TConversation }) => void } = {};
+let mockForkOptions: {
+  onSuccess?: (data: { conversation: TConversation; messages: TMessage[] }) => void;
+} = {};
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) =>
@@ -95,6 +97,7 @@ function renderRecovery({
   readOnly = false,
   isSubmitting = false,
   ask = jest.fn(() => true),
+  endpoint = 'agents',
 }: {
   messages: TMessage[];
   messageId?: string;
@@ -104,8 +107,9 @@ function renderRecovery({
   readOnly?: boolean;
   isSubmitting?: boolean;
   ask?: jest.Mock;
+  endpoint?: string;
 }) {
-  const conversation = { conversationId: 'convo', endpoint: 'agents' } as TConversation;
+  const conversation = { conversationId: 'convo', endpoint } as TConversation;
   const operations = {
     ask,
     regenerate: jest.fn(),
@@ -216,7 +220,8 @@ describe('AttachmentRecoveryActions', () => {
     });
 
     const forked = { conversationId: 'forked' } as TConversation;
-    act(() => mockForkOptions.onSuccess?.({ conversation: forked }));
+    const copied = [user('c1', Constants.NO_PARENT), answer('c2', 'c1')];
+    act(() => mockForkOptions.onSuccess?.({ conversation: forked, messages: copied }));
 
     /** Everything the failed turn carried except its files reaches the copy's composer. */
     expect(composerHandoff).toEqual({
@@ -231,6 +236,32 @@ describe('AttachmentRecoveryActions', () => {
     expect(mockShowToast).toHaveBeenCalledWith(
       expect.objectContaining({ message: catalog.com_ui_branch_without_files_draft }),
     );
+  });
+
+  it('reports a copy that still has its files instead of announcing a recovery', async () => {
+    renderRecovery({ messages: branchFixture() });
+    await userEvent.click(
+      screen.getByRole('button', { name: catalog.com_ui_branch_without_files }),
+    );
+
+    const forked = { conversationId: 'forked' } as TConversation;
+    const copied = [user('c1', Constants.NO_PARENT, { files: [screenshot] }), answer('c2', 'c1')];
+    act(() => mockForkOptions.onSuccess?.({ conversation: forked, messages: copied }));
+
+    expect(mockNavigateToConvo).not.toHaveBeenCalled();
+    expect(composerHandoff?.text).toBeUndefined();
+    expect(mockShowToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: catalog.com_ui_branch_without_files_unsupported,
+        status: 'error',
+      }),
+    );
+  });
+
+  it('offers nothing in an assistants conversation, whose thread keeps its own files', () => {
+    renderRecovery({ messages: branchFixture(), endpoint: 'assistants' });
+
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
   it('offers the actions without blaming files for an unrelated failure', () => {

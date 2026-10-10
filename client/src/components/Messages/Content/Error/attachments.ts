@@ -1,8 +1,8 @@
 import {
   Constants,
   ErrorTypes,
-  ContentTypes,
   findMessageById,
+  messageCarriesFiles,
   parseLangChainErrorCode,
 } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
@@ -89,19 +89,6 @@ export function mayBeAttachmentError(text: string): boolean {
   return code == null || fileAgnosticErrorCodes.has(code);
 }
 
-/** A stored file (a code output), not tool metadata such as search sources. */
-const isFileAttachment = (attachment: NonNullable<TMessage['attachments']>[number]): boolean =>
-  'file_id' in attachment && typeof attachment.file_id === 'string' && attachment.file_id !== '';
-
-/** Uploads, code outputs, and attachments steered into a response: everything a turn resends. */
-const carriesFiles = (message: TMessage): boolean =>
-  (message.files?.length ?? 0) > 0 ||
-  (message.attachments?.some(isFileAttachment) ?? false) ||
-  (message.content?.some(
-    (part) => part?.type === ContentTypes.STEER && (part.files?.length ?? 0) > 0,
-  ) ??
-    false);
-
 export type AttachmentRecovery = {
   /** The user turn the failed response answered, which a retry sends again. */
   parent: TMessage;
@@ -141,14 +128,14 @@ export function findAttachmentRecovery(
     if (ancestor == null) {
       break;
     }
-    if (carriesFiles(ancestor)) {
+    if (messageCarriesFiles(ancestor)) {
       earlierCarriesFiles = true;
       break;
     }
     currentId = ancestor.parentMessageId;
   }
 
-  const canRetry = carriesFiles(parent) && isSubmittableMessage(parent.text, 0);
+  const canRetry = messageCarriesFiles(parent) && isSubmittableMessage(parent.text, 0);
   const previousId = parent.parentMessageId;
   const branchTargetId =
     earlierCarriesFiles && previousId != null && previousId !== Constants.NO_PARENT

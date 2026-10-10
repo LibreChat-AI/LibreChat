@@ -59,6 +59,21 @@ describe('withoutMessageFiles', () => {
     expect(content?.[1]).toHaveProperty('files', [upload]);
   });
 
+  it('drops content parts that are themselves stored files', () => {
+    const content = [
+      { type: ContentTypes.TEXT, text: 'Here is the image.' },
+      { type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'generated-1' } },
+      { type: 'file', file: { file_id: 'provider-file-1' } },
+      { type: 'input_file', file_id: 'direct-1' },
+    ] as unknown as TMessage['content'];
+    const message: Partial<TMessage> = { messageId: 'assistant-4', content, tokenCount: 30 };
+
+    expect(withoutMessageFiles(message)).toEqual({
+      messageId: 'assistant-4',
+      content: [{ type: ContentTypes.TEXT, text: 'Here is the image.' }],
+    });
+  });
+
   it('keeps metadata-only attachments such as search sources', () => {
     const sources = { type: 'web_search', toolCallId: 'call-2', messageId: 'a' } as TAttachment;
     const message: Partial<TMessage> = { messageId: 'assistant-3', attachments: [output, sources] };

@@ -1,4 +1,4 @@
-import { ContentTypes } from 'librechat-data-provider';
+import { isFileAttachment, isFileContentPart, hasContentPartFiles } from 'librechat-data-provider';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 
 type MessageFileRefs = Partial<Pick<TMessage, 'files' | 'attachments' | 'tokenCount' | 'content'>>;
@@ -8,12 +8,6 @@ type ConversationFileRefs = Partial<Pick<TConversation, 'file_ids'>> & {
 };
 
 type ContentPart = NonNullable<TMessage['content']>[number];
-type Attachment = NonNullable<TMessage['attachments']>[number];
-
-/** Whether an attachment is a stored file (a code output) rather than tool metadata like search
- *  sources, which the thread file walk never collects and the transcript still renders. */
-const isFileAttachment = (attachment: Attachment): boolean =>
-  'file_id' in attachment && typeof attachment.file_id === 'string' && attachment.file_id !== '';
 
 export type MessageWithoutFiles<T extends MessageFileRefs> = Omit<
   T,
@@ -21,41 +15,49 @@ export type MessageWithoutFiles<T extends MessageFileRefs> = Omit<
 > &
   Pick<MessageFileRefs, 'attachments' | 'tokenCount'>;
 
-const carriesFiles = (files: readonly object[] | null | undefined): boolean =>
-  (files?.length ?? 0) > 0;
-
-/** A steer part's attachments replay on every later turn, like a user turn's uploads. */
-function withoutSteerFiles(part: ContentPart): ContentPart {
-  if (part?.type !== ContentTypes.STEER || !('files' in part) || !carriesFiles(part.files)) {
-    return part;
+/** A part's own attached files (a steer's) go; a part that is itself a file goes entirely. */
+function withoutContentFiles(content: ContentPart[]): ContentPart[] {
+  let changed = false;
+  const kept: ContentPart[] = [];
+  for (const part of content) {
+    if (isFileContentPart(part)) {
+      changed = true;
+      continue;
+    }
+    if (!hasContentPartFiles(part)) {
+      kept.push(part);
+      continue;
+    }
+    changed = true;
+    const { files: _files, ...rest } = part as ContentPart & { files?: readonly object[] };
+    kept.push(rest as ContentPart);
   }
-  const { files: _files, ...rest } = part;
-  return rest as ContentPart;
+  return changed ? kept : content;
 }
 
 /**
- * Drops the file references a later turn collects from history and sends again: uploads on a
- * user turn (`files`), file-backed attachments such as code-execution outputs (metadata-only
- * attachments like search sources stay), and attachments steered into a response
- * (`content[].files` on a steer part). A stored token count that covered dropped uploads
- * goes too, so the next turn recounts what is left instead of budgeting context for files it no
- * longer sends.
+ * Drops every file reference a later turn collects from history and sends again, in the shapes
+ * historical replay reads (`messageCarriesFiles`): uploads on a user turn (`files`), file-backed
+ * attachments such as code outputs (metadata-only ones like search sources stay), and file
+ * references in the content (a steered attachment, a generated image, a provider file block). A
+ * stored token count that covered a dropped file goes too, so the next turn recounts what is left
+ * instead of budgeting context for files it no longer sends.
  */
 export function withoutMessageFiles<T extends MessageFileRefs>(message: T): MessageWithoutFiles<T> {
   const { files, attachments, tokenCount, ...rest } = message;
-  let droppedUploads = carriesFiles(files);
+  let droppedFiles = (files?.length ?? 0) > 0;
   const keptAttachments = attachments?.filter((attachment) => !isFileAttachment(attachment));
   if (keptAttachments != null && keptAttachments.length > 0) {
     (rest as MessageFileRefs).attachments = keptAttachments;
   }
   if (Array.isArray(rest.content)) {
-    const content = rest.content.map(withoutSteerFiles);
-    if (content.some((part, index) => part !== rest.content?.[index])) {
-      droppedUploads = true;
+    const content = withoutContentFiles(rest.content);
+    if (content !== rest.content) {
+      droppedFiles = true;
       rest.content = content;
     }
   }
-  if (droppedUploads || tokenCount == null) {
+  if (droppedFiles || tokenCount == null) {
     return rest;
   }
   return { ...rest, tokenCount };

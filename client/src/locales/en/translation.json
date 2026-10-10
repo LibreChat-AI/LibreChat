@@ -1360,6 +1360,7 @@
   "com_ui_branch_without_files": "Branch without files",
   "com_ui_branch_without_files_done": "Copied this conversation without files.",
   "com_ui_branch_without_files_draft": "Copied without files. Your message is ready to send.",
+  "com_ui_branch_without_files_unsupported": "The copy still has its files, because this server can't leave them out yet. Your original conversation is unchanged.",
   "com_ui_bulk_delete_error": "Some items could not be deleted",
   "com_ui_by_author": "by {{0}}",
   "com_ui_cache_read": "Cache read",

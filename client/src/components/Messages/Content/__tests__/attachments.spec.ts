@@ -170,6 +170,21 @@ describe('findAttachmentRecovery', () => {
     });
   });
 
+  it('counts a generated image in an earlier response as a file', () => {
+    const messages = [
+      user('u1', Constants.NO_PARENT),
+      answer('a1', 'u1', {
+        content: [
+          { type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'generated' } },
+        ] as TMessage['content'],
+      }),
+      user('u2', 'a1'),
+      answer('a2', 'u2', { error: true }),
+    ];
+
+    expect(findAttachmentRecovery(messages, messages[3])?.branchTargetId).toBe('a1');
+  });
+
   it('does not count search sources as files', () => {
     const messages = [
       user('u1', Constants.NO_PARENT),

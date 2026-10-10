@@ -2,7 +2,13 @@ import { useContext, useRef } from 'react';
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import { useToastContext } from '@librechat/client';
-import { ContentTypes, ForkOptions, findMessageById } from 'librechat-data-provider';
+import {
+  ForkOptions,
+  ContentTypes,
+  findMessageById,
+  messageCarriesFiles,
+  isAssistantsEndpoint,
+} from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { AttachmentRecovery } from './attachments';
 import type { TranslationKeys } from '~/hooks';
@@ -115,6 +121,15 @@ function RecoveryActions({
 
   const forkConvo = useForkConvoMutation({
     onSuccess: (data) => {
+      /** A server that predates `excludeFiles` ignores it and returns an ordinary copy, which
+       *  would fail the same way; say so rather than announce a recovery that did not happen. */
+      if (data.messages.some((message) => messageCarriesFiles(message))) {
+        showToast({
+          message: localize('com_ui_branch_without_files_unsupported'),
+          status: 'error',
+        });
+        return;
+      }
       const turn = failedTurnRef.current;
       const forkedId = data.conversation.conversationId;
       const staged = turn != null && forkedId != null && stageFailedTurn(forkedId, turn);
@@ -209,10 +224,13 @@ export default function AttachmentRecoveryActions({
   const { getMessages } = useOptionalMessagesOperations();
   const { messageId: contextMessageId, partIndex } = useMessageContext();
 
+  /** An assistants thread keeps its own copy of every attachment upstream, so neither a retry
+   *  nor a local copy leaves them behind; those endpoints offer no fork for the same reason. */
   if (
     chat == null ||
     readOnly ||
     conversation?.subagentThread != null ||
+    isAssistantsEndpoint(conversation?.endpoint) ||
     !mayBeAttachmentError(text)
   ) {
     return null;
