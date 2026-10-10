@@ -611,11 +611,13 @@ export default function ToolCallGroup({
   const partialMarkerFallback =
     activityLabel?.status === 'partial' &&
     (activitySummary.failedCount === 0 || activitySummary.failedCount >= count);
-  const iconStatus = getOutcomeStatus({
-    failed: activityFailed ? count : activitySummary.failedCount,
-    cancelled: activitySummary.cancelledCount,
-    total: count,
-  });
+  const iconStatus = activityFailed
+    ? 'failed'
+    : getOutcomeStatus({
+        failed: activitySummary.failedCount,
+        cancelled: activitySummary.cancelledCount,
+        total: count,
+      });
 
   const hasActiveToolCall = useMemo(
     () => isSubmitting && toolMetadata.some((m) => m && !m.hasOutput),

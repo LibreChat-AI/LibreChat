@@ -119,8 +119,8 @@ jest.mock('~/components/MCPUIResource', () => ({
 }));
 
 jest.mock('../ToolOutput', () => ({
-  StackedToolIcons: ({ toolNames }: { toolNames: string[] }) => (
-    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} />
+  StackedToolIcons: ({ toolNames, status }: { toolNames: string[]; status?: string }) => (
+    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} data-status={status} />
   ),
   getMCPServerName: () => '',
   isError: (output: string) => output.startsWith('Error processing tool'),
@@ -1798,6 +1798,26 @@ describe('ToolCallGroup failure fast path', () => {
       expect(screen.getByText('warning')).toBeInTheDocument();
     },
   );
+
+  it.each([
+    { type: ContentTypes.THINK, think: 'Remaining thought' },
+    { type: ContentTypes.TEXT, text: 'Remaining commentary' },
+  ])('preserves a failed batch marker with only a $type row', (part) => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [{ part: part as TMessageContentParts, idx: 0 }],
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          activity_label: 'Could not finish',
+          pending: false,
+          status: 'failed',
+        } as TMessageContentParts,
+        idx: 1,
+      },
+    });
+    expect(screen.getByTestId('stacked-icons')).toHaveAttribute('data-status', 'failed');
+  });
 
   it('does not tint the title of a partially failed labeled group', () => {
     renderGroup({
