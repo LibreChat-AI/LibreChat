@@ -1,7 +1,7 @@
 import { memo, useRef, useMemo, useState, useLayoutEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
-import { TooltipAnchor, useMediaQuery } from '@librechat/client';
+import { Button, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 import Effort, { effortRank, resolveEffortLabel } from './Effort';
@@ -124,19 +124,10 @@ function ThinkingControl({
         render={
           <TooltipAnchor
             description={localize('com_ui_composer_thinking')}
-            render={
-              <button
-                type="button"
-                className={cn(
-                  'text-text-primary gap-1 rounded-full px-2.5 text-sm transition-colors',
-                  'hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
-                  open && 'bg-surface-hover',
-                )}
-              />
-            }
+            render={<Button variant="composer-pill" />}
           />
         }
-        className="flex h-8 shrink-0 items-center"
+        className="flex shrink-0"
       >
         {/* Closed, the button hugs its label so it takes no more room in the bar
             than it needs. Open, it widens to the longest label and the text

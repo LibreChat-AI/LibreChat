@@ -1,5 +1,6 @@
 import { memo, useMemo, useRef, useState } from 'react';
 import { TextQuote } from 'lucide-react';
+import { Button } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
@@ -15,9 +16,6 @@ import { cn, isLegacyDeliveryUncertain } from '~/utils';
 import { useLatestMessage } from '~/hooks/Messages';
 import { useLocalize } from '~/hooks';
 import SteerPart from './SteerPart';
-
-const ACTION_CLASS =
-  'rounded text-xs font-medium text-text-secondary hover:text-text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy';
 
 /**
  * Steers that have not been confirmed by the server yet, rendered at the tail
@@ -181,31 +179,27 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
                   )}
                 </span>
                 {retrySafe && (
-                  <button
-                    type="button"
-                    onClick={() => retry(steer.steerId)}
-                    className={ACTION_CLASS}
-                  >
+                  <Button type="button" onClick={() => retry(steer.steerId)} variant="text-action">
                     {localize('com_ui_retry')}
-                  </button>
+                  </Button>
                 )}
                 {!deliveryUncertain && (
-                  <button
+                  <Button
                     type="button"
                     onClick={() => editFailedSteer(steer)}
-                    className={ACTION_CLASS}
+                    variant="text-action"
                   >
                     {localize('com_ui_edit')}
-                  </button>
+                  </Button>
                 )}
                 {!deliveryUncertain && (
-                  <button
+                  <Button
                     type="button"
                     onClick={() => sendAsNew(steer.steerId)}
-                    className={ACTION_CLASS}
+                    variant="text-action"
                   >
                     {localize('com_ui_send_as_new')}
-                  </button>
+                  </Button>
                 )}
               </div>
             ) : (
@@ -230,18 +224,18 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
                 )}
                 {steer.status === 'pending' && (
                   <>
-                    <button
+                    <Button
                       type="button"
                       disabled={movingId != null}
                       onClick={() => void queueSteer(steer)}
-                      className={ACTION_CLASS}
+                      variant="text-action"
                     >
                       {localize('com_ui_convert_to_queue')}
-                    </button>
+                    </Button>
                   </>
                 )}
                 {(steer.status === 'pending' || steer.status === 'sending') && (
-                  <button
+                  <Button
                     type="button"
                     ref={(node) => {
                       if (node == null) {
@@ -252,10 +246,10 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
                     }}
                     disabled={movingId != null}
                     onClick={() => void cancelPendingSteer(steer)}
-                    className={ACTION_CLASS}
+                    variant="text-action"
                   >
                     {localize('com_ui_cancel')}
-                  </button>
+                  </Button>
                 )}
               </div>
             )}

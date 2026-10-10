@@ -38,6 +38,13 @@ type ButtonVariantOptions =
         | 'card'
         | 'disclosure'
         | 'option'
+        | 'text-action'
+        | 'row-content'
+        | 'chip-toggle'
+        | 'pill-toggle'
+        | 'composer-pill'
+        | 'composer-trigger'
+        | 'hit-area'
         | null
         | undefined;
       size?:
@@ -227,6 +234,32 @@ const buttonVariantRecipe = cva(
         option:
           'w-full select-none justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
+        /** A small text action in the secondary ink beside a status line, such as a failed
+         *  steer's Retry or a pending one's Cancel; it rises to the primary ink under the pointer. */
+        'text-action':
+          'rounded text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
+        /** The content of a list row whose row owns the highlight, such as a composer palette
+         *  entry: it lays the row out and takes the pointer, and leaves fill and ink to the row. */
+        'row-content':
+          'flex cursor-pointer justify-start gap-2.5 px-2 text-left font-normal transition-none',
+        /** An outlined chip that toggles a mode, its pressed state marked with `aria-pressed`. */
+        'chip-toggle':
+          'min-h-theme-target shrink-0 rounded-full border border-border-medium text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-offset-0 aria-pressed:border-transparent aria-pressed:bg-surface-active-alt aria-pressed:text-text-primary aria-pressed:hover:bg-surface-active-alt',
+        /** A borderless pill that toggles a mode, lit in the accent while `aria-pressed`. */
+        'pill-toggle':
+          'rounded-full text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary aria-pressed:bg-accent-primary/15 aria-pressed:text-accent-primary aria-pressed:hover:bg-accent-primary/15 aria-pressed:hover:text-accent-primary',
+        /** A composer pill that opens a popover with its value, such as Thinking: primary ink,
+         *  and kept lit while the popover it controls is expanded. */
+        'composer-pill':
+          'gap-1 rounded-theme-control-round font-normal text-text-primary hover:bg-surface-hover focus-visible:ring-offset-0 aria-expanded:bg-surface-hover',
+        /** A composer control that opens a popover from an icon, such as the reasoning menu: it
+         *  rests in the secondary ink and takes the primary one while hovered or expanded. */
+        'composer-trigger':
+          'gap-1.5 rounded-xl text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-offset-0 aria-expanded:bg-surface-hover aria-expanded:text-text-primary',
+        /** An invisible target laid over a custom-drawn control, such as a stop on a slider rail:
+         *  it draws only its focus ring, inside its own box. */
+        'hit-area':
+          'rounded-full bg-transparent focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
         default: 'h-theme-button px-theme-button-x py-2',
@@ -335,6 +368,14 @@ const buttonVariantRecipe = cva(
         shape: 'unset',
         class: 'rounded-xl',
       },
+      /* These carry their own box, which the default size's height and padding would otherwise win. */
+      { variant: 'text-action', size: 'default', class: 'h-auto p-0' },
+      { variant: 'row-content', size: 'default', class: 'h-auto px-2 py-0' },
+      { variant: 'chip-toggle', size: 'default', class: 'h-auto px-2 py-0.5' },
+      { variant: 'pill-toggle', size: 'default', class: 'h-auto px-2 py-0.5' },
+      { variant: 'composer-pill', size: 'default', class: 'h-theme-button-compact px-2.5 py-0' },
+      { variant: 'composer-trigger', size: 'default', class: 'h-theme-button-compact px-2 py-0' },
+      { variant: 'hit-area', size: 'default', class: 'h-auto p-0' },
     ],
     defaultVariants: {
       variant: 'default',

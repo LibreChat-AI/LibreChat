@@ -925,17 +925,13 @@ function Palette({
               aria-selected={isActive}
               className="min-w-0 flex-1"
             >
-              <button
-                type="button"
-                tabIndex={-1}
-                className="flex h-full w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
-              >
+              <Button variant="row-content" tabIndex={-1} className="h-full w-full">
                 <ChevronDown
                   aria-hidden="true"
                   className={cn('animate-composer-icon size-4 shrink-0', expanded && '-rotate-180')}
                 />
                 <span className="truncate">{row.label}</span>
-              </button>
+              </Button>
             </div>
           </div>
         );
@@ -967,11 +963,7 @@ function Palette({
               aria-selected={isActive}
               className="min-w-0 flex-1"
             >
-              <button
-                type="button"
-                tabIndex={-1}
-                className="flex h-full w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
-              >
+              <Button variant="row-content" tabIndex={-1} className="h-full w-full">
                 {/* The wrapper carries the fallback tile color; the image itself
                     hides on error so an unreachable thumbnail (remote storage,
                     expired links) degrades to an empty tile instead of a broken
@@ -1007,7 +999,7 @@ function Palette({
                     {formatFileDate(file)}
                   </span>
                 </span>
-              </button>
+              </Button>
             </div>
           </div>
         );
@@ -1060,14 +1052,14 @@ function Palette({
                 className="bg-text-primary absolute inset-y-1 left-0 w-0.5 rounded-full"
               />
             )}
-            <button
-              type="button"
+            <Button
+              variant="row-content"
               tabIndex={-1}
               aria-pressed={isEntry ? checked : undefined}
               aria-label={
                 favorited ? `${label}, ${localize('com_ui_tools_view_favorites')}` : undefined
               }
-              className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
+              className="h-full min-w-0 flex-1"
             >
               <span className="relative flex shrink-0" aria-hidden="true">
                 {icon}
@@ -1091,7 +1083,7 @@ function Palette({
                   <span className="text-text-secondary truncate text-xs">{description}</span>
                 )}
               </span>
-            </button>
+            </Button>
           </div>
           {modes != null && modes.length > 0 && (
             <div role="gridcell" className="flex shrink-0 items-center gap-1">
@@ -1118,23 +1110,17 @@ function Palette({
                     </IconButton>
                   </span>
                 ) : (
-                  <button
+                  <Button
                     key={mode.id}
-                    type="button"
+                    variant="chip-toggle"
                     aria-pressed={mode.active}
                     onClick={(event) => {
                       event.stopPropagation();
                       mode.onSelect();
                     }}
-                    className={cn(
-                      'focus-visible:ring-text-primary min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden',
-                      mode.active
-                        ? 'bg-surface-active-alt text-text-primary border-transparent'
-                        : 'border-border-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-                    )}
                   >
                     {mode.label}
-                  </button>
+                  </Button>
                 ),
               )}
             </div>
