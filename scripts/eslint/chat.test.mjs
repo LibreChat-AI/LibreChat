@@ -122,6 +122,15 @@ tester.run('chat/boundary', chat.rules.boundary, {
     ...cases('react/probe.ts', selfSpellings, 'self'),
     ...cases('core/probe.ts', selfSpellings, 'self'),
     {
+      // An absolute root holds when ESLint runs from another directory, as a workspace script does.
+      code: "import x from 'react';",
+      filename: at('core/probe.ts'),
+      options: [
+        { sourceRoot: path.join(root, 'packages/chat/src'), packageName: '@librechat/chat' },
+      ],
+      errors: [{ messageId: 'ui' }],
+    },
+    {
       code: 'export const load = (name: string) => import(name);',
       filename: at('core/probe.ts'),
       options,

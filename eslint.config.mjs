@@ -634,7 +634,7 @@ export default [
     rules: {
       'chat/boundary': [
         'error',
-        { sourceRoot: 'packages/chat/src', packageName: '@librechat/chat' },
+        { sourceRoot: path.join(__dirname, 'packages/chat/src'), packageName: '@librechat/chat' },
       ],
     },
   },
