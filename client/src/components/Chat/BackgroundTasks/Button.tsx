@@ -1,7 +1,8 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { TooltipAnchor } from '@librechat/client';
+import { Button, IconButton, TooltipAnchor } from '@librechat/client';
 import { ListTodo, Maximize2, Minimize2, Square, X } from 'lucide-react';
+import type { TaskRow } from './rows';
 import { RECENT_SUBAGENT_WINDOW_MS } from './rows';
 import useBackgroundTasks from './useTasks';
 import { useLocalize } from '~/hooks';
@@ -12,7 +13,7 @@ import { cn } from '~/utils';
 const TICK_MS = 1_000;
 
 const iconButtonClass =
-  'flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary disabled:pointer-events-none disabled:opacity-50';
+  'flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary disabled:pointer-events-none disabled:opacity-50';
 
 /** Header control listing the conversation's background tools and subagents. */
 function BackgroundTasksButton({
@@ -26,6 +27,7 @@ function BackgroundTasksButton({
   const popover = Ariakit.usePopoverStore({ placement: 'bottom-end' });
   const open = Ariakit.useStoreState(popover, 'open');
   const disclosureRef = useRef<HTMLButtonElement>(null);
+  const finalFocusRef = useRef<HTMLElement | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [wide, setWide] = useState(false);
   const [popoverElement, setPopoverElement] = useState<HTMLDivElement | null>(null);
@@ -34,6 +36,7 @@ function BackgroundTasksButton({
 
   useEffect(() => {
     setNow(Date.now());
+    if (open) finalFocusRef.current = disclosureRef.current;
     if (!open || activeCount === 0) return;
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(timer);
@@ -81,6 +84,35 @@ function BackgroundTasksButton({
   } else if (partiallyStoppable) {
     stopAllLabel = localize('com_ui_background_tasks_stop_available');
   }
+  const jumpToTool = (row: TaskRow): boolean => {
+    const message = row.messageId == null ? null : document.getElementById(row.messageId);
+    const scope = message ?? document;
+    const targets = Array.from(
+      scope.querySelectorAll<HTMLElement>(
+        '[data-tool-call-id], [data-subagent-tool-call], [data-subagent-thread]',
+      ),
+    ).filter(
+      (element) =>
+        (row.threadId != null && element.dataset.subagentThread === row.threadId) ||
+        (row.toolCallId != null &&
+          (element.dataset.toolCallId === row.toolCallId ||
+            element.dataset.subagentToolCall === row.toolCallId)),
+    );
+    // Legacy call ids are only usable when they identify one rendered call.
+    const target = targets.length === 1 ? targets[0] : message;
+    if (target == null) return false;
+    finalFocusRef.current = target.matches('button')
+      ? target
+      : (target.querySelector<HTMLElement>('button') ?? target);
+    popover.hide();
+    target.scrollIntoView?.({
+      block: 'center',
+      behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+        ? 'instant'
+        : 'smooth',
+    });
+    return true;
+  };
   const card = (row: (typeof rows)[number]) => (
     <TaskCard
       key={row.id}
@@ -90,6 +122,7 @@ function BackgroundTasksButton({
       isStopping={view.isStopping}
       onStop={view.stop}
       portalElement={popoverElement}
+      onJump={jumpToTool}
     />
   );
 
@@ -126,30 +159,34 @@ function BackgroundTasksButton({
         gutter={8}
         portal
         unmountOnHide
-        finalFocus={disclosureRef}
+        finalFocus={finalFocusRef}
         aria-label={title}
         className={cn(
-          'border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col border shadow-lg focus:outline-none',
-          wide ? 'w-[36rem]' : 'w-80',
+          'animate-composer-popover border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel animate-composer-popover-resize z-[200] flex max-w-[calc(100vw-2rem)] flex-col border shadow-lg focus:outline-none motion-reduce:transition-none',
+          wide
+            ? 'max-h-[calc(100dvh-5rem)] w-[min(56rem,calc(100vw-2rem))]'
+            : 'max-h-[min(36rem,calc(100dvh-5rem))] w-80',
         )}
       >
         <div className="flex items-center gap-1 px-3 pt-3 pb-2">
           <Ariakit.PopoverHeading className="flex-1 text-sm font-semibold">
             {title}
           </Ariakit.PopoverHeading>
-          <button
+          <Button
+            variant="quiet"
+            size="icon-xs"
             type="button"
             aria-label={localize(wide ? 'com_ui_collapse' : 'com_ui_expand')}
             aria-pressed={wide}
             onClick={() => setWide((value) => !value)}
-            className={cn(iconButtonClass, 'max-sm:hidden')}
+            className="max-sm:hidden"
           >
             {wide ? (
               <Minimize2 className="size-4" aria-hidden="true" />
             ) : (
               <Maximize2 className="size-4" aria-hidden="true" />
             )}
-          </button>
+          </Button>
           <Ariakit.PopoverDismiss aria-label={localize('com_ui_close')} className={iconButtonClass}>
             <X className="size-4" aria-hidden="true" />
           </Ariakit.PopoverDismiss>
@@ -165,7 +202,7 @@ function BackgroundTasksButton({
               <p>{localize('com_ui_background_tasks_load_failed')}</p>
               <button
                 type="button"
-                className="text-text-primary focus-visible:ring-ring-primary rounded px-2 py-1 underline focus-visible:ring-2"
+                className="text-text-primary focus-visible:ring-text-primary rounded px-2 py-1 underline focus-visible:ring-2"
                 onClick={() => void view.retry()}
               >
                 {localize('com_ui_retry')}
@@ -187,16 +224,18 @@ function BackgroundTasksButton({
                       tabIndex={!anyStoppable ? 0 : undefined}
                       className="inline-flex"
                     >
-                      <button
+                      <IconButton
                         type="button"
-                        aria-label={stopAllLabel}
+                        variant="submit"
+                        size="sm"
+                        shape="composer"
+                        label={stopAllLabel}
                         disabled={!anyStoppable || view.isStopping}
                         onClick={() => void view.stopAll()}
                         data-testid="background-tasks-stop-all"
-                        className={cn(iconButtonClass, 'border-border-medium border')}
                       >
                         <Square className="size-3 fill-current" aria-hidden="true" />
-                      </button>
+                      </IconButton>
                     </span>
                   }
                 />

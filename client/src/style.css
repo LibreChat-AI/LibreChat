@@ -2104,6 +2104,10 @@ html[data-input-modality='keyboard']
     transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
   will-change: transform, opacity;
 }
+/* Resizable anchored panels share the composer entrance and exit clock. */
+.animate-composer-popover-resize {
+  transition-property: opacity, transform, width, max-height;
+}
 .animate-composer-popover[data-enter] {
   opacity: 1;
   transform: scale(1);
