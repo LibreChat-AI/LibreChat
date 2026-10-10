@@ -11,6 +11,23 @@ const createFormData = (text: string, voice: string) => {
   formData.append('voice', voice);
   return formData;
 };
+/** Derives a collision-safe Cache API key for TTS audio.
+ *
+ * The Cache API parses the request URL and ignores its fragment when matching,
+ * so keying by raw message text collides whenever a message starts with a
+ * Markdown heading (everything from the first `#` is a fragment and the rest
+ * resolves to the document base URL). Hashing `voice + text` keeps each
+ * utterance's audio under its own key.
+ */
+const getTTSCacheKey = (text: string, voice: string) => {
+  let hash = 0x811c9dc5;
+  const input = `${voice}::${text}`;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `tts-audio-${(hash >>> 0).toString(16)}`;
+};
 
 type TUseTTSExternal = {
   setIsSpeaking: React.Dispatch<React.SetStateAction<boolean>>;
@@ -107,7 +124,7 @@ function useTextToSpeechExternal({
 
         if (cacheTTS && inputText) {
           const cache = await caches.open('tts-responses');
-          const request = new Request(inputText);
+          const request = new Request(getTTSCacheKey(inputText, (variables.get('voice') ?? '') as string));
           const response = new Response(audioBlob);
           cache.put(request, response);
         }
@@ -147,7 +164,7 @@ function useTextToSpeechExternal({
   };
 
   const handleCachedResponse = async (text: string, download: boolean) => {
-    const cachedResponse = await caches.match(text);
+    const cachedResponse = await caches.match(getTTSCacheKey(text, voice ?? ''));
     if (!cachedResponse) {
       return startMutation(text, download);
     }
