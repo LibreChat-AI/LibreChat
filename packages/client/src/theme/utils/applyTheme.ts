@@ -91,6 +91,11 @@ function mapColors(input: RenamedThemeRGB, base?: IThemeRGB): Array<[string, str
     variables.push(['--field-fill', colors['rgb-surface-primary']]);
   }
 
+  /** The checkbox fill follows the canvas, as in `resolveTheme`. */
+  if (colors['rgb-checkbox-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--checkbox-fill', colors['rgb-surface-primary']]);
+  }
+
   Object.entries(overlayFallbacks(colors)).forEach(([role, value]) => {
     variables.push([colorProperty(role as keyof IThemeRGB), value]);
   });

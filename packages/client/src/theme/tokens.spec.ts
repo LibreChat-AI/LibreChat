@@ -97,6 +97,7 @@ describe('theme color tokens', () => {
       'bg-switch-thumb',
       'text-table-header-text',
       'bg-table-header-fill',
+      'bg-checkbox-fill',
     ]);
 
     expect(css).toContain('rgb(var(--surface-primary))');
@@ -105,6 +106,7 @@ describe('theme color tokens', () => {
     expect(css).toContain('rgb(var(--switch-thumb, var(--surface-primary)))');
     expect(css).toContain('rgb(var(--table-header-text, var(--text-secondary)))');
     expect(css).toContain('rgb(var(--table-header-fill, var(--surface-dialog)))');
+    expect(css).toContain('rgb(var(--checkbox-fill, var(--surface-primary)))');
   });
 
   it('keeps a border token on its intrinsic alpha and still takes an opacity modifier', async () => {
