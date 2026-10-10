@@ -1,17 +1,27 @@
 const mockDownload = jest.fn();
-const mockGetBlockBlobClient = jest.fn(() => ({ download: mockDownload }));
+const mockUploadData = jest.fn();
+const mockDelete = jest.fn();
+const mockGetBlockBlobClient = jest.fn((blobPath) => ({
+  url: `https://account.blob.core.windows.net/files/${blobPath}`,
+  download: mockDownload,
+  uploadData: mockUploadData,
+  delete: mockDelete,
+}));
 const mockGetAzureContainerClient = jest.fn(async () => ({
   url: 'https://account.blob.core.windows.net/files',
+  createIfNotExists: jest.fn(),
   getBlockBlobClient: mockGetBlockBlobClient,
 }));
 const mockGetSafeErrorMetadata = jest.fn(() => ({ type: 'Error', status: 403 }));
 
 jest.mock('@librechat/data-schemas', () => ({
-  logger: { error: jest.fn() },
+  logger: { error: jest.fn(), debug: jest.fn() },
 }));
 
 jest.mock('@librechat/api', () => ({
   deleteRagFile: jest.fn(),
+  getAzureBlobPath: jest.requireActual('@librechat/api').getAzureBlobPath,
+  getAzureFileLink: jest.requireActual('@librechat/api').getAzureFileLink,
   assertRemoteFileURL: jest.fn((url) => url),
   getSafeErrorMetadata: (...args) => mockGetSafeErrorMetadata(...args),
   getAzureContainerClient: (...args) => mockGetAzureContainerClient(...args),
@@ -21,7 +31,8 @@ jest.mock('@librechat/api', () => ({
 }));
 
 const { logger } = require('@librechat/data-schemas');
-const { getAzureFileStream } = require('./crud');
+const { getStoredFileURL } = jest.requireActual('@librechat/api');
+const { getAzureFileStream, saveBufferToAzure, deleteFileFromAzure } = require('./crud');
 
 describe('getAzureFileStream', () => {
   it('downloads private blobs through the authenticated Azure client', async () => {
@@ -74,5 +85,52 @@ describe('getAzureFileStream', () => {
       status: 403,
     });
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain(signedUrl);
+  });
+});
+
+describe('stored file links', () => {
+  const storedLink = getStoredFileURL('azure_blob', 'images/user-1/photo one.png');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.STORAGE_PROXY_FILES = 'true';
+  });
+
+  afterAll(() => {
+    delete process.env.STORAGE_PROXY_FILES;
+  });
+
+  it('stores LibreChat links for uploads when the proxy is on, and blob URLs when off', async () => {
+    const upload = { userId: 'user-1', buffer: Buffer.from('x'), fileName: 'photo one.png' };
+    await expect(saveBufferToAzure(upload)).resolves.toBe(storedLink);
+
+    process.env.STORAGE_PROXY_FILES = 'false';
+    await expect(saveBufferToAzure(upload)).resolves.toBe(
+      'https://account.blob.core.windows.net/files/images/user-1/photo one.png',
+    );
+  });
+
+  it('keeps blob URLs for containers other than the configured one', async () => {
+    await expect(
+      saveBufferToAzure({
+        userId: 'user-1',
+        buffer: Buffer.from('x'),
+        fileName: 'photo.png',
+        containerName: 'other',
+      }),
+    ).resolves.toMatch(/^https:/);
+  });
+
+  it('streams and deletes the blob behind a stored link from the configured container', async () => {
+    const stream = { pipe: jest.fn() };
+    mockDownload.mockResolvedValue({ readableStreamBody: stream });
+
+    await expect(getAzureFileStream({}, storedLink)).resolves.toBe(stream);
+    expect(mockGetAzureContainerClient).toHaveBeenCalledWith();
+    expect(mockGetBlockBlobClient).toHaveBeenCalledWith('images/user-1/photo one.png');
+
+    await deleteFileFromAzure({ user: { id: 'user-1' } }, { filepath: storedLink });
+    expect(mockGetBlockBlobClient).toHaveBeenLastCalledWith('images/user-1/photo one.png');
+    expect(mockDelete).toHaveBeenCalled();
   });
 });
