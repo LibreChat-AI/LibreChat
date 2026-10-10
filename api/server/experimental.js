@@ -547,7 +547,7 @@ if (cluster.isMaster) {
     });
     const indexShell = createDeploymentThemeShell(
       indexHTML,
-      appConfig.interfaceConfig?.theme,
+      baseAppConfig?.interfaceConfig?.theme,
       readBundledThemeBoot(appConfig.paths.dist),
     );
 
