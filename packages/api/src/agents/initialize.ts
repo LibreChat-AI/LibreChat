@@ -2,6 +2,7 @@ import { Providers } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
 import {
   Tools,
+  resolveSubagents,
   Constants,
   ErrorTypes,
   EModelEndpoint,
@@ -2755,6 +2756,7 @@ export async function initializeAgent(
 
   const initializedAgent: InitializedAgent = {
     ...agent,
+    subagents: resolveSubagents(agent.subagents, appConfig?.endpoints?.agents?.capabilities ?? []),
     azureOptions: options.azureOptions,
     resendFiles,
     imageDetail,

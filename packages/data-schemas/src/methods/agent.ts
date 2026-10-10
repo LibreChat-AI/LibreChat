@@ -2067,6 +2067,7 @@ export function createAgentMethods(
       projection['edges.from'] = 1;
       projection['edges.to'] = 1;
       projection['subagents.enabled'] = 1;
+      projection['subagents.graphsEnabled'] = 1;
       projection['subagents.agent_ids'] = 1;
       projection['subagents.graphs.agent_ids'] = 1;
     }

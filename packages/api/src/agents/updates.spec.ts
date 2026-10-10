@@ -230,3 +230,42 @@ describe('Agent Management update handler', () => {
     });
   });
 });
+
+it.each([false, true])(
+  'updates project the saved graph enablement choice after commit: %s',
+  async (graphsEnabled) => {
+    const subagents = {
+      enabled: false,
+      graphsEnabled,
+      shareFiles: true,
+      allowSelf: false,
+      agent_ids: [],
+      graphs: [
+        {
+          type: 'review',
+          name: 'Review',
+          description: 'Review work',
+          agent_ids: ['member'],
+          edges: [],
+          entry_agent_id: 'member',
+          result_agent_id: 'member',
+        },
+      ],
+    };
+    const deps = makeDeps({
+      updateAgent: jest.fn(async (_req: Request, res: Response) =>
+        res.json({ ...updatedAgent, subagents }),
+      ),
+    });
+    const request = makeRequest({ body: { subagents } });
+    const response = makeResponse();
+    await createAgentManagementUpdateHandler(deps)(request, response);
+    expect(deps.updateAgent).toHaveBeenCalledTimes(1);
+    expect(request.body.subagents).toEqual(subagents);
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.status).not.toHaveBeenCalledWith(500);
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({ id: existingAgent.id, subagents }),
+    );
+  },
+);

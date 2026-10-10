@@ -3021,6 +3021,37 @@ describe('subagentConfigs', () => {
     expect(memberInput.toolDefinitions).toEqual([{ name: 'tool_search' }]);
   });
 
+  it('advertises graph teams without enabling ordinary self-spawn or explicit agents', async () => {
+    const member = makeAgent({ id: 'graph_only_member' });
+    const definition = {
+      type: 'graph_only',
+      name: 'Graph only',
+      description: 'Delegate a team',
+      agent_ids: [member.id],
+      edges: [],
+      entry_agent_id: member.id,
+      result_agent_id: member.id,
+    };
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          id: 'parent',
+          subagents: {
+            enabled: false,
+            graphsEnabled: true,
+            allowSelf: true,
+            agent_ids: ['unused'],
+            graphs: [definition],
+          },
+          subagentGraphConfigs: [{ definition, memberConfigs: [member] }],
+        }),
+      ],
+    });
+    expect(agents[0].subagentConfigs).toHaveLength(1);
+    const configs = agents[0].subagentConfigs as Array<Record<string, unknown>>;
+    expect(configs[0]).toMatchObject({ kind: 'graph', type: 'graph_only' });
+  });
+
   it('builds lazy graph inputs from initialized members instead of capability metadata', async () => {
     const childId = 'agent_lazy_capability_parent';
     const memberId = 'agent_lazy_capability_member';

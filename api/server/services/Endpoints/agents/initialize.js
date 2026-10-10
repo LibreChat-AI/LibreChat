@@ -57,6 +57,8 @@ const {
   createSubagentCodeRouting,
 } = require('@librechat/api');
 const {
+  resolveSubagents,
+  hasSubagentCapability,
   ResourceType,
   EModelEndpoint,
   PermissionBits,
@@ -1004,7 +1006,7 @@ const initializeClientWithProvider = async ({
   const atSubagentThreadDepthLimit = !subagentThreadTaskStore.canCreateChildThread(
     requestConversation?.subagentThread?.depth ?? 0,
   );
-  const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+  const subagentsCapabilityEnabled = hasSubagentCapability([...enabledCapabilities]);
   const subagentsAvailableForRun = subagentsCapabilityEnabled && !atSubagentThreadDepthLimit;
   /** Track skipped ids locally so repeated failures short-circuit within
    *  the subagent loading loop. Seeded from the discovery helper's skip
@@ -1164,6 +1166,7 @@ const initializeClientWithProvider = async ({
     getInheritedEnvironments: () => req.codeWorkspaceInheritance,
     sharedRunFiles: isRunFileSharingRequested({
       policy: appConfig.endpoints?.agents?.fileSharing,
+      capabilities: [...enabledCapabilities],
       agent: primaryConfig,
     }),
   });
@@ -1245,7 +1248,7 @@ const initializeClientWithProvider = async ({
         memory_scope: agent.memory_scope,
         memoryToolsRegistered:
           memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
-        subagents: agent.subagents,
+        subagents: resolveSubagents(agent.subagents, [...enabledCapabilities]),
         configId: getLazySubagentConfigId(agent),
         ...codeAvailability,
         statefulCodeEnvironment,
@@ -1410,6 +1413,7 @@ const initializeClientWithProvider = async ({
             requestFiles,
             authorizedRunFiles: getAuthorizedRunFileSnapshot({
               policy: appConfig.endpoints?.agents?.fileSharing,
+              capabilities: [...enabledCapabilities],
               agent: primaryConfig,
               files: primaryConfig.currentRequestAttachments,
             }),
@@ -1647,6 +1651,7 @@ const initializeClientWithProvider = async ({
           request: runtimeRequestBody,
         }),
         roots: rootSubagentConfigs.filter((config) => config?.id),
+        capabilities: [...enabledCapabilities],
         loadSubagent: (agentId) => resolveLazyMetadata(() => loadViewableSubagent(agentId)),
         environments: statefulCodeSessionsConfig?.environments,
         allowEnvironmentSelection: statefulCodeSessionsConfig?.allowEnvironmentSelection,

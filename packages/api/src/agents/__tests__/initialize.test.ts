@@ -611,19 +611,25 @@ describe('initializeAgent: ChatProject context', () => {
     agent._id = 'mongo-graph-agent';
     agent.instructions = 'Graph Agent instructions.';
     agent.tools = [Tools.file_search];
-    req.config = projectRuntime().appConfig;
+    const runtime = projectRuntime();
+    runtime.appConfig.endpoints = {
+      ...runtime.appConfig.endpoints,
+      agents: { capabilities: [AgentCapabilities.file_search, AgentCapabilities.subagent_graphs] },
+    };
+    req.config = runtime.appConfig;
     req.chatProjectContext = projectContext;
     const getProjectFiles = jest.fn().mockResolvedValue([canonicalFile]);
     const projectDb = { ...db, getProjectFiles };
     const primaryConfig: GraphSubagentHostConfig = await initializeAgent(
       {
-        runtime: projectRuntime(),
+        runtime,
         agent: {
           ...agent,
           id: 'primary-agent',
           tools: [],
           subagents: {
-            enabled: true,
+            enabled: false,
+            graphsEnabled: true,
             graphs: [
               {
                 type: 'team',

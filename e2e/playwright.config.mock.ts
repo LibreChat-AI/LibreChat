@@ -244,6 +244,12 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  if (process.env.E2E_GRAPH_SUBAGENTS === 'true') {
+    config = config.replace(
+      '    toolApproval:\n      enabled: true',
+      '    toolApproval:\n      enabled: false',
+    );
+  }
   config = config.replace(
     '  agents:\n',
     `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,

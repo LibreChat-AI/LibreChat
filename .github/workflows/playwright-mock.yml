@@ -414,6 +414,16 @@ jobs:
           conversation-management.spec.ts --grep 'first-turn|final-title polling' --reporter=line
           --output=e2e/specs/.test-results/title-ownership
 
+      - name: Run graph subagent execution regression
+        if: ${{ !cancelled() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        env:
+          CI: 'true'
+          E2E_GRAPH_SUBAGENTS: 'true'
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          agent-graphs.spec.ts --reporter=line
+          --output=e2e/specs/.test-results/graph-subagents
+
       - name: Upload title ownership diagnostics
         if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
         uses: actions/upload-artifact@v6

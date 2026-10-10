@@ -24,6 +24,7 @@ export interface ItemIcon {
 }
 
 const BUILTIN_ICONS: Record<string, ItemIcon> = {
+  subagent_graphs: { Icon: Workflow, colorClass: 'bg-series-6/15 text-series-6' },
   subagents: {
     Icon: Network,
     colorClass: 'bg-series-2/15 text-series-2',
