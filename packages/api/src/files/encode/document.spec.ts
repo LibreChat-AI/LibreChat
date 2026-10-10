@@ -1,8 +1,9 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes } from 'librechat-data-provider';
 import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
-import type { ServerRequest } from '~/types';
-import { encodeAndFormatDocuments } from './document';
+import type { BedrockDocumentBlock, ServerRequest } from '~/types';
+import type { PayloadContentPart } from './document';
+import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 
 /** Mock the validation module */
 jest.mock('~/files/validation', () => ({
@@ -1201,5 +1202,97 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       expect(result.documents).toHaveLength(6);
       expect(result.files).toHaveLength(6);
     });
+  });
+});
+
+describe('dedupeDocumentNames', () => {
+  const bedrock = (name: string): BedrockDocumentBlock => ({
+    type: 'document',
+    document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+  });
+  type Message = { content?: string | PayloadContentPart[] | null };
+  const names = (parts: PayloadContentPart[] = []): string[] =>
+    parts.flatMap((part) =>
+      part.document?.name != null ? [part.document.name] : names(part.media ?? []),
+    );
+  const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
+
+  it('renames repeated Bedrock document names across the payload in order', () => {
+    const first = bedrock('Stripe fees');
+    const messages: Message[] = [
+      { content: [{ type: 'text' }, first, bedrock('invoice')] },
+      { content: 'A plain answer' },
+      { content: [bedrock('Stripe fees'), bedrock('STRIPE FEES')] },
+      { content: [{ type: 'text' }, bedrock('Stripe fees')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(messages.map((message) => names(contentOf(message)))).toEqual([
+      ['Stripe fees', 'invoice'],
+      [],
+      ['Stripe fees (2)', 'STRIPE FEES (3)'],
+      ['Stripe fees (4)'],
+    ]);
+    /** The first occurrence keeps its own block object and its message keeps its array. */
+    expect(contentOf(messages[0])[1]).toBe(first);
+  });
+
+  it('includes documents inside replayed steer media', () => {
+    const steer: PayloadContentPart = {
+      type: 'steer',
+      media: [{ type: 'text' }, bedrock('notes')],
+    };
+    const messages: Message[] = [
+      { content: [bedrock('notes')] },
+      { content: [{ type: 'text' }, steer] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[1]))).toEqual(['notes (2)']);
+    expect(names(steer.media)).toEqual(['notes']);
+  });
+
+  it('does not mutate the renamed source blocks or arrays', () => {
+    const repeated = bedrock('report');
+    const secondContent: PayloadContentPart[] = [repeated];
+    const messages: Message[] = [{ content: [bedrock('report')] }, { content: secondContent }];
+
+    dedupeDocumentNames(messages);
+
+    expect(repeated.document.name).toBe('report');
+    expect(secondContent[0]).toBe(repeated);
+    expect(names(contentOf(messages[1]))).toEqual(['report (2)']);
+  });
+
+  it('skips past a name a later upload already uses and keeps names within the limit', () => {
+    const long = 'a'.repeat(199) + ' ';
+    const messages: Message[] = [
+      { content: [bedrock('notes'), bedrock('notes (2)')] },
+      { content: [bedrock('notes'), bedrock(long), bedrock(long)] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    const second = names(contentOf(messages[1]));
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+    expect(second[0]).toBe('notes (3)');
+    expect(second[2]).toBe(`${'a'.repeat(196)} (2)`);
+    expect(second[2].length).toBeLessThanOrEqual(200);
+  });
+
+  it('leaves blocks without a Bedrock document name alone', () => {
+    const anthropic = {
+      type: 'document',
+      title: 'report.pdf',
+      source: { type: 'base64', media_type: 'application/pdf', data: 'x' },
+    } as PayloadContentPart;
+    const content = [anthropic, { ...anthropic }];
+    const messages: Message[] = [{ content }];
+
+    dedupeDocumentNames(messages);
+
+    expect(messages[0].content).toBe(content);
   });
 });

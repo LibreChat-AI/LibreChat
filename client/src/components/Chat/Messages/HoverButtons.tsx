@@ -249,7 +249,8 @@ const HoverButtons = ({
         />
       )}
 
-      {/* Fork Button */}
+      {/* Fork Button: withheld on a failed turn, whose copy would carry the provider's error as an
+          ordinary answer. The error card's "Branch without files" copies up to the turn before. */}
       {!error && !isActiveStreamingMessage && (
         <Fork
           messageId={message.messageId}

@@ -58,4 +58,37 @@ describe('Fork', () => {
       }),
     );
   });
+
+  it('copies without files only when that box is checked for this fork', async () => {
+    render(
+      <RecoilRoot>
+        <Fork messageId="assistant-1" conversationId="convo-1" forkingSupported={true} />
+      </RecoilRoot>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'com_ui_fork_exclude_files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_visible' }));
+
+    expect(mockMutate).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId: 'assistant-1',
+        option: ForkOptions.DIRECT_PATH,
+        excludeFiles: true,
+      }),
+    );
+  });
+
+  it('keeps files by default', async () => {
+    render(
+      <RecoilRoot>
+        <Fork messageId="assistant-1" conversationId="convo-1" forkingSupported={true} />
+      </RecoilRoot>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_fork_open_menu' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_fork_visible' }));
+
+    expect(mockMutate.mock.calls.at(-1)?.[0]).not.toHaveProperty('excludeFiles');
+  });
 });
