@@ -1980,6 +1980,86 @@ html {
     font-size: max(16px, 0.875rem);
   }
 
+  :is(
+    input:not([type]),
+    input:is(
+      [type='text'],
+      [type='email'],
+      [type='password'],
+      [type='search'],
+      [type='url'],
+      [type='tel'],
+      [type='number']
+    ),
+    textarea
+  ).text-base {
+    font-size: max(16px, var(--text-base));
+  }
+
+  :is(
+    input:not([type]),
+    input:is(
+      [type='text'],
+      [type='email'],
+      [type='password'],
+      [type='search'],
+      [type='url'],
+      [type='tel'],
+      [type='number']
+    ),
+    textarea
+  ).text-lg {
+    font-size: max(16px, var(--text-lg));
+  }
+
+  :is(
+    input:not([type]),
+    input:is(
+      [type='text'],
+      [type='email'],
+      [type='password'],
+      [type='search'],
+      [type='url'],
+      [type='tel'],
+      [type='number']
+    ),
+    textarea
+  ).text-xl {
+    font-size: max(16px, var(--text-xl));
+  }
+
+  :is(
+    input:not([type]),
+    input:is(
+      [type='text'],
+      [type='email'],
+      [type='password'],
+      [type='search'],
+      [type='url'],
+      [type='tel'],
+      [type='number']
+    ),
+    textarea
+  ).text-2xl {
+    font-size: max(16px, var(--text-2xl));
+  }
+
+  :is(
+    input:not([type]),
+    input:is(
+      [type='text'],
+      [type='email'],
+      [type='password'],
+      [type='search'],
+      [type='url'],
+      [type='tel'],
+      [type='number']
+    ),
+    textarea
+  ).text-3xl {
+    font-size: max(16px, var(--text-3xl));
+  }
+
   textarea.message-editor-text,
   textarea.composer-text {
     font-size: max(16px, var(--markdown-font-size, var(--font-size-base)));
