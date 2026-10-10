@@ -2,6 +2,7 @@ import type {
   TPayload,
   ChatEvent,
   TConversation,
+  TPendingSteer,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
@@ -73,6 +74,8 @@ export type ChatSendRequest = ChatRequestOptions & {
 export type ChatReconnectRequest = ChatRequestOptions & {
   chatId: string;
   streamId?: string;
+  /** The {@link ChatStream.generationCreatedAt} to reattach to, so a newer run is not attached instead. */
+  generationCreatedAt?: number;
   abortSignal?: AbortSignal;
 };
 
@@ -82,6 +85,20 @@ export type ChatAbortRequest = {
   /** The {@link ChatStream.generationCreatedAt} of the run to stop; a newer run is left running. */
   generationCreatedAt?: number;
   endpoint: string;
+};
+
+/** What the server did with a stop request. */
+export type ChatAbortResult = {
+  success: boolean;
+  /** The run reached its own terminal state first, so no abort event follows. */
+  settled?: boolean;
+  terminalStatus?: 'complete' | 'error' | 'aborted';
+  /** The run stopped but its terminal state was not saved; the queue must not drain behind it. */
+  persistenceFailed?: boolean;
+  /** Steers the run never injected, handed back so they can be restored. */
+  pendingSteers?: TPendingSteer[];
+  code?: string;
+  error?: string;
 };
 
 /**
@@ -95,8 +112,8 @@ export interface ChatTransport {
   sendMessages(request: ChatSendRequest): Promise<ChatStream>;
   /** Attaches to the running generation, or resolves `null` when nothing is running. */
   reconnectToStream(request: ChatReconnectRequest): Promise<ChatStream | null>;
-  /** Stops the running generation; its stream then reports the abort. */
-  abort(request: ChatAbortRequest): Promise<void>;
+  /** Stops the running generation; its stream then reports the abort, unless the result says it settled first. */
+  abort(request: ChatAbortRequest): Promise<ChatAbortResult>;
   close?(): void;
   listQueued?(
     conversationId: string,

@@ -665,6 +665,14 @@ export default [
     ignores: ['**/*.{spec,test}.{ts,tsx,js,jsx}'],
     rules: {
       'no-restricted-imports': ['error', { patterns: chatCoreRestrictions }],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'JSXElement, JSXFragment',
+          message:
+            'The @librechat/chat core has no UI dependency; JSX compiles to react/jsx-runtime.',
+        },
+      ],
     },
   },
 ];
