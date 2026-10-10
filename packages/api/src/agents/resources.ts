@@ -132,6 +132,13 @@ export type TFilterFilesByAgentAccess = (params: {
 }) => Promise<Array<TFile>>;
 
 /**
+ * Loads the image attachments uploaded to a conversation so an image-edit tool can
+ * reference an upload from an earlier turn. Returns hydrated file records (with
+ * `file_id`, `type`, `height` and `width`); access filtering happens in the caller.
+ */
+export type TGetConversationImageFiles = (conversationId: string) => Promise<Array<TFile | null>>;
+
+/**
  * Helper function to add a file to a specific tool resource category
  * Prevents duplicate files within the same resource category
  * @param params - Parameters object
@@ -661,6 +668,9 @@ export const primeResources = async ({
   codeBaseUrl,
   codeExecutionProfile,
   codeBridgeWorkerId,
+  conversationId,
+  wantsImageEdit,
+  getConversationImageFiles,
 }: {
   req?: ServerRequest;
   principal?: Pick<IUser, 'id' | 'role'>;
@@ -697,6 +707,12 @@ export const primeResources = async ({
    *  its uploads and executions do, so a worker-bound route gets a worker-bound bearer. */
   codeExecutionProfile?: CodeExecutionContext['executionProfile'];
   codeBridgeWorkerId?: string;
+  /** The conversation whose earlier uploads an image-edit tool may act on. */
+  conversationId?: string;
+  /** True when the agent can edit an image, which enables the conversation-image fallback. */
+  wantsImageEdit?: boolean;
+  /** Loads the conversation's image attachments for the image-edit fallback. */
+  getConversationImageFiles?: TGetConversationImageFiles;
 }): Promise<{
   attachments: Array<TFile | undefined> | undefined;
   requestAttachments: Array<TFile | undefined> | undefined;
@@ -908,9 +924,60 @@ export const primeResources = async ({
       }
     }
 
+    /**
+     * An image-edit tool can only act on a `file_id`, and the edit usually targets an
+     * image uploaded on an earlier turn — which is neither a request attachment nor a
+     * persisted agent file, so nothing above would prime it. When the agent can edit
+     * images and no image is primed yet, load the conversation's images through the
+     * injected loader, then apply the same access filtering and policy screening as any
+     * other historical file before filing them under `image_edit`.
+     */
+    const applyConversationImageEditFallback = async (): Promise<void> => {
+      if (wantsImageEdit !== true || conversationId == null || !getConversationImageFiles) {
+        return;
+      }
+      if ((tool_resources[EToolResources.image_edit]?.files ?? []).length > 0) {
+        return;
+      }
+      const candidates = await getConversationImageFiles(conversationId);
+      let images = (candidates ?? []).filter((file): file is TFile => {
+        return (
+          file != null &&
+          typeof file.file_id === 'string' &&
+          typeof file.type === 'string' &&
+          file.type.startsWith('image') &&
+          file.height != null &&
+          file.width != null
+        );
+      });
+      if (images.length === 0) {
+        return;
+      }
+      if (filterFiles && resourcePrincipal?.id && agentId) {
+        images = await filterFiles({
+          files: images,
+          userId: resourcePrincipal.id,
+          role: resourcePrincipal.role,
+          agentId,
+        });
+      }
+      if (screenPersistentFiles) {
+        images = screenPersistentFiles(images);
+      }
+      for (const file of images) {
+        addFileToResource({
+          file,
+          resourceType: EToolResources.image_edit,
+          tool_resources,
+          processedResourceFiles,
+        });
+      }
+    };
+
     if (!_attachments) {
       /** Persistent agent context files are already collected above; queue them for
        *  provisioning here too, so a turn with no new attachment still primes them. */
+      await applyConversationImageEditFallback();
       const contextProvisionState = await computeProvisionState({
         req,
         attachments: withDeferredCandidates(attachments, [
@@ -976,6 +1043,8 @@ export const primeResources = async ({
         requestAttachmentFileIds.add(file.file_id);
       }
     }
+
+    await applyConversationImageEditFallback();
 
     const provisionState = await computeProvisionState({
       req,

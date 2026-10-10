@@ -4,6 +4,7 @@ const {
   checkAccess,
   createGitHubCompareTool,
   getProxyDispatcher,
+  toolkitExpansion,
   toolkitParent,
   toolRolePermissions,
   checkToolRolePermission,
@@ -247,7 +248,13 @@ const loadTools = async ({
       if (toolContext) {
         dynamicToolContextMap.image_edit_oai = toolContext;
       }
-      return createOpenAIImageTools({
+      // The toolkit constructor always builds both image_gen_oai and
+      // image_edit_oai. An agent that selected only `image_edit_oai` must not
+      // also receive `image_gen_oai`: the model can then fall back to
+      // text-to-image and ignore the reference image. Keep the requested tools,
+      // expanding toolkit keys the same way `loadToolDefinitions` does so a
+      // normal `image_gen_oai` selection still exposes its child `image_edit_oai`.
+      const built = await createOpenAIImageTools({
         ...authValues,
         isAgent: !!agent,
         req: options.req,
@@ -255,6 +262,8 @@ const loadTools = async ({
         fileStrategy,
         imageFiles,
       });
+      const wanted = new Set(tools.flatMap((name) => [name, ...(toolkitExpansion[name] ?? [])]));
+      return built.filter((t) => wanted.has(t.name));
     },
     gemini_image_gen: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('gemini_image_gen');

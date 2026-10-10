@@ -1656,6 +1656,48 @@ export async function initializeAgent(
   });
 
   /**
+   * An image-edit tool references its input by `file_id`, and the edit usually targets an
+   * image uploaded on an earlier turn. That image is neither a request attachment nor a
+   * persisted agent file, so it is absent from every source `primeResources` walks. When
+   * the agent can edit images, prime the conversation's images instead: read the file ids
+   * the conversation and thread reference, hydrate them under the requesting owner, and
+   * leave access filtering and policy screening to `primeResources`.
+   */
+  const wantsImageEdit =
+    resourceToolNames.includes(`${EToolResources.image_edit}_oai`) ||
+    resourceToolNames.includes('image_gen_oai');
+  const getConversationImageFiles =
+    conversationId != null && db.getMessages != null && requestFileOwnerScope != null
+      ? async (targetConversationId: string): Promise<Array<TFile | null>> => {
+          const messages = await db.getMessages!({ conversationId: targetConversationId }, 'files');
+          const fileIds = new Set<string>();
+          for (const message of messages ?? []) {
+            for (const file of message.files ?? []) {
+              if (file?.file_id) {
+                fileIds.add(file.file_id);
+              }
+            }
+          }
+          if (fileIds.size === 0) {
+            return [];
+          }
+          const hydrated =
+            ((await db.getFiles(
+              {
+                file_id: { $in: Array.from(fileIds) },
+                user: requestFileOwnerScope.userId,
+                ...(requestFileOwnerScope.tenantId != null && {
+                  tenantId: requestFileOwnerScope.tenantId,
+                }),
+              },
+              {},
+              {},
+            )) as IMongoFile[] | null) ?? [];
+          return hydrated as unknown as Array<TFile | null>;
+        }
+      : undefined;
+
+  /**
    * Load conversation files for ALL agents, not just the initial agent.
    * This enables handoff agents to access files that were uploaded earlier
    * in the conversation. Without this, file_search and execute_code tools
@@ -2052,6 +2094,9 @@ export async function initializeAgent(
     codeBaseUrl: codeExecutionContext.baseUrl,
     codeExecutionProfile: codeExecutionContext.executionProfile,
     codeBridgeWorkerId: codeExecutionContext.bridgeWorkerId,
+    conversationId: conversationId ?? undefined,
+    wantsImageEdit,
+    getConversationImageFiles,
     screenPersistentFiles: (files) => {
       /* Persistent agent files are read inside primeResources, so they miss both checks
        * the caller already applied to this turn's other files. They face the same
