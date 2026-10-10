@@ -1173,6 +1173,32 @@ describe('definitions.ts', () => {
         const editDefs = result.toolDefinitions.filter((d) => d.name === 'image_edit_oai');
         expect(editDefs).toHaveLength(1);
       });
+
+      it('should include a toolkit child selected on its own', async () => {
+        /** `image_edit_oai` is not a manifest plugin/toolkit key, so the runtime
+         *  predicate reports it as not built-in. Recognition must come from the
+         *  toolkit parent mapping; otherwise the definition is dropped and the
+         *  model writes the call as plain text instead of invoking the tool. */
+        mockIsBuiltInTool.mockImplementation((name) => name === 'image_gen_oai');
+
+        const params: LoadToolDefinitionsParams = {
+          userId: 'user-123',
+          agentId: 'agent-123',
+          tools: ['image_edit_oai'],
+        };
+
+        const deps: LoadToolDefinitionsDeps = {
+          getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+          isBuiltInTool: mockIsBuiltInTool,
+        };
+
+        const result = await loadToolDefinitions(params, deps);
+
+        const editDef = result.toolDefinitions.find((d) => d.name === 'image_edit_oai');
+        expect(editDef).toBeDefined();
+        expect(editDef?.parameters).toBeDefined();
+        expect(result.toolRegistry.has('image_edit_oai')).toBe(true);
+      });
     });
 
     describe('toolkit mapping invariants', () => {
