@@ -211,6 +211,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
@@ -267,6 +268,10 @@ jobs:
       - name: Build client-package
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
+
+      # About a second, so it is not cached; the chat-package scenarios load the built entries.
+      - name: Build chat package
+        run: npm run build:chat
 
       - name: Restore client app build cache
         id: cache-client-app
@@ -462,6 +467,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
@@ -608,6 +614,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
