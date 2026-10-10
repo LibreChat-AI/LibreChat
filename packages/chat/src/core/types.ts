@@ -1,6 +1,11 @@
 import type {
+  TUser,
+  Agents,
+  TModelSpec,
+  RetentionMode,
   TPayload,
   TMessage,
+  TEphemeralAgent,
   ChatEvent,
   TConversation,
   TPendingSteer,
@@ -61,8 +66,22 @@ export type ChatStream = AsyncIterable<ChatEvent> & {
    * so an abort carries this to stop only the generation it means.
    */
   readonly generationCreatedAt?: number;
+  /** The generation protocol the server selected for this stream; missing or `1` is legacy. */
+  readonly generationProtocolVersion?: number;
+  /** The start attached to a generation already running for this turn instead of starting one. */
+  readonly resumed?: boolean;
   close(): void;
 };
+
+/**
+ * How a start ended. `settled`: the turn already reached its terminal state, so there is nothing
+ * to attach to. `replaced`: a newer generation owns the conversation; the caller attaches to it
+ * or reports the conflict.
+ */
+export type ChatSendResult =
+  | { status: 'stream'; stream: ChatStream }
+  | { status: 'settled'; conversationId: string }
+  | { status: 'replaced'; conversationId: string; streamId: string; generationCreatedAt: number };
 
 export type ChatSendRequest = ChatRequestOptions & {
   trigger: ChatTrigger;
@@ -75,6 +94,8 @@ export type ChatSendRequest = ChatRequestOptions & {
 export type ChatReconnectRequest = ChatRequestOptions & {
   chatId: string;
   streamId?: string;
+  /** Replays the generation so far before live events, for a client that missed them. */
+  resume?: boolean;
   /** The {@link ChatStream.generationCreatedAt} to reattach to, so a newer run is not attached instead. */
   generationCreatedAt?: number;
   abortSignal?: AbortSignal;
@@ -96,6 +117,10 @@ export type ChatAbortRequest = {
 /** What the server did with a stop request. */
 export type ChatAbortResult = {
   success: boolean;
+  generationProtocolVersion?: number;
+  /** The id of the stream that was stopped. */
+  aborted?: string;
+  streamId?: string;
   /** The run reached its own terminal state first, so no abort event follows. */
   settled?: boolean;
   terminalStatus?: 'complete' | 'error' | 'aborted';
@@ -124,6 +149,7 @@ export type ChatSteerRequest = {
 
 /** The server queued the steer; `settled` and `leftover` mark a receipt replayed after the run ended. */
 export type ChatSteerResult = {
+  generationProtocolVersion?: number;
   status: 'queued';
   steerId: string;
   position: number;
@@ -145,10 +171,73 @@ export type ChatSteerTarget = {
 };
 
 /** `removed: false` means the cancel lost its race with the injection or the run's end. */
-export type ChatCancelSteerResult = { removed?: boolean };
+export type ChatCancelSteerResult = { generationProtocolVersion?: number; removed?: boolean };
 
 /** `armed: false` means the steer already injected, was cancelled, or cannot interrupt here. */
-export type ChatArmSteerResult = { armed?: boolean; code?: string; preemptRevision?: number };
+export type ChatArmSteerResult = {
+  generationProtocolVersion?: number;
+  armed?: boolean;
+  code?: string;
+  preemptRevision?: number;
+};
+
+/** The server's view of a conversation's generation, read before reattaching. */
+export type ChatStreamStatus = {
+  generationProtocolVersion?: number;
+  active: boolean;
+  streamId?: string;
+  status?: 'running' | 'complete' | 'error' | 'aborted' | 'requires_action';
+  /** Content generated so far, for a client that reattaches mid-turn. */
+  aggregatedContent?: Array<{ type: string; text?: string }>;
+  createdAt?: number;
+  /** Generation age on the server's clock, so elapsed time survives clock skew. */
+  elapsedMs?: number;
+  resumeState?: Agents.ResumeState;
+  isTemporary?: boolean;
+  /** The pending approval while `status` is `requires_action`. */
+  pendingAction?: Agents.PendingAction;
+  /** Steers a terminal drain parked because no subscriber was live; restored as queued. */
+  unrecoveredSteers?: TPendingSteer[];
+};
+
+/** The agent selection a paused generation resumes with, matching its original request. */
+export type ChatResumeSelection = {
+  conversationId: string;
+  /** The paused generation being resumed. */
+  generationCreatedAt: number;
+  endpoint?: string | null;
+  endpointType?: string | null;
+  agent_id?: string | null;
+  model?: string | null;
+  spec?: string | null;
+  promptPrefix?: string | null;
+  ephemeralAgent?: TEphemeralAgent | null;
+  isTemporary?: boolean;
+};
+
+/** Answers a paused generation: tool approval decisions, or an ask-user reply. */
+export type ChatResumeRequest = ChatResumeSelection & { actionId: string } & (
+    | { decisions: Agents.ToolApprovalResolution[] }
+    | { answer?: string; answers?: Record<string, string> }
+  );
+
+/** The continuation streams over the stream already attached. */
+export type ChatResumeResult = {
+  generationProtocolVersion?: number;
+  streamId: string;
+  conversationId: string;
+  status: 'resuming';
+};
+
+/**
+ * A failed transport request. `code` is `ERR_NETWORK` when the request never got a response, so a
+ * caller can tell an ambiguous failure from a refusal; `response.data` carries the server's reason,
+ * such as `NO_ACTIVE_RUN`, `RUN_PAUSED`, `STEER_UNSUPPORTED` or `RUN_REPLACED`.
+ */
+export type ChatTransportError = Error & {
+  code?: string;
+  response?: { status: number; data: unknown; headers: Record<string, string> };
+};
 
 /**
  * The wire a chat runs over. AI SDK: `ChatTransport`, with LibreChat's two-step run underneath:
@@ -157,13 +246,17 @@ export type ChatArmSteerResult = { armed?: boolean; code?: string; preemptRevisi
  * reports them as unsupported when the transport leaves them out.
  */
 export interface ChatTransport {
-  /** Starts a turn, then attaches to its stream. */
-  sendMessages(request: ChatSendRequest): Promise<ChatStream>;
+  /** Starts a turn, then attaches to its stream. Rejects with a {@link ChatTransportError}. */
+  sendMessages(request: ChatSendRequest): Promise<ChatSendResult>;
   /** Attaches to the running generation, or resolves `null` when nothing is running. */
   reconnectToStream(request: ChatReconnectRequest): Promise<ChatStream | null>;
   /** Stops the running generation; its stream then reports the abort, unless the result says it settled first. */
   abort(request: ChatAbortRequest): Promise<ChatAbortResult>;
   close?(): void;
+  /** Reads the conversation's generation state; what a reload checks before reattaching. */
+  getStatus?(conversationId: string): Promise<ChatStreamStatus>;
+  /** Resumes a paused generation with approval decisions or an ask-user reply. */
+  resume?(request: ChatResumeRequest): Promise<ChatResumeResult>;
   /** Folds text into the running generation. */
   steer?(request: ChatSteerRequest): Promise<ChatSteerResult>;
   /** Withdraws a steer that has not been injected yet. */
@@ -201,8 +294,14 @@ export type ChatHostSettings = {
 
 /** The deployment configuration the chat reads. */
 export type ChatHostConfig = {
-  retentionMode?: string;
+  /** How long the deployment keeps conversations; forced temporary retention hides saving paths. */
+  retentionMode?: RetentionMode;
+  /** Whether replies offer rating feedback. */
   feedbackEnabled: boolean;
+  /** Whether a running chat can be renamed, because the deployment protects a manual title. */
+  canRenameRunningChat: boolean;
+  /** Model specs the deployment offers, for the presets and token limits a spec carries. */
+  modelSpecs?: TModelSpec[];
   balanceEnabled: boolean;
   queuedSendLockTimeoutMs?: number;
   queuedTurnReconciliationTimeoutMs?: number;
@@ -213,7 +312,8 @@ export type ChatHostAuth = {
   headers: Resolvable<Record<string, string>>;
   /** Resolves a fresh token after a 401, or `undefined` when the session cannot be refreshed. */
   refreshToken?: () => Promise<string | undefined>;
-  userId?: string;
+  /** Fills user variables such as `{{current_user}}` in a conversation's prompt prefix. */
+  user?: TUser;
 };
 
 export type ChatHostNavigation = {
