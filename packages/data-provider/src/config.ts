@@ -2654,6 +2654,32 @@ export type TThemeDefinitionConfig = z.infer<typeof themeDefinitionSchema>;
 
 /** A bundled theme name or an inline theme definition applied to every user. */
 export const deploymentThemeSchema = z.union([z.string().trim().min(1), themeDefinitionSchema]);
+
+/** One resolved theme mode as plain data: what the shell's boot script replays on the root. */
+export type ThemeBootStyle = {
+  properties: Array<[string, string]>;
+  attributes: Record<string, string>;
+};
+
+export type ThemeBootModes = { light: ThemeBootStyle; dark: ThemeBootStyle };
+
+/** Each bundled theme resolved at build time, in `THEME_BOOT_FILE` beside the shell. */
+export type BundledThemeBoot = Record<string, ThemeBootModes>;
+
+/** The build output the server reads to hand a bundled theme to the shell's boot script. */
+export const THEME_BOOT_FILE = 'theme-boot.json';
+
+/**
+ * The id of the JSON block the server embeds in the HTML shell with the deployment's base
+ * `interface.theme`, so a first-ever visit paints it before `/api/config` answers. `modes`
+ * is present only for a bundled name; an inline definition is resolved by the bundle.
+ */
+export const DEPLOYMENT_THEME_BOOT_ID = 'deployment-theme-boot';
+
+export type DeploymentThemeBoot = {
+  source: z.infer<typeof deploymentThemeSchema>;
+  modes?: ThemeBootModes;
+};
 /** Single source for the agents panel selector's unsearched list cap; the
  * schema default and the client fallback both read it. */
 export const DEFAULT_AGENT_SELECTOR_LIMIT = 10;

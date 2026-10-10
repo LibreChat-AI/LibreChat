@@ -104,17 +104,37 @@
           /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/i.test(
             path,
           );
+        const mode = dark ? 'dark' : 'light';
+        let boot = null;
         if (!contrast && !publicRoute) {
           try {
             const cached = JSON.parse(localStorage.getItem('deployment-theme') || 'null');
-            const boot =
+            boot =
               cached &&
               cached.v === '__THEME_CACHE_VERSION__' &&
               typeof cached.owner === 'string' &&
               cached.owner === sessionStorage.getItem('deployment-theme-owner') &&
               cached.modes &&
-              cached.modes[dark ? 'dark' : 'light'];
-            if (boot && Array.isArray(boot.properties)) {
+              cached.modes[mode];
+          } catch (e) {
+            /* Denied or corrupt storage replays no cached copy. */
+          }
+        }
+        /* With no copy of its own, the tab paints the deployment's base theme, which the
+         * server embeds in the shell for a bundled name (`readShellTheme` in themeCache.ts),
+         * so even a first-ever visit wears it. Shared links paint their own tenant's. */
+        if (!contrast && !boot && !/^share(?:\/|$)/i.test(path)) {
+          try {
+            const block = document.getElementById('deployment-theme-boot');
+            const shell = block && JSON.parse(block.textContent);
+            boot = shell && shell.modes && shell.modes[mode];
+          } catch (e) {
+            /* A malformed block paints the stock shell. */
+          }
+        }
+        if (boot) {
+          try {
+            if (Array.isArray(boot.properties)) {
               let surface;
               let canvas;
               /* Only the conversation paints the canvas, and the redirects that land on it; other routes keep the split surface. */
@@ -159,7 +179,7 @@
               }
             }
           } catch (e) {
-            /* Denied or corrupt storage paints the stock shell, as before. */
+            /* A malformed copy paints the stock shell, as before. */
           }
         }
 

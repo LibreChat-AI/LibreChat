@@ -1,3 +1,4 @@
+import type { ThemeBootStyle } from 'librechat-data-provider';
 import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
 import {
   controlBorderFallback,
@@ -228,10 +229,7 @@ export function clearAppliedTheme(root: HTMLElement = document.documentElement):
 }
 
 /** What `applyResolvedTheme` writes on the root, as plain data a boot script can replay. */
-export type ResolvedThemeStyle = {
-  properties: Array<[string, string]>;
-  attributes: Record<string, string>;
-};
+export type ResolvedThemeStyle = ThemeBootStyle;
 
 export function describeResolvedTheme(theme: ResolvedThemeDefinition): ResolvedThemeStyle {
   return {

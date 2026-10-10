@@ -3,7 +3,12 @@ import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { useTheme, clickHouseTheme } from '@librechat/client';
 import { act, render, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { QueryKeys, MutationKeys, dataService } from 'librechat-data-provider';
+import {
+  QueryKeys,
+  MutationKeys,
+  dataService,
+  DEPLOYMENT_THEME_BOOT_ID,
+} from 'librechat-data-provider';
 import type { TStartupConfig, TUser } from 'librechat-data-provider';
 import type { ThemeDefinition } from '@librechat/client';
 import {
@@ -503,6 +508,66 @@ describe('DeploymentTheme cache', () => {
     act(() => signOut());
     await waitFor(() => expect(sessionStorage.getItem(THEME_OWNER_KEY)).toBeNull());
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+  });
+
+  describe("the shell's base theme", () => {
+    const embed = (source: NonNullable<ConfigTheme>) => {
+      const block = document.createElement('script');
+      block.type = 'application/json';
+      block.id = DEPLOYMENT_THEME_BOOT_ID;
+      block.textContent = JSON.stringify({ source });
+      document.head.append(block);
+    };
+
+    afterEach(() => {
+      document.getElementById(DEPLOYMENT_THEME_BOOT_ID)?.remove();
+      window.history.pushState({}, '', '/');
+    });
+
+    it('paints a first-ever visit in the first commit, before the config answers', () => {
+      embed('clickhouse');
+      pending();
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBe('clickhouse');
+      expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+      expect(localStorage.getItem('theme-definition')).toBeNull();
+    });
+
+    it('resolves an inline definition the build could not', () => {
+      embed(inlineTheme as NonNullable<ConfigTheme>);
+      pending();
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBe(inlineTheme.name);
+    });
+
+    it("yields to the owner's cache", () => {
+      embed('librechat');
+      cacheTheme();
+      pending();
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBe('clickhouse');
+    });
+
+    it('yields to the answer once it arrives', async () => {
+      embed('clickhouse');
+      getStartupConfig.mockResolvedValue(configWith(undefined));
+      renderTheme(queryClient, user);
+
+      await waitFor(() => expect(root().dataset.theme).toBeUndefined());
+      expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+    });
+
+    it('does not paint on a shared link, which paints its own tenant', () => {
+      embed('clickhouse');
+      pending();
+      window.history.pushState({}, '', '/share/abc');
+      renderTheme(queryClient);
+
+      expect(root().dataset.theme).toBeUndefined();
+    });
   });
 
   it('does not seed the cache on a shared link, which paints its own tenant', () => {

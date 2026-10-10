@@ -1,7 +1,7 @@
-import { themeRoleFingerprint } from 'librechat-data-provider';
 import { resolveTheme, describeResolvedTheme } from '@librechat/client';
+import { themeRoleFingerprint, DEPLOYMENT_THEME_BOOT_ID } from 'librechat-data-provider';
+import type { TInterfaceConfig, TUser, DeploymentThemeBoot } from 'librechat-data-provider';
 import type { ResolvedThemeStyle, ThemeDefinition } from '@librechat/client';
-import type { TInterfaceConfig, TUser } from 'librechat-data-provider';
 
 type DeploymentThemeValue = TInterfaceConfig['theme'];
 
@@ -63,12 +63,38 @@ export function appBasePath(): string {
   return base ? new URL(base.href).pathname : '/';
 }
 
+const routePath = (pathname: string, basePath: string): string =>
+  pathname.startsWith(basePath) ? pathname.slice(basePath.length) : pathname.replace(/^\//, '');
+
 /** `pathname` relative to the app's base path. */
 export function isPublicRoute(pathname: string, basePath = '/'): boolean {
-  const path = pathname.startsWith(basePath)
-    ? pathname.slice(basePath.length)
-    : pathname.replace(/^\//, '');
-  return PUBLIC_ROUTE.test(path);
+  return PUBLIC_ROUTE.test(routePath(pathname, basePath));
+}
+
+/** Shared links paint their own tenant's theme, so the deployment's base theme never stands in. */
+const SHARE_ROUTE = /^share(?:\/|$)/i;
+
+/**
+ * The deployment's base `interface.theme`, which the server embeds in the shell
+ * (`DEPLOYMENT_THEME_BOOT_ID`) for the boot script to paint before `/api/config` answers.
+ * Absent on a shared link and wherever no server said (the Vite dev server).
+ */
+export function readShellTheme(
+  pathname: string,
+  basePath = '/',
+): NonNullable<DeploymentThemeValue> | undefined {
+  if (SHARE_ROUTE.test(routePath(pathname, basePath))) {
+    return undefined;
+  }
+  try {
+    const block = document.getElementById(DEPLOYMENT_THEME_BOOT_ID);
+    const boot = block
+      ? (JSON.parse(block.textContent ?? '') as Partial<DeploymentThemeBoot>)
+      : null;
+    return boot?.source ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export const themeOwner = (user?: Pick<TUser, 'id' | 'tenantId'>): string | undefined =>
@@ -176,16 +202,20 @@ export function writeThemeCache(entry: ThemeCacheEntry): void {
  * - otherwise the previous answer keeps painting while it is the signed-out one, which is
  *   the same deployment's; one from another signed-in key may be another identity's, so
  *   nothing paints until the current answer arrives.
+ * Wherever nothing would paint, the deployment's base theme from the shell (`shell`) stands
+ * in, as the signed-out answer does: it is served to everyone, so it is no one else's.
  * A theme that turns out invalid is cleared by the caller, which resolves it.
  */
 export function reconcileThemeCache({
   cached,
   owner,
   answer,
+  shell,
 }: {
   cached?: ThemeCacheEntry;
   owner?: string;
   answer?: ThemeAnswer;
+  shell?: DeploymentThemeValue;
 }): { theme: DeploymentThemeValue; cache: ThemeCacheAction } {
   if (answer?.current) {
     if (!owner) {
@@ -194,16 +224,16 @@ export function reconcileThemeCache({
     return { theme: answer.theme, cache: answer.theme == null ? 'clear' : 'write' };
   }
   if (cached?.disowned) {
-    return { theme: undefined, cache: 'keep' };
+    return { theme: shell, cache: 'keep' };
   }
   if (cached && owner !== undefined && cached.owner !== owner) {
-    return { theme: undefined, cache: 'disown' };
+    return { theme: shell, cache: 'disown' };
   }
   if (cached) {
     return { theme: cached.source, cache: 'keep' };
   }
   if (answer && !answer.current && !answer.signedOut) {
-    return { theme: undefined, cache: 'keep' };
+    return { theme: shell, cache: 'keep' };
   }
-  return { theme: answer?.theme, cache: 'keep' };
+  return { theme: answer ? answer.theme : shell, cache: 'keep' };
 }
