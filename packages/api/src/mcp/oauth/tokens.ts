@@ -855,9 +855,11 @@ export class MCPTokenStorage {
           `${logPrefix} New refresh token received from OAuth server, will store/update`,
         );
         const encryptedRefreshToken = await encryptV2(tokens.refresh_token);
-        const extendedTokens = tokens as ExtendedOAuthTokens;
-        const refreshTokenExpiry = extendedTokens.refresh_token_expires_in
-          ? new Date(Date.now() + extendedTokens.refresh_token_expires_in * 1000)
+        const extendedTokens: ExtendedOAuthTokens = tokens;
+        const refreshTokenExpirySeconds =
+          extendedTokens.refresh_token_expires_in ?? extendedTokens.refresh_expires_in;
+        const refreshTokenExpiry = refreshTokenExpirySeconds
+          ? new Date(Date.now() + refreshTokenExpirySeconds * 1000)
           : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // Default to 1 year
 
         /** Calculated expiresIn for refresh token */

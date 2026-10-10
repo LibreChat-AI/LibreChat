@@ -88,4 +88,34 @@ describe('MCPTokenStorage.storeTokens expiry handling', () => {
 
     expect(stored.expiresIn).toBe(DEFAULT_TTL_SECONDS);
   });
+
+  it.each([
+    {
+      source: 'refresh_token_expires_in',
+      expiry: { refresh_token_expires_in: 3600 },
+      expected: 3600,
+    },
+    { source: 'refresh_expires_in', expiry: { refresh_expires_in: 3600 }, expected: 3600 },
+    { source: 'the default (neither field)', expiry: {}, expected: DEFAULT_TTL_SECONDS },
+  ])('stores refresh token expiry from $source', async ({ expiry, expected }) => {
+    const createToken = jest.fn().mockResolvedValue({});
+    await MCPTokenStorage.storeTokens({
+      userId: 'user-1',
+      serverName: 'keycloak',
+      tokens: {
+        access_token: 'access-token',
+        token_type: 'Bearer',
+        refresh_token: 'refresh-token',
+        ...expiry,
+      },
+      createToken: createToken as unknown as TokenMethods['createToken'],
+    });
+
+    const refreshTokenCall = createToken.mock.calls.find(
+      (call) => call[0]?.type === 'mcp_oauth_refresh',
+    );
+    expect(refreshTokenCall).toBeDefined();
+    expect(refreshTokenCall![0].expiresIn).toBeGreaterThanOrEqual(expected - 1);
+    expect(refreshTokenCall![0].expiresIn).toBeLessThanOrEqual(expected);
+  });
 });

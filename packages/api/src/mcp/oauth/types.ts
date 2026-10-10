@@ -150,4 +150,6 @@ export interface MCPOAuthTokens extends OAuthTokens {
 export interface ExtendedOAuthTokens extends OAuthTokens {
   /** Refresh token expiry in seconds (non-standard, some providers include this) */
   refresh_token_expires_in?: number;
+  /** Keycloak's refresh token expiry in seconds */
+  refresh_expires_in?: number;
 }
