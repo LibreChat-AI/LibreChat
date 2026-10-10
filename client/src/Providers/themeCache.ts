@@ -16,6 +16,13 @@ export const THEME_CACHE_KEY = 'deployment-theme';
  * `client/vite.config.ts` writes the same value into the boot script's version check.
  */
 export const THEME_CACHE_VERSION = themeRoleFingerprint();
+/**
+ * The owner this tab last saw signed in. Session storage lives and dies with the tab, so
+ * the cache is replayed only on a reload of a tab that was serving its owner; a new tab,
+ * or one whose identity changed elsewhere, waits for its own answer. The boot script
+ * reads this key too.
+ */
+export const THEME_OWNER_KEY = 'deployment-theme-owner';
 
 export type ThemeCacheEntry = {
   v: string;
@@ -95,6 +102,30 @@ export function readThemeCache(): ThemeCacheEntry | undefined {
     // Storage is an optional adapter: denied or corrupt storage paints no cached theme.
   }
   return undefined;
+}
+
+/** The cache, only when this tab last saw its owner signed in, so the replay cannot cross identities. */
+export function readOwnedThemeCache(): ThemeCacheEntry | undefined {
+  try {
+    const tabOwner = sessionStorage.getItem(THEME_OWNER_KEY);
+    const entry = tabOwner ? readThemeCache() : undefined;
+    return entry?.owner === tabOwner ? entry : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Records the tab's signed-in owner, or forgets it once no one is signed in. */
+export function setThemeOwner(owner?: string): void {
+  try {
+    if (owner) {
+      sessionStorage.setItem(THEME_OWNER_KEY, owner);
+    } else {
+      sessionStorage.removeItem(THEME_OWNER_KEY);
+    }
+  } catch {
+    // Without session storage no owner is known, so the cache is never replayed.
+  }
 }
 
 export function clearThemeCache(): void {
