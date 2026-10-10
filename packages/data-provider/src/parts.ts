@@ -27,7 +27,10 @@ export type TextDeltaContentPart = {
 } & ContentMetadata;
 
 /** Every content part the mapping accepts. */
-export type MappableContentPart = TMessageContentParts | TextDeltaContentPart;
+export type MappableContentPart =
+  | TMessageContentParts
+  | TextDeltaContentPart
+  | AskUserQuestionContentPart;
 
 type ContentPartOf<T extends ContentTypes> = Extract<MappableContentPart, { type: T }>;
 type ToolCallContentPart = ContentPartOf<ContentTypes.TOOL_CALL>;
@@ -186,7 +189,7 @@ export type AskUserQuestionData = {
  * Client-written content part for an `ask_user_question` pause. It rides in the content array
  * under a type outside `ContentTypes`, so it occupies a slot like any other part.
  */
-export type AskUserQuestionContentPart = {
+export type AskUserQuestionContentPart = ContentMetadata & {
   type: typeof ASK_USER_QUESTION;
   [ASK_USER_QUESTION]: AskUserQuestionData;
 };
@@ -286,14 +289,6 @@ export const isUIToolPart = (part: UIMessagePart): part is UIToolPart =>
 
 export const isUIDataPart = (part: UIMessagePart): part is UIDataPart =>
   part.type.startsWith('data-');
-
-/** Whether a content part is an `ask_user_question` pause, whose type `ContentTypes` lacks. */
-export const isAskUserQuestionContent = (
-  part: object | null | undefined,
-): part is AskUserQuestionContentPart =>
-  part != null &&
-  (part as { type?: unknown }).type === ASK_USER_QUESTION &&
-  ASK_USER_QUESTION in part;
 
 const hasKeys = (value: object) => Object.keys(value).length > 0;
 
@@ -558,11 +553,6 @@ export function toUIPart(
   if (part == null) {
     return stepStart;
   }
-  const unlisted: object = part;
-  if (isAskUserQuestionContent(unlisted)) {
-    const { type: _type, ...data } = unlisted;
-    return { type: 'data-ask-user-question', data };
-  }
   switch (part.type) {
     case ContentTypes.TEXT: {
       const { type: _type, text, ...rest } = part;
@@ -646,6 +636,10 @@ export function toUIPart(
     case ContentTypes.STEER:
     case ContentTypes.ERROR:
       return toDataPart(part);
+    case ASK_USER_QUESTION: {
+      const { type: _type, ...data } = part;
+      return { type: 'data-ask-user-question', data };
+    }
   }
   return stepStart;
 }

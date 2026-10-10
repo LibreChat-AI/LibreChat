@@ -409,7 +409,7 @@ describe('parts', () => {
 
       expect(parts).toHaveLength(content.length);
       for (let i = 0; i < content.length; i++) {
-        const part = content[i] as MappableContentPart | undefined;
+        const part = content[i] as TMessageContentParts | undefined;
         expect(parts[i].type).toBe(part ? expectedUITypes[part.type] : 'step-start');
       }
       expect(fromUIParts(parts)).toStrictEqual(content);
@@ -434,7 +434,7 @@ describe('parts', () => {
         const parts = toUIParts(content);
         expect(parts).toHaveLength(length);
         for (let i = 0; i < length; i++) {
-          const part = content[i] as MappableContentPart | undefined;
+          const part = content[i] as TMessageContentParts | undefined;
           expect(parts[i].type).toBe(part ? expectedUITypes[part.type] : 'step-start');
         }
         expect(fromUIParts(parts)).toStrictEqual(content);
@@ -1242,7 +1242,7 @@ describe('parts', () => {
       description: 'Run it?',
       ...fields,
     });
-    const toolCall = (fields: Partial<Agents.ToolCall>): TMessageContentParts => ({
+    const toolCall = (fields: Partial<Agents.ToolCall> & PartMetadata): TMessageContentParts => ({
       type: ContentTypes.TOOL_CALL,
       tool_call: {
         type: 'tool_call',
@@ -1377,13 +1377,13 @@ describe('parts', () => {
         tool_call_id: 'ask-1',
       },
     };
-    const content = [
+    const content: TMessageContentParts[] = [
       { type: ContentTypes.TEXT, text: 'Before I search' },
       ask as unknown as TMessageContentParts,
     ];
 
     it('maps the pause to a data-ask-user-question part and back', () => {
-      const part = toUIPart(ask as unknown as MappableContentPart);
+      const part = toUIPart(ask);
 
       expect(part).toStrictEqual({
         type: 'data-ask-user-question',
@@ -1394,7 +1394,7 @@ describe('parts', () => {
     });
 
     it('keeps the pause in its content slot', () => {
-      const parts = toUIParts([undefined, ask as unknown as MappableContentPart]);
+      const parts = toUIParts([undefined, ask]);
 
       expect(parts.map((part) => part.type)).toEqual(['step-start', 'data-ask-user-question']);
       const restored = fromUIParts(parts);
