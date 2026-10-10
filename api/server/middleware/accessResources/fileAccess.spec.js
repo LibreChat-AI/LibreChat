@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const { tenantStorage } = require('@librechat/data-schemas');
 const { ResourceType, PrincipalType, PrincipalModel } = require('librechat-data-provider');
 const { MongoMemoryServer } = require('mongodb-memory-server');
-const { fileAccess } = require('./fileAccess');
+const { fileAccess, canAccessFile } = require('./fileAccess');
 const { User, Role, AclEntry } = require('~/db/models');
 const { createAgent, createFile } = require('~/models');
 
@@ -644,6 +644,71 @@ describe('fileAccess middleware', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(403);
+    });
+  });
+  describe('canAccessFile', () => {
+    const viewer = () => ({ id: testUser._id.toString(), role: 'USER' });
+
+    test('admits the owner of a file record', async () => {
+      const file = await createFile({
+        user: testUser._id.toString(),
+        file_id: 'owned_file',
+        filepath: '/test/owned.txt',
+        filename: 'owned.txt',
+        type: 'text/plain',
+        size: 100,
+      });
+
+      await expect(canAccessFile(viewer(), file)).resolves.toBe(true);
+    });
+
+    test('admits a viewer of an agent the file is attached to, and refuses others', async () => {
+      const file = await createFile({
+        user: otherUser._id.toString(),
+        file_id: 'agent_file',
+        filepath: '/test/agent.txt',
+        filename: 'agent.txt',
+        type: 'text/plain',
+        size: 100,
+      });
+      await expect(canAccessFile(viewer(), file)).resolves.toBe(false);
+
+      const agent = await createAgent({
+        id: `agent_${Date.now()}`,
+        name: 'Shared Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: otherUser._id,
+        tool_resources: { file_search: { file_ids: ['agent_file'] } },
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: testUser._id,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        permBits: 1,
+        grantedBy: otherUser._id,
+      });
+
+      await expect(canAccessFile(viewer(), file)).resolves.toBe(true);
+    });
+
+    test("refuses a tenant-scoped file to another tenant's user, even its owner", async () => {
+      const file = await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        createFile({
+          user: testUser._id.toString(),
+          file_id: 'tenant_file',
+          filepath: '/test/tenant.txt',
+          filename: 'tenant.txt',
+          type: 'text/plain',
+          size: 100,
+          tenantId: 'tenant-a',
+        }),
+      );
+
+      await expect(canAccessFile({ ...viewer(), tenantId: 'tenant-b' }, file)).resolves.toBe(false);
+      await expect(canAccessFile({ ...viewer(), tenantId: 'tenant-a' }, file)).resolves.toBe(true);
     });
   });
 });
