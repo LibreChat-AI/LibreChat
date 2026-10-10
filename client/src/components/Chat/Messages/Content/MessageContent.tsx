@@ -4,6 +4,7 @@ import { Alert, DelayedRender } from '@librechat/client';
 import { Constants, parseThinkingContent } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
+import AttachmentRecoveryActions from '~/components/Messages/Content/Error/recovery';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Error from '~/components/Messages/Content/Error';
 import ToolCallLimitNotice from './ToolCallLimitNotice';
@@ -85,6 +86,7 @@ export const ErrorMessage = ({
     <Container message={message}>
       <ErrorBox className={className}>
         <Error text={text} message={message} />
+        <AttachmentRecoveryActions text={text} messageId={message?.messageId} />
       </ErrorBox>
     </Container>
   );

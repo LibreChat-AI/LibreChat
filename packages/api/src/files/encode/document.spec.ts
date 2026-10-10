@@ -1,8 +1,8 @@
 import { Providers } from '@librechat/agents';
 import { mbToBytes } from 'librechat-data-provider';
 import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
-import type { ServerRequest } from '~/types';
-import { encodeAndFormatDocuments } from './document';
+import type { BedrockDocumentBlock, DocumentBlock, ServerRequest } from '~/types';
+import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 
 /** Mock the validation module */
 jest.mock('~/files/validation', () => ({
@@ -1201,5 +1201,78 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       expect(result.documents).toHaveLength(6);
       expect(result.files).toHaveLength(6);
     });
+  });
+});
+
+describe('dedupeDocumentNames', () => {
+  const bedrock = (name: string): BedrockDocumentBlock => ({
+    type: 'document',
+    document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+  });
+  const names = (messages: Array<{ documents?: DocumentBlock[] }>) =>
+    messages.map((message) =>
+      (message.documents ?? []).map((block) =>
+        'document' in block ? block.document.name : block.type,
+      ),
+    );
+
+  it('renames repeated Bedrock document names across the conversation in order', () => {
+    const first = bedrock('Stripe fees');
+    const messages: Array<{ documents?: DocumentBlock[] }> = [
+      { documents: [first, bedrock('invoice')] },
+      {},
+      { documents: [bedrock('Stripe fees'), bedrock('STRIPE FEES')] },
+      { documents: [bedrock('Stripe fees')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(messages)).toEqual([
+      ['Stripe fees', 'invoice'],
+      [],
+      ['Stripe fees (2)', 'STRIPE FEES (3)'],
+      ['Stripe fees (4)'],
+    ]);
+    /** The first occurrence keeps its own block object. */
+    expect(messages[0].documents?.[0]).toBe(first);
+  });
+
+  it('does not mutate the renamed source blocks', () => {
+    const repeated = bedrock('report');
+    const messages = [{ documents: [bedrock('report')] }, { documents: [repeated] }];
+
+    dedupeDocumentNames(messages);
+
+    expect(repeated.document.name).toBe('report');
+    expect(names(messages)).toEqual([['report'], ['report (2)']]);
+  });
+
+  it('skips past a name a later upload already uses and keeps names within the limit', () => {
+    const long = 'a'.repeat(199) + ' ';
+    const messages = [
+      { documents: [bedrock('notes'), bedrock('notes (2)')] },
+      { documents: [bedrock('notes'), bedrock(long), bedrock(long)] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    const [, second] = names(messages);
+    expect(names(messages)[0]).toEqual(['notes', 'notes (2)']);
+    expect(second[0]).toBe('notes (3)');
+    expect(second[2]).toBe(`${'a'.repeat(196)} (2)`);
+    expect(second[2].length).toBeLessThanOrEqual(200);
+  });
+
+  it('leaves non-Bedrock blocks alone', () => {
+    const anthropic: DocumentBlock = {
+      type: 'document',
+      title: 'report.pdf',
+      source: { type: 'base64', media_type: 'application/pdf', data: 'x' },
+    };
+    const messages = [{ documents: [anthropic] }, { documents: [{ ...anthropic }] }];
+
+    dedupeDocumentNames(messages);
+
+    expect(messages[1].documents[0]).toEqual(anthropic);
   });
 });

@@ -145,6 +145,7 @@ const {
   collectFreshSkillPrimeNames,
   isSkillPrimeMessage,
   collectFileIds,
+  dedupeDocumentNames,
   processTextWithTokenLimit,
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
@@ -2653,6 +2654,7 @@ class AgentClient extends BaseClient {
     /** Memory copies built for canonical recounts, reused by the memory payload pass. */
     const memoryFormattedMessages = [];
 
+    dedupeDocumentNames(orderedMessages);
     const formattedMessages = orderedMessages.map((message, i) => {
       const formattedMessage = formatMessage({
         message,

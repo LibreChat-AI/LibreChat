@@ -5,7 +5,9 @@ const {
   createNativeCopyPreflight,
   withoutTraceRefs,
   isTemporaryRecord,
+  withoutMessageFiles,
   getAllMessagesUpToParent,
+  withoutConversationFiles,
   transferNativeCopyProvenance,
 } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
@@ -22,17 +24,19 @@ const BaseClient = require('~/app/clients/BaseClient');
  * @param {ImportBatchBuilder} importBatchBuilder - Instance of ImportBatchBuilder
  * @param {object} [options] - Clone behavior for the source conversation.
  * @param {boolean} [options.detachSubagentRuntime=false] - Remove durable child execution metadata.
+ * @param {boolean} [options.excludeFiles=false] - Drop uploads and code outputs from every clone.
  * @returns {Map<string, string>} Map of original messageIds to new messageIds
  */
 function cloneMessagesWithTimestamps(
   messagesToClone,
   importBatchBuilder,
-  { detachSubagentRuntime = false, nativeCopy = false } = {},
+  { detachSubagentRuntime = false, nativeCopy = false, excludeFiles = false } = {},
 ) {
   const { entries, idMapping } = cloneLineage(messagesToClone, uuidv4);
   for (const { source, messageId, parentMessageId, createdAt } of entries) {
+    const traced = withoutTraceRefs(source);
     const clonedMessage = {
-      ...withoutTraceRefs(source),
+      ...(excludeFiles ? withoutMessageFiles(traced) : traced),
       messageId,
       parentMessageId,
       createdAt,
@@ -62,6 +66,8 @@ function cloneMessagesWithTimestamps(
  * @param {boolean} [params.records=false] - Optional flag for returning actual database records or resulting conversation and messages.
  * @param {boolean} [params.splitAtTarget=false] - Optional flag for splitting the messages at the target message level.
  * @param {string} [params.latestMessageId] - latestMessageId - Required if splitAtTarget is true.
+ * @param {boolean} [params.excludeFiles=false] - Copy without uploads or code outputs, so a branch whose
+ *   attachments keep failing can continue without any of them.
  * @param {object} [params.interfaceConfig] - Runtime interface config used to apply retention to cloned records.
  * @param {object} [params.filters] - Source-aware content filters applied before cloned records are persisted.
  * @param {object} [params.legacyPii] - Legacy messageFilter.pii applied before cloned records are persisted.
@@ -77,6 +83,7 @@ async function forkConversation({
   records = false,
   splitAtTarget = false,
   latestMessageId,
+  excludeFiles = false,
   filters,
   legacyPii,
   builderFactory = createImportBatchBuilder,
@@ -129,12 +136,13 @@ async function forkConversation({
        * task protocol and private serialized model transcript. */
       detachSubagentRuntime: originalConvo.subagentThread != null,
       nativeCopy: true,
+      excludeFiles,
     });
 
     const result = importBatchBuilder.finishConversation(
       newTitle || originalConvo.title,
       new Date(),
-      originalConvo,
+      excludeFiles ? withoutConversationFiles(originalConvo) : originalConvo,
     );
     await importBatchBuilder.saveBatch();
     logger.debug(

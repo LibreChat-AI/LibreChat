@@ -249,8 +249,9 @@ const HoverButtons = ({
         />
       )}
 
-      {/* Fork Button */}
-      {!error && !isActiveStreamingMessage && (
+      {/* Fork Button: offered on a failed turn too, since copying the conversation (optionally
+          without its files) is one of the ways out of a branch that keeps failing. */}
+      {!isActiveStreamingMessage && (
         <Fork
           messageId={message.messageId}
           conversationId={conversation.conversationId}

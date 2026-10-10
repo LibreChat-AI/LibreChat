@@ -162,6 +162,30 @@ describe('HoverButtons edit affordance', () => {
     expect(screen.getByTestId('copy-response-button')).toBeEnabled();
   });
 
+  /** Copying the conversation, optionally without its files, is a way out of a branch that keeps
+   *  failing; editing the persisted error text is not, so Edit stays withheld. */
+  it('offers fork but not edit on an error response', () => {
+    const errorMessage = {
+      ...userMessage,
+      messageId: 'assistant-error',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      error: true,
+      text: 'Error uploading code environment file: 429',
+    } as TMessage;
+
+    const container = renderHoverButtons({
+      isSubmitting: false,
+      message: errorMessage,
+      isLast: true,
+      latestMessageId: errorMessage.messageId,
+      thread: [userMessage, errorMessage],
+    });
+
+    expect(screen.getByRole('button', { name: 'Open Fork Menu' })).toBeInTheDocument();
+    expect(container.querySelector(`#edit-${errorMessage.messageId}`)).toBeNull();
+  });
+
   it('disables copy when the response serializes to nothing', () => {
     const errorPartMessage = {
       ...userMessage,

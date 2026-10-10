@@ -11,6 +11,7 @@ import type { IMongoFile } from '@librechat/data-schemas';
 import type {
   DocumentBlock,
   AnthropicDocumentBlock,
+  BedrockDocumentBlock,
   StrategyFunctions,
   DocumentResult,
   ServerRequest,
@@ -22,6 +23,62 @@ import {
 } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
+
+/** The longest document name LibreChat sends to Bedrock. */
+const BEDROCK_DOCUMENT_NAME_LIMIT = 200;
+
+function isBedrockDocumentBlock(block: DocumentBlock): block is BedrockDocumentBlock {
+  return block.type === 'document' && 'document' in block;
+}
+
+/** `name (n)`, trimmed so the suffix fits the limit and never follows a space. */
+function numberedDocumentName(name: string, index: number): string {
+  const suffix = ` (${index})`;
+  return `${name.slice(0, BEDROCK_DOCUMENT_NAME_LIMIT - suffix.length).trimEnd()}${suffix}`;
+}
+
+/**
+ * Bedrock rejects a request in which two documents share a name, and every turn resends the
+ * documents of earlier turns, so two uploads with the same filename would fail every later turn of
+ * the conversation. Renames each repeat in conversation order (`report`, `report (2)`), leaving the
+ * first occurrence and every non-Bedrock block untouched. Names compare case-insensitively, as
+ * the restriction is not documented to be case-sensitive.
+ */
+export function dedupeDocumentNames(messages: Array<{ documents?: DocumentBlock[] | null }>): void {
+  const used = new Set<string>();
+  const nextIndex = new Map<string, number>();
+  for (const message of messages) {
+    const documents = message.documents;
+    if (documents == null || documents.length === 0) {
+      continue;
+    }
+    let renamed: DocumentBlock[] | undefined;
+    for (let i = 0; i < documents.length; i++) {
+      const block = documents[i];
+      if (!isBedrockDocumentBlock(block)) {
+        continue;
+      }
+      const original = block.document.name;
+      let name = original;
+      const baseKey = original.toLowerCase();
+      let index = nextIndex.get(baseKey) ?? 2;
+      while (used.has(name.toLowerCase())) {
+        name = numberedDocumentName(original, index);
+        index++;
+      }
+      nextIndex.set(baseKey, index);
+      used.add(name.toLowerCase());
+      if (name === original) {
+        continue;
+      }
+      renamed ??= [...documents];
+      renamed[i] = { ...block, document: { ...block.document, name } };
+    }
+    if (renamed != null) {
+      message.documents = renamed;
+    }
+  }
+}
 
 /** Anthropic only accepts PDFs as base64 documents; textual types must use a text source */
 function getAnthropicDocumentSource(
@@ -271,7 +328,7 @@ export async function encodeAndFormatDocuments(
 
       const sanitizedName = (file.filename || 'document')
         .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
-        .slice(0, 200);
+        .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
       result.documents.push({
         type: 'document',
         document: {

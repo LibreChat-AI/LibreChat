@@ -8,12 +8,14 @@ const Image = ({
   onDelete,
   progress = 1,
   source = FileSources.local,
+  removeLabel,
 }: {
   imageBase64?: string;
   url?: string;
   onDelete: () => void;
   progress: number; // between 0 and 1
   source?: FileSources;
+  removeLabel?: string;
 }) => {
   return (
     <div className="group text-text-secondary relative inline-block text-sm">
@@ -23,7 +25,7 @@ const Image = ({
       <div className="border-border-medium relative flex overflow-hidden rounded-2xl border">
         <ImagePreview source={source} imageBase64={imageBase64} url={url} progress={progress} />
       </div>
-      <RemoveFile onRemove={onDelete} />
+      <RemoveFile onRemove={onDelete} label={removeLabel} />
     </div>
   );
 };

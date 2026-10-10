@@ -217,6 +217,8 @@ function Fork({
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [remember, setRemember] = useState(false);
+  /** Per fork, never remembered: a copy without files is a recovery step, not a preference. */
+  const [excludeFiles, setExcludeFiles] = useState(false);
   const { navigateToConvo } = useNavigateToConvo();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [forkSetting, setForkSetting] = useRecoilState(store.forkSetting);
@@ -280,6 +282,7 @@ function Fork({
       option,
       splitAtTarget,
       latestMessageId: getLatestMessageId?.(),
+      ...(excludeFiles ? { excludeFiles } : {}),
     });
   };
 
@@ -421,6 +424,13 @@ function Fork({
           onToggle={setSplitAtTarget}
           labelKey="com_ui_fork_split_target"
           infoKey="com_ui_fork_info_start"
+        />
+        <CheckboxOption
+          id="exclude-files-checkbox"
+          checked={excludeFiles}
+          onToggle={setExcludeFiles}
+          labelKey="com_ui_fork_exclude_files"
+          infoKey="com_ui_fork_info_exclude_files"
         />
         <CheckboxOption
           id="remember-checkbox"
