@@ -315,7 +315,7 @@ jobs:
         run: |
           node_modules/.bin/eslint --config eslint.config.mjs \
             api/server/index.js client/src/main.jsx packages/api/src/index.ts
-          node --test scripts/eslint/design.test.mjs
+          node --test scripts/eslint/design.test.mjs scripts/eslint/chat.test.mjs
 
       - name: Validate the design-rule suppressions baseline
         id: suppressions

@@ -633,6 +633,10 @@ test.describe('the recorded design-rule backlog', () => {
       resolve(repoRoot, 'scripts/eslint/design.mjs'),
       join(emptyRoot, 'scripts/eslint/design.mjs'),
     );
+    copyFileSync(
+      resolve(repoRoot, 'scripts/eslint/chat.mjs'),
+      join(emptyRoot, 'scripts/eslint/chat.mjs'),
+    );
     copyFileSync(resolve(repoRoot, 'package.json'), join(emptyRoot, 'package.json'));
     symlinkSync(resolve(repoRoot, 'node_modules'), join(emptyRoot, 'node_modules'), 'dir');
     const deleted = run(
@@ -1103,6 +1107,7 @@ function syntheticRoot(): string {
     'scripts/i18n.mts',
     /** The local design rules the config registers and the runner validates against. */
     'scripts/eslint/design.mjs',
+    'scripts/eslint/chat.mjs',
     'package.json',
     'package-lock.json',
     'eslint.config.mjs',

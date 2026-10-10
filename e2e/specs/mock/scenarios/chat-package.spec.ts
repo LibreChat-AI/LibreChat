@@ -26,102 +26,122 @@ const UI_MODULES = [
   '@librechat/client',
 ];
 
-const restricted = (relativePath: string, source: string): string[] =>
-  messagesFor(lintStdin(relativePath, source), 'no-restricted-imports');
+/** The forms a source can load a module in; the boundary judges each the same way. */
+const FORMS = (specifier: string): string[] => [
+  `import x from '${specifier}';\nexport default x;\n`,
+  `export * from '${specifier}';\n`,
+  `export const load = () => import('${specifier}');\n`,
+  `export const load = () => import(\`${specifier}\`);\n`,
+  `export const load = () => require('${specifier}');\n`,
+  `export type X = typeof import('${specifier}');\n`,
+];
 
-/** `import()` and `require()` are not static imports; their own rule reports them. */
-const restrictedLoad = (relativePath: string, specifier: string): string[] =>
-  messagesFor(
-    lintStdin(
-      relativePath,
-      [
-        `export const load = () => import('${specifier}');`,
-        `export const sync = () => require('${specifier}');`,
-        `export const template = () => import(\`${specifier}\`);`,
-        `export const templateSync = () => require(\`${specifier}\`);`,
-        '',
-      ].join('\n'),
-    ),
-    'no-restricted-syntax',
+/** One row of the boundary table: a file, a specifier, and whether the boundary rejects it. */
+type BoundaryRow = { file: string; specifier: string; rejected: boolean };
+
+const CORE = 'packages/chat/src/core/streaming/probe.ts';
+const BINDING = 'packages/chat/src/react/probe.ts';
+const COMPONENT = 'packages/chat/src/components/Probe.tsx';
+
+/** Every spelling of the `/react` and `/components` entries from a nested core file. */
+const ENTRY_SPELLINGS = ['react', 'components'].flatMap((entry) => [
+  `../../${entry}`,
+  `../../${entry}/`,
+  `../../${entry}.ts`,
+  `../../${entry}.tsx`,
+  `../../${entry}.js`,
+  `../../${entry}.mjs`,
+  `../../${entry}.cjs`,
+  `../../${entry}/index`,
+  `../../${entry}/index.js`,
+]);
+
+const row = (file: string, rejected: boolean) => (specifier: string) => ({
+  file,
+  specifier,
+  rejected,
+});
+
+const CORE_TABLE: BoundaryRow[] = [
+  ...ENTRY_SPELLINGS.map(row(CORE, true)),
+  ...[
+    'react',
+    'react/jsx-runtime',
+    'react-dom/client',
+    'jotai/utils',
+    '@tanstack/react-query',
+    '@librechat/client',
+    '@librechat/chat/react',
+    '@librechat/chat/components',
+  ].map(row(CORE, true)),
+  ...['react', './components/'].map(row('packages/chat/src/index.ts', true)),
+  ...['librechat-data-provider', '../types', '../types.js', './react-utils', '../reactive.js'].map(
+    row(CORE, false),
+  ),
+  ...['react', 'jotai', '../core', '../components'].map(row(BINDING, false)),
+];
+
+const APP_TABLE: BoundaryRow[] = [BINDING, COMPONENT, CORE].flatMap((file) =>
+  [
+    '~/store',
+    '@librechat/frontend',
+    '@librechat/frontend/src/store/filesDialog',
+    'recoil',
+    '@librechat/chat',
+    '@librechat/chat/components',
+  ].map(row(file, true)),
+);
+
+/**
+ * Lints every row in every form through the real flat config in one process, and returns the
+ * sources whose verdict differs from the table, so a failure names the spelling that slipped.
+ */
+function boundaryMismatches(rows: BoundaryRow[]): string[] {
+  const sources = rows.flatMap((entry) =>
+    FORMS(entry.specifier).map((code) => ({ ...entry, code })),
   );
+  const query = `
+    const { ESLint } = require('eslint');
+    const sources = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+    (async () => {
+      const eslint = new ESLint({ overrideConfigFile: 'eslint.config.mjs' });
+      const verdicts = [];
+      for (const source of sources) {
+        const [result] = await eslint.lintText(source.code, { filePath: source.file });
+        verdicts.push(result.messages.filter((m) => m.ruleId === 'chat/boundary').length);
+      }
+      process.stdout.write(JSON.stringify(verdicts));
+    })();
+  `;
+  const answered = run(process.execPath, ['-e', query], { input: JSON.stringify(sources) });
+  if (answered.status !== 0) throw new Error(`no lint verdicts: ${answered.output}`);
+  const verdicts = JSON.parse(answered.stdout) as number[];
+  return sources.flatMap((source, index) =>
+    verdicts[index] > 0 === source.rejected
+      ? []
+      : [
+          `${source.file}: ${source.code.trim()} should be ${source.rejected ? 'rejected' : 'allowed'}`,
+        ],
+  );
+}
 
 test.describe('the @librechat/chat package boundary', () => {
   test.beforeEach(() => inOneProject());
 
   test('the chat core rejects a UI framework import @scenario:the-chat-core-rejects-a-ui-framework-import', () => {
-    test.setTimeout(120_000);
-    const source = "import { useState } from 'react';\nexport const probe = useState;\n";
+    test.setTimeout(180_000);
+    expect(boundaryMismatches(CORE_TABLE)).toEqual([]);
 
-    const core = restricted('packages/chat/src/core/probe.ts', source);
-    expect(core.join('\n')).toContain("'react' import is restricted");
-    expect(restricted('packages/chat/src/index.ts', source)).toHaveLength(1);
-    expect(restricted('packages/chat/src/core/Probe.tsx', source)).toHaveLength(1);
     const jsx = lintStdin(
       'packages/chat/src/core/Probe.tsx',
       'export const Probe = () => <div />;\n',
     );
     expect(messagesFor(jsx, 'no-restricted-syntax')).toHaveLength(1);
-    for (const entry of ['../../react', '../../components']) {
-      const nested = `import * as entry from '${entry}';\nexport const probe = entry;\n`;
-      expect(restricted('packages/chat/src/core/streaming/probe.ts', nested), entry).toHaveLength(
-        1,
-      );
-    }
-    expect(
-      restricted(
-        'packages/chat/src/core/probe.ts',
-        "import { atom } from 'jotai';\nexport const a = atom;\n",
-      ),
-    ).toHaveLength(1);
-
-    for (const specifier of [
-      'react',
-      'react/jsx-runtime',
-      'jotai',
-      '@librechat/client',
-      '../components',
-      '../react',
-      '../react.js',
-      '../components.mjs',
-    ]) {
-      expect(restrictedLoad('packages/chat/src/core/probe.ts', specifier), specifier).toHaveLength(
-        4,
-      );
-    }
-    expect(restrictedLoad('packages/chat/src/core/probe.ts', 'librechat-data-provider')).toEqual(
-      [],
-    );
-
-    expect(restricted('packages/chat/src/react/probe.ts', source)).toEqual([]);
-    expect(restrictedLoad('packages/chat/src/react/probe.ts', 'react')).toEqual([]);
   });
 
   test('the chat package rejects an import from the app @scenario:the-chat-package-rejects-an-import-from-the-app', () => {
-    test.setTimeout(120_000);
-    const probes = [
-      "import store from '~/store';\nexport const s = store;\n",
-      "import { useAuthContext } from '../../../../client/src/hooks';\nexport const h = useAuthContext;\n",
-      "import { useRecoilValue } from 'recoil';\nexport const r = useRecoilValue;\n",
-      "export { showFilesDialogAtom } from '@librechat/frontend/src/store/filesDialog';\n",
-      "export * from '@librechat/chat/components';\n",
-    ];
-    for (const path of [
-      'packages/chat/src/react/probe.ts',
-      'packages/chat/src/components/probe.tsx',
-    ]) {
-      for (const source of probes) {
-        expect(restricted(path, source), `${path}\n${source}`).toHaveLength(1);
-      }
-      for (const specifier of [
-        '~/store',
-        '../../../../client/src/hooks',
-        'recoil',
-        '@librechat/frontend/src/store/filesDialog',
-        '@librechat/chat/components',
-      ]) {
-        expect(restrictedLoad(path, specifier), `${path}\n${specifier}`).toHaveLength(4);
-      }
-    }
+    test.setTimeout(180_000);
+    expect(boundaryMismatches(APP_TABLE)).toEqual([]);
   });
 
   test('chat components reject literal copy @scenario:chat-components-reject-literal-copy', () => {
