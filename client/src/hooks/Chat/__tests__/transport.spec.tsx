@@ -861,6 +861,7 @@ describe('chat transport boundary', () => {
         conversationId: 'convo-1',
         generationCreatedAt: 1000,
       });
+      expect(result.current.chat.status).toBe('submitted');
 
       /** The server answers the stop with the aborted run's final frame. */
       await act(async () => {
@@ -885,6 +886,10 @@ describe('chat transport boundary', () => {
 
       await waitFor(() => expect(result.current.chat.status).toBe('ready'));
       expect(result.current.chat.error).toBeUndefined();
+      expect(result.current.chat.messages.map((message) => message.id)).toEqual([
+        userMessageId,
+        responseMessageId,
+      ]);
     });
 
     it('steers and queues behind the turn it started, and refuses a second send', async () => {
