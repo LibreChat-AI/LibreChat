@@ -62,6 +62,7 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
           actionId={liveAsk.actionId}
           questions={questions}
           className="shrink-0"
+          focusOnArrival
           headerAction={<MoveToChatButton onClick={collapse} />}
         />
       </div>
