@@ -115,8 +115,10 @@ const FILTERS = {
   css_colors: [
     'client/src/*.css',
     'packages/client/src/*.css',
+    'packages/chat/src/*.css',
     'client/src/**/*.css',
     'packages/client/src/**/*.css',
+    'packages/chat/src/**/*.css',
     'packages/client/src/theme/allowlist.md',
     /** The scanner parses with postcss: an upgrade changes what it reads. */
     'package.json',
@@ -133,6 +135,7 @@ const FILTERS = {
     'api/**',
     'client/src/**',
     'packages/client/**',
+    'packages/chat/src/**',
     'packages/data-provider/src/**',
     'packages/data-schemas/src/**',
     '.github/workflows/static-checks.yml',
@@ -304,6 +307,7 @@ const I18N_SOURCE_DIRS = [
   'api',
   'packages/data-provider/src',
   'packages/client',
+  'packages/chat/src',
   'packages/data-schemas/src',
 ];
 

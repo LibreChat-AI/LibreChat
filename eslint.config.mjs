@@ -45,7 +45,13 @@ const tenantModelRestrictions = [
 /** `@librechat/chat` is consumed by the app, never the reverse: nothing in it reaches into `client/src`. */
 const chatPackageRestrictions = [
   {
-    group: ['~/*', '**/client/src', '**/client/src/**'],
+    group: [
+      '~/*',
+      '**/client/src',
+      '**/client/src/**',
+      '@librechat/frontend',
+      '@librechat/frontend/*',
+    ],
     message: '@librechat/chat cannot import the app; take what it needs from the host instead.',
   },
   {

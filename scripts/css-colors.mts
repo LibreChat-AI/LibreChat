@@ -16,7 +16,7 @@ export interface CssColorFinding {
   literal: string;
 }
 
-export const CSS_ROOTS = ['client/src', 'packages/client/src'];
+export const CSS_ROOTS = ['client/src', 'packages/client/src', 'packages/chat/src'];
 
 /** Theme token sources (allowlist.md entry 1): their custom property declarations may hold a literal or a channel triplet. */
 export const CSS_COLOR_ALLOWED_FILES = [

@@ -62,6 +62,7 @@ test.describe('the @librechat/chat package boundary', () => {
       "import store from '~/store';\nexport const s = store;\n",
       "import { useAuthContext } from '../../../../client/src/hooks';\nexport const h = useAuthContext;\n",
       "import { useRecoilValue } from 'recoil';\nexport const r = useRecoilValue;\n",
+      "export { showFilesDialogAtom } from '@librechat/frontend/src/store/filesDialog';\n",
     ];
     for (const path of [
       'packages/chat/src/react/probe.ts',

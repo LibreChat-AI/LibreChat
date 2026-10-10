@@ -54,6 +54,11 @@ export type ChatTrigger = 'submit-message' | 'regenerate-message' | 'continue-me
 export type ChatStream = AsyncIterable<ChatEvent> & {
   /** The server's id for the generation, when it names one; what a reconnect addresses. */
   readonly streamId?: string;
+  /**
+   * When the server started this generation. A stream id is reused across a conversation's turns,
+   * so an abort carries this to stop only the generation it means.
+   */
+  readonly generationCreatedAt?: number;
   close(): void;
 };
 
@@ -74,6 +79,8 @@ export type ChatReconnectRequest = ChatRequestOptions & {
 export type ChatAbortRequest = {
   chatId: string;
   streamId?: string;
+  /** The {@link ChatStream.generationCreatedAt} of the run to stop; a newer run is left running. */
+  generationCreatedAt?: number;
   endpoint: string;
 };
 
