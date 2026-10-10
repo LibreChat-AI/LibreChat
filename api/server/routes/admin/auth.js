@@ -36,7 +36,7 @@ const {
 } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
-const { getOpenIdConfig } = require('~/strategies');
+const { getOpenIdConfig, ensureOpenIdConfigured } = require('~/strategies');
 const middleware = require('~/server/middleware');
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
@@ -231,21 +231,29 @@ function retrievePkceChallenge(provider) {
  * OpenID Admin Routes
  * ────────────────────────────────────────────── */
 
-router.get('/oauth/openid', requireOpenIdConfig, async (req, res, next) => {
-  const state = generateState();
-  const cache = getLogStores(CacheKeys.ADMIN_OAUTH_EXCHANGE);
-  const stored = await storeAndStripChallenge(cache, req, state, 'openid');
-  if (!stored) {
-    return res.redirect(
-      `${getAdminPanelUrl()}/auth/openid/callback?error=pkce_store_failed&error_description=Failed+to+store+PKCE+challenge`,
-    );
-  }
+router.get(
+  '/oauth/openid',
+  async (req, res, next) => {
+    await ensureOpenIdConfigured();
+    next();
+  },
+  requireOpenIdConfig,
+  async (req, res, next) => {
+    const state = generateState();
+    const cache = getLogStores(CacheKeys.ADMIN_OAUTH_EXCHANGE);
+    const stored = await storeAndStripChallenge(cache, req, state, 'openid');
+    if (!stored) {
+      return res.redirect(
+        `${getAdminPanelUrl()}/auth/openid/callback?error=pkce_store_failed&error_description=Failed+to+store+PKCE+challenge`,
+      );
+    }
 
-  return passport.authenticate('openidAdmin', {
-    session: false,
-    state,
-  })(req, res, next);
-});
+    return passport.authenticate('openidAdmin', {
+      session: false,
+      state,
+    })(req, res, next);
+  },
+);
 
 router.get(
   '/oauth/openid/callback',
