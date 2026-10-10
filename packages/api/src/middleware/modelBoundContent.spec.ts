@@ -1587,6 +1587,74 @@ describe('assertModelBoundContent', () => {
     ).toThrow('Submitted content contains a private context');
   });
 
+  it('does not traverse unrelated initialized tool schemas while checking agent files', () => {
+    const hydratedFile = {
+      file_id: 'file-agent-context',
+      filename: 'context.txt',
+      filepath: '/uploads/context.txt',
+      text: 'safe canonical context',
+    };
+
+    expect(() =>
+      assertModelBoundContent({
+        filters,
+        agents: [
+          {
+            instructions: 'Safe agent instructions',
+            toolDefinitions: [
+              {
+                name: 'deep_tool',
+                description: 'Safe tool description',
+                parameters: makeDeepModelParameter(),
+              },
+            ],
+            requestAttachments: [hydratedFile],
+          } as never,
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('still checks provider-bound agent fields for opaque file content', () => {
+    const failClosedFilters: FiltersConfig = {
+      files: {
+        pii: {
+          fields: ['content'],
+          starterPatterns: [],
+          uninspectable: 'block',
+        },
+      },
+    };
+    const hydratedFile = {
+      file_id: 'file-agent-context',
+      filename: 'context.txt',
+      filepath: '/uploads/context.txt',
+      content: 'safe canonical context',
+    };
+
+    for (const agent of [
+      {
+        instructions: 'data:application/pdf;base64,opaque',
+        requestAttachments: [hydratedFile],
+      },
+      {
+        model_parameters: {
+          additionalModelRequestFields: {
+            input_file: { file_data: 'data:application/pdf;base64,opaque' },
+          },
+        },
+        requestAttachments: [hydratedFile],
+      },
+    ]) {
+      expect(() =>
+        assertModelBoundContent({
+          filters: failClosedFilters,
+          agents: [agent as never],
+        }),
+      ).toThrow('Submitted file content could not be inspected before processing.');
+    }
+  });
+
   it('accepts only agent resource IDs backed by inspectable hydrated resource files', () => {
     const filters: FiltersConfig = {
       files: {
