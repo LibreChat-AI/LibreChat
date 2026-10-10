@@ -15,6 +15,8 @@ const mongoSanitize = require('express-mongo-sanitize');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
   isEnabled,
+  STORED_FILES_ROUTE,
+  isStoredFileProxyEnabled,
   issueCsp,
   apiNotFound,
   createMetrics,
@@ -432,6 +434,9 @@ const startServer = async () => {
   app.use('/api/models', routes.models);
   app.use('/api/config', preAuthTenantMiddleware, optionalJwtAuth, routes.config);
   app.use('/api/assistants', routes.assistants);
+  if (isStoredFileProxyEnabled()) {
+    app.use(STORED_FILES_ROUTE, routes.storedFiles);
+  }
   app.use('/api/files', await routes.files.initialize());
   app.use(
     '/images/',
