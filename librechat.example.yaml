@@ -435,6 +435,13 @@ interface:
 # passkeys:
 #   perUserMax: 20
 
+# Session JWT transport, read at startup.
+# header: read the session JWT from this header before Authorization, for a proxy that
+# overwrites Authorization (e.g. oauth2-proxy with --set-authorization-header). Accepts
+# "Bearer <token>" or a bare token. Omitted, falls back to JWT_AUTH_HEADER, then Authorization only.
+# sessionToken:
+#   header: x-original-authorization
+
 registration:
   socialLogins: ['github', 'google', 'discord', 'openid', 'facebook', 'apple', 'saml']
   # allowedDomains:

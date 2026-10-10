@@ -4128,6 +4128,18 @@ export const configSchema = z.object({
       perUserMax: z.number().int().min(1).max(100).optional(),
     })
     .default({}),
+  /** Session JWT transport. Read when the server starts, so a change needs a restart. */
+  sessionToken: z
+    .object({
+      /** Header read before `Authorization`, for a proxy that overwrites it; `JWT_AUTH_HEADER`
+       *  when unset, and only `Authorization` when neither is given. */
+      header: z
+        .string()
+        .trim()
+        .regex(/^[!#$%&'*+.^_`|~0-9a-z-]+$/i)
+        .optional(),
+    })
+    .optional(),
   balance: balanceSchema.optional(),
   transactions: transactionsSchema.optional(),
   speech: z

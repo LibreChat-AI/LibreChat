@@ -296,6 +296,24 @@ describe('passkey enrollment config', () => {
   });
 });
 
+describe('session token config', () => {
+  it('leaves the session JWT header unset unless a deployment names one', () => {
+    expect(configSchema.parse({ version: '1.0' }).sessionToken).toBeUndefined();
+    expect(
+      configSchema.parse({ version: '1.0', sessionToken: { header: ' X-Original-Authorization ' } })
+        .sessionToken?.header,
+    ).toBe('X-Original-Authorization');
+  });
+
+  it('rejects a header name a request could never carry', () => {
+    for (const header of ['', 'x-auth: value', 'x auth', 'x-a\nb']) {
+      expect(configSchema.safeParse({ version: '1.0', sessionToken: { header } }).success).toBe(
+        false,
+      );
+    }
+  });
+});
+
 describe('retained tool-count ceiling', () => {
   it('ships the exact-count budget a deployment can raise or lower', () => {
     /** The save path tokenizes a stopped turn's retained tool results to add an
