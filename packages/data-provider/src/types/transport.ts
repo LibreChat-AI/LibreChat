@@ -203,7 +203,11 @@ export type ChatEvent =
   | { type: 'context_usage'; data: TContextUsageEvent }
   /** AI SDK: `message-metadata`. */
   | { type: 'token_usage'; data: TTokenUsageEvent }
-  /** AI SDK: `tool-approval-request`. */
+  /**
+   * AI SDK: `tool-approval-request` for a `tool_approval` pause; an `ask_user_question` pause
+   * becomes a `data-ask-user-question` part. The decision travels on the resume request, so
+   * `approval-responded` and `output-denied` have no frame of their own.
+   */
   | { type: 'pending_action'; data: Agents.PendingAction }
   /** No AI SDK equivalent: steering. */
   | { type: 'steer_applied'; data: TSteerAppliedEvent }

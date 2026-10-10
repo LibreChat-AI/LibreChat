@@ -1,4 +1,10 @@
-import type { UIMappingOptions, MappableContentPart, UIMessagePart, UIToolPart } from './parts';
+import type {
+  AskUserQuestionContentPart,
+  MappableContentPart,
+  UIMappingOptions,
+  UIMessagePart,
+  UIToolPart,
+} from './parts';
 import type { TMessageContentParts, PartMetadata } from './types/content';
 import type { TAttachment, TMessage } from './schemas';
 import type { Agents } from './types/agents';
@@ -403,7 +409,7 @@ describe('parts', () => {
 
       expect(parts).toHaveLength(content.length);
       for (let i = 0; i < content.length; i++) {
-        const part = content[i] as MappableContentPart | undefined;
+        const part = content[i] as TMessageContentParts | undefined;
         expect(parts[i].type).toBe(part ? expectedUITypes[part.type] : 'step-start');
       }
       expect(fromUIParts(parts)).toStrictEqual(content);
@@ -428,7 +434,7 @@ describe('parts', () => {
         const parts = toUIParts(content);
         expect(parts).toHaveLength(length);
         for (let i = 0; i < length; i++) {
-          const part = content[i] as MappableContentPart | undefined;
+          const part = content[i] as TMessageContentParts | undefined;
           expect(parts[i].type).toBe(part ? expectedUITypes[part.type] : 'step-start');
         }
         expect(fromUIParts(parts)).toStrictEqual(content);
@@ -1225,5 +1231,185 @@ describe('parts', () => {
 
     expect(parts.filter(isUIDataPart).map((part) => part.type)).toEqual(['data-agent-update']);
     expect(parts.filter(isUIToolPart).map((part) => part.toolCallId)).toEqual(['call-1']);
+  });
+
+  describe('approval decisions', () => {
+    const approval = (
+      fields: Partial<NonNullable<Agents.ToolCall['approval']>> = {},
+    ): NonNullable<Agents.ToolCall['approval']> => ({
+      actionId: 'action-1',
+      allowed_decisions: ['approve', 'reject', 'edit', 'respond'],
+      description: 'Run it?',
+      ...fields,
+    });
+    const toolCall = (fields: Partial<Agents.ToolCall> & PartMetadata): TMessageContentParts => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        type: 'tool_call',
+        name: 'search',
+        id: 'call-1',
+        args: '{"q":"cats"}',
+        ...fields,
+      },
+    });
+    const withoutMetadata = ({ callProviderMetadata: _stored, ...part }: UIToolPart) => part;
+
+    it.each([
+      ['approve', true],
+      ['edit', true],
+      ['reject', false],
+      ['respond', false],
+    ] as const)(
+      'reports the %s decision awaiting the resume as approval-responded',
+      (decision, approved) => {
+        const stored = toolCall({ approval: approval({ decision, reason: 'Checked' }) });
+
+        expect(toUIPart(stored)).toMatchObject({
+          state: 'approval-responded',
+          input: { q: 'cats' },
+          approval: { id: 'action-1', requestReason: 'Run it?', approved, reason: 'Checked' },
+        });
+        expect(fromUIPart(toUIPart(stored))).toStrictEqual(stored);
+      },
+    );
+
+    it('reports a denied call that ended as output-denied, without its output', () => {
+      const rejected = toolCall({
+        approval: approval({ decision: 'reject', reason: 'Too broad' }),
+        output: 'The user rejected this tool call.',
+        progress: 1,
+      });
+      const failed = toolCall({
+        approval: approval({ decision: 'reject' }),
+        runStepStatus: 'failed',
+      });
+
+      const part = toUIPart(rejected);
+      expect(withoutMetadata(part as UIToolPart)).toStrictEqual({
+        type: 'tool-search',
+        toolCallId: 'call-1',
+        state: 'output-denied',
+        input: { q: 'cats' },
+        approval: {
+          id: 'action-1',
+          requestReason: 'Run it?',
+          approved: false,
+          reason: 'Too broad',
+        },
+      });
+      expect(toUIPart(failed)).toMatchObject({
+        state: 'output-denied',
+        approval: { approved: false },
+      });
+      expect(fromUIPart(part)).toStrictEqual(rejected);
+      expect(fromUIPart(toUIPart(failed))).toStrictEqual(failed);
+    });
+
+    it('keeps an approved call approved through its output or failure', () => {
+      const succeeded = toolCall({ approval: approval({ decision: 'approve' }), output: '3' });
+      const failed = toolCall({
+        approval: approval({ decision: 'edit' }),
+        output: 'Error: tool call failed: timeout',
+      });
+
+      expect(toUIPart(succeeded)).toMatchObject({
+        state: 'output-available',
+        output: '3',
+        approval: { id: 'action-1', approved: true },
+      });
+      expect(toUIPart(failed)).toMatchObject({
+        state: 'output-error',
+        approval: { id: 'action-1', approved: true },
+      });
+      expect(fromUIPart(toUIPart(succeeded))).toStrictEqual(succeeded);
+      expect(fromUIPart(toUIPart(failed))).toStrictEqual(failed);
+    });
+
+    it('drops an undecided approval once the call has output, as before', () => {
+      const answered = toolCall({ approval: approval(), output: '3' });
+
+      expect(toUIPart(answered)).not.toHaveProperty('approval');
+      expect(toUIPart(answered)).toMatchObject({ state: 'output-available' });
+    });
+
+    it.each<UIToolPart>([
+      {
+        type: 'tool-search',
+        toolCallId: 'call-9',
+        state: 'approval-responded',
+        input: { q: 'dogs' },
+        approval: { id: 'action-9', approved: true },
+      },
+      {
+        type: 'tool-search',
+        toolCallId: 'call-9',
+        state: 'approval-responded',
+        input: { q: 'dogs' },
+        approval: { id: 'action-9', requestReason: 'Search?', approved: false, reason: 'No' },
+      },
+      {
+        type: 'tool-search',
+        toolCallId: 'call-9',
+        state: 'output-denied',
+        input: { q: 'dogs' },
+        approval: { id: 'action-9', approved: false, reason: 'No' },
+      },
+      {
+        type: 'tool-search',
+        toolCallId: 'call-9',
+        state: 'output-available',
+        input: { q: 'dogs' },
+        output: 'found',
+        approval: { id: 'action-9', approved: true },
+      },
+    ])('rebuilds a hand-built $state part without a stored base', (part) => {
+      expect(withoutMetadata(toUIPart(fromUIPart(part)) as UIToolPart)).toStrictEqual(part);
+    });
+  });
+
+  describe('ask-user pauses', () => {
+    const ask: AskUserQuestionContentPart = {
+      type: 'ask_user_question',
+      ask_user_question: {
+        actionId: 'action-2',
+        question: { question: 'Which city?', options: [{ label: 'Rome', value: 'rome' }] },
+        questions: [{ id: 'city', header: 'City', question: 'Which city?' }],
+        tool_call_id: 'ask-1',
+      },
+    };
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: 'Before I search' },
+      ask as unknown as TMessageContentParts,
+    ];
+
+    it('maps the pause to a data-ask-user-question part and back', () => {
+      const part = toUIPart(ask);
+
+      expect(part).toStrictEqual({
+        type: 'data-ask-user-question',
+        data: { ask_user_question: ask.ask_user_question },
+      });
+      expect(isUIDataPart(part)).toBe(true);
+      expect(fromUIPart(part)).toStrictEqual(ask);
+    });
+
+    it('keeps the pause in its content slot', () => {
+      const parts = toUIParts([undefined, ask]);
+
+      expect(parts.map((part) => part.type)).toEqual(['step-start', 'data-ask-user-question']);
+      const restored = fromUIParts(parts);
+      expect(restored).toHaveLength(2);
+      expect(0 in restored).toBe(false);
+      expect(restored[1]).toStrictEqual(ask);
+    });
+
+    it('round-trips a message carrying the pause, with and without a stored base', () => {
+      const message = createMessage({ content, text: 'Before I search' });
+      const view = toUIMessage(message);
+
+      expect(view.parts.map((part) => part.type)).toEqual(['text', 'data-ask-user-question']);
+      expect(fromUIMessage(view, message)).toStrictEqual(message);
+      expect(fromUIMessage(view)).toStrictEqual(message);
+    });
   });
 });

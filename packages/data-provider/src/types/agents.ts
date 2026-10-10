@@ -157,6 +157,10 @@ export namespace Agents {
       remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
       /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
       allow_always?: boolean;
+      /** The reviewer's decision once submitted; absent while the call still awaits review. */
+      decision?: ToolApprovalDecisionType;
+      /** The reason the reviewer gave with the decision. */
+      reason?: string;
     };
   };
 
