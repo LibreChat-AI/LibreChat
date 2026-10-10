@@ -1,6 +1,7 @@
 import type { TEndpointsConfig } from './types';
 import {
   allowedAddressesSchema,
+  parseAllowedAddressEnvReference,
   agentsEndpointSchema,
   DEFAULT_RETAINED_ANSWER_TOKENS,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
@@ -1900,6 +1901,61 @@ describe('allowedAddressesSchema', () => {
         expect(result.error.issues[0]?.message).toMatch(/scoped to private IP space/);
       }
     });
+  });
+
+  describe('environment references', () => {
+    it.each(['${SEARXNG_ALLOWED_ADDRESS}', '${searxng_host}:8080', '${FIRECRAWL_HOST}:3002'])(
+      'accepts %s',
+      (entry) => {
+        expect(allowedAddressesSchema.safeParse([entry]).success).toBe(true);
+      },
+    );
+
+    it.each([
+      '${SEARXNG_HOST}.internal:8080',
+      'searxng.${NAMESPACE}:8080',
+      '${HOST}:${PORT}',
+      '${SEARXNG_HOST}:0',
+      '${SEARXNG_HOST}:70000',
+      '${1HOST}:8080',
+      '${}:8080',
+      '$SEARXNG_HOST:8080',
+      '{searxng}:8080',
+      ' ${SEARXNG_HOST}:8080',
+    ])('rejects %s instead of storing it as a literal hostname', (entry) => {
+      const result = allowedAddressesSchema.safeParse([entry]);
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts an env reference on webSearch', () => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        webSearch: { allowedAddresses: ['${SEARXNG_HOST}:8080', '${FIRECRAWL_ALLOWED_ADDRESS}'] },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('parseAllowedAddressEnvReference', () => {
+    it('reads a whole-entry reference', () => {
+      expect(parseAllowedAddressEnvReference('${SEARXNG_ALLOWED_ADDRESS}')).toEqual({
+        varName: 'SEARXNG_ALLOWED_ADDRESS',
+      });
+    });
+
+    it('reads a host reference with a normalized port', () => {
+      expect(parseAllowedAddressEnvReference('${SEARXNG_HOST}:08080')).toEqual({
+        varName: 'SEARXNG_HOST',
+        port: '8080',
+      });
+    });
+
+    it.each(['searxng.local:8080', '${A}:${B}', 'x${A}:80', '${A}:0'])(
+      'returns null for %s',
+      (entry) => {
+        expect(parseAllowedAddressEnvReference(entry)).toBeNull();
+      },
+    );
   });
 
   describe('integration with configSchema', () => {

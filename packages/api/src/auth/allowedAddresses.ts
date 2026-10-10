@@ -15,8 +15,13 @@
  *    exemption there has no defensive purpose and must not grant "trusted"
  *    status. Hostnames pass through; their resolved IP is checked
  *    separately by callers (e.g. `resolveHostnameSSRF`).
+ *  - Drop entries carrying `$`, `{` or `}`. Environment references are
+ *    resolved once from the server environment by the config loader
+ *    (`resolveAllowedAddressesEnv`); any that reach this parser came from
+ *    somewhere else (DB overrides, programmatic lists) and must not match.
  */
 import { isIP } from 'node:net';
+import { isSensitiveEnvVar, parseAllowedAddressEnvReference } from 'librechat-data-provider';
 import { isPrivateIP } from './ip';
 
 const ADDRESS_PORT_SEPARATOR = '\0';
@@ -103,12 +108,12 @@ function parseAddressPortEntry(entry: string): AddressPort | null {
 /**
  * Normalizes a single `allowedAddresses` entry. Returns the canonical form
  * when the entry is acceptable, or `''` when it must be ignored (URL, path,
- * whitespace, bare host/IP, public IP literal, invalid port, or empty after
- * trimming).
+ * whitespace, unresolved `${...}` reference, bare host/IP, public IP literal,
+ * invalid port, or empty after trimming).
  */
 export function normalizeAddressEntry(entry: unknown): string {
   if (typeof entry !== 'string') return '';
-  if (entry.includes('://') || entry.includes('/') || /\s/.test(entry)) return '';
+  if (entry.includes('://') || entry.includes('/') || /[\s${}]/.test(entry)) return '';
   const parsed = parseAddressPortEntry(entry);
   if (!parsed) return '';
   return addressPortKey(parsed.address, parsed.port);
@@ -151,4 +156,57 @@ export function isAddressInAllowedSet(
   const normalizedAddress = parsedCandidate?.address ?? normalizeAddressCandidate(candidate);
   if (!normalizedAddress) return false;
   return set.has(addressPortKey(normalizedAddress, normalizedPort));
+}
+
+export type AllowedAddressEnvDropReason = 'unset' | 'invalid' | 'sensitive';
+
+export interface AllowedAddressEnvDrop {
+  entry: string;
+  varName: string;
+  reason: AllowedAddressEnvDropReason;
+}
+
+export interface AllowedAddressesEnvResolution {
+  addresses: string[];
+  dropped: AllowedAddressEnvDrop[];
+}
+
+/**
+ * Replaces `${VAR}` and `${VAR}:port` entries with values from `env`, which must be the server's
+ * own environment. Literal entries pass through unchanged. A reference is dropped when its
+ * variable is unset or empty, names an infrastructure secret, or resolves to something the
+ * runtime parser would reject (URL, path, missing port, public IP literal, nested reference),
+ * so an unresolved placeholder never reaches the effective list and a deployment without the
+ * variable keeps every other exemption.
+ */
+export function resolveAllowedAddressesEnv(
+  entries: readonly string[],
+  env: NodeJS.ProcessEnv,
+): AllowedAddressesEnvResolution {
+  const addresses: string[] = [];
+  const dropped: AllowedAddressEnvDrop[] = [];
+  for (const entry of entries) {
+    const reference = typeof entry === 'string' ? parseAllowedAddressEnvReference(entry) : null;
+    if (!reference) {
+      addresses.push(entry);
+      continue;
+    }
+    const { varName, port } = reference;
+    if (isSensitiveEnvVar(varName)) {
+      dropped.push({ entry, varName, reason: 'sensitive' });
+      continue;
+    }
+    const value = env[varName]?.trim();
+    if (!value) {
+      dropped.push({ entry, varName, reason: 'unset' });
+      continue;
+    }
+    const resolved = port ? `${value}:${port}` : value;
+    if (!normalizeAddressEntry(resolved)) {
+      dropped.push({ entry, varName, reason: 'invalid' });
+      continue;
+    }
+    addresses.push(resolved);
+  }
+  return { addresses, dropped };
 }

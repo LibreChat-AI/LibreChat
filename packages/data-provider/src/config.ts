@@ -291,21 +291,52 @@ function parseAllowedAddressEntry(entry: string): { address: string; port: strin
   return { address, port };
 }
 
+export interface AllowedAddressEnvReference {
+  varName: string;
+  /** Present for `${VAR}:port`, where the variable holds only the host. */
+  port?: string;
+}
+
+/**
+ * Parses an `allowedAddresses` entry that names a server environment variable: `${VAR}`, where
+ * the variable holds a whole `host:port` entry, or `${VAR}:port`, where it holds only the host.
+ * Returns null for every other shape. The config loader resolves these from the server
+ * environment; nothing else does, so the runtime parser drops any entry still carrying one.
+ */
+export function parseAllowedAddressEnvReference(entry: string): AllowedAddressEnvReference | null {
+  const match = entry.trim().match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?::(\d+))?$/);
+  if (!match) return null;
+  if (match[2] == null) return { varName: match[1] };
+  const port = normalizePort(match[2]);
+  return port ? { varName: match[1], port } : null;
+}
+
 const allowedAddressEntrySchema = z
   .string()
   .refine((entry) => entry.length > 0 && entry.trim().length > 0, {
     message: 'allowedAddresses entries must be non-empty',
   })
+  .refine((entry) => !/[${}]/.test(entry) || parseAllowedAddressEnvReference(entry) != null, {
+    message:
+      'allowedAddresses environment references must be the whole entry, either ${VAR} holding host:port or ${VAR}:port holding the host',
+  })
   .refine((entry) => !entry.includes('://') && !entry.includes('/') && !/\s/.test(entry), {
     message:
       'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
   })
-  .refine((entry) => parseAllowedAddressEntry(entry) != null, {
-    message:
-      'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
-  })
+  .refine(
+    (entry) =>
+      parseAllowedAddressEnvReference(entry) != null || parseAllowedAddressEntry(entry) != null,
+    {
+      message:
+        'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
+    },
+  )
   .refine(
     (entry) => {
+      if (parseAllowedAddressEnvReference(entry) != null) {
+        return true; // resolved and re-checked by the config loader
+      }
       const parsed = parseAllowedAddressEntry(entry);
       if (!parsed) return false;
       const stripped = parsed.address;

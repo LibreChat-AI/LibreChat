@@ -1461,6 +1461,12 @@ endpoints:
 #   # `http://searxng:8080`, `http://firecrawl:3002`, or `http://127.0.0.1:8080` is
 #   # blocked once this guard is active, so list it here or those requests will fail.
 #   #
+#   # An entry can come from the server environment, here and in every other
+#   # `allowedAddresses` list: `${VAR}` when the variable holds `host:port`, or
+#   # `${VAR}:port` when it holds only the host. The reference must be the whole
+#   # entry. An unset, empty or invalid variable drops that entry with a startup
+#   # warning; the rest of the list and the server keep working.
+#   #
 #   # A proxy from `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` (either case) is
 #   # exempted automatically and needs no entry. That exemption is applied to the
 #   # whole tool rather than per destination, so a host `NO_PROXY` sends direct also
@@ -1470,6 +1476,8 @@ endpoints:
 #   # allowedAddresses:
 #   #   - 'searxng:8080'
 #   #   - '127.0.0.1:8080'
+#   #   - '${SEARXNG_ALLOWED_ADDRESS}'
+#   #   - '${FIRECRAWL_HOST}:3002'
 #
 # Tavily as both search and scraper provider example:
 # webSearch:
