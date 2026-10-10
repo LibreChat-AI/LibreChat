@@ -1965,7 +1965,12 @@ html {
       [type='search'],
       [type='url'],
       [type='tel'],
-      [type='number']
+      [type='number'],
+      [type='date'],
+      [type='time'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week']
     ),
     textarea,
     select
@@ -1990,7 +1995,12 @@ html {
       [type='search'],
       [type='url'],
       [type='tel'],
-      [type='number']
+      [type='number'],
+      [type='date'],
+      [type='time'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week']
     ),
     textarea,
     select
@@ -2007,7 +2017,12 @@ html {
       [type='search'],
       [type='url'],
       [type='tel'],
-      [type='number']
+      [type='number'],
+      [type='date'],
+      [type='time'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week']
     ),
     textarea,
     select
@@ -2024,7 +2039,12 @@ html {
       [type='search'],
       [type='url'],
       [type='tel'],
-      [type='number']
+      [type='number'],
+      [type='date'],
+      [type='time'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week']
     ),
     textarea,
     select
@@ -2041,7 +2061,12 @@ html {
       [type='search'],
       [type='url'],
       [type='tel'],
-      [type='number']
+      [type='number'],
+      [type='date'],
+      [type='time'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week']
     ),
     textarea,
     select
@@ -2058,7 +2083,12 @@ html {
       [type='search'],
       [type='url'],
       [type='tel'],
-      [type='number']
+      [type='number'],
+      [type='date'],
+      [type='time'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week']
     ),
     textarea,
     select
