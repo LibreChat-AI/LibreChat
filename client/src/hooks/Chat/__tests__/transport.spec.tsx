@@ -1,10 +1,10 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { useAtomValue, getDefaultStore } from 'jotai';
-import { QueryKeys, request } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryKeys, ContentTypes, EModelEndpoint, request } from 'librechat-data-provider';
 import type {
   TEnqueueAgentQueuedTurnRequest,
   TSubmission,
@@ -185,6 +185,12 @@ const renderSteering = (transport: Transport) =>
     }),
     { wrapper: createWrapper(transport, seedSteerableRun, seedLiveBranch) },
   );
+
+/** The host builds the pane's chat contract, as the chat view does. */
+function ChatHost({ children }: { children: React.ReactNode }) {
+  const helpers: ChatContract = useChatHelpers(0, 'convo-1');
+  return <ChatContext.Provider value={helpers}>{children}</ChatContext.Provider>;
+}
 
 beforeEach(() => resetQueueFamilies());
 
@@ -501,12 +507,6 @@ describe('chat transport boundary', () => {
   });
 
   describe('resume', () => {
-    /** The host builds the pane's chat contract, as the chat view does. */
-    function ChatHost({ children }: { children: React.ReactNode }) {
-      const helpers: ChatContract = useChatHelpers(0, 'convo-1');
-      return <ChatContext.Provider value={helpers}>{children}</ChatContext.Provider>;
-    }
-
     /** The resume-on-load path and the stream hook a chat view mounts, read through `useChat`. */
     const useResumablePane = () => {
       const helpers = useChatContext();
@@ -682,6 +682,295 @@ describe('chat transport boundary', () => {
 
       await waitFor(() => expect(result.current.status).toBe('error'));
       expect(result.current.error?.message).toContain('Generation failed');
+    });
+  });
+
+  describe('useChat', () => {
+    const consumeDraft = jest.fn();
+    const sendNow = jest.fn();
+
+    /**
+     * A pane as the chat view mounts it: the stream hook for its submissions and the composer's
+     * steering, with the turn itself driven through `useChat`.
+     */
+    const usePane = () => {
+      const helpers = useChatContext();
+      const submission = useRecoilValue(store.submissionByIndex(0));
+      useResumableSSE(submission, helpers, false, 0);
+      const steering = useSteering({
+        consumeDraft,
+        index: 0,
+        conversationId: 'convo-1',
+        conversation: helpers.conversation,
+        isSubmitting: helpers.isSubmitting,
+        answerModeActive: false,
+        sendNow,
+        stopGenerating: helpers.stopGenerating,
+      });
+      const queue = useAtomValue(queuedMessagesByConvoId('convo-1'));
+      return { chat: useChat(), submission, steering, queue };
+    };
+
+    const seedConversation = ({ set }: MutableSnapshot) =>
+      set(store.conversationByIndex(0), {
+        conversationId: 'convo-1',
+        endpoint: 'agents',
+      } as TConversation);
+
+    const seedCache = (queryClient: QueryClient) => {
+      queryClient.setQueryData(startupConfigKey(false), {});
+      queryClient.setQueryData([QueryKeys.messages, 'convo-1'], []);
+    };
+
+    beforeEach(() => {
+      /** Teardown confirms with the status route that the run it attached to has ended. */
+      jest
+        .spyOn(request, 'get')
+        .mockImplementation(async (url: string) =>
+          url.includes('/api/agents/chat/status/')
+            ? { active: false, createdAt: 1000, generationProtocolVersion: 2 }
+            : [],
+        );
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    const renderPane = (transport: Transport) => {
+      const Wrapper = createWrapper(transport, seedConversation, seedCache);
+      return renderHook(usePane, {
+        wrapper: ({ children }) => (
+          <Wrapper>
+            <ChatHost>{children}</ChatHost>
+          </Wrapper>
+        ),
+      });
+    };
+
+    type Pane = ReturnType<typeof renderPane>['result'];
+
+    /** Sends a turn in the AI SDK message shape and waits for its stream to attach. */
+    const sendTurn = async (result: Pane, fake: ReturnType<typeof createFakeTransport>) => {
+      act(() => {
+        result.current.chat.sendMessage({ parts: [{ type: 'text', text: 'Hello' }] });
+      });
+      await waitFor(() => expect(fake.streams).toHaveLength(1));
+      const { submission } = result.current;
+      if (!submission) {
+        throw new Error('The turn left no submission');
+      }
+      return {
+        onEvent: fake.streams[0].options.onEvent,
+        userMessageId: submission.userMessage.messageId,
+        responseMessageId: submission.initialResponse?.messageId ?? '',
+      };
+    };
+
+    it('sends a turn through the host transport and streams its response into messages', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      expect(result.current.chat.status).toBe('ready');
+
+      const { onEvent, userMessageId, responseMessageId } = await sendTurn(result, fake);
+
+      expect(fake.transport.start).toHaveBeenCalledTimes(1);
+      const [startRequest] = (fake.transport.start as jest.Mock).mock.calls[0];
+      expect(startRequest.server).toBe('/api/agents/chat/agents');
+      expect(startRequest.payload).toEqual(expect.objectContaining({ text: 'Hello' }));
+      expect(fake.streams[0].url).toContain('generationCreatedAt=1000');
+      expect(result.current.chat.status).toBe('submitted');
+      expect(result.current.chat.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: userMessageId,
+            role: 'user',
+            parts: [expect.objectContaining({ type: 'text', text: 'Hello' })],
+          }),
+        ]),
+      );
+
+      act(() =>
+        onEvent({
+          type: 'created',
+          data: {
+            created: true,
+            message: { messageId: userMessageId, conversationId: 'convo-1', text: 'Hello' },
+          },
+        }),
+      );
+      act(() =>
+        onEvent({
+          type: 'content',
+          data: {
+            type: ContentTypes.TEXT,
+            text: 'Hi there',
+            index: 0,
+            messageId: responseMessageId,
+            conversationId: 'convo-1',
+            thread_id: '',
+          },
+        }),
+      );
+      await waitFor(() => expect(result.current.chat.status).toBe('streaming'));
+
+      const responseMessage = {
+        messageId: responseMessageId,
+        conversationId: 'convo-1',
+        parentMessageId: userMessageId,
+        isCreatedByUser: false,
+        sender: 'Assistant',
+        text: 'Hi there',
+        content: [{ type: ContentTypes.TEXT as const, text: 'Hi there' }],
+      };
+      await act(async () => {
+        await onEvent({
+          type: 'final',
+          data: {
+            final: true,
+            conversation: { conversationId: 'convo-1', endpoint: EModelEndpoint.agents },
+            requestMessage: { messageId: userMessageId, conversationId: 'convo-1', text: 'Hello' },
+            responseMessage,
+          },
+        });
+      });
+
+      await waitFor(() => expect(result.current.chat.status).toBe('ready'));
+      expect(result.current.chat.error).toBeUndefined();
+      expect(result.current.chat.messages.at(-1)).toEqual(
+        expect.objectContaining({
+          id: responseMessageId,
+          role: 'assistant',
+          parts: [expect.objectContaining({ type: 'text', text: 'Hi there' })],
+        }),
+      );
+    });
+
+    it('stops the running turn through the host transport and settles it as ready', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      const { onEvent, userMessageId, responseMessageId } = await sendTurn(result, fake);
+
+      await act(async () => {
+        await result.current.chat.stop();
+      });
+
+      expect(fake.transport.abort).toHaveBeenCalledTimes(1);
+      expect((fake.transport.abort as jest.Mock).mock.calls[0][0]).toEqual({
+        conversationId: 'convo-1',
+        generationCreatedAt: 1000,
+      });
+
+      /** The server answers the stop with the aborted run's final frame. */
+      await act(async () => {
+        await onEvent({
+          type: 'final',
+          data: {
+            final: true,
+            aborted: true,
+            conversation: { conversationId: 'convo-1', endpoint: EModelEndpoint.agents },
+            requestMessage: { messageId: userMessageId, conversationId: 'convo-1', text: 'Hello' },
+            responseMessage: {
+              messageId: responseMessageId,
+              conversationId: 'convo-1',
+              parentMessageId: userMessageId,
+              isCreatedByUser: false,
+              text: '',
+              unfinished: true,
+            },
+          },
+        });
+      });
+
+      await waitFor(() => expect(result.current.chat.status).toBe('ready'));
+      expect(result.current.chat.error).toBeUndefined();
+    });
+
+    it('steers and queues behind the turn it started, and refuses a second send', async () => {
+      const fake = createFakeTransport({
+        steer: jest.fn(async () => ({
+          status: 'queued' as const,
+          steerId: 'steer-1',
+          position: 0,
+          conversationId: 'convo-1',
+          generationProtocolVersion: 2,
+        })),
+        enqueue: jest.fn(async (input: TEnqueueAgentQueuedTurnRequest) => ({
+          ...input,
+          queuedTurnId: 'queued-turn-1',
+          status: 'queued' as const,
+          revision: 0,
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        })),
+      });
+      const { result } = renderPane(fake.transport);
+      await sendTurn(result, fake);
+
+      let sent: false | void = undefined;
+      act(() => {
+        sent = result.current.chat.sendMessage({ text: 'not now' });
+      });
+      expect(sent).toBe(false);
+      expect(fake.transport.start).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        expect(result.current.steering.steerFromComposer('fold this in')).toBe(true);
+      });
+      await waitFor(() => expect(fake.transport.steer).toHaveBeenCalledTimes(1));
+      expect((fake.transport.steer as jest.Mock).mock.calls[0][0]).toEqual(
+        expect.objectContaining({
+          conversationId: 'convo-1',
+          generationCreatedAt: 1000,
+          text: 'fold this in',
+        }),
+      );
+
+      await act(async () => {
+        expect(result.current.steering.queueFromComposer('after this run')).toBe(true);
+      });
+      await waitFor(() => expect(fake.transport.enqueue).toHaveBeenCalledTimes(1));
+      expect((fake.transport.enqueue as jest.Mock).mock.calls[0][0]).toEqual(
+        expect.objectContaining({ conversationId: 'convo-1', text: 'after this run' }),
+      );
+      await waitFor(() =>
+        expect(result.current.queue).toEqual([
+          expect.objectContaining({
+            text: 'after this run',
+            server: expect.objectContaining({ id: 'queued-turn-1' }),
+          }),
+        ]),
+      );
+      expect(result.current.chat.status).toBe('submitted');
+      expect(fake.transport.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a rejected start as the chat error', async () => {
+      const failure = Object.assign(new Error('Bad request'), {
+        response: { status: 400, data: { message: 'Bad request' }, headers: {} },
+      });
+      const fake = createFakeTransport({ start: jest.fn(async () => Promise.reject(failure)) });
+      const { result } = renderPane(fake.transport);
+
+      act(() => {
+        result.current.chat.sendMessage({ text: 'Hello' });
+      });
+
+      await waitFor(() => expect(result.current.chat.status).toBe('error'));
+      expect(fake.streams).toHaveLength(0);
+      expect(result.current.chat.error).toBeInstanceOf(Error);
+      expect(result.current.chat.error?.message).toContain('Bad request');
+    });
+
+    it('reports a stream that fails mid-turn as the chat error', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      const { onEvent } = await sendTurn(result, fake);
+
+      act(() => onEvent({ type: 'error', data: { message: 'Generation failed' } }));
+
+      await waitFor(() => expect(result.current.chat.status).toBe('error'));
+      expect(result.current.chat.error?.message).toContain('Generation failed');
     });
   });
 });
