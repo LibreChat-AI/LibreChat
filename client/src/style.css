@@ -1968,7 +1968,15 @@ html {
       [type='number']
     ),
     textarea
-  ):not(.text-base, .text-lg, .text-xl, .text-2xl, .text-3xl) {
+  ):not(
+    .text-base,
+    .text-lg,
+    .text-xl,
+    .text-2xl,
+    .text-3xl,
+    .message-editor-text,
+    .composer-text
+  ) {
     font-size: max(16px, 0.875rem);
   }
 
