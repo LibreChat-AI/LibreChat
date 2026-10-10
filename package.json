@@ -108,7 +108,7 @@
     "test:packages:api": "cd packages/api && npm run test:ci",
     "test:packages:data-provider": "cd packages/data-provider && npm run test:ci",
     "test:packages:data-schemas": "cd packages/data-schemas && npm run test:ci",
-    "test:packages:chat": "cd packages/chat && npm run test:ci",
+    "test:packages:chat": "npm run build:data-provider && cd packages/chat && npm run test:ci",
     "test:config": "jest --config config/jest.config.js",
     "test:all": "npm run test:client && npm run test:api && npm run test:packages:api && npm run test:packages:data-provider && npm run test:packages:data-schemas && npm run test:packages:chat",
     "test:turbo": "turbo run test:ci --concurrency=2 --filter=@librechat/frontend --filter=@librechat/client --filter=@librechat/backend --filter=@librechat/api --filter=librechat-data-provider --filter=@librechat/data-schemas --filter=@librechat/chat",

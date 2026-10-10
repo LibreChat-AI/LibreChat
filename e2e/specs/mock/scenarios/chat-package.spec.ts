@@ -81,6 +81,8 @@ test.describe('the @librechat/chat package boundary', () => {
       '@librechat/client',
       '../components',
       '../react',
+      '../react.js',
+      '../components.mjs',
     ]) {
       expect(restrictedLoad('packages/chat/src/core/probe.ts', specifier), specifier).toHaveLength(
         4,

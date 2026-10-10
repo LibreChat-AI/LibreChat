@@ -80,8 +80,15 @@ export type ChatStream = AsyncIterable<ChatEvent> & {
  */
 export type ChatSendResult =
   | { status: 'stream'; stream: ChatStream }
-  | { status: 'settled'; conversationId: string }
-  | { status: 'replaced'; conversationId: string; streamId: string; generationCreatedAt: number };
+  | { status: 'settled'; conversationId: string; generationProtocolVersion?: number }
+  | {
+      status: 'replaced';
+      conversationId: string;
+      streamId: string;
+      generationCreatedAt: number;
+      /** Both control outcomes are v2-only; a caller trusts them only when this says `2`. */
+      generationProtocolVersion?: number;
+    };
 
 export type ChatSendRequest = ChatRequestOptions & {
   trigger: ChatTrigger;
