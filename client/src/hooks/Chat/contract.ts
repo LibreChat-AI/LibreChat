@@ -2,6 +2,7 @@ import type {
   TFile,
   TPreset,
   TMessage,
+  TAttachment,
   TConversation,
   ChatTransport,
   ChatTransportRequest,
@@ -87,6 +88,13 @@ export type ChatMessagesContract = {
   latestMessageId: string | undefined;
   /** Depth of the tail of the active branch, if loaded. */
   latestMessageDepth: number | undefined;
+  /**
+   * Attachments delivered by message id while the message cache holds none of them yet: tool
+   * artifacts streamed mid-run and previews resolved after it. A hook, so only a caller that
+   * merges them re-renders when one arrives; stable across renders. AI SDK: the data parts a
+   * stream writes onto its message.
+   */
+  useLiveAttachments: () => Record<string, TAttachment[] | undefined>;
 };
 
 /** Sending, regenerating and continuing turns. AI SDK: `sendMessage` / `regenerate` / `status`. */
