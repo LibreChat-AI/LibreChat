@@ -9,7 +9,7 @@ import './Field.css';
 const INPUT_VARIANTS = {
   default: '',
   inline: 'h-theme-button',
-  title: 'h-theme-field-lg text-2xl pointer-coarse:text-2xl font-semibold tracking-tight',
+  title: 'h-theme-field-lg text-2xl any-pointer-coarse:text-2xl font-semibold tracking-tight',
   'title-sm': 'text-base font-semibold tracking-tight',
 } as const;
 

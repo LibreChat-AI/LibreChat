@@ -1953,7 +1953,7 @@ html {
 }
 
 /* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .message-editor-text,
   .composer-text {
     font-size: max(16px, var(--markdown-font-size, var(--font-size-base)));
