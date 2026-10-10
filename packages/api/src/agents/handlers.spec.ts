@@ -6490,7 +6490,13 @@ describe('createToolExecuteHandler', () => {
       const followUpFiles = readSandboxFile.mock.calls[1][0].files;
       expect(followUpFiles).toEqual([
         skillRef,
-        { id: 'file-note', name: 'note.md', kind: 'user', storage_session_id: 'sess-write' },
+        {
+          id: 'file-note',
+          resource_id: 'file-note',
+          name: 'note.md',
+          kind: 'user',
+          storage_session_id: 'sess-write',
+        },
       ]);
       expect(writeSandboxFile.mock.calls[1][0].files).toEqual(followUpFiles);
       expect(writeSandboxFile.mock.calls[1][0].session_id).toBe('sess-write');
@@ -6533,11 +6539,19 @@ describe('createToolExecuteHandler', () => {
       expect(writeSandboxFile.mock.calls[1][0].files).toEqual([
         {
           id: 'file-legacy',
+          resource_id: 'file-legacy',
           name: 'legacy.md',
+          kind: 'user',
           session_id: 'store-legacy',
           storage_session_id: 'store-legacy',
         },
-        { id: 'file-fresh', name: 'fresh.md', storage_session_id: 'sess-exec' },
+        {
+          id: 'file-fresh',
+          resource_id: 'file-fresh',
+          name: 'fresh.md',
+          kind: 'user',
+          storage_session_id: 'sess-exec',
+        },
       ]);
     });
 
@@ -6571,8 +6585,56 @@ describe('createToolExecuteHandler', () => {
       ]);
 
       expect(writeSandboxFile.mock.calls[1][0].files).toEqual([
-        { id: 'file-dup', name: 'dup.md', storage_session_id: 'store-1', kind: 'user' },
+        {
+          id: 'file-dup',
+          resource_id: 'file-dup',
+          name: 'dup.md',
+          storage_session_id: 'store-1',
+          kind: 'user',
+        },
       ]);
+    });
+
+    it('mounts an output ref with the resource identity codeapi requires', async () => {
+      /* Output refs from `/exec` carry no `resource_id` (optional on
+       * `FileRef`), but codeapi validates it on every mounted input file
+       * (`CodeEnvFile`) and rejects the whole call with a 400 when it is
+       * missing. ToolNode normalizes refs before code calls mount them, so
+       * only a second authoring call in the same batch hit this. */
+      const readSandboxFile = jest.fn(async (_params: SandboxIoParams) => {
+        throw new Error('cat: /mnt/data/out.md: No such file or directory');
+      });
+      const writeSandboxFile = jest.fn(async (_params: SandboxIoParams) => ({
+        stdout: 'WROTE 2 bytes to /mnt/data/out.md\n',
+        session_id: 'sess-exec',
+        files: [{ id: 'file-out', name: 'out.md' }],
+      }));
+      const handler = makeSandboxAuthoringHandler({ readSandboxFile, writeSandboxFile });
+
+      await invokeHandler(handler, [
+        {
+          id: 'call_out_1',
+          name: 'create_file',
+          args: { path: '/mnt/data/out.md', content: 'hi' },
+        } as unknown as ToolCallRequest,
+        {
+          id: 'call_out_2',
+          name: 'create_file',
+          args: { path: '/mnt/data/out.md', content: 'hi again', overwrite: true },
+        } as unknown as ToolCallRequest,
+      ]);
+
+      const mounted = [
+        {
+          id: 'file-out',
+          resource_id: 'file-out',
+          name: 'out.md',
+          kind: 'user',
+          storage_session_id: 'sess-exec',
+        },
+      ];
+      expect(readSandboxFile.mock.calls[1][0].files).toEqual(mounted);
+      expect(writeSandboxFile.mock.calls[1][0].files).toEqual(mounted);
     });
 
     it('creates a file atomically in an attached workspace', async () => {
@@ -7940,6 +8002,11 @@ describe('createToolExecuteHandler', () => {
       const sandboxFiles = [
         { id: 'file-queued', name: 'queued.txt', storage_session_id: 'sess-new' },
       ];
+      const mountedFiles = sandboxFiles.map((file) => ({
+        ...file,
+        resource_id: file.id,
+        kind: 'user',
+      }));
       const readSandboxFile = jest.fn(
         async ({
           session_id,
@@ -7954,7 +8021,7 @@ describe('createToolExecuteHandler', () => {
           }
 
           expect(session_id).toBe('sess-new');
-          expect(files).toEqual(sandboxFiles);
+          expect(files).toEqual(mountedFiles);
           return { content: 'hello world\n' };
         },
       );
@@ -7975,7 +8042,7 @@ describe('createToolExecuteHandler', () => {
             expect(content).toBe('hello world\n');
           } else {
             expect(session_id).toBe('sess-new');
-            expect(files).toEqual(sandboxFiles);
+            expect(files).toEqual(mountedFiles);
             expect(content).toBe('goodbye world\n');
           }
           return {

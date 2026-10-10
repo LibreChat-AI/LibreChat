@@ -2727,13 +2727,20 @@ function mergeSandboxSessionArtifact(
       continue;
     }
     /* Carry the ref whole: the Code API reads fields this host never
-     * inspects, so a copy is a downgrade. Only the storage session is
-     * defaulted, and it resolves exactly as `getPreparedCodeOutputBuffer`
-     * resolves it — the legacy per-file `session_id` outranks the execution
-     * session, or an older Code API response would be remounted against the
-     * bucket that merely produced it. */
+     * inspects, so a copy is a downgrade. The storage session resolves
+     * exactly as `getPreparedCodeOutputBuffer` resolves it — the legacy
+     * per-file `session_id` outranks the execution session, or an older Code
+     * API response would be remounted against the bucket that merely
+     * produced it. An output ref also lacks the resource identity codeapi
+     * requires on every mounted file; default it as ToolNode does before a
+     * code call mounts refs. For `kind: 'user'` codeapi only needs a
+     * `resource_id` to be present, so the storage id stands in. */
     const merged: SandboxFileRef = { ...ref };
     merged.storage_session_id ??= ref.session_id ?? execSessionId;
+    merged.kind ??= 'user';
+    if (merged.kind === 'user') {
+      merged.resource_id ??= merged.id;
+    }
 
     /* One artifact can name the same stored file twice. Fold the repeat into
      * the entry already collected rather than mounting it again: codeapi
