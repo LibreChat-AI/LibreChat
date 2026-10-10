@@ -64,7 +64,7 @@
     "build": "npx turbo run build",
     "build:safe": "npx turbo run build --no-daemon",
     "frontend": "npm run build:data-provider && npm run build:data-schemas && npm run build:api && npm run build:client-package && npm run build:chat && cd client && npm run build",
-    "frontend:ci": "npm run build:data-provider && npm run build:client-package && cd client && npm run build:ci",
+    "frontend:ci": "npm run build:data-provider && npm run build:client-package && npm run build:chat && cd client && npm run build:ci",
     "frontend:dev": "cd client && npm run dev",
     "e2e:prepare": "npm run frontend",
     "test:client-build": "node --test e2e/client-build.test.mjs",
