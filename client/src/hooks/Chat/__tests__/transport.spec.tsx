@@ -757,13 +757,14 @@ describe('chat transport boundary', () => {
       });
       await waitFor(() => expect(fake.streams).toHaveLength(1));
       const { submission } = result.current;
-      if (!submission) {
-        throw new Error('The turn left no submission');
+      const responseMessageId = submission?.initialResponse?.messageId;
+      if (!submission || !responseMessageId) {
+        throw new Error('The turn left no submission with a response placeholder');
       }
       return {
         onEvent: fake.streams[0].options.onEvent,
         userMessageId: submission.userMessage.messageId,
-        responseMessageId: submission.initialResponse?.messageId ?? '',
+        responseMessageId,
       };
     };
 
