@@ -167,6 +167,7 @@ const FILTERS = {
     'client/**',
     'packages/api/**',
     'packages/client/**',
+    'packages/chat/**',
     // Every workspace manifest PACKAGE_JSON_FILES validates, plus the ones
     // whose dependencies feed the unused-package calculation through
     // api/package.json's @librechat/data-schemas entry.
@@ -2111,22 +2112,31 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
     return { ok: true, skipped: 'depcheck is not installed — npm install -g depcheck' };
   }
 
-  const [rootManifest, clientManifest, apiManifest, packagesClientManifest, packagesApiManifest] =
-    await Promise.all([
-      readManifest('package.json'),
-      readManifest('client/package.json'),
-      readManifest('api/package.json'),
-      readManifest('packages/client/package.json'),
-      readManifest('packages/api/package.json'),
-    ]);
-
-  const [rootCode, clientCode, apiCode, packagesClientCode, packagesApiCode] = await Promise.all([
-    importedPackages('.'),
-    importedPackages('client'),
-    importedPackages('api'),
-    importedPackages('packages/client'),
-    importedPackages('packages/api'),
+  const [
+    rootManifest,
+    clientManifest,
+    apiManifest,
+    packagesClientManifest,
+    packagesApiManifest,
+    packagesChatManifest,
+  ] = await Promise.all([
+    readManifest('package.json'),
+    readManifest('client/package.json'),
+    readManifest('api/package.json'),
+    readManifest('packages/client/package.json'),
+    readManifest('packages/api/package.json'),
+    readManifest('packages/chat/package.json'),
   ]);
+
+  const [rootCode, clientCode, apiCode, packagesClientCode, packagesApiCode, packagesChatCode] =
+    await Promise.all([
+      importedPackages('.'),
+      importedPackages('client'),
+      importedPackages('api'),
+      importedPackages('packages/client'),
+      importedPackages('packages/api'),
+      importedPackages('packages/chat'),
+    ]);
 
   const targets = [
     {
@@ -2158,6 +2168,12 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
         packagesApiCode,
         manifestDependencies(packagesApiManifest),
       ],
+      ignored: new Set<string>(),
+    },
+    {
+      name: 'Chat',
+      dir: resolve(ROOT, 'packages/chat'),
+      allowed: [scriptWords(packagesChatManifest), packagesChatCode],
       ignored: new Set<string>(),
     },
   ];

@@ -181,6 +181,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
           key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
 
@@ -209,6 +210,11 @@ jobs:
       - name: Build client-package
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
+
+      # About a second, so it is not cached. Nothing downstream consumes the output yet; the step
+      # proves the package's tsdown build, declarations and exports on every frontend run.
+      - name: Build chat package
+        run: npm run build:chat
 
       - name: Upload data-provider build
         uses: actions/upload-artifact@v6
@@ -245,6 +251,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
           key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
 
@@ -290,6 +297,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
           key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
 
@@ -335,6 +343,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
           key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
 
@@ -417,6 +426,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
           key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
 
@@ -493,6 +503,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
           key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
 

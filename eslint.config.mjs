@@ -61,6 +61,24 @@ const chatPackageRestrictions = [
   },
 ];
 
+/**
+ * `no-restricted-imports` reads only static imports, so the same boundaries are restated for
+ * `import()` and `require()` of a literal specifier. Each pattern is an esquery regex body, which
+ * cannot hold a slash, so `\x2F` stands for one.
+ */
+const restrictedLoads = (pattern, message) => ({
+  selector: `ImportExpression[source.value=/${pattern}/], CallExpression[callee.name='require'][arguments.0.value=/${pattern}/]`,
+  message,
+});
+
+const chatPackageLoads = [
+  restrictedLoads(
+    '^~\\x2F|^@librechat\\x2Ffrontend(\\x2F|$)|(^|\\x2F)client\\x2Fsrc(\\x2F|$)',
+    chatPackageRestrictions[0].message,
+  ),
+  restrictedLoads('^recoil(\\x2F|$)', chatPackageRestrictions[1].message),
+];
+
 /** The core entry runs without a UI framework, so a non-React host or a worker can drive a chat. */
 const chatCoreRestrictions = [
   ...chatPackageRestrictions,
@@ -81,6 +99,18 @@ const chatCoreRestrictions = [
     group: ['**/components', '**/components/**'],
     message: 'The core cannot import the /components entry; it builds on the core.',
   },
+];
+
+const chatCoreLoads = [
+  ...chatPackageLoads,
+  restrictedLoads(
+    '^(react|react-dom|jotai|@librechat\\x2Fclient)(\\x2F|$)|^@tanstack\\x2F',
+    chatCoreRestrictions[chatPackageRestrictions.length].message,
+  ),
+  restrictedLoads(
+    '(^|\\x2F)components(\\x2F|$)',
+    chatCoreRestrictions[chatPackageRestrictions.length + 1].message,
+  ),
 ];
 
 export default [
@@ -658,6 +688,22 @@ export default [
     files: ['packages/chat/src/**/*.{ts,tsx,js,jsx}'],
     rules: {
       'no-restricted-imports': ['error', { patterns: chatPackageRestrictions }],
+      'no-restricted-syntax': ['error', ...chatPackageLoads],
+    },
+  },
+  {
+    // The app's literal-copy rule skips `packages/**`; chat components render visible text, so it
+    // reaches them. Specs assert rendered strings and stay exempt, as they are in the app.
+    files: ['packages/chat/src/**/*.{tsx,jsx}'],
+    ignores: ['**/*.{spec,test}.{tsx,jsx}', '**/__tests__/**'],
+    rules: {
+      'i18next/no-literal-string': [
+        'error',
+        {
+          mode: 'jsx-text-only',
+          'should-validate-template': true,
+        },
+      ],
     },
   },
   {
@@ -667,6 +713,7 @@ export default [
       'no-restricted-imports': ['error', { patterns: chatCoreRestrictions }],
       'no-restricted-syntax': [
         'error',
+        ...chatCoreLoads,
         {
           selector: 'JSXElement, JSXFragment',
           message:

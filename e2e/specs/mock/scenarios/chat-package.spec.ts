@@ -29,6 +29,16 @@ const UI_MODULES = [
 const restricted = (relativePath: string, source: string): string[] =>
   messagesFor(lintStdin(relativePath, source), 'no-restricted-imports');
 
+/** `import()` and `require()` are not static imports; their own rule reports them. */
+const restrictedLoad = (relativePath: string, specifier: string): string[] =>
+  messagesFor(
+    lintStdin(
+      relativePath,
+      `export const load = () => import('${specifier}');\nexport const sync = () => require('${specifier}');\n`,
+    ),
+    'no-restricted-syntax',
+  );
+
 test.describe('the @librechat/chat package boundary', () => {
   test.beforeEach(() => inOneProject());
 
@@ -58,7 +68,23 @@ test.describe('the @librechat/chat package boundary', () => {
       ),
     ).toHaveLength(1);
 
+    for (const specifier of [
+      'react',
+      'react/jsx-runtime',
+      'jotai',
+      '@librechat/client',
+      '../components',
+    ]) {
+      expect(restrictedLoad('packages/chat/src/core/probe.ts', specifier), specifier).toHaveLength(
+        2,
+      );
+    }
+    expect(restrictedLoad('packages/chat/src/core/probe.ts', 'librechat-data-provider')).toEqual(
+      [],
+    );
+
     expect(restricted('packages/chat/src/react/probe.ts', source)).toEqual([]);
+    expect(restrictedLoad('packages/chat/src/react/probe.ts', 'react')).toEqual([]);
   });
 
   test('the chat package rejects an import from the app @scenario:the-chat-package-rejects-an-import-from-the-app', () => {
@@ -76,7 +102,28 @@ test.describe('the @librechat/chat package boundary', () => {
       for (const source of probes) {
         expect(restricted(path, source), `${path}\n${source}`).toHaveLength(1);
       }
+      for (const specifier of [
+        '~/store',
+        '../../../../client/src/hooks',
+        'recoil',
+        '@librechat/frontend/src/store/filesDialog',
+      ]) {
+        expect(restrictedLoad(path, specifier), `${path}\n${specifier}`).toHaveLength(2);
+      }
     }
+  });
+
+  test('chat components reject literal copy @scenario:chat-components-reject-literal-copy', () => {
+    test.setTimeout(120_000);
+    const path = 'packages/chat/src/components/Probe.tsx';
+    const literal = lintStdin(path, 'export function Probe() {\n  return <p>Hello world</p>;\n}\n');
+    expect(messagesFor(literal, 'i18next/no-literal-string')).toHaveLength(1);
+
+    const localized = lintStdin(
+      path,
+      'export function Probe({ label }: { label: string }) {\n  return <p>{label}</p>;\n}\n',
+    );
+    expect(messagesFor(localized, 'i18next/no-literal-string')).toEqual([]);
   });
 
   test('the design rules police the chat components @scenario:the-design-rules-police-the-chat-components', () => {

@@ -30,6 +30,7 @@ COPY packages/data-provider/package*.json ./packages/data-provider/
 COPY packages/api/package*.json ./packages/api/
 COPY packages/data-schemas/package*.json ./packages/data-schemas/
 COPY packages/client/package*.json ./packages/client/
+COPY packages/chat/package*.json ./packages/chat/
 COPY client/package*.json ./client/
 COPY api/package*.json ./api/
 

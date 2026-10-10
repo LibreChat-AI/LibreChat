@@ -138,6 +138,7 @@ jobs:
               - 'client/**'
               - 'packages/api/**'
               - 'packages/client/**'
+              - 'packages/chat/**'
               # Every workspace manifest the JSON validation step covers, plus
               # the ones whose dependencies feed the unused-package calculation
               # through api/package.json's @librechat/data-schemas entry.
@@ -664,12 +665,28 @@ jobs:
             cd ..
           fi
 
+      - name: Run depcheck for packages/chat/package.json
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: check-chat
+        continue-on-error: true
+        run: |
+          if [[ -f "packages/chat/package.json" ]]; then
+            cd packages/chat
+            UNUSED=$(depcheck --json | jq -r '.dependencies | join("\n")' || echo "")
+            # Exclude dependencies the package's own scripts invoke
+            UNUSED=$(comm -23 <(echo "$UNUSED" | sort) <(jq -r '.scripts // {} | .[]' package.json | tr ' ' '\n' | sort -u) || echo "")
+            echo "CHAT_UNUSED<<EOF" >> $GITHUB_ENV
+            echo "$UNUSED" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            cd ../..
+          fi
+
       - name: Fail workflow if unused dependencies found
         id: unused_packages
         if: >
           always() &&
           steps.paths.outputs.unused_packages == 'true' &&
-          (env.ROOT_UNUSED != '' || env.CLIENT_UNUSED != '' || env.API_UNUSED != '')
+          (env.ROOT_UNUSED != '' || env.CLIENT_UNUSED != '' || env.API_UNUSED != '' || env.CHAT_UNUSED != '')
         continue-on-error: true
         run: exit 1
 
@@ -706,6 +723,7 @@ jobs:
           CHECK_ROOT_OUTCOME: ${{ steps.check-root.outcome }}
           CHECK_CLIENT_OUTCOME: ${{ steps.check-client.outcome }}
           CHECK_API_OUTCOME: ${{ steps.check-api.outcome }}
+          CHECK_CHAT_OUTCOME: ${{ steps.check-chat.outcome }}
           UNUSED_PACKAGES_OUTCOME: ${{ steps.unused_packages.outcome }}
         run: |
           failures=()
@@ -746,12 +764,14 @@ jobs:
           record_failure "Root depcheck" "$CHECK_ROOT_OUTCOME"
           record_failure "Client depcheck" "$CHECK_CLIENT_OUTCOME"
           record_failure "API depcheck" "$CHECK_API_OUTCOME"
+          record_failure "Chat depcheck" "$CHECK_CHAT_OUTCOME"
           record_failure "Unused NPM packages" "$UNUSED_PACKAGES_OUTCOME"
 
           if [[ "$UNUSED_PACKAGES_OUTCOME" == "failure" ]]; then
             [[ -n "$ROOT_UNUSED" ]] && printf 'Root unused dependencies:\n%s\n' "$ROOT_UNUSED"
             [[ -n "$CLIENT_UNUSED" ]] && printf 'Client unused dependencies:\n%s\n' "$CLIENT_UNUSED"
             [[ -n "$API_UNUSED" ]] && printf 'API unused dependencies:\n%s\n' "$API_UNUSED"
+            [[ -n "$CHAT_UNUSED" ]] && printf 'Chat unused dependencies:\n%s\n' "$CHAT_UNUSED"
           fi
 
           if [[ ${#failures[@]} -eq 0 ]]; then
