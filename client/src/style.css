@@ -2005,7 +2005,7 @@ html {
     textarea,
     select
   ).text-base {
-    font-size: max(16px, var(--text-base));
+    font-size: max(16px, var(--text-base, 1rem));
   }
 
   :is(
@@ -2027,7 +2027,7 @@ html {
     textarea,
     select
   ).text-lg {
-    font-size: max(16px, var(--text-lg));
+    font-size: max(16px, var(--text-lg, 1.125rem));
   }
 
   :is(
@@ -2049,7 +2049,7 @@ html {
     textarea,
     select
   ).text-xl {
-    font-size: max(16px, var(--text-xl));
+    font-size: max(16px, var(--text-xl, 1.25rem));
   }
 
   :is(
@@ -2071,7 +2071,7 @@ html {
     textarea,
     select
   ).text-2xl {
-    font-size: max(16px, var(--text-2xl));
+    font-size: max(16px, var(--text-2xl, 1.5rem));
   }
 
   :is(
@@ -2093,7 +2093,7 @@ html {
     textarea,
     select
   ).text-3xl {
-    font-size: max(16px, var(--text-3xl));
+    font-size: max(16px, var(--text-3xl, 1.875rem));
   }
 
   textarea.message-editor-text,
