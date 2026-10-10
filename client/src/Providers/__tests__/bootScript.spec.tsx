@@ -241,7 +241,7 @@ describe('index.html deployment theme boot script', () => {
 
     it('leaves an inline definition, which the build has not resolved, to the bundle', () => {
       document.getElementById(DEPLOYMENT_THEME_BOOT_ID)?.remove();
-      embedShellTheme({ source: { version: 1, name: 'acme', modes: acme.modes } });
+      embedShellTheme(JSON.stringify({ source: acme }));
       boot();
       expect(root().getAttribute('style')).toBeNull();
       expect(root().hasAttribute('data-theme')).toBe(false);
