@@ -6248,3 +6248,98 @@ describe('initializeAgent turn delivery routing', () => {
     expect(filesOrder).toBeLessThan(toolsOrder);
   });
 });
+
+/** `model_parameters` is free-form and OpenAI-compatible clients send `modelKwargs` verbatim in
+ *  the request body, so a nested `model` would replace the model `validateAgentModel` checked
+ *  against the user's role/group-filtered list. */
+describe('initializeAgent — validated model pinning', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  /** `fallbacks` makes the agents runtime build a second client from user-chosen provider,
+   *  model and baseURL (with the server's env credentials) when the primary call fails, and
+   *  OpenRouter/LiteLLM-style `modelKwargs` routing keys pick other models server-side. */
+  it('drops user-supplied fallback and routing keys that select other models', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.OPENAI,
+      model: 'gpt-4o-mini',
+    });
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: false,
+      maxContextTokens: undefined,
+      modelOptions: {
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        fallbacks: [{ provider: 'openAI', clientOptions: { model: 'gpt-4o' } }],
+        modelKwargs: {
+          models: ['gpt-4o'],
+          route: 'fallback',
+          fallbacks: ['gpt-4o'],
+          service_tier: 'flex',
+        },
+      },
+    });
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    const { results } = mockGetProviderConfig.mock;
+    const { getOptions } = results[results.length - 1].value;
+    expect(getOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model_parameters: {
+          model: 'gpt-4o-mini',
+          temperature: 0.2,
+          modelKwargs: { service_tier: 'flex' },
+        },
+      }),
+    );
+  });
+
+  it('drops a nested modelKwargs.model so the provider request uses the validated model', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.OPENAI,
+      model: 'gpt-4o-mini',
+    });
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: false,
+      maxContextTokens: undefined,
+      modelOptions: {
+        model: 'gpt-4o-mini',
+        modelKwargs: { model: 'gpt-4o', service_tier: 'flex' },
+      },
+    });
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    const { results } = mockGetProviderConfig.mock;
+    const { getOptions } = results[results.length - 1].value;
+    expect(getOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model_parameters: { model: 'gpt-4o-mini', modelKwargs: { service_tier: 'flex' } },
+      }),
+    );
+  });
+});
