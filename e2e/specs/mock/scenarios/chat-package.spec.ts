@@ -80,6 +80,7 @@ test.describe('the @librechat/chat package boundary', () => {
       'jotai',
       '@librechat/client',
       '../components',
+      '../react',
     ]) {
       expect(restrictedLoad('packages/chat/src/core/probe.ts', specifier), specifier).toHaveLength(
         4,

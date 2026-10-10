@@ -119,7 +119,7 @@ const chatCoreRestrictions = [
   },
   {
     group: ['**/components', '**/components/**'],
-    message: 'The core cannot import the /components entry; it builds on the core.',
+    message: 'The core cannot import the /react or /components entries; they build on the core.',
   },
 ];
 
@@ -130,7 +130,7 @@ const chatCoreLoads = [
     chatCoreRestrictions[chatPackageRestrictions.length].message,
   ),
   restrictedLoads(
-    '(^|\\x2F)components(\\x2F|$)',
+    '(^|\\x2F)components(\\x2F|$)|^\\.\\.?\\x2F(.*\\x2F)?react(\\x2F|$)',
     chatCoreRestrictions[chatPackageRestrictions.length + 1].message,
   ),
 ];

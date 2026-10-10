@@ -114,8 +114,8 @@ export type ChatAbortRequest = {
   abortKey?: string;
 };
 
-/** What the server did with a stop request. */
-export type ChatAbortResult = {
+/** What the server did with a stop request for a resumable generation. */
+export type ChatStreamAbortResult = {
   success: boolean;
   generationProtocolVersion?: number;
   /** The id of the stream that was stopped. */
@@ -131,6 +131,19 @@ export type ChatAbortResult = {
   code?: string;
   error?: string;
 };
+
+/**
+ * An Assistants stop, addressed by `abortKey`. That stream ends without a final event of its own,
+ * so the stop's response carries the terminal conversation and messages; `null` when there was no
+ * run left to stop.
+ */
+export type ChatRunAbortResult = {
+  final: true;
+  conversation: Partial<TConversation>;
+  runMessages: TMessage[];
+} | null;
+
+export type ChatAbortResult = ChatStreamAbortResult | ChatRunAbortResult;
 
 /** Text folded into the running generation at its next injection boundary. */
 export type ChatSteerRequest = {
@@ -250,7 +263,10 @@ export interface ChatTransport {
   sendMessages(request: ChatSendRequest): Promise<ChatSendResult>;
   /** Attaches to the running generation, or resolves `null` when nothing is running. */
   reconnectToStream(request: ChatReconnectRequest): Promise<ChatStream | null>;
-  /** Stops the running generation; its stream then reports the abort, unless the result says it settled first. */
+  /**
+   * Stops the running generation; its stream then reports the abort, unless the result says it
+   * settled first. A request with `abortKey` resolves to a {@link ChatRunAbortResult}.
+   */
   abort(request: ChatAbortRequest): Promise<ChatAbortResult>;
   close?(): void;
   /** Reads the conversation's generation state; what a reload checks before reattaching. */
