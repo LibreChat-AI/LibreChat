@@ -12,6 +12,8 @@ import { disabledFillClasses } from '~/utils/theme';
  * the 2px perimeter the app holds as its focus floor. The value inks in `field-text`, and a theme
  * whose `fieldFillStyle` is `fill` paints the field in `field-fill`, which a disabled field keeps
  * under the pointer too; by default it stays clear.
+ * On touch devices `Field.css` and the app stylesheet keep the value at 16px or more, because iOS
+ * zooms the page into a focused field below that and the installed PWA never zooms back out.
  */
 export const fieldBase: string = `lc-field flex w-full rounded-lg border border-border-control px-3 py-theme-field-y text-sm text-field-text theme-field-fill:bg-field-fill theme-field-fill:disabled:hover:bg-field-fill placeholder:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control theme-field-border:focus:border-border-field-focus theme-field-border:focus-visible:ring-1 theme-field-border:focus-visible:ring-border-field-focus disabled:cursor-not-allowed disabled:opacity-50 ${disabledFillClasses}`;
 

@@ -79,3 +79,43 @@ html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
     outline: none !important;
   }
 }
+
+/* iOS zooms into a focused field under 16px and the installed PWA never zooms back out, so on
+   touch devices the field's type never drops under 16px. Sizes at text-base or above keep their
+   own value, floored the same way for a small UI scale. A single-line field also gets a line box
+   and row height that give 16px text room at small UI scales instead of clipping the glyphs; the
+   inline variant keeps its height tied to the adjacent buttons. Bare controls outside the shared
+   primitives are covered by the app stylesheet. */
+@media (any-pointer: coarse) {
+  .lc-field:not(.text-base, .text-lg, .text-xl, .text-2xl, .text-3xl) {
+    font-size: max(16px, 0.875rem);
+  }
+
+  .lc-field.text-base {
+    font-size: max(16px, var(--text-base, 1rem));
+  }
+
+  .lc-field.text-lg {
+    font-size: max(16px, var(--text-lg, 1.125rem));
+  }
+
+  .lc-field.text-xl {
+    font-size: max(16px, var(--text-xl, 1.25rem));
+  }
+
+  .lc-field.text-2xl {
+    font-size: max(16px, var(--text-2xl, 1.5rem));
+  }
+
+  .lc-field.text-3xl {
+    font-size: max(16px, var(--text-3xl, 1.875rem));
+  }
+
+  input.lc-field {
+    line-height: 1.25;
+  }
+
+  input.lc-field:not(.h-theme-button) {
+    min-height: 40px;
+  }
+}
