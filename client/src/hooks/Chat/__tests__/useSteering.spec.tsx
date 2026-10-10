@@ -3838,7 +3838,7 @@ describe('useSteering', () => {
         type: 'image/png',
       });
 
-      function setupComposer() {
+      function setupComposer(initialFiles = new Map<string, ExtendedFile>()) {
         const sendNow = jest.fn();
         const stopGenerating = jest.fn();
         const observed: { files: Map<string, ExtendedFile> } = { files: new Map() };
@@ -3848,7 +3848,7 @@ describe('useSteering', () => {
         /** Real composer state, so `useUpdateFiles` and `useSteering` write
          *  through the same setter they share in `ChatForm`. */
         const Composer = () => {
-          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          const [files, setFiles] = React.useState(initialFiles);
           observed.files = files;
           updates = useUpdateFiles(setFiles);
           steering = useSteering({
@@ -3877,6 +3877,59 @@ describe('useSteering', () => {
           getSteering: () => steering!,
         };
       }
+
+      const uploadedFile = {
+        ...extended('file-uploaded', 1),
+        temp_file_id: 'upload-key',
+      };
+
+      it('clears a queued attachment stored under its temporary upload key', () => {
+        const { observed, getSteering } = setupComposer(new Map([['upload-key', uploadedFile]]));
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+
+        expect(observed.files.size).toBe(0);
+      });
+
+      it('does not attach a previously queued upload to the next queued message', () => {
+        const { getSteering } = setupComposer(new Map([['upload-key', uploadedFile]]));
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+        act(() => {
+          getSteering().queueFromComposer('next message without attachments');
+        });
+
+        expect(getDefaultStore().get(queuedMessagesByConvoId(CONVO_ID))[1].files).toBeUndefined();
+      });
+
+      it('ignores a late callback using the queued attachment temporary upload id', () => {
+        const { observed, getUpdates, getSteering } = setupComposer(
+          new Map([['upload-key', uploadedFile]]),
+        );
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+        act(() => getUpdates().replaceFile(extended('upload-key', 1)));
+
+        expect(observed.files.size).toBe(0);
+      });
+
+      it('keeps the server file reference on the queued message', () => {
+        const { getSteering } = setupComposer(new Map([['upload-key', uploadedFile]]));
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+
+        expect(getDefaultStore().get(queuedMessagesByConvoId(CONVO_ID))[0].files).toEqual([
+          expect.objectContaining({ file_id: 'file-uploaded' }),
+        ]);
+      });
 
       it('ignores a late callback for an attachment the steer already took', () => {
         const { observed, getUpdates, getSteering } = setupComposer();

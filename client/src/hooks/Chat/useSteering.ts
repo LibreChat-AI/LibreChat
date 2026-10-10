@@ -1302,7 +1302,12 @@ export default function useSteering({
       return undefined;
     }
     const staged = Array.from(files.values());
-    const takenIds = staged.map((file) => file.file_id);
+    // Completed uploads keep their temporary map key after receiving a server id.
+    const takenIds = Array.from(files.entries()).flatMap(([key, file]) => [
+      key,
+      file.file_id,
+      ...(file.temp_file_id ? [file.temp_file_id] : []),
+    ]);
     const taken = staged.map((file) => ({
       file_id: file.file_id,
       filepath: file.filepath,
