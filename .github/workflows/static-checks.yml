@@ -77,6 +77,7 @@ jobs:
               - '**/eslint-suppressions.json'
               - 'client/src/**'
               - 'packages/client/src/**'
+              - 'packages/chat/src/**'
               # The bundle the rules resolve primitives through is named by the
               # library's manifest, produced by its build config and shaped by
               # its compiler options.
@@ -429,7 +430,7 @@ jobs:
         if: always() && steps.paths.outputs.unused_packages == 'true'
         continue-on-error: true
         run: |
-          for FILE in package.json client/package.json api/package.json packages/api/package.json packages/client/package.json packages/data-provider/package.json packages/data-schemas/package.json; do
+          for FILE in package.json client/package.json api/package.json packages/api/package.json packages/client/package.json packages/chat/package.json packages/data-provider/package.json packages/data-schemas/package.json; do
             if [[ -f "$FILE" ]]; then
               jq empty "$FILE" || (echo "::error title=Invalid JSON::$FILE is invalid" && exit 1)
             fi

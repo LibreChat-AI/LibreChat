@@ -91,6 +91,7 @@ const FILTERS = {
     '**/eslint-suppressions.json',
     'client/src/**',
     'packages/client/src/**',
+    'packages/chat/src/**',
     /** The bundle the rules resolve primitives through is named by the library's
      *  manifest, produced by its build config and shaped by its compiler
      *  options. */
@@ -193,6 +194,7 @@ const PACKAGE_JSON_FILES = [
   'api/package.json',
   'packages/api/package.json',
   'packages/client/package.json',
+  'packages/chat/package.json',
   'packages/data-provider/package.json',
   'packages/data-schemas/package.json',
 ];
@@ -242,8 +244,8 @@ const DESIGN_METADATA_FILES = [
   'packages/client/tsconfig.json',
 ];
 
-/** The two trees the design rules police, and what `lint:design:record` records. */
-const DESIGN_ROOTS = ['client/src', 'packages/client/src'];
+/** The trees the design rules police, and what `lint:design:record` records. */
+const DESIGN_ROOTS = ['client/src', 'packages/client/src', 'packages/chat/src'];
 
 /**
  * This runner is the gate the record is measured against: `unusedCapacity` and
@@ -1941,6 +1943,17 @@ const TYPECHECK_PROJECTS = [
       'packages/client/**',
       ...ROOT_MANIFESTS,
       BACKEND_REVIEW,
+      '!**.md',
+    ],
+    requires: ['build:data-provider'],
+  },
+  {
+    project: 'packages/chat/tsconfig.json',
+    paths: [
+      'packages/data-provider/**',
+      'packages/chat/**',
+      ...ROOT_MANIFESTS,
+      FRONTEND_REVIEW,
       '!**.md',
     ],
     requires: ['build:data-provider'],

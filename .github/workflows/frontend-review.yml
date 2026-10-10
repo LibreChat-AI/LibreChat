@@ -6,6 +6,7 @@ on:
       - 'e2e/client-build.test.mjs'
       - 'client/**'
       - 'packages/client/**'
+      - 'packages/chat/**'
       - 'packages/data-provider/**'
       - 'package.json'
       - 'package-lock.json'
@@ -20,6 +21,7 @@ on:
       - 'e2e/client-build.test.mjs'
       - 'client/**'
       - 'packages/client/**'
+      - 'packages/chat/**'
       - 'packages/data-provider/**'
       - 'package.json'
       - 'package-lock.json'
@@ -265,6 +267,49 @@ jobs:
       - name: Type check client
         run: npm run typecheck
         working-directory: client
+
+  test-packages-chat:
+    name: 'Tests: @librechat/chat'
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            client/node_modules
+            packages/client/node_modules
+            packages/data-provider/node_modules
+          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Download data-provider build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-provider
+          path: packages/data-provider/dist
+
+      - name: Type check
+        run: npm run typecheck
+        working-directory: packages/chat
+
+      - name: Run unit tests
+        run: npm run test:ci
+        working-directory: packages/chat
 
   test-packages-client:
     name: 'Tests: @librechat/client'

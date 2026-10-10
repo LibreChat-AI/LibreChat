@@ -42,6 +42,41 @@ const tenantModelRestrictions = [
   },
 ];
 
+/** `@librechat/chat` is consumed by the app, never the reverse: nothing in it reaches into `client/src`. */
+const chatPackageRestrictions = [
+  {
+    group: ['~/*', '**/client/src', '**/client/src/**'],
+    message: '@librechat/chat cannot import the app; take what it needs from the host instead.',
+  },
+  {
+    group: ['recoil'],
+    message:
+      '@librechat/chat holds no Recoil state; per-pane run state is Jotai in the React binding.',
+  },
+];
+
+/** The core entry runs without a UI framework, so a non-React host or a worker can drive a chat. */
+const chatCoreRestrictions = [
+  ...chatPackageRestrictions,
+  {
+    group: [
+      'react',
+      'react-dom',
+      'react-dom/*',
+      'jotai',
+      'jotai/*',
+      '@tanstack/*',
+      '@librechat/client',
+    ],
+    message:
+      'The @librechat/chat core has no UI dependency; React and Jotai belong in the /react entry.',
+  },
+  {
+    group: ['../react', '../react/**', '../components', '../components/**'],
+    message: 'The core cannot import the /react or /components entries; they build on the core.',
+  },
+];
+
 export default [
   {
     ignores: [
@@ -54,6 +89,7 @@ export default [
       'packages/api/test_bundle/**/*',
       'api/demo/**/*',
       'packages/client/dist/**/*',
+      'packages/chat/dist/**/*',
       'packages/data-provider/types/**/*',
       'packages/data-provider/dist/**/*',
       'packages/data-provider/test_bundle/**/*',
@@ -199,7 +235,11 @@ export default [
   // The client's entry points and helpers are `.jsx`/`.js` — App.jsx among them — so the globs
   // name those extensions too: the rules have to see them.
   {
-    files: ['client/src/**/*.{ts,tsx,js,jsx}', 'packages/client/src/**/*.{ts,tsx,js,jsx}'],
+    files: [
+      'client/src/**/*.{ts,tsx,js,jsx}',
+      'packages/client/src/**/*.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/*.{ts,tsx,js,jsx}',
+    ],
     plugins: { shadcn, design },
     settings: {
       shadcn: {
@@ -341,6 +381,8 @@ export default [
       'client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
       'packages/client/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
       'packages/client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
     ],
     rules: {
       'design/disabled-recipe': 'off',
@@ -604,6 +646,19 @@ export default [
         },
         ...tenantModelRestrictions,
       ],
+    },
+  },
+  {
+    files: ['packages/chat/src/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: chatPackageRestrictions }],
+    },
+  },
+  {
+    files: ['packages/chat/src/index.ts', 'packages/chat/src/core/**/*.ts'],
+    ignores: ['**/*.spec.ts', '**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: chatCoreRestrictions }],
     },
   },
 ];
