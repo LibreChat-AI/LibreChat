@@ -101,9 +101,11 @@ function BackgroundTasksButton({
     // Legacy call ids are only usable when they identify one rendered call.
     const target = targets.length === 1 ? targets[0] : message;
     if (target == null) return false;
-    finalFocusRef.current = target.matches('button')
-      ? target
-      : (target.querySelector<HTMLElement>('button') ?? target);
+    if (!target.hasAttribute('tabindex') && !target.matches('button')) {
+      target.tabIndex = -1;
+      target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
+    }
+    finalFocusRef.current = target;
     popover.hide();
     target.scrollIntoView?.({
       block: 'center',

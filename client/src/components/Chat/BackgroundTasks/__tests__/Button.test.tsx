@@ -424,6 +424,28 @@ describe('BackgroundTasksButton', () => {
     }
   });
 
+  it('makes the parent message focusable when its call is not rendered', async () => {
+    jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(
+      index({
+        tasks: [{ ...index().tasks[0], messageId: 'parent-message' }],
+      }),
+    );
+    renderButton();
+    const message = document.createElement('section');
+    message.id = 'parent-message';
+    message.append(document.createElement('button'));
+    document.body.append(message);
+    try {
+      await userEvent.click(await screen.findByTestId('header-background-tasks-button'));
+      await userEvent.click(
+        screen.getByRole('button', { name: 'com_ui_background_tasks_go_to_tool' }),
+      );
+      expect(message).toHaveAttribute('tabindex', '-1');
+    } finally {
+      message.remove();
+    }
+  });
+
   it('explains when the destination is not loaded instead of silently doing nothing', async () => {
     jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
     renderButton();
