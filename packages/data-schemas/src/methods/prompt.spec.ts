@@ -767,3 +767,40 @@ describe('Prompt method failure contracts', () => {
     expect(all.data).toHaveLength(2);
   });
 });
+
+describe('Prompt group list projections include `command`', () => {
+  let commandGroupId: string;
+
+  beforeEach(async () => {
+    const group = (await PromptGroup.create({
+      name: 'Command Projection Group',
+      command: 'mytest-cmd',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    })).toObject() as unknown as LeanPromptGroup;
+    commandGroupId = String(group._id);
+  });
+
+  afterEach(async () => {
+    await PromptGroup.deleteMany({});
+  });
+
+  it('getPromptGroups includes command in the list projection', async () => {
+    const result = await methods.getPromptGroups({
+      pageNumber: 1,
+      pageSize: 10,
+      name: 'Command Projection',
+    });
+    expect(result.promptGroups).toBeDefined();
+    expect(result.promptGroups).toHaveLength(1);
+    expect(result.promptGroups![0].command).toBe('mytest-cmd');
+  });
+
+  it('getListPromptGroupsByAccess includes command in the list projection', async () => {
+    const result = await methods.getListPromptGroupsByAccess({
+      accessibleIds: [commandGroupId],
+    });
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].command).toBe('mytest-cmd');
+  });
+});
