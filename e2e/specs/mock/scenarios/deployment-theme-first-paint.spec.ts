@@ -340,56 +340,87 @@ async function firstVisitFrames(page: Page, path: string, ready: () => Promise<v
   );
 }
 
-for (const mode of ['light', 'dark'] as const) {
-  test.describe(`deployment theme first-ever visit (${mode})`, () => {
-    test.use({ colorScheme: mode, viewport: { width: 1280, height: 800 } });
+/** A signed-in first visit: every frame before the answer, shell and app alike, wears the theme. */
+async function expectFirstVisit(page: Page, mode: Mode) {
+  const { colors } = resolveTheme(clickHouseTheme, mode);
+  const frames = await firstVisitFrames(page, '/c/new', () =>
+    expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 }),
+  );
 
-    test(`a first-ever signed-in visit paints the operator theme from the first frame in ${mode} @scenario:deployment-theme-first-visit-${mode}`, async ({
+  /** Frames of both the shell and the first render landed before the answer. */
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames[0].shell).not.toBeNull();
+  expect(frames.some((frame) => frame.app)).toBe(true);
+  for (const frame of frames) {
+    expect(frame.theme).toBe('clickhouse');
+    expect(frame.surface).toBe(colors['rgb-surface-primary']);
+    if (frame.shell !== null) {
+      expect(frame.shell).toBe(rgb(colors['rgb-surface-canvas']));
+    }
+  }
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme-boot');
+}
+
+/** A signed-out first visit to the login page, which is where a new browser lands. */
+async function expectFirstVisitLogin(page: Page, mode: Mode) {
+  const { colors } = resolveTheme(clickHouseTheme, mode);
+  const frames = await firstVisitFrames(page, '/login', () =>
+    expect(page.getByTestId('login-button')).toBeVisible({ timeout: 60000 }),
+  );
+
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames[0].shell).not.toBeNull();
+  for (const frame of frames) {
+    expect(frame.theme).toBe('clickhouse');
+    expect(frame.surface).toBe(colors['rgb-surface-primary']);
+    if (frame.shell !== null) {
+      expect(frame.shell).toBe(rgb(colors['rgb-surface-primary-alt']));
+    }
+  }
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+}
+
+test.describe('deployment theme first-ever visit (light)', () => {
+  test.use({ colorScheme: 'light', viewport: { width: 1280, height: 800 } });
+
+  test('a first-ever signed-in visit paints the operator theme from the first frame in light @scenario:deployment-theme-first-visit-light', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstVisit(page, 'light');
+  });
+
+  test.describe('signed out', () => {
+    test.use({ storageState: { cookies: [], origins: [] } });
+
+    test('a first-ever visit to the login page paints the operator theme from the first frame in light @scenario:deployment-theme-first-visit-login-light', async ({
       page,
     }) => {
       test.setTimeout(120000);
-      const { colors } = resolveTheme(clickHouseTheme, mode);
-      const frames = await firstVisitFrames(page, '/c/new', () =>
-        expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 }),
-      );
-
-      expect(frames.length).toBeGreaterThan(0);
-      expect(frames[0].shell).not.toBeNull();
-      expect(frames.some((frame) => frame.app)).toBe(true);
-      for (const frame of frames) {
-        expect(frame.theme).toBe('clickhouse');
-        expect(frame.surface).toBe(colors['rgb-surface-primary']);
-        if (frame.shell !== null) {
-          expect(frame.shell).toBe(rgb(colors['rgb-surface-canvas']));
-        }
-      }
-      await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
-      await expect(page.locator('html')).not.toHaveAttribute('data-theme-boot');
-    });
-
-    test.describe('signed out', () => {
-      test.use({ storageState: { cookies: [], origins: [] } });
-
-      test(`a first-ever visit to the login page paints the operator theme from the first frame in ${mode} @scenario:deployment-theme-first-visit-login-${mode}`, async ({
-        page,
-      }) => {
-        test.setTimeout(120000);
-        const { colors } = resolveTheme(clickHouseTheme, mode);
-        const frames = await firstVisitFrames(page, '/login', () =>
-          expect(page.getByTestId('login-button')).toBeVisible({ timeout: 60000 }),
-        );
-
-        expect(frames.length).toBeGreaterThan(0);
-        expect(frames[0].shell).not.toBeNull();
-        for (const frame of frames) {
-          expect(frame.theme).toBe('clickhouse');
-          expect(frame.surface).toBe(colors['rgb-surface-primary']);
-          if (frame.shell !== null) {
-            expect(frame.shell).toBe(rgb(colors['rgb-surface-primary-alt']));
-          }
-        }
-        await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
-      });
+      await expectFirstVisitLogin(page, 'light');
     });
   });
-}
+});
+
+test.describe('deployment theme first-ever visit (dark)', () => {
+  test.use({ colorScheme: 'dark', viewport: { width: 1280, height: 800 } });
+
+  test('a first-ever signed-in visit paints the operator theme from the first frame in dark @scenario:deployment-theme-first-visit-dark', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstVisit(page, 'dark');
+  });
+
+  test.describe('signed out', () => {
+    test.use({ storageState: { cookies: [], origins: [] } });
+
+    test('a first-ever visit to the login page paints the operator theme from the first frame in dark @scenario:deployment-theme-first-visit-login-dark', async ({
+      page,
+    }) => {
+      test.setTimeout(120000);
+      await expectFirstVisitLogin(page, 'dark');
+    });
+  });
+});
