@@ -1769,6 +1769,7 @@ const BUILD_ORDER = [
   'build:data-schemas',
   'build:api',
   'build:client-package',
+  'build:chat',
 ];
 
 /** Returns the failing build's outcome, or null when every build succeeded. */
@@ -1956,12 +1957,13 @@ const TYPECHECK_PROJECTS = [
     project: 'packages/chat/tsconfig.json',
     paths: [
       'packages/data-provider/**',
+      'packages/client/**',
       'packages/chat/**',
       ...ROOT_MANIFESTS,
       FRONTEND_REVIEW,
       '!**.md',
     ],
-    requires: ['build:data-provider'],
+    requires: ['build:data-provider', 'build:client-package'],
   },
   {
     project: 'client/tsconfig.json',
@@ -1969,11 +1971,12 @@ const TYPECHECK_PROJECTS = [
       'client/**',
       'packages/data-provider/**',
       'packages/client/**',
+      'packages/chat/**',
       ...ROOT_MANIFESTS,
       FRONTEND_REVIEW,
       '!**.md',
     ],
-    requires: ['build:data-provider', 'build:client-package'],
+    requires: ['build:data-provider', 'build:client-package', 'build:chat'],
   },
 ];
 

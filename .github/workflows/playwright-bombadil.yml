@@ -109,6 +109,10 @@ jobs:
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
 
+      # The client app resolves @librechat/chat to this build; about a second, so it is not cached.
+      - name: Build chat package
+        run: npm run build:chat
+
       - name: Restore client app build cache
         id: cache-client-app
         uses: actions/cache@v4
