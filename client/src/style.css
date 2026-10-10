@@ -1967,7 +1967,8 @@ html {
       [type='tel'],
       [type='number']
     ),
-    textarea
+    textarea,
+    select
   ):not(
     .text-base,
     .text-lg,
@@ -1991,7 +1992,8 @@ html {
       [type='tel'],
       [type='number']
     ),
-    textarea
+    textarea,
+    select
   ).text-base {
     font-size: max(16px, var(--text-base));
   }
@@ -2007,7 +2009,8 @@ html {
       [type='tel'],
       [type='number']
     ),
-    textarea
+    textarea,
+    select
   ).text-lg {
     font-size: max(16px, var(--text-lg));
   }
@@ -2023,7 +2026,8 @@ html {
       [type='tel'],
       [type='number']
     ),
-    textarea
+    textarea,
+    select
   ).text-xl {
     font-size: max(16px, var(--text-xl));
   }
@@ -2039,7 +2043,8 @@ html {
       [type='tel'],
       [type='number']
     ),
-    textarea
+    textarea,
+    select
   ).text-2xl {
     font-size: max(16px, var(--text-2xl));
   }
@@ -2055,7 +2060,8 @@ html {
       [type='tel'],
       [type='number']
     ),
-    textarea
+    textarea,
+    select
   ).text-3xl {
     font-size: max(16px, var(--text-3xl));
   }
