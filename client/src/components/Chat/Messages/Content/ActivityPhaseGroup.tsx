@@ -1,11 +1,11 @@
-import { memo, useId, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
-import { Button } from '@librechat/client';
 import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
+import type { RailHover } from './rail';
 import {
   useLocalize,
   useExpandCollapse,
@@ -20,6 +20,14 @@ import {
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
 } from './live';
+import {
+  FoldRail,
+  RailGlyph,
+  useFoldPath,
+  useRailHover,
+  revealFoldHeader,
+  FoldHeaderContext,
+} from './rail';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
@@ -28,7 +36,9 @@ import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
+import { MCPAppViews } from '~/components/MCPUIResource';
 import { sandboxStartingByToolCallId } from '~/store';
+import { MessageSurfaceContext } from '../ui/surface';
 import useClockFormat from '~/hooks/useClockFormat';
 import { cn, getMessageTimestamp } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
@@ -272,6 +282,7 @@ function LivePhaseHeader({
   detailId,
   attachments,
   onAnnounce,
+  railHover,
 }: {
   parts: ReadonlyArray<TMessageContentParts | undefined>;
   animate: boolean;
@@ -283,6 +294,7 @@ function LivePhaseHeader({
   detailId: string;
   attachments?: TAttachment[];
   onAnnounce: (text: string) => void;
+  railHover: RailHover;
 }) {
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
@@ -358,28 +370,30 @@ function LivePhaseHeader({
 
   return (
     <>
-      {iconNames.length === 0 ? (
-        /** A span that is only reasoning so far has no tool to show; it takes
-         *  the glyph the reasoning row itself uses. */
-        <span
-          className={cn(ROW_GLYPH_SLOT, 'animate-pulse text-text-primary')}
-          aria-hidden="true"
-          data-testid="live-phase-thinking"
-        >
-          <Lightbulb size={14} />
-        </span>
-      ) : (
-        <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-          <StackedToolIcons
-            toolNames={iconNames}
-            mcpIconMap={mcpIconMap}
-            maxIcons={SPAN_ICONS}
-            sourceDomains={sourceDomains}
-            status={getOutcomeStatus(activity.outcome)}
-            isAnimating
-          />
-        </span>
-      )}
+      <RailGlyph hover={railHover}>
+        {iconNames.length === 0 ? (
+          /** A span that is only reasoning so far has no tool to show; it takes
+           *  the glyph the reasoning row itself uses. */
+          <span
+            className={cn(ROW_GLYPH_SLOT, 'text-text-primary animate-pulse')}
+            aria-hidden="true"
+            data-testid="live-phase-thinking"
+          >
+            <Lightbulb size={14} />
+          </span>
+        ) : (
+          <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+            <StackedToolIcons
+              toolNames={iconNames}
+              mcpIconMap={mcpIconMap}
+              maxIcons={SPAN_ICONS}
+              sourceDomains={sourceDomains}
+              status={getOutcomeStatus(activity.outcome)}
+              isAnimating
+            />
+          </span>
+        )}
+      </RailGlyph>
       {/** The multiplier counts the line it is printed next to, so it travels
        *  with that line instead of sitting out at the row's right edge beside
        *  the chevron, where it read as a property of the row. `Create File ×2`
@@ -400,7 +414,7 @@ function LivePhaseHeader({
         {combo !== '' && (
           <span
             id={comboId}
-            className="shrink-0 text-xs font-normal text-text-secondary"
+            className="text-text-secondary shrink-0 text-xs font-normal"
             data-testid="live-phase-combo"
           >
             {combo}
@@ -410,7 +424,7 @@ function LivePhaseHeader({
       {detail !== '' && (
         <span
           id={detailId}
-          className="shrink-0 text-xs font-normal text-text-warning"
+          className="text-text-warning shrink-0 text-xs font-normal"
           data-testid="live-phase-outcome"
         >
           {/** The failure count is spoken here, as part of the header's name,
@@ -421,7 +435,7 @@ function LivePhaseHeader({
           {failedNote !== '' && <span className="sr-only">· {failedNote}</span>}
           {cancelledNote !== '' && (
             <>
-              <span className="mr-1 text-text-secondary">·</span>
+              <span className="text-text-secondary mr-1">·</span>
               <span>{cancelledNote}</span>
             </>
           )}
@@ -453,7 +467,7 @@ function FailedPeekTime({ failedAt }: { failedAt: number | Date }) {
     <time
       dateTime={timestamp.iso}
       title={timestamp.absolute}
-      className="min-w-0 shrink truncate text-xs text-text-secondary"
+      className="text-text-secondary min-w-0 shrink truncate text-xs"
       data-testid="activity-phase-failed-time"
     >
       {timestamp.relative}
@@ -486,7 +500,7 @@ function FailedPeek({
       type="button"
       className={cn(
         TOOL_ROW_CLASSES,
-        'w-full pl-6 text-left text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border-heavy',
+        'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle w-full pl-6 text-left focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-inset',
       )}
       onClick={onReveal}
       data-testid="activity-phase-failed-peek"
@@ -495,7 +509,7 @@ function FailedPeek({
         <TriangleAlert size={14} />
       </span>
       <span className="tool-status-text flex min-w-0 items-center gap-2">
-        <span className="min-w-0 max-w-full shrink-0 truncate font-medium text-status-error">
+        <span className="text-status-error max-w-full min-w-0 shrink-0 truncate font-medium">
           {first.text}
         </span>
         {first.detail !== '' && (
@@ -548,6 +562,7 @@ export default function ActivityPhaseGroup({
   spanParts?: ReadonlyArray<TMessageContentParts | undefined>;
   onExpansionChange?: (expanded: boolean) => void;
 }) {
+  const messageSurface = useContext(MessageSurfaceContext);
   const isLive = liveParts != null;
   const label = getActivityLabelText(labelPart);
   const hasFailure = labelPart.status === 'failed' || labelPart.status === 'partial';
@@ -584,6 +599,9 @@ export default function ActivityPhaseGroup({
   const [isExpanded, setIsExpanded] = useState(foldsIn);
   const [isSettled, setIsSettled] = useState(!foldsIn);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const railHover = useRailHover();
+  const railScope = useMemo(() => ({ header: headerRef, expanded: isExpanded }), [isExpanded]);
   const panelId = useId();
   const lineId = useId();
   const comboId = useId();
@@ -614,6 +632,7 @@ export default function ActivityPhaseGroup({
     isExpanded,
     hasPendingApproval,
   );
+  useFoldPath(rootRef, shouldRenderBody);
   const { value: revealValue, requestReveal } = useFailedRevealTrigger(
     isExpanded && shouldRenderBody,
   );
@@ -661,6 +680,16 @@ export default function ActivityPhaseGroup({
     onExpansionChange?.(!isExpanded);
     setIsExpanded(!isExpanded);
   }, [mountBody, isExpanded, onExpansionChange]);
+
+  /** The rail stays drawn while the panel animates shut, so a second click on
+   *  it must not reopen what the first one closed. */
+  const handleRailCollapse = useCallback(() => {
+    if (!isExpanded) {
+      return;
+    }
+    revealFoldHeader(rootRef.current, headerRef.current);
+    handleToggle();
+  }, [isExpanded, handleToggle]);
 
   /** One click to the error from a closed card: open the card the way a
    *  toggle would, then ask every failed row below to open its own panel. */
@@ -723,13 +752,18 @@ export default function ActivityPhaseGroup({
    *  fading window under the header (#14546). The fold had swallowed that
    *  peek with the rows, leaving one throttled sentence on the header to
    *  stand for a paragraph of live reasoning. It takes the cursor's place:
-   *  moving text is its own sign the run is alive. */
+   *  moving text is its own sign the run is alive. Only a card that is still
+   *  just thinking shows it: once tool calls fold in with the thought, the
+   *  header names the mix and the cursor stands in for the reasoning (#16680). */
   const streamingThought = useMemo(() => {
     if (!isLive || isExpanded || liveParts == null) {
       return '';
     }
     const tail = liveParts[liveParts.length - 1];
     if (tail?.type !== ContentTypes.THINK) {
+      return '';
+    }
+    if (liveParts.some((part) => part?.type === ContentTypes.TOOL_CALL)) {
       return '';
     }
     return typeof tail.think === 'string' ? tail.think : (tail.think?.value ?? '');
@@ -754,6 +788,7 @@ export default function ActivityPhaseGroup({
       <>
         <SearchVerticals attachments={attachments} />
         <AttachmentGroup attachments={attachments} />
+        <MCPAppViews attachments={attachments} />
       </>
     ) : null;
   if (!label && !isLive) {
@@ -767,7 +802,7 @@ export default function ActivityPhaseGroup({
   const group = !hasContent ? (
     <div
       className={cn(
-        'mb-2 mt-1 flex min-h-7 w-full items-center gap-2 py-1 text-text-secondary',
+        'text-text-secondary mt-1 mb-2 flex min-h-7 w-full items-center gap-2 py-1',
         shouldAnimateEntrance && `animate-in fade-in-0 motion-reduce:animate-none ${FOLD_EASING}`,
       )}
       data-testid="activity-phase-card"
@@ -789,20 +824,25 @@ export default function ActivityPhaseGroup({
      *  groups it stands for, so it carries the same geometry: 16px glyph, 8px
      *  gap, no inset. Boxing it was what put its text on a third left edge and
      *  forced every folded row 13px sideways as the box materialized. */
-    <div className="mb-2 mt-1 w-full" ref={rootRef} data-testid="activity-phase-card">
+    <div
+      className="mt-1 mb-2 w-full"
+      ref={rootRef}
+      data-testid="activity-phase-card"
+      data-fold-root=""
+    >
       <span className="sr-only" role="status" data-testid="activity-phase-announcer">
         {announcement}
       </span>
       <div
+        ref={headerRef}
         style={headerStyle}
         /** Pinned while open, so a run long enough to scroll keeps its name
          *  at the top of the viewport. The containing block is this card, so
          *  the header stops pinning where its own rows end. */
-        className={cn(isExpanded && 'sticky top-0 z-[1] bg-presentation')}
+        className={cn(isExpanded && 'sticky top-0 z-[1]', isExpanded && messageSurface)}
       >
         <div className="flex items-center gap-2 overflow-hidden">
-          <Button
-            variant="ghost"
+          <button
             type="button"
             /** `ring-inset` is not decoration: the clip above is permanent (the
              *  grid rows need it), so an outset ring would be drawn entirely
@@ -811,10 +851,10 @@ export default function ActivityPhaseGroup({
              *  supplies it today; stating it here keeps the requirement with
              *  the element that depends on it. */
             className={cn(
-              'flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-left font-medium text-text-secondary hover:bg-transparent hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border-heavy focus-visible:ring-offset-0',
+              'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle flex h-auto min-h-7 min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-left font-medium hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none focus-visible:ring-inset',
               /** The open card's title: the one semibold, primary-colour line
                *  in the fold, so the rows under it read as its contents. */
-              isExpanded && 'font-semibold text-text-primary',
+              isExpanded && 'text-text-primary font-semibold',
             )}
             onClick={handleToggle}
             aria-expanded={isExpanded}
@@ -839,14 +879,17 @@ export default function ActivityPhaseGroup({
                 detailId={detailId}
                 attachments={attachments}
                 onAnnounce={setAnnouncement}
+                railHover={railHover}
               />
             ) : (
               <>
-                {outcomeParts != null && !hasFailure ? (
-                  <SpanGlyph parts={outcomeParts} attachments={attachments} />
-                ) : (
-                  <PhaseGlyph failed={hasFailure} />
-                )}
+                <RailGlyph hover={railHover}>
+                  {outcomeParts != null && !hasFailure ? (
+                    <SpanGlyph parts={outcomeParts} attachments={attachments} />
+                  ) : (
+                    <PhaseGlyph failed={hasFailure} />
+                  )}
+                </RailGlyph>
                 <PhaseLabel text={label} failed={hasFailure} animate={smoothStreaming} />
               </>
             )}
@@ -857,7 +900,7 @@ export default function ActivityPhaseGroup({
               )}
               aria-hidden="true"
             />
-          </Button>
+          </button>
           <FailedRevealPill count={failedCount} total={toolCount} onReveal={handleRevealFailed} />
         </div>
       </div>
@@ -870,10 +913,17 @@ export default function ActivityPhaseGroup({
         data-testid="activity-phase-panel"
       >
         {shouldRenderBody && (
-          <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
-            <FailedRevealContext.Provider value={revealValue}>
-              {children}
-            </FailedRevealContext.Provider>
+          <div
+            className={cn('overflow-hidden', FOLD_RAIL_CLASSES)}
+            ref={expandRef}
+            data-fold-panel=""
+          >
+            <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
+            <FoldHeaderContext.Provider value={railScope}>
+              <FailedRevealContext.Provider value={revealValue}>
+                {children}
+              </FailedRevealContext.Provider>
+            </FoldHeaderContext.Provider>
           </div>
         )}
       </div>

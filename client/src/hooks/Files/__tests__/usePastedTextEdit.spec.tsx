@@ -104,13 +104,8 @@ jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
-jest.mock('recoil', () => ({
-  useRecoilValue: () => mockState.saveDrafts,
-}));
-
-jest.mock('~/store', () => ({
-  __esModule: true,
-  default: { saveDrafts: { key: 'saveDrafts' } },
+jest.mock('~/Providers/ChatSettingsContext', () => ({
+  useChatSettings: () => ({ saveDrafts: mockState.saveDrafts }),
 }));
 
 jest.mock('~/hooks/AuthContext', () => ({

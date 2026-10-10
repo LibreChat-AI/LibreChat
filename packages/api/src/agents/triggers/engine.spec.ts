@@ -74,7 +74,12 @@ describe('createAgentTriggerDeliveryEngine', () => {
 
     expect(dispatch).toHaveBeenCalledWith(
       { version: 1 },
-      { signal: expect.any(AbortSignal), attempt: 1, maxAttempts: 8 },
+      {
+        signal: expect.any(AbortSignal),
+        attempt: 1,
+        maxAttempts: 8,
+        deliveryClaimToken: 'claim-1',
+      },
     );
     expect(store.beginAttempt).toHaveBeenCalledWith({
       id: 'delivery-row-1',

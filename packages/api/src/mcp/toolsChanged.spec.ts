@@ -12,6 +12,7 @@ import {
   cancelMCPToolsChanged,
   notifyMCPToolsChanged,
   getMCPAppToolsPublicationGeneration,
+  getMCPToolCatalogGeneration,
 } from './toolsChanged';
 
 const createEvent = (name = 'one'): MCPToolsChangedEvent => ({
@@ -201,7 +202,7 @@ describe('MCP tools-changed dispatch', () => {
     expect(revisionHandler).toHaveBeenCalledTimes(1);
     expect(revisionHandler).toHaveBeenCalledWith({
       serverName: 'dynamic',
-      configGeneration: getMCPAppToolsPublicationGeneration(serverConfig),
+      configGeneration: getMCPToolCatalogGeneration(serverConfig),
     });
   });
 

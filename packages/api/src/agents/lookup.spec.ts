@@ -9,7 +9,11 @@
 import { logger } from '@librechat/data-schemas';
 import { CacheKeys, Constants } from 'librechat-data-provider';
 import type * as t from '~/mcp/types';
-import { getMCPAppToolsPublicationGeneration } from '~/mcp/toolsChanged';
+import {
+  getMCPToolCatalogGeneration,
+  getMCPAppToolsPublicationGeneration,
+} from '~/mcp/toolsChanged';
+import { STANDARD_MCP_CAPABILITY_PROFILE } from '~/mcp/capabilities';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { createMCPCatalogStore } from '~/mcp/catalog/store';
@@ -82,7 +86,10 @@ function createHarness() {
   /** What ConnectionsRepository does for an app-level connection at startup. */
   async function publishAtStartup() {
     const serverConfig = (await registry.getServerConfig(SERVER)) as t.ParsedServerConfig;
-    const publicationGeneration = getMCPAppToolsPublicationGeneration(serverConfig);
+    const publicationGeneration = getMCPToolCatalogGeneration(
+      serverConfig,
+      STANDARD_MCP_CAPABILITY_PROFILE,
+    );
     const publicationRevision = await store.getNextAppToolsPublicationRevision(
       SERVER,
       publicationGeneration,

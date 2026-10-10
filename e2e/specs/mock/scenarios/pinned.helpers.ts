@@ -191,6 +191,36 @@ const sidebarPlacement = async (page: Page): Promise<SidebarPlacement> => {
  * than answered with a click that would never resolve.
  */
 export async function ensureSidebarOnScreen(page: Page): Promise<void> {
+  const drawer = page.locator('#mobile-drawer');
+  /* A closed drawer stays mounted and keeps its layout box, so geometry cannot
+     tell it from an open one; `inert` is the state the component actually sets
+     and the reason every control inside answers a query while none of them can
+     be tapped. Open it before anything below measures. */
+  if ((await drawer.count()) > 0 && (await drawer.getAttribute('inert')) != null) {
+    const opener = page.getByRole('button', { name: 'Open sidebar' });
+    if ((await opener.count()) > 0) {
+      await opener.first().click();
+      await expect.poll(() => drawer.getAttribute('inert'), { timeout: 15_000 }).toBeNull();
+      /* `inert` clears on the state commit, a few frames ahead of the slide
+         settling. Wait for the drawer to actually be in the viewport before
+         letting a caller query the controls inside it. */
+      await expect
+        .poll(async () => (await drawer.boundingBox())?.x ?? Number.NEGATIVE_INFINITY, {
+          timeout: 15_000,
+        })
+        .toBeGreaterThanOrEqual(0);
+    }
+  }
+  if ((await pinnedSection(page).count()) === 0) {
+    /* Empty sidebars have no Pinned region to measure, and there is nothing
+       left to do: the drawer above is already open, and desktop renders no
+       drawer at all. Measuring the drawer again here and opening it a second
+       time is what used to close it: the slide is animated imperatively and
+       its state commit is deferred by several frames, so a bounding box read
+       mid-flight still reads as off-screen and the extra click lands on the
+       machine that is already opening it. */
+    return;
+  }
   await expect.poll(() => sidebarPlacement(page), { timeout: 15_000 }).not.toBe('unlaid');
   if ((await sidebarPlacement(page)) === 'on-screen') {
     return;

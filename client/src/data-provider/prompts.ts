@@ -1,6 +1,6 @@
 import { useRecoilValue } from 'recoil';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { dataService, QueryKeys } from 'librechat-data-provider';
+import { dataService, QueryKeys, ResourceType } from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import {
@@ -126,6 +126,12 @@ export const useCreatePrompt = (
         );
 
         addGroupToAll(queryClient, group);
+        /** The sidebar reads row permissions from the batch map, which lacks the new group */
+        queryClient.invalidateQueries([
+          QueryKeys.effectivePermissions,
+          'all',
+          ResourceType.PROMPTGROUP,
+        ]);
       }
 
       if (onSuccess) {

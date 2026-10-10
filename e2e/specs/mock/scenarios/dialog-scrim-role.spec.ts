@@ -143,10 +143,33 @@ async function readScrim(page: Page): Promise<ScrimReading> {
     if (!(scrim instanceof HTMLElement)) {
       throw new Error('the frontmost open dialog is not preceded by a scrim');
     }
+    /**
+     * Tailwind 4 compiles a slash modifier to `color-mix(in oklab, ...)`, which
+     * Chromium reports as `oklab(L a b / alpha)` where version 3's `rgb(... / .8)`
+     * reported `rgba(r, g, b, .8)`. The paint is the same; only the serialization
+     * moved. Rounding the computed color through a canvas gives back the sRGB
+     * channels either spelling describes, so the expectations below stay written
+     * as the rgba a reader can check against the palette.
+     */
+    const swatch = document.createElement('canvas');
+    swatch.width = swatch.height = 1;
+    const brush = swatch.getContext('2d');
+    if (!brush) {
+      throw new Error('the color-normalizing canvas has no 2d context');
+    }
+    brush.clearRect(0, 0, 1, 1);
+    brush.fillStyle = getComputedStyle(scrim).backgroundColor;
+    brush.fillRect(0, 0, 1, 1);
+    const [red, green, blue, alpha] = brush.getImageData(0, 0, 1, 1).data;
+    const opacity = Math.round((alpha / 255) * 100) / 100;
+
     const rect = content.getBoundingClientRect();
     const middle = rect.top + rect.height / 2;
     return {
-      color: getComputedStyle(scrim).backgroundColor,
+      color:
+        opacity === 1
+          ? `rgb(${red}, ${green}, ${blue})`
+          : `rgba(${red}, ${green}, ${blue}, ${opacity})`,
       dialog: { x: rect.left + 6, y: middle },
       scrim: { x: Math.max(4, rect.left - 48), y: middle },
     };

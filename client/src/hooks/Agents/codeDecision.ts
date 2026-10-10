@@ -1,5 +1,6 @@
-import { Constants } from 'librechat-data-provider';
+import { Constants, canonicalizeCodeWorkspaceSelections } from 'librechat-data-provider';
 import type {
+  CodeApprovalMode,
   CodeEnvironmentMode,
   EventSubmission,
   CodeWorkspaceSelection,
@@ -12,10 +13,10 @@ function sameSelections(
 ): boolean {
   if (!left?.length || !right?.length) return !left?.length && !right?.length;
   if (left.length !== right.length) return false;
-  const key = ({ environmentId, workspaceId }: CodeWorkspaceSelection) =>
-    JSON.stringify([environmentId, workspaceId]);
-  const held = new Set(left.map(key));
-  return right.every((selection) => held.has(key(selection)));
+  return (
+    JSON.stringify(canonicalizeCodeWorkspaceSelections(left)) ===
+    JSON.stringify(canonicalizeCodeWorkspaceSelections(right))
+  );
 }
 
 /**
@@ -87,4 +88,25 @@ export function getFailedCodeDecisionRequest(submission: EventSubmission, resolv
       codeWorkspaces: submission.codeWorkspaces,
     },
   };
+}
+
+/**
+ * The mode a submission carries: the conversation's pick when current policy offers it, else the
+ * gated fallback. A turn sent without attached workspaces has no target for a stronger mode to
+ * govern, so it carries `ask` even when the composer resolved the decision only at send time.
+ */
+export function resolveSubmittedCodeApprovalMode({
+  requested,
+  modes,
+  fallback,
+  codeEnvironmentMode,
+}: {
+  requested?: CodeApprovalMode;
+  modes: readonly CodeApprovalMode[];
+  fallback?: CodeApprovalMode;
+  codeEnvironmentMode?: CodeEnvironmentMode;
+}): CodeApprovalMode | undefined {
+  if (fallback == null) return undefined;
+  if (codeEnvironmentMode === 'without_attached') return 'ask';
+  return requested != null && modes.includes(requested) ? requested : fallback;
 }

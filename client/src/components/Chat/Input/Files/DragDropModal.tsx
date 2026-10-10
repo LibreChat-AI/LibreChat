@@ -91,7 +91,7 @@ const DragDropModal = () => {
     <OGDialog open={isVisible} onOpenChange={(open) => !open && closeModal()}>
       <OGDialogTemplate
         title={localize('com_ui_upload_type')}
-        className="w-11/12 sm:w-[440px] md:w-[400px] lg:w-[360px]"
+        className="w-11/12 sm:w-[min(27.5rem,90vw)] md:w-[min(25rem,90vw)] lg:w-[min(22.5rem,90vw)]"
         main={
           <div className="flex flex-col gap-2">
             {options.map((value) => {
@@ -103,7 +103,7 @@ const DragDropModal = () => {
                     routeFiles(files, value);
                     closeModal();
                   }}
-                  className="flex items-center gap-2 rounded-lg p-2 hover:bg-surface-active-alt"
+                  className="hover:bg-surface-active-alt flex items-center gap-2 rounded-lg p-2"
                 >
                   {icon}
                   <span>{label}</span>

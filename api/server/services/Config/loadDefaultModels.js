@@ -7,6 +7,7 @@ const {
   getAppConfigOptionsFromUser,
   getOpenAIModels,
   getGoogleModels,
+  configuredModelList,
 } = require('@librechat/api');
 const { getAppConfig } = require('./app');
 
@@ -35,17 +36,21 @@ async function loadDefaultModels(req) {
 
     const [openAI, anthropic, azureOpenAI, assistants, azureAssistants, google, bedrock] =
       await Promise.all([
-        getOpenAIModels({ user: req.user.id, headers: openAIHeaders, userObject: req.user }).catch(
-          (error) => {
-            logger.error('Error fetching OpenAI models:', error);
-            return [];
-          },
-        ),
+        getOpenAIModels({
+          user: req.user.id,
+          headers: openAIHeaders,
+          userObject: req.user,
+          configuredModels: configuredModelList(appConfig, EModelEndpoint.openAI),
+        }).catch((error) => {
+          logger.error('Error fetching OpenAI models:', error);
+          return [];
+        }),
         getAnthropicModels({
           user: req.user.id,
           vertexModels: vertexConfig?.modelNames,
           headers: anthropicHeaders,
           userObject: req.user,
+          configuredModels: configuredModelList(appConfig, EModelEndpoint.anthropic),
         }).catch((error) => {
           logger.error('Error fetching Anthropic models:', error);
           return [];

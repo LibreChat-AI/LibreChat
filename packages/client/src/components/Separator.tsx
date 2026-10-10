@@ -21,7 +21,7 @@ const Separator: React.ForwardRefExoticComponent<
       orientation,
       className: cn(
         'shrink-0 bg-border-light',
-        orientation === 'horizontal' ? 'h-[1px] w-full' : 'h-full w-[1px]',
+        orientation === 'horizontal' ? 'h-[0.0625rem] w-full' : 'h-full w-[0.0625rem]',
         className,
       ),
     }}

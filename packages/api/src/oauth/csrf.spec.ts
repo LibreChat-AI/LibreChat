@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import type { Request, Response } from 'express';
 import {
   shouldUseSecureCookie,
   setRefreshTokenCookie,
@@ -7,7 +8,77 @@ import {
   REFRESH_TOKEN_COOKIE,
   TOKEN_PROVIDER_COOKIE,
   OPENID_USER_ID_COOKIE,
+  setOAuthCsrfCookie,
+  setOAuthSessionCookie,
+  validateOAuthCsrf,
+  generateOAuthCsrfToken,
 } from './csrf';
+
+describe('OAuth browser binding cookie paths', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = {
+      ...originalEnv,
+      DOMAIN_CLIENT: 'https://client.example/ui',
+      JWT_SECRET: 'cookie-path-test-secret',
+      SESSION_COOKIE_SECURE: 'false',
+    };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it.each([
+    { domainServer: undefined, basePath: '' },
+    { domainServer: '', basePath: '' },
+    { domainServer: 'invalid', basePath: '' },
+    { domainServer: 'https://server.example', basePath: '' },
+    { domainServer: 'https://server.example/', basePath: '' },
+    { domainServer: 'https://server.example/chat', basePath: '/chat' },
+    { domainServer: 'https://server.example/chat/', basePath: '/chat' },
+    { domainServer: 'https://server.example/chat///', basePath: '/chat' },
+    { domainServer: 'https://server.example/apps/librechat', basePath: '/apps/librechat' },
+  ])(
+    'issues and clears cookies under $basePath for $domainServer',
+    async ({ domainServer, basePath }) => {
+      if (domainServer === undefined) {
+        delete process.env.DOMAIN_SERVER;
+      } else {
+        process.env.DOMAIN_SERVER = domainServer;
+      }
+
+      const res = { cookie: jest.fn(), clearCookie: jest.fn() } as unknown as Response;
+      setOAuthSessionCookie(res, 'user-123');
+      expect(res.cookie).toHaveBeenCalledWith(
+        'oauth_session',
+        generateOAuthCsrfToken('user-123'),
+        expect.objectContaining({ path: `${basePath}/api`, httpOnly: true, sameSite: 'lax' }),
+      );
+      for (const route of ['mcp', 'actions']) {
+        const cookiePath = `/api/${route}`;
+        const flowId = `user-123:${route}`;
+        const token = generateOAuthCsrfToken(flowId);
+        setOAuthCsrfCookie(res, flowId, cookiePath);
+        expect(res.cookie).toHaveBeenCalledWith(
+          'oauth_csrf',
+          token,
+          expect.objectContaining({
+            path: `${basePath}${cookiePath}`,
+            httpOnly: true,
+            sameSite: 'lax',
+          }),
+        );
+        const req = { cookies: { oauth_csrf: token } } as Request;
+        expect(validateOAuthCsrf(req, res, flowId, cookiePath)).toBe(true);
+        expect(res.clearCookie).toHaveBeenCalledWith('oauth_csrf', {
+          path: `${basePath}${cookiePath}`,
+        });
+      }
+    },
+  );
+});
 
 describe('shouldUseSecureCookie', () => {
   const originalEnv = process.env;
@@ -222,7 +293,10 @@ describe('setOpenIDMarkerCookies', () => {
     const signedUserId = (res.cookie as jest.Mock).mock.calls.find(
       ([name]) => name === OPENID_USER_ID_COOKIE,
     )?.[1];
-    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({ id: 'user-123' });
+    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({
+      id: 'user-123',
+      issuedAtMs: expect.any(Number),
+    });
   });
 
   /** Preserves the marker's binding to the durable refresh-token session: a marker signed for one
@@ -244,6 +318,7 @@ describe('setOpenIDMarkerCookies', () => {
     expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({
       id: 'user-123',
       refreshTokenHash: crypto.createHash('sha256').update('the-refresh-token').digest('base64url'),
+      issuedAtMs: expect.any(Number),
     });
   });
 

@@ -300,11 +300,20 @@ export function resolveComposerKeyDown(
     return resolveSubmitOverrideAction(binding, ctx.submitOverride, ctx.enterToSend);
   }
   const isCtrlEnter = e.ctrlKey || e.metaKey;
-  if (!ctx.enterToSend && !isCtrlEnter && !ctx.isComposing) {
-    return 'newline';
-  }
-  if ((!e.shiftKey || isCtrlEnter) && !ctx.isComposing) {
-    return 'submit';
+  if (!ctx.isComposing) {
+    /** The modifier is always the inverse of plain Enter: it sends when Enter
+     *  writes a newline, and writes one when Enter sends. The rebound path in
+     *  `resolveSubmitOverrideAction` already reads it this way, so the default
+     *  path only looked different because it had no newline branch. */
+    if (isCtrlEnter) {
+      return ctx.enterToSend ? 'newline' : 'submit';
+    }
+    if (!ctx.enterToSend) {
+      return 'newline';
+    }
+    if (!e.shiftKey) {
+      return 'submit';
+    }
   }
   if (!e.shiftKey) {
     return 'block';

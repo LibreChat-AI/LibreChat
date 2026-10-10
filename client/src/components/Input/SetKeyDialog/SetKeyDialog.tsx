@@ -120,7 +120,7 @@ const RevokeKeysButton = ({
             {localize('com_ui_revoke')}
           </Button>
         </OGDialogTrigger>
-        <OGDialogContent className="max-w-[450px]">
+        <OGDialogContent className="max-w-[28.125rem]">
           <OGDialogHeader>
             <OGDialogTitle>{localize('com_ui_revoke_key_endpoint', { 0: endpoint })}</OGDialogTitle>
           </OGDialogHeader>
@@ -137,7 +137,7 @@ const RevokeKeysButton = ({
               variant="destructive"
               onClick={onClick}
               disabled={isLoading}
-              className="bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover"
+              className="bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover transition-all duration-200"
             >
               {isLoading ? <Spinner /> : localize('com_ui_revoke')}
             </Button>
@@ -389,7 +389,7 @@ const SetKeyDialog = ({
             value={expiresAtLabel}
             onChange={handleExpirationChange}
             options={expirationOptions.map((option) => option.label)}
-            sizeClasses="w-[185px]"
+            sizeClasses="w-[min(11.5625rem,90vw)]"
             portal={false}
           />
           <FormProvider {...methods}>

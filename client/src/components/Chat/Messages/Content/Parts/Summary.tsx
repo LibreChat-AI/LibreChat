@@ -1,12 +1,10 @@
 import { memo, useMemo, useState, useCallback, useRef, useId, useEffect } from 'react';
-import { useAtomValue } from 'jotai';
 import { Copy, Check } from 'lucide';
 import { ScrollText, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { SummaryContentPart } from 'librechat-data-provider';
 import type { MouseEvent, FocusEvent } from 'react';
-import { fontSizeAtom } from '~/store/fontSize';
-import { useMessageContext } from '~/Providers';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -41,12 +39,13 @@ function useCopyToClipboard(content?: string) {
 }
 
 const SummaryContent = memo(({ children, meta }: { children: React.ReactNode; meta?: string }) => {
-  const fontSize = useAtomValue(fontSizeAtom);
+  const { useFontSize } = useMessagePartsHost();
+  const fontSize = useFontSize();
 
   return (
-    <div className="relative rounded-3xl border border-border-medium bg-surface-tertiary p-4 pb-10 text-text-secondary">
-      {meta && <span className="mb-1 block text-xs text-text-secondary">{meta}</span>}
-      <p className={cn('whitespace-pre-wrap leading-[26px]', fontSize)}>{children}</p>
+    <div className="border-border-medium bg-surface-tertiary text-text-secondary relative rounded-3xl border p-4 pb-10">
+      {meta && <span className="text-text-secondary mb-1 block text-xs">{meta}</span>}
+      <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{children}</p>
     </div>
   );
 });
@@ -72,28 +71,29 @@ const SummaryButton = memo(
     onCopy: (e: MouseEvent<HTMLButtonElement>) => void;
   }) => {
     const localize = useLocalize();
-    const fontSize = useAtomValue(fontSizeAtom);
+    const { useFontSize } = useMessagePartsHost();
+    const fontSize = useFontSize();
 
     return (
       <div className="group/summary flex w-full items-center justify-between gap-2">
         <Button
-          variant="ghost"
+          variant="disclosure"
           onClick={onClick}
           aria-expanded={isExpanded}
           aria-controls={contentId}
           className={cn(
-            'group/button h-auto flex-1 justify-start gap-0 rounded-lg p-0 font-normal leading-[18px] hover:bg-transparent',
+            'group/button h-auto flex-1 justify-start gap-0 rounded-lg p-0 leading-[18px] font-normal',
             fontSize,
           )}
         >
-          <span className="relative mr-1.5 inline-flex h-[18px] w-[18px] items-center justify-center">
+          <span className="relative mr-1.5 inline-flex h-[1.125rem] w-[1.125rem] items-center justify-center">
             <ScrollText
-              className="icon-sm absolute text-text-secondary opacity-100 transition-opacity group-hover/button:opacity-0"
+              className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
               aria-hidden="true"
             />
             <ChevronDown
               className={cn(
-                'icon-sm absolute transform-gpu text-text-primary opacity-0 transition-all duration-300 group-hover/button:opacity-100',
+                'icon-sm text-text-primary absolute transform-gpu opacity-0 transition-all duration-300 group-hover/button:opacity-100',
                 isExpanded && 'rotate-180',
               )}
               aria-hidden="true"
@@ -110,18 +110,18 @@ const SummaryButton = memo(
               isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')
             }
             className={cn(
-              'size-auto rounded-lg p-1.5 text-text-secondary-alt',
+              'text-text-secondary-alt size-auto rounded-lg p-1.5',
               isExpanded
                 ? 'opacity-0 group-focus-within/summary-container:opacity-100 group-hover/summary-container:opacity-100'
                 : 'opacity-0',
               'hover:bg-surface-hover hover:text-text-primary',
-              'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+              'focus-visible:ring-text-primary focus-visible:opacity-100 focus-visible:ring-2',
             )}
           >
             <span className="sr-only">
               {isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')}
             </span>
-            <MorphIcon icon={isCopied ? Check : Copy} size={18} />
+            <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
           </Button>
         )}
       </div>
@@ -155,7 +155,7 @@ const FloatingSummaryBar = memo(
     return (
       <div
         className={cn(
-          'absolute bottom-3 right-3 flex items-center gap-2 transition-opacity duration-150',
+          'absolute right-3 bottom-3 flex items-center gap-2 transition-opacity duration-150',
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
@@ -169,12 +169,12 @@ const FloatingSummaryBar = memo(
               aria-label={collapseTooltip}
               aria-controls={contentId}
               className={cn(
-                'flex items-center justify-center rounded-lg bg-surface-secondary p-1.5 text-text-secondary-alt shadow-sm',
+                'bg-surface-secondary text-text-secondary-alt flex items-center justify-center rounded-lg p-1.5 shadow-xs',
                 'hover:bg-surface-hover hover:text-text-primary',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy',
+                'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
               )}
             >
-              <ChevronUp className="h-[18px] w-[18px]" aria-hidden="true" />
+              <ChevronUp className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />
             </button>
           }
         />
@@ -188,12 +188,12 @@ const FloatingSummaryBar = memo(
                 onClick={onCopy}
                 aria-label={copyTooltip}
                 className={cn(
-                  'flex items-center justify-center rounded-lg bg-surface-secondary p-1.5 text-text-secondary-alt shadow-sm',
+                  'bg-surface-secondary text-text-secondary-alt flex items-center justify-center rounded-lg p-1.5 shadow-xs',
                   'hover:bg-surface-hover hover:text-text-primary',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy',
+                  'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
                 )}
               >
-                <MorphIcon icon={isCopied ? Check : Copy} size={18} />
+                <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
               </button>
             }
           />
@@ -210,7 +210,8 @@ const Summary = memo(
     const [isExpanded, setIsExpanded] = useState(false);
     const [isBarVisible, setIsBarVisible] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
-    const { isSubmitting, isLatestMessage } = useMessageContext();
+    const { useMessage } = useMessagePartsHost();
+    const { isSubmitting, isLatestMessage } = useMessage();
 
     const text = useMemo(
       () =>
@@ -281,7 +282,7 @@ const Summary = memo(
         onBlur={handleBlur}
       >
         <div className="group/summary-container">
-          <div className="mb-2 pb-2 pt-2">
+          <div className="mb-2 pt-2 pb-2">
             <SummaryButton
               isExpanded={isExpanded}
               onClick={handleClick}

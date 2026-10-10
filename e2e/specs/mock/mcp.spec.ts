@@ -93,7 +93,7 @@ test.describe('agent builder MCP tools', () => {
 
       await form.getByLabel('Agent name').fill(agentName);
       await form.getByLabel('Agent description').fill(DESCRIPTION);
-      await form.getByLabel('Instructions').fill(INSTRUCTIONS);
+      await form.getByRole('textbox', { name: 'Instructions', exact: true }).fill(INSTRUCTIONS);
       await selectMockModel(page, true);
 
       await addMCPServerTools(page, form);
@@ -136,7 +136,9 @@ test.describe('agent builder MCP tools', () => {
 
       await expect(reopenedForm.getByLabel('Agent name')).toHaveValue(agentName);
       await expect(reopenedForm.getByLabel('Agent description')).toHaveValue(DESCRIPTION);
-      await expect(reopenedForm.getByLabel('Instructions')).toHaveValue(INSTRUCTIONS);
+      await expect(
+        reopenedForm.getByRole('textbox', { name: 'Instructions', exact: true }),
+      ).toHaveValue(INSTRUCTIONS);
       await expectSelectedMCPServerTools(reopenedForm);
 
       await reopenedForm.getByRole('button', { name: 'Select Agent' }).click();

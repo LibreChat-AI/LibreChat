@@ -108,7 +108,7 @@ export default function PendingTurn({
   return (
     <div
       ref={rowRef}
-      className="w-full border-0 bg-transparent text-text-primary"
+      className="text-text-primary w-full border-0 bg-transparent"
       data-testid="pending-turn"
     >
       <div className="m-auto justify-center px-4 py-3 sm:px-0">
@@ -124,7 +124,7 @@ export default function PendingTurn({
             <SubRow
               classes={cn(messageFooterClasses, 'flex-wrap items-center justify-end gap-1.5')}
             >
-              <span className="text-xs text-text-secondary" role="status">
+              <span className="text-text-secondary text-xs" role="status">
                 {localize('com_ui_queued_turn_starting')}
               </span>
               <span ref={setActionsTarget} className="flex items-center gap-1" />
@@ -134,7 +134,7 @@ export default function PendingTurn({
           <Container message={message}>
             <div
               className={cn(
-                'markdown prose message-content dark:prose-invert light w-full break-words text-text-primary',
+                'markdown prose message-content dark:prose-invert light text-text-primary w-full break-words',
                 !enableUserMsgMarkdown && 'whitespace-pre-wrap',
               )}
             >

@@ -1,61 +1,106 @@
-import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
-import type { NextFunction, Request, Response } from 'express';
-import {
-  codeEnvironmentPairingLimiter,
-  codeEnvironmentStatusIpLimiter,
-  codeEnvironmentStatusLimiter,
-} from './code';
-import { limiterCache } from '~/cache/cacheFactory';
+import express from 'express';
+import request from 'supertest';
+import type { RequestHandler } from 'express';
+import type * as CodeMiddleware from './code';
 
-jest.mock('express-rate-limit', () => ({
-  rateLimit: jest.fn(() => jest.fn((_req: Request, _res: Response, next: NextFunction) => next())),
-  ipKeyGenerator: jest.fn((ip: string | undefined) => ip ?? ''),
-}));
-jest.mock('~/cache/cacheFactory', () => ({ limiterCache: jest.fn(() => undefined) }));
+jest.mock('~/cache/cacheFactory', () => ({ limiterCache: () => undefined }));
 
-const mockRateLimit = jest.mocked(rateLimit);
-const mockIpKeyGenerator = jest.mocked(ipKeyGenerator);
-const mockLimiterCache = jest.mocked(limiterCache);
-
-type LimiterOptions = {
-  max: number;
-  windowMs: number;
-  keyGenerator: (req: Request) => string;
-};
+function createApp(limiter: RequestHandler) {
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use((req, _res, next) => {
+    Object.assign(req, { user: { id: req.get('x-test-user') } });
+    next();
+  });
+  app.get('/', limiter, (_req, res) => {
+    res.sendStatus(200);
+  });
+  return app;
+}
 
 describe('code environment limiters', () => {
-  test('uses a bounded per-user pairing bucket', () => {
-    const req = { user: { id: 'user-1' } } as unknown as Request;
+  let codeEnvironmentPairingLimiter: RequestHandler;
+  let codeEnvironmentStatusIpLimiter: RequestHandler;
+  let codeEnvironmentStatusLimiter: RequestHandler;
 
-    codeEnvironmentPairingLimiter(req, {} as Response, jest.fn());
-
-    const options = mockRateLimit.mock.calls[0]?.[0] as LimiterOptions;
-    expect(options).toEqual(expect.objectContaining({ max: 5, windowMs: 3_600_000 }));
-    expect(options.keyGenerator(req)).toBe('user-1');
-    expect(mockLimiterCache).toHaveBeenCalledWith('code_environment_pairing_user_limiter');
+  beforeEach(() => {
+    jest.replaceProperty(process, 'env', {
+      ...process.env,
+      CODE_ENVIRONMENT_PAIRING_USER_MAX: '2',
+      CODE_ENVIRONMENT_PAIRING_USER_WINDOW: '2',
+      CODE_ENVIRONMENT_STATUS_USER_MAX: '2',
+      CODE_ENVIRONMENT_STATUS_IP_MAX: '2',
+    });
+    jest.isolateModules(() => {
+      ({
+        codeEnvironmentPairingLimiter,
+        codeEnvironmentStatusIpLimiter,
+        codeEnvironmentStatusLimiter,
+      } = jest.requireActual<typeof CodeMiddleware>('./code'));
+    });
   });
 
-  test('keys status user limits by immutable user ID', () => {
-    const req = { user: { id: 'user-1' }, ip: '2001:db8::1' } as unknown as Request;
+  afterEach(() => jest.restoreAllMocks());
 
-    codeEnvironmentStatusLimiter(req, {} as Response, jest.fn());
+  test('limits pairing per user and returns a bounded retry delay', async () => {
+    const app = createApp(codeEnvironmentPairingLimiter);
+    await request(app).get('/').set('x-test-user', 'pairing-user').expect(200);
+    await request(app).get('/').set('x-test-user', 'pairing-user').expect(200);
 
-    const options = mockRateLimit.mock.calls[1]?.[0] as LimiterOptions;
-    expect(options).toEqual(expect.objectContaining({ max: 120, windowMs: 60_000 }));
-    expect(options.keyGenerator(req)).toBe('user-1');
-    expect(mockIpKeyGenerator).not.toHaveBeenCalled();
-    expect(mockLimiterCache).toHaveBeenCalledWith('code_environment_status_user_limiter');
+    const limited = await request(app).get('/').set('x-test-user', 'pairing-user').expect(429);
+    expect(limited.body.error.code).toBe('code_environment_pairing_rate_limited');
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    expect(Number(limited.headers['retry-after'])).toBeLessThanOrEqual(120);
+    await request(app).get('/').set('x-test-user', 'other-pairing-user').expect(200);
   });
 
-  test('applies an independent normalized IP status limit', () => {
-    const req = { user: { id: 'user-1' }, ip: '2001:db8::1' } as unknown as Request;
+  test('keeps the user status bucket across IP changes without limiting other users', async () => {
+    const app = createApp(codeEnvironmentStatusLimiter);
+    await request(app)
+      .get('/')
+      .set('x-test-user', 'status-user')
+      .set('X-Forwarded-For', '192.0.2.1')
+      .expect(200);
+    await request(app)
+      .get('/')
+      .set('x-test-user', 'status-user')
+      .set('X-Forwarded-For', '192.0.2.2')
+      .expect(200);
+    const limited = await request(app)
+      .get('/')
+      .set('x-test-user', 'status-user')
+      .set('X-Forwarded-For', '192.0.2.3')
+      .expect(429);
+    expect(limited.body.error.code).toBe('code_environment_status_rate_limited');
+    await request(app)
+      .get('/')
+      .set('x-test-user', 'other-status-user')
+      .set('X-Forwarded-For', '192.0.2.1')
+      .expect(200);
+  });
 
-    codeEnvironmentStatusIpLimiter(req, {} as Response, jest.fn());
-
-    const options = mockRateLimit.mock.calls[2]?.[0] as LimiterOptions;
-    expect(options).toEqual(expect.objectContaining({ max: 300, windowMs: 60_000 }));
-    expect(options.keyGenerator(req)).toBe('2001:db8::1');
-    expect(mockIpKeyGenerator).toHaveBeenCalledWith('2001:db8::1');
-    expect(mockLimiterCache).toHaveBeenCalledWith('code_environment_status_ip_limiter');
+  test('shares the IP status bucket across users and normalized IPv6 addresses', async () => {
+    const app = createApp(codeEnvironmentStatusIpLimiter);
+    await request(app)
+      .get('/')
+      .set('x-test-user', 'ip-user-1')
+      .set('X-Forwarded-For', '2001:db8:1::1')
+      .expect(200);
+    await request(app)
+      .get('/')
+      .set('x-test-user', 'ip-user-2')
+      .set('X-Forwarded-For', '2001:db8:1::2')
+      .expect(200);
+    const limited = await request(app)
+      .get('/')
+      .set('x-test-user', 'ip-user-3')
+      .set('X-Forwarded-For', '2001:db8:1::3')
+      .expect(429);
+    expect(limited.body.error.code).toBe('code_environment_status_rate_limited');
+    await request(app)
+      .get('/')
+      .set('x-test-user', 'ip-user-1')
+      .set('X-Forwarded-For', '2001:db8:2::1')
+      .expect(200);
   });
 });

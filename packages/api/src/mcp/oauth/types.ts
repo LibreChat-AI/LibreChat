@@ -32,6 +32,8 @@ export type OAuthClientSource = 'configured' | 'dynamic';
 export interface OAuthStoredClientMetadata extends OAuthMetadata {
   /** Random identifier shared by the access, refresh, and client records from one authorization. */
   credential_set_id?: string;
+  /** Internal upstream rejection marker, valid only while it matches this credential generation. */
+  rejected_credential_set_id?: string;
   /** Canonical MCP server URL the tokens and client registration are bound to. */
   server_url: string;
   /** Whether the client came from server configuration or dynamic client registration. */

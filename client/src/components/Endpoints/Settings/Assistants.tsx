@@ -152,7 +152,7 @@ export default function Settings({ conversation, setOption, models, readonly }: 
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="promptPrefix" className="text-left text-sm font-medium">
             {localize('com_endpoint_prompt_prefix_assistants')}{' '}
-            <small className="opacity-40 high-contrast:opacity-100">
+            <small className="high-contrast:opacity-100 opacity-40">
               ({localize('com_endpoint_default_blank')})
             </small>
           </Label>
@@ -164,14 +164,14 @@ export default function Settings({ conversation, setOption, models, readonly }: 
             placeholder={localize('com_endpoint_prompt_prefix_assistants_placeholder')}
             className={cn(
               defaultTextProps,
-              'flex max-h-[240px] min-h-[80px] w-full resize-none px-3 py-2',
+              'flex max-h-[15rem] min-h-[5rem] w-full resize-none px-3 py-2',
             )}
           />
         </div>
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="instructions" className="text-left text-sm font-medium">
             {localize('com_endpoint_instructions_assistants')}{' '}
-            <small className="opacity-40 high-contrast:opacity-100">
+            <small className="high-contrast:opacity-100 opacity-40">
               ({localize('com_endpoint_default_blank')})
             </small>
           </Label>
@@ -183,7 +183,7 @@ export default function Settings({ conversation, setOption, models, readonly }: 
             placeholder={localize('com_endpoint_instructions_assistants_placeholder')}
             className={cn(
               defaultTextProps,
-              'flex max-h-[240px] min-h-[80px] w-full resize-none px-3 py-2',
+              'flex max-h-[15rem] min-h-[5rem] w-full resize-none px-3 py-2',
             )}
           />
         </div>

@@ -1,9 +1,9 @@
 import React, { useState, useCallback } from 'react';
+import { REGEXP_ONLY_DIGITS } from 'input-otp';
 import { useSearchParams } from 'react-router-dom';
 import { useToastContext } from '@librechat/client';
 import { ErrorTypes } from 'librechat-data-provider';
 import { useForm, Controller } from 'react-hook-form';
-import { REGEXP_ONLY_DIGITS, REGEXP_ONLY_DIGITS_AND_CHARS } from 'input-otp';
 import {
   Label,
   Button,
@@ -13,6 +13,7 @@ import {
   InputOTPSeparator,
 } from '@librechat/client';
 import { useVerifyTwoFactorTempMutation } from '~/data-provider';
+import BackupCodeInput from './BackupCodeInput';
 import { useLocalize } from '~/hooks';
 
 interface VerifyPayload {
@@ -86,11 +87,11 @@ const TwoFactorScreen: React.FC = React.memo(() => {
   return (
     <div className="mt-4">
       <form onSubmit={handleSubmit(onSubmit)}>
-        <Label className="flex justify-center break-keep text-center text-sm text-text-primary">
+        <Label className="text-text-primary flex justify-center text-center text-sm break-keep">
           {localize('com_auth_two_factor')}
         </Label>
         {!useBackup && (
-          <div className="my-4 flex justify-center text-text-primary">
+          <div className="text-text-primary my-4 flex justify-center">
             <Controller
               name="token"
               control={control}
@@ -117,38 +118,21 @@ const TwoFactorScreen: React.FC = React.memo(() => {
               )}
             />
             {errors.token && (
-              <span className="text-sm text-text-destructive">{errors.token.message}</span>
+              <span className="text-text-destructive text-sm">{errors.token.message}</span>
             )}
           </div>
         )}
         {useBackup && (
-          <div className="my-4 flex justify-center text-text-primary">
+          <div className="text-text-primary my-4 flex justify-center">
             <Controller
               name="backupCode"
               control={control}
               render={({ field: { onChange, value } }) => (
-                <InputOTP
-                  maxLength={8}
-                  value={value != null ? value : ''}
-                  onChange={onChange}
-                  pattern={REGEXP_ONLY_DIGITS_AND_CHARS}
-                  aria-label={localize('com_ui_backup_code_verification_required')}
-                >
-                  <InputOTPGroup>
-                    <InputOTPSlot index={0} />
-                    <InputOTPSlot index={1} />
-                    <InputOTPSlot index={2} />
-                    <InputOTPSlot index={3} />
-                    <InputOTPSlot index={4} />
-                    <InputOTPSlot index={5} />
-                    <InputOTPSlot index={6} />
-                    <InputOTPSlot index={7} />
-                  </InputOTPGroup>
-                </InputOTP>
+                <BackupCodeInput value={value ?? ''} onChange={onChange} />
               )}
             />
             {errors.backupCode && (
-              <span className="text-sm text-text-destructive">{errors.backupCode.message}</span>
+              <span className="text-text-destructive text-sm">{errors.backupCode.message}</span>
             )}
           </div>
         )}
@@ -169,7 +153,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
               type="button"
               variant="link"
               onClick={toggleBackupOn}
-              className="inline-flex p-1 text-sm font-medium text-accent-primary transition-colors hover:text-accent-primary-hover"
+              className="text-accent-primary hover:text-accent-primary-hover inline-flex p-1 text-sm font-medium transition-colors"
             >
               {localize('com_ui_use_backup_code')}
             </Button>
@@ -178,7 +162,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
               type="button"
               variant="link"
               onClick={toggleBackupOff}
-              className="inline-flex p-1 text-sm font-medium text-accent-primary transition-colors hover:text-accent-primary-hover"
+              className="text-accent-primary hover:text-accent-primary-hover inline-flex p-1 text-sm font-medium transition-colors"
             >
               {localize('com_ui_use_2fa_code')}
             </Button>

@@ -2,6 +2,15 @@
 
 The mock e2e profile is the safest default for generated tests. It starts LibreChat with `e2e/config/librechat.e2e.yaml`, injects an in-process fake LLM (via `LIBRECHAT_TEST_RUN_HOOK`), creates an authenticated e2e user, and avoids real provider credentials.
 
+## Automatic title regressions
+
+The standard mock profile disables automatic titles. CI runs the title-enabled cases once on the first memory shard. To run them locally after building the app:
+
+```sh
+E2E_TITLE_CONVO=true npx playwright test --config=e2e/playwright.config.mock.ts \
+  conversation-management.spec.ts --grep 'first-turn|final-title polling'
+```
+
 ## Deployed-instance smoke test
 
 The deployed profile exercises an existing LibreChat deployment without starting another app or
@@ -35,6 +44,23 @@ The profile deliberately has no global setup, database access, or web server. It
 authenticated shell, sends one real prompt, reloads the resulting conversation, and deletes only
 the conversation created by that run through LibreChat's authenticated API. Keep deterministic
 provider behavior and destructive database fixtures in the mock profile instead.
+
+## Email Delivery
+
+The registered-email flow has a dedicated profile because enabling SMTP changes registration into a verification-required workflow. It starts a disposable local SMTP mailbox, verifies the setup account from the delivered message, and then tests the Settings → Account email change, verification link, notifications to both addresses, and login with the new address:
+
+```sh
+npm run e2e:email-change
+```
+
+The disabled-mode profile verifies that `ALLOW_EMAIL_CHANGE=false` hides the Account control,
+rejects both request and confirmation endpoints, and sends no email:
+
+```sh
+npm run e2e:email-change:disabled
+```
+
+Override `E2E_SMTP_PORT` or `E2E_MAILBOX_PORT` if ports 1025 or 8025 are already in use. The mailbox binds only to `127.0.0.1` and is discarded with the test process.
 
 ## Stream Stores and Shards
 
@@ -188,3 +214,14 @@ For a historical revision without this lane, copy the two `e2e/screenshots/*.ts`
 Each PNG has a JSON sidecar containing the revision, browser version, viewport, theme, scenario hash, lockfile hash, built HTML hash, and image hash. Visible images must decode, fonts must finish loading, greeting springs must settle, and consecutive captures must match. A passing run and human inspection are both required before treating the pair as reviewed evidence; sidecars from a failed run are not complete evidence. Compare matching filenames between revisions. Pin the browser and font environment as well as the app revisions.
 
 Keep storage state, traces, logs, and session data private. Check that the PNGs contain only intended synthetic test data before uploading with the attachment-capable `gh` described in the PR template, then read back the PR body to verify real asset URLs. Mark any pending visual review explicitly. Do not commit the images. A new surface has no before state; label it accordingly rather than substituting another screen.
+
+## Running-chat rename rollout
+
+`interface.runningChatRename` defaults to `true`. Set it to `false` during rolling upgrades
+from a version without title ownership. After **every API replica** supports title ownership,
+drain all title-generation tasks started on older replicas, then remove the override. The client
+also requires the server's title-ownership capability; an old replica cannot advertise it.
+
+With the fence off, running rows and unowned placeholder titles cannot be renamed.
+Other menu actions remain available. Settled non-placeholder chats retain Rename.
+The isolated mock profile enables the option because it contains no older replicas.

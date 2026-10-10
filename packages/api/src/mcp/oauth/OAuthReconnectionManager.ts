@@ -4,6 +4,7 @@ import type { ParsedServerConfig, UserConnectionContext } from '~/mcp/types';
 import type { MCPOAuthTokens } from './types';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { OAuthReconnectionTracker } from './OAuthReconnectionTracker';
+import { STANDARD_MCP_CAPABILITY_PROFILE } from '~/mcp/capabilities';
 import { requiresEphemeralUserConnection } from '~/mcp/utils';
 import { FlowStateManager } from '~/flow/manager';
 import { MCPManager } from '~/mcp/MCPManager';
@@ -152,7 +153,10 @@ export class OAuthReconnectionManager {
   private cleanupOnFailedReconnect(userId: string, serverName: string): void {
     this.reconnectionsTracker.setFailed(userId, serverName);
     this.reconnectionsTracker.removeActive(userId, serverName);
-    this.mcpManager?.disconnectUserConnection(userId, serverName, { reason: 'lifecycle' });
+    this.mcpManager?.disconnectUserConnection(userId, serverName, {
+      reason: 'lifecycle',
+      capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+    });
   }
 
   /**
@@ -211,6 +215,7 @@ export class OAuthReconnectionManager {
       const connection = await this.mcpManager.getUserConnection({
         serverName,
         user: { id: userId } as IUser,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         serverConfig: config,
         flowManager: this.flowManager,
         tokenMethods: this.tokenMethods,
@@ -268,7 +273,10 @@ export class OAuthReconnectionManager {
     }
 
     // if the server is already connected, don't attempt to reconnect
-    const existingConnections = this.mcpManager.getUserConnections(userId);
+    const existingConnections = this.mcpManager.getUserConnections(
+      userId,
+      STANDARD_MCP_CAPABILITY_PROFILE,
+    );
     if (existingConnections?.has(serverName)) {
       const isConnected = await existingConnections.get(serverName)?.isConnected();
       if (isConnected) {

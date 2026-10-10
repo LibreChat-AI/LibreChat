@@ -229,8 +229,57 @@ describe('parseBackgroundTaskOutput', () => {
         toolName: 'subagent',
         subagentType: 'researcher',
         status: 'accepted',
+        threadId: 'thread-1',
       },
     });
+  });
+
+  it('parses a subagent progress digest and drops only a malformed one', () => {
+    const task = {
+      background_task_id: 'subagent-1',
+      tool: 'subagent',
+      subagent_type: 'reviewer',
+      status: 'running',
+    };
+    const activity = {
+      turns: 2,
+      tools: 3,
+      errors: 0,
+      active: '2.1',
+      cursor: '1.2',
+      phase: 'thinking',
+      nodes: [
+        { path: '1', kind: 'turn', status: 'ok', summary: 'read_file ×2', folded: true, ms: 10 },
+        { path: '2.1', kind: 'tool', status: 'running', name: 'bash_tool', label: 'Run', ms: 5 },
+        { path: '1-14', kind: 'range', evicted: true, errors: 0 },
+      ],
+    };
+    expect(parseBackgroundTaskOutput(JSON.stringify({ ...task, activity }))).toMatchObject({
+      kind: 'task',
+      task: {
+        activity: {
+          turns: 2,
+          tools: 3,
+          errors: 0,
+          active: '2.1',
+          phase: 'thinking',
+          nodes: [
+            { path: '1', kind: 'turn', status: 'ok', summary: 'read_file ×2', folded: true },
+            { path: '2.1', name: 'bash_tool', label: 'Run' },
+            { path: '1-14', kind: 'range', evicted: true },
+          ],
+        },
+      },
+    });
+    for (const malformed of [
+      { ...activity, turns: -1 },
+      { ...activity, nodes: [{ path: '2.1', kind: 'script' }] },
+      { ...activity, nodes: 'none' },
+    ]) {
+      const parsed = parseBackgroundTaskOutput(JSON.stringify({ ...task, activity: malformed }));
+      expect(parsed).toMatchObject({ kind: 'task', task: { status: 'running' } });
+      expect(parsed?.kind === 'task' ? parsed.task.activity : 'missing').toBeUndefined();
+    }
   });
 
   it.each(['claimed', 'not_running', 'control_not_found'])(

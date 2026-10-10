@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
-import { atomFamily, useRecoilState, useResetRecoilState } from 'recoil';
+import { atom, useAtom } from 'jotai';
+import { atomFamily } from 'jotai/utils';
 import type { Agents } from 'librechat-data-provider';
 import {
   useAskSubmitStatus,
@@ -16,10 +17,12 @@ interface AskQuestionsFormState {
   selected: Record<string, string[]>;
 }
 
-const askQuestionsFormState = atomFamily<AskQuestionsFormState, string>({
-  key: 'askQuestionsFormState',
-  default: { step: 0, text: {}, selected: {} },
-});
+const EMPTY_FORM: AskQuestionsFormState = { step: 0, text: {}, selected: {} };
+
+/** Keyed by action id, so the composer popover and the chat card share one form. */
+const askQuestionsFormFamily = atomFamily((_actionId: string) =>
+  atom<AskQuestionsFormState>(EMPTY_FORM),
+);
 
 function ownValue<T>(record: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(record, key) ? record[key] : undefined;
@@ -29,8 +32,8 @@ export default function useAskQuestionsForm(
   actionId: string,
   questions: Agents.AskUserQuestionBatchItem[],
 ) {
-  const [state, setState] = useRecoilState(askQuestionsFormState(actionId));
-  const resetState = useResetRecoilState(askQuestionsFormState(actionId));
+  const [state, setState] = useAtom(askQuestionsFormFamily(actionId));
+  const resetState = useCallback(() => setState(EMPTY_FORM), [setState]);
   const { submitAskAnswer } = useResumeSubmit();
   const { getAskStatus } = useAskSubmitStatus();
   const status = getAskStatus(actionId);
@@ -41,8 +44,10 @@ export default function useAskQuestionsForm(
       setState((previous) => ({
         ...previous,
         text: { ...previous.text, [question.id]: value },
+        /** A typed answer replaces the choices: the rows lock while the field
+         *  has text, so nothing stays selected behind them. */
         selected:
-          question.multiSelect === true || value.length === 0
+          value.trim().length === 0
             ? previous.selected
             : { ...previous.selected, [question.id]: [] },
       }));

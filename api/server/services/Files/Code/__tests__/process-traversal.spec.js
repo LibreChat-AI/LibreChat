@@ -22,6 +22,7 @@ jest.mock('@librechat/api', () => {
   const https = require('https');
   return {
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
+    createSandboxTextReader: jest.requireActual('@librechat/api').createSandboxTextReader,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     getBasePath: jest.fn(() => ''),

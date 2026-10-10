@@ -1,7 +1,13 @@
-import { loadDefaultInterface } from '@librechat/data-schemas';
-import { SystemRoles, Permissions, PermissionTypes, roleDefaults } from 'librechat-data-provider';
+import { logger, loadDefaultInterface } from '@librechat/data-schemas';
+import {
+  SystemRoles,
+  Permissions,
+  roleDefaults,
+  RetentionMode,
+  PermissionTypes,
+} from 'librechat-data-provider';
 import type { TConfigDefaults, TCustomConfig } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
+import type { AppConfig, IRole } from '@librechat/data-schemas';
 import { updateInterfacePermissions } from './permissions';
 
 const mockUpdateAccessPermissions = jest.fn();
@@ -202,6 +208,36 @@ describe('updateInterfacePermissions - permissions', () => {
       expectedPermissionsForAdmin,
       null,
     );
+  });
+
+  it('does not rewrite a stored TEMPORARY_CHAT permission when retentionMode is ephemeral', async () => {
+    const config = {
+      interface: {
+        retentionMode: RetentionMode.EPHEMERAL,
+        temporaryChat: false,
+      },
+    };
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig } as unknown as AppConfig;
+
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: mockGetRoleByName,
+      updateAccessPermissions: mockUpdateAccessPermissions,
+    });
+
+    /** The forced mode is overlaid where the control is rendered; persisting it here would
+     *  survive a later return to `temporary` and silently grant access the operator removed. */
+    for (const role of [SystemRoles.USER, SystemRoles.ADMIN]) {
+      expect(mockUpdateAccessPermissions).toHaveBeenCalledWith(
+        role,
+        expect.objectContaining({
+          [PermissionTypes.TEMPORARY_CHAT]: { [Permissions.USE]: false },
+        }),
+        null,
+      );
+    }
   });
 
   it('should call updateAccessPermissions with false when permission types are false', async () => {
@@ -2967,5 +3003,128 @@ describe('updateInterfacePermissions - permissions', () => {
     for (const call of mockUpdateAccessPermissions.mock.calls) {
       expect(call[1][PermissionTypes.SCHEDULES]).toBeUndefined();
     }
+  });
+});
+
+describe('updateInterfacePermissions - web search recovery', () => {
+  it('preserves a stored denial on omission and restores it only with an explicit grant', async () => {
+    const roles = new Map(
+      [SystemRoles.USER, SystemRoles.ADMIN].map((name) => [
+        name,
+        { name, permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: true } } },
+      ]),
+    );
+    const getRoleByName = jest.fn(async (name: string) => roles.get(name as SystemRoles) as IRole);
+    const updateAccessPermissions = jest.fn<
+      ReturnType<Parameters<typeof updateInterfacePermissions>[0]['updateAccessPermissions']>,
+      Parameters<Parameters<typeof updateInterfacePermissions>[0]['updateAccessPermissions']>
+    >(async (name, updates) => {
+      const role = roles.get(name as SystemRoles);
+      const grant = updates[PermissionTypes.WEB_SEARCH]?.[Permissions.USE];
+      if (role && grant !== undefined) {
+        role.permissions[PermissionTypes.WEB_SEARCH][Permissions.USE] = grant;
+      }
+    });
+    const sync = async (webSearch?: boolean) => {
+      updateAccessPermissions.mockClear();
+      const config = { interface: webSearch === undefined ? {} : { webSearch } };
+      const interfaceConfig = await loadDefaultInterface({
+        config,
+        configDefaults: { interface: {} } as TConfigDefaults,
+      });
+      await updateInterfacePermissions({
+        appConfig: { config, interfaceConfig } as unknown as AppConfig,
+        getRoleByName,
+        updateAccessPermissions,
+      });
+    };
+    const grants = () =>
+      [...roles.values()].map(
+        (role) => role.permissions[PermissionTypes.WEB_SEARCH][Permissions.USE],
+      );
+    const expectPreserved = () => {
+      for (const [, updates] of updateAccessPermissions.mock.calls) {
+        expect(updates).not.toHaveProperty(PermissionTypes.WEB_SEARCH);
+      }
+    };
+
+    await sync(false);
+    expect(grants()).toEqual([false, false]);
+    await sync();
+    expect(grants()).toEqual([false, false]);
+    expectPreserved();
+    await sync(true);
+    expect(grants()).toEqual([true, true]);
+    await sync();
+    expect(grants()).toEqual([true, true]);
+    expectPreserved();
+    await sync(false);
+    expect(grants()).toEqual([false, false]);
+  });
+});
+
+describe('updateInterfacePermissions - native web search warning', () => {
+  const nativeSpec = { name: 'gpt-native', label: 'GPT', preset: { web_search: true } };
+
+  const run = async (webSearch: boolean | undefined, list: unknown[] = [nativeSpec]) => {
+    const config = { interface: webSearch === undefined ? {} : { webSearch } };
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig, modelSpecs: { list } } as unknown as AppConfig;
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: mockGetRoleByName,
+      updateAccessPermissions: mockUpdateAccessPermissions,
+    });
+  };
+
+  const nativeWarnings = () =>
+    warnSpy.mock.calls.filter(([message]) =>
+      String(message).includes('provider-native web search'),
+    );
+
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetRoleByName.mockResolvedValue(null);
+    warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('warns when interface.webSearch: false blocks model specs that request native search', async () => {
+    await run(false);
+    const warnings = nativeWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain('`interface.webSearch: false` denies');
+    expect(warnings[0][0]).toContain('gpt-native');
+    expect(warnings[0][0]).toContain('endpoints.agents.capabilities');
+  });
+
+  it('warns when the key is unset but a stored role still denies WEB_SEARCH', async () => {
+    mockGetRoleByName.mockImplementation(async (roleName: string) => ({
+      name: roleName,
+      permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } },
+    }));
+    await run(undefined);
+    const warnings = nativeWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toContain('stored role permission keeps denying');
+    expect(warnings[0][0]).toContain(SystemRoles.USER);
+  });
+
+  it('does not warn when web search is allowed or no spec requests native search', async () => {
+    await run(true);
+    await run(undefined);
+    await run(false, [{ name: 'plain', label: 'Plain', preset: {} }]);
+    mockGetRoleByName.mockImplementation(async (roleName: string) => ({
+      name: roleName,
+      permissions: { [PermissionTypes.WEB_SEARCH]: { [Permissions.USE]: false } },
+    }));
+    await run(true);
+    expect(nativeWarnings()).toHaveLength(0);
   });
 });

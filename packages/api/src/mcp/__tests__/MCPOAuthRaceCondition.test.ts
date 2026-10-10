@@ -134,10 +134,13 @@ describe('MCP OAuth Race Condition Fixes', () => {
           shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
           getAllowedDomains: jest.fn().mockReturnValue(null),
           getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
           resolveAllowlists: jest.fn().mockResolvedValue({
             allowedDomains: null,
             allowedAddresses: null,
             useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
           }),
         });
 
@@ -177,6 +180,113 @@ describe('MCP OAuth Race Condition Fixes', () => {
       }
     });
 
+    it('cancels after asynchronous lookup without starting connection creation', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      const { MCPServersRegistry } = await import('~/mcp/registry/MCPServersRegistry');
+      class TestManager extends UserConnectionManager {}
+      const manager = new TestManager();
+      let resolveConfig!: (config: object) => void;
+      const config = new Promise<object>((resolve) => {
+        resolveConfig = resolve;
+      });
+      const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+        getServerConfig: jest.fn().mockReturnValue(config),
+      } as never);
+      const createSpy = jest.spyOn(MCPConnectionFactory, 'create');
+      const controller = new AbortController();
+
+      const creation = manager.getUserConnection({
+        serverName: 'test-server',
+        user: { id: 'user-cancelled' } as never,
+        signal: controller.signal,
+      });
+      controller.abort(new Error('request cancelled'));
+      resolveConfig({ type: 'sse', url: 'https://mcp.example.com' });
+
+      await expect(creation).rejects.toThrow('request cancelled');
+      expect(createSpy).not.toHaveBeenCalled();
+      registrySpy.mockRestore();
+      createSpy.mockRestore();
+    });
+
+    it('waits for a different config generation and then creates its own connection', async () => {
+      const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
+      const { MCPConnectionFactory } = await import('~/mcp/MCPConnectionFactory');
+      class TestManager extends UserConnectionManager {}
+      const manager = new TestManager();
+      manager.appConnections = {} as never;
+      const connection = (name: string) =>
+        ({
+          name,
+          on: jest.fn(),
+          isConnected: jest.fn().mockResolvedValue(true),
+          refreshToolList: jest.fn().mockResolvedValue(undefined),
+          removeAllListeners: jest.fn(),
+          dispose: jest.fn().mockResolvedValue(undefined),
+          isStale: jest.fn().mockReturnValue(false),
+        }) as never;
+      const secondConnection = connection('second');
+      const firstFailure = new Error('first target unavailable');
+      let releaseFirst!: () => void;
+      const firstHeld = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const createSpy = jest
+        .spyOn(MCPConnectionFactory, 'create')
+        .mockImplementation(async (options) => {
+          if (
+            'url' in options.serverConfig &&
+            options.serverConfig.url === 'https://first.example.com'
+          ) {
+            await firstHeld;
+            throw firstFailure;
+          }
+          return secondConnection;
+        });
+      const registrySpy = jest
+        .spyOn(
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          require('~/mcp/registry/MCPServersRegistry').MCPServersRegistry,
+          'getInstance',
+        )
+        .mockReturnValue({
+          resolveAllowlists: jest.fn().mockResolvedValue({
+            allowedDomains: null,
+            allowedAddresses: null,
+            useSSRFProtection: false,
+          }),
+        });
+      const user = { id: 'user-generation' } as never;
+      const first = manager.getUserConnection({
+        serverName: 'test-server',
+        user,
+        connectionTarget: {
+          connectionOwner: 'principal',
+          serverConfig: { type: 'sse', url: 'https://first.example.com' },
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const waiterOAuthStart = jest.fn();
+      const second = manager.getUserConnection({
+        serverName: 'test-server',
+        user,
+        oauthStart: waiterOAuthStart,
+        connectionTarget: {
+          connectionOwner: 'principal',
+          serverConfig: { type: 'sse', url: 'https://second.example.com' },
+        },
+      });
+      releaseFirst();
+
+      await expect(first).rejects.toBe(firstFailure);
+      await expect(second).resolves.toBe(secondConnection);
+      expect(createSpy).toHaveBeenCalledTimes(2);
+      expect(waiterOAuthStart).not.toHaveBeenCalled();
+      registrySpy.mockRestore();
+      createSpy.mockRestore();
+    });
+
     it('should re-issue the pending OAuth URL when joining an in-flight connection', async () => {
       const { UserConnectionManager } = await import('~/mcp/UserConnectionManager');
 
@@ -213,10 +323,13 @@ describe('MCP OAuth Race Condition Fixes', () => {
           shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
           getAllowedDomains: jest.fn().mockReturnValue(null),
           getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
           resolveAllowlists: jest.fn().mockResolvedValue({
             allowedDomains: null,
             allowedAddresses: null,
             useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
           }),
         });
 
@@ -301,10 +414,13 @@ describe('MCP OAuth Race Condition Fixes', () => {
           shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
           getAllowedDomains: jest.fn().mockReturnValue(null),
           getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
           resolveAllowlists: jest.fn().mockResolvedValue({
             allowedDomains: null,
             allowedAddresses: null,
             useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
           }),
         });
 
@@ -423,10 +539,13 @@ describe('MCP OAuth Race Condition Fixes', () => {
           shouldEnableSSRFProtection: jest.fn().mockReturnValue(false),
           getAllowedDomains: jest.fn().mockReturnValue(null),
           getAllowedAddresses: jest.fn().mockReturnValue(null),
+          getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
           resolveAllowlists: jest.fn().mockResolvedValue({
             allowedDomains: null,
             allowedAddresses: null,
             useSSRFProtection: false,
+            mcpApps: { enabled: true, legacyHtmlEnabled: true },
           }),
         });
 
@@ -500,6 +619,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
             type: 'streamable-http',
             url: 'http://localhost:9999/',
           }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
           resolveAllowlists: jest.fn().mockResolvedValue({
             allowedDomains: null,
             allowedAddresses: null,
@@ -581,6 +701,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
             type: 'streamable-http',
             url: 'http://localhost:9999/',
           }),
+          isAppServerConfig: jest.fn().mockResolvedValue(false),
           resolveAllowlists: jest.fn().mockResolvedValue({
             allowedDomains: null,
             allowedAddresses: null,

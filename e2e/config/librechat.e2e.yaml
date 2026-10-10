@@ -5,9 +5,15 @@ version: 1.3.11
 cache: true
 
 interface:
+  # Isolated test fleet contains only ownership-aware replicas.
+  runningChatRename: true
   # Exercises the cost row in the context usage gauge (off by default).
   # Mock models price at the default rate, so synthetic usage yields a value.
   contextCost: true
+  # Enables the model-parameter surface, including the per-turn reasoning
+  # control in the composer. Mock Provider A resolves Anthropic's adaptive
+  # `effort` setting through its custom endpoint configuration below.
+  parameters: true
   # Grants MULTI_CONVO.USE so the composer's `+` command opens the added-model
   # popover. agent-skills-added.spec.ts drives that flow; without an explicit
   # value the permission falls through to the seeded role default and
@@ -36,15 +42,20 @@ rateLimits:
     userMax: 2
   tts:
     userMax: 2
+# __E2E_MCP_APP_RATE_LIMITS__
+
+# __E2E_MCP_APP_SANDBOX__
 
 mcpSettings:
-  # Deliberately excludes 127.0.0.1, so the URL-based `e2e-http` server below is blocked
+  # __E2E_MCP_APPS_SETTING__
+  # Deliberately excludes the e2e-http origin below, so that server is blocked
   # at boot (stored as inspectionFailed). mcp-allowlist-override.spec.ts adds that origin
   # via an admin-panel config override and asserts the server reinitializes — proving the
   # admin override is honored by inspection/connection. stdio servers skip this check.
   allowedDomains:
     - https://allowed.example.com
     - http://127.0.0.1:8767
+    # __E2E_MCP_APPS_ALLOWED_DOMAIN__
     # __E2E_DYNAMIC_MCP_ALLOWED_DOMAIN__
 
 actions:
@@ -80,6 +91,7 @@ mcpServers:
       token_url: http://127.0.0.1:8767/token
       client_id: e2e-oauth-client
   # __E2E_DYNAMIC_MCP_NETWORK_SERVERS__
+  # __E2E_MCP_APPS_SERVER__
 
 # Per-endpoint file upload config so both upload UXs get e2e coverage:
 # - Mock Provider A keeps the legacy 3-way dropdown (chat.spec.ts exercises
@@ -136,7 +148,11 @@ endpoints:
     # existing file-authoring, steering, background-tool, or MCP specs.
     toolApproval:
       enabled: true
+      agentModes: true
       mode: bypass
+      # The probe below is an `ask` rule and a hook match, so it is never offered
+      # "Always allow"; the remembered-approval scenarios assert exactly that.
+      allowAlways: true
       ask:
         - approval_probe_mcp_e2e-memory
       reason: E2E approval required before running {tool}.
@@ -168,7 +184,34 @@ endpoints:
       modelDisplayLabel: 'Mock Provider A'
       customParams:
         defaultParamsEndpoint: anthropic
-
+        # Explicitly advertise the effort control for the mock custom endpoint.
+        # Generic fallback inference is intentionally disabled for custom targets.
+        paramDefinitions:
+          - key: effort
+    - name: 'Mock Titles immediate'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-immediate'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: immediate
+      modelDisplayLabel: 'Mock Titles immediate'
+    - name: 'Mock Titles final'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-final'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: final
+      modelDisplayLabel: 'Mock Titles final'
     - name: 'Mock Provider B'
       apiKey: 'e2e-mock-key-b'
       baseURL: 'http://127.0.0.1:8889/v1'
@@ -250,6 +293,8 @@ modelSpecs:
   # set) limited to entries that don't collide with the spec labels above.
   addedEndpoints:
     # __E2E_MODEL_RECORD_ADDED_ENDPOINT__
+    - 'Mock Titles immediate'
+    - 'Mock Titles final'
     - 'Mock Provider C'
     - 'Mock Provider D'
     - 'Mock Provider E'

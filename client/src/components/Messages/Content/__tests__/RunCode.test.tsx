@@ -5,6 +5,7 @@ import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ToolCallResponse } from 'librechat-data-provider';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { MessageContext } from '~/Providers/MessageContext';
 import RunCode from '../RunCode';
 
@@ -84,4 +85,54 @@ describe('RunCode animation lifecycle', () => {
       queryClient.clear();
     },
   );
+});
+
+describe('RunCode retention flag', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('sends the temporary-chat flag current when each run executes', async () => {
+    const callTool = jest
+      .mocked(dataService.callTool)
+      .mockResolvedValue({ result: '1', attachments: [] } as ToolCallResponse);
+    callTool.mockClear();
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const code = document.createElement('code');
+    code.textContent = 'print(1)';
+    const codeRef = { current: code };
+    const tree = (isTemporary: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot>
+          <ToastProvider>
+            <ChatSettingsContext.Provider value={{ ...defaultChatSettings, isTemporary }}>
+              <MessageContext.Provider
+                value={{ messageId: 'message', conversationId: 'conversation', isExpanded: false }}
+              >
+                <RunCode lang="python" codeRef={codeRef} blockIndex={0} />
+              </MessageContext.Provider>
+            </ChatSettingsContext.Provider>
+          </ToastProvider>
+        </RecoilRoot>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree(false));
+    const button = screen.getByRole('button', { name: 'com_ui_run_code' });
+
+    await act(async () => {
+      fireEvent.click(button);
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await waitFor(() => expect(callTool).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button).toBeEnabled());
+
+    rerender(tree(true));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1100);
+      fireEvent.click(button);
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await waitFor(() => expect(callTool).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(callTool.mock.calls[0])).toContain('"isTemporary":false');
+    expect(JSON.stringify(callTool.mock.calls[1])).toContain('"isTemporary":true');
+  });
 });

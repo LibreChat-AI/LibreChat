@@ -36,6 +36,13 @@ const ARRAY_MERGE_KEYS: Record<string, string> = {
 };
 
 /**
+ * Object-valued paths an override replaces whole instead of merging into. A theme
+ * definition is one coherent value: merging two would keep the base theme's modes,
+ * brands and tokens under the override's name. Uses AppConfig key names.
+ */
+const ATOMIC_MERGE_PATHS = new Set<string>(['interfaceConfig.theme']);
+
+/**
  * Maps YAML-level override keys (TCustomConfig) to their AppConfig equivalents.
  * Overrides are stored with YAML keys but merged into the already-processed AppConfig
  * where some fields have been renamed by AppService.
@@ -185,6 +192,7 @@ function deepMerge<T extends AnyObject>(target: T, source: AnyObject, depth = 0,
     const targetVal = result[key];
     if (
       depth < MAX_MERGE_DEPTH &&
+      !ATOMIC_MERGE_PATHS.has(currentPath) &&
       sourceVal != null &&
       typeof sourceVal === 'object' &&
       !Array.isArray(sourceVal) &&

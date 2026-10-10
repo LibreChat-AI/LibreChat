@@ -6,6 +6,7 @@ import {
   removeNullishValues,
   prefersResponsesApiByModel,
   supportsAdaptiveThinking,
+  gpt6Tier,
 } from 'librechat-data-provider';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import type { AzureOpenAIInput } from '@librechat/agents/langchain/openai';
@@ -923,8 +924,8 @@ export function getOpenAILLMConfig({
    * The drop loop later removes the flag, but it must already govern effort. */
   if (responsesApiExplicitlyOptedOut) llmConfig.useResponsesApi = false;
 
-  const solLunaRulesApply =
-    firstPartyEndpoint && /^gpt-6-(?:sol|luna)(?:-|$)/i.test(llmConfig.model ?? '');
+  const tier = gpt6Tier(llmConfig.model);
+  const solLunaRulesApply = firstPartyEndpoint && (tier === 'sol' || tier === 'luna');
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({

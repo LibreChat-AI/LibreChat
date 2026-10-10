@@ -56,6 +56,8 @@ export interface ConversationImportProtectionContext {
   readonly getFiles?: GetCanonicalFilesForInspection;
   readonly trustedLiveFiles?: readonly CanonicalFileInspectionFile[];
   readonly legacyPii?: MessageFilterPiiConfig | null;
+  /** Supplied only by native canonical-copy/share callers, never parsed from an import. */
+  readonly privateTextTokens?: ReadonlySet<string>;
   /** Injectable only at the legacy package boundary and in focused tests. */
   readonly assertModelBoundContent?: (input: ModelBoundContentInput) => void;
 }
@@ -161,6 +163,7 @@ async function inspectConversationImportContent(
         onTraversalFailure: context.onTraversalFailure,
         filters: activeFilters,
         legacyPii,
+        privateTextTokens: context.privateTextTokens,
         storedMessages: [message],
       });
     } catch (error) {

@@ -1,6 +1,7 @@
 import { Constants } from '@librechat/agents';
 import {
   CODE_APPROVAL_MODES,
+  CodeApprovalModeError,
   getAllowedCodeApprovalModes,
   resolveCodeApprovalMode,
   resolveCodePermissionDecision,
@@ -65,6 +66,14 @@ type CodeEnvironmentPolicyAgent = {
     codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
     codeEnvironmentSettings?: CodeEnvironmentUserSettings;
   };
+  /** Machines a parent may route this subagent to per call. */
+  codeExecutionChoices?:
+    | readonly {
+        environmentType?: string;
+        codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
+        codeEnvironmentSettings?: CodeEnvironmentUserSettings;
+      }[]
+    | null;
   subagentAgentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   lazySubagentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   subagentGraphMemberMetadata?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
@@ -137,6 +146,28 @@ export function markNativeCodeToolApprovalRequests(
   };
 }
 
+/** Scope native edit normalization to the executing agent, never a same-name external tool. */
+export function collectNativeEditFileAgentIds(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Set<string> {
+  const agentIds = new Set<string>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    if (!agent.id) continue;
+    let native = false;
+    let conflicting = false;
+    for (const definition of [
+      ...(agent.toolDefinitions ?? []),
+      ...(agent.toolRegistry?.values() ?? []),
+    ]) {
+      if (definition.name !== EDIT_FILE_TOOL_NAME) continue;
+      if (definition.toolType === 'builtin') native = true;
+      else conflicting = true;
+    }
+    if (native && !conflicting) agentIds.add(agent.id);
+  }
+  return agentIds;
+}
+
 export class AttachedCodeEnvironmentApprovalError extends Error {
   readonly code = 'BYOM_TOOL_APPROVAL_UNSUPPORTED';
 
@@ -167,7 +198,9 @@ export function collectAttachedCodeEnvironmentAgentIds(
 ): Set<string> {
   const attachedAgentIds = new Set<string>();
   for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
-    if (agent.id && agent.codeExecutionContext?.environmentType === 'attached') {
+    const routable =
+      agent.codeExecutionChoices?.some((choice) => choice.environmentType === 'attached') === true;
+    if (agent.id && (agent.codeExecutionContext?.environmentType === 'attached' || routable)) {
       attachedAgentIds.add(agent.id);
     }
   }
@@ -188,6 +221,36 @@ export function collectAttachedCodeEnvironmentPolicySettings(
     }
   }
   return settingsByAgentId;
+}
+
+/**
+ * Each agent's attached-machine policies: its default route and every machine a parent may route
+ * it to per call. Preflight decisions use all of them, since the call picks the machine later.
+ */
+export function collectAttachedCodeRoutePolicies(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Map<string, AttachedCodeEnvironmentPolicySettings[]> {
+  const policiesByAgentId = new Map<string, AttachedCodeEnvironmentPolicySettings[]>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    const policies = [agent.codeExecutionContext, ...(agent.codeExecutionChoices ?? [])]
+      .filter((context) => context?.environmentType === 'attached')
+      .map((context) => ({
+        configSchema: context?.codeEnvironmentConfigSchema,
+        settings: context?.codeEnvironmentSettings,
+        skillAuthoringAvailable: agent.skillAuthoringAvailable === true,
+      }));
+    if (agent.id && policies.length > 0) {
+      policiesByAgentId.set(agent.id, [...(policiesByAgentId.get(agent.id) ?? []), ...policies]);
+    }
+  }
+  return policiesByAgentId;
+}
+
+/** Every attached-machine policy the run may execute under, for validating the requested mode. */
+export function collectAttachedCodeApprovalPolicies(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): AttachedCodeEnvironmentPolicySettings[] {
+  return [...collectAttachedCodeRoutePolicies(roots).values()].flat();
 }
 
 function permissionDecision(
@@ -212,9 +275,19 @@ function permissionDecision(
   return resolveCodePermissionDecision({ mode: effectiveMode, category, decision });
 }
 
+function isCodeApprovalMode(value: unknown): value is CodeApprovalMode {
+  return CODE_APPROVAL_MODES.some((mode) => mode === value);
+}
+
+/**
+ * Validates a requested approval mode against every attached target the turn can run on.
+ * A turn with no attached target has nothing for the mode to govern, so any known mode is
+ * accepted there and resolves to `ask`: a target discovered later still starts gated, and a
+ * stale preference from another workspace never fails a turn that cannot use it.
+ */
 export function resolveAttachedCodeApprovalMode(
   requested: unknown,
-  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
+  policies: Iterable<AttachedCodeEnvironmentPolicySettings>,
   approvalsEnabled = true,
 ): CodeApprovalMode | undefined {
   if (!approvalsEnabled) {
@@ -227,9 +300,15 @@ export function resolveAttachedCodeApprovalMode(
       enabled: false,
     });
   }
+  const targets = [...policies];
+  if (targets.length === 0) {
+    if (requested == null) return undefined;
+    if (!isCodeApprovalMode(requested)) throw new CodeApprovalModeError();
+    return 'ask';
+  }
   let resolved: CodeApprovalMode | undefined;
   let rejection: Error | undefined;
-  for (const policy of settingsByAgentId.values()) {
+  for (const policy of targets) {
     try {
       resolved = resolveCodeApprovalMode(requested, {
         environment: 'attached',
@@ -244,13 +323,50 @@ export function resolveAttachedCodeApprovalMode(
     }
   }
   if (resolved == null && rejection != null) throw rejection;
-  return (
-    resolved ??
-    resolveCodeApprovalMode(requested, {
-      environment: 'attached',
-      allowedModes: CODE_APPROVAL_MODES,
-    })
-  );
+  return resolved;
+}
+
+/** Approvals are on and no agent the turn can reach runs, or may be routed, on an attached
+ *  machine. */
+function makesNoCodeApprovalDecision(
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
+  approvalsEnabled: boolean,
+): boolean {
+  return approvalsEnabled && policies.length === 0;
+}
+
+/**
+ * The approval mode a turn records on its conversation: the mode it validated against its
+ * attached targets. A turn without one still rejects a value that is not an approval mode, but
+ * records nothing; `getCodeApprovalPreservedFields` keeps the stored mode through its writes.
+ */
+export function resolvePersistedCodeApprovalMode({
+  requested,
+  policies,
+  approvalsEnabled = true,
+}: {
+  requested: unknown;
+  /** Every attached-machine policy the run may execute under (`collectAttachedCodeApprovalPolicies`). */
+  policies: readonly AttachedCodeEnvironmentPolicySettings[];
+  approvalsEnabled?: boolean;
+}): CodeApprovalMode | undefined {
+  const effective = resolveAttachedCodeApprovalMode(requested, policies, approvalsEnabled);
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? undefined : effective;
+}
+
+/**
+ * Conversation fields a turn's writes keep as stored although its save options omit them. A turn
+ * with no attached target makes no approval decision, so the mode stored on whichever
+ * conversation it is saved under, including an `overrideConvoId` target, stays as it is: leaving
+ * a workspace for a turn and returning keeps the reader's pick, and a chat that stores none keeps
+ * offering the remembered one. A kept mode grants nothing on its own and is validated again
+ * against the targets of whichever later turn uses it.
+ */
+export function getCodeApprovalPreservedFields(
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
+  approvalsEnabled = true,
+): Array<'codeApprovalMode'> {
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? ['codeApprovalMode'] : [];
 }
 
 function exactToolMatcher(toolNames: ReadonlySet<string>): string {
@@ -262,6 +378,11 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
   attachedAgentIds: ReadonlySet<string>,
   settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
   mode?: CodeApprovalMode,
+  /** Machines a parent may route an agent to per call; any of them that asks can pause. */
+  routePoliciesByAgentId: ReadonlyMap<
+    string,
+    readonly AttachedCodeEnvironmentPolicySettings[]
+  > = new Map(),
 ): ResolvedToolApprovalHook[] {
   const hook = createAttachedCodeEnvironmentPolicyHook(attachedAgentIds, settingsByAgentId, mode);
   const hooks: ResolvedToolApprovalHook[] = [];
@@ -269,20 +390,30 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
   const askCommandAgents = new Set<string>();
   const skillAuthoringAgents = new Set<string>();
   for (const agentId of attachedAgentIds) {
-    const policy = settingsByAgentId.get(agentId);
-    if (permissionDecision(policy, 'fileWrite', mode) === 'ask') askFileAgents.add(agentId);
-    if (permissionDecision(policy, 'commandExecution', mode) === 'ask')
-      askCommandAgents.add(agentId);
-    if (policy?.skillAuthoringAvailable === true) skillAuthoringAgents.add(agentId);
+    const routePolicies = routePoliciesByAgentId.get(agentId) ?? [];
+    const policies = routePolicies.length > 0 ? routePolicies : [settingsByAgentId.get(agentId)];
+    const asks = (category: PermissionCategory): boolean =>
+      policies.some((policy) => permissionDecision(policy, category, mode) === 'ask');
+    if (asks('fileWrite')) askFileAgents.add(agentId);
+    if (asks('commandExecution')) askCommandAgents.add(agentId);
+    if (policies.some((policy) => policy?.skillAuthoringAvailable === true)) {
+      skillAuthoringAgents.add(agentId);
+    }
   }
   if (askFileAgents.size > 0) {
-    hooks.push({ hook, matcher: exactToolMatcher(BYOM_FILE_WRITE_TOOLS), agentIds: askFileAgents });
+    hooks.push({
+      hook,
+      matcher: exactToolMatcher(BYOM_FILE_WRITE_TOOLS),
+      agentIds: askFileAgents,
+      toolNames: [...BYOM_FILE_WRITE_TOOLS],
+    });
   }
   if (askCommandAgents.size > 0) {
     hooks.push({
       hook,
       matcher: exactToolMatcher(BYOM_COMMAND_EXECUTION_TOOLS),
       agentIds: askCommandAgents,
+      toolNames: [...BYOM_COMMAND_EXECUTION_TOOLS],
     });
   }
   if (skillAuthoringAgents.size > 0) {
@@ -290,6 +421,7 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
       hook,
       matcher: exactToolMatcher(new Set([CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME])),
       agentIds: skillAuthoringAgents,
+      toolNames: [CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME],
     });
   }
   return hooks;

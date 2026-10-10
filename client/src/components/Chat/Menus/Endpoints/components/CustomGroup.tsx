@@ -25,10 +25,10 @@ export function CustomGroup({ groupName, specs, groupIcon }: CustomGroupProps) {
       key={`custom-group-${groupName}`}
       className="transition-opacity duration-200 ease-in-out"
       label={
-        <div className="group flex w-full flex-shrink cursor-pointer items-center justify-between rounded-xl px-1 py-1 text-sm">
+        <div className="group flex w-full shrink cursor-pointer items-center justify-between rounded-xl px-1 py-1 text-sm">
           <div className="flex items-center gap-2">
             {groupIcon && (
-              <div className="flex-shrink-0" aria-hidden="true">
+              <div className="shrink-0" aria-hidden="true">
                 <GroupIcon iconURL={groupIcon} groupName={groupName} />
               </div>
             )}

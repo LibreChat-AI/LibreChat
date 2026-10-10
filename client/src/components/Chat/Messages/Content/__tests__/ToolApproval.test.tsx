@@ -1,8 +1,14 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { Provider, createStore } from 'jotai';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
-import ApprovalProvider from '../ApprovalContext';
+import {
+  approvalPanelOpenFamily,
+  pendingApprovalActionFamily,
+} from '~/components/Chat/approval/state';
+import ApprovalProvider, { useApprovalContext } from '../ApprovalContext';
+import { ChatContext } from '~/Providers/ChatContext';
 import ToolApproval from '../ToolApproval';
 
 jest.mock('~/hooks', () => ({
@@ -12,6 +18,8 @@ jest.mock('~/hooks', () => ({
     }
     const map: Record<string, string> = {
       com_ui_approve: 'Approve',
+      com_ui_approve_always: 'Always allow',
+      com_ui_approve_always_hint: 'Runs without asking for this conversation',
       com_ui_reject: 'Reject',
       com_ui_edit: 'Edit',
       com_ui_respond: 'Respond',
@@ -20,6 +28,7 @@ jest.mock('~/hooks', () => ({
       com_ui_invalid_json: 'Invalid JSON',
       com_ui_reject_reason_placeholder: 'Reason',
       com_ui_tool_response_placeholder: 'Response',
+      com_ui_approval_review_in_composer: 'Review in composer',
     };
     return map[key] ?? key;
   },
@@ -48,7 +57,52 @@ const renderCards = (cards: React.ReactNode) =>
     </RecoilRoot>,
   );
 
+function DecisionProbe() {
+  const { getDecisions } = useApprovalContext();
+  return <output data-testid="decisions">{JSON.stringify(getDecisions('action-1'))}</output>;
+}
+
+const decisions = () => JSON.parse(screen.getByTestId('decisions').textContent ?? '[]');
+
 describe('ToolApproval', () => {
+  test('hides Always allow unless the server offered it', () => {
+    renderCards(<ToolApproval approval={approval()} toolCallId="call-1" args={{}} />);
+    expect(screen.queryByRole('button', { name: 'Always allow' })).not.toBeInTheDocument();
+  });
+
+  test('Always allow submits a session-scoped approve and is mutually exclusive with Approve', () => {
+    renderCards(
+      <>
+        <ToolApproval
+          approval={{ ...approval(), allow_always: true }}
+          toolCallId="call-1"
+          args={{}}
+        />
+        <DecisionProbe />
+      </>,
+    );
+    const always = screen.getByRole('button', { name: 'Always allow' });
+    const approve = screen.getByRole('button', { name: 'Approve' });
+    expect(always).toHaveAccessibleDescription('Runs without asking for this conversation');
+
+    fireEvent.click(always);
+    expect(always).toHaveAttribute('aria-pressed', 'true');
+    expect(approve).toHaveAttribute('aria-pressed', 'false');
+    expect(decisions()).toEqual([
+      { tool_call_id: 'call-1', decision: 'approve', scope: 'session' },
+    ]);
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+
+    fireEvent.click(approve);
+    expect(always).toHaveAttribute('aria-pressed', 'false');
+    expect(approve).toHaveAttribute('aria-pressed', 'true');
+    expect(decisions()).toEqual([{ tool_call_id: 'call-1', decision: 'approve' }]);
+
+    fireEvent.click(always);
+    fireEvent.click(always);
+    expect(decisions()).toEqual([]);
+  });
+
   test('enables Submit immediately after Approve is the first decision (#14390)', () => {
     renderCards(<ToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />);
 
@@ -107,16 +161,15 @@ describe('ToolApproval', () => {
     }
   });
 
-  test('invalid edit JSON replaces the field border rather than doubling it', () => {
+  test('invalid edit JSON marks the field invalid and names the error', () => {
     renderCards(<ToolApproval approval={approval(['edit'])} toolCallId="call-1" args={{ a: 1 }} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     const field = screen.getByRole('textbox', { name: 'Edit' });
     fireEvent.change(field, { target: { value: '{' } });
 
-    expect(field).toHaveClass('border-red-500');
-    expect(field).not.toHaveClass('border-border-xheavy');
-    expect(screen.getByText('Invalid JSON')).toBeInTheDocument();
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription('Invalid JSON');
   });
 
   test('multiple paused calls share one Submit that requires every decision', () => {
@@ -146,7 +199,7 @@ describe('ToolApproval', () => {
           approval={approval()}
           toolCallId="call-1"
           args={{ a: 1 }}
-          showSubmit={false}
+          surface="composer"
         />
       </>,
     );
@@ -186,5 +239,97 @@ describe('ToolApproval', () => {
 
     expect(screen.getByRole('button', { name: 'Approve' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+  });
+
+  describe('while the composer review panel presents the pending action', () => {
+    const conversationId = 'convo-1';
+    const pendingAction: Agents.PendingAction = {
+      actionId: 'action-1',
+      streamId: 'stream-1',
+      conversationId,
+      createdAt: 1000,
+      payload: {
+        type: 'tool_approval',
+        action_requests: [{ name: 'probe', tool_call_id: 'call-1', arguments: { a: 1 } }],
+        review_configs: [
+          {
+            action_name: 'probe',
+            tool_call_id: 'call-1',
+            allowed_decisions: ['approve', 'reject'],
+          },
+        ],
+      },
+    };
+
+    const renderWithComposer = (open: boolean, extra?: React.ReactNode) => {
+      const store = createStore();
+      store.set(pendingApprovalActionFamily(conversationId), pendingAction);
+      store.set(approvalPanelOpenFamily(conversationId), open);
+      render(
+        <RecoilRoot>
+          <Provider store={store}>
+            <ChatContext.Provider value={{ conversation: { conversationId } } as never}>
+              <ApprovalProvider pendingAction={pendingAction}>
+                <div data-testid="thread">
+                  <ToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />
+                </div>
+                <div data-testid="composer">
+                  <ToolApproval
+                    approval={approval()}
+                    toolCallId="call-1"
+                    args={{ a: 1 }}
+                    surface="composer"
+                  />
+                </div>
+                {extra}
+              </ApprovalProvider>
+            </ChatContext.Provider>
+          </Provider>
+        </RecoilRoot>,
+      );
+      return store;
+    };
+
+    test('the thread card is a record with no decisions or Submit while the panel is open', () => {
+      renderWithComposer(true);
+      const thread = screen.getByTestId('thread');
+
+      expect(thread).toHaveTextContent('Review in composer');
+      expect(thread.querySelectorAll('button')).toHaveLength(0);
+      expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1);
+    });
+
+    test('collapsing the panel hands the decisions and Submit back to the thread card', () => {
+      const store = renderWithComposer(true);
+
+      act(() => store.set(approvalPanelOpenFamily(conversationId), false));
+
+      const thread = screen.getByTestId('thread');
+      expect(thread).not.toHaveTextContent('Review in composer');
+      fireEvent.click(within(thread).getByRole('button', { name: 'Approve' }));
+      expect(within(thread).getByRole('button', { name: 'Submit' })).toBeEnabled();
+      expect(
+        within(screen.getByTestId('composer')).queryByRole('button', { name: 'Submit' }),
+      ).not.toBeInTheDocument();
+    });
+
+    test('a thread card for a different action keeps its controls', () => {
+      renderWithComposer(
+        true,
+        <div data-testid="other-action">
+          <ToolApproval
+            approval={{ actionId: 'action-2', allowed_decisions: ['approve'] }}
+            toolCallId="call-9"
+            args={{}}
+          />
+        </div>,
+      );
+
+      const other = screen.getByTestId('other-action');
+      expect(other).not.toHaveTextContent('Review in composer');
+      expect(within(other).getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+      expect(screen.getByTestId('thread')).toHaveTextContent('Review in composer');
+    });
   });
 });

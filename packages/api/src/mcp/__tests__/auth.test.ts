@@ -173,6 +173,26 @@ describe('getUserMCPAuthMap', () => {
       expect(result).toEqual({});
     });
 
+    it('propagates lookup failures when throwOnError is set, and asks the map to throw too', async () => {
+      const toolInstances = [createMockTool('test_mcp_Server1', 'Server1')];
+      const dbError = new Error('Database connection failed');
+
+      mockGetPluginAuthMap.mockRejectedValue(dbError);
+
+      await expect(
+        getUserMCPAuthMap({
+          userId: 'user123',
+          toolInstances,
+          findPluginAuthsByKeys: mockFindPluginAuthsByKeys,
+          throwOnError: true,
+        }),
+      ).rejects.toThrow('Database connection failed');
+
+      expect(mockGetPluginAuthMap).toHaveBeenCalledWith(
+        expect.objectContaining({ throwError: true }),
+      );
+    });
+
     it('should handle non-Error exceptions gracefully', async () => {
       const toolInstances = [createMockTool('test_mcp_Server1', 'Server1')];
 

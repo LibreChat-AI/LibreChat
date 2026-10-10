@@ -28,13 +28,13 @@ const pressedOptions: Array<{
   name: string;
   overrides: Partial<React.ComponentProps<typeof MCPToolItem>>;
   label: string;
-  border: string;
+  color: string;
 }> = [
   {
     name: 'deferred',
     overrides: { deferredToolsEnabled: true, isDeferred: true },
     label: 'com_ui_mcp_defer_loading',
-    border: 'border-series-4',
+    color: 'text-series-4',
   },
   {
     name: 'programmatic',
@@ -44,19 +44,19 @@ const pressedOptions: Array<{
       isProgrammatic: true,
     },
     label: 'com_ui_mcp_programmatic',
-    border: 'border-series-6',
+    color: 'text-series-6',
   },
   {
     name: 'background',
     overrides: { backgroundToolsEnabled: true, isBackground: true },
     label: 'com_ui_mcp_background',
-    border: 'border-series-1',
+    color: 'text-series-1',
   },
   {
     name: 'intent',
     overrides: { toolIntentsEnabled: true, isIntent: true },
     label: 'com_ui_mcp_intent',
-    border: 'border-series-3',
+    color: 'text-series-3',
   },
 ];
 
@@ -130,20 +130,23 @@ describe('MCPToolItem', () => {
     expect(props.onToggleDefer).toHaveBeenCalledTimes(1);
   });
 
-  test.each(pressedOptions)('$name option uses a semantic pressed-state border', (option) => {
-    setup(option.overrides);
-    const button = screen.getByRole('button', { name: option.label });
+  test.each(pressedOptions)(
+    '$name option uses its semantic series border and color when pressed',
+    (option) => {
+      setup(option.overrides);
+      const button = screen.getByRole('button', { name: option.label });
 
-    expect(button).toHaveClass(
-      option.border,
-      'bg-surface-active',
-      'text-text-primary',
-      'hover:bg-surface-active-alt',
-    );
-    expect(button.querySelector('svg')?.className.baseVal).not.toMatch(
-      /text-(?:amber|violet|sky|teal)-/,
-    );
-  });
+      expect(button).toHaveClass(
+        option.color,
+        `hover:${option.color}`,
+        option.color.replace('text-', 'border-'),
+      );
+      expect(button).not.toHaveClass('bg-surface-active', 'text-text-primary');
+      expect(button.querySelector('svg')?.className.baseVal).not.toMatch(
+        /text-(?:amber|violet|sky|teal)-/,
+      );
+    },
+  );
 
   test('defer button is absent when deferred tools are disabled', () => {
     setup();

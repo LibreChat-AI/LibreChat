@@ -41,16 +41,16 @@ export default function DeleteKeyDialog({
       <OGDialogTemplate
         showCloseButton={false}
         title={localize('com_ui_delete_api_key')}
-        className="max-w-[450px]"
+        className="max-w-[28.125rem]"
         main={
           <div className="space-y-3 text-left">
-            <p className="text-sm text-text-primary">
+            <p className="text-text-primary text-sm">
               {localize('com_ui_api_key_delete_confirm', { 0: name })}
             </p>
-            <div className="flex items-center rounded-lg border border-border-light bg-surface-secondary px-3 py-2">
-              <code className="break-all font-mono text-xs text-text-secondary">{keyPrefix}…</code>
+            <div className="border-border-light bg-surface-secondary flex items-center rounded-lg border px-3 py-2">
+              <code className="text-text-secondary font-mono text-xs break-all">{keyPrefix}…</code>
             </div>
-            <p className="text-sm text-text-secondary">
+            <p className="text-text-secondary text-sm">
               {localize('com_ui_api_key_delete_warning')}
             </p>
           </div>

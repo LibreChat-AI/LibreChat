@@ -1,5 +1,6 @@
 import { FileSources } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import type { TThemeDefinitionConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   resolveSharedLinkConfig,
@@ -61,6 +62,37 @@ describe('shared-link config resolution', () => {
       expect(getAppConfig).toHaveBeenCalledWith({ baseOnly: true });
     },
   );
+});
+
+describe('fail-closed shared-link config', () => {
+  const overridesUnavailable = new Error('overrides unavailable');
+  /** Mirrors getAppConfig: a failed override lookup substitutes the base config unless failClosed. */
+  const getAppConfig = jest.fn(async (options?: { failClosed?: boolean }) => {
+    if (options?.failClosed) {
+      throw overridesUnavailable;
+    }
+    return appConfig({ interfaceConfig: { theme: 'librechat' } });
+  });
+
+  it('rejects instead of serving the base config for a tenant link when failClosed', async () => {
+    const middleware = createSharedLinkConfigMiddleware({ getAppConfig, failClosed: true });
+    const req = Object.assign({} as Parameters<typeof middleware>[0], {
+      shareTenantId: 'tenant-owner',
+    });
+    const next = jest.fn();
+
+    await middleware(req, {} as Parameters<typeof middleware>[1], next);
+
+    expect(next).toHaveBeenCalledWith(overridesUnavailable);
+    expect(req.config).toBeUndefined();
+  });
+
+  it('keeps the base-config fallback for the default middleware', async () => {
+    const config = await resolveSharedLinkConfig(getAppConfig, 'tenant-owner');
+
+    expect(getAppConfig).toHaveBeenLastCalledWith({ tenantId: 'tenant-owner' });
+    expect(config.interfaceConfig?.theme).toBe('librechat');
+  });
 });
 
 describe('isFileSnapshotEnabled', () => {
@@ -148,6 +180,46 @@ describe('buildSharedLinkStartupPayload', () => {
         termsOfService: { externalUrl: 'https://example.com/tos' },
       },
     });
+  });
+
+  it.each<[string, TThemeDefinitionConfig | string]>([
+    ['a bundled name', 'clickhouse'],
+    [
+      'an inline definition',
+      {
+        version: 1,
+        name: 'acme',
+        modes: { light: { colors: { 'rgb-surface-primary': '1 2 3' } } },
+      },
+    ],
+  ])('carries the link tenant deployment theme as %s', (_label, theme) => {
+    const payload = buildSharedLinkStartupPayload(
+      appConfig({ interfaceConfig: { theme, modelSelect: true } }),
+      {},
+    );
+
+    expect(payload).toEqual({ appTitle: 'LibreChat', interface: { theme } });
+  });
+
+  it('omits a theme that does not match the deployment theme schema', () => {
+    const payload = buildSharedLinkStartupPayload(
+      appConfig({ interfaceConfig: { theme: { name: 'broken', modes: {} } } }),
+      {},
+    );
+
+    expect(payload).toEqual({ appTitle: 'LibreChat' });
+  });
+
+  it('serves the share tenant theme rather than the viewer tenant theme', async () => {
+    const configs: Record<string, AppConfig> = {
+      'tenant-owner': appConfig({ interfaceConfig: { theme: 'clickhouse' } }),
+      'tenant-viewer': appConfig({ interfaceConfig: { theme: 'librechat' } }),
+    };
+    const getAppConfig = jest.fn(async () => configs[getTenantId() ?? ''] ?? appConfig());
+
+    const config = await resolveSharedLinkConfig(getAppConfig, 'tenant-owner');
+
+    expect(buildSharedLinkStartupPayload(config, {}).interface).toEqual({ theme: 'clickhouse' });
   });
 
   it('defaults the app title and omits unrelated interface config', () => {

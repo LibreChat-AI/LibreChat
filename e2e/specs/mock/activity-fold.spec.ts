@@ -29,13 +29,14 @@ async function setPhaseLabel(request: APIRequestContext) {
 }
 
 async function selectEphemeralMCP(page: Page) {
-  await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-  const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(MCP_SERVER_TITLE) });
-  await expect(serverItem).toBeVisible();
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+  const serverItem = palette.getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) });
+  await expect(serverItem).toBeVisible({ timeout: 20_000 });
   await serverItem.click();
-  await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+  await expect(serverItem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: new RegExp(MCP_SERVER_TITLE) })).toBeVisible();
+  await expect(page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true })).toBeVisible();
 }
 
 function collectPageProblems(page: Page): string[] {
@@ -138,6 +139,133 @@ test.describe('activity fold', () => {
     await expect(panel).toContainText(/error/i);
     await shot(page, 'revealed-by-pill');
 
+    /** Each open fold's rail lights up under the pointer, swaps ITS header's
+     *  glyph for a collapse knob, and collapses only that fold. */
+    const knobs = messagesView(page).getByTestId('fold-rail-knob');
+    const phaseRail = messagesView(page)
+      .getByTestId('activity-phase-panel')
+      .locator('> div > [data-testid="fold-rail"]');
+    const groupPanel = messagesView(page)
+      .getByTestId('tool-call-group-panel')
+      .filter({ has: page.getByTestId('tool-call').filter({ hasText: /^Failed:/ }) });
+    const groupRail = groupPanel.locator('> div > [data-testid="fold-rail"]');
+    const groupHeader = groupPanel.locator('xpath=preceding-sibling::div[1]').getByRole('button');
+    const lineColor = (railLocator: typeof groupRail) =>
+      railLocator
+        .locator('span')
+        .first()
+        .evaluate((line) => getComputedStyle(line).backgroundColor);
+    const restingLine = await lineColor(groupRail);
+
+    /** A row two folds deep lights both rails down to it: the group's turns into
+     *  the row's glyph, the phase's runs on past the group's header. */
+    const failedCall = groupPanel.getByTestId('tool-call').filter({ hasText: /^Failed:/ });
+    const litLength = (railLocator: typeof groupRail) =>
+      railLocator.evaluate((rail) => parseFloat(rail.style.getPropertyValue('--fold-lit')));
+    await failedCall.scrollIntoViewIfNeeded();
+    await failedCall.hover();
+    await expect(groupRail).toHaveAttribute('data-fold-lit', 'end');
+    await expect(phaseRail).toHaveAttribute('data-fold-lit', 'through');
+    expect(await litLength(phaseRail)).toBeGreaterThan(await litLength(groupRail));
+    const groupPath = groupRail.getByTestId('fold-rail-path');
+    await expect(groupPath).toHaveCSS('opacity', '1');
+    const [elbow, glyph] = await Promise.all([
+      groupPath.boundingBox(),
+      failedCall.locator('.fold-glyph').first().boundingBox(),
+    ]);
+    expect(elbow).not.toBeNull();
+    expect(glyph).not.toBeNull();
+    expect(Math.abs(elbow!.y + elbow!.height - (glyph!.y + glyph!.height / 2))).toBeLessThan(2);
+    await shot(page, 'lit-path');
+
+    await failedCall.evaluate((row) => {
+      const { left, top, width, height } = row.getBoundingClientRect();
+      const pointer = {
+        bubbles: true,
+        pointerType: 'mouse',
+        pointerId: 1,
+        isPrimary: true,
+        clientX: left + width / 2,
+        clientY: top + height / 2,
+      };
+      row.dispatchEvent(new PointerEvent('pointermove', pointer));
+      row.dispatchEvent(new PointerEvent('pointerdown', { ...pointer, buttons: 1 }));
+      row.dispatchEvent(new PointerEvent('pointerup', pointer));
+    });
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+    await failedCall.scrollIntoViewIfNeeded();
+    await failedCall.hover();
+    await expect(groupRail).toHaveAttribute('data-fold-lit', 'end');
+    await groupPanel.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingTop = '12px';
+    });
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+    await groupPanel.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.removeProperty('padding-top');
+    });
+    await page.mouse.move(0, 0);
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+
+    /** An earlier message can shift this fold without resizing it or scrolling. */
+    const transcript = messagesView(page).getByTestId('screenshot-target');
+    const previousAnchor = await transcript.evaluate((content) => {
+      const spacer = document.createElement('div');
+      spacer.id = 'fold-layout-predecessor';
+      spacer.style.height = '0px';
+      content.prepend(spacer);
+      const scroll = content.closest<HTMLElement>('.scrollbar-gutter-stable')!;
+      const anchor = scroll.style.overflowAnchor;
+      scroll.style.overflowAnchor = 'none';
+      return anchor;
+    });
+    await failedCall.scrollIntoViewIfNeeded();
+    await failedCall.hover();
+    await expect(groupRail).toHaveAttribute('data-fold-lit', 'end');
+    const shift = await failedCall.evaluate((row) => {
+      const fold = row.closest<HTMLElement>('[data-testid="activity-phase-card"]')!;
+      const message = row.closest<HTMLElement>('.message-render')!;
+      const scroll = row.closest<HTMLElement>('.scrollbar-gutter-stable')!;
+      const measure = () => ({
+        top: fold.getBoundingClientRect().top,
+        foldHeight: fold.getBoundingClientRect().height,
+        messageHeight: message.getBoundingClientRect().height,
+        scrollTop: scroll.scrollTop,
+      });
+      const before = measure();
+      document.getElementById('fold-layout-predecessor')!.style.height = '32px';
+      return { before, after: measure() };
+    });
+    expect(shift.after.top - shift.before.top).toBeCloseTo(32);
+    expect(shift.after.foldHeight).toBe(shift.before.foldHeight);
+    expect(shift.after.messageHeight).toBe(shift.before.messageHeight);
+    expect(shift.after.scrollTop).toBe(shift.before.scrollTop);
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+    await transcript.evaluate((content, anchor) => {
+      content.querySelector('#fold-layout-predecessor')!.remove();
+      content.closest<HTMLElement>('.scrollbar-gutter-stable')!.style.overflowAnchor = anchor;
+    }, previousAnchor);
+    await expect(knobs).toHaveCount(0);
+    await groupRail.hover();
+    await expect(knobs).toHaveCount(1);
+    await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
+    await expect.poll(() => lineColor(groupRail)).not.toBe(restingLine);
+    await shot(page, 'group-rail-hover');
+    await phaseRail.hover();
+    await expect(knobs).toHaveCount(1);
+    await expect(header.getByTestId('fold-rail-knob')).toBeVisible();
+    await shot(page, 'phase-rail-hover');
+    await groupRail.click();
+    await expect(groupHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await phaseRail.click();
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(knobs).toHaveCount(0);
+    await shot(page, 'rail-collapsed');
+
     /** Survives a reload from the persisted message. */
     await page.reload();
     const reloaded = messagesView(page).getByRole('button', { name: PHASE_LABEL, exact: true });
@@ -184,6 +312,60 @@ test.describe('activity fold', () => {
     await groupHeader.click();
     await expect(messagesView(page).locator('[data-testid="tool-call"]').first()).toBeVisible();
     await shot(page, 'clean-open-group');
+
+    const phaseRail = messagesView(page)
+      .getByTestId('activity-phase-panel')
+      .locator('> div > [data-testid="fold-rail"]');
+    const groupRail = group.locator('> div > [data-testid="fold-rail"]');
+    const phaseLabel = header.getByText(PHASE_LABEL, { exact: true });
+    const beforeHover = await phaseLabel.boundingBox();
+    await phaseRail.hover();
+    await expect(header.getByTestId('fold-rail-knob')).toBeVisible();
+    expect(await phaseLabel.boundingBox()).toEqual(beforeHover);
+
+    const groupLabel = groupHeader.locator('[role="status"]');
+    const beforeGroupHover = await groupLabel.boundingBox();
+    await groupRail.hover();
+    await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
+    expect(await groupLabel.boundingBox()).toEqual(beforeGroupHover);
+
+    /** Keep room below the historical fold so collapse cannot clamp away an overlap. */
+    const phaseCard = messagesView(page).getByTestId('activity-phase-card');
+    await phaseCard.evaluate((card) => {
+      const spacer = document.createElement('div');
+      spacer.style.height = '1200px';
+      card.after(spacer);
+    });
+    await group.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingBottom = '1200px';
+    });
+    await groupRail.click({ position: { x: 12, y: 900 } });
+    await expect(groupHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await expect
+      .poll(async () => {
+        const phaseBox = await header.boundingBox();
+        const groupBox = await groupHeader.boundingBox();
+        return phaseBox != null && groupBox != null && groupBox.y >= phaseBox.y + phaseBox.height;
+      })
+      .toBe(true);
+    const isPointerAccessible = (button: typeof header) =>
+      button.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(box.left + 12, box.top + box.height / 2));
+      });
+    await expect(groupHeader).toBeInViewport();
+    await expect.poll(() => isPointerAccessible(groupHeader)).toBe(true);
+    await shot(page, 'nested-rail-revealed');
+
+    await phaseRail.locator('..').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingBottom = '1200px';
+    });
+    await phaseRail.click({ position: { x: 12, y: 900 } });
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toBeInViewport();
+    await expect.poll(() => isPointerAccessible(header)).toBe(true);
+    await shot(page, 'phase-rail-revealed');
     expect(problems.filter((line) => !line.includes('favicon'))).toEqual([]);
   });
 });

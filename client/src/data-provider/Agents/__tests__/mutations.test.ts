@@ -177,6 +177,45 @@ describe('useUpdateAgentMutation', () => {
       isEditable: false,
     });
   });
+
+  it('writes the server response straight into the expanded cache, redaction included', async () => {
+    /** Every full-agent response is now redacted server-side (PATCH, duplicate, revert,
+     *  avatar, versions, actions), so the client no longer guards the cache against a
+     *  write response that carries an unredacted link: it trusts and stores whatever
+     *  `instructionsPrompt` the server returns, restricted stub or real link alike. */
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const agentId = 'agent_relinked';
+    const expandedKey = [QueryKeys.agent, agentId, 'expanded'];
+    const stub = { source: 'native' as const, restricted: true as const };
+    queryClient.setQueryData<Agent>(expandedKey, {
+      ...createAgent(agentId),
+      instructionsPrompt: stub,
+    });
+
+    const newLink = {
+      source: 'native' as const,
+      groupId: 'group_2',
+      selection: { type: 'production' as const },
+    };
+    const response = createAgent(agentId);
+    response.instructionsPrompt = newLink;
+    jest.mocked(dataService.updateAgent).mockResolvedValue(response);
+
+    const { result } = renderHook(() => useUpdateAgentMutation(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        agent_id: agentId,
+        data: { instructionsPrompt: newLink },
+      });
+    });
+
+    expect(queryClient.getQueryData<Agent>(expandedKey)?.instructionsPrompt).toEqual(newLink);
+  });
 });
 
 describe('useDuplicateAgentMutation', () => {

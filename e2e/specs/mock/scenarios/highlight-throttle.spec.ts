@@ -50,10 +50,14 @@ async function openCodePane(page: Parameters<typeof sendMessage>[0]) {
  * test, because that is the only time the input keeps changing.
  */
 async function expectHighlightedCode(page: Parameters<typeof sendMessage>[0]) {
-  await openCodePane(page);
   const code = highlightedCode(page);
-  await expect(code).toBeVisible({ timeout: 30000 });
-  await expect.poll(() => code.locator('span').count(), { timeout: 30000 }).toBeGreaterThan(0);
+  /** The saved card can replace the live card after opening it. Reopen that
+   *  replacement before checking tokens; collapsed cards deliberately stay raw. */
+  await expect(async () => {
+    await openCodePane(page);
+    await expect(code).toBeVisible();
+    expect(await code.locator('span').count()).toBeGreaterThan(0);
+  }).toPass({ timeout: 30000 });
   return code;
 }
 

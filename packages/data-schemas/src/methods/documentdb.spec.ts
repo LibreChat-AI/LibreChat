@@ -403,6 +403,32 @@ function findPipelineUpdates(sourceFile: ts.SourceFile): string[] {
   return offenses;
 }
 
+/** Reports `$lookup` stages using the correlated `let`/`pipeline` form, which
+ * Amazon DocumentDB 5.0 rejects. The marketplace author pipeline is checked
+ * separately because tenant/probe.ts deliberately exercises that unsupported
+ * form to verify its compatibility probe. */
+function findCorrelatedLookups(sourceFile: ts.SourceFile): string[] {
+  const objects = collectObjectValuedNames(sourceFile);
+  const offenses: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node) && propertyName(node) === '$lookup') {
+      const initializer = unwrapExpression(node.initializer);
+      const lookup = ts.isIdentifier(initializer) ? objects.get(initializer.text) : initializer;
+      if (lookup != null && ts.isObjectLiteralExpression(lookup)) {
+        for (const property of lookup.properties) {
+          const name = propertyName(property);
+          if (name === 'let' || name === 'pipeline') {
+            offenses.push(offenseAt(sourceFile, property, `$lookup.${name}`));
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return offenses;
+}
+
 /** Reports forbidden operator tokens in string literals and property names,
  * ignoring prose — the rewrites explain themselves by naming the construct —
  * and type members, which never reach the engine (Mongoose documents declare
@@ -855,6 +881,28 @@ describe('Amazon DocumentDB compatibility', () => {
 
   it('builds every index through the retrying helpers', () => {
     expect(parsedSources.flatMap(findRawIndexBuilds)).toEqual([]);
+  });
+
+  it('keeps marketplace author lookups in the DocumentDB-compatible form', () => {
+    const agentSource = parsedSources.find(
+      (source) => source.fileName === 'packages/data-schemas/src/methods/agent.ts',
+    );
+    expect(agentSource).toBeDefined();
+    expect(agentSource ? findCorrelatedLookups(agentSource) : []).toEqual([]);
+  });
+
+  it('flags a correlated $lookup let/pipeline form', () => {
+    const incompatible = parse(
+      'fixture.ts',
+      `Model.aggregate([{ $lookup: { from: 'users', let: { id: '$_id' }, pipeline: [], as: 'owner' } }]);`,
+    );
+    const classic = parse(
+      'fixture.ts',
+      `Model.aggregate([{ $lookup: { from: 'users', localField: 'ownerId', foreignField: '_id', as: 'owner' } }]);`,
+    );
+
+    expect(findCorrelatedLookups(incompatible)).not.toEqual([]);
+    expect(findCorrelatedLookups(classic)).toEqual([]);
   });
 
   /** A guard that cannot fail protects nothing, so every shape the detectors

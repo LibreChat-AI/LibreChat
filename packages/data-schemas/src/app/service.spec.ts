@@ -287,6 +287,62 @@ describe('AppService assistants config', () => {
   });
 });
 
+describe('AppService MCP App sandbox configuration', () => {
+  it('preserves deployment-owned MCP App sandbox limits', async () => {
+    const result = await AppService({
+      config: {
+        mcpAppSandbox: {
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+          maxSourcesPerDirective: 64,
+          maxSerializedLength: 8192,
+          maxAdmissionRequestsPerMinute: 480,
+        },
+      } as DeepPartial<TCustomConfig>,
+    });
+
+    expect(result.mcpAppSandbox).toEqual({
+      url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+      maxSourcesPerDirective: 64,
+      maxSerializedLength: 8192,
+      maxAdmissionRequestsPerMinute: 480,
+    });
+  });
+});
+
+describe('AppService conversation list limits', () => {
+  it('carries the configured filter limits onto the app config', async () => {
+    const result = await AppService({
+      config: {
+        conversationList: { maxEndpointFilters: 200, maxEndpointNameLength: 256 },
+      } as DeepPartial<TCustomConfig>,
+    });
+
+    expect(result.conversationList).toEqual({
+      maxEndpointFilters: 200,
+      maxEndpointNameLength: 256,
+    });
+  });
+
+  it('fills the schema defaults when the deployment configures none', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+  });
+
+  it('keeps the defaults when the configured block is invalid', async () => {
+    const result = await AppService({
+      config: { conversationList: { maxEndpointFilters: 0 } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+  });
+
+  it('keeps the default for a limit the deployment leaves out', async () => {
+    const result = await AppService({
+      config: { conversationList: { maxEndpointFilters: 10 } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 10, maxEndpointNameLength: 128 });
+  });
+});
+
 describe('AppService memory capability', () => {
   it('strips the memory capability when no memory config is present', async () => {
     const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });

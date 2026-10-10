@@ -17,7 +17,7 @@ export default function ClockFormatSelector() {
   const labelId = 'clock-format-selector-label';
 
   return (
-    <div className="flex w-full items-center justify-between">
+    <div className="flex w-full flex-wrap items-center justify-between gap-2">
       <div id={labelId}>{localize('com_nav_clock_format')}</div>
       <Dropdown
         value={clockFormat}

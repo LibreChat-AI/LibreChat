@@ -187,11 +187,11 @@ function Avatar() {
         }
       }}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{localize('com_nav_profile_picture')}</span>
         <OGDialogTrigger asChild>
           <Button variant="outline">
-            <FileImage className="mr-2 flex w-[22px] items-center" aria-hidden="true" />
+            <FileImage className="mr-2 flex w-[1.375rem] items-center" aria-hidden="true" />
             <span>{localize('com_nav_change_picture')}</span>
           </Button>
         </OGDialogTrigger>
@@ -199,17 +199,17 @@ function Avatar() {
 
       <OGDialogContent className="w-11/12 max-w-md">
         <OGDialogHeader>
-          <OGDialogTitle className="text-lg font-medium leading-6 text-text-primary">
+          <OGDialogTitle className="text-lg leading-6 font-medium">
             {image != null ? localize('com_ui_preview') : localize('com_ui_upload_image')}
           </OGDialogTitle>
         </OGDialogHeader>
-        <div className="flex flex-col items-center justify-center p-2">
+        <div className="flex min-w-0 flex-col items-center justify-center p-2">
           {image != null ? (
             <>
               <div
                 className={cn(
-                  'relative overflow-hidden rounded-full ring-4 ring-border-light transition-all',
-                  isDragging && 'cursor-move ring-ring-primary',
+                  'ring-border-light relative w-full max-w-[17.5rem] overflow-hidden rounded-full ring-4 transition-all',
+                  isDragging && 'ring-ring-primary cursor-move',
                 )}
                 onMouseDown={() => setIsDragging(true)}
                 onMouseUp={() => setIsDragging(false)}
@@ -227,12 +227,16 @@ function Avatar() {
                   rotate={rotation}
                   position={position}
                   onPositionChange={handlePositionChange}
-                  className="cursor-move"
+                  /* The width/height props stay at 280 so the exported avatar keeps its
+                     resolution; only the rendered canvas yields to the dialog, which is
+                     narrower than 17.5rem once the scale or the reader's font grows. The
+                     editor writes its size inline, so the overrides are important. */
+                  className="aspect-square h-auto! w-full! cursor-move"
                 />
                 {!isDragging && (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition-opacity hover:opacity-100">
-                    <div className="rounded-full bg-black/50 p-2">
-                      <Move className="h-6 w-6 text-white" aria-hidden="true" />
+                    <div className="bg-surface-media-overlay/50 rounded-full p-2">
+                      <Move className="text-text-on-media h-6 w-6" aria-hidden="true" />
                     </div>
                   </div>
                 )}
@@ -245,7 +249,7 @@ function Avatar() {
                     <Label htmlFor="zoom-slider" className="text-sm font-medium">
                       {localize('com_ui_zoom')}
                     </Label>
-                    <span className="text-sm text-text-secondary">{Math.round(scale * 100)}%</span>
+                    <span className="text-text-secondary text-sm">{Math.round(scale * 100)}%</span>
                   </div>
                   <div className="flex items-center space-x-3">
                     <Button
@@ -283,7 +287,7 @@ function Avatar() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-center space-x-3">
+                <div className="flex flex-wrap items-center justify-center gap-3">
                   <Button
                     type="button"
                     variant="outline"
@@ -307,13 +311,13 @@ function Avatar() {
                 </div>
 
                 {/* Helper Text */}
-                <p className="text-center text-xs text-text-tertiary">
+                <p className="text-text-tertiary text-center text-xs">
                   {localize('com_ui_editor_instructions')}
                 </p>
               </div>
 
               {/* Action Buttons */}
-              <div className="mt-6 flex w-full space-x-3">
+              <div className="mt-6 flex w-full flex-wrap gap-3">
                 <Button
                   type="button"
                   variant="outline"
@@ -326,7 +330,7 @@ function Avatar() {
                 <Button
                   variant="submit"
                   type="button"
-                  className={cn('w-full', isUploading ? 'cursor-not-allowed opacity-90' : '')}
+                  className={cn('flex-1', isUploading ? 'cursor-not-allowed opacity-90' : '')}
                   onClick={handleUpload}
                   disabled={isUploading}
                 >
@@ -341,15 +345,15 @@ function Avatar() {
             </>
           ) : (
             <div
-              className="flex h-72 w-full flex-col items-center justify-center rounded-lg border-2 border-dashed border-border-medium bg-transparent transition-colors hover:border-border-heavy"
+              className="border-border-medium hover:border-border-heavy flex h-72 w-full flex-col items-center justify-center rounded-lg border-2 border-dashed bg-transparent transition-colors"
               onDrop={handleDrop}
               onDragOver={handleDragOver}
             >
-              <FileImage className="mb-4 size-16 text-text-tertiary" aria-hidden="true" />
-              <p className="mb-2 text-center text-sm font-medium text-text-primary">
+              <FileImage className="text-text-tertiary mb-4 size-16" aria-hidden="true" />
+              <p className="text-text-primary mb-2 text-center text-sm font-medium">
                 {localize('com_ui_avatar_drop_image')}
               </p>
-              <p className="mb-4 text-center text-xs text-text-secondary">
+              <p className="text-text-secondary mb-4 text-center text-xs">
                 {localize('com_ui_avatar_file_requirements', {
                   0: avatarSizeLimitMB,
                 })}

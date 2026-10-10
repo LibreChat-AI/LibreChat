@@ -8,6 +8,19 @@ const mockRetryLimiter = jest.fn((_req, _res, next) => next());
 const mockRetryProbeLimiter = jest.fn((_req, _res, next) => next());
 const mockExemptAgentTrigger = jest.fn(() => false);
 const mockExemptSchedule = jest.fn(() => false);
+const mockIngress = jest.fn((req, _res, next) => {
+  if (req.config?.filters?.messages?.pii?.action === 'redact') {
+    req.body.text = '[EMAIL_1]';
+  }
+  next();
+});
+const mockCheckBan = jest.fn((_req, _res, next) => next());
+const mockConfigMiddleware = jest.fn((req, _res, next) => {
+  if (req.headers['x-test-private'] === 'yes') {
+    req.config = { filters: { messages: { pii: { action: 'redact' } } } };
+  }
+  next();
+});
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -35,18 +48,28 @@ jest.mock('@librechat/api', () => ({
   exemptAgentTriggerFromIpLimiter: (...args) => mockExemptAgentTrigger(...args),
   exemptFromUserLimiter: (...args) => mockExemptSchedule(...args),
   createMessageFilterPii: jest.fn(() => (_req, _res, next) => next()),
+  createPrivateTextIngress: jest.fn(
+    () =>
+      (...args) =>
+        mockIngress(...args),
+  ),
+  isPreDenialTextSubmission: (req) => req.method === 'POST' && typeof req.body?.text === 'string',
+  isPrivateTextChatSubmission: (req) =>
+    req.method === 'POST' &&
+    req.originalUrl === '/agents/chat' &&
+    typeof req.body?.text === 'string',
 }));
 
 jest.mock('~/server/middleware', () => ({
   uaParser: (_req, _res, next) => next(),
-  checkBan: (_req, _res, next) => next(),
+  checkBan: (...args) => mockCheckBan(...args),
   requireJwtAuth: (req, _res, next) => {
     req.user = { id: 'user-1' };
     next();
   },
   moderateText: (_req, _res, next) => next(),
   messageIpLimiter: (...args) => mockIpLimiter(...args),
-  configMiddleware: (_req, _res, next) => next(),
+  configMiddleware: (...args) => mockConfigMiddleware(...args),
   messageUserLimiter: (...args) => mockUserLimiter(...args),
 }));
 
@@ -101,6 +124,74 @@ describe('start-generation idempotency before message limiters', () => {
     jest.clearAllMocks();
     mockExemptAgentTrigger.mockReturnValue(false);
     mockExemptSchedule.mockReturnValue(false);
+  });
+
+  it('filters before a ban denial, IP limit, and user limit without charging config twice', async () => {
+    mockHasGenerationClaim.mockResolvedValue(false);
+    const payload = { text: 'alice@example.com', clientRequestId: 'request-privacy' };
+    mockCheckBan.mockImplementationOnce((req, res) => {
+      expect(req.body.text).toBe('[EMAIL_1]');
+      res.status(403).json({ banned: true });
+    });
+    const banned = await request(app)
+      .post('/agents/chat')
+      .set('X-Test-Private', 'yes')
+      .send(payload);
+    expect(banned.status).toBe(403);
+    expect(mockIpLimiter).not.toHaveBeenCalled();
+
+    mockIpLimiter.mockImplementationOnce((req, res) => {
+      expect(req.body.text).toBe('[EMAIL_1]');
+      res.status(429).json({ limited: 'ip' });
+    });
+    const ipLimited = await request(app)
+      .post('/agents/chat')
+      .set('X-Test-Private', 'yes')
+      .send(payload);
+    expect(ipLimited.status).toBe(429);
+    expect(mockUserLimiter).not.toHaveBeenCalled();
+
+    mockIpLimiter.mockImplementationOnce((_req, _res, next) => next());
+    mockUserLimiter.mockImplementationOnce((req, res) => {
+      expect(req.body.text).toBe('[EMAIL_1]');
+      res.status(429).json({ limited: 'user' });
+    });
+    const userLimited = await request(app)
+      .post('/agents/chat')
+      .set('X-Test-Private', 'yes')
+      .send(payload);
+    expect(userLimited.status).toBe(429);
+    expect(mockIngress).toHaveBeenCalledTimes(3);
+    expect(mockConfigMiddleware).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['/agents/chat/queued-turns', '/agents/chat/queued-turns/v2', '/agents/chat/steer'])(
+    'loads policy once ahead of a banned text submission to %s without transforming it',
+    async (path) => {
+      mockCheckBan.mockImplementationOnce((req, res) => {
+        expect(req.config?.filters?.messages?.pii?.action).toBe('redact');
+        expect(req.body.text).toBe('alice@example.com');
+        res.status(403).json({ banned: true });
+      });
+      const response = await request(app)
+        .post(path)
+        .set('X-Test-Private', 'yes')
+        .send({ text: 'alice@example.com' });
+      expect(response.status).toBe(403);
+      expect(mockConfigMiddleware).toHaveBeenCalledTimes(1);
+      expect(mockIngress).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not reload pre-denial config on an admitted queued submission', async () => {
+    mockIpLimiter.mockImplementationOnce((_req, _res, next) => next());
+    mockUserLimiter.mockImplementationOnce((_req, _res, next) => next());
+    const response = await request(app)
+      .post('/agents/chat/queued-turns')
+      .set('X-Test-Private', 'yes')
+      .send({ text: 'clean queued turn' });
+    expect(response.status).toBe(202);
+    expect(mockConfigMiddleware).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a confirmed retry behind the shared IP limiter', async () => {

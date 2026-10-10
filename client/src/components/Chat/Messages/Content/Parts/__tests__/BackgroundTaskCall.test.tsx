@@ -1,6 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import type { ChatSurface } from '~/components/Chat/Subagents/surface';
+import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
+import { MessageContext } from '~/Providers/MessageContext';
 import BackgroundTaskCall from '../BackgroundTaskCall';
 
 jest.mock('~/hooks', () => ({
@@ -19,6 +22,7 @@ jest.mock('~/utils', () => ({
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getToolDisplayLabel: (name: string) =>
     (({ bash_tool: 'Code', web_search: 'Web Search' }) as Record<string, string>)[name] ?? name,
+  getRunStepDurationLabels: jest.requireActual('~/utils/runStepDuration').getRunStepDurationLabels,
 }));
 
 jest.mock('../../ProgressText', () => ({
@@ -74,6 +78,12 @@ jest.mock('../Attachment', () => ({
   AttachmentGroup: () => <div data-testid="task-attachments" />,
 }));
 
+jest.mock('~/components/MCPUIResource', () => ({
+  MCPAppViews: ({ attachments }: { attachments?: unknown[] }) => (
+    <div data-testid="task-app-views" data-count={attachments?.length ?? 0} />
+  ),
+}));
+
 const completed = {
   background_task_id: 'bg-1',
   tool: 'bash_tool',
@@ -99,6 +109,27 @@ function renderCall(
 }
 
 describe('BackgroundTaskCall', () => {
+  it('renders App attachments once on a standalone card and leaves grouped cards to their parent', () => {
+    const attachments = [{ type: 'ui_resources' }] as NonNullable<
+      React.ComponentProps<typeof BackgroundTaskCall>['attachments']
+    >;
+    const { rerender } = renderCall(JSON.stringify(completed), { attachments });
+    expect(screen.getByTestId('task-app-views')).toHaveAttribute('data-count', '1');
+
+    rerender(
+      <RecoilRoot>
+        <BackgroundTaskCall
+          args={'{"background_task_id":"bg-1"}'}
+          output={JSON.stringify(completed)}
+          isSubmitting={false}
+          attachments={attachments}
+          hideAttachments
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('task-app-views')).not.toBeInTheDocument();
+  });
+
   it('presents a completed code task as a native result without leaking its JSON envelope', () => {
     renderCall(JSON.stringify(completed));
     const header = screen.getByTestId('task-header');
@@ -424,6 +455,108 @@ describe('BackgroundTaskCall', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('task-header')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('task-header').parentElement?.nextElementSibling).toHaveAttribute(
+      'data-expanded',
+      'true',
+    );
     expect(screen.getByTestId('task-output')).toHaveTextContent('checked at=2026-09-27');
+  });
+
+  const runningReviewer = {
+    background_task_id: 'task-reviewer',
+    subagent_thread_id: 'thread-reviewer',
+    tool: 'subagent',
+    subagent_type: 'pr-reviewer',
+    status: 'running',
+    progress: 0,
+    next_check_s: 30,
+    message:
+      'This subagent resumes you automatically when it finishes, so there is no need to check again. If you do, wait next_check_s and pass since: activity.cursor.',
+    activity: {
+      turns: 9,
+      tools: 9,
+      errors: 1,
+      active: '9.1',
+      cursor: '8.1',
+      nodes: [
+        {
+          path: '1-3',
+          kind: 'range',
+          status: 'error',
+          ms: 9_000,
+          summary: 'bash_tool ×2, read_file',
+          errors: 1,
+          folded: true,
+        },
+        { path: '8', kind: 'turn', status: 'ok', ms: 400, summary: 'read_file', folded: true },
+        { path: '9', kind: 'turn', status: 'running', ms: 42_000 },
+        {
+          path: '9.1',
+          kind: 'tool',
+          status: 'running',
+          name: 'bash_tool',
+          label: 'Running the jest suite',
+          ms: 42_000,
+        },
+      ],
+    },
+  };
+
+  it('renders a running subagent as a folded progress tree with its active branch open', () => {
+    renderCall(JSON.stringify(runningReviewer));
+    fireEvent.click(screen.getByTestId('task-header'));
+    const progress = screen.getByTestId('subagent-progress');
+    expect(within(progress).getByText('com_ui_subagent_progress_counts')).toBeInTheDocument();
+    expect(within(progress).getByText('Code ×2, read_file')).toBeInTheDocument();
+    const active = within(progress).getByText('Running the jest suite');
+    expect(active.closest('details')).toHaveAttribute('open');
+    expect(within(progress).getByText('read_file').closest('details')).toBeNull();
+    expect(
+      within(progress).getAllByRole('img', { name: 'com_ui_background_tasks_running' }),
+    ).toHaveLength(2);
+    expect(
+      within(screen.getByTestId('background-task-card')).getByText(
+        'com_ui_background_tasks_subagent_wakeup_guidance',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_wakeup_view_activity' })).toBeNull();
+  });
+
+  it('drops a malformed progress digest without losing the task card', () => {
+    renderCall(
+      JSON.stringify({
+        ...runningReviewer,
+        activity: { turns: 1, tools: 1, errors: 0, nodes: [{ path: '../../x', kind: 'tool' }] },
+      }),
+    );
+    fireEvent.click(screen.getByTestId('task-header'));
+    expect(screen.getByTestId('background-task-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-progress')).toBeNull();
+  });
+
+  it('opens the subagent activity panel for the polled child thread', () => {
+    const claimForeground = jest.fn();
+    const surface = { claimForeground } as unknown as ChatSurface;
+    render(
+      <RecoilRoot>
+        <ChatSurfaceProvider value={surface}>
+          <MessageContext.Provider
+            value={{ messageId: 'parent-message', conversationId: 'convo-1', isExpanded: true }}
+          >
+            <BackgroundTaskCall
+              args={'{"background_task_id":"task-reviewer"}'}
+              output={JSON.stringify(runningReviewer)}
+              isSubmitting={false}
+              initialProgress={1}
+            />
+          </MessageContext.Provider>
+        </ChatSurfaceProvider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByTestId('task-header'));
+    const open = screen.getByRole('button', { name: 'com_ui_wakeup_view_activity' });
+    expect(open).toHaveAttribute('data-subagent-tool-call', 'wakeup:thread-reviewer');
+    fireEvent.click(open);
+    expect(claimForeground).toHaveBeenCalledTimes(1);
   });
 });

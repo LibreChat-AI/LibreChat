@@ -1,6 +1,22 @@
 // --- Mocks ---
-jest.mock('fs');
-jest.mock('path');
+jest.mock('fs', () => {
+  const actual = jest.requireActual('fs');
+  return {
+    ...actual,
+    existsSync: jest.fn(actual.existsSync),
+    statSync: jest.fn(actual.statSync),
+    readFileSync: jest.fn(actual.readFileSync),
+  };
+});
+jest.mock('path', () => {
+  const actual = jest.requireActual('path');
+  return {
+    ...actual,
+    isAbsolute: jest.fn(actual.isAbsolute),
+    join: jest.fn(actual.join),
+    normalize: jest.fn(actual.normalize),
+  };
+});
 jest.mock('node-fetch');
 jest.mock('@node-saml/passport-saml');
 jest.mock('@librechat/data-schemas', () => ({
@@ -11,12 +27,14 @@ jest.mock('@librechat/data-schemas', () => ({
     error: jest.fn(),
   },
   hashToken: jest.fn().mockResolvedValue('hashed-token'),
+  tenantStorage: { run: (_store, fn) => fn() },
 }));
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
-  createUser: jest.fn(),
+  createUserIfAbsent: jest.fn(),
   updateUser: jest.fn(),
   claimSamlIdentity: jest.fn(),
+  findBalanceByUser: jest.fn(),
 }));
 jest.mock('~/server/services/Config', () => ({
   config: {
@@ -27,6 +45,8 @@ jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn().mockResolvedValue({}),
 }));
 jest.mock('@librechat/api', () => ({
+  findSamlUser: jest.requireActual('@librechat/api').findSamlUser,
+  provisionSamlUser: jest.requireActual('@librechat/api').provisionSamlUser,
   isEmailDomainAllowed: jest.fn(() => true),
   getBalanceConfig: jest.fn(() => ({
     tokenCredits: 1000,
@@ -244,11 +264,11 @@ describe('setupSaml', () => {
     verifyCallbacks.clear();
 
     // Configure mocks
-    const { findUser, createUser, updateUser, claimSamlIdentity } = require('~/models');
+    const { findUser, createUserIfAbsent, updateUser, claimSamlIdentity } = require('~/models');
     findUser.mockResolvedValue(null);
-    createUser.mockImplementation(async (userData) => ({
-      _id: 'mock-user-id',
-      ...userData,
+    createUserIfAbsent.mockImplementation(async (userData) => ({
+      ok: true,
+      value: { _id: 'mock-user-id', ...userData },
     }));
     updateUser.mockImplementation(async (id, userData) => ({
       _id: id,
@@ -486,6 +506,77 @@ u7wlOSk+oFzDIO/UILIA
     expect(result.user).toBe(false);
     expect(result.details.message).toBe(require('librechat-data-provider').ErrorTypes.AUTH_FAILED);
     expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  describe('concurrent first login', () => {
+    const raceCreateWith = (existingUser) => {
+      const { findUser, createUserIfAbsent } = require('~/models');
+      let created = false;
+      const matches = (query) =>
+        Object.entries(query).every(([field, value]) => existingUser[field] === value);
+      findUser.mockImplementation(async (query) =>
+        created && matches(query) ? existingUser : null,
+      );
+      createUserIfAbsent.mockImplementation(async () => {
+        created = true;
+        return { ok: false, error: { code: 'user_exists' } };
+      });
+    };
+
+    it("claims the account the other request created with this login's profile", async () => {
+      const { createUserIfAbsent, claimSamlIdentity } = require('~/models');
+      raceCreateWith({
+        _id: 'winner-user-id',
+        provider: 'saml',
+        samlId: baseProfile.nameID,
+        email: baseProfile.email,
+        username: 'old-username',
+        name: 'Old Name',
+      });
+
+      const { user } = await validate(baseProfile);
+
+      expect(createUserIfAbsent).toHaveBeenCalledTimes(1);
+      expect(claimSamlIdentity).toHaveBeenCalledWith('winner-user-id', baseProfile.nameID, {
+        username: baseProfile.username,
+        name: `${baseProfile.given_name} ${baseProfile.family_name}`,
+      });
+      expect(user).toEqual(expect.objectContaining({ _id: 'winner-user-id' }));
+    });
+
+    it("fails the login when the recovered tenant account's policy rejects the email", async () => {
+      const { getAppConfig } = require('~/server/services/Config');
+      getAppConfig.mockImplementation(async (options) =>
+        options?.tenantId ? { registration: { allowedDomains: ['other.example'] } } : {},
+      );
+      raceCreateWith({
+        _id: 'tenant-user-id',
+        provider: 'saml',
+        samlId: baseProfile.nameID,
+        email: baseProfile.email,
+        tenantId: 'tenant-a',
+      });
+
+      const result = await validate(baseProfile);
+
+      expect(result.user).toBe(false);
+      expect(result.details.message).toBe('Email domain not allowed');
+      getAppConfig.mockResolvedValue({});
+    });
+
+    it('fails the login when another provider took the email in the meantime', async () => {
+      const { claimSamlIdentity, updateUser } = require('~/models');
+      raceCreateWith({ _id: 'local-user-id', provider: 'local', email: baseProfile.email });
+
+      const result = await validate(baseProfile);
+
+      expect(result.user).toBe(false);
+      expect(result.details.message).toBe(
+        require('librechat-data-provider').ErrorTypes.AUTH_FAILED,
+      );
+      expect(claimSamlIdentity).not.toHaveBeenCalled();
+      expect(updateUser).not.toHaveBeenCalled();
+    });
   });
 
   it.each([undefined, '', '   '])('should reject an invalid NameID value: %p', async (nameID) => {

@@ -345,6 +345,29 @@ describe('configured content inspection', () => {
     });
   });
 
+  it('does not interpret the api-key detector label as an API key header', () => {
+    const filters: FiltersConfig = {
+      messages: {
+        pii: {
+          starterPatterns: ['api_key_header'],
+        },
+      },
+    };
+
+    expect(
+      inspectContent(
+        [
+          fragment(
+            'message',
+            'text',
+            'Submitted content contains an api-key header. Remove it and try again.',
+          ),
+        ],
+        { filters },
+      ),
+    ).toBeNull();
+  });
+
   it('keeps the runtime starter catalog aligned with the public schema', () => {
     expect(FILTER_PII_STARTER_PATTERNS).toEqual(STARTER_PATTERN_CASES.map(([ruleId]) => ruleId));
   });

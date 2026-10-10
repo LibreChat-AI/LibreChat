@@ -1,6 +1,8 @@
 import {
   parseConvo,
+  getSpeechText,
   parseTextParts,
+  parseThinkingContent,
   parseCompactConvo,
   replaceSpecialVars,
   getEphemeralSender,
@@ -593,6 +595,74 @@ describe('parseCompactConvo - defaultParamsEndpoint', () => {
     expect(result).not.toBeNull();
     expect(result?.max_tokens).toBe(4096);
     expect(result?.maxOutputTokens).toBeUndefined();
+  });
+});
+
+describe('getSpeechText', () => {
+  test('speaks text parts and skips think parts', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.THINK, think: 'internal reasoning' },
+      { type: ContentTypes.TEXT, text: 'First.' },
+      { type: ContentTypes.THINK, think: 'more reasoning' },
+      { type: ContentTypes.TEXT, text: 'Second.' },
+    ];
+    expect(getSpeechText({ content, text: 'ignored' })).toBe('First. Second.');
+  });
+
+  test('is empty for a response that only reasoned', () => {
+    const content: TMessageContentParts[] = [{ type: ContentTypes.THINK, think: 'reasoning' }];
+    expect(getSpeechText({ content })).toBe('');
+  });
+
+  test('never speaks steer parts', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.STEER, steer: 'user words' } as TMessageContentParts,
+      { type: ContentTypes.TEXT, text: 'answer' },
+    ];
+    expect(getSpeechText({ content })).toBe('answer');
+  });
+
+  test('falls back to plain text when there are no content parts', () => {
+    expect(getSpeechText({ content: [], text: 'plain answer' })).toBe('plain answer');
+    expect(getSpeechText({ text: 'plain answer' })).toBe('plain answer');
+    expect(getSpeechText({ content: null, text: null })).toBe('');
+  });
+
+  test('speaks string content, as imported messages may carry it', () => {
+    const content = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
+    expect(getSpeechText({ content, text: '' })).toBe('The answer is 4.');
+  });
+
+  test('falls back to text when string content is empty', () => {
+    expect(getSpeechText({ content: '', text: 'stored answer' })).toBe('stored answer');
+  });
+
+  test('strips a legacy thinking block from plain text', () => {
+    const text = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
+    expect(getSpeechText({ text })).toBe('The answer is 4.');
+  });
+
+  test('speaks a repeated thinking block, which the message view shows as answer text', () => {
+    const text = ':::thinking\na\n:::\nAnswer 1\n:::thinking\nb\n:::\nAnswer 2';
+    expect(getSpeechText({ text })).toBe(parseThinkingContent(text).regularContent);
+    expect(getSpeechText({ text })).toBe('Answer 1\n:::thinking\nb\n:::\nAnswer 2');
+  });
+
+  test('trims structured answers so whitespace alone is not speakable', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.THINK, think: 'reasoning' },
+      { type: ContentTypes.TEXT, text: '\n' },
+    ];
+    expect(getSpeechText({ content })).toBe('');
+  });
+
+  test('speaks an unmatched marker, which the UI shows as answer text', () => {
+    const text = 'Wrap reasoning in a :::thinking block.';
+    expect(getSpeechText({ text })).toBe(text);
+  });
+
+  test('keeps plain text that merely uses colons', () => {
+    expect(getSpeechText({ text: 'Ratio is 3:1 ::: done' })).toBe('Ratio is 3:1 ::: done');
   });
 });
 

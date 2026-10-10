@@ -42,7 +42,24 @@ export function payloadParser({
   if (isAgentsEndpoint(endpoint)) {
     return;
   }
-  return req.body?.endpointOption?.model_parameters;
+  const modelParameters = req.body?.endpointOption?.model_parameters;
+  if (modelParameters == null || req.reasoningOverrideBase == null) {
+    return modelParameters;
+  }
+
+  const { key, hadValue, value } = req.reasoningOverrideBase;
+  const persistedParameters = { ...modelParameters };
+  if (hadValue) {
+    persistedParameters[key] = value;
+  } else {
+    delete persistedParameters[key];
+  }
+  if (req.reasoningOverrideBase.thinkingHadValue === true) {
+    persistedParameters.thinking = req.reasoningOverrideBase.thinkingValue;
+  } else if (req.reasoningOverrideBase.thinkingHadValue === false) {
+    delete persistedParameters.thinking;
+  }
+  return persistedParameters;
 }
 
 /**

@@ -9,6 +9,7 @@ import type {
 } from 'librechat-data-provider';
 import { ToolIcon, isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import Image from '~/components/Chat/Messages/Content/Image';
+import { useToolPreparation } from '../../preparation';
 import { useProgress, useLocalize } from '~/hooks';
 import { useToolCallIntent } from '../intent';
 import { ROW_GLYPH_SLOT } from '../../rows';
@@ -62,6 +63,7 @@ export default function OpenAIImageGen({
   runStepStatus?: PartMetadata['runStepStatus'];
 }) {
   const localize = useLocalize();
+  const preparationText = useToolPreparation();
   /** Model-authored live label (injected when the tool is opted into
    *  describe_intent); wins over the phase texts. */
   const intent = useToolCallIntent(_args);
@@ -248,7 +250,7 @@ export default function OpenAIImageGen({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (progress < 1 && !cancelled && !reportsError) {
-            return '';
+            return preparationText ?? '';
           }
           if (reportsError) {
             return localize('com_ui_image_gen_failed');
@@ -259,7 +261,7 @@ export default function OpenAIImageGen({
           return intent ?? localize('com_ui_image_created');
         })()}
       </span>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2 text-text-secondary">
+      <div className="text-text-secondary relative my-1 flex h-5 shrink-0 items-center gap-2">
         <span className={ROW_GLYPH_SLOT} aria-hidden="true">
           <ToolIcon type="image_gen" isAnimating={isInProgress} />
         </span>

@@ -1,5 +1,10 @@
 const crypto = require('crypto');
-const { sendEvent } = require('@librechat/api');
+const {
+  sendEvent,
+  rejectUnprotectedDeniedMessage,
+  stampPrivateTextMessage,
+  savePrivateTextMessage,
+} = require('@librechat/api');
 const { getResponseSender, Constants } = require('librechat-data-provider');
 const { sendError } = require('~/server/middleware/error');
 const { saveMessage } = require('~/models');
@@ -21,6 +26,10 @@ const { saveMessage } = require('~/models');
  * @throws {Error} Throws an error if there's an issue saving the message or sending the error.
  */
 const denyRequest = async (req, res, errorMessage) => {
+  if (rejectUnprotectedDeniedMessage(req, res)) {
+    return;
+  }
+
   let responseText = errorMessage;
   if (typeof errorMessage === 'object') {
     responseText = JSON.stringify(errorMessage);
@@ -28,21 +37,27 @@ const denyRequest = async (req, res, errorMessage) => {
 
   const { messageId, conversationId: _convoId, parentMessageId, text } = req.body;
   const conversationId = _convoId ?? crypto.randomUUID();
+  const shouldSaveMessage = Boolean(
+    _convoId && parentMessageId && parentMessageId !== Constants.NO_PARENT,
+  );
 
-  const userMessage = {
-    sender: 'User',
-    messageId: messageId ?? crypto.randomUUID(),
-    parentMessageId,
-    conversationId,
-    isCreatedByUser: true,
-    text,
-  };
-  sendEvent(res, { message: userMessage, created: true });
-
-  const shouldSaveMessage = _convoId && parentMessageId && parentMessageId !== Constants.NO_PARENT;
+  const userMessage = stampPrivateTextMessage(
+    req,
+    {
+      sender: 'User',
+      messageId: messageId ?? crypto.randomUUID(),
+      parentMessageId,
+      conversationId,
+      isCreatedByUser: true,
+      text,
+    },
+    shouldSaveMessage,
+  );
 
   if (shouldSaveMessage) {
-    await saveMessage(
+    await savePrivateTextMessage(
+      saveMessage,
+      req,
       {
         userId: req?.user?.id,
         isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
@@ -54,6 +69,7 @@ const denyRequest = async (req, res, errorMessage) => {
     );
   }
 
+  sendEvent(res, { message: userMessage, created: true });
   return await sendError(req, res, {
     sender: getResponseSender(req.body),
     messageId: crypto.randomUUID(),

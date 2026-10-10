@@ -372,7 +372,7 @@ describe('useGetMessagesByConvoId', () => {
       expect(result.current.data).toEqual(serverMessages);
     });
     expect(mockGetMessagesByConvoId).toHaveBeenCalledTimes(1);
-    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+    expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId, { toolPreviews: true });
 
     unmount();
   });
@@ -397,7 +397,7 @@ describe('useGetMessagesByConvoId', () => {
     });
 
     await waitFor(() => {
-      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId, { toolPreviews: true });
     });
 
     act(() => {
@@ -443,7 +443,7 @@ describe('useGetMessagesByConvoId', () => {
     const refetchPromise = result.current.refetch();
 
     await waitFor(() => {
-      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId, { toolPreviews: true });
     });
 
     act(() => {
@@ -520,7 +520,7 @@ describe('useGetMessagesByConvoId', () => {
     const refetchPromise = result.current.refetch();
 
     await waitFor(() => {
-      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+      expect(mockGetMessagesByConvoId).toHaveBeenCalledWith(conversationId, { toolPreviews: true });
     });
 
     act(() => {
@@ -579,7 +579,9 @@ describe('useGetMessagesByConvoId', () => {
     await waitFor(() => {
       expect(result.current.data).toBe(currentMessages);
     });
-    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(conversationId, {
+      toolPreviews: true,
+    });
     expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toBe(currentMessages);
 
     unmount();
@@ -623,7 +625,9 @@ describe('useGetMessagesByConvoId', () => {
     await waitFor(() => {
       expect(result.current.data).toBe(currentMessages);
     });
-    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(conversationId);
+    expect(dataService.getMessagesByConvoId).toHaveBeenCalledWith(conversationId, {
+      toolPreviews: true,
+    });
     expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toBe(currentMessages);
     expect(logger.warn).toHaveBeenCalledWith(
       'messages',

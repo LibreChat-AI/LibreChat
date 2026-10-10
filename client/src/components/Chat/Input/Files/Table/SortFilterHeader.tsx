@@ -105,8 +105,8 @@ export function SortFilterHeader<TData, TValue>({
                 aria-pressed={column.getIsFiltered() ? 'true' : 'false'}
                 aria-current={sortState ? 'true' : 'false'}
                 className={cn(
-                  'inline-flex items-center gap-2 rounded-lg px-2 py-0 text-xs transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary data-[open]:bg-surface-hover sm:px-2 sm:py-2 sm:text-sm',
-                  column.getIsFiltered() && 'border-b-2 border-b-border-xheavy',
+                  'hover:bg-surface-hover focus-visible:ring-text-primary data-[open]:bg-surface-hover inline-flex items-center gap-2 rounded-lg px-2 py-0 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden sm:px-2 sm:py-2 sm:text-sm',
+                  column.getIsFiltered() && 'border-b-border-xheavy border-b-2',
                 )}
               >
                 <span>{title}</span>

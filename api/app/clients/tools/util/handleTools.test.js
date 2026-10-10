@@ -94,7 +94,7 @@ jest.mock('~/config', () => ({
 
 const { Calculator } = require('@librechat/agents');
 const { Tools, Constants } = require('librechat-data-provider');
-const { ASK_USER_QUESTION_TOOL_NAME } = require('@librechat/api');
+const { ASK_USER_QUESTION_TOOL_NAME, STANDARD_MCP_CAPABILITY_PROFILE } = require('@librechat/api');
 
 const { User } = require('~/db/models');
 const PluginService = require('~/server/services/PluginService');
@@ -571,6 +571,7 @@ describe('Tool Handlers', () => {
         fakeUser._id.toString(),
         serverName,
         serverConfig,
+        STANDARD_MCP_CAPABILITY_PROFILE,
       );
       expect(mockCreateMCPTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -615,6 +616,14 @@ describe('Tool Handlers', () => {
           req: {
             user: { id: fakeUser._id.toString(), role: 'USER' },
             body: {},
+            config: {
+              mcpSettings: { apps: true },
+              mcpAppSandbox: {
+                maxPersistedAppBytes: 2048,
+                maxAdmissionRequestsPerMinute: 12,
+                url: 'https://sandbox.example.com',
+              },
+            },
           },
         },
       });
@@ -629,6 +638,13 @@ describe('Tool Handlers', () => {
         expect.objectContaining({
           toolKey: normalizedKey,
           serverName: rawServerName,
+          mcpApps: expect.objectContaining({
+            enabled: true,
+            legacyHtmlEnabled: true,
+            maxPersistedAppBytes: 2048,
+            maxAdmissionRequestsPerMinute: 12,
+            sandboxUrl: 'https://sandbox.example.com',
+          }),
         }),
       );
     });

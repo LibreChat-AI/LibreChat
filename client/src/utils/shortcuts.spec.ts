@@ -404,9 +404,41 @@ describe('resolveComposerKeyDown', () => {
   it('keeps idle Enter semantics', () => {
     expect(resolveComposerKeyDown(keydown(), idle)).toBe('submit');
     expect(resolveComposerKeyDown(keydown(), { ...idle, enterToSend: false })).toBe('newline');
-    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), idle)).toBe('submit');
     expect(resolveComposerKeyDown(keydown({ shiftKey: true }), idle)).toBe('none');
     expect(resolveComposerKeyDown(new KeyboardEvent('keydown', { key: 'a' }), idle)).toBe('none');
+  });
+
+  /* The modifier is the inverse of plain Enter, so whichever of the two sends,
+     the other writes a newline and neither preference leaves the user without
+     a way to break a line. */
+  it('inverts Ctrl/Cmd+Enter against the Enter-to-send preference while idle', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), idle)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown({ metaKey: true }), idle)).toBe('newline');
+    expect(
+      resolveComposerKeyDown(keydown({ ctrlKey: true }), { ...idle, enterToSend: false }),
+    ).toBe('submit');
+    expect(
+      resolveComposerKeyDown(keydown({ metaKey: true }), { ...idle, enterToSend: false }),
+    ).toBe('submit');
+  });
+
+  it('leaves both newline chords available whichever way Enter is bound', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), idle)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown({ shiftKey: true }), idle)).toBe('none');
+    const newlineOnEnter = { ...idle, enterToSend: false };
+    expect(resolveComposerKeyDown(keydown(), newlineOnEnter)).toBe('newline');
+    expect(resolveComposerKeyDown(keydown({ shiftKey: true }), newlineOnEnter)).toBe('newline');
+  });
+
+  /* The during-run table claims Ctrl/Cmd+Enter for the alternate send action,
+     and it resolves before the idle tail, so the newline chord must not reach
+     into a live run and swallow it. */
+  it('does not let the idle newline chord displace the during-run actions', () => {
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true }), duringRun)).toBe('other');
+    expect(resolveComposerKeyDown(keydown({ ctrlKey: true, shiftKey: true }), duringRun)).toBe(
+      'preempt',
+    );
+    expect(resolveComposerKeyDown(keydown({ altKey: true }), duringRun)).toBe('interrupt');
   });
 
   it('resolves through the submit override while idle', () => {

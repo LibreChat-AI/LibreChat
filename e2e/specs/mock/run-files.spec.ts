@@ -176,12 +176,16 @@ test.describe('run-scoped subagent files', () => {
       expect(download.suggestedFilename()).toBe(outputName);
       expect(await download.failure()).toBeNull();
 
-      await page.getByTestId('nav-panel-files').click();
-      const filesPanel = page.getByRole('region', { name: 'Files Table' });
-      await filesPanel.locator('#filename-filter').fill(outputName);
-      const reuse = filesPanel.locator('td[role="button"]').filter({ hasText: outputName });
+      /* Reuse goes through the composer palette, which searches every file the
+         user owns and attaches the chosen one to the draft. */
+      await page.getByRole('button', { name: 'Attach and tools' }).click();
+      const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+      await palette
+        .getByRole('combobox', { name: 'Search tools, skills and servers', exact: true })
+        .fill(outputName);
+      const reuse = palette.locator(`[data-row-key="file:${published.file_id}"]`);
       await expect(reuse).toHaveCount(1);
-      await reuse.press('Enter');
+      await reuse.click();
       await expect(
         page.getByTestId('composer-surface').getByRole('button', { name: outputName, exact: true }),
       ).toBeVisible();

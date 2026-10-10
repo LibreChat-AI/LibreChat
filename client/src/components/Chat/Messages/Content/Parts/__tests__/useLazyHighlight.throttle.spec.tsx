@@ -21,7 +21,7 @@ jest.mock('lowlight', () => ({
 
 const flush = () => act(async () => Promise.resolve());
 
-describe('useLazyHighlight throttling', () => {
+describe('useLazyHighlight debouncing', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockHighlight.mockClear();
@@ -55,26 +55,31 @@ describe('useLazyHighlight throttling', () => {
     expect(result.current).toEqual(['a']);
   });
 
-  it('throttles re-highlights while streaming and highlights the settled value once', async () => {
+  it('debounces re-highlights while streaming and highlights the settled value once', async () => {
     const { result, rerender } = renderHook(({ code }) => useLazyHighlight(code, 'js'), {
       initialProps: { code: 'a' },
     });
     await flush();
     mockHighlight.mockClear();
 
-    const chunks = ['ab', 'abc', 'abcd', 'abcde'];
-    for (const code of chunks) {
+    let code = 'a';
+    for (let i = 0; i < 20; i++) {
+      act(() => jest.advanceTimersByTime(50));
+      code += 'b';
       rerender({ code });
-      act(() => jest.advanceTimersByTime(20));
+      expect(result.current).toEqual([code]);
+      expect(mockHighlight).not.toHaveBeenCalled();
     }
-    expect(mockHighlight).not.toHaveBeenCalled();
-    expect(result.current).toEqual(['abcde']);
 
-    act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS));
+    act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS - 1));
+    expect(mockHighlight).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(1));
     await flush();
     expect(mockHighlight).toHaveBeenCalledTimes(1);
-    expect(mockHighlight).toHaveBeenLastCalledWith('js', 'abcde');
-    expect(result.current).toEqual(['abcde']);
+    expect(mockHighlight).toHaveBeenLastCalledWith('js', code);
+    expect(result.current).toEqual([code]);
+    act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS * 2));
+    expect(mockHighlight).toHaveBeenCalledTimes(1);
   });
 
   it('keeps completed highlights when the configured throttle changes', async () => {
@@ -121,7 +126,7 @@ describe('useLazyHighlight throttling', () => {
     throttleMs = HIGHLIGHT_THROTTLE_MS * 2;
     rerender({ code: 'ab' });
 
-    act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS * 2 - 101));
+    act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS * 2 - 1));
     await flush();
     expect(mockHighlight).not.toHaveBeenCalled();
 
@@ -150,7 +155,7 @@ describe('useLazyHighlight throttling', () => {
     await flush();
     expect(result.current).toEqual(['ab']);
   });
-  it('keeps the throttle window stable when the wall clock moves backwards', async () => {
+  it('keeps the debounce window stable when the wall clock moves backwards', async () => {
     const { result, rerender } = renderHook(({ code }) => useLazyHighlight(code, 'js'), {
       initialProps: { code: 'a' },
     });
@@ -165,6 +170,40 @@ describe('useLazyHighlight throttling', () => {
     await flush();
     expect(result.current).toEqual(['ab']);
   });
+  it('debounces a replacement even after a long pause', async () => {
+    const { rerender } = renderHook(({ code }) => useLazyHighlight(code, 'js'), {
+      initialProps: { code: 'a' },
+    });
+    await flush();
+    mockHighlight.mockClear();
+
+    act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS * 2));
+    rerender({ code: 'ab' });
+    expect(mockHighlight).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(HIGHLIGHT_THROTTLE_MS - 1));
+    expect(mockHighlight).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(1));
+    expect(mockHighlight).toHaveBeenCalledTimes(1);
+    expect(mockHighlight).toHaveBeenLastCalledWith('js', 'ab');
+  });
+
+  it('highlights every update immediately when the delay is zero', async () => {
+    const { rerender } = renderHook(({ code }) => useLazyHighlight(code, 'js'), {
+      initialProps: { code: 'a' },
+      wrapper: ({ children }) => (
+        <CodeHighlightThrottleContext.Provider value={0}>
+          {children}
+        </CodeHighlightThrottleContext.Provider>
+      ),
+    });
+    await flush();
+    mockHighlight.mockClear();
+    rerender({ code: 'ab' });
+    expect(mockHighlight).toHaveBeenCalledTimes(1);
+    expect(mockHighlight).toHaveBeenLastCalledWith('js', 'ab');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it('does not parse an initialized value twice on mount', async () => {
     const { result } = renderHook(() => useLazyHighlight('initialized', 'js'));
     await flush();

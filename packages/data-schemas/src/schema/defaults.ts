@@ -1,5 +1,9 @@
 import { Schema } from 'mongoose';
-import { CODE_APPROVAL_MODES, CODE_ENVIRONMENT_MODES } from 'librechat-data-provider';
+import {
+  CODE_APPROVAL_MODES,
+  CODE_ENVIRONMENT_MODES,
+  CODE_WORKSPACE_CHECKOUT_MODES,
+} from 'librechat-data-provider';
 
 // @ts-ignore
 export const conversationPreset: {
@@ -129,6 +133,8 @@ export const conversationPreset: {
     type: {
       environmentId: { type: StringConstructor; required: boolean };
       workspaceId: { type: StringConstructor; required: boolean };
+      checkout: { type: StringConstructor; enum: string[]; default: undefined };
+      agentIds: { type: StringConstructor[]; default: undefined };
       _id: boolean;
     }[];
     default: undefined;
@@ -329,6 +335,8 @@ export const conversationPreset: {
       {
         environmentId: { type: String, required: true },
         workspaceId: { type: String, required: true },
+        checkout: { type: String, enum: [...CODE_WORKSPACE_CHECKOUT_MODES], default: undefined },
+        agentIds: { type: [String], default: undefined },
         _id: false,
       },
     ],

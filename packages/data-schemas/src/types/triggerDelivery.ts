@@ -17,6 +17,8 @@ export const AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1 =
   'background_tool_completion_v1';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2 =
   'background_tool_completion_receipt_v2';
+export const AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3 =
+  'background_tool_completion_batch_v3';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1 = 'agent_queued_turn_v1';
 export const AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2 = 'agent_queued_turn_v2';
 export const AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS: number = 64 * 1024;
@@ -92,6 +94,8 @@ export interface AgentBackgroundToolResultReceipt {
     kind: 'wakeup';
     claimId: string;
     claimedAt: Date;
+    appliedAt?: Date;
+    batchId?: string;
   };
 }
 
@@ -128,6 +132,18 @@ export interface IAgentTriggerDelivery {
   producerLeaseUntil?: Date;
   /** Durable source of truth for a background completion. */
   backgroundToolResult?: AgentBackgroundToolResultReceipt;
+  /** Receipt batching is separate from event-envelope coalescing. */
+  backgroundToolResultBatch?: {
+    batchId: string;
+    dispatchCount: number;
+    dispatchId?: string;
+    releaseId?: string;
+    proofCopiedAt?: Date;
+    candidates: string[];
+    members?: string[];
+    appliedAt?: Date;
+    releasing?: true;
+  };
   /** Conversation-deletion fence preventing a late producer from restoring private output. */
   backgroundToolResultErasedAt?: Date;
   backgroundToolResultDeletionPendingAt?: Date;

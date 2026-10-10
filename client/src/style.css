@@ -1,6 +1,37 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+/* Semantic colors live in the component library, in CSS, so one file feeds this app, the published
+ * package and @shadcn/lint's token checking. Imported from source rather than from the built
+ * package so a lint or CI run needs no prior build. */
+@import '../../packages/client/src/theme/tokens.css';
+@config '../tailwind.config.cjs';
+
+/* Close the legacy palette scales only inside this repository. */
+@theme inline {
+  --color-gray-*: initial;
+  --color-green-*: initial;
+}
+
+/* Tailwind v4 changed two preflight defaults this app was built against. Each rule below
+ * restores the v3 default rather than adopting the new one, so the upgrade carries no visual
+ * change; drop one only as a deliberate design decision.
+ *   - border-color: v3 used gray-200, v4 uses currentColor.
+ *   - ::placeholder: v3 used gray-400, v4 uses currentColor at 50% opacity.
+ * Both read the repository compatibility palette through `theme()` instead of pinning a hex here.
+ * `button { cursor: pointer }` below already covers v4's third change. */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: theme(colors.gray.200);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: theme(colors.gray.400);
+  }
+}
 
 .message-render {
   scroll-margin-top: 4rem;
@@ -8,67 +39,6 @@
 
 /* Custom Variables */
 :root {
-  --white: 255 255 255;
-  --black: 0 0 0;
-  --gray-20: 236 236 241;
-  --gray-50: 247 247 248;
-  --gray-100: 236 236 236;
-  --gray-200: 227 227 227;
-  --gray-300: 205 205 205;
-  --gray-400: 153 150 150;
-  --gray-500: 89 89 89;
-  --gray-600: 66 66 66;
-  --gray-650: 57 57 57;
-  --gray-700: 47 47 47;
-  --gray-800: 33 33 33;
-  --gray-850: 23 23 23;
-  --gray-875: 18 18 18;
-  --gray-900: 13 13 13;
-  --green-50: 236 253 245;
-  --green-100: 209 250 229;
-  --green-200: 167 243 208;
-  --green-300: 110 231 183;
-  --green-400: 52 211 153;
-  --green-500: 16 185 129;
-  --green-600: 5 150 105;
-  --green-700: 4 120 87;
-  --green-800: 6 95 70;
-  --green-900: 6 78 59;
-  --green-950: 2 44 34;
-  --red-50: 254 242 242;
-  --red-100: 254 226 226;
-  --red-200: 254 202 202;
-  --red-300: 252 165 165;
-  --red-400: 248 113 113;
-  --red-500: 239 68 68;
-  --red-600: 220 38 38;
-  --red-700: 185 28 28;
-  --red-800: 153 27 27;
-  --red-900: 127 29 29;
-  --red-950: 69 10 10;
-  --amber-50: 255 251 235;
-  --amber-100: 254 243 199;
-  --amber-200: 253 230 138;
-  --amber-300: 252 211 77;
-  --amber-400: 251 191 36;
-  --amber-500: 245 158 11;
-  --amber-600: 217 119 6;
-  --amber-700: 180 83 9;
-  --amber-800: 146 64 14;
-  --amber-900: 120 53 15;
-  --amber-950: 69 26 3;
-  --blue-50: 239 246 255;
-  --blue-100: 219 234 254;
-  --blue-200: 191 219 254;
-  --blue-300: 147 197 253;
-  --blue-400: 96 165 250;
-  --blue-500: 59 130 246;
-  --blue-600: 37 99 235;
-  --blue-700: 29 78 216;
-  --blue-800: 30 64 175;
-  --blue-900: 30 58 138;
-  --blue-950: 23 37 84;
-  --brand-purple: 126 34 206;
   --gizmo-gray-500: 153 153 153;
   --gizmo-gray-600: 102 102 102;
   --gizmo-gray-950: 15 15 15;
@@ -78,9 +48,17 @@
   --font-size-lg: 1.125rem;
   --font-size-xl: 1.25rem;
   --markdown-font-size: 1rem;
+  --ui-scale: 1;
 }
 
-/* transitions-dev tokens — semantic names shared by every t-* class below. */
+/* Every size in the app is expressed in rem, so scaling the root font size scales
+   the whole interface. A percentage keeps the reader's own browser font-size
+   preference intact instead of pinning the root to a fixed pixel value. */
+html {
+  font-size: calc(100% * var(--ui-scale));
+}
+
+/* transitions-dev tokens: semantic names shared by every t-* class below. */
 :root {
   --resize-dur: 300ms;
   --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -96,7 +74,7 @@
   --avatar-ease-out: cubic-bezier(0.34, 3.85, 0.64, 1);
 }
 
-/* Icon swap — cross-fade two icons sharing a slot. */
+/* Icon swap: cross-fade two icons sharing a slot. */
 .t-icon-swap {
   position: relative;
   display: inline-grid;
@@ -128,7 +106,7 @@
   }
 }
 
-/* Avatar group hover — distance-falloff lift on a horizontal row. */
+/* Avatar group hover: distance-falloff lift on a horizontal row. */
 .t-avatar {
   transform-origin: center;
   transform: translateY(var(--shift, 0px)) scale(var(--scale-active, 1));
@@ -146,238 +124,6 @@
   }
 }
 
-html {
-  --brand-purple: 126 34 206;
-  --presentation: var(--white);
-  --text-primary: var(--gray-800);
-  --text-secondary: var(--gray-600);
-  --text-secondary-alt: var(--gray-500);
-  --text-tertiary: var(--gray-500);
-  --text-muted: 105 110 121; /* Click UI global.color.text.muted #696e79 */
-  --shimmer-dip: 129 130 134;
-  --shimmer-dip-alpha: 0.18;
-  --text-warning: var(--amber-700);
-  --text-destructive: var(--red-600);
-  --link: var(--blue-600);
-  --link-hover: var(--blue-700);
-  --link-visited: 147 51 234;
-  --accent-primary: 18 110 107;
-  --accent-primary-hover: 10 79 83;
-  --ring-primary: var(--gray-500);
-  --header-primary: var(--white);
-  --header-hover: var(--gray-50);
-  --header-button-hover: var(--gray-50);
-  --surface-active: var(--gray-100);
-  --surface-active-alt: var(--gray-200);
-  --surface-hover: var(--gray-200);
-  --surface-hover-alt: var(--gray-300);
-  --surface-composer-hover: var(--gray-200);
-  --surface-primary: var(--white);
-  --chart-widget-surface: 255 255 255; /* Click UI dashboards.chartWidget.color.background.default #ffffff */
-  --chart-widget-stroke: 230 231 233; /* Click UI dashboards.chartWidget.color.stroke.default #e6e7e9 */
-  --surface-primary-alt: var(--gray-50);
-  --surface-primary-contrast: var(--gray-100);
-  --surface-secondary: var(--gray-50);
-  --surface-secondary-alt: var(--gray-200);
-  --surface-tertiary: var(--gray-100);
-  --surface-tertiary-alt: var(--white);
-  --surface-dialog: var(--white);
-  --surface-overlay: var(--gray-500);
-  --surface-submit: var(--green-700);
-  --surface-submit-hover: var(--green-800);
-  --surface-destructive: var(--red-700);
-  --surface-destructive-hover: var(--red-800);
-  --surface-chat: var(--white);
-  --surface-code: var(--surface-primary-alt);
-  --surface-qr: var(--white);
-  --border-light: var(--gray-200);
-  --border-light-alpha: 1;
-  --border-medium-alt: var(--gray-300);
-  --border-medium: var(--gray-300);
-  --border-medium-alpha: 1;
-  --border-heavy: var(--gray-400);
-  --border-heavy-alpha: 1;
-  --border-xheavy: var(--gray-500);
-  --border-xheavy-alpha: 1;
-  --border-destructive: var(--red-600);
-  --status-success: var(--green-700);
-  --status-success-subtle: var(--green-50);
-  --status-success-border: var(--green-300);
-  --status-success-strong: 2 133 94;
-  --status-info: var(--blue-600);
-  --status-info-subtle: var(--blue-50);
-  --status-info-border: var(--blue-300);
-  --status-info-strong: var(--gray-500);
-  --status-warning: var(--amber-700);
-  --status-warning-subtle: var(--amber-50);
-  --status-warning-border: var(--amber-300);
-  --status-warning-strong: 199 82 9;
-  --status-error: var(--red-700);
-  --status-error-subtle: var(--red-50);
-  --status-error-border: var(--red-300);
-  --status-error-strong: 224 47 31;
-  --status-neutral: var(--gray-600);
-  --status-neutral-subtle: var(--gray-100);
-  --status-neutral-border: var(--gray-300);
-  --status-verified: 37 99 235;
-  --text-on-status: var(--white);
-
-  /* Categorical series scale — slot order is the CVD-safety mechanism */
-  --series-1: 5 110 189;
-  --series-2: 233 86 13;
-  --series-3: 0 148 142;
-  --series-4: 182 123 5;
-  --series-5: 216 90 142;
-  --series-6: 126 35 205;
-  --series-7: 1 131 1;
-  --series-8: 63 81 181;
-
-  /* Code syntax highlighting */
-  --syntax-text: var(--gray-800);
-  --syntax-comment: var(--gray-500);
-  --syntax-meta: var(--gray-600);
-  --syntax-builtin: 154 103 0;
-  --syntax-keyword: 5 80 174;
-  --syntax-string: 10 123 98;
-  --syntax-attr: 154 47 106;
-  --syntax-title: 180 35 24;
-
-  --surface-inverted: var(--gray-850);
-  --surface-inverted-hover: var(--gray-700);
-  --text-inverted: var(--white);
-  --surface-fixed: var(--white);
-  --surface-fixed-hover: var(--gray-100);
-  --text-fixed: var(--gray-800);
-  --radius: 0.5rem;
-  --theme-control-radius: 0.75rem;
-  --theme-round-control-radius: 9999px;
-  --theme-surface-radius: 1rem;
-  --theme-large-surface-radius: 1.5rem;
-  --theme-control-height: 2.25rem;
-  --theme-space-compact: 0.375rem;
-  --theme-space-normal: 0.75rem;
-  --theme-font-family: Inter, sans-serif;
-  --theme-elevation-surface: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-  --theme-motion-fast: 150ms;
-  --theme-motion-normal: 200ms;
-  --switch-unchecked: 148 148 148;
-  --provider-openai: #19c37d;
-  --provider-openai-gpt4: #ab68ff;
-  --provider-openai-reasoning: #000000;
-  --provider-anthropic: #d09a74;
-  --provider-azure: linear-gradient(0.375turn, #61bde2, #4389d0);
-  --provider-bedrock: #268672;
-  --provider-foreground: #ffffff;
-}
-.dark {
-  --brand-purple: 171 104 255;
-  --presentation: var(--gray-800);
-  --text-primary: var(--gray-100);
-  --text-secondary: var(--gray-300);
-  --text-secondary-alt: var(--gray-400);
-  --text-tertiary: var(--gray-400);
-  --text-muted: 179 182 189; /* Click UI global.color.text.muted #b3b6bd */
-  --shimmer-base: 255 255 255;
-  --shimmer-base-alpha: 0.8;
-  --shimmer-dip: 179 179 179;
-  --shimmer-dip-alpha: 0.25;
-  --text-warning: var(--amber-500);
-  --text-destructive: var(--red-400);
-  --link: var(--blue-400);
-  --link-hover: var(--blue-300);
-  --link-visited: 192 132 252;
-  --accent-primary: 65 167 157;
-  --accent-primary-hover: 109 200 185;
-  --header-primary: var(--gray-700);
-  --header-hover: var(--gray-600);
-  --header-button-hover: var(--gray-700);
-  --surface-active: var(--gray-500);
-  --surface-active-alt: var(--gray-700);
-  --surface-hover: var(--gray-650);
-  --surface-hover-alt: var(--gray-600);
-  --surface-composer-hover: var(--gray-600);
-  --surface-primary: var(--gray-900);
-  --chart-widget-surface: 40 40 40; /* Click UI dashboards.chartWidget.color.background.default #282828 */
-  --chart-widget-stroke: 50 50 50; /* Click UI dashboards.chartWidget.color.stroke.default #323232 */
-  --surface-primary-alt: var(--gray-850);
-  --surface-primary-contrast: var(--gray-850);
-  --surface-secondary: var(--gray-800);
-  --surface-secondary-alt: var(--gray-800);
-  --surface-tertiary: var(--gray-700);
-  --surface-tertiary-alt: var(--gray-700);
-  --surface-dialog: var(--gray-875);
-  --surface-overlay: 0 0 0;
-  --surface-submit: var(--green-700);
-  --surface-submit-hover: var(--green-800);
-  --surface-destructive: var(--red-800);
-  --surface-destructive-hover: var(--red-900);
-  --surface-chat: var(--gray-700);
-  --surface-code: var(--presentation);
-  --surface-qr: var(--white);
-  --border-light: var(--gray-700);
-  --border-medium-alt: var(--gray-600);
-  --border-medium: var(--gray-600);
-  --border-heavy: var(--gray-500);
-  --border-xheavy: var(--gray-400);
-  --border-destructive: var(--red-500);
-  --status-success: var(--green-300);
-  --status-success-subtle: var(--green-950);
-  --status-success-border: var(--green-800);
-  --status-success-strong: 8 135 89;
-  --status-info: var(--blue-300);
-  --status-info-subtle: var(--blue-950);
-  --status-info-border: var(--blue-800);
-  --status-info-strong: var(--gray-600);
-  --status-warning: var(--amber-300);
-  --status-warning-subtle: var(--amber-950);
-  --status-warning-border: var(--amber-800);
-  --status-warning-strong: var(--amber-800);
-  --status-error: var(--red-300);
-  --status-error-subtle: var(--red-950);
-  --status-error-border: var(--red-800);
-  --status-error-strong: var(--red-800);
-  --status-neutral: var(--gray-300);
-  --status-neutral-subtle: var(--gray-800);
-  --status-neutral-border: var(--gray-700);
-  --status-verified: 26 127 216;
-  --text-on-status: var(--white);
-
-  /* Categorical series scale — same hues, stepped for the dark surface */
-  --series-1: 9 140 238;
-  --series-2: 217 87 35;
-  --series-3: 6 158 152;
-  --series-4: 200 133 12;
-  --series-5: 213 82 130;
-  --series-6: 171 104 254;
-  --series-7: 80 167 49;
-  --series-8: 120 130 190;
-
-  /* Code syntax highlighting. Comment and meta are the flattened equivalents of
-     the 50% and 60% alpha whites this palette used before it was tokenized. */
-  --syntax-text: var(--white);
-  --syntax-comment: 144 144 144;
-  --syntax-meta: 166 166 166;
-  --syntax-builtin: 233 149 12;
-  --syntax-keyword: 46 149 211;
-  --syntax-string: 0 166 125;
-  --syntax-attr: 223 48 121;
-  --syntax-title: 242 44 61;
-
-  --surface-inverted: var(--white);
-  --surface-inverted-hover: var(--gray-100);
-  --text-inverted: var(--gray-850);
-  --surface-fixed: var(--white);
-  --surface-fixed-hover: var(--gray-100);
-  --text-fixed: var(--gray-800);
-  --switch-unchecked: 102 102 102;
-  --provider-openai: #19c37d;
-  --provider-openai-gpt4: #ab68ff;
-  --provider-openai-reasoning: #000000;
-  --provider-anthropic: #d09a74;
-  --provider-azure: linear-gradient(0.375turn, #61bde2, #4389d0);
-  --provider-bedrock: #268672;
-  --provider-foreground: #ffffff;
-}
 .gizmo {
   --text-primary: var(--gizmo-gray-950);
   --text-secondary: var(--gizmo-gray-600);
@@ -437,10 +183,21 @@ html.high-contrast ::-webkit-scrollbar-track {
 }
 html.high-contrast * {
   scrollbar-color: rgb(var(--border-heavy)) rgb(var(--surface-primary));
-  /* Controls that halve their own ring (`ring-opacity-50`, `ring-opacity-20`)
-   * keep it at full strength here. The outline rules below cover the controls
-   * that blank it outright. */
-  --tw-ring-opacity: 1;
+}
+/* Controls that halve their own ring (`focus-visible:ring-text-primary/50` on the
+ * composer's collapse, tools, attach-file and attach-file-menu buttons,
+ * `focus:ring-text-primary/20` in `defaultTextProps`) keep it at full strength
+ * here. v4 has no ring-opacity variable — the slash bakes the alpha into
+ * `--tw-ring-color` as a `color-mix(...)` — so restoring full strength means
+ * re-declaring the colour rather than resetting an opacity.
+ *
+ * Matched by the class the caller wrote, not by `*`: a control that names its own
+ * ring colour means it, and `ring-current` on the toast close button is the ink
+ * that contrasts with a status fill, where `--text-primary` would be black on
+ * the light fills and white on the dark ones. The `:focus-visible` rule below
+ * carries the mode's 3px perimeter for everything either way. */
+html.high-contrast [class*='ring-text-primary/'] {
+  --tw-ring-color: rgb(var(--text-primary));
 }
 /* `.dark body`/`.dark html` pin the page to #212121, which would leave a
  * near-black canvas behind the pure black surfaces. */
@@ -457,11 +214,10 @@ html.high-contrast ::selection {
   color: rgb(var(--surface-primary));
 }
 /* WCAG 2.4.13 wants a 2px perimeter as the floor; a contrast mode should exceed
- * it. The global pair below hard-codes #000/#fff instead of reading the ink
- * token, and the keyboard-modality rule for text fields sits at 2px. */
+ * it. The global rule and the keyboard-modality rule for text fields sit at 2px. */
 html.high-contrast :focus-visible,
 html.high-contrast.dark :focus-visible {
-  outline: 3px solid rgb(var(--text-primary));
+  outline: 3px solid rgb(var(--focus-outline));
   outline-offset: 2px;
 }
 /* Selection perimeters and placeholder ink used to live here, but they complete
@@ -489,7 +245,7 @@ html[data-input-modality='keyboard'].high-contrast
     ),
     textarea
   ):not(.lc-field):focus-visible {
-  outline: 3px solid rgb(var(--text-primary)) !important;
+  outline: 3px solid rgb(var(--focus-control)) !important;
   outline-offset: 2px !important;
 }
 /* The WCAG 1.4.1 link treatment moved to
@@ -562,19 +318,6 @@ html.high-contrast.dark .btn-neutral:hover {
   background-color: rgb(var(--surface-hover));
 }
 
-.text-token-text-primary {
-  color: #171717;
-  color: rgb(var(--text-primary));
-}
-.text-token-text-secondary {
-  color: #565869;
-  color: rgb(var(--text-secondary));
-}
-.text-token-text-tertiary {
-  color: #8e8ea0;
-  color: rgb(var(--text-tertiary));
-}
-
 .icon-sm {
   stroke-width: 2;
   height: 1rem;
@@ -604,19 +347,6 @@ html.high-contrast.dark .btn-neutral:hover {
   height: 2rem;
   width: 2rem;
 }
-.border-token-border-light {
-  border-color: #ececf1;
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
-}
-
-.border-token-border-medium {
-  border-color: #d9d9e3;
-  border-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
-}
-
-.bg-token-surface-secondary {
-  background-color: rgb(var(--surface-secondary));
-}
 
 /* Forced-colors overrides the inline `background-color: currentColor` a masked
  * CustomIcon paints with; `!important` is needed to beat that inline style. */
@@ -632,107 +362,28 @@ html.high-contrast.dark .btn-neutral:hover {
   text-overflow: ellipsis;
 }
 
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: normal;
-  font-weight: 400;
-  src: url('$fonts/Inter-Regular.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: italic;
-  font-weight: 400;
-  src: url('$fonts/Inter-Italic.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: normal;
-  font-weight: 500;
-  src: url('$fonts/Inter-SemiBold.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: italic;
-  font-weight: 500;
-  src: url('$fonts/Inter-SemiBoldItalic.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: normal;
-  font-weight: 600;
-  src: url('$fonts/Inter-Bold.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: italic;
-  font-weight: 600;
-  src: url('$fonts/Inter-BoldItalic.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Roboto Mono;
-  font-style: normal;
-  font-weight: 400;
-  src: url('$fonts/roboto-mono-latin-400-normal.woff2') format('woff2');
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Roboto Mono;
-  font-style: normal;
-  font-weight: 700;
-  src: url('$fonts/roboto-mono-latin-700-normal.woff2') format('woff2');
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Roboto Mono;
-  font-style: italic;
-  font-weight: 400;
-  src: url('$fonts/roboto-mono-latin-400-italic.woff2') format('woff2');
-}
-
-select {
-  --tw-shadow: 0 0 transparent;
-  -webkit-appearance: none;
-  appearance: none;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%238e8ea0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
-  background-position: right 0.5rem center;
-  background-repeat: no-repeat;
-  background-size: 1.5em 1.5em;
-  padding-right: 2.5rem;
-  background-color: #fff;
-  border-color: #8e8ea0;
-  border-radius: 0;
-  border-width: 1px;
-  font-size: 1rem;
-  line-height: 1.5rem;
-}
-
-.overflow-y-auto {
-  overflow-y: overlay;
-}
-
-.overflow-x-auto {
-  overflow-x: overlay;
+/* v4 puts every utility in `@layer utilities`, and an unlayered declaration outranks a
+ * layered one whatever its specificity. The rules below are element and bare-pseudo
+ * resets that utilities beat under v3 by being classes; each is layered so it keeps
+ * losing to a utility. A rule that is meant to beat utilities stays unlayered
+ * (`.dark :focus-visible`, the `code, pre` font reset). */
+@layer base {
+  select {
+    --tw-shadow: 0 0 transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%238e8ea0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.5em 1.5em;
+    padding-right: 2.5rem;
+    background-color: #fff;
+    border-color: #8e8ea0;
+    border-radius: 0;
+    border-width: 1px;
+    font-size: 1rem;
+    line-height: 1.5rem;
+  }
 }
 
 .reset-rc-number-input input {
@@ -743,10 +394,6 @@ select {
 
 .reset-rc-number-input-text-right input {
   text-align: right;
-}
-
-.hidden {
-  display: none;
 }
 
 p > small {
@@ -778,21 +425,23 @@ p > small {
   }
 }
 
-blockquote,
-dd,
-dl,
-fieldset,
-figure,
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-hr,
-p,
-pre {
-  margin: 0;
+@layer base {
+  blockquote,
+  dd,
+  dl,
+  fieldset,
+  figure,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  hr,
+  p,
+  pre {
+    margin: 0;
+  }
 }
 
 /* Show the message time when the row is hovered. Tailwind group-hover
@@ -878,7 +527,7 @@ pre {
   max-width: 65ch;
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
+    1.375rem * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
   );
 }
 
@@ -998,13 +647,10 @@ pre {
 .prose :where(code):not(:where([class~='not-prose'] *)) {
   color: var(--tw-prose-code);
   font-size: 0.875em;
-  font-weight: 600;
-  background-color: rgb(var(--gray-200));
+  font-weight: var(--theme-inline-code-weight, 600);
+  background-color: rgb(var(--surface-code-inline));
   padding: 0.125rem 0.25rem;
   border-radius: 0.35rem;
-}
-.dark .prose :where(code):not(:where([class~='not-prose'] *)):not(:where(pre *)) {
-  background-color: rgb(var(--gray-600));
 }
 .prose :where(a code):not(:where([class~='not-prose'] *)) {
   color: inherit;
@@ -1095,39 +741,43 @@ pre {
 .prose :where(tfoot td):not(:where([class~='not-prose'] *)) {
   vertical-align: top;
 }
+/* Prose colours read the theme roles, so a theme definition repaints message
+ * content. Each variable takes the role that reproduces the default palette
+ * (body is `text-secondary`, #424242 in light). Links read `link-prose`, which is
+ * `link` in light and `text-primary` in dark, where the default set renders them white. */
 .prose {
-  --tw-prose-body: #424242;
-  --tw-prose-headings: #111827;
-  --tw-prose-lead: #4b5563;
-  --tw-prose-links: #0066cc;
-  --tw-prose-bold: #111827;
-  --tw-prose-counters: #6b7280;
-  --tw-prose-bullets: #d1d5db;
-  --tw-prose-hr: #cdcdcd;
-  --tw-prose-quotes: #111827;
-  --tw-prose-quote-borders: #e5e7eb;
-  --tw-prose-captions: #6b7280;
-  --tw-prose-code: #111827;
-  --tw-prose-pre-code: #e5e7eb;
-  --tw-prose-pre-bg: #1f2937;
-  --tw-prose-th-borders: #d1d5db;
-  --tw-prose-td-borders: #e5e7eb;
-  --tw-prose-invert-body: #d1d5db;
-  --tw-prose-invert-headings: #fff;
-  --tw-prose-invert-lead: #9ca3af;
-  --tw-prose-invert-links: #fff;
-  --tw-prose-invert-bold: #fff;
-  --tw-prose-invert-counters: #9ca3af;
-  --tw-prose-invert-bullets: #4b5563;
-  --tw-prose-invert-hr: #424242;
-  --tw-prose-invert-quotes: #f3f4f6;
-  --tw-prose-invert-quote-borders: #424242;
-  --tw-prose-invert-captions: #9ca3af;
-  --tw-prose-invert-code: #fff;
-  --tw-prose-invert-pre-code: #d1d5db;
-  --tw-prose-invert-pre-bg: rgba(0, 0, 0, 0.5);
-  --tw-prose-invert-th-borders: #4b5563;
-  --tw-prose-invert-td-borders: #424242;
+  --tw-prose-body: rgb(var(--text-secondary));
+  --tw-prose-headings: rgb(var(--text-primary));
+  --tw-prose-lead: rgb(var(--text-secondary));
+  --tw-prose-links: rgb(var(--link-prose));
+  --tw-prose-bold: rgb(var(--text-primary));
+  --tw-prose-counters: rgb(var(--text-tertiary));
+  --tw-prose-bullets: rgb(var(--prose-bullet));
+  --tw-prose-hr: rgb(var(--border-medium));
+  --tw-prose-quotes: rgb(var(--text-primary));
+  --tw-prose-quote-borders: rgb(var(--border-light));
+  --tw-prose-captions: rgb(var(--text-tertiary));
+  --tw-prose-code: rgb(var(--text-primary));
+  --tw-prose-pre-code: rgb(var(--text-primary));
+  --tw-prose-pre-bg: rgb(var(--surface-code));
+  --tw-prose-th-borders: rgb(var(--border-medium));
+  --tw-prose-td-borders: rgb(var(--border-light));
+  --tw-prose-invert-body: rgb(var(--text-secondary));
+  --tw-prose-invert-headings: rgb(var(--text-primary));
+  --tw-prose-invert-lead: rgb(var(--text-tertiary));
+  --tw-prose-invert-links: rgb(var(--link-prose));
+  --tw-prose-invert-bold: rgb(var(--text-primary));
+  --tw-prose-invert-counters: rgb(var(--text-tertiary));
+  --tw-prose-invert-bullets: rgb(var(--prose-bullet));
+  --tw-prose-invert-hr: rgb(var(--border-medium));
+  --tw-prose-invert-quotes: rgb(var(--text-primary));
+  --tw-prose-invert-quote-borders: rgb(var(--border-medium));
+  --tw-prose-invert-captions: rgb(var(--text-tertiary));
+  --tw-prose-invert-code: rgb(var(--text-primary));
+  --tw-prose-invert-pre-code: rgb(var(--text-primary));
+  --tw-prose-invert-pre-bg: rgb(var(--surface-code));
+  --tw-prose-invert-th-borders: rgb(var(--border-medium));
+  --tw-prose-invert-td-borders: rgb(var(--border-medium));
   font-size: 1rem;
   line-height: 1.4;
 }
@@ -1226,7 +876,7 @@ pre {
 }
 
 /* `code`, `kbd`, `samp` and `pre` take their font from Tailwind's preflight, which
-   reads `theme.fontFamily.mono` — see `tailwind.config.cjs`. Do not restate it here:
+   reads `--font-mono`, mapped to `--theme-mono-font-family` above. Do not restate it here:
    this file used to, with `!important`, which silently beat every `font-mono` class
    in the app and pinned code to faces the repository does not ship. */
 code.language-text,
@@ -1303,9 +953,16 @@ pre[class*='language-'] {
   color: rgb(var(--syntax-title));
 }
 
-[role='button'],
-button {
-  cursor: pointer;
+/* Tailwind 3 gave every button a pointer cursor and Tailwind 4 leaves the
+ * platform default, so this shim is what keeps the affordance. It belongs in
+ * `base`: unlayered it would outrank every utility in the sheet, and
+ * `cursor-default` on `SelectDropDown` or `disabled:cursor-not-allowed` on a
+ * disabled button would stop meaning anything. */
+@layer base {
+  [role='button'],
+  button {
+    cursor: pointer;
+  }
 }
 
 .btn {
@@ -1512,16 +1169,16 @@ html {
   height: 100%;
 }
 
-/* Scoped to the drawer-gesture breakpoint (useSidebarState's 768px): on small
-   screens the app never scrolls at the root, so chaining out of nested
-   scrollers has nothing legitimate to reach — this kills Chrome Android's
-   pull-to-refresh and horizontal overscroll gliding into browser navigation.
-   Desktop keeps native trackpad back/forward and refresh gestures. */
-@media (max-width: 768px) {
-  body,
-  html {
-    overscroll-behavior: none;
-  }
+/* Scoped to drawer mode rather than a fixed viewport width: that breakpoint is
+   scale-aware and a media query cannot read the scaled root font size, so Root
+   stamps this attribute from the same predicate. In drawer mode the app never
+   scrolls at the root, so chaining out of nested scrollers has nothing legitimate
+   to reach: this kills Chrome Android's pull-to-refresh and horizontal overscroll
+   gliding into browser navigation. Desktop keeps native trackpad back/forward
+   and refresh gestures. */
+html[data-drawer-nav],
+html[data-drawer-nav] body {
+  overscroll-behavior: none;
 }
 
 .dark body,
@@ -1539,7 +1196,7 @@ html {
   max-width: none;
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
+    1.375rem * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
   );
 }
 
@@ -1578,7 +1235,7 @@ html {
 
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-400));
+  border-color: rgb(var(--prose-quote-bar));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
@@ -1593,7 +1250,7 @@ html {
 }
 
 .markdown th {
-  background-color: rgba(236, 236, 241, 0.2);
+  background-color: rgb(var(--table-header-fill));
   border-bottom-width: 1px;
   border-left-width: 1px;
   border-top-width: 1px;
@@ -1606,7 +1263,7 @@ html {
 
 .markdown th:last-child {
   border-right-width: 1px;
-  border-color: #d1d5db;
+  border-color: rgb(var(--border-medium));
   border-top-right-radius: 0.375rem;
 }
 
@@ -1628,19 +1285,32 @@ html {
   border-bottom-right-radius: 0.375rem;
 }
 
+/* The column rules take the inset share of the border-medium edge, so a theme that draws no inset
+ * border keeps the row rules and the outer frame only. Every side edge takes the inset share and
+ * the frame, the first cell's start edge and the last cell's end edge, is put back whole in
+ * logical terms, so a table laid out right-to-left, even under a left-to-right page, keeps the
+ * edge that is visually outermost with no selector on direction. The selectors outrank the cell
+ * rules above, which restate the edge in one declaration, and leave high contrast to its own. */
+html:not(.high-contrast) .markdown :is(th, td) {
+  border-left-color: rgb(
+    var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
+  );
+  border-right-color: rgb(
+    var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
+  );
+}
+
+html:not(.high-contrast) .markdown :is(th, td):first-child {
+  border-inline-start-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+}
+
+html:not(.high-contrast) .markdown :is(th, td):last-child {
+  border-inline-end-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+}
+
 .markdown a {
   text-decoration-line: underline;
   text-underline-offset: 2px;
-}
-
-.truncate {
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.text-ellipsis,
-.truncate {
-  text-overflow: ellipsis;
 }
 
 .group:hover .group-hover\:visible {
@@ -1690,31 +1360,14 @@ html {
     transform: rotate(1turn);
   }
 }
-.animate-spin {
-  -webkit-animation: spin 1s linear infinite;
-  animation: spin 1s linear infinite;
-}
 
-.grow {
-  flex-grow: 1;
-}
-
-.transform {
-  -webkit-transform: translate(var(--tw-translate-x), var(--tw-translate-y))
-    rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y))
-    scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
-  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate))
-    skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x))
-    scaleY(var(--tw-scale-y));
-}
 body,
 html {
   height: 100%;
 }
 .dark body,
 .dark html {
-  --tw-bg-opacity: 1;
-  background-color: rgba(33, 33, 33, var(--tw-bg-opacity));
+  background-color: rgb(var(--surface-primary-alt));
 }
 #__next,
 #root {
@@ -1748,13 +1401,10 @@ html {
 }
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--prose-quote-bar));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
-}
-.dark .markdown blockquote {
-  border-color: rgb(var(--gray-600));
 }
 .markdown table {
   --tw-border-spacing-x: 0px;
@@ -1762,49 +1412,40 @@ html {
   border-collapse: separate;
   border-spacing: var(--tw-border-spacing-x) var(--tw-border-spacing-y);
   width: 100%;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
 }
 .markdown th {
-  background-color: rgb(var(--gray-100));
+  background-color: rgb(var(--table-header-fill));
+  color: rgb(var(--table-header-text));
   border-bottom-width: 1px;
   border-left-width: 1px;
   border-top-width: 1px;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
   font-weight: 600;
 }
-.dark .markdown th {
-  border-color: rgb(var(--gray-600));
-  background-color: rgb(var(--gray-600));
-}
 .markdown th:first-child {
-  border-top-left-radius: 0.75rem;
+  border-top-left-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown th:last-child {
   border-right-width: 1px;
-  border-top-right-radius: 0.75rem;
+  border-top-right-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown td {
   border-bottom-width: 1px;
   border-left-width: 1px;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
 }
 .markdown td:last-child {
   border-right-width: 1px;
-  border-color: rgb(var(--gray-300));
-}
-.dark .markdown td {
-  border-color: rgb(var(--gray-600));
-}
-.dark .markdown td:last-child {
-  border-color: rgb(var(--gray-600));
+  border-color: rgb(var(--border-medium));
 }
 .markdown tbody tr:last-child td:first-child {
-  border-bottom-left-radius: 0.75rem;
+  border-bottom-left-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown tbody tr:last-child td:last-child {
-  border-bottom-right-radius: 0.75rem;
+  border-bottom-right-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown a {
   text-decoration-line: underline;
@@ -1907,10 +1548,10 @@ html {
   border-radius: 50%;
   content: ' ';
   display: block;
-  height: 12px;
+  height: 0.75rem;
   position: absolute;
-  top: -11px;
-  width: 12px;
+  top: -0.6875rem;
+  width: 0.75rem;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1980,8 +1621,8 @@ html {
 .result-streaming > pre:last-child code:after {
   display: inline-block;
   content: '⬤';
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   font-family:
     system-ui,
     Inter,
@@ -2018,8 +1659,8 @@ html {
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
-    width: 12px;
-    height: 12px;
+    width: 0.75rem;
+    height: 0.75rem;
   }
 }
 
@@ -2043,8 +1684,8 @@ html {
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
-    width: 12px;
-    height: 12px;
+    width: 0.75rem;
+    height: 0.75rem;
   }
 
   .result-streaming > ol:last-child > li:last-child > :is(ul, ol, pre) ~ :after,
@@ -2088,14 +1729,14 @@ html {
 .webkit-dark-styles,
 .webkit-dark-styles:focus {
   background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh #fff inset;
+  -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
 }
 
 .dark .webkit-dark-styles,
 .dark .webkit-dark-styles:focus {
-  -webkit-text-fill-color: #fff;
+  -webkit-text-fill-color: rgb(var(--field-text, var(--text-primary)));
   background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh #0d0d0d inset;
+  -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
 }
 
 /* Ordered Listing */
@@ -2348,24 +1989,26 @@ html {
 .tooltip {
   z-index: 150;
   cursor: pointer;
-  border-radius: 0.275rem;
-  background-color: rgb(var(--surface-primary));
-  padding-top: 0.25rem;
-  padding-bottom: 0.25rem;
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
-  font-size: 1rem;
-  line-height: 1.5rem;
-  color: rgb(var(--text-primary));
-  box-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
+  border-radius: var(--theme-tooltip-radius, 0.275rem);
+  background-color: rgb(var(--surface-tooltip, var(--surface-primary)));
+  padding-top: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-bottom: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-left: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-right: var(--theme-tooltip-padding-x, 0.5rem);
+  font-size: var(--theme-tooltip-text-size, 1rem);
+  line-height: 1.5;
+  color: rgb(var(--text-tooltip, var(--text-primary)));
+  box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(0 0 0 / 0.25));
 }
 
 .tooltip:where(.dark, .dark *) {
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  box-shadow: var(--theme-tooltip-shadow, 0 1px 2px 0 rgb(0 0 0 / 0.35));
 }
 
-:focus {
-  outline: none;
+@layer base {
+  :focus {
+    outline: none;
+  }
 }
 
 html[data-input-modality='pointer']
@@ -2410,18 +2053,25 @@ html[data-input-modality='keyboard']
     ),
     textarea
   ):not(.lc-field):focus-visible {
-  outline: 2px solid rgb(var(--text-primary)) !important;
-  outline-offset: 2px !important;
+  outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-control)) !important;
+  outline-offset: var(--theme-focus-ring-offset, 2px) !important;
 }
 
-:focus-visible {
-  outline: 2px solid #000;
-  outline-offset: 2px;
+/* The focus outline is the theme's `focus-outline` role: black and white in the
+ * default theme, and whatever a theme names, or its `ring-primary` when it names
+ * only that (see `resolveTheme`). Its width and offset are the `focusRingWidth`
+ * and `focusRingOffset` roles, 2px each by default. The contrast modes keep their
+ * own 3px rule. */
+@layer base {
+  :focus-visible {
+    outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
+    outline-offset: var(--theme-focus-ring-offset, 2px);
+  }
 }
 
 .dark :focus-visible {
-  outline: 2px solid #fff;
-  outline-offset: 2px;
+  outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
+  outline-offset: var(--theme-focus-ring-offset, 2px);
 }
 
 .popover-ui {
@@ -2430,16 +2080,19 @@ html[data-input-modality='keyboard']
   flex-direction: column;
   overflow: auto;
   overscroll-behavior: contain;
-  border-radius: 0.7rem;
+  border-radius: var(--theme-menu-radius, 0.7rem);
   border-width: 1px;
   border-style: solid;
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
-  background-color: rgb(var(--surface-primary));
+  border-color: rgb(var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1)));
+  background-color: rgb(var(--surface-popover));
   padding: 0.5rem;
   color: rgb(var(--text-primary));
-  box-shadow:
+  /* The `menuShadow` role, whose light default is this literal. */
+  box-shadow: var(
+    --theme-menu-shadow,
     0 10px 15px -3px rgb(0 0 0 / 0.1),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+    0 4px 6px -4px rgb(0 0 0 / 0.1)
+  );
   transform-origin: var(--popover-transform-origin, top);
   opacity: 0;
   transition-property: opacity, scale;
@@ -2464,16 +2117,18 @@ html[data-input-modality='keyboard']
 
 .popover-ui:focus-visible,
 .popover-ui[data-focus-visible] {
-  outline: 2px solid rgb(var(--text-primary));
+  outline: 2px solid rgb(var(--focus-control));
   outline-offset: -1px;
 }
 
 .popover-ui:where(.dark, .dark *) {
-  background-color: rgb(var(--surface-secondary));
+  background-color: rgb(var(--surface-popover));
   color: rgb(var(--text-secondary));
-  box-shadow:
+  box-shadow: var(
+    --theme-menu-shadow,
     0 10px 15px -3px rgb(0 0 0 / 0.25),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+    0 4px 6px -4px rgb(0 0 0 / 0.1)
+  );
 }
 
 .select-item {
@@ -2482,7 +2137,7 @@ html[data-input-modality='keyboard']
   scroll-margin: 0.5rem;
   align-items: center;
   gap: 0.5rem;
-  border-radius: 0.5rem;
+  border-radius: var(--theme-radius-lg, 0.5rem);
   padding: 0.5rem;
   outline: none !important;
 }
@@ -2551,6 +2206,224 @@ html[data-input-modality='keyboard']
 .animate-popover-top-left[data-enter] {
   opacity: 1;
   transform: scale(1) translate(0, 0);
+}
+
+/**
+ * Composer popovers. Its own curve rather than `animate-popover`'s: these are
+ * large surfaces, and the shared 150ms ease-in-out reads as a snap at that size.
+ * Decelerating hard from the first frame and then settling is what makes a panel
+ * feel placed rather than switched on. Leaving is quicker than entering, so
+ * dismissing never feels like waiting.
+ */
+.animate-composer-popover {
+  /* Ariakit resolves this to the edge nearest the trigger, so the panel grows
+     out of the button whether it opens below or flips above. `animate-popover`
+     pins the origin to the top and translates down, which is right one way
+     round and backwards the other. */
+  transform-origin: var(--popover-transform-origin, top center);
+  opacity: 0;
+  transform: scale(0.94);
+  transition:
+    opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform, opacity;
+}
+.animate-composer-popover[data-enter] {
+  opacity: 1;
+  transform: scale(1);
+}
+.animate-composer-popover[data-leave] {
+  transition-duration: 120ms, 140ms;
+}
+
+/* The Thinking pill's label slot resizes with the popover it opens: same
+   duration and curve as the opacity leg above. */
+.composer-slot-resize {
+  transition: width 190ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/**
+ * Palette list. `.scrollbar-hover` fades its thumb in on pointer-over, so on a
+ * list this dense the scrollbar reads as appearing out of nowhere, and where
+ * the platform draws classic rather than overlay scrollbars, a gutter that only
+ * exists while the thumb does shifts every row sideways under the cursor. The
+ * thumb stays drawn and the gutter stays reserved; the class is only applied
+ * when the list actually overflows, so a short list keeps its full width.
+ *
+ * Standard properties only, deliberately: styling `::-webkit-scrollbar` opts an
+ * element out of overlay scrollbars altogether, which would spend 8px of gutter
+ * on the platforms that never had the problem.
+ */
+.composer-palette-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1)) transparent;
+  scrollbar-gutter: stable;
+}
+/**
+ * The thinking-level slider's stops. Position and size glide on a spring with a
+ * slight overshoot, so the thumb and the fill settle onto a stop rather than
+ * stopping dead; both share the curve, so the fill's end stays under the thumb
+ * throughout. Custom CSS because the overshoot curve has no theme token.
+ */
+.composer-effort-glide {
+  transition-property: left, width, height;
+  transition-duration: 280ms;
+  transition-timing-function: cubic-bezier(0.34, 1.36, 0.64, 1);
+}
+
+/**
+ * The held thumb leaning toward the pointer (set on the track as
+ * `--effort-lean`, stretched along the pull and squashed across it). It tracks
+ * the pointer directly while held and springs back on release.
+ */
+.composer-effort-thumb {
+  transform: translateX(var(--effort-lean, 0px))
+    scale(var(--effort-stretch, 1), var(--effort-squash, 1));
+  transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.composer-effort-thumb[data-dragging] {
+  transition-duration: 60ms;
+  transition-timing-function: linear;
+}
+
+/**
+ * The fill follows the thumb's lean, so pulling toward a higher level stretches
+ * the fill along with the thumb instead of leaving its end behind, uncovered,
+ * as the thumb leans away. Same clocks as the thumb.
+ */
+.composer-effort-fill {
+  width: calc(100% + var(--effort-lean, 0px));
+  transition:
+    width 320ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 100ms ease-out;
+}
+.composer-effort-fill[data-dragging] {
+  transition:
+    width 60ms linear,
+    opacity 100ms ease-out;
+}
+
+/**
+ * The thinking button's label changing level: the old word blurs out in the
+ * direction of the change while the new one arrives from the other side,
+ * overlapping it briefly, like an odometer. `-up` for a higher level.
+ */
+@keyframes composer-label-out-up {
+  to {
+    transform: translateY(-70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+@keyframes composer-label-out-down {
+  to {
+    transform: translateY(70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+@keyframes composer-label-in-up {
+  from {
+    transform: translateY(70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+@keyframes composer-label-in-down {
+  from {
+    transform: translateY(-70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+.composer-label-out-up {
+  animation: composer-label-out-up 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+.composer-label-out-down {
+  animation: composer-label-out-down 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+.composer-label-in-up {
+  animation: composer-label-in-up 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.composer-label-in-down {
+  animation: composer-label-in-down 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/** Trigger glyphs that turn as their popover opens, on the same curve. */
+.animate-composer-icon {
+  /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
+  transition-property: transform, rotate;
+  transition-duration: 260ms;
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/**
+ * The palette growing or shrinking as its list rearranges. The rows themselves
+ * are moved from `Palette.tsx`, which plays each one back to where it was after
+ * the list has been redrawn; a re-inserted node drops any transition it was
+ * about to run, and starring an entry re-inserts every row it passed. The
+ * panel's own height has no such problem: the list box is never re-inserted.
+ */
+.composer-palette-rows .ReactVirtualized__Grid {
+  transition: height 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* Held for the frame a search redraws in: the list is being replaced rather
+   than rearranged there, and growing into its new size reads as the panel
+   lagging behind the typing. */
+.composer-palette-instant .ReactVirtualized__Grid {
+  transition-duration: 0s;
+}
+@keyframes composer-palette-row {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-composer-palette-row {
+  animation: composer-palette-row 200ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+@keyframes composer-palette-row-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* Accelerating away, unlike everything else here: the shared decelerating curve
+   spends this beat almost entirely at zero, leaving the rows gone well before
+   the list starts closing over them. */
+.animate-composer-palette-row-out {
+  animation: composer-palette-row-out 110ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave],
+  .animate-composer-icon,
+  .composer-slot-resize,
+  .composer-effort-glide,
+  .composer-effort-thumb,
+  .composer-effort-fill,
+  .composer-palette-rows .ReactVirtualized__Grid {
+    transition-duration: 1ms;
+  }
+  .animate-composer-palette-row,
+  .animate-composer-palette-row-out,
+  .composer-label-out-up,
+  .composer-label-out-down,
+  .composer-label-in-up,
+  .composer-label-in-down {
+    animation-duration: 1ms;
+  }
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave] {
+    transform: none;
+  }
 }
 
 /** Note: ensure KaTeX can spread across visible space */
@@ -2678,9 +2551,19 @@ html[data-input-modality='keyboard']
 /* ask_user_question popover <-> chat-card morph (view transition) */
 ::view-transition-group(ask-question),
 ::view-transition-old(ask-question),
-::view-transition-new(ask-question) {
+::view-transition-new(ask-question),
+::view-transition-group(ask-question-chevron),
+::view-transition-old(ask-question-chevron),
+::view-transition-new(ask-question-chevron) {
   animation-duration: 280ms;
   animation-timing-function: cubic-bezier(0.32, 0.72, 0.22, 1);
+}
+
+/* The move control's chevron is its own group, so the morph also turns it
+   (down in the composer, up in the chat): the group interpolates the icon's
+   rotate-180. Above its card, below the composer like the card itself. */
+::view-transition-group(ask-question-chevron) {
+  z-index: 1;
 }
 
 /* The composer keeps its own snapshot group stacked above the morphing

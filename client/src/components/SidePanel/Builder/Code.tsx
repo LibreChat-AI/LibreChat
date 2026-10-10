@@ -29,7 +29,7 @@ export default function Code({ version }: { version: number | string }) {
                 {...field}
                 checked={field.value}
                 onCheckedChange={field.onChange}
-                className="relative float-left mr-2 inline-flex h-4 w-4 cursor-pointer"
+                className="relative float-left mr-2 inline-flex cursor-pointer"
                 value={field.value.toString()}
                 aria-labelledby={Capabilities.code_interpreter}
               />
@@ -37,7 +37,7 @@ export default function Code({ version }: { version: number | string }) {
           />
           <button
             type="button"
-            className="flex items-center space-x-2"
+            className="text-text-tertiary flex items-center space-x-2"
             onClick={() =>
               setValue(Capabilities.code_interpreter, !getValues(Capabilities.code_interpreter), {
                 shouldDirty: true,
@@ -46,19 +46,19 @@ export default function Code({ version }: { version: number | string }) {
           >
             <label
               id={Capabilities.code_interpreter}
-              className="form-check-label text-token-text-primary w-full cursor-pointer"
+              className="form-check-label text-text-primary w-full cursor-pointer"
               htmlFor={Capabilities.code_interpreter}
             >
               {localize('com_assistants_code_interpreter')}
             </label>
             <HoverCardTrigger>
-              <CircleHelpIcon className="h-5 w-5 text-gray-500" />
+              <CircleHelpIcon className="h-5 w-5" />
             </HoverCardTrigger>
           </button>
           <HoverCardPortal>
             <HoverCardContent side={ESide.Top} className="w-80">
               <div className="space-y-2">
-                <p className="text-sm text-gray-600 dark:text-gray-300">
+                <p className="text-text-secondary text-sm">
                   {version == 2 && localize('com_assistants_code_interpreter_info')}
                 </p>
               </div>

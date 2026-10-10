@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Minus } from 'lucide-react';
 import { OTPInput, OTPInputContext, RenderProps } from 'input-otp';
-import { cn } from '~/utils';
+import { cn, disabledWithinFillClasses } from '~/utils';
 
 const InputOTP: React.ForwardRefExoticComponent<
   (
@@ -71,6 +71,7 @@ const InputOTP: React.ForwardRefExoticComponent<
     ref={ref}
     containerClassName={cn(
       'flex items-center gap-2 has-[:disabled]:opacity-50',
+      disabledWithinFillClasses,
       containerClassName,
     )}
     className={cn('disabled:cursor-not-allowed', className)}
@@ -109,8 +110,8 @@ const InputOTPSlot: React.ForwardRefExoticComponent<
     <div
       ref={ref}
       className={cn(
-        'relative flex h-11 w-11 items-center justify-center border-y border-r border-border-medium text-base shadow-sm transition-all first:rounded-l-xl first:border-l last:rounded-r-xl',
-        isActive && 'z-10 ring-1 ring-text-primary',
+        'border-border-control relative flex h-11 w-11 items-center justify-center border-y border-r text-base shadow-xs transition-all first:rounded-l-xl first:border-l last:rounded-r-xl',
+        isActive && 'ring-focus-control z-10 ring-1',
         className,
       )}
       {...props}
@@ -118,7 +119,7 @@ const InputOTPSlot: React.ForwardRefExoticComponent<
       {char}
       {hasFakeCaret && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="animate-caret-blink h-4 w-px bg-text-primary duration-1000" />
+          <div className="animate-caret-blink bg-text-primary h-4 w-px duration-1000" />
         </div>
       )}
     </div>

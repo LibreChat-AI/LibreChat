@@ -17,7 +17,12 @@ import type {
   TextContent,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import type { SearchResultData, UIResource, TPlugin } from 'librechat-data-provider';
+import type {
+  SearchResultData,
+  UIResource,
+  TPlugin,
+  TMCPAppOperationLimits,
+} from 'librechat-data-provider';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type { LCTool } from '@librechat/agents';
 import type {
@@ -98,6 +103,7 @@ export type MCPToolCallResponse =
       _meta?: Record<string, unknown>;
       content?: Array<ToolContentPart>;
       isError?: boolean;
+      structuredContent?: Record<string, unknown>;
     };
 
 export type Provider =
@@ -228,7 +234,22 @@ export interface DirectBearerRecoveryState {
   resolvedConfig?: MCPOptions;
 }
 
+/** Host-supplied live headers; transport requests cannot reuse a prior allow observation. */
+export type MCPRequestHeaderResolver = ((
+  signal?: AbortSignal,
+  /** Stops this connection's retries at observation, before denial admission awaits. */
+  onDenied?: (error: unknown) => void,
+) => Promise<Record<string, string>>) & {
+  /** Synchronous completion/owner cutoff, checked beside dispatch with no intervening await. */
+  assertOpen?: () => void;
+  /** Records asynchronous transport denials at the owning request boundary. */
+  recordFailure?: (error: unknown) => Promise<void>;
+  /** Pending owner evidence must be admitted before transport disposal completes. */
+  settle?: () => Promise<void>;
+};
+
 export interface BasicConnectionOptions {
+  resolveRequestHeaders?: MCPRequestHeaderResolver;
   serverName: string;
   serverConfig: MCPOptions;
   /** Original unresolved definition retained across asynchronous credential preprocessing. */
@@ -247,6 +268,10 @@ export interface BasicConnectionOptions {
   skipEnvProcessing?: boolean;
   /** When true, the connection is intentionally short-lived for a single request/tool call */
   ephemeralConnection?: boolean;
+  /** Immutable client capabilities negotiated for this connection. */
+  capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
+  /** Validated deployment limits captured for App-profile transport parsing. */
+  operationLimits?: TMCPAppOperationLimits;
 }
 
 /** User context for placeholder resolution in MCP connections (non-OAuth and OAuth alike) */
@@ -264,6 +289,8 @@ export interface UserConnectionContext {
   /** Cancels the connection's SDK requests when the caller itself is cancelled; previously only
    *  OAuth connections could carry a signal, leaving non-OAuth discovery uncancellable. */
   signal?: AbortSignal;
+  /** Immutable client capabilities requested by this caller. */
+  capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
   /** Absolute epoch-ms bound on the whole connect-and-list operation. `connectionTimeout` bounds
    *  only a single `connect()`, so a caller that must return within a fixed budget sets this to
    *  cap every segment, including `tools/list` pagination and the unauthenticated fallback. */
@@ -306,6 +333,8 @@ export interface RequestScopedMCPConnectionStore {
   disposeConnection?: (connectionKey: string, connection: unknown) => Promise<void>;
   /** Set before cleanup snapshots pending work; new connection attempts must fail closed. */
   cleanupStarted?: boolean;
+  /** Completion cutoff: no new occurrence dispatch or connection may begin. */
+  quiesceStarted?: boolean;
 }
 
 export interface OAuthStartOptions {
@@ -327,26 +356,35 @@ export interface OAuthConnectionOptions extends UserConnectionContext {
   oboIdentityContext?: AuthIdentityContext;
 }
 
-/** Options accepted by UserConnectionManager.getUserConnection. OAuth fields are optional. */
-export interface UserMCPConnectionOptions extends UserConnectionContext {
-  serverName: string;
-  forceNew?: boolean;
-  ephemeralConnection?: boolean;
-  serverConfig?: ParsedServerConfig;
-  /** Internal one-shot fence shared across connection initialization and initial tools/list. */
-  directBearerRecoveryState?: DirectBearerRecoveryState;
-  flowManager?: FlowStateManager<o.MCPOAuthTokens | null>;
-  /** Request-local resolved credentials; serverConfig remains the authoritative definition. */
-  directBearerResolvedConfig?: MCPOptions;
-  tokenMethods?: TokenMethods;
-  signal?: AbortSignal;
-  oauthStart?: OAuthStartHandler;
-  oauthEnd?: () => Promise<void>;
-  returnOnOAuth?: boolean;
-  oboTokenResolver?: OboTokenResolver;
-  oboTrustChecker?: OboTrustChecker;
-  oboIdentityContext?: AuthIdentityContext;
+export interface MCPConnectionTarget {
+  serverConfig: ParsedServerConfig;
+  connectionOwner: 'operator' | 'principal';
 }
+
+type MCPConnectionTargetInput =
+  | { connectionTarget: MCPConnectionTarget; serverConfig?: never }
+  | { connectionTarget?: never; serverConfig?: ParsedServerConfig };
+
+/** Options accepted by UserConnectionManager.getUserConnection. OAuth fields are optional. */
+export type UserMCPConnectionOptions = UserConnectionContext &
+  MCPConnectionTargetInput & {
+    serverName: string;
+    forceNew?: boolean;
+    ephemeralConnection?: boolean;
+    /** Internal one-shot fence shared across connection initialization and initial tools/list. */
+    directBearerRecoveryState?: DirectBearerRecoveryState;
+    flowManager?: FlowStateManager<o.MCPOAuthTokens | null>;
+    /** Request-local resolved credentials; serverConfig remains the authoritative definition. */
+    directBearerResolvedConfig?: MCPOptions;
+    tokenMethods?: TokenMethods;
+    signal?: AbortSignal;
+    oauthStart?: OAuthStartHandler;
+    oauthEnd?: () => Promise<void>;
+    returnOnOAuth?: boolean;
+    oboTokenResolver?: OboTokenResolver;
+    oboTrustChecker?: OboTrustChecker;
+    oboIdentityContext?: AuthIdentityContext;
+  };
 
 export interface ToolDiscoveryOptions {
   serverName: string;
@@ -373,6 +411,8 @@ export interface ToolDiscoveryOptions {
   upstreamTokenProvider?: UpstreamTokenProvider;
   upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
   oboIdentityContext?: AuthIdentityContext;
+  /** Immutable client capabilities used for this discovery session. */
+  capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
 }
 
 export interface ToolDiscoveryResult {

@@ -4,11 +4,17 @@ const db = require('~/models');
 
 /* Wiring only: binds this workspace's provisioning service and file model to the
  * ON_TOOL_EXECUTE callback implemented in packages/api. */
-function createProvisionFilesCallback({ req, agentToolContexts, resolvePrimaryAgentId }) {
+function createProvisionFilesCallback({
+  req,
+  agentToolContexts,
+  resolvePrimaryAgentId,
+  resolveExecutionContext,
+}) {
   return createCallback({
     req,
     agentToolContexts,
     resolvePrimaryAgentId,
+    resolveExecutionContext,
     provisionToCodeEnv,
     provisionToVectorDB,
     updateFile: db.updateFile,

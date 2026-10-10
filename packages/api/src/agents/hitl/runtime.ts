@@ -4,10 +4,13 @@ import {
   TOOL_APPROVAL_EXECUTION_SCOPE_CONFIG_KEY,
 } from '@librechat/agents';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
+import type { HookCallback } from '@librechat/agents';
 import type { ResolvedToolApprovalHook, ToolApprovalHookContext } from './hooks';
 import type { MCPToolAlias } from '~/tools/classification';
 import { isHITLEnabled, mapToolApprovalPolicy } from './policy';
 import { buildToolApprovalHooks } from './hooks';
+import { EDIT_FILE_TOOL_NAME } from '../tools';
+import { normalizeEditArgs } from '../edits';
 
 /** Stable across resumes; the job epoch separates edits that reuse a response id. */
 export function buildToolApprovalExecutionConfig(
@@ -58,11 +61,45 @@ export function buildHITLRunWiring(
   context: ToolApprovalHookContext = {},
   mcpToolAliases: readonly MCPToolAlias[] = [],
   resolvedProgrammaticHooks?: readonly ResolvedToolApprovalHook[],
+  nativeEditFileAgentIds: ReadonlySet<string> = new Set(),
 ): HITLRunWiring | undefined {
   if (!isHITLEnabled(policy)) {
     return undefined;
   }
 
+  const normalizeInput = (input: Parameters<HookCallback<'PreToolUse'>>[0]['toolInput']) => {
+    if (typeof input.path !== 'string' || input.path.length === 0) return 'path is required';
+    const edits = normalizeEditArgs(input);
+    if (typeof edits === 'string') return edits;
+    const normalized: typeof input = { ...input, edits };
+    delete normalized.old_text;
+    delete normalized.new_text;
+    delete normalized.replace_all;
+    return normalized;
+  };
+  const withNormalizedEdits =
+    (hook: HookCallback<'PreToolUse'>): HookCallback<'PreToolUse'> =>
+    async (input, signal) => {
+      if (
+        input.toolName !== EDIT_FILE_TOOL_NAME ||
+        input.executingAgentId == null ||
+        !nativeEditFileAgentIds.has(input.executingAgentId)
+      ) {
+        return hook(input, signal);
+      }
+      const normalized = normalizeInput(input.toolInput);
+      if (typeof normalized === 'string') return { decision: 'deny', reason: normalized };
+      /** A fresh updatedInput would supersede the checkpointed proposal on approval replay. */
+      Object.assign(input.toolInput, normalized);
+      delete input.toolInput.old_text;
+      delete input.toolInput.new_text;
+      delete input.toolInput.replace_all;
+      const result = await hook(input, signal);
+      if (result?.updatedInput == null) return result;
+      const updatedInput = normalizeInput(result.updatedInput);
+      if (typeof updatedInput === 'string') return { decision: 'deny', reason: updatedInput };
+      return { ...result, updatedInput };
+    };
   const registry = new HookRegistry();
   let activePolicy: TToolApprovalPolicy | undefined = policy;
   const aliases = [...mcpToolAliases];
@@ -72,8 +109,9 @@ export function buildHITLRunWiring(
   // Static config-driven policy (mode/allow/deny/ask) — the baseline.
   registry.register('PreToolUse', {
     hooks: [
-      async (input, signal) =>
+      withNormalizedEdits(async (input, signal) =>
         createToolPolicyHook(mapToolApprovalPolicy(activePolicy) ?? {})(input, signal),
+      ),
     ],
   });
 
@@ -81,33 +119,35 @@ export function buildHITLRunWiring(
   const programmaticHooks = resolvedProgrammaticHooks ?? buildToolApprovalHooks(context);
   for (const { hook, matcher } of programmaticHooks) {
     if (matcher == null) {
-      registry.register('PreToolUse', { hooks: [hook] });
+      registry.register('PreToolUse', { hooks: [withNormalizedEdits(hook)] });
       continue;
     }
+    let regex: RegExp | null = null;
+    try {
+      regex = new RegExp(matcher);
+    } catch {
+      regex = null;
+    }
+    const compiled = regex;
     registry.register('PreToolUse', {
       hooks: [
-        async (input, signal) => {
-          let regex: RegExp;
-          try {
-            regex = new RegExp(matcher);
-          } catch {
+        withNormalizedEdits(async (input, signal) => {
+          if (compiled == null) {
             return {};
           }
-          regex.lastIndex = 0;
-          if (regex.test(input.toolName)) {
+          if (compiled.test(input.toolName)) {
             return hook(input, signal);
           }
           for (const { name, aliasName } of aliases) {
             if (name !== input.toolName) {
               continue;
             }
-            regex.lastIndex = 0;
-            if (regex.test(aliasName)) {
+            if (compiled.test(aliasName)) {
               return hook(input, signal);
             }
           }
           return {};
-        },
+        }),
       ],
     });
   }

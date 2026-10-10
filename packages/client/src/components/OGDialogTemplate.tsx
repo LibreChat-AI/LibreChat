@@ -6,6 +6,7 @@ import {
   Ref,
   RefAttributes,
 } from 'react';
+import type { ComponentProps } from 'react';
 import {
   OGDialogTitle,
   OGDialogClose,
@@ -66,7 +67,12 @@ type DialogTemplateProps = {
   footerClassName?: string;
   showCloseButton?: boolean;
   showCancelButton?: boolean;
+  cancelDisabled?: boolean;
   onClose?: () => void;
+  onOpenAutoFocus?: ComponentProps<typeof OGDialogContent>['onOpenAutoFocus'];
+  onCloseAutoFocus?: ComponentProps<typeof OGDialogContent>['onCloseAutoFocus'];
+  onEscapeKeyDown?: ComponentProps<typeof OGDialogContent>['onEscapeKeyDown'];
+  onInteractOutside?: ComponentProps<typeof OGDialogContent>['onInteractOutside'];
 };
 
 const OGDialogTemplate: ForwardRefExoticComponent<
@@ -87,13 +93,18 @@ const OGDialogTemplate: ForwardRefExoticComponent<
     showCloseButton = false,
     overlayClassName,
     showCancelButton = true,
+    cancelDisabled = false,
+    onOpenAutoFocus,
+    onCloseAutoFocus,
+    onEscapeKeyDown,
+    onInteractOutside,
   } = props;
   const isLegacySelection = isSelectionProps(selection);
   const legacySelection = isLegacySelection ? selection : null;
   const { selectHandler, selectClasses, selectText, isLoading } = legacySelection ?? {};
 
   const defaultSelect =
-    'bg-surface-inverted text-text-inverted transition-colors hover:bg-surface-inverted-hover disabled:cursor-not-allowed disabled:opacity-50';
+    'bg-button-primary text-text-inverted transition-colors hover:bg-button-primary-hover disabled:cursor-not-allowed disabled:opacity-50';
 
   let selectionContent = null;
   if (isLegacySelection) {
@@ -103,10 +114,10 @@ const OGDialogTemplate: ForwardRefExoticComponent<
         disabled={isLoading}
         className={`${
           selectClasses ?? defaultSelect
-        } flex h-10 items-center justify-center rounded-lg border-none px-4 py-2 text-sm disabled:opacity-80 max-sm:order-first max-sm:w-full sm:order-none`}
+        } h-theme-button flex items-center justify-center rounded-lg border-none px-4 py-2 text-sm disabled:opacity-80 max-sm:order-first max-sm:w-full sm:order-none`}
       >
         {isLoading === true ? (
-          <Spinner className="size-4 text-text-primary" />
+          <Spinner className="size-theme-icon" />
         ) : (
           (selectText as React.JSX.Element)
         )}
@@ -120,13 +131,12 @@ const OGDialogTemplate: ForwardRefExoticComponent<
     <OGDialogContent
       overlayClassName={overlayClassName}
       showCloseButton={showCloseButton}
+      onOpenAutoFocus={onOpenAutoFocus}
+      onCloseAutoFocus={onCloseAutoFocus}
+      onEscapeKeyDown={onEscapeKeyDown}
+      onInteractOutside={onInteractOutside}
       ref={ref}
-      className={cn(
-        /** `border-none` clears the default edge; the contrast variant has to
-         *  restore the style as well as the width to survive it. */
-        'w-11/12 border-none bg-surface-dialog text-text-primary high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none',
-        className ?? '',
-      )}
+      className={cn('bg-surface-dialog text-text-primary w-11/12', className ?? '')}
       onClick={(e) => e.stopPropagation()}
     >
       <OGDialogHeader className={cn(headerClassName ?? '')}>
@@ -144,7 +154,11 @@ const OGDialogTemplate: ForwardRefExoticComponent<
         ) : null}
         {showCancelButton && (
           <OGDialogClose asChild>
-            <Button variant="outline" aria-label={localize('com_ui_cancel')}>
+            <Button
+              variant="outline"
+              aria-label={localize('com_ui_cancel')}
+              disabled={cancelDisabled}
+            >
               {localize('com_ui_cancel')}
             </Button>
           </OGDialogClose>

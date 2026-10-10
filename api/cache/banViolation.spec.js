@@ -1,5 +1,8 @@
 const mongoose = require('mongoose');
 const { MongoMemoryServer } = require('mongodb-memory-server');
+const { ViolationTypes } = require('librechat-data-provider');
+const { deleteAllUserSessions } = require('~/models');
+const getLogStores = require('./getLogStores');
 const banViolation = require('./banViolation');
 
 // Mock deleteAllUserSessions since we're testing ban logic, not session deletion
@@ -79,6 +82,40 @@ describe('banViolation', () => {
     errorMessage.violation_count = randomValueAbove;
     await banViolation(req, res, errorMessage);
     expect(errorMessage.ban).toBeTruthy();
+  });
+
+  it.each(['127.0.0.1', '::1', '::ffff:127.0.0.1'])(
+    'bans only the user for a verified trigger request from %s',
+    async (ip) => {
+      const banLogs = getLogStores(ViolationTypes.BAN);
+      await banLogs.delete(ip);
+      req.ip = ip;
+      req._isAgentTrigger = true;
+      errorMessage.violation_count = 20;
+
+      await banViolation(req, res, errorMessage);
+
+      expect(await banLogs.get(errorMessage.user_id)).toEqual(
+        expect.objectContaining({ violation_count: 20 }),
+      );
+      expect(await banLogs.get(ip)).toBeUndefined();
+      expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: errorMessage.user_id });
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(errorMessage.ban).toBe(true);
+      expect(req.ip).toBe(ip);
+    },
+  );
+
+  it('still bans the IP when an ordinary request sends a trigger header', async () => {
+    req.headers = { 'x-lc-agent-trigger': '1' };
+    errorMessage.violation_count = 20;
+
+    await banViolation(req, res, errorMessage);
+
+    const banLogs = getLogStores(ViolationTypes.BAN);
+    expect(await banLogs.get(req.ip)).toEqual(
+      expect.objectContaining({ user_id: errorMessage.user_id, violation_count: 20 }),
+    );
   });
 
   it('should handle invalid BAN_INTERVAL and default to 20', async () => {

@@ -24,6 +24,8 @@ on:
       - 'config/circular-deps.mjs'
       - '.github/workflows/backend-review.yml'
       - '!**.md'
+  # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
+  workflow_dispatch:
 
 permissions:
   contents: read

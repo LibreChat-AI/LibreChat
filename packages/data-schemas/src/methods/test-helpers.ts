@@ -1,3 +1,5 @@
+import { gptPointReleaseFamily } from 'librechat-data-provider';
+
 /**
  * Inlined utility functions previously imported from @librechat/api.
  * These are used only by test files in data-schemas.
@@ -34,6 +36,18 @@ function findLongestKey(
  * the pricing tests stop describing real billing behavior.
  */
 export function findMatchingPattern(
+  modelName: string,
+  tokensMap: Record<string, number | Record<string, number>>,
+): string | undefined {
+  const direct = findVendorAwarePattern(modelName, tokensMap);
+  if (direct != null) {
+    return direct;
+  }
+  const family = gptPointReleaseFamily(modelName);
+  return family == null ? undefined : findVendorAwarePattern(family, tokensMap);
+}
+
+function findVendorAwarePattern(
   modelName: string,
   tokensMap: Record<string, number | Record<string, number>>,
 ): string | undefined {

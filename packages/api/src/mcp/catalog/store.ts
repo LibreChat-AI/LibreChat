@@ -171,6 +171,7 @@ export interface CachedToolsOptions {
   userId?: string;
   serverName?: string;
   configGeneration?: string;
+  allowLegacyMigration?: boolean;
   ttl?: number;
 }
 
@@ -541,7 +542,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     }
     const toolsKey = ToolCacheKeys.MCP_SERVER(userId, serverName, configGeneration);
     let cached = await cache.get(toolsKey);
-    if (cached == null && configGeneration) {
+    if (cached == null && configGeneration && options.allowLegacyMigration !== false) {
       cached = await withUserQueue(
         userId,
         serverName,

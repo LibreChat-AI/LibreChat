@@ -8,7 +8,7 @@ import type {
   ImageFile,
   ContentPart,
   PartMetadata,
-  TContentData,
+  ChatContentFrame,
   EventSubmission,
   TMessageContentParts,
 } from 'librechat-data-provider';
@@ -20,7 +20,7 @@ type TUseContentHandler = {
 };
 
 type TContentHandler = {
-  data: TContentData;
+  data: ChatContentFrame;
   submission: EventSubmission;
 };
 

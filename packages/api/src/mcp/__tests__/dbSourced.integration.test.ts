@@ -23,6 +23,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { Socket } from 'net';
+import { applyRequestHeaders, hasCustomUserVars, getMissingCustomUserVars } from '~/mcp/utils';
+import { getUserApiKeyVariable } from '~/mcp/registry/binding';
 import { MCPConnection } from '~/mcp/connection';
 import { processMCPEnv } from '~/utils/env';
 
@@ -208,10 +210,114 @@ describe('dbSourced header security – integration', () => {
     delete process.env.INTERNAL_API_KEY;
   });
 
+  it('does not send a saved key to a new URL even when old field names are injected', async () => {
+    const original: MCPOptions = {
+      type: 'streamable-http',
+      url: 'https://trusted.example.com/mcp',
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+    };
+    const updated: MCPOptions = { ...original, url: server.url };
+    const oldField = getUserApiKeyVariable(original);
+    const newField = getUserApiKeyVariable(updated);
+    const resolved = processMCPEnv({
+      options: {
+        ...updated,
+        customUserVars: { [newField]: { title: 'API Key', description: 'Per-user key' } },
+        headers: {
+          Authorization: `Bearer {{${newField}}}`,
+          'X-Stolen-Key': `{{${oldField}}}`,
+          'X-Legacy-Key': '{{MCP_API_KEY}}',
+        },
+      },
+      dbSourced: true,
+      customUserVars: { [oldField]: 'another-users-secret', MCP_API_KEY: 'legacy-secret' },
+    });
+    conn = new MCPConnection({
+      serverName: 'rebound-key',
+      serverConfig: resolved,
+      useSSRFProtection: false,
+    });
+    if ('headers' in resolved) {
+      conn.setRequestHeaders(resolved.headers || {});
+    }
+    await conn.connect();
+    await conn.fetchTools();
+    const captured = JSON.stringify(server.getLastHeaders());
+    expect(captured).not.toContain('another-users-secret');
+    expect(captured).not.toContain('legacy-secret');
+  });
+
+  it('does not require or send a bound key shadowed by request authentication', async () => {
+    const options: MCPOptions = {
+      type: 'streamable-http',
+      url: server.url,
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+    };
+    const field = getUserApiKeyVariable(options);
+    const declared: MCPOptions = {
+      ...options,
+      customUserVars: { [field]: { title: 'API Key', description: 'Per-user key' } },
+      headers: { Authorization: `Bearer {{${field}}}` },
+      requestHeaders: { authorization: 'Bearer request-secret' },
+    };
+    expect(hasCustomUserVars(declared)).toBe(false);
+    expect(getMissingCustomUserVars(declared)).toEqual([]);
+    const resolved = processMCPEnv({
+      options: applyRequestHeaders(declared),
+      dbSourced: true,
+      customUserVars: { [field]: 'unused-user-secret' },
+    });
+    conn = new MCPConnection({
+      serverName: 'shadowed-bound-key',
+      serverConfig: resolved,
+      useSSRFProtection: false,
+    });
+    if ('headers' in resolved) {
+      conn.setRequestHeaders(resolved.headers || {});
+    }
+    await conn.connect();
+    await conn.fetchTools();
+    const captured = server.getLastHeaders();
+    expect(captured.authorization).toBe('Bearer request-secret');
+    expect(JSON.stringify(captured)).not.toContain('unused-user-secret');
+  });
+
+  it('sends the saved bound key after a fragment-only URL edit', async () => {
+    const original: MCPOptions = {
+      type: 'streamable-http',
+      url: `${server.url}#old`,
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+    };
+    const field = getUserApiKeyVariable(original);
+    const updated: MCPOptions = { ...original, url: `${server.url}#new` };
+    expect(getUserApiKeyVariable(updated)).toBe(field);
+    const resolved = processMCPEnv({
+      options: {
+        ...updated,
+        customUserVars: { [field]: { title: 'API Key', description: 'Per-user key' } },
+        headers: { Authorization: `Bearer {{${field}}}` },
+      },
+      dbSourced: true,
+      customUserVars: { [field]: 'saved-user-secret' },
+    });
+    conn = new MCPConnection({
+      serverName: 'fragment-bound-key',
+      serverConfig: resolved,
+      useSSRFProtection: false,
+    });
+    if ('headers' in resolved) {
+      conn.setRequestHeaders(resolved.headers || {});
+    }
+    await conn.connect();
+    await conn.fetchTools();
+    expect(server.getLastHeaders().authorization).toBe('Bearer saved-user-secret');
+  });
+
   it('DB-sourced: resolves {{MCP_API_KEY}} via customUserVars', async () => {
     const options: MCPOptions = {
       type: 'streamable-http',
       url: server.url,
+      customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
       headers: {
         Authorization: 'Bearer {{MCP_API_KEY}}',
       },
@@ -346,6 +452,7 @@ describe('dbSourced header security – integration', () => {
     const options: MCPOptions = {
       type: 'streamable-http',
       url: server.url,
+      customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
       headers: {
         Authorization: 'Bearer {{MCP_API_KEY}}',
         'X-Env-Leak': '${SECRET_DB_URL}',
@@ -458,6 +565,11 @@ describe('dbSourced header security – integration', () => {
     const options: MCPOptions = {
       type: 'streamable-http',
       url: server.url,
+      customUserVars: {
+        API_TOKEN: { title: 'Token', description: 'Per-user token' },
+        WORKSPACE_ID: { title: 'Workspace', description: 'Per-user workspace' },
+        REGION: { title: 'Region', description: 'Per-user region' },
+      },
       headers: {
         Authorization: 'Bearer {{API_TOKEN}}',
         'X-Workspace': '{{WORKSPACE_ID}}',
@@ -498,6 +610,7 @@ describe('dbSourced header security – integration', () => {
     const options: MCPOptions = {
       type: 'streamable-http',
       url: server.url,
+      customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
       headers: {
         Authorization: 'Bearer {{MCP_API_KEY}}',
       },

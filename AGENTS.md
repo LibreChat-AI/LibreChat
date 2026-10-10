@@ -109,7 +109,7 @@ unsuccessful outcome as an exception:
   successful lookup with no record), never to hide a query failure.
 - For an expected failure the caller can handle without aborting the operation, prefer a typed
   discriminated result such as `{ ok: true; value: T } | { ok: false; error: { code: string;
-  message?: string } }`. Keep an existing domain-specific result shape when changing it would
+message?: string } }`. Keep an existing domain-specific result shape when changing it would
   break callers; do not introduce interchangeable `ok`, `valid`, and bare `{ message }` contracts
   in the same service. Codes should be stable, machine-readable identifiers when the caller
   needs to distinguish failures. Internal validation helpers may use the existing local pattern.
@@ -189,6 +189,12 @@ independent reads in parallel. Do not weaken authorization or tenant checks or w
 before those checks succeed.
 
 ## Frontend rules
+
+Use the chat Share/Export action-menu pattern: `DropdownPopup` from `@librechat/client` with
+`Ariakit.MenuButton` (see `HeaderMenu.tsx` and `useExportShare.tsx`). Never introduce or reintroduce
+the Radix `DropdownMenu` family for app action or sort menus. Preserve the Share/Export
+dialog-item contract (`hideOnClick: false`, item ref, button render, and dialog `triggerRef`)
+when a menu action opens a dialog.
 
 Use `useLocalize()` for all visible copy and update only English keys in
 `client/src/locales/en/translation.json`. Use semantic HTML, keyboard behavior, and ARIA labels.

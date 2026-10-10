@@ -705,7 +705,7 @@ const PinnedSection = ({
   return (
     <div
       ref={setSectionRef}
-      className="flex flex-col px-3 text-sm"
+      className="flex flex-col px-3 pt-3 text-sm"
       role="region"
       /** The focus handoff after an unpin must act only on rows in this list:
        *  `ConversationsSection` is also a labelled region and an ancestor of
@@ -715,8 +715,8 @@ const PinnedSection = ({
     >
       <div
         className={cn(
-          'flex h-8 w-full items-center pr-2',
-          isPinOver && canPin && 'rounded-lg bg-surface-active-alt',
+          'flex h-8 w-full items-center pr-1',
+          isPinOver && canPin && 'bg-surface-nav-selected rounded-lg',
         )}
       >
         <button
@@ -725,7 +725,7 @@ const PinnedSection = ({
           type="button"
           aria-expanded={isExpanded}
         >
-          <span className="select-none truncate">{localize('com_ui_pinned')}</span>
+          <span className="truncate select-none">{localize('com_ui_pinned')}</span>
           <ChevronDown
             className={cn(
               'h-3 w-3 shrink-0 transition-transform duration-200',
@@ -742,9 +742,9 @@ const PinnedSection = ({
           {displayEntries.length === 0 && draggingConversation && (
             <div
               className={cn(
-                'flex h-9 items-center justify-center rounded-lg border border-dashed text-xs text-text-secondary',
+                'text-text-secondary flex h-9 items-center justify-center rounded-lg border border-dashed text-xs',
                 isPinOver && canPin
-                  ? 'border-border-medium bg-surface-active-alt text-text-primary'
+                  ? 'border-border-medium bg-surface-nav-selected text-text-primary'
                   : 'border-border-light',
               )}
               aria-hidden="true"

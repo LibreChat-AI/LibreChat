@@ -3,20 +3,510 @@ import {
   Constants,
   EToolResources,
   PermissionBits,
+  PrincipalType,
   ResourceType,
   SkillsScope,
   actionDelimiter,
   isActionTool,
 } from 'librechat-data-provider';
-import type { FilterQuery, Model, ProjectionType, Types } from 'mongoose';
-import type { AgentToolResources } from 'librechat-data-provider';
-import type { IAgent, IAclEntry, ActionQuery } from '~/types';
-import { withCodeEnvironmentReference } from './codeEnvironment';
+import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
+import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
+import type { IAgent, IAclEntry, IUser, ActionQuery } from '~/types';
+import { withCodeEnvironmentReferences } from './codeEnvironment';
+import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { filterExistingSkillIds } from './skill';
 import logger from '~/config/winston';
 
 const { mcp_delimiter } = Constants;
+
+/**
+ * Fallback used for the `author` sort when an agent has neither a joined
+ * user display name nor a denormalized `authorName`. U+10FFFF is the highest
+ * valid Unicode code point, so this sentinel sorts after every real display
+ * name — including ones starting with an emoji, whose leading UTF-8 byte is
+ * otherwise higher than any ASCII sentinel like `'zzz_unknown'`.
+ */
+const AUTHOR_SORT_SENTINEL = String.fromCodePoint(0x10ffff);
+
+/**
+ * The aggregation-expression shapes the predicate helpers below build: a field path
+ * (`'$$e.grantedAt'`), a literal, or a nested operator. Narrow on purpose — the
+ * fragments these helpers hand to `$filter`/`$switch`/`$cond` are only correct in
+ * these forms, and a wider `Record<string, unknown>` would let a misspelled operator
+ * or a wrong-arity operand list through to the production pipeline.
+ */
+type AggregationOperand = string | number | null | AggregationExpression;
+
+type AggregationExpression =
+  | { $and: AggregationExpression[] }
+  | { $or: AggregationExpression[] }
+  | { $eq: [AggregationOperand, AggregationOperand] }
+  | { $ne: [AggregationOperand, AggregationOperand] }
+  | { $lt: [AggregationOperand, AggregationOperand] }
+  | { $cond: [AggregationExpression, AggregationOperand, AggregationOperand] }
+  | { $indexOfCP: [AggregationOperand, AggregationOperand] }
+  | { $in: [AggregationOperand, number[]] }
+  | { $type: AggregationOperand }
+  | { $trim: { input: AggregationOperand } }
+  | { $ifNull: [AggregationOperand, AggregationOperand] }
+  | { $arrayElemAt: [AggregationOperand, AggregationOperand] };
+
+/**
+ * Picks the earlier of two ACL entry sub-documents by (`grantedAt`, `createdAt`, `_id`) —
+ * the same tie-break `getFirstOwnerIdsByResource` applies via its `$sort`+`$group` pipeline
+ * (`api/server/services/Agents/ownerContact.js`). Written as a manual `$lt`/`$eq` cascade,
+ * not `$sortArray`+`$first`, because DocumentDB (this project's CI gate,
+ * `documentdb.spec.ts`) rejects `$sortArray` outright.
+ *
+ * Every timestamp is read through `$ifNull` because an imported or legacy entry can omit
+ * `grantedAt` or `createdAt` entirely. `$sort` reads a missing field as null, while a
+ * missing field path in a comparison expression is `undefined`, which BSON orders below
+ * null — so without this the cascade would rank an entry that omits the field ahead of one
+ * that stores null, and an author page would name a different owner than every other list
+ * order for the same stored ACL data.
+ */
+const aclOrderKey = (path: string): AggregationExpression => ({ $ifNull: [path, null] });
+
+function earlierAclEntry(a: string, b: string): AggregationExpression {
+  return {
+    $or: [
+      { $lt: [aclOrderKey(`${a}.grantedAt`), aclOrderKey(`${b}.grantedAt`)] },
+      {
+        $and: [
+          { $eq: [aclOrderKey(`${a}.grantedAt`), aclOrderKey(`${b}.grantedAt`)] },
+          {
+            $or: [
+              { $lt: [aclOrderKey(`${a}.createdAt`), aclOrderKey(`${b}.createdAt`)] },
+              {
+                $and: [
+                  { $eq: [aclOrderKey(`${a}.createdAt`), aclOrderKey(`${b}.createdAt`)] },
+                  { $lt: [`${a}._id`, `${b}._id`] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * `true` when `varRef` (already `$trim`-ed by the caller, so it is either `null` or a
+ * non-empty-checked string) is usable as a display name: non-empty, and not email-shaped.
+ * Mirrors `normalizeDisplayName` (`packages/api/src/agents/contact.ts`), which the card's
+ * owner-fallback also runs through — an owner's account email is never shown as their
+ * display name, only an opted-in `support_contact.email` is.
+ *
+ * The `$cond` guard keeps `$indexOfCP` from ever running on a `null` input (DocumentDB/Mongo
+ * both throw on that): when `varRef` is `null` the guard short-circuits to `-1` ("no `@`
+ * found"), which is moot anyway since the `$ne: [varRef, null]` branch already fails the
+ * `$and` in that case.
+ */
+function isValidDisplayName(varRef: string): AggregationExpression {
+  return {
+    $and: [
+      { $ne: [varRef, null] },
+      { $ne: [varRef, ''] },
+      {
+        $eq: [{ $cond: [{ $eq: [varRef, null] }, -1, { $indexOfCP: [varRef, '@'] }] }, -1],
+      },
+    ],
+  };
+}
+
+/** Converts any stored value to a string-safe trimmed aggregation operand. Mixed legacy
+ * fields can contain BSON values that `$trim` rejects, so check the type first. */
+function trimStringOrEmpty(value: AggregationOperand): AggregationExpression {
+  return {
+    $trim: {
+      input: {
+        $cond: [{ $eq: [{ $type: value }, 'string'] }, value, ''],
+      },
+    },
+  };
+}
+
+export type AgentListSortOption = AgentSortOption | 'recent';
+
+/**
+ * How each marketplace sort mode orders the agent list, and how a cursor taken from
+ * that ordering has to be read back.
+ *
+ * `createdAt` is stored, while popularity counts and author display names are computed for
+ * their respective paths. Each mode applies its cursor predicate before selecting the next
+ * page.
+ *
+ * The cursor version is part of the ordering identity. Bump the version whenever an ordering's
+ * comparison semantics change, or an older reader will resume a walk under semantics that no
+ * longer exist. Cursors without a version are version 1 for rolling-deployment compatibility.
+ *
+ * `'recent'` is not a marketplace mode: it is the order this endpoint has always served when
+ * nothing asks for one — most recently edited first — and the agent selector, the mention menu
+ * and the schedule pickers still rely on it. The marketplace's own default, `'newest'`, orders
+ * by creation instead, so it has to be requested explicitly.
+ *
+ * The `_id` tie-break is ascending for every mode except 'oldest'. The latter reverses both
+ * keys so MongoDB can scan the existing `{ createdAt: -1, _id: 1 }` index backwards without
+ * requiring a second ascending index.
+ */
+const AGENT_SORT_CONFIG: Record<
+  AgentListSortOption,
+  {
+    field: 'createdAt' | 'updatedAt' | 'favoriteCount' | 'authorSortKey';
+    direction: 1 | -1;
+    tieBreakDirection: 1 | -1;
+    valueType: 'date' | 'number' | 'string';
+    version: number;
+  }
+> = {
+  recent: {
+    field: 'updatedAt',
+    direction: -1,
+    tieBreakDirection: 1,
+    valueType: 'date',
+    version: 1,
+  },
+  newest: {
+    field: 'createdAt',
+    direction: -1,
+    tieBreakDirection: 1,
+    valueType: 'date',
+    version: 1,
+  },
+  oldest: {
+    field: 'createdAt',
+    direction: 1,
+    tieBreakDirection: -1,
+    valueType: 'date',
+    version: 1,
+  },
+  popular: {
+    field: 'favoriteCount',
+    direction: -1,
+    tieBreakDirection: 1,
+    valueType: 'number',
+    version: 1,
+  },
+  // Version 2 records the normalized (`$toLower`) comparison key.
+  author: {
+    field: 'authorSortKey',
+    direction: 1,
+    tieBreakDirection: 1,
+    valueType: 'string',
+    version: 2,
+  },
+};
+
+/**
+ * Sort keys the list query needs internally — to order rows and to build the cursor —
+ * but which are not part of the endpoint's response contract. `createdAt` in particular
+ * has never been returned by this endpoint, and leaking any of them would make the
+ * response shape depend on `?sort=`.
+ */
+const INTERNAL_SORT_FIELDS = [
+  'createdAt',
+  'favoriteCount',
+  'authorDisplayName',
+  'authorSortKey',
+] as const;
+
+/**
+ * Favourite counts are keyed per tenant because agent ids collide across tenants,
+ * and a missing `tenantId` is the same tenant as an explicitly null one — the separator
+ * is a code point no tenant id or agent id can contain.
+ */
+const FAVORITE_COUNT_KEY_SEPARATOR = '\u0000';
+function favoriteCountKey(tenantId: string | null | undefined, agentId: string): string {
+  return `${tenantId ?? ''}${FAVORITE_COUNT_KEY_SEPARATOR}${agentId}`;
+}
+
+/**
+ * Marks a list row whose owner contact the list query already resolved, so `attachOwnerContacts`
+ * skips the ACL aggregation and the user lookup for it and strips this field from the response.
+ */
+export const AGENT_OWNER_CONTACT_RESOLVED_FIELD = '_ownerContactResolved';
+
+/**
+ * A stringified ObjectId is always exactly 24 hex characters. Checked explicitly rather
+ * than with `ObjectId.isValid`, which also accepts any 12-character string.
+ */
+const OBJECT_ID_HEX = /^[0-9a-fA-F]{24}$/;
+
+interface AgentSortCursor {
+  /** The last row's value for the mode's sort field; `''` means "that value was absent". */
+  primary: string;
+  /** The last row's `_id`, used as the tie-break. */
+  secondary: string;
+}
+
+export type AgentSortCursorFailure = 'ordering-mismatch' | 'unreadable';
+
+export class AgentSortCursorError extends Error {
+  readonly code = 'AGENT_SORT_CURSOR_INVALID';
+
+  constructor(readonly failure: AgentSortCursorFailure) {
+    super(`Agent sort cursor ${failure}`);
+    this.name = 'AgentSortCursorError';
+  }
+}
+
+type AgentSortCursorDecodeResult =
+  | { kind: 'usable'; cursor: AgentSortCursor }
+  | { kind: 'ordering-mismatch' }
+  | { kind: 'unreadable' };
+
+function isAgentListSortOption(value: unknown): value is AgentListSortOption {
+  return (
+    typeof value === 'string' && Object.prototype.hasOwnProperty.call(AGENT_SORT_CONFIG, value)
+  );
+}
+
+function castCursorPrimary(
+  valueType: 'date' | 'number' | 'string',
+  raw: string,
+): Date | number | string {
+  if (valueType === 'date') {
+    return new Date(raw);
+  }
+  if (valueType === 'number') {
+    return Number(raw);
+  }
+  return raw;
+}
+
+/**
+ * Cursor invariant: a cursor names the ordering it was produced under, and is honored only
+ * by a reader that implements that ordering. A cursor that cannot be honored is an error,
+ * never a silent restart.
+ *
+ * The `sort`/`version` pair is the ordering identity. Bump the version whenever an ordering's
+ * comparison semantics change, or an older reader will resume a walk under semantics that no
+ * longer exist. Cursors without a version are version 1 for rolling-deployment compatibility.
+ *
+ * Orderings past version 1 nest their boundary under `boundary`, where a pre-versioning reader
+ * cannot find it — see {@link encodeAgentSortCursor}. A flat boundary claiming such a version
+ * did not come from this encoder and is unreadable rather than trusted.
+ *
+ * Legacy cursors carry only `updatedAt` and `_id`; they name `recent`, whose ordering preserves
+ * the old updated-time walk. A cursor naming another ordering is a mismatch, while malformed
+ * data is unreadable; both are fail-closed.
+ */
+function decodeAgentSortCursor(
+  after: string,
+  sort: AgentListSortOption,
+): AgentSortCursorDecodeResult {
+  try {
+    const decoded: Record<string, unknown> = JSON.parse(
+      Buffer.from(after, 'base64').toString('utf8'),
+    );
+    if (decoded == null || Array.isArray(decoded) || typeof decoded !== 'object') {
+      return { kind: 'unreadable' };
+    }
+
+    const hasPrimary = typeof decoded.primary !== 'undefined';
+    const hasLegacyPair = typeof decoded.updatedAt === 'string' && typeof decoded._id === 'string';
+    /** Set once a versioned cursor's nested boundary has been lifted into place, so the
+     *  legacy substitution below does not overwrite it with an absent `updatedAt`. */
+    let hasNestedBoundary = false;
+    let cursorSort: AgentListSortOption | null = null;
+
+    if (typeof decoded.sort === 'undefined') {
+      if (!hasPrimary && hasLegacyPair) {
+        cursorSort = 'recent';
+      } else if (
+        hasPrimary &&
+        hasLegacyPair &&
+        decoded.primary === decoded.updatedAt &&
+        decoded.secondary === decoded._id
+      ) {
+        // Cursors from the immediately preceding current release were recent cursors
+        // without the explicit identity; retain their safe legacy interpretation.
+        cursorSort = 'recent';
+      } else {
+        return { kind: 'unreadable' };
+      }
+    } else if (!isAgentListSortOption(decoded.sort)) {
+      return { kind: 'unreadable' };
+    } else {
+      cursorSort = decoded.sort;
+      const cursorVersion = typeof decoded.version === 'undefined' ? 1 : decoded.version;
+      if (cursorVersion !== AGENT_SORT_CONFIG[cursorSort].version) {
+        return { kind: 'ordering-mismatch' };
+      }
+      if (cursorVersion > 1) {
+        const boundary = decoded.boundary;
+        if (boundary == null || typeof boundary !== 'object' || Array.isArray(boundary)) {
+          return { kind: 'unreadable' };
+        }
+        const { primary, secondary } = boundary as Record<string, unknown>;
+        decoded.primary = primary;
+        decoded.secondary = secondary;
+        hasNestedBoundary = true;
+      }
+    }
+    if (!hasPrimary && !hasNestedBoundary && hasLegacyPair && cursorSort !== 'recent') {
+      return { kind: 'ordering-mismatch' };
+    }
+    if (cursorSort !== sort) {
+      return { kind: 'ordering-mismatch' };
+    }
+
+    if (!hasPrimary && !hasNestedBoundary) {
+      decoded.primary = decoded.updatedAt;
+      decoded.secondary = decoded._id;
+    }
+    if (typeof decoded.secondary !== 'string' || !OBJECT_ID_HEX.test(decoded.secondary)) {
+      return { kind: 'unreadable' };
+    }
+
+    const { valueType } = AGENT_SORT_CONFIG[sort];
+    /* Coercion is not validation: `String(undefined)` is `'undefined'`, which compares as a
+       perfectly ordinary author key and would resume the walk partway through the alphabet
+       instead of failing closed. The date mode is caught by its cast; the numeric mode also
+       requires a non-negative integer because favorite counts are discrete. The string mode
+       has no cast to fail, so its boundary has to arrive as a string. */
+    if (valueType === 'string' && typeof decoded.primary !== 'string') {
+      return { kind: 'unreadable' };
+    }
+    const primary = String(decoded.primary);
+    if (valueType === 'date') {
+      if (primary !== '' && Number.isNaN(new Date(primary).getTime())) {
+        return { kind: 'unreadable' };
+      }
+    } else if (valueType === 'number') {
+      const numericPrimary = Number(primary);
+      if (primary === '' || !Number.isInteger(numericPrimary) || numericPrimary < 0) {
+        return { kind: 'unreadable' };
+      }
+    }
+    return { kind: 'usable', cursor: { primary, secondary: decoded.secondary } };
+  } catch {
+    return { kind: 'unreadable' };
+  }
+}
+
+/**
+ * Builds the filter that selects everything ordered after a decoded cursor.
+ *
+ * Field-name-agnostic: the same Date/Number/String comparison works whether the sort
+ * field is stored (`createdAt`) or computed by an aggregation (`favoriteCount`/`authorSortKey`).
+ *
+ * Agents inserted outside Mongoose can lack `createdAt`, and legacy rows can
+ * contain an explicit null. Mongo sorts both as the same null tier. Cursor predicates
+ * therefore use a null equality branch so neither form disappears between pages.
+ */
+function buildAgentSortCursorCondition(
+  sort: AgentListSortOption,
+  decoded: AgentSortCursor,
+  /**
+   * `decoded.secondary` already cast to an ObjectId. Passed in rather than constructed
+   * here because this module receives its mongoose instance through `createAgentMethods`,
+   * and the aggregation branch gets no automatic query casting.
+   */
+  secondaryId: Types.ObjectId,
+): Record<string, unknown> {
+  const { field, direction, tieBreakDirection, valueType } = AGENT_SORT_CONFIG[sort];
+  const tieBreakOperator = tieBreakDirection === 1 ? '$gt' : '$lt';
+  const tieBreak = { _id: { [tieBreakOperator]: secondaryId } };
+
+  // Missing and explicit null dates occupy the same MongoDB sort tier.
+  if (valueType === 'date' && decoded.primary === '') {
+    const stillNull = { [field]: null, ...tieBreak };
+    if (direction === 1) {
+      return { $or: [stillNull, { [field]: { $exists: true, $ne: null } }] };
+    }
+    return stillNull;
+  }
+
+  const op = direction === -1 ? '$lt' : '$gt';
+  const primaryValue = castCursorPrimary(valueType, decoded.primary);
+  const branches: Record<string, unknown>[] = [
+    { [field]: { [op]: primaryValue } },
+    { [field]: primaryValue, ...tieBreak },
+  ];
+
+  if (valueType === 'date' && direction === -1) {
+    branches.push({ [field]: null });
+  }
+
+  return { $or: branches };
+}
+
+/**
+ * Cursor invariant: a cursor names the ordering it was produced under, and is honored only
+ * by a reader that implements that ordering. A cursor that cannot be honored is an error,
+ * never a silent restart.
+ *
+ * The `sort`/`version` pair is the ordering identity. Bump the version whenever an ordering's
+ * comparison semantics change, or an older reader will resume a walk under semantics that no
+ * longer exist. `recent` additionally carries the legacy pair so old instances can keep
+ * reading its updated-time walk.
+ *
+ * A version is only half the protection, because it protects the reader that knows to look
+ * at it. Instances deployed before versioning existed ignore unknown fields and read
+ * `primary`/`secondary` straight out of the payload, so a bumped ordering whose boundary sits
+ * where they expect it would still be resumed under the comparison it replaced. So any
+ * ordering past version 1 carries its boundary nested instead: a reader that does not know
+ * about versions finds no boundary it recognizes and fails closed, and one that does knows
+ * where to look. Version 1 keeps the flat shape, which is what makes every cursor already in
+ * flight readable across a deployment.
+ */
+function encodeAgentSortCursor(
+  sort: AgentListSortOption,
+  lastAgent: Record<string, unknown>,
+): string {
+  const { field, valueType, version } = AGENT_SORT_CONFIG[sort];
+  const rawValue = lastAgent[field];
+  const asIsoDate = (value: unknown): string | null => {
+    if (value == null) {
+      return null;
+    }
+    let asDate: Date;
+    if (value instanceof Date) {
+      asDate = value;
+    } else if (typeof value === 'string' || typeof value === 'number') {
+      asDate = new Date(value);
+    } else {
+      asDate = new Date(Number.NaN);
+    }
+    return Number.isNaN(asDate.getTime()) ? null : asDate.toISOString();
+  };
+
+  let primary: string;
+  if (valueType === 'date') {
+    primary = asIsoDate(rawValue) ?? '';
+  } else if (valueType === 'number') {
+    primary = String(rawValue ?? 0);
+  } else {
+    /* The row already carries the key `$sort` compared — `$toLower` of the display name —
+       so it is serialized as it stands. Lowercasing it again here would normalize what the
+       database did not: `$toLower` is only defined over ASCII and leaves `Émile` uppercase,
+       while JavaScript lowercases the whole of Unicode. The boundary would then land on
+       `émile` (U+00E9) and the next page's `$match` would skip every key between it and
+       `Émile` (U+00C9). */
+    primary = String(rawValue ?? AUTHOR_SORT_SENTINEL);
+  }
+
+  const secondary = String(lastAgent._id);
+  if (version > 1) {
+    return Buffer.from(
+      JSON.stringify({ sort, version, boundary: { primary, secondary } }),
+    ).toString('base64');
+  }
+
+  const legacyUpdatedAt = sort === 'recent' ? asIsoDate(lastAgent.updatedAt) : null;
+  return Buffer.from(
+    JSON.stringify({
+      sort,
+      version,
+      primary,
+      secondary,
+      ...(legacyUpdatedAt == null ? {} : { updatedAt: legacyUpdatedAt, _id: secondary }),
+    }),
+  ).toString('base64');
+}
 
 /**
  * Whether emptying an allowlist has to fall back to disabling skills.
@@ -560,6 +1050,7 @@ export function createAgentMethods(
   deps: AgentDeps,
 ): {
   getAgent: GetAgent;
+  getAgentName: (id: string, tenantId?: string) => Promise<string | undefined>;
   getAgentVersions: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent['versions'] | null>;
   getAgentWithVersionCount: (
     searchParameter: FilterQuery<IAgent>,
@@ -585,6 +1076,13 @@ export function createAgentMethods(
       skipVersioning?: boolean;
     },
   ) => Promise<IAgent | null>;
+  updateAgentAvatar: (params: {
+    id: string;
+    avatar: { filepath: string; source: string };
+    /** The avatar the caller read. When given, the write only lands while the stored avatar
+     *  still matches it. */
+    previousAvatar?: { filepath: string; source: string } | null;
+  }) => Promise<boolean>;
   deleteAgent: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent | null>;
   deleteUserAgents: (userId: string) => Promise<void>;
   revertAgentVersion: (
@@ -611,6 +1109,7 @@ export function createAgentMethods(
     after,
     includeSkillConfig,
     includeExecutionConfig,
+    sort,
   }: {
     accessibleIds?: Array<Types.ObjectId | string> | null;
     otherParams?: Record<string, unknown>;
@@ -620,6 +1119,7 @@ export function createAgentMethods(
     after?: string | null;
     includeSkillConfig?: boolean;
     includeExecutionConfig?: boolean;
+    sort?: AgentListSortOption;
   }) => Promise<{
     object: string;
     data: Array<Record<string, unknown>>;
@@ -670,6 +1170,13 @@ export function createAgentMethods(
 } {
   const { removeAllPermissions, getActions, getSoleOwnedResourceIds, isExternalSkillId } = deps;
 
+  function codeEnvironmentReferences(data: Record<string, unknown>): string[] {
+    return [
+      data.code_environment_id,
+      ...(Array.isArray(data.code_environment_ids) ? data.code_environment_ids : []),
+    ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+  }
+
   async function restoreAgentAfterReferenceLoss(
     Agent: Model<IAgent>,
     agentAfterWrite: IAgent | null,
@@ -681,7 +1188,10 @@ export function createAgentMethods(
     const restored = await Agent.replaceOne(
       {
         _id: agentAfterWrite._id,
-        code_environment_id: lostEnvironmentId,
+        $or: [
+          { code_environment_id: lostEnvironmentId },
+          { code_environment_ids: lostEnvironmentId },
+        ],
         updatedAt,
       },
       originalAgent,
@@ -694,6 +1204,10 @@ export function createAgentMethods(
       await Agent.updateOne(
         { _id: agentAfterWrite._id, code_environment_id: lostEnvironmentId },
         { $unset: { code_environment_id: 1 } },
+      );
+      await Agent.updateOne(
+        { _id: agentAfterWrite._id, code_environment_ids: lostEnvironmentId },
+        { $pull: { code_environment_ids: lostEnvironmentId } },
       );
     }
   }
@@ -736,11 +1250,10 @@ export function createAgentMethods(
         extractMCPServerNames(agentData.tools as string[] | undefined),
     };
 
-    return await withCodeEnvironmentReference(
+    return await withCodeEnvironmentReferences(
       mongoose,
-      typeof agentData.code_environment_id === 'string' ? agentData.code_environment_id : undefined,
+      codeEnvironmentReferences(agentData),
       async () => (await Agent.create(initialAgentData)).toObject() as IAgent,
-      undefined,
       async (createdAgent) => {
         await Agent.deleteOne({ _id: createdAgent._id });
       },
@@ -759,6 +1272,16 @@ export function createAgentMethods(
     const Agent = mongoose.models.Agent as Model<IAgent>;
     return await Agent.findOne(searchParameter, projection).lean<IAgent>();
   };
+
+  /** Storage-neutral display-name lookup for a known execution subject. */
+  async function getAgentName(id: string, tenantId?: string): Promise<string | undefined> {
+    const agent = await getAgent(
+      { id, tenantId: tenantId ?? null },
+      { name: 1, tenantId: 1, _id: 0 },
+    );
+    if ((agent?.tenantId ?? undefined) !== tenantId) return undefined;
+    return agent?.name || undefined;
+  }
 
   /**
    * Get an agent's version history only, without the rest of the document.
@@ -1075,37 +1598,42 @@ export function createAgentMethods(
       }
     }
 
-    const directEnvironmentId = updateData.code_environment_id;
-    const setEnvironmentId =
-      typeof updateData.$set === 'object' && updateData.$set != null
-        ? (updateData.$set as { code_environment_id?: unknown }).code_environment_id
-        : undefined;
-    let nextEnvironmentId: string | undefined;
-    if (typeof directEnvironmentId === 'string') {
-      nextEnvironmentId = directEnvironmentId;
-    } else if (typeof setEnvironmentId === 'string') {
-      nextEnvironmentId = setEnvironmentId;
+    const nextEnvironmentIds = codeEnvironmentReferences({
+      ...updateData,
+      ...(typeof updateData.$set === 'object' && updateData.$set != null ? updateData.$set : {}),
+    });
+    for (const operator of ['$push', '$addToSet']) {
+      const update = updateData[operator] as { code_environment_ids?: unknown } | undefined;
+      const values = update?.code_environment_ids;
+      const added =
+        values != null && typeof values === 'object' && '$each' in values
+          ? (values as { $each: unknown }).$each
+          : values;
+      nextEnvironmentIds.push(
+        ...codeEnvironmentReferences({
+          code_environment_ids: Array.isArray(added) ? added : [added],
+        }),
+      );
     }
-    const updatedAgent = await withCodeEnvironmentReference(
+    const updatedAgent = await withCodeEnvironmentReferences(
       mongoose,
-      nextEnvironmentId,
+      nextEnvironmentIds,
       async () =>
         (await Agent.findOneAndUpdate(
-          currentAgent == null || nextEnvironmentId == null
+          currentAgent == null || nextEnvironmentIds.length === 0
             ? searchParameter
             : { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision },
           updateData,
           mongoOptions,
         ).lean()) as IAgent | null,
-      undefined,
-      async (agentAfterUpdate) => {
-        if (agentAfterUpdate == null || nextEnvironmentId == null) return;
+      async (agentAfterUpdate, lostEnvironmentId) => {
+        if (agentAfterUpdate == null) return;
         if (currentAgent == null) return;
         await restoreAgentAfterReferenceLoss(
           Agent,
           agentAfterUpdate,
           currentAgent.toObject() as IAgent,
-          nextEnvironmentId,
+          lostEnvironmentId,
         );
       },
     );
@@ -1119,6 +1647,32 @@ export function createAgentMethods(
     }
 
     return updatedAgent;
+  }
+
+  /** Updates only the stored avatar metadata; maintenance must not advance list cursors. */
+  async function updateAgentAvatar({
+    id,
+    avatar,
+    previousAvatar,
+  }: {
+    id: string;
+    avatar: { filepath: string; source: string };
+    previousAvatar?: { filepath: string; source: string } | null;
+  }): Promise<boolean> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    const searchParameter: FilterQuery<IAgent> = { id };
+    if (previousAvatar === null) {
+      searchParameter.avatar = null;
+    } else if (previousAvatar !== undefined) {
+      searchParameter['avatar.filepath'] = previousAvatar.filepath;
+      searchParameter['avatar.source'] = previousAvatar.source;
+    }
+    const result = await Agent.updateOne(
+      searchParameter,
+      { $set: { avatar } },
+      { timestamps: false },
+    );
+    return result.matchedCount > 0;
   }
 
   /**
@@ -1429,7 +1983,8 @@ export function createAgentMethods(
    * Get agents by accessible IDs with cursor pagination. Pass `accessibleIds: null`
    * only after a management-capability check, with the authenticated tenantId
    * (or null for legacy agents); `[]` and omitted IDs match nothing.
-   * Defaults to a 100-page limit (max 1000); pass `limit: null` to opt out entirely.
+   * Defaults to the most-recently-edited order and a 100-page limit (max 1000);
+   * pass `limit: null` to opt out entirely. Other sort modes preserve the projection.
    */
   async function getListAgentsByAccess({
     accessibleIds = [],
@@ -1439,6 +1994,7 @@ export function createAgentMethods(
     after = null,
     includeSkillConfig = false,
     includeExecutionConfig = false,
+    sort: sortInput = 'recent',
   }: {
     accessibleIds?: Array<Types.ObjectId | string> | null;
     otherParams?: Record<string, unknown>;
@@ -1447,6 +2003,7 @@ export function createAgentMethods(
     after?: string | null;
     includeSkillConfig?: boolean;
     includeExecutionConfig?: boolean;
+    sort?: AgentListSortOption;
   }): Promise<{
     object: string;
     data: Array<Record<string, unknown>>;
@@ -1460,6 +2017,9 @@ export function createAgentMethods(
     const normalizedLimit = isPaginated
       ? Math.min(Math.max(1, parseInt(String(limit)) || 20), 1000)
       : null;
+    // The HTTP layer allowlists `sort`, but this method is also called directly by
+    // internal callers, and everything below indexes `AGENT_SORT_CONFIG` by it.
+    const sort: AgentListSortOption = AGENT_SORT_CONFIG[sortInput] != null ? sortInput : 'recent';
 
     const baseQuery: Record<string, unknown> = {
       ...otherParams,
@@ -1468,32 +2028,11 @@ export function createAgentMethods(
         : { _id: { $in: accessibleIds } }),
     };
 
-    if (after) {
-      try {
-        const cursor = JSON.parse(Buffer.from(after, 'base64').toString('utf8'));
-        const { updatedAt, _id } = cursor;
-
-        const cursorCondition = {
-          $or: [
-            { updatedAt: { $lt: new Date(updatedAt) } },
-            {
-              updatedAt: new Date(updatedAt),
-              _id: { $gt: new mongoose.Types.ObjectId(_id) },
-            },
-          ],
-        };
-
-        if (Object.keys(baseQuery).length > 0) {
-          baseQuery.$and = [{ ...baseQuery }, cursorCondition];
-          Object.keys(baseQuery).forEach((key) => {
-            if (key !== '$and') delete baseQuery[key];
-          });
-        } else {
-          Object.assign(baseQuery, cursorCondition);
-        }
-      } catch (error) {
-        logger.warn('Invalid cursor:', (error as Error).message);
-      }
+    // `.find()` casts query values against the schema automatically; the aggregate
+    // branch below builds a raw `$match` stage, which does not. Cast unconditionally
+    // (both branches) so this stays true even if the `.find()` branch changes later.
+    if (typeof baseQuery.author === 'string') {
+      baseQuery.author = new mongoose.Types.ObjectId(baseQuery.author);
     }
 
     const projection: Record<string, 1> = {
@@ -1505,6 +2044,7 @@ export function createAgentMethods(
       description: 1,
       conversation_starters: 1,
       updatedAt: 1,
+      createdAt: 1,
       category: 1,
       support_contact: 1,
       is_promoted: 1,
@@ -1521,6 +2061,7 @@ export function createAgentMethods(
       projection.stateful_code_sessions = 1;
       projection.code_environment_id = 1;
       projection.code_workspace_id = 1;
+      projection.code_environment_ids = 1;
       projection.repositoryInstructions = 1;
       projection.agent_ids = 1;
       projection['edges.from'] = 1;
@@ -1530,7 +2071,460 @@ export function createAgentMethods(
       projection['subagents.graphs.agent_ids'] = 1;
     }
 
-    let query = Agent.find(baseQuery, projection).sort({ updatedAt: -1, _id: 1 });
+    const finalizeAgent = (agent: Record<string, unknown>): Record<string, unknown> => {
+      if (includeExecutionConfig) {
+        agent.tools =
+          Array.isArray(agent.tools) && agent.tools.includes(EToolResources.execute_code)
+            ? [EToolResources.execute_code]
+            : [];
+      }
+      if (agent.author) {
+        agent.author = (agent.author as Types.ObjectId).toString();
+      }
+      return agent;
+    };
+
+    /** Removes internal sort fields after the mode-specific cursor is built. */
+    const buildEnvelope = (
+      data: Array<Record<string, unknown>>,
+      hasMore: boolean,
+      nextCursor: string | null,
+    ) => {
+      for (const agent of data) {
+        for (const field of INTERNAL_SORT_FIELDS) {
+          delete agent[field];
+        }
+      }
+
+      return {
+        object: 'list',
+        data,
+        first_id: data.length > 0 ? (data[0].id as string) : null,
+        last_id: data.length > 0 ? (data[data.length - 1].id as string) : null,
+        has_more: hasMore,
+        after: nextCursor,
+      };
+    };
+
+    /** A cursor that cannot be honored is an error, never a page-one restart. */
+    const readCursor = (): AgentSortCursor | null => {
+      if (!after) {
+        return null;
+      }
+      const decoded = decodeAgentSortCursor(after, sort);
+      if (decoded.kind === 'usable') {
+        return decoded.cursor;
+      }
+      throw new AgentSortCursorError(decoded.kind);
+    };
+
+    if (sort === 'popular') {
+      const User = mongoose.models.User as Model<IUser>;
+      /* Favourites live on user documents, so popularity has to be counted there. The
+         group is keyed by tenant as well as agent id because ids collide across
+         tenants, and the tenant plugin scopes the aggregation, so the result is
+         bounded by the favourited agents in the caller's tenant rather than by the
+         size of the marketplace. */
+      const countRows = (await User.aggregate([
+        { $match: { 'favorites.agentId': { $exists: true } } },
+        {
+          $project: {
+            tenantId: 1,
+            favoriteAgentIds: {
+              $setUnion: [{ $ifNull: ['$favorites.agentId', []] }, []],
+            },
+          },
+        },
+        { $unwind: '$favoriteAgentIds' },
+        {
+          $group: {
+            _id: {
+              tenantId: '$tenantId',
+              agentId: '$favoriteAgentIds',
+            },
+            favoriteCount: { $sum: 1 },
+          },
+        },
+      ])) as Array<{
+        _id: { tenantId?: string | null; agentId: string };
+        favoriteCount: number;
+      }>;
+
+      const favoriteCounts = new Map<string, number>();
+      const favoritedAgentIds = new Set<string>();
+      for (const row of countRows) {
+        const agentId = row?._id?.agentId;
+        if (typeof agentId !== 'string' || !(row.favoriteCount > 0)) {
+          continue;
+        }
+        favoriteCounts.set(favoriteCountKey(row._id.tenantId, agentId), row.favoriteCount);
+        favoritedAgentIds.add(agentId);
+      }
+
+      /* Only favourited agents need ordering by count, and there are at most as many
+         of them as there are favourites. Every other accessible agent has count 0 and
+         is therefore ordered by `_id` alone, which the index serves as a range scan —
+         so a page costs the favourited set plus one page, never the whole corpus. */
+      const favoritedRows =
+        favoritedAgentIds.size > 0
+          ? ((await Agent.find(
+              { $and: [baseQuery, { id: { $in: [...favoritedAgentIds] } }] },
+              { _id: 1, id: 1, tenantId: 1 },
+            ).lean()) as Array<{ _id: Types.ObjectId; id: string; tenantId?: string | null }>)
+          : [];
+      const decodedCursor = readCursor();
+      const cursorCount = decodedCursor ? Number(decodedCursor.primary) : null;
+      const cursorIdHex = decodedCursor ? decodedCursor.secondary.toLowerCase() : null;
+      const favorited = favoritedRows
+        .map((row) => ({
+          _id: row._id,
+          idHex: row._id.toString(),
+          favoriteCount: favoriteCounts.get(favoriteCountKey(row.tenantId, row.id)) ?? 0,
+        }))
+        // The `$in` matches by agent id, so a row whose own tenant never favourited it
+        // belongs to the count-0 tail instead.
+        .filter((row) => row.favoriteCount > 0)
+        .sort((a, b) => {
+          if (a.favoriteCount !== b.favoriteCount) {
+            return b.favoriteCount - a.favoriteCount;
+          }
+          if (a.idHex === b.idHex) {
+            return 0;
+          }
+          return a.idHex < b.idHex ? -1 : 1;
+        });
+
+      /* Counts are recomputed for each request. The order and cursor are stable within a
+         count bucket while counts stay unchanged; client-side dedup can absorb rows that
+         drift backward. An unseen row that gains favorites can cross upward between
+         requests and be missed (berry-13/LibreChat#31). Pinning a ranking needs a
+         materialized favorite counter and a revision to pin it against
+         (berry-13/LibreChat#11); favorites carry no per-favorite timestamp. */
+      let startIndex = favorited.length;
+      if (cursorCount === null) {
+        startIndex = 0;
+      } else if (cursorCount > 0 && cursorIdHex) {
+        const found = favorited.findIndex((row) =>
+          row.favoriteCount !== cursorCount
+            ? row.favoriteCount < cursorCount
+            : row.idHex > cursorIdHex,
+        );
+        startIndex = found < 0 ? favorited.length : found;
+      }
+
+      const pageFavorited =
+        normalizedLimit == null
+          ? favorited.slice(startIndex)
+          : favorited.slice(startIndex, startIndex + normalizedLimit);
+      const favoritedHasMore =
+        normalizedLimit != null && favorited.length > startIndex + normalizedLimit;
+
+      const favoritedDocs =
+        pageFavorited.length > 0
+          ? ((await Agent.find(
+              { $and: [baseQuery, { _id: { $in: pageFavorited.map((row) => row._id) } }] },
+              projection,
+            ).lean()) as Array<Record<string, unknown>>)
+          : [];
+      const favoritedById = new Map(favoritedDocs.map((agent) => [String(agent._id), agent]));
+      const data = pageFavorited
+        .map((row) => favoritedById.get(row.idHex))
+        .filter((agent): agent is Record<string, unknown> => agent != null)
+        .map(finalizeAgent);
+
+      /* The count-0 tail is ordered by `_id` alone, so the database applies both the
+         cursor predicate and the limit to it. */
+      let tailHasMore = false;
+      let tailCursorRow: Record<string, unknown> | null = null;
+      if (!favoritedHasMore) {
+        const remaining = normalizedLimit == null ? null : normalizedLimit - pageFavorited.length;
+        const conditions: Record<string, unknown>[] = [baseQuery];
+        if (favorited.length > 0) {
+          conditions.push({ _id: { $nin: favorited.map((row) => row._id) } });
+        }
+        if (cursorCount === 0 && decodedCursor) {
+          conditions.push({
+            _id: { $gt: new mongoose.Types.ObjectId(decodedCursor.secondary) },
+          });
+        }
+        let tailQuery = Agent.find({ $and: conditions }, projection).sort({ _id: 1 });
+        if (remaining != null) {
+          // One extra row answers `has_more` without a second query.
+          tailQuery = tailQuery.limit(remaining + 1);
+        }
+        const tailRows = (await tailQuery.lean()) as Array<Record<string, unknown>>;
+        tailHasMore = remaining != null && tailRows.length > remaining;
+        const tailPage = remaining != null ? tailRows.slice(0, remaining) : tailRows;
+        for (const agent of tailPage) {
+          data.push(finalizeAgent(agent));
+        }
+        tailCursorRow = tailPage[tailPage.length - 1] ?? null;
+      }
+
+      const hasMore = favoritedHasMore || tailHasMore;
+      const favoritedCursorRow = pageFavorited[pageFavorited.length - 1];
+      let nextCursor: string | null = null;
+      /* The whole row rather than its id alone: `encodeAgentSortCursor` carries the
+         row's updatedAt only for the legacy-compatible recent mode. */
+      if (hasMore && tailCursorRow) {
+        nextCursor = encodeAgentSortCursor(sort, { ...tailCursorRow, favoriteCount: 0 });
+      } else if (hasMore && favoritedCursorRow) {
+        nextCursor = encodeAgentSortCursor(sort, {
+          ...favoritedById.get(favoritedCursorRow.idHex),
+          _id: favoritedCursorRow._id,
+          favoriteCount: favoritedCursorRow.favoriteCount,
+        });
+      }
+      return buildEnvelope(data, hasMore, nextCursor);
+    }
+
+    if (sort === 'author') {
+      const pipeline: PipelineStage[] = [{ $match: baseQuery }];
+      /* Resolve the same owner contact used by the agent card before sorting. The join
+         matches on `resourceId` alone because a compound `localField` is not a thing, so
+         the resource type is asserted in the filter below: `AGENT` and `REMOTE_AGENT`
+         entries share an agent's `_id`, and `attachOwnerContacts` counts only the
+         `AGENT` ones as ownership. */
+      pipeline.push({
+        $lookup: {
+          from: 'aclentries',
+          localField: '_id',
+          foreignField: 'resourceId',
+          /* Aggregation lookups bypass the ACL model's tenant middleware. The joined
+           * array is narrowed in the following stage because DocumentDB 5.0 does not
+           * support the `$lookup` `let`/`pipeline` form. */
+          as: '_ownerAclEntries',
+        },
+      });
+      pipeline.push({
+        $addFields: {
+          _ownerAclEntries: {
+            $filter: {
+              input: '$_ownerAclEntries',
+              as: 'e',
+              cond: {
+                $eq: [{ $ifNull: ['$$e.tenantId', null] }, { $ifNull: ['$tenantId', null] }],
+              },
+            },
+          },
+        },
+      });
+      pipeline.push({
+        $addFields: {
+          _ownerId: {
+            $let: {
+              vars: {
+                ownerEntry: {
+                  $reduce: {
+                    input: {
+                      $filter: {
+                        input: '$_ownerAclEntries',
+                        as: 'e',
+                        cond: {
+                          $and: [
+                            { $eq: ['$$e.resourceType', ResourceType.AGENT] },
+                            { $eq: ['$$e.principalType', PrincipalType.USER] },
+                            {
+                              $in: ['$$e.permBits', [...OWNER_ACL_PERMISSION_BIT_SUPERSETS]],
+                            },
+                          ],
+                        },
+                      },
+                    },
+                    initialValue: null,
+                    in: {
+                      $cond: [
+                        { $eq: ['$$value', null] },
+                        '$$this',
+                        {
+                          $cond: [earlierAclEntry('$$this', '$$value'), '$$this', '$$value'],
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+              in: { $ifNull: ['$$ownerEntry.principalId', '$author'] },
+            },
+          },
+        },
+      });
+      pipeline.push({
+        $lookup: {
+          from: 'users',
+          localField: '_ownerId',
+          foreignField: '_id',
+          /* User lookups bypass the User model's tenant middleware too. Filter the
+           * joined array afterwards to keep imported principals in their own tenant. */
+          as: '_ownerUser',
+        },
+      });
+      pipeline.push({
+        $addFields: {
+          _ownerUser: {
+            $filter: {
+              input: '$_ownerUser',
+              as: 'u',
+              cond: {
+                $eq: [{ $ifNull: ['$$u.tenantId', null] }, { $ifNull: ['$tenantId', null] }],
+              },
+            },
+          },
+        },
+      });
+      pipeline.push({
+        $addFields: {
+          /* Trimmed once so the sort key and the owner contact below read exactly the
+           * same values. Every operand is checked for BSON string type first because
+           * imported legacy values can make `$trim` fail the whole aggregation. */
+          _supportName: trimStringOrEmpty('$support_contact.name'),
+          _supportEmail: trimStringOrEmpty('$support_contact.email'),
+          _ownerName: trimStringOrEmpty({ $arrayElemAt: ['$_ownerUser.name', 0] }),
+          _ownerUsername: trimStringOrEmpty({ $arrayElemAt: ['$_ownerUser.username', 0] }),
+          // Dead on Agent documents in practice (only Prompts/Skills write it) —
+          // kept as the final real-value tier for exact parity with
+          // `resolveAgentOwnerContact`, which checks it too.
+          _authorName: trimStringOrEmpty('$authorName'),
+          _hasOwnerUser: { $gt: [{ $size: { $ifNull: ['$_ownerUser', []] } }, 0] },
+        },
+      });
+      pipeline.push({
+        $addFields: {
+          authorDisplayName: {
+            $switch: {
+              branches: [
+                { case: { $ne: ['$_supportName', ''] }, then: '$_supportName' },
+                { case: { $ne: ['$_supportEmail', ''] }, then: '$_supportEmail' },
+                { case: isValidDisplayName('$_ownerName'), then: '$_ownerName' },
+                { case: isValidDisplayName('$_ownerUsername'), then: '$_ownerUsername' },
+                { case: isValidDisplayName('$_authorName'), then: '$_authorName' },
+              ],
+              default: AUTHOR_SORT_SENTINEL,
+            },
+          },
+          /* This pipeline joined the owner in order to sort by it, and that is the same
+             owner `attachOwnerContacts` would resolve again — an ACL aggregation plus a
+             user query per page. Resolved here instead, on exactly the tiers
+             `resolveAgentOwnerContact` applies: a support contact means no owner
+             contact at all, and without a joined owner user there is none either, even
+             when the agent carries a denormalized `authorName`. `$$REMOVE` is rejected
+             by DocumentDB, so "no contact" is an explicit null the caller drops. */
+          owner_contact: {
+            $cond: [
+              { $or: [{ $ne: ['$_supportName', ''] }, { $ne: ['$_supportEmail', ''] }] },
+              null,
+              {
+                $let: {
+                  vars: {
+                    ownerDisplayName: {
+                      $switch: {
+                        branches: [
+                          { case: isValidDisplayName('$_ownerName'), then: '$_ownerName' },
+                          {
+                            case: isValidDisplayName('$_ownerUsername'),
+                            then: '$_ownerUsername',
+                          },
+                          { case: isValidDisplayName('$_authorName'), then: '$_authorName' },
+                        ],
+                        default: null,
+                      },
+                    },
+                  },
+                  in: {
+                    $cond: [
+                      { $and: ['$_hasOwnerUser', { $ne: ['$$ownerDisplayName', null] }] },
+                      { name: '$$ownerDisplayName' },
+                      null,
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+      pipeline.push({
+        $addFields: {
+          authorSortKey: { $toLower: '$authorDisplayName' },
+        },
+      });
+
+      // Applied after the `$addFields` above, since it compares against the computed
+      // sort key rather than a stored field.
+      const decodedCursor = readCursor();
+      if (decodedCursor) {
+        pipeline.push({
+          $match: buildAgentSortCursorCondition(
+            sort,
+            decodedCursor,
+            new mongoose.Types.ObjectId(decodedCursor.secondary),
+          ),
+        } as PipelineStage);
+      }
+
+      pipeline.push({
+        $project: {
+          ...projection,
+          authorDisplayName: 1,
+          authorSortKey: 1,
+          owner_contact: 1,
+        },
+      });
+
+      pipeline.push({
+        $sort: {
+          authorSortKey: AGENT_SORT_CONFIG[sort].direction,
+          _id: AGENT_SORT_CONFIG[sort].tieBreakDirection,
+        },
+      });
+
+      if (isPaginated && normalizedLimit) {
+        pipeline.push({ $limit: normalizedLimit + 1 });
+      }
+
+      const agents = (await Agent.aggregate(pipeline)) as Array<Record<string, unknown>>;
+
+      const hasMore = isPaginated && normalizedLimit ? agents.length > normalizedLimit : false;
+      const trimmed = isPaginated && normalizedLimit ? agents.slice(0, normalizedLimit) : agents;
+      const data = trimmed.map((agent) => {
+        if (agent.owner_contact == null) {
+          delete agent.owner_contact;
+        }
+        agent[AGENT_OWNER_CONTACT_RESOLVED_FIELD] = true;
+        return finalizeAgent(agent);
+      });
+
+      let nextCursor: string | null = null;
+      if (isPaginated && hasMore && data.length > 0 && normalizedLimit) {
+        nextCursor = encodeAgentSortCursor(sort, agents[normalizedLimit - 1]);
+      }
+
+      return buildEnvelope(data, hasMore, nextCursor);
+    }
+
+    /* The remaining modes sort by a stored date: `createdAt` for the marketplace's newest
+       and oldest, whose descending compound index supports both directions by reversing
+       the scan, and `updatedAt` for the order this endpoint serves when nothing asks. */
+    const { field: dateField, direction: dir, tieBreakDirection } = AGENT_SORT_CONFIG[sort];
+
+    let finalQuery: Record<string, unknown> = baseQuery;
+    const decodedCursor = readCursor();
+    if (decodedCursor) {
+      const cursorCondition = buildAgentSortCursorCondition(
+        sort,
+        decodedCursor,
+        new mongoose.Types.ObjectId(decodedCursor.secondary),
+      );
+      finalQuery =
+        Object.keys(baseQuery).length > 0
+          ? { $and: [{ ...baseQuery }, cursorCondition] }
+          : { ...cursorCondition };
+    }
+
+    let query = Agent.find(finalQuery, projection).sort({
+      [dateField]: dir,
+      _id: tieBreakDirection,
+    });
 
     if (isPaginated && normalizedLimit) {
       query = query.limit(normalizedLimit + 1);
@@ -1540,39 +2534,15 @@ export function createAgentMethods(
 
     const hasMore = isPaginated && normalizedLimit ? agents.length > normalizedLimit : false;
     const data = (isPaginated && normalizedLimit ? agents.slice(0, normalizedLimit) : agents).map(
-      (agent) => {
-        if (includeExecutionConfig) {
-          agent.tools =
-            Array.isArray(agent.tools) && agent.tools.includes(EToolResources.execute_code)
-              ? [EToolResources.execute_code]
-              : [];
-        }
-        if (agent.author) {
-          agent.author = (agent.author as Types.ObjectId).toString();
-        }
-        return agent;
-      },
+      finalizeAgent,
     );
 
     let nextCursor: string | null = null;
     if (isPaginated && hasMore && data.length > 0 && normalizedLimit) {
-      const lastAgent = agents[normalizedLimit - 1];
-      nextCursor = Buffer.from(
-        JSON.stringify({
-          updatedAt: (lastAgent.updatedAt as Date).toISOString(),
-          _id: (lastAgent._id as Types.ObjectId).toString(),
-        }),
-      ).toString('base64');
+      nextCursor = encodeAgentSortCursor(sort, agents[normalizedLimit - 1]);
     }
 
-    return {
-      object: 'list',
-      data,
-      first_id: data.length > 0 ? (data[0].id as string) : null,
-      last_id: data.length > 0 ? (data[data.length - 1].id as string) : null,
-      has_more: hasMore,
-      after: nextCursor,
-    };
+    return buildEnvelope(data, hasMore, nextCursor);
   }
 
   /**
@@ -1689,8 +2659,10 @@ export function createAgentMethods(
     for (const field of [
       'code_environment_id',
       'code_workspace_id',
+      'code_environment_ids',
       'repositoryInstructions',
       'git_identity',
+      'instructionsPrompt',
       'skills_scope',
       'skill_authoring_enabled',
     ]) {
@@ -1702,27 +2674,24 @@ export function createAgentMethods(
       Object.keys(unsetOnRestore).length > 0
         ? { $set: revertToVersion, $unset: unsetOnRestore }
         : { $set: revertToVersion };
-    const revertedAgent = await withCodeEnvironmentReference(
+    const revertedAgent = await withCodeEnvironmentReferences(
       mongoose,
-      typeof revertToVersion.code_environment_id === 'string'
-        ? revertToVersion.code_environment_id
-        : undefined,
+      codeEnvironmentReferences(revertToVersion),
       async () =>
         await Agent.findOneAndUpdate(
           { ...searchParameter, _id: agent._id, updatedAt: originalRevision },
           revertUpdate,
           { new: true },
         ).lean<IAgent>(),
-      undefined,
-      async (agentAfterRevert) => {
-        if (agentAfterRevert == null || typeof revertToVersion.code_environment_id !== 'string') {
+      async (agentAfterRevert, lostEnvironmentId) => {
+        if (agentAfterRevert == null) {
           return;
         }
         await restoreAgentAfterReferenceLoss(
           Agent,
           agentAfterRevert,
           agent.toObject() as IAgent,
-          revertToVersion.code_environment_id,
+          lostEnvironmentId,
         );
       },
     );
@@ -1765,6 +2734,7 @@ export function createAgentMethods(
 
   return {
     getAgent,
+    getAgentName,
     getAgentVersions,
     getAgentWithVersionCount,
     getAgents,
@@ -1774,6 +2744,7 @@ export function createAgentMethods(
     getAgentIdsByMCPServerName,
     getAgentsWithMCPServerNames,
     updateAgent,
+    updateAgentAvatar,
     deleteAgent,
     deleteUserAgents,
     revertAgentVersion,

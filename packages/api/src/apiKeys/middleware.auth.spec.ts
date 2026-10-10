@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
 import type { NextFunction, Response } from 'express';
 import type { ApiKeyAuthRequest } from './middleware';
 import { createRequireApiKeyAuth } from './middleware';
@@ -66,6 +67,57 @@ describe('remote Agent API key authentication', () => {
 
     expect(req.user?.id).toBe(userId.toString());
     expect(next).toHaveBeenCalledWith();
+  });
+
+  describe('under required two-factor enforcement', () => {
+    const original = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+    beforeEach(() => {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    });
+    afterEach(() => {
+      if (original === undefined) {
+        delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+      } else {
+        process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = original;
+      }
+    });
+
+    const authenticate = async (owner: Record<string, unknown>) => {
+      const userId = new Types.ObjectId();
+      const middleware = createRequireApiKeyAuth({
+        validateAgentApiKey: jest.fn().mockResolvedValue({ userId, keyId: new Types.ObjectId() }),
+        findUser: jest.fn().mockResolvedValue({ _id: userId, ...owner }),
+        isPrincipalActive: jest.fn().mockResolvedValue(true),
+      });
+      const req = createRequest();
+      const response = createResponse();
+      const next = jest.fn() as NextFunction;
+      await middleware(req, response.res, next);
+      return { req, next, ...response };
+    };
+
+    it('refuses a key whose local owner has not enrolled', async () => {
+      const { req, next, status, json } = await authenticate({ provider: 'local' });
+
+      expect(status).toHaveBeenCalledWith(403);
+      expect(json).toHaveBeenCalledWith({
+        error: expect.objectContaining({ code: TWO_FACTOR_ENROLLMENT_REQUIRED_CODE }),
+      });
+      expect(req.user).toBeUndefined();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('admits a key whose owner has enrolled', async () => {
+      const { next } = await authenticate({ provider: 'local', twoFactorEnabled: true });
+
+      expect(next).toHaveBeenCalledWith();
+    });
+
+    it('admits a key whose owner signs in through a federated provider', async () => {
+      const { next } = await authenticate({ provider: 'openid' });
+
+      expect(next).toHaveBeenCalledWith();
+    });
   });
 
   it('starts the user and deletion-fence reads together', async () => {

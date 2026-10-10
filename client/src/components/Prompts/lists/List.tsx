@@ -1,5 +1,7 @@
 import { FileText } from 'lucide-react';
 import { EmptyState } from '@librechat/client';
+import { ResourceType } from 'librechat-data-provider';
+import { useGetAllEffectivePermissionsQuery } from 'librechat-data-provider/react-query';
 import type { TPromptGroup } from 'librechat-data-provider';
 import ChatGroupItem from './ChatGroupItem';
 import { useLocalize } from '~/hooks';
@@ -12,6 +14,9 @@ export default function List({
   isChatRoute?: boolean;
 }) {
   const localize = useLocalize();
+  const { data: permissionsMap } = useGetAllEffectivePermissionsQuery(ResourceType.PROMPTGROUP, {
+    enabled: groups.length > 0,
+  });
 
   const renderContent = () => {
     if (groups.length === 0) {
@@ -26,12 +31,17 @@ export default function List({
     }
 
     return groups.map((group) => (
-      <ChatGroupItem key={group._id} group={group} isChatRoute={isChatRoute} />
+      <ChatGroupItem
+        key={group._id}
+        group={group}
+        isChatRoute={isChatRoute}
+        permissionBits={group._id ? permissionsMap?.[group._id] : 0}
+      />
     ));
   };
 
   return (
-    <section className="flex-grow" aria-label={localize('com_ui_prompt_groups')}>
+    <section className="grow" aria-label={localize('com_ui_prompt_groups')}>
       <div>{renderContent()}</div>
     </section>
   );

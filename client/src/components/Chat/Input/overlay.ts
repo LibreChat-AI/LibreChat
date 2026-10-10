@@ -10,8 +10,8 @@ import { atom, useSetAtom } from 'jotai';
  * composer is taller than ~92px, which it always is. The control stands down
  * while the count is above zero. Each panel registers through
  * {@link useComposerOverlay} for exactly as long as it renders, so the count
- * can never go stale; like `steerOverlayHeightFamily`, the family is never
- * GC'd but holds one number per visited conversation.
+ * can never go stale; the family is never GC'd but holds one number per
+ * visited conversation.
  */
 export const composerOverlayCountFamily = atomFamily((_conversationId: string) => atom<number>(0));
 

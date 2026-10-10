@@ -45,7 +45,7 @@ export const ClearChats = () => {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_nav_confirm_clear')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <Label className="break-words">
               {localize('com_nav_clear_conversation_confirm_message')}

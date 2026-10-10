@@ -37,6 +37,7 @@ jest.mock('@librechat/api', () => ({
 }));
 
 jest.mock('~/models', () => ({
+  initializeMessageBudget: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
 }));
 
@@ -89,7 +90,10 @@ describe('SSE stream tenant isolation', () => {
       checkpointIds: ['checkpoint-a'],
     });
     mockDeleteAgentCheckpoint.mockResolvedValue(undefined);
-    mockSaveMessage.mockResolvedValue({ persisted: true });
+    mockSaveMessage.mockImplementation(async (_context, message) => ({
+      ...message,
+      persisted: true,
+    }));
     mockGenerationJobManager.getActiveJobIdsForUser.mockResolvedValue([]);
     mockGenerationJobManager.steering.claim.mockResolvedValue([]);
     mockGenerationJobManager.steering.claimDetailed.mockResolvedValue({
@@ -506,6 +510,25 @@ describe('SSE stream tenant isolation', () => {
       expect(res.status).toBe(200);
       expect(res.body.active).toBe(true);
     });
+
+    it.each([true, false])(
+      'reports the run temporary state %s recorded at admission',
+      async (isTemporary) => {
+        mockUserId = 'user-123';
+        mockTenantId = 'tenant-a';
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'user-123', tenantId: 'tenant-a', isTemporary },
+          status: 'running',
+          createdAt: Date.now(),
+        });
+        mockGenerationJobManager.getResumeState.mockResolvedValue(null);
+
+        const res = await request(app).get('/agents/chat/status/conv-123');
+
+        expect(res.status).toBe(200);
+        expect(res.body.isTemporary).toBe(isTemporary);
+      },
+    );
 
     it('preserves the immutable v2 marker on an active status response', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue({
@@ -982,7 +1005,7 @@ describe('SSE stream tenant isolation', () => {
         1,
         expect.any(Object),
         expect.objectContaining({ messageId: 'user-1', isCreatedByUser: true }),
-        expect.any(Object),
+        expect.objectContaining({ insertOnly: true }),
       );
       expect(mockSaveMessage).toHaveBeenNthCalledWith(
         2,

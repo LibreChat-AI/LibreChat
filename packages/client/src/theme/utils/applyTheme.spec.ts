@@ -3,8 +3,11 @@ import applyTheme, {
   applyResolvedTheme,
   clearAppliedTheme,
   themeOwnedProperties,
+  THEME_DISABLED_ATTRIBUTE,
+  THEME_SCOPE_ATTRIBUTE,
+  THEME_FIELD_FOCUS_ATTRIBUTE,
 } from './applyTheme';
-import { highContrastTheme, resolveTheme } from '../registry';
+import { defaultAppearance, highContrastTheme, resolveTheme } from '../registry';
 import { defaultTheme } from '../themes/default';
 
 const semanticProperties = [
@@ -17,7 +20,15 @@ const semanticProperties = [
   '--text-muted',
   '--chart-widget-surface',
   '--chart-widget-stroke',
+  '--switch-thumb',
+  '--surface-tooltip',
+  '--alert-error-fill',
+  '--avatar-placeholder',
+  '--avatar-text',
+  '--table-header-text',
+  '--table-header-fill',
   '--border-destructive',
+  '--border-control',
   '--status-success',
   '--status-success-subtle',
   '--status-success-border',
@@ -137,6 +148,99 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--theme-motion-fast')).toBe('80ms');
   });
 
+  /** The plain `rounded-*`, `font-sans` and `font-mono` utilities read these properties, so a
+   *  theme reaches every call site only if the adapter writes them and a reset removes them. */
+  it('applies and clears the radius and shadow scales and the mono family', () => {
+    const root = document.documentElement;
+    const scale = {
+      radiusSm: ['--theme-radius-sm', '0px'],
+      radiusMd: ['--theme-radius-md', '0.125rem'],
+      radiusLg: ['--theme-radius-lg', '0.25rem'],
+      radiusXl: ['--theme-radius-xl', '0.5rem'],
+      radius2xl: ['--theme-radius-2xl', '0.75rem'],
+      radius3xl: ['--theme-radius-3xl', '1rem'],
+      monoFontFamily: ['--theme-mono-font-family', 'Inconsolata, monospace'],
+      shadow2xs: ['--theme-shadow-2xs', '0 1px rgb(0 0 0 / 0.1)'],
+      shadowXs: ['--theme-shadow-xs', '0 1px 2px rgb(0 0 0 / 0.15)'],
+      shadowSm: ['--theme-shadow-sm', '0 2px 4px rgb(0 0 0 / 0.15)'],
+      shadowMd: ['--theme-shadow-md', '0 4px 8px rgb(0 0 0 / 0.15)'],
+      shadowLg: ['--theme-shadow-lg', '0 8px 16px rgb(0 0 0 / 0.15)'],
+      shadowXl: ['--theme-shadow-xl', '0 12px 24px rgb(0 0 0 / 0.15)'],
+      shadow2xl: ['--theme-shadow-2xl', 'inset 0 0 0 1px rgb(0, 0, 0)'],
+    } as const;
+    const appearance = Object.fromEntries(
+      Object.entries(scale).map(([key, [, value]]) => [key, value]),
+    );
+
+    applyResolvedTheme(
+      resolveTheme(
+        { version: 1, name: 'shape-reference', modes: { light: { appearance } } },
+        'light',
+      ),
+      root,
+    );
+
+    Object.values(scale).forEach(([property, value]) => {
+      expect(root.style.getPropertyValue(property)).toBe(value);
+      expect(themeOwnedProperties).toContain(property);
+    });
+
+    applyResolvedTheme(resolveTheme({ version: 1, name: 'defaults', modes: {} }, 'light'), root);
+    expect(root.style.getPropertyValue('--theme-radius-lg')).toBe(defaultAppearance.radiusLg);
+    expect(root.style.getPropertyValue('--theme-mono-font-family')).toBe(
+      defaultAppearance.monoFontFamily,
+    );
+    expect(root.style.getPropertyValue('--theme-shadow-lg')).toBe(defaultAppearance.shadowLg);
+
+    clearAppliedTheme(root);
+    Object.values(scale).forEach(([property]) => {
+      expect(root.style.getPropertyValue(property)).toBe('');
+    });
+  });
+
+  /** Tailwind lists `--tw-shadow` after the ring layers, where a bare `none` voids the whole
+   *  declaration and takes a focus ring with it, so a disabled step becomes a transparent layer. */
+  it('writes a disabled shadow step as a composable transparent layer', () => {
+    const root = document.documentElement;
+
+    applyResolvedTheme(
+      resolveTheme(
+        {
+          version: 1,
+          name: 'flat',
+          modes: { light: { appearance: { shadow2xl: 'none', elevationSurface: ' NONE ' } } },
+        },
+        'light',
+      ),
+      root,
+    );
+
+    expect(root.style.getPropertyValue('--theme-shadow-2xl')).toBe('0 0 #0000');
+    expect(root.style.getPropertyValue('--theme-elevation-surface')).toBe('0 0 #0000');
+    expect(root.style.getPropertyValue('--theme-shadow-lg')).toBe(defaultAppearance.shadowLg);
+    clearAppliedTheme(root);
+  });
+
+  it('keeps the default for an appearance key that is present but undefined', () => {
+    const root = document.documentElement;
+
+    applyResolvedTheme(
+      resolveTheme(
+        {
+          version: 1,
+          name: 'sparse',
+          modes: { light: { appearance: { shadowLg: undefined, radiusSm: undefined } } },
+        },
+        'light',
+      ),
+      root,
+    );
+
+    expect(root.style.getPropertyValue('--theme-shadow-lg')).toBe(defaultAppearance.shadowLg);
+    expect(root.style.getPropertyValue('--theme-radius-sm')).toBe(defaultAppearance.radiusSm);
+    clearAppliedTheme(root);
+  });
+
   it('applies the resolved high-contrast code surface instead of the stock grey', () => {
     const root = document.documentElement;
 
@@ -236,6 +340,252 @@ describe('applyTheme', () => {
 
     expect(root.style.getPropertyValue('--chart-widget-surface')).toBe('40 41 42');
     expect(root.style.getPropertyValue('--chart-widget-stroke')).toBe('50 51 52');
+  });
+
+  it('carries a legacy hover onto the pressed fills', () => {
+    const root = document.documentElement;
+
+    applyTheme(
+      { 'rgb-surface-hover': '110 111 112', 'rgb-surface-inverted-hover': '20 21 22' },
+      root,
+      defaultTheme,
+    );
+
+    expect(root.style.getPropertyValue('--surface-pressed')).toBe('110 111 112');
+    expect(root.style.getPropertyValue('--surface-inverted-pressed')).toBe('20 21 22');
+  });
+
+  it('sets dialog titles in the primary ink of a theme that predates the role', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-primary': '30 31 32' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--dialog-title')).toBe('30 31 32');
+    expect(root.style.getPropertyValue('--badge-label')).toBe('30 31 32');
+  });
+
+  it('fills the primary button with the inverted surface of a theme that predates the role', () => {
+    const root = document.documentElement;
+
+    applyTheme(
+      { 'rgb-surface-inverted': '30 31 32', 'rgb-surface-inverted-hover': '40 41 42' },
+      root,
+      defaultTheme,
+    );
+
+    expect(root.style.getPropertyValue('--button-primary')).toBe('30 31 32');
+    expect(root.style.getPropertyValue('--button-primary-hover')).toBe('40 41 42');
+  });
+
+  it('marks the root only for a theme that fills its disabled controls, and clears it', () => {
+    const root = document.documentElement;
+    const fill: ThemeDefinition = {
+      version: 1,
+      name: 'fill-reference',
+      modes: { light: { appearance: { disabledStyle: 'fill' } } },
+    };
+
+    applyResolvedTheme(resolveTheme(fill, 'light'), root);
+    expect(root.getAttribute(THEME_DISABLED_ATTRIBUTE)).toBe('fill');
+
+    applyResolvedTheme(resolveTheme({ ...fill, modes: {} }, 'light'), root);
+    expect(root.hasAttribute(THEME_DISABLED_ATTRIBUTE)).toBe(false);
+
+    applyResolvedTheme(resolveTheme(fill, 'light'), root);
+    clearAppliedTheme(root);
+    expect(root.hasAttribute(THEME_DISABLED_ATTRIBUTE)).toBe(false);
+  });
+
+  it('leaves the document root backdrop to the stylesheet alias so it follows the mode', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' }, root);
+
+    expect(root.style.getPropertyValue('--surface-secondary')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('');
+  });
+
+  it('marks a scoped root so the stylesheet derives its backdrop from its own surfaces', () => {
+    const scoped = document.createElement('div');
+    document.body.append(scoped);
+    try {
+      applyTheme(
+        { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' },
+        scoped,
+      );
+
+      expect(scoped.hasAttribute(THEME_SCOPE_ATTRIBUTE)).toBe(true);
+      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('');
+      expect(document.documentElement.hasAttribute(THEME_SCOPE_ATTRIBUTE)).toBe(false);
+
+      clearAppliedTheme(scoped);
+      expect(scoped.hasAttribute(THEME_SCOPE_ATTRIBUTE)).toBe(false);
+    } finally {
+      scoped.remove();
+    }
+  });
+
+  it("inks a legacy theme's default avatar in its primary text", () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-primary': '10 11 12' }, root);
+    expect(root.style.getPropertyValue('--avatar-text')).toBe('10 11 12');
+
+    applyTheme({ 'rgb-text-primary': '10 11 12', 'rgb-avatar-text': '1 2 3' }, root);
+    expect(root.style.getPropertyValue('--avatar-text')).toBe('1 2 3');
+  });
+
+  it('leaves an explicit avatar backdrop alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-tertiary': '30 31 32', 'rgb-avatar-placeholder': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('1 2 3');
+  });
+
+  it('marks the root only for a theme that focuses fields by their edge, and clears it', () => {
+    const root = document.documentElement;
+    const border: ThemeDefinition = {
+      version: 1,
+      name: 'field-border-reference',
+      modes: { light: { appearance: { fieldFocusStyle: 'border' } } },
+    };
+
+    applyResolvedTheme(resolveTheme(border, 'light'), root);
+    expect(root.getAttribute(THEME_FIELD_FOCUS_ATTRIBUTE)).toBe('border');
+
+    applyResolvedTheme(resolveTheme({ ...border, modes: {} }, 'light'), root);
+    expect(root.hasAttribute(THEME_FIELD_FOCUS_ATTRIBUTE)).toBe(false);
+
+    applyResolvedTheme(resolveTheme(border, 'light'), root);
+    clearAppliedTheme(root);
+    expect(root.hasAttribute(THEME_FIELD_FOCUS_ATTRIBUTE)).toBe(false);
+  });
+
+  it('writes the default focus and disabled styles on a nested root, so it overrides its ancestor', () => {
+    const outer = document.createElement('div');
+    const inner = document.createElement('div');
+    outer.append(inner);
+    document.body.append(outer);
+    const edge: ThemeDefinition = {
+      version: 1,
+      name: 'edge-fill-reference',
+      modes: { light: { appearance: { fieldFocusStyle: 'border', disabledStyle: 'fill' } } },
+    };
+    try {
+      applyResolvedTheme(resolveTheme(edge, 'light'), outer);
+      applyResolvedTheme(resolveTheme({ ...edge, modes: {} }, 'light'), inner);
+
+      /** The style queries read these inherited properties, so the nearest root decides. */
+      expect(outer.style.getPropertyValue('--theme-field-focus-style')).toBe('border');
+      expect(outer.style.getPropertyValue('--theme-disabled-style')).toBe('fill');
+      expect(inner.style.getPropertyValue('--theme-field-focus-style')).toBe('ring');
+      expect(inner.style.getPropertyValue('--theme-disabled-style')).toBe('dim');
+
+      clearAppliedTheme(inner);
+      expect(inner.style.getPropertyValue('--theme-field-focus-style')).toBe('');
+      expect(inner.style.getPropertyValue('--theme-disabled-style')).toBe('');
+    } finally {
+      outer.remove();
+    }
+  });
+
+  it('focuses the fields of a legacy theme in the focus color it names', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-focus-control': '30 31 32' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--border-field-focus')).toBe('30 31 32');
+  });
+
+  it('maps a legacy theme canvas and ink onto the field fill and ink', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-text-primary': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--field-fill')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--field-text')).toBe('1 2 3');
+  });
+
+  it('keeps the switch knob of a legacy theme on the surface it repainted', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22' }, root);
+
+    expect(root.style.getPropertyValue('--switch-thumb')).toBe('20 21 22');
+  });
+
+  it('leaves an explicit switch knob alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-switch-thumb': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--switch-thumb')).toBe('1 2 3');
+  });
+
+  it('keeps the tooltip and the error alert of a legacy theme on the roles it repainted', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-status-error-subtle': '4 5 6' }, root);
+
+    expect(root.style.getPropertyValue('--surface-tooltip')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--alert-error-fill')).toBe('4 5 6');
+  });
+
+  it('leaves an explicit tooltip surface alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-surface-tooltip': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--surface-tooltip')).toBe('1 2 3');
+  });
+
+  it('keeps table column names of a legacy theme on its secondary text', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-secondary': '20 21 22' }, root);
+
+    expect(root.style.getPropertyValue('--table-header-text')).toBe('20 21 22');
+  });
+
+  it('keeps a legacy self-sticking table header on its dialog surface', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-dialog': '20 21 22' }, root);
+
+    expect(root.style.getPropertyValue('--table-header-fill')).toBe('20 21 22');
+  });
+
+  it('carries a legacy light border onto the control outline', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-border-light': '110 111 112' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--border-control')).toBe('110 111 112');
+  });
+
+  it('carries a legacy medium border onto the control outline', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-border-medium': '60 61 62' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--border-control')).toBe('60 61 62');
+  });
+
+  it('leaves the bundled outline when the theme paints no border', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '250 250 250' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--border-control')).toBe('');
+  });
+
+  it('leaves an explicit control outline alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-border-medium': '60 61 62', 'rgb-border-control': '70 71 72' }, root);
+
+    expect(root.style.getPropertyValue('--border-control')).toBe('70 71 72');
   });
 
   it('carries a legacy theme without a verified fill onto its success fill', () => {

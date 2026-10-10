@@ -4,8 +4,11 @@ const mockVerifyOTPOrBackupCode = jest.fn();
 const mockGenerateTOTPSecret = jest.fn();
 const mockGenerateBackupCodes = jest.fn();
 const mockEncryptV3 = jest.fn();
+const mockGetTOTPSecret = jest.fn();
+const mockVerifyTOTP = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   encryptV3: (...args) => mockEncryptV3(...args),
   logger: { error: jest.fn() },
 }));
@@ -15,8 +18,8 @@ jest.mock('~/server/services/twoFactorService', () => ({
   generateBackupCodes: (...args) => mockGenerateBackupCodes(...args),
   generateTOTPSecret: (...args) => mockGenerateTOTPSecret(...args),
   verifyBackupCode: jest.fn(),
-  getTOTPSecret: jest.fn(),
-  verifyTOTP: jest.fn(),
+  getTOTPSecret: (...args) => mockGetTOTPSecret(...args),
+  verifyTOTP: (...args) => mockVerifyTOTP(...args),
 }));
 
 jest.mock('~/models', () => ({
@@ -24,7 +27,12 @@ jest.mock('~/models', () => ({
   updateUser: (...args) => mockUpdateUser(...args),
 }));
 
-const { enable2FA, regenerateBackupCodes } = require('~/server/controllers/TwoFactorController');
+const {
+  enable2FA,
+  confirm2FA,
+  disable2FA,
+  regenerateBackupCodes,
+} = require('~/server/controllers/TwoFactorController');
 
 function createRes() {
   const res = {};
@@ -45,6 +53,66 @@ beforeEach(() => {
   mockGenerateTOTPSecret.mockReturnValue('NEWSECRET');
   mockGenerateBackupCodes.mockResolvedValue({ plainCodes: PLAIN_CODES, codeObjects: CODE_OBJECTS });
   mockEncryptV3.mockReturnValue('encrypted-secret');
+  mockGetTOTPSecret.mockResolvedValue('plain-secret');
+  mockVerifyTOTP.mockResolvedValue(true);
+});
+
+/** Any write that moves the pending or live credentials strands an in-flight required enrollment. */
+const CLEARED_NONCES = {
+  twoFactorAcknowledgementNonceHash: null,
+  twoFactorFinalizationNonceHash: null,
+};
+
+describe('required-enrollment nonce cleanup', () => {
+  it('clears stale nonce state when setup is regenerated', async () => {
+    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false, email: 'a@b.com' });
+    mockUpdateUser.mockResolvedValue({ email: 'a@b.com' });
+
+    await enable2FA({ user: { id: 'user1' }, body: {} }, createRes());
+
+    expect(mockUpdateUser.mock.calls[0][1]).toMatchObject(CLEARED_NONCES);
+  });
+
+  it('clears stale nonce state when 2FA is confirmed from account settings', async () => {
+    mockGetUserById.mockResolvedValue({
+      _id: 'user1',
+      twoFactorEnabled: false,
+      pendingTotpSecret: 'encrypted-secret',
+      pendingBackupCodes: CODE_OBJECTS,
+    });
+    mockUpdateUser.mockResolvedValue({});
+    const res = createRes();
+
+    await confirm2FA({ user: { id: 'user1' }, body: { token: '123456' } }, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mockUpdateUser.mock.calls[0][1]).toMatchObject({
+      twoFactorEnabled: true,
+      pendingTotpSecret: null,
+      pendingBackupCodes: [],
+      ...CLEARED_NONCES,
+    });
+  });
+
+  it('clears stale nonce state when 2FA is disabled', async () => {
+    mockGetUserById.mockResolvedValue({
+      _id: 'user1',
+      twoFactorEnabled: true,
+      totpSecret: 'enc-secret',
+    });
+    mockVerifyOTPOrBackupCode.mockResolvedValue({ verified: true });
+    mockUpdateUser.mockResolvedValue({});
+    const res = createRes();
+
+    await disable2FA({ user: { id: 'user1' }, body: { token: '123456' } }, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mockUpdateUser.mock.calls[0][1]).toMatchObject({
+      twoFactorEnabled: false,
+      totpSecret: null,
+      ...CLEARED_NONCES,
+    });
+  });
 });
 
 describe('enable2FA', () => {

@@ -7,6 +7,7 @@ const { Tool } = require('@librechat/agents/langchain/tools');
 const { Tools, ImageVisionTool } = require('librechat-data-provider');
 const {
   getToolkitKey,
+  getGitHubCompareCatalogTools,
   isToolModuleFile,
   oaiToolkit,
   geminiToolkit,
@@ -106,7 +107,7 @@ function loadAndFormatTools({ directory, adminFilter = [], adminIncluded = [] })
     tools.push(formattedTool);
   }
 
-  tools.push(ImageVisionTool);
+  tools.push(ImageVisionTool, ...getGitHubCompareCatalogTools(adminIncluded, adminFilter));
 
   return tools.reduce((map, tool) => {
     map[tool.function.name] = tool;

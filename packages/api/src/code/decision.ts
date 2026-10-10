@@ -1,4 +1,8 @@
-import { isCodeEnvironmentMode, isCodeWorkspaceSelections } from 'librechat-data-provider';
+import {
+  isCodeEnvironmentMode,
+  isCodeWorkspaceSelections,
+  canonicalizeCodeWorkspaceSelections,
+} from 'librechat-data-provider';
 import type {
   CodeEnvironmentMode,
   CodeWorkspaceSelection,
@@ -19,13 +23,7 @@ export type StoredConversationDecision = Pick<
 > & { codeEnvironmentRevision?: number };
 
 function canonicalSelections(selections: CodeWorkspaceSelection[]): CodeWorkspaceSelection[] {
-  return [...selections].sort((left, right) => {
-    if (left.environmentId < right.environmentId) return -1;
-    if (left.environmentId > right.environmentId) return 1;
-    if (left.workspaceId < right.workspaceId) return -1;
-    if (left.workspaceId > right.workspaceId) return 1;
-    return 0;
-  });
+  return canonicalizeCodeWorkspaceSelections(selections);
 }
 
 function sameSelections(left: CodeWorkspaceSelection[], right: CodeWorkspaceSelection[]): boolean {

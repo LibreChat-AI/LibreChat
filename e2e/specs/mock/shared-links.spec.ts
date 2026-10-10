@@ -57,8 +57,8 @@ type PublicSharedPayload = {
 const randomSuffix = () => `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
 async function uploadProviderFile(page: Page, fixture: UploadFixture) {
-  await page.getByRole('button', { name: 'Attach File Options' }).click();
-  const uploadOption = page.getByText('Upload to Provider', { exact: true });
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const uploadOption = page.getByRole('button', { name: 'Upload to Provider', exact: true });
   await expect(uploadOption).toBeVisible();
 
   const fileChooserPromise = page.waitForEvent('filechooser');
@@ -168,7 +168,7 @@ test.describe('shared links', () => {
       throw new Error(`Could not parse conversation id from ${conversationUrl.href}`);
     }
 
-    await page.getByRole('button', { name: 'Export/Share' }).click();
+    await page.getByRole('button', { name: 'Chat options' }).click();
     await page.getByTestId('share-conversation-menu-item').click();
     const shareDialog = page.getByRole('dialog', { name: 'Share link to chat' });
     await expect(shareDialog).toBeVisible();
@@ -239,7 +239,7 @@ test.describe('shared links', () => {
     await expect(mockReply(page)).toHaveCount(1);
 
     await page.goto(conversationUrl.pathname, { timeout: 10000 });
-    await page.getByRole('button', { name: 'Export/Share' }).click();
+    await page.getByRole('button', { name: 'Chat options' }).click();
     await page.getByTestId('share-conversation-menu-item').click();
     await expect(shareDialog).toBeVisible();
     await expect(shareFilesSwitch).not.toBeChecked();
@@ -351,7 +351,7 @@ test.describe('shared links', () => {
     }
 
     await page.goto(conversationUrl.pathname, { timeout: 10000 });
-    await page.getByRole('button', { name: 'Export/Share' }).click();
+    await page.getByRole('button', { name: 'Chat options' }).click();
     await page.getByTestId('share-conversation-menu-item').click();
     await expect(shareDialog).toBeVisible();
     await shareDialog.getByRole('button', { name: 'Delete Link' }).click();

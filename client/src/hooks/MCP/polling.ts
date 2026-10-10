@@ -50,6 +50,35 @@ export function applyMCPDiscoveryAuthorizationState(
   return changed ? nextStatus : connectionStatus;
 }
 
+/**
+ * A server this browser is authorizing is `connecting`, whatever the cached status says. Starting
+ * a flow does not refetch connection status, so the cache can still hold the durable `connected`
+ * that stored-but-rejected tokens report, and that would read as ready in the middle of OAuth.
+ */
+export function applyPendingOAuthState(
+  connectionStatus: Record<string, MCPServerStatus> | undefined,
+  initStates: Record<string, { oauthUrl: string | null }>,
+): Record<string, MCPServerStatus> | undefined {
+  let nextStatus: Record<string, MCPServerStatus> | undefined;
+  for (const [serverName, initState] of Object.entries(initStates)) {
+    const current = connectionStatus?.[serverName];
+    if (
+      initState.oauthUrl == null ||
+      (current?.connectionState === 'connecting' && current.authorizationState === 'authorizing')
+    ) {
+      continue;
+    }
+    nextStatus ??= { ...(connectionStatus ?? {}) };
+    nextStatus[serverName] = {
+      ...current,
+      requiresOAuth: true,
+      connectionState: 'connecting',
+      authorizationState: 'authorizing',
+    };
+  }
+  return nextStatus ?? connectionStatus;
+}
+
 export type MCPOAuthPollingOutcome = 'pending' | 'completed' | 'failed';
 
 export function getMCPOAuthTimeout(

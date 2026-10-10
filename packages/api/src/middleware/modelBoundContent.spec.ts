@@ -6197,3 +6197,40 @@ describe('assertModelBoundProviderContent', () => {
     expect(onAllowed).not.toHaveBeenCalled();
   });
 });
+
+it('admits only after every native batch passes and awaits the protected commit', async () => {
+  const onContentAllowed = jest.fn(async () => {});
+  const callback = createModelBoundChatModelCallback(
+    {
+      filters: {
+        messages: {
+          pii: {
+            fields: ['text', 'content_part'],
+            starterPatterns: [],
+            customPatterns: [{ id: 'secret', label: 'Secret', regex: 'BLOCK-ME' }],
+          },
+        },
+      },
+    },
+    { onContentAllowed },
+  );
+  expect(() =>
+    callback.handleChatModelStart(undefined, [
+      [{ role: 'user', content: 'safe' }],
+      [{ role: 'user', content: 'BLOCK-ME' }],
+    ]),
+  ).toThrow();
+  expect(onContentAllowed).not.toHaveBeenCalled();
+  let finish!: () => void;
+  onContentAllowed.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const pending = callback.handleChatModelStart(undefined, [[{ role: 'user', content: 'safe' }]]);
+  expect(pending).toBeInstanceOf(Promise);
+  finish();
+  await pending;
+  expect(onContentAllowed).toHaveBeenCalledTimes(1);
+});

@@ -1310,6 +1310,38 @@ describe('injectSkillCatalog', () => {
     expect(definedNames).not.toContain('skill');
   });
 
+  it('carries attached defaults when the skill catalog registers tools first', async () => {
+    const listSkillsByAccess = buildPager([[makeSkill('attached-defaults')]]);
+    const result = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess,
+        codeEnvAvailable: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['read_file', 'execute_command']),
+        workspaceCommandTimeoutMaxMs: 80_000,
+        workspaceCommandTimeoutDefaultMs: 60_000,
+        workspaceReadFileDefaultLines: 500,
+      }),
+    );
+    expect(
+      result.toolDefinitions?.find(({ name }) => name === 'read_file')?.parameters,
+    ).toMatchObject({
+      properties: {
+        max_lines: { maximum: 500, description: expect.stringContaining('Defaults to 500') },
+      },
+    });
+    expect(
+      result.toolDefinitions?.find(({ name }) => name === 'bash_tool')?.parameters,
+    ).toMatchObject({
+      properties: {
+        timeoutMs: {
+          maximum: 80_000,
+          description: expect.stringContaining('Defaults to 60000 for foreground calls'),
+        },
+      },
+    });
+  });
+
   it('registers bash_tool with the tool-output reference syntax guide when codeEnvAvailable', async () => {
     /**
      * Symmetry check with `initializeAgent`'s call: `injectSkillCatalog`

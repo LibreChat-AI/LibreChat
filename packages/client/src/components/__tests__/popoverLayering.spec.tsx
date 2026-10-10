@@ -2,7 +2,7 @@ import '@testing-library/jest-dom';
 import { render, screen } from '@testing-library/react';
 import { HoverCard, HoverCardContent, HoverCardPortal, HoverCardTrigger } from '../HoverCard';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../Select';
-import { OGDialog, OGDialogContent } from '../OriginalDialog';
+import { DialogLayer, OGDialog, OGDialogContent } from '../OriginalDialog';
 
 /**
  * A portaled popover lands beside the dialog in the DOM, not inside it, so its
@@ -58,7 +58,21 @@ describe('portaled popovers inside a dialog', () => {
 
     const listbox = screen.getByRole('listbox');
     expect(zIndexOf(listbox)).toBeGreaterThan(DIALOG_CONTENT_Z_INDEX);
-    expect(listbox.style.pointerEvents).toBe('auto');
+    expect(listbox).toHaveClass('pointer-events-auto');
+  });
+
+  /** The Settings dialog is a Headless UI panel at z-50, not an OGDialog, so it declares its own
+   *  dialog level (berry-13/LibreChat#249). */
+  it('opens a select above a non-OGDialog panel that declares a dialog layer', () => {
+    render(
+      <DialogLayer>
+        <EnvironmentSelect />
+      </DialogLayer>,
+    );
+
+    const listbox = screen.getByRole('listbox');
+    expect(zIndexOf(listbox)).toBeGreaterThan(50);
+    expect(listbox).toHaveClass('pointer-events-auto');
   });
 
   it('opens a hover card above the dialog content it belongs to', () => {
@@ -95,6 +109,7 @@ describe('portaled popovers inside a dialog', () => {
     const card = screen.getByText('What stateful sessions do');
     expect(listbox.style.zIndex).toBe('');
     expect(listbox).toHaveClass('z-40');
+    expect(listbox).not.toHaveClass('pointer-events-auto');
     expect(card.style.zIndex).toBe('');
     expect(card).toHaveClass('z-50');
   });

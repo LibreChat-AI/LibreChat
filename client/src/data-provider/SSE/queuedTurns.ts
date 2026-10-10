@@ -5,6 +5,7 @@ import type {
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 
 export type AgentQueuedTurnReceipt = TAgentQueuedTurnReceipt;
 export type EnqueueAgentQueuedTurnRequest = TEnqueueAgentQueuedTurnRequest;
@@ -133,12 +134,13 @@ export function useAgentQueuedTurns(
   expectsReceipts = false,
 ) {
   const queryClient = useQueryClient();
+  const transport = useChatTransport();
   const knownIds = [...new Set(clientRequestIds)].sort();
   const knownIdsSignature = knownIds.join('\u0000');
   const previousRequest = useRef({ conversationId, knownIdsSignature });
   const query = useQuery({
     queryKey: agentQueuedTurnsQueryKey(conversationId),
-    queryFn: () => fetchAgentQueuedTurns(conversationId, knownIds),
+    queryFn: () => transport.listQueued(conversationId, knownIds),
     enabled: enabled && conversationId.length > 0,
     staleTime: 1_000,
     /** A stopped indeterminate row can receive exact proof at any time. Its
@@ -191,9 +193,10 @@ export function useAgentQueuedTurns(
 
 export function useEnqueueAgentQueuedTurnMutation() {
   const queryClient = useQueryClient();
+  const transport = useChatTransport();
   return useMutation({
     mutationKey: [MutationKeys.enqueueAgentQueuedTurn],
-    mutationFn: enqueueAgentQueuedTurn,
+    mutationFn: transport.enqueue,
     /** A retry can encounter admission middleware while the first request is
      * still committing. Reconcile ambiguous outcomes through the read-only
      * known-id projection instead of issuing a second mutating POST. */
@@ -207,9 +210,10 @@ export function useEnqueueAgentQueuedTurnMutation() {
 
 export function useCancelAgentQueuedTurnMutation() {
   const queryClient = useQueryClient();
+  const transport = useChatTransport();
   return useMutation({
     mutationKey: [MutationKeys.cancelAgentQueuedTurn],
-    mutationFn: cancelAgentQueuedTurn,
+    mutationFn: transport.cancelQueued,
     onSuccess: (_receipt, input) =>
       queryClient.invalidateQueries({
         queryKey: [QueryKeys.agentQueuedTurns, input.conversationId],

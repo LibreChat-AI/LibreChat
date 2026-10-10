@@ -78,13 +78,13 @@ const FileUpload: React.FC<FileUploadProps> = ({
         size="sm"
         onClick={handleClick}
         className={cn(
-          'mr-1 flex h-auto cursor-pointer items-center rounded bg-transparent px-2 py-1 text-xs font-normal text-text-secondary transition-colors hover:bg-surface-hover hover:text-status-success focus:ring-text-primary',
+          'text-text-secondary hover:bg-surface-hover hover:text-status-success focus:ring-text-primary mr-1 flex h-auto cursor-pointer items-center rounded bg-transparent px-2 py-1 text-xs font-normal transition-colors',
           statusColor,
           containerClassName,
         )}
         aria-label={statusText}
       >
-        <FileUp className="mr-1 flex w-[22px] items-center stroke-1" aria-hidden="true" />
+        <FileUp className="mr-1 flex size-5.5 items-center stroke-1" aria-hidden="true" />
         <span className="flex text-xs">{statusText}</span>
       </Button>
       <input

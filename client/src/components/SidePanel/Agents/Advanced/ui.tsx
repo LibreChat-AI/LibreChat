@@ -17,7 +17,7 @@ export const groupHeadingClass = 'text-sm font-semibold text-text-primary';
 /** Small count chip, e.g. "2 / 10". */
 export function CountPill({ children }: { children: ReactNode }) {
   return (
-    <span className="inline-flex h-4 items-center justify-center whitespace-nowrap rounded-full bg-surface-tertiary px-1.5 text-[10px] font-medium tabular-nums text-text-secondary">
+    <span className="bg-surface-tertiary text-text-secondary inline-flex h-4 items-center justify-center rounded-full px-1.5 text-[10px] font-medium whitespace-nowrap tabular-nums">
       {children}
     </span>
   );
@@ -34,7 +34,7 @@ export function CountPill({ children }: { children: ReactNode }) {
 export function BetaPill() {
   const localize = useLocalize();
   return (
-    <span className="rounded-full border border-brand-purple/40 bg-brand-purple/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brand-purple">
+    <span className="border-brand-purple/40 bg-brand-purple/10 text-brand-purple rounded-full border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
       {localize('com_ui_beta')}
     </span>
   );
@@ -51,7 +51,7 @@ export function InfoTrigger() {
       <Button
         variant="ghost"
         aria-label={localize('com_ui_more_info')}
-        className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded p-0 text-text-tertiary transition-colors hover:bg-transparent hover:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+        className="text-text-tertiary hover:text-text-secondary focus-visible:ring-text-primary flex h-4 w-4 shrink-0 items-center justify-center rounded p-0 transition-colors hover:bg-transparent focus-visible:ring-2"
       >
         <CircleHelpIcon className="h-3.5 w-3.5" aria-hidden={true} />
       </Button>
@@ -77,7 +77,7 @@ export function ToggleSetting({ id, label, checked, onCheckedChange, info }: Tog
   const row = (
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <label htmlFor={id} className="truncate text-[13px] font-medium text-text-primary">
+        <label htmlFor={id} className="text-text-primary truncate text-[13px] font-medium">
           {label}
         </label>
         {info != null && <InfoTrigger />}
@@ -95,7 +95,7 @@ export function ToggleSetting({ id, label, checked, onCheckedChange, info }: Tog
       {row}
       <HoverCardPortal>
         <HoverCardContent side={ESide.Top} className="w-80">
-          <div className="space-y-2 text-sm text-text-secondary">{info}</div>
+          <div className="text-text-secondary space-y-2 text-sm">{info}</div>
         </HoverCardContent>
       </HoverCardPortal>
     </HoverCard>

@@ -25,7 +25,7 @@ export default function ScheduleMCPRecovery({
         return (
           <div
             key={`${item.server}:${ownerId}:${item.status}:${index}`}
-            className="flex flex-wrap items-baseline gap-x-2 text-xs text-text-secondary"
+            className="text-text-secondary flex flex-wrap items-baseline gap-x-2 text-xs"
           >
             <p>
               {item.server} ({ownerLabel}): {localize(scheduleMCPStatusLabel(item))}

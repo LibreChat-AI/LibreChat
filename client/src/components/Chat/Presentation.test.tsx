@@ -1,11 +1,13 @@
 import React from 'react';
 import { useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
-import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
+import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
 import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
+import { undockedArtifacts } from '~/components/Artifacts/state';
 import { ChatSurfaceHarness } from 'test/harness';
 import Presentation from './Presentation';
 import store from '~/store';
@@ -69,19 +71,24 @@ jest.mock('~/Providers', () => ({
   EditorProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-jest.mock('~/hooks/Artifacts/useResetArtifactsOnConversationChange', () => ({
+jest.mock('~/hooks/Artifacts/useArtifactsRegistryLifetime', () => ({
   __esModule: true,
   default: jest.fn(),
 }));
 
 jest.mock('~/data-provider', () => ({
   useDeleteFilesMutation: () => ({ mutateAsync: jest.fn() }),
+  useGetStartupConfig: () => ({ data: undefined }),
   useParentSubagentsQuery: (conversationId: string, config?: unknown, isSubmitting?: boolean) =>
     mockUseParentSubagentsQuery(conversationId, config, isSubmitting),
 }));
 
 jest.mock('~/hooks', () => ({
   useSetFilesToDelete: () => jest.fn(),
+  useLocalize:
+    () =>
+    (key: string): string =>
+      key,
 }));
 
 const OpenArtifactPanel = () => {
@@ -233,5 +240,46 @@ describe('Presentation Artifact loading', () => {
     fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
     expect(await screen.findByText(mockArtifactPanelLabel)).toBeInTheDocument();
     expect(screen.queryByText(mockChildPanelLabel)).not.toBeInTheDocument();
+  });
+
+  /* Undocked, the artifacts pane is in its own window and the side panel is
+   * free: a child-activity panel opened there has to stay open. */
+  it('keeps child activity in the side panel while the artifacts pane is undocked', async () => {
+    const detachedDocument = document.implementation.createHTMLDocument('');
+    const root = prepareUndockedDocument(document, detachedDocument);
+    const detachedWindow = {
+      document: detachedDocument,
+      closed: false,
+      outerWidth: 900,
+      outerHeight: 700,
+      screenX: 0,
+      screenY: 0,
+      focus: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      close: jest.fn(),
+    } as unknown as Window;
+
+    renderPresentation(
+      <ChatSurfaceHarness
+        seed={(store) => store.set(undockedArtifacts, { window: detachedWindow, root })}
+      >
+        <RecoilRoot>
+          <Presentation>
+            <OpenSubagentPanel />
+            <OpenArtifactPanel />
+          </Presentation>
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: mockOpenArtifactLabel }));
+    fireEvent.click(screen.getByRole('button', { name: mockOpenChildLabel }));
+
+    expect(await screen.findByText(mockChildPanelLabel)).toBeInTheDocument();
+    expect(screen.queryByText(mockArtifactPanelLabel)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(detachedDocument.body.textContent).toContain(mockArtifactPanelLabel),
+    );
   });
 });

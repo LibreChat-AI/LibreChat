@@ -8,27 +8,49 @@ import {
   useId,
   type MouseEvent,
 } from 'react';
-import { useAtomValue } from 'jotai';
 import { Lightbulb, ChevronDown } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
 import type { FocusEvent, FC } from 'react';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize, useExpandCollapse } from '~/hooks';
-import { showThinkingAtom } from '~/store/showThinking';
-import { fontSizeAtom } from '~/store/fontSize';
 import { AnimatedText } from '../animate';
 import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
+
+/** Whether any part of `el` is inside the viewport and every clipping ancestor. */
+function isRectVisible(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  let top = Math.max(rect.top, 0);
+  let bottom = Math.min(rect.bottom, window.innerHeight);
+  for (let node = el.parentElement; node != null && top < bottom; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if (overflowY === 'visible') {
+      continue;
+    }
+    const clip = node.getBoundingClientRect();
+    top = Math.max(top, clip.top);
+    bottom = Math.min(bottom, clip.bottom);
+  }
+  return top < bottom;
+}
 
 /**
  * Tracks whether the referenced element is within the viewport. Mirrors the
  * CodeBlock pattern: the header copy/collapse controls live at the top, and the
  * floating bottom-right bar only takes over once the header scrolls out of view.
+ *
+ * The observer is only a trigger. Its entries can be stale: a header mounted
+ * inside a fold that is still opening is first reported hidden, and that report
+ * can land after the pointer has already revealed the bar. So every
+ * notification re-measures the header's real position instead of trusting
+ * `isIntersecting`, and `recheck` does the same for callers about to reveal.
  */
 export function useInViewport(): {
   ref: React.RefObject<HTMLDivElement>;
   inViewport: boolean;
+  recheck: () => boolean;
 } {
   const ref = useRef<HTMLDivElement>(null);
   const [inViewport, setInViewport] = useState(true);
@@ -38,7 +60,7 @@ export function useInViewport(): {
     if (!el) {
       return;
     }
-    const observer = new IntersectionObserver(([entry]) => setInViewport(entry.isIntersecting), {
+    const observer = new IntersectionObserver(() => setInViewport(isRectVisible(el)), {
       root: null,
       threshold: 0,
     });
@@ -46,7 +68,14 @@ export function useInViewport(): {
     return () => observer.disconnect();
   }, []);
 
-  return { ref, inViewport };
+  const recheck = useCallback(() => {
+    const el = ref.current;
+    const visible = el == null ? true : isRectVisible(el);
+    setInViewport(visible);
+    return visible;
+  }, []);
+
+  return { ref, inViewport, recheck };
 }
 
 /**
@@ -57,13 +86,14 @@ export const ThinkingContent: FC<{
   children: React.ReactNode;
   animate?: boolean;
 }> = memo(({ children, animate = false }) => {
-  const fontSize = useAtomValue(fontSizeAtom);
+  const { useFontSize } = useMessagePartsHost();
+  const fontSize = useFontSize();
   const content =
     animate && typeof children === 'string' ? <AnimatedText text={children} /> : children;
 
   return (
-    <div className="relative rounded-lg border border-border-light bg-surface-secondary p-3 pb-8 text-text-secondary">
-      <p className={cn('whitespace-pre-wrap leading-[26px]', fontSize)}>{content}</p>
+    <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3">
+      <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{content}</p>
     </div>
   );
 });
@@ -123,12 +153,12 @@ export const ThinkingButton = memo(
         >
           <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
             <Lightbulb
-              className="icon-sm absolute text-text-secondary opacity-100 transition-opacity group-hover/button:opacity-0"
+              className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
               aria-hidden="true"
             />
             <ChevronDown
               className={cn(
-                'icon-sm absolute transform-gpu text-text-primary opacity-0 transition-all duration-300 group-hover/button:opacity-100',
+                'icon-sm text-text-primary absolute transform-gpu opacity-0 transition-all duration-300 group-hover/button:opacity-100',
                 isExpanded && 'rotate-180',
               )}
               aria-hidden="true"
@@ -159,7 +189,7 @@ export const ThinkingButton = memo(
               'min-w-0 truncate text-left font-medium',
               shimmerLabel && !animateLabel && 'shimmer',
               animateLabel &&
-                'duration-300 ease-out animate-in fade-in-0 slide-in-from-bottom-1 motion-reduce:animate-none',
+                'animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out motion-reduce:animate-none',
             )}
           >
             {shimmerLabel && animateLabel ? (
@@ -177,7 +207,7 @@ export const ThinkingButton = memo(
             label={localize('com_ui_copy_thoughts_to_clipboard')}
             copiedLabel={localize('com_ui_copied_to_clipboard')}
             className={cn(
-              'absolute right-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity',
+              'absolute top-1/2 right-0 -translate-y-1/2 opacity-0 transition-opacity',
               'group-focus-within/thinking-container:opacity-100 group-hover/thinking-container:opacity-100',
               'focus-visible:opacity-100',
             )}
@@ -196,12 +226,12 @@ export const ThinkingButton = memo(
  */
 export const ThinkingLabel = memo(({ label, title }: { label: string; title?: string }) => {
   return (
-    <div className="mb-2 pb-2 pt-2">
+    <div className="mb-2 pt-2 pb-2">
       <div className="tool-status-text flex w-full items-center justify-start" title={title}>
         <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
           <Lightbulb className="icon-sm text-text-secondary" aria-hidden="true" />
         </span>
-        <span className="min-w-0 truncate text-left font-medium text-text-secondary">{label}</span>
+        <span className="text-text-secondary min-w-0 truncate text-left font-medium">{label}</span>
       </div>
     </div>
   );
@@ -244,7 +274,9 @@ export const FloatingThinkingBar = memo(
     return (
       <div
         className={cn(
-          'absolute bottom-3 right-3 flex items-center gap-2 transition-opacity duration-150',
+          /* Laid over the text rather than reserved below it, so the box keeps
+             even padding; the fill keeps the controls legible over a line. */
+          'bg-surface-secondary absolute right-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
@@ -263,7 +295,7 @@ export const FloatingThinkingBar = memo(
             >
               <MorphIcon
                 icon={isExpanded ? ChevronUpNode : ChevronDownNode}
-                className="h-[18px] w-[18px]"
+                className="h-[1.125rem] w-[1.125rem]"
               />
             </Button>
           }
@@ -300,11 +332,12 @@ export const FloatingThinkingBar = memo(
  */
 const Thinking: React.ElementType = memo(({ children }: { children: React.ReactNode }) => {
   const localize = useLocalize();
-  const showThinking = useAtomValue(showThinkingAtom);
+  const { useShowThinking } = useMessagePartsHost();
+  const showThinking = useShowThinking();
   const [isExpanded, setIsExpanded] = useState(showThinking);
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { ref: headerRef, inViewport: headerInViewport } = useInViewport();
+  const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
   const contentId = useId();
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
 
@@ -314,8 +347,9 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   }, []);
 
   const handleFocus = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleBlur = useCallback((e: FocusEvent) => {
     if (!containerRef.current?.contains(e.relatedTarget as Node)) {
@@ -324,8 +358,9 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   }, []);
 
   const handleMouseEnter = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleMouseLeave = useCallback(() => {
     if (!containerRef.current?.contains(document.activeElement)) {
@@ -356,7 +391,7 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
       onFocus={handleFocus}
       onBlur={handleBlur}
     >
-      <div className="mb-4 pb-2 pt-2" ref={headerRef}>
+      <div className="mb-4 pt-2 pb-2" ref={headerRef}>
         <ThinkingButton
           isExpanded={isExpanded}
           onClick={handleClick}

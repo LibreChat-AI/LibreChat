@@ -160,7 +160,7 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     expect(footer).toHaveClass('bg-transparent');
     expect(footer).not.toHaveClass('border-t');
     expect(saveButton).toHaveClass('sm:w-auto');
-    expect(saveButton).not.toHaveClass('min-w-[140px]');
+    expect(saveButton).not.toHaveClass('min-w-[8.75rem]');
     expect(screen.queryByRole('button', { name: 'com_ui_cancel' })).not.toBeInTheDocument();
   });
 

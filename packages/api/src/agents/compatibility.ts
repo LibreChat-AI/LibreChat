@@ -6,6 +6,7 @@ import {
   MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH,
 } from '@librechat/data-schemas';
 import type { IAgentEventActorSummary } from '@librechat/data-schemas';
+import { NO_CHAT_PROJECT_CONTEXT_KEY } from '../projects/context';
 
 export const AGENT_CONTEXT_FINGERPRINT_VERSION = 1;
 export const AGENT_GRAPH_SCHEMA_VERSION = 1;
@@ -52,6 +53,8 @@ export interface AgentTurnSemanticContext {
   memory?: readonly AgentContextMemorySnapshot[];
   checkpointerType?: string;
   discoveredToolNames?: readonly string[];
+  /** Server-owned ChatProject identity/revision; instruction text is hashed on agents. */
+  projectContextKey?: string;
   checkpointFormatVersion?: number;
   graphSchemaVersion?: number;
 }
@@ -253,6 +256,10 @@ export function createAgentContextFingerprint(
     discoveredToolNames: normalizeAgentEventActorDiscoveredTools(input.discoveredToolNames),
     approvalPolicy: input.approvalPolicy,
     retainedAnswers: input.retainedAnswers,
+    /* A turn outside any project hashes as it did before projects carried context,
+     * so checkpoints written without the key keep matching. */
+    projectContextKey:
+      input.projectContextKey === NO_CHAT_PROJECT_CONTEXT_KEY ? undefined : input.projectContextKey,
     agents: input.agents.map((agent) => ({
       ...agent,
       modelParameters: redactModelParameterCredentials(agent.modelParameters),
@@ -306,6 +313,8 @@ export function createInitializedAgentContextFingerprint(input: {
   memory?: readonly AgentContextMemorySnapshot[];
   checkpointerType?: string;
   discoveredToolNames?: readonly string[];
+  /** Server-owned ChatProject identity/revision; instruction text is hashed on agents. */
+  projectContextKey?: string;
 }): AgentContextFingerprint {
   return createAgentContextFingerprint({
     checkpointerType: input.checkpointerType,
@@ -313,6 +322,7 @@ export function createInitializedAgentContextFingerprint(input: {
     retainedAnswers: input.retainedAnswers,
     memory: input.memory,
     discoveredToolNames: input.discoveredToolNames,
+    projectContextKey: input.projectContextKey,
     agents: input.agents.map((agent, index) => ({
       id: agent.id,
       version: agent.version,

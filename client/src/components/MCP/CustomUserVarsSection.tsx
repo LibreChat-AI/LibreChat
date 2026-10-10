@@ -57,13 +57,13 @@ function AuthField({ name, config, hasValue, control, errors, autoFocus }: AuthF
         </Label>
         <div aria-hidden="true">
           {hasValue ? (
-            <div className="flex min-w-fit items-center gap-2 whitespace-nowrap rounded-full border border-border-light px-2 py-0.5 text-xs font-medium text-text-secondary">
-              <div className="h-1.5 w-1.5 rounded-full bg-status-success" />
+            <div className="border-border-light text-text-secondary flex min-w-fit items-center gap-2 rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap">
+              <div className="bg-status-success h-1.5 w-1.5 rounded-full" />
               <span>{localize('com_ui_set')}</span>
             </div>
           ) : (
-            <div className="flex min-w-fit items-center gap-2 whitespace-nowrap rounded-full border border-border-light px-2 py-0.5 text-xs font-medium text-text-secondary">
-              <div className="h-1.5 w-1.5 rounded-full border border-border-medium" />
+            <div className="border-border-light text-text-secondary flex min-w-fit items-center gap-2 rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap">
+              <div className="border-border-medium h-1.5 w-1.5 rounded-full border" />
               <span>{localize('com_ui_unset')}</span>
             </div>
           )}
@@ -78,7 +78,7 @@ function AuthField({ name, config, hasValue, control, errors, autoFocus }: AuthF
             ? localize('com_ui_mcp_update_var', { 0: config.title })
             : localize('com_ui_mcp_enter_var', { 0: config.title });
           const className =
-            'w-full rounded border border-border-medium bg-transparent px-2 py-1 text-text-primary placeholder:text-text-secondary focus:outline-none sm:text-sm';
+            'w-full rounded border border-border-medium bg-transparent px-2 py-1 text-text-primary placeholder:text-text-secondary sm:text-sm';
           // Prevent autofill: browser DOM mutations bypass React's synthetic
           // onChange, silently emptying react-hook-form state on submit.
           const sharedProps = {
@@ -100,11 +100,11 @@ function AuthField({ name, config, hasValue, control, errors, autoFocus }: AuthF
       />
       {sanitizedDescription && (
         <p
-          className="text-xs text-text-secondary [&_a]:text-link [&_a]:hover:underline"
+          className="text-text-secondary [&_a]:text-link text-xs [&_a]:hover:underline"
           dangerouslySetInnerHTML={{ __html: sanitizedDescription }}
         />
       )}
-      {errors[name] && <p className="text-xs text-text-destructive">{errors[name]?.message}</p>}
+      {errors[name] && <p className="text-text-destructive text-xs">{errors[name]?.message}</p>}
     </div>
   );
 }

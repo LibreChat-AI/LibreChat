@@ -24,7 +24,7 @@ export default function NewChat({ className }: { className?: string }) {
           size="icon"
           variant="outline"
           className={cn(
-            'size-9 flex-shrink-0 rounded-xl bg-presentation hover:bg-surface-active-alt',
+            'bg-presentation hover:bg-surface-active-alt size-9 shrink-0 rounded-xl',
             className,
           )}
         >

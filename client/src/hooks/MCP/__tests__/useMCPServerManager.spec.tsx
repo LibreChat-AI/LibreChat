@@ -3,7 +3,7 @@ import { Provider } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
-import type { MCPReinitializeResponse } from 'librechat-data-provider';
+import type { MCPServersResponse, MCPReinitializeResponse } from 'librechat-data-provider';
 import { useMCPServerManager } from '../useMCPServerManager';
 
 const mockOpenInNewTab = jest.fn();
@@ -12,7 +12,9 @@ jest.mock('~/utils', () => ({ openInNewTab: (...args: unknown[]) => mockOpenInNe
 const mockShowToast = jest.fn();
 const mockSetMCPValues = jest.fn();
 const mockReinitialize = jest.fn();
-const mockUseMCPToolsQuery = jest.fn((_options?: unknown) => ({ data: undefined }));
+const mockUseMCPToolsQuery = jest.fn((_options?: unknown): { data?: MCPServersResponse } => ({
+  data: undefined,
+}));
 const mockUseMCPConnectionStatus = jest.fn((_options?: unknown) => ({ connectionStatus: {} }));
 
 jest.mock('@librechat/client', () => ({
@@ -204,4 +206,77 @@ describe('useMCPServerManager initialization', () => {
       }
     },
   );
+
+  it('keeps a server this browser is authorizing connecting when rediscovery outdates a cached connection', async () => {
+    jest.useFakeTimers();
+    const serverName = 'clickhouse';
+    /** Stored tokens the server rejects: status reports a durable connection, discovery a reauth. */
+    const connectionStatus = {
+      [serverName]: {
+        requiresOAuth: true,
+        connectionState: 'connected',
+        authorizationState: 'authorized',
+        authorizationGeneration: 'generation-1',
+      },
+    };
+    const catalog = (authorizationGeneration: string) => ({
+      data: {
+        servers: {
+          [serverName]: {
+            name: serverName,
+            icon: '',
+            authenticated: false,
+            authorizationState: 'reauth_required' as const,
+            authorizationGeneration,
+            authConfig: [],
+            tools: [],
+          },
+        },
+      },
+    });
+    mockUseMCPConnectionStatus.mockImplementation(() => ({ connectionStatus }));
+    mockUseMCPToolsQuery.mockImplementation(() => catalog('generation-1'));
+    mockReinitialize.mockReset();
+    mockReinitialize.mockResolvedValueOnce({
+      success: true,
+      serverName,
+      oauthRequired: true,
+      oauthUrl: 'https://auth.example.test/authorize',
+      flowId: `user:${serverName}`,
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider>
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </Provider>
+    );
+    const { result, rerender, unmount } = renderHook(() => useMCPServerManager(), { wrapper });
+
+    try {
+      expect(result.current.connectionStatus?.[serverName]?.connectionState).toBe('disconnected');
+
+      await act(async () => {
+        await result.current.initializeServer(serverName, false);
+      });
+      /** Reinitialize refetches the catalog, which reports a newer generation than cached status. */
+      mockUseMCPToolsQuery.mockImplementation(() => catalog('generation-2'));
+      rerender();
+
+      expect(result.current.connectionStatus?.[serverName]).toMatchObject({
+        connectionState: 'connecting',
+        authorizationState: 'authorizing',
+      });
+      expect(result.current.getServerStatusIconProps(serverName)).toMatchObject({
+        isInitializing: true,
+        canCancel: true,
+      });
+    } finally {
+      unmount();
+      queryClient.clear();
+      jest.clearAllTimers();
+      jest.useRealTimers();
+      mockUseMCPConnectionStatus.mockImplementation(() => ({ connectionStatus: {} }));
+      mockUseMCPToolsQuery.mockImplementation(() => ({ data: undefined }));
+    }
+  });
 });

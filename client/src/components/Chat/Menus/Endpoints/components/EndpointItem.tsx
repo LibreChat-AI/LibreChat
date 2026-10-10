@@ -61,7 +61,7 @@ const SettingsButton = ({
         'text-text-secondary transition-colors duration-150',
         'hover:bg-surface-tertiary hover:text-text-primary',
         'focus-visible:bg-surface-tertiary focus-visible:text-text-primary',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-1',
+        'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden',
         className,
       )}
       aria-label={`${text} ${endpoint.label}`}
@@ -312,7 +312,7 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
               )}
               {isEndpointSelected && (
                 <>
-                  <CheckCircle2 className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+                  <CheckCircle2 className="text-text-primary size-4 shrink-0" aria-hidden="true" />
                   <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>
                 </>
               )}
@@ -343,14 +343,14 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
               side="top"
               render={
                 <span className="flex items-center">
-                  <MousePointerClick className="size-4 text-text-secondary" aria-hidden="true" />
+                  <MousePointerClick className="text-text-secondary size-4" aria-hidden="true" />
                 </span>
               }
             />
           )}
           {isEndpointSelected && !isAssistantsNotLoaded && (
             <>
-              <CheckCircle2 className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+              <CheckCircle2 className="text-text-primary size-4 shrink-0" aria-hidden="true" />
               <VisuallyHidden>{localize('com_a11y_selected')}</VisuallyHidden>
             </>
           )}

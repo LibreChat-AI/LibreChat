@@ -44,7 +44,7 @@ export default function MaxAgentSteps() {
       </div>
       <HoverCardPortal>
         <HoverCardContent side={ESide.Top} className="w-80">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {localize('com_ui_agent_recursion_limit_info')}
           </p>
         </HoverCardContent>

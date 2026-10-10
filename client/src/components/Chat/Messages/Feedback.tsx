@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { memo, useState, useCallback, useMemo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { TFeedback, TFeedbackTag, getTagsForRating } from 'librechat-data-provider';
 import {
@@ -61,14 +61,14 @@ function FeedbackOptionButton({
     <Button
       variant="ghost"
       className={cn(
-        'h-auto w-full justify-start gap-3 rounded-xl p-2 text-text-secondary transition-colors duration-200 hover:bg-surface-hover hover:text-text-primary',
-        active && 'bg-surface-hover font-semibold text-text-primary',
+        'text-text-secondary hover:bg-surface-hover hover:text-text-primary h-auto w-full justify-start gap-3 rounded-xl p-2 transition-colors duration-200',
+        active && 'bg-surface-hover text-text-primary font-semibold',
       )}
       onClick={onClick}
       aria-label={label}
       aria-pressed={active}
     >
-      <Icon size="19" bold={active} aria-hidden="true" />
+      <Icon size="1.1875rem" bold={active} aria-hidden="true" />
       <span>{label}</span>
     </Button>
   );
@@ -158,7 +158,7 @@ function FeedbackButtons({
             aria-pressed={feedback?.rating === 'thumbsUp'}
             aria-haspopup="menu"
           >
-            <ThumbUpIcon size="19" bold={feedback?.rating === 'thumbsUp'} />
+            <ThumbUpIcon size="1.1875rem" bold={feedback?.rating === 'thumbsUp'} />
           </Button>
         }
       />
@@ -167,7 +167,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate flex w-auto flex-col gap-1.5 overflow-hidden rounded-2xl border border-border-medium bg-surface-secondary p-1.5 shadow-lg"
+        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
       >
         <div className="flex flex-col items-stretch justify-center">
           {positiveTags.map((tag) => (
@@ -193,7 +193,7 @@ function FeedbackButtons({
             aria-pressed={feedback?.rating === 'thumbsDown'}
             aria-haspopup="menu"
           >
-            <ThumbDownIcon size="19" bold={feedback?.rating === 'thumbsDown'} />
+            <ThumbDownIcon size="1.1875rem" bold={feedback?.rating === 'thumbsDown'} />
           </Button>
         }
       />
@@ -202,7 +202,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate flex w-auto flex-col gap-1.5 overflow-hidden rounded-2xl border border-border-medium bg-surface-secondary p-1.5 shadow-lg"
+        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
       >
         <div className="flex flex-col items-stretch justify-center">
           {negativeTags.map((tag) => (
@@ -222,11 +222,7 @@ function FeedbackButtons({
 const buttonClasses = (isActive: boolean, isLast: boolean) =>
   hoverButtonClasses({ isActive, isLast });
 
-export default function Feedback({
-  isLast = false,
-  handleFeedback,
-  feedback: initialFeedback,
-}: FeedbackProps) {
+function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }: FeedbackProps) {
   const localize = useLocalize();
   const [openDialog, setOpenDialog] = useState(false);
   const [feedback, setFeedback] = useState<TFeedback | undefined>(initialFeedback);
@@ -297,7 +293,7 @@ export default function Feedback({
             aria-label={label}
             aria-pressed="true"
           >
-            <Icon size="19" bold />
+            <Icon size="1.1875rem" bold />
           </Button>
         }
       />
@@ -318,11 +314,11 @@ export default function Feedback({
       )}
       <OGDialog open={openDialog} onOpenChange={setOpenDialog}>
         <OGDialogContent className="w-11/12 max-w-lg">
-          <OGDialogTitle className="text-token-text-primary text-lg font-semibold leading-6">
+          <OGDialogTitle className="text-lg leading-6 font-semibold">
             {localize('com_ui_feedback_more_information')}
           </OGDialogTitle>
           <Textarea
-            className="h-auto w-full rounded-xl border-border-light p-2"
+            className="border-border-light h-auto w-full rounded-xl p-2"
             value={feedback?.text || ''}
             onChange={handleTextChange}
             rows={4}
@@ -342,3 +338,6 @@ export default function Feedback({
     </>
   );
 }
+
+/** Memoized: a send re-renders every row's toolbar, and nothing here depends on it. */
+export default memo(Feedback);

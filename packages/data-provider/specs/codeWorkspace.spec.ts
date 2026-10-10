@@ -49,4 +49,28 @@ describe('isCodeWorkspaceSelections', () => {
       ]),
     ).toBe(false);
   });
+
+  it('accepts bounded ownership and rejects an agent assigned to two machines', () => {
+    expect(
+      isCodeWorkspaceSelections([
+        { environmentId: 'a', workspaceId: 'root', agentIds: ['primary', 'reviewer'] },
+      ]),
+    ).toBe(true);
+    expect(
+      isCodeWorkspaceSelections([
+        { environmentId: 'a', workspaceId: 'root', agentIds: ['primary'] },
+        { environmentId: 'b', workspaceId: 'root', agentIds: ['primary'] },
+      ]),
+    ).toBe(false);
+    for (const agentIds of [
+      [],
+      ['primary', 'primary'],
+      ['../escape'],
+      Array.from({ length: 129 }, (_, i) => `agent-${i}`),
+    ]) {
+      expect(isCodeWorkspaceSelection({ environmentId: 'a', workspaceId: 'root', agentIds })).toBe(
+        false,
+      );
+    }
+  });
 });

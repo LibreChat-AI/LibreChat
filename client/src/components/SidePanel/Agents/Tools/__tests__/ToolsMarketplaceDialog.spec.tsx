@@ -9,6 +9,8 @@ let mockWatchedTools: string[] = [];
 let mockExecuteCode = false;
 let mockMcpServersMap = new Map<string, object>();
 let mockIsDesktop = true;
+let mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
+let mockEdges: Array<{ from: string; to: string; edgeType?: 'handoff' | 'direct' }> = [];
 
 jest.mock('react-hook-form', () => ({
   useFormContext: () => ({
@@ -18,6 +20,8 @@ jest.mock('react-hook-form', () => ({
   }),
   useWatch: ({ name }: { name: string }) => {
     const map: Record<string, unknown> = {
+      subagents: mockSubagents,
+      edges: mockEdges,
       tools: mockWatchedTools,
       skills: [],
       execute_code: mockExecuteCode,
@@ -34,7 +38,7 @@ jest.mock('react-hook-form', () => ({
 
 jest.mock('~/Providers', () => ({
   useAgentPanelContext: () => ({
-    agentsConfig: { capabilities: ['execute_code', 'tools'] },
+    agentsConfig: { capabilities: ['execute_code', 'tools', 'subagents'] },
     regularTools: [{ pluginKey: 'dalle', name: 'DALL-E', description: 'Images' }],
     mcpServersMap: mockMcpServersMap,
     actions: [],
@@ -102,6 +106,8 @@ jest.mock('../hooks', () => {
       });
       const selected = deriveSelectedItems(
         {
+          subagents: useWatch({ name: 'subagents' }),
+          edges: useWatch({ name: 'edges' }),
           execute_code: (useWatch({ name: 'execute_code' }) ?? false) as boolean,
           web_search: (useWatch({ name: 'web_search' }) ?? false) as boolean,
           file_search: (useWatch({ name: 'file_search' }) ?? false) as boolean,
@@ -173,6 +179,8 @@ describe('ToolsMarketplaceDialog', () => {
     mockToggleFavorite.mockClear();
     mockFavoriteKeys = new Set<string>();
     mockIsDesktop = true;
+    mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
+    mockEdges = [];
     mockFileEntries = { contextFiles: [], knowledgeFiles: [], codeFiles: [] };
   });
 
@@ -408,5 +416,56 @@ describe('ToolsMarketplaceDialog', () => {
     expect(screen.queryByText('com_ui_tools_create_new')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /com_ui_tools_view_favorites/ }));
     expect(screen.getByText('com_ui_tools_view_favorites_empty')).toBeInTheDocument();
+  });
+});
+
+describe('native collaboration tools', () => {
+  beforeEach(() => {
+    mockSetValue.mockClear();
+    mockGetValues.mockReset();
+    mockGetValues.mockReturnValue([]);
+    mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
+    mockEdges = [];
+  });
+
+  test.each(['subagents', 'handoffs'] as const)(
+    'the marketplace removes %s independently',
+    (id) => {
+      mockSubagents = { enabled: true, allowSelf: false, agent_ids: ['reviewer'] };
+      mockEdges = [
+        { from: 'parent', to: 'reviewer' },
+        { from: 'parent', to: 'other', edgeType: 'direct' },
+      ];
+      mockGetValues.mockImplementation((name: string) =>
+        name === 'subagents' ? mockSubagents : mockEdges,
+      );
+      render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: new RegExp(id === 'subagents' ? 'com_ui_agent_subagents' : 'com_ui_agent_handoffs'),
+        }),
+      );
+      expect(mockSetValue.mock.calls).toEqual(
+        id === 'subagents'
+          ? [['subagents', { ...mockSubagents, enabled: false }, { shouldDirty: true }]]
+          : [['edges', [mockEdges[1]], { shouldDirty: true }]],
+      );
+    },
+  );
+
+  test('adding subagents enables the retained configuration without touching handoffs', () => {
+    mockGetValues.mockImplementation(() => mockSubagents);
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_agent_subagents/ }));
+    expect(mockSetValue.mock.calls).toEqual([
+      ['subagents', { ...mockSubagents, enabled: true }, { shouldDirty: true }],
+    ]);
+  });
+
+  test('adding handoffs opens only their destination dialog without mutating the form', () => {
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_agent_handoffs/ }));
+    expect(screen.getByTestId('item-dialog')).toBeInTheDocument();
+    expect(mockSetValue).not.toHaveBeenCalled();
   });
 });

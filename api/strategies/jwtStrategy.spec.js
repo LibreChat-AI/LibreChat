@@ -21,6 +21,8 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   AGENT_TRIGGER_SCOPE: 'agent_trigger',
+  isTokenRetired: jest.requireActual('@librechat/api').isTokenRetired,
+  continueAfterBearerRetirement: jest.requireActual('@librechat/api').continueAfterBearerRetirement,
 }));
 
 jest.mock('~/models', () => ({
@@ -182,5 +184,172 @@ describe('jwtStrategy', () => {
       'user-3',
       '-password -__v -totpSecret -backupCodes +agentTriggerDeletionStartedAt',
     );
+  });
+
+  describe('credentialsChangedAt revocation', () => {
+    /** Reset landed 500ms into second 1700000010 */
+    const credentialsChangedAt = new Date(1700000010500);
+
+    const mockUserWithStamp = (stamp) => {
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-reset' },
+        role: SystemRoles.USER,
+        credentialsChangedAt: stamp,
+      });
+    };
+
+    it('rejects an access token issued before the password reset', async () => {
+      mockUserWithStamp(credentialsChangedAt);
+
+      const { user } = await invokeVerify({ id: 'user-reset', iat: 1700000009 });
+
+      expect(user).toBe(false);
+    });
+
+    it('accepts an access token issued after the password reset', async () => {
+      mockUserWithStamp(credentialsChangedAt);
+
+      const { user } = await invokeVerify({ id: 'user-reset', iat: 1700000011 });
+
+      expect(user.id).toBe('user-reset');
+    });
+
+    it('rejects a token whose issuing second started before the reset instant', async () => {
+      mockUserWithStamp(credentialsChangedAt);
+
+      const { user } = await invokeVerify({ id: 'user-reset', iat: 1700000010 });
+
+      expect(user).toBe(false);
+    });
+
+    it('rejects a token issued in the same second as a reset stamped on the second boundary', async () => {
+      mockUserWithStamp(new Date(1700000010000));
+
+      const { user } = await invokeVerify({ id: 'user-reset', iat: 1700000010 });
+
+      expect(user).toBe(false);
+    });
+
+    it('accepts a token dated after a boundary reset to the millisecond', async () => {
+      mockUserWithStamp(new Date(1700000010000));
+
+      const { user } = await invokeVerify({
+        id: 'user-reset',
+        iat: 1700000010,
+        issuedAtMs: 1700000010001,
+      });
+
+      expect(user.id).toBe('user-reset');
+    });
+
+    it('accepts a stale token when the user never changed credentials', async () => {
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-1' },
+        role: SystemRoles.USER,
+      });
+
+      const { user } = await invokeVerify({ id: 'user-1', iat: 1 });
+
+      expect(user.id).toBe('user-1');
+    });
+
+    it('rejects a token without iat once credentials have changed', async () => {
+      mockUserWithStamp(credentialsChangedAt);
+
+      const { user } = await invokeVerify({ id: 'user-reset' });
+
+      expect(user).toBe(false);
+    });
+
+    it('honors a stamp deserialized as a string', async () => {
+      mockUserWithStamp(credentialsChangedAt.toISOString());
+
+      const { user } = await invokeVerify({ id: 'user-reset', iat: 1700000009 });
+
+      expect(user).toBe(false);
+    });
+  });
+
+  describe('two-factor enrollment cutoff', () => {
+    const enrolledAt = new Date('2026-01-01T00:00:10.500Z');
+    const enrolledSecond = Math.floor(enrolledAt.getTime() / 1000);
+
+    const mockEnrolledUser = () =>
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-3' },
+        role: SystemRoles.USER,
+        twoFactorEnabled: true,
+        twoFactorEnrolledAt: enrolledAt,
+      });
+
+    it('refuses an access token minted before enrollment', async () => {
+      mockEnrolledUser();
+
+      const { user } = await invokeVerify({ id: 'user-3', iat: enrolledSecond - 1 });
+
+      expect(user).toBe(false);
+    });
+
+    it('refuses an access token minted before a password reset', async () => {
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-3' },
+        role: SystemRoles.USER,
+        twoFactorEnrolledAt: null,
+        credentialsChangedAt: enrolledAt,
+      });
+
+      const { user } = await invokeVerify({ id: 'user-3', iat: enrolledSecond - 1 });
+
+      expect(user).toBe(false);
+    });
+
+    it('accepts an access token minted after a password reset', async () => {
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-3' },
+        role: SystemRoles.USER,
+        twoFactorEnrolledAt: null,
+        credentialsChangedAt: enrolledAt,
+      });
+
+      const { user } = await invokeVerify({ id: 'user-3', iat: enrolledSecond + 60 });
+
+      expect(user.id).toBe('user-3');
+    });
+
+    it('accepts the session minted within the enrolling second', async () => {
+      mockEnrolledUser();
+
+      const { user } = await invokeVerify({ id: 'user-3', iat: enrolledSecond });
+
+      expect(user.id).toBe('user-3');
+    });
+
+    it('accepts an access token minted after enrollment', async () => {
+      mockEnrolledUser();
+
+      const { user } = await invokeVerify({ id: 'user-3', iat: enrolledSecond + 60 });
+
+      expect(user.id).toBe('user-3');
+    });
+
+    it('refuses an undatable token once the account is enrolled', async () => {
+      mockEnrolledUser();
+
+      const { user } = await invokeVerify({ id: 'user-3' });
+
+      expect(user).toBe(false);
+    });
+
+    it('leaves accounts that never enrolled untouched', async () => {
+      getUserById.mockResolvedValue({
+        _id: { toString: () => 'user-4' },
+        role: SystemRoles.USER,
+        twoFactorEnrolledAt: null,
+      });
+
+      const { user } = await invokeVerify({ id: 'user-4', iat: 0 });
+
+      expect(user.id).toBe('user-4');
+    });
   });
 });

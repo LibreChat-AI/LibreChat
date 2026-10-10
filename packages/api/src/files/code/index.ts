@@ -12,3 +12,4 @@ export * from './priming';
 export * from './process';
 export * from './publication';
 export * from './snapshot';
+export * from './text';

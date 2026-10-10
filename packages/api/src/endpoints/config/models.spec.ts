@@ -16,7 +16,7 @@ jest.mock('~/utils', () => {
 });
 
 import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from '../keys';
-import { createLoadConfigModels } from './models';
+import { createLoadConfigModels, configuredModelList } from './models';
 
 describe('createLoadConfigModels – user-provided baseURL header guard', () => {
   const fetchModels = jest.fn().mockResolvedValue([]);
@@ -295,5 +295,61 @@ describe('createLoadConfigModels – in-request fetch coalescing', () => {
 
     // Same baseURL + apiKey + headers → one fetch shared across both endpoints.
     expect(fetchModels).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createLoadConfigModels � configured model lists for built-in endpoints', () => {
+  const load = (endpoints: Record<string, unknown>, config?: Record<string, unknown>) =>
+    createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({ endpoints }),
+      getUserKeyValues: jest.fn(),
+      fetchModels: jest.fn(),
+    })({ user: { id: 'user-1' }, config } as unknown as ServerRequest);
+
+  it.each([
+    EModelEndpoint.openAI,
+    EModelEndpoint.google,
+    EModelEndpoint.anthropic,
+    EModelEndpoint.bedrock,
+  ])('serves the %s list from config in place of its environment list', async (endpoint) => {
+    const models = await load({ [endpoint]: { models: ['model-a', 'model-b'] } });
+    expect(models[endpoint]).toEqual(['model-a', 'model-b']);
+  });
+
+  it('reads the per-request config, so principal overrides narrow the list', async () => {
+    const models = await load(
+      { [EModelEndpoint.anthropic]: { models: ['base-a', 'base-b'] } },
+      { endpoints: { [EModelEndpoint.anthropic]: { models: ['narrowed'] } } },
+    );
+    expect(models[EModelEndpoint.anthropic]).toEqual(['narrowed']);
+  });
+
+  it('leaves endpoints without a configured list to their environment defaults', async () => {
+    const models = await load({ [EModelEndpoint.openAI]: { streamRate: 25 } });
+    expect(models).not.toHaveProperty(EModelEndpoint.openAI);
+    expect(models).not.toHaveProperty(EModelEndpoint.anthropic);
+  });
+
+  it('keeps an explicitly empty list and drops non-string entries', async () => {
+    const models = await load({
+      [EModelEndpoint.google]: { models: [] },
+      [EModelEndpoint.bedrock]: { models: ['ok', 42, null] },
+    });
+    expect(models[EModelEndpoint.google]).toEqual([]);
+    expect(models[EModelEndpoint.bedrock]).toEqual(['ok']);
+  });
+});
+
+describe('configuredModelList', () => {
+  it('returns string entries of a configured list and undefined otherwise', () => {
+    const appConfig = {
+      endpoints: {
+        [EModelEndpoint.openAI]: { models: ['a', 7, 'b'] },
+        [EModelEndpoint.google]: { streamRate: 25 },
+      },
+    } as unknown as Parameters<typeof configuredModelList>[0];
+    expect(configuredModelList(appConfig, EModelEndpoint.openAI)).toEqual(['a', 'b']);
+    expect(configuredModelList(appConfig, EModelEndpoint.google)).toBeUndefined();
+    expect(configuredModelList(undefined, EModelEndpoint.anthropic)).toBeUndefined();
   });
 });

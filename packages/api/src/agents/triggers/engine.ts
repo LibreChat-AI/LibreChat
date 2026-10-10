@@ -92,6 +92,7 @@ export interface AgentTriggerDeliveryRecord {
   orderingKey: string;
   laneSequence: number;
   envelope: unknown;
+  requiredWorkerCapability?: string;
   status: AgentTriggerDeliveryStatus;
   attempts: number;
   availableAt: Date;
@@ -204,7 +205,13 @@ export interface AgentTriggerDeliveryEngineDeps {
   store: AgentTriggerDeliveryStore;
   dispatch: (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
+    },
   ) => Promise<AgentTriggerExecutionResult>;
   /** Source-owned terminalization must commit before its delivery can become
    * dead, including recovery after a crash that exhausted the attempt budget. */
@@ -489,6 +496,10 @@ export function createAgentTriggerDeliveryEngine(
           signal: controller.signal,
           attempt,
           maxAttempts,
+          deliveryClaimToken: delivery.claimToken,
+          ...(delivery.requiredWorkerCapability != null && {
+            requiredWorkerCapability: delivery.requiredWorkerCapability,
+          }),
         });
       } catch (error) {
         const attemptedAt = now();

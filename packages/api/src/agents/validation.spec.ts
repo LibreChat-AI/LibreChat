@@ -15,6 +15,9 @@ import {
   validateAgentModel,
 } from './validation';
 
+const validGroupId = '507f1f77bcf86cd799439011';
+const validPromptId = '507f191e810c19729de860ea';
+
 describe('agent Git identity validation', () => {
   const base = { provider: 'openAI', model: 'gpt-4o-mini', tools: [] };
 
@@ -48,6 +51,132 @@ describe('agent Git identity validation', () => {
   it('accepts null only when updating to clear a configured identity', () => {
     expect(agentCreateSchema.safeParse({ ...base, git_identity: null }).success).toBe(false);
     expect(agentUpdateSchema.parse({ git_identity: null })).toEqual({ git_identity: null });
+  });
+});
+
+describe('agent instructions-prompt link validation', () => {
+  const base = { provider: 'openAI', model: 'gpt-4o-mini', tools: [] };
+
+  it('accepts a production selection on create and update', () => {
+    const instructionsPrompt = {
+      source: 'native' as const,
+      groupId: validGroupId,
+      selection: { type: 'production' as const },
+    };
+    expect(agentCreateSchema.parse({ ...base, instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+    expect(agentUpdateSchema.parse({ instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+  });
+
+  it('accepts an exact selection with a valid promptId', () => {
+    const instructionsPrompt = {
+      source: 'native' as const,
+      groupId: validGroupId,
+      selection: { type: 'exact' as const, promptId: validPromptId },
+    };
+    expect(agentCreateSchema.parse({ ...base, instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+  });
+
+  it('accepts null on create and update to keep or remove the link', () => {
+    expect(
+      agentCreateSchema.parse({ ...base, instructionsPrompt: null }).instructionsPrompt,
+    ).toBeNull();
+    expect(agentUpdateSchema.parse({ instructionsPrompt: null }).instructionsPrompt).toBeNull();
+  });
+
+  it('rejects a malformed groupId', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: 'not-an-object-id',
+          selection: { type: 'production' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a malformed promptId on an exact selection', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: validGroupId,
+          selection: { type: 'exact', promptId: 'not-an-object-id' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unknown source', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: validGroupId,
+          selection: { type: 'production' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unknown selection type', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: validGroupId,
+          selection: { type: 'staging' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects extra keys on the link and on the selection', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: validGroupId,
+          selection: { type: 'production' },
+          extra: true,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: validGroupId,
+          selection: { type: 'production', extra: true },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps the field on both create and update schemas instead of stripping it', () => {
+    const instructionsPrompt = {
+      source: 'native' as const,
+      groupId: validGroupId,
+      selection: { type: 'production' as const },
+    };
+    expect(agentCreateSchema.parse({ ...base, instructionsPrompt })).toMatchObject({
+      instructionsPrompt,
+    });
+    expect(agentUpdateSchema.parse({ instructionsPrompt })).toMatchObject({
+      instructionsPrompt,
+    });
   });
 });
 
@@ -349,6 +478,27 @@ describe('agentCreateSchema with subagents', () => {
 });
 
 describe('stateful code environments', () => {
+  it('rejects a machine list above the wire safety ceiling before any persistence', () => {
+    expect(
+      agentUpdateSchema.safeParse({
+        code_environment_ids: Array.from({ length: 129 }, (_, i) => `machine-${i}`),
+      }).success,
+    ).toBe(false);
+  });
+  it.each([{ value: ['machine-a', 'machine-b'] }, { value: [] }])(
+    'accepts an explicit machine allowlist of $value',
+    ({ value }) => {
+      expect(agentUpdateSchema.parse({ code_environment_ids: value })).toEqual({
+        code_environment_ids: value,
+      });
+    },
+  );
+  it.each([{ value: true }, { value: ['bad/path'] }, { value: [1] }])(
+    'rejects malformed machine allowlists',
+    ({ value }) => {
+      expect(agentUpdateSchema.safeParse({ code_environment_ids: value }).success).toBe(false);
+    },
+  );
   it.each(['user', 'agent-user', 'conversation'])('accepts %s', (environment) => {
     const result = agentCreateSchema.safeParse({
       provider: 'openAI',

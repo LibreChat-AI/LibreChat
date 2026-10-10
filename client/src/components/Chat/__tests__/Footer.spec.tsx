@@ -53,4 +53,58 @@ describe('Footer', () => {
     expect(screen.getByRole('link', { name: 'Privacy policy' })).not.toHaveAttribute('target');
     expect(screen.getByRole('link', { name: 'Terms of service' })).not.toHaveAttribute('target');
   });
+
+  test('leaves the policy links behind once a conversation starts', () => {
+    render(
+      <Footer
+        configuredOnly
+        startupConfig={{
+          customFooter: 'Operator policy',
+          interface: {
+            privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+            termsOfService: { externalUrl: 'https://example.com/terms' },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Operator policy')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Privacy policy' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Terms of service' })).not.toBeInTheDocument();
+  });
+
+  /** `externalUrl` is an optional string, so an operator can set it to nothing;
+   *  a link to a blank url points back at the page the reader is on. */
+  test('treats a blank policy url as a policy the deployment never published', () => {
+    const { container } = render(
+      <Footer
+        startupConfig={{
+          interface: {
+            privacyPolicy: { externalUrl: '  ' },
+            termsOfService: { externalUrl: '' },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.queryByRole('link', { name: 'Privacy policy' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Terms of service' })).not.toBeInTheDocument();
+    expect(container.querySelector('a[href=""]')).toBeNull();
+  });
+
+  test('places no bar in a conversation whose deployment configured only policies', () => {
+    const { container } = render(
+      <Footer
+        configuredOnly
+        startupConfig={{
+          interface: {
+            privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+            termsOfService: { externalUrl: 'https://example.com/terms' },
+          },
+        }}
+      />,
+    );
+
+    expect(container).toBeEmptyDOMElement();
+  });
 });

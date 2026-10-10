@@ -7,7 +7,11 @@ import {
   PermissionBits,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
-import { createAclEntryMethods, permissionBitSupersets } from './aclEntry';
+import {
+  OWNER_ACL_PERMISSION_BITS,
+  createAclEntryMethods,
+  permissionBitSupersets,
+} from './aclEntry';
 import aclEntrySchema from '~/schema/aclEntry';
 
 let mongoServer: MongoMemoryServer;
@@ -1274,6 +1278,85 @@ describe('AclEntry Model Tests', () => {
         { $match: { principalType: 'nonexistent' } },
       ]);
       expect(results).toEqual([]);
+    });
+  });
+
+  describe('getFirstOwnerIdsByResource', () => {
+    test('answers with the earliest owner when a transfer left two owner entries behind', async () => {
+      const formerOwner = new mongoose.Types.ObjectId();
+      const currentOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        formerOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+      await methods.grantPermission(
+        PrincipalType.USER,
+        currentOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(formerOwner.toString());
+    });
+
+    /* Granting Agent Insights ORs VIEW_INSIGHTS into the owner's role bits, so an owner
+       entry is not always exactly OWNER_ACL_PERMISSION_BITS. */
+    test('recognises an owner whose entry also carries the insights bit', async () => {
+      const owner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        owner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS | PermissionBits.VIEW_INSIGHTS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(owner.toString());
+    });
+
+    /* An agent and its remote counterpart share one id, so a lookup that ignored the
+       resource type would let a revoked remote owner decide the agent's public author. */
+    test('ignores an owner entry stored against another resource type with the same id', async () => {
+      const remoteOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        remoteOwner,
+        ResourceType.MCPSERVER,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.size).toBe(0);
+    });
+
+    test('ignores a viewer and asks nothing of the database for an empty page', async () => {
+      await methods.grantPermission(
+        PrincipalType.USER,
+        userId,
+        ResourceType.AGENT,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+      );
+
+      expect(
+        (await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId])).size,
+      ).toBe(0);
+      expect((await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [])).size).toBe(0);
     });
   });
 

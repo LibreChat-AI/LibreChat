@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { useResetRecoilState } from 'recoil';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { logger } from '~/utils';
-import store from '~/store';
 
 /**
  * Hook to reset visible artifacts when the conversation ID changes
@@ -9,7 +8,7 @@ import store from '~/store';
  */
 export default function useIdChangeEffect(conversationId: string) {
   const lastConvoId = useRef<string | null>(null);
-  const resetVisibleArtifacts = useResetRecoilState(store.visibleArtifacts);
+  const { resetVisibleArtifacts } = useChatSettings();
 
   useEffect(() => {
     if (conversationId !== lastConvoId.current) {

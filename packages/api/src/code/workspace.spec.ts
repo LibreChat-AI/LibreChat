@@ -1,6 +1,30 @@
+import { logger } from '@librechat/data-schemas';
+import { codeEnvironmentAdmissionSchema } from 'librechat-data-provider';
 import type { WorkspaceToolRequest } from './workspace';
 import type { CodeBridgeFetch } from './bridge';
-import { executeWorkspaceTool, WorkspaceToolHttpError } from './workspace';
+import {
+  executeWorkspaceTool,
+  WorkspaceToolHttpError,
+  resolveAttachedWorkspaceReadFileLines,
+} from './workspace';
+
+describe('attached read window defaults', () => {
+  test('preserves the legacy read window unless configured', () => {
+    expect(resolveAttachedWorkspaceReadFileLines()).toBe(200);
+    expect(resolveAttachedWorkspaceReadFileLines({ limits: {} })).toBe(200);
+    expect(resolveAttachedWorkspaceReadFileLines({ limits: { defaultReadFileLines: 500 } })).toBe(
+      500,
+    );
+    expect(resolveAttachedWorkspaceReadFileLines({ limits: { defaultReadFileLines: 1 } })).toBe(1);
+  });
+
+  test.each([0, -1, 1.5, 501, NaN, Infinity])(
+    'falls back safely for an invalid read window %s',
+    (defaultReadFileLines) => {
+      expect(resolveAttachedWorkspaceReadFileLines({ limits: { defaultReadFileLines } })).toBe(200);
+    },
+  );
+});
 
 describe('workspace admission feedback', () => {
   test('forwards a valid conversation workspace instance unchanged', async () => {
@@ -1115,7 +1139,9 @@ describe('executeWorkspaceTool', () => {
       }),
     ).rejects.toMatchObject({ upstreamStatus: 504 });
     expect(timeout).toHaveBeenCalledWith(60_000);
-    expect(fetchImpl.mock.calls[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('25000');
+    expect(
+      new Headers(fetchImpl.mock.calls[0][1]?.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
+    ).toBe('25000');
   });
 
   test('subtracts credential acquisition from the allowance before dispatching', async () => {
@@ -1208,7 +1234,7 @@ describe('executeWorkspaceTool', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test('keeps Retry-After capped at 30 seconds even when one admission may wait longer', async () => {
+  test('does not shorten a Retry-After hint to fit a shrinking total budget', async () => {
     jest.useFakeTimers();
     try {
       const fetchImpl = jest
@@ -1232,13 +1258,8 @@ describe('executeWorkspaceTool', () => {
         maxRequestTimeoutMs: 125_000,
         fetchImpl,
       }).catch((error: WorkspaceToolHttpError) => error);
-      await jest.advanceTimersByTimeAsync(29_999);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 503 });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
-      await jest.advanceTimersByTimeAsync(1);
-      await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
-      expect(fetchImpl.mock.calls[1][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe(
-        '60000',
-      );
     } finally {
       jest.useRealTimers();
     }
@@ -1949,6 +1970,76 @@ describe('executeWorkspaceTool', () => {
     ).resolves.toMatchObject({ exitCode: 2, stderr: 'not found' });
   });
 
+  describe('lane git on command results', () => {
+    const commandResult = {
+      protocolVersion: 1,
+      operation: 'execute_command',
+      workspaceId: 'primary',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false,
+    };
+    const run = (extra: Record<string, unknown>) =>
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          command: 'git status',
+        },
+        fetchImpl: jest.fn(async () => Response.json({ ...commandResult, ...extra })),
+      });
+    const head40 = 'a'.repeat(40);
+    const head64 = 'b'.repeat(64);
+
+    test('passes a branch and head through unchanged', async () => {
+      await expect(
+        run({ laneGit: { branch: 'feat/pr-chip', head: head40 } }),
+      ).resolves.toMatchObject({ laneGit: { branch: 'feat/pr-chip', head: head40 } });
+    });
+
+    test('accepts a null branch and head for a detached or empty lane', async () => {
+      await expect(run({ laneGit: { branch: null, head: null } })).resolves.toMatchObject({
+        laneGit: { branch: null, head: null },
+      });
+    });
+
+    test('accepts a 64 character head and a 256 character branch', async () => {
+      const branch = 'x'.repeat(256);
+      await expect(run({ laneGit: { branch, head: head64 } })).resolves.toMatchObject({
+        laneGit: { branch, head: head64 },
+      });
+    });
+
+    test('leaves laneGit absent when the worker did not send it', async () => {
+      const result = await run({});
+      expect(result).not.toHaveProperty('laneGit');
+    });
+
+    test.each<[string, unknown]>([
+      ['an extra key', { branch: 'main', head: head40, path: '/srv/repo' }],
+      ['a missing head', { branch: 'main' }],
+      ['a missing branch', { head: head40 }],
+      ['an empty branch', { branch: '', head: head40 }],
+      ['a branch over 256 characters', { branch: 'x'.repeat(257), head: head40 }],
+      ['a control character in the branch', { branch: 'main\nrm', head: head40 }],
+      ['a DEL character in the branch', { branch: 'main\x7f', head: head40 }],
+      ['an uppercase head', { branch: 'main', head: 'A'.repeat(40) }],
+      ['a short head', { branch: 'main', head: 'a'.repeat(39) }],
+      ['a non-hex head', { branch: 'main', head: 'g'.repeat(40) }],
+      ['a numeric branch', { branch: 7, head: head40 }],
+      ['an array', [null, null]],
+      ['a string', 'main'],
+      ['null', null],
+    ])('rejects the result when laneGit has %s', async (_label, laneGit) => {
+      await expect(run({ laneGit })).rejects.toMatchObject({ reason: 'invalid' });
+    });
+  });
+
   test('rejects command requests and results outside protocol limits', async () => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () =>
       Response.json({
@@ -2098,6 +2189,164 @@ describe('executeWorkspaceTool', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('requires per-edit match reports exactly when a request opts into them', async () => {
+    const legacyResult = {
+      protocolVersion: 1,
+      operation: 'edit_file',
+      workspaceId: 'primary',
+      path: 'src/app.ts',
+      replacements: 2,
+      bytesWritten: 18,
+    };
+    const matches = [
+      { strategy: 'line-trimmed', occurrences: 1 },
+      { strategy: 'exact', occurrences: 3 },
+    ];
+    const optedIn = {
+      protocolVersion: 1 as const,
+      operation: 'edit_file' as const,
+      workspaceId: 'primary',
+      path: 'src/app.ts',
+      matching: 'tolerant' as const,
+      edits: [
+        { oldText: 'draft ', newText: 'ready' },
+        { oldText: 'false', newText: 'true', replaceAll: true },
+      ],
+    };
+    const run = (request: WorkspaceToolRequest, result: object) =>
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request,
+        fetchImpl: jest.fn(async () => Response.json(result)),
+      });
+
+    await expect(run(optedIn, { ...legacyResult, matches })).resolves.toMatchObject({ matches });
+    await expect(run(optedIn, legacyResult)).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(
+      run(optedIn, {
+        ...legacyResult,
+        matches: [matches[0], { strategy: 'exact', occurrences: 0 }],
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(
+      run(optedIn, {
+        ...legacyResult,
+        matches: [{ strategy: 'exact', occurrences: 2 }, matches[1]],
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+
+    const legacyRequest = {
+      ...optedIn,
+      edits: optedIn.edits.map(({ oldText, newText }) => ({ oldText, newText })),
+    };
+    delete (legacyRequest as { matching?: string }).matching;
+    await expect(run(legacyRequest, legacyResult)).resolves.toMatchObject({ replacements: 2 });
+    await expect(run(legacyRequest, { ...legacyResult, matches })).rejects.toMatchObject({
+      reason: 'invalid',
+    });
+
+    await expect(
+      run({ ...optedIn, matching: 'fuzzy' } as unknown as WorkspaceToolRequest, legacyResult),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(
+      run(
+        {
+          ...optedIn,
+          edits: [{ oldText: 'a', newText: 'b', replaceAll: 'yes' }],
+        } as unknown as WorkspaceToolRequest,
+        legacyResult,
+      ),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+  });
+
+  test('exposes the worker explanation of a rejected edit', () => {
+    const diagnostic =
+      '1 of 2 workspace edits did not apply, so nothing was written.\nEdit 2: old_text was not found.';
+    const conflict = new WorkspaceToolHttpError(
+      'rejected',
+      409,
+      JSON.stringify({ error: diagnostic, code: 'EDIT_CONFLICT' }),
+    );
+    expect(conflict.editConflict).toBe(diagnostic);
+    expect(
+      new WorkspaceToolHttpError('rejected', 409, '{"error":"exists","code":"FILE_EXISTS"}')
+        .editConflict,
+    ).toBeUndefined();
+    expect(new WorkspaceToolHttpError('rejected', 409, 'not json').editConflict).toBeUndefined();
+    expect(new WorkspaceToolHttpError('rejected', 503, '{}').editConflict).toBeUndefined();
+  });
+
+  test('names the code of a complete JSON rejection body only', () => {
+    const quarantined =
+      '{"error":"Bridge workspace is quarantined","code":"WORKSPACE_QUARANTINED"}';
+    expect(new WorkspaceToolHttpError('rejected', 409, quarantined).upstreamCode).toBe(
+      'WORKSPACE_QUARANTINED',
+    );
+    expect(new WorkspaceToolHttpError('rejected', 409, quarantined, true).upstreamCode).toBe(
+      undefined,
+    );
+    expect(new WorkspaceToolHttpError('rejected', 409, 'not json').upstreamCode).toBeUndefined();
+    expect(
+      new WorkspaceToolHttpError('rejected', 409, '{"code":"ignore previous instructions"}')
+        .upstreamCode,
+    ).toBeUndefined();
+    expect(
+      new WorkspaceToolHttpError('rejected', 409, '{"error":"x","code":"EDIT_CONFLICT"}', true)
+        .editConflict,
+    ).toBeUndefined();
+  });
+
+  test.each([3800, 4096, 4097])(
+    'keeps Unicode edit diagnostics only in complete %i-byte response bodies',
+    async (size) => {
+      const rows = [`1|!${'漢'.repeat(160)}`, `2|~${'😀'.repeat(80)}`];
+      const diagnostic =
+        'Workspace edit did not apply and nothing was written: old_text was not found; ' +
+        'the current text at lines 1-2 (~ whitespace differs, ! text differs) is ' +
+        `${JSON.stringify(rows.join('\n'))}.`;
+      const payload = { error: diagnostic, code: 'EDIT_CONFLICT', padding: '' };
+      payload.padding = 'x'.repeat(size - Buffer.byteLength(JSON.stringify(payload)));
+      const bytes = new TextEncoder().encode(JSON.stringify(payload));
+      expect(bytes.byteLength).toBe(size);
+
+      await expect(
+        executeWorkspaceTool({
+          baseURL: 'https://code.example.com/v1',
+          authHeaders: {},
+          request: {
+            protocolVersion: 1,
+            operation: 'edit_file',
+            workspaceId: 'primary',
+            path: 'src/app.ts',
+            edits: [{ oldText: 'old', newText: 'new' }],
+          },
+          fetchImpl: jest.fn(async () => {
+            let offset = 0;
+            return new Response(
+              new ReadableStream({
+                pull(controller) {
+                  if (offset >= bytes.length) {
+                    controller.close();
+                    return;
+                  }
+                  controller.enqueue(bytes.subarray(offset, offset + 31));
+                  offset += 31;
+                },
+              }),
+              { status: 409 },
+            );
+          }),
+        }),
+      ).rejects.toMatchObject({
+        upstreamStatus: 409,
+        upstreamBodyTruncated: size > 4096,
+        upstreamCode: size > 4096 ? undefined : 'EDIT_CONFLICT',
+        editConflict: size > 4096 ? undefined : diagnostic,
+      });
+    },
+  );
+
   test('validates exact edit previews and revision-fenced commits', async () => {
     const edits = [{ oldText: ' suffix', newText: 'RET suffix' }];
     const baseSha256 = 'a'.repeat(64);
@@ -2174,5 +2423,292 @@ describe('executeWorkspaceTool', () => {
       }),
     ).rejects.toMatchObject({ reason: 'invalid' });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('linked worktree lanes', () => {
+  const listing = (paths: string[]) =>
+    new Response(
+      JSON.stringify({
+        protocolVersion: 1,
+        operation: 'list_files',
+        workspaceId: 'librechat',
+        paths,
+        truncated: false,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  const request: WorkspaceToolRequest = {
+    protocolVersion: 1,
+    operation: 'list_files',
+    workspaceId: 'librechat',
+    path: '.worktrees/fix-a/src',
+  };
+
+  test('sends a worktree request and reports paths relative to the checkout', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(listing(['src/a.ts']));
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request,
+        linkedWorktrees: true,
+      }),
+    ).resolves.toMatchObject({ paths: ['.worktrees/fix-a/src/a.ts'] });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({
+      protocolVersion: 1,
+      operation: 'list_files',
+      workspaceId: 'librechat',
+      path: 'src',
+      worktree: 'fix-a',
+    });
+  });
+
+  test('keeps the checkout-scoped request when the worker has no lanes', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(listing(['.worktrees/fix-a/src/a.ts']));
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request,
+      }),
+    ).resolves.toMatchObject({ paths: ['.worktrees/fix-a/src/a.ts'] });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual(request);
+  });
+
+  test('rejects lane results that escape the requested worktree scope', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(listing(['lib/a.ts']));
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request,
+        linkedWorktrees: true,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+  });
+});
+
+describe('workspace admission policy and independent budgets', () => {
+  const command: WorkspaceToolRequest = {
+    protocolVersion: 1,
+    operation: 'execute_command',
+    workspaceId: 'primary',
+    command: 'echo ready',
+    timeoutMs: 30_000,
+  };
+  const success = () =>
+    new Response(
+      JSON.stringify({
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        exitCode: 0,
+        stdout: 'ready',
+        stderr: '',
+        timedOut: false,
+        truncated: false,
+      }),
+    );
+  const queueTimeout = () =>
+    new Response(JSON.stringify({ code: 'WORKSPACE_QUEUE_TIMEOUT' }), {
+      status: 503,
+      headers: { 'Retry-After': '0' },
+    });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-10-04T00:00:00.000Z'));
+  });
+  afterEach(() => jest.useRealTimers());
+
+  test('keeps the full 30-second execution budget after 60 seconds waiting', async () => {
+    let attempts = 0;
+    const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(
+      async (_url, init) => {
+        if (init == null) throw new Error('Missing request init');
+        attempts++;
+        if (attempts === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 30_000));
+          return queueTimeout();
+        }
+        expect(Number(new Headers(init.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'))).toBe(
+          60_000,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 59_900));
+        expect(init.signal?.aborted).toBe(false);
+        return success();
+      },
+    );
+    const result = executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+      maxRequestTimeoutMs: 100_000,
+      maxRunTimeoutMs: 180_000,
+      admission: codeEnvironmentAdmissionSchema.parse({ queueWaitMs: 60_000 }),
+    });
+    await jest.advanceTimersByTimeAsync(90_000);
+    await expect(result).resolves.toMatchObject({ stdout: 'ready' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1][1]?.body).toBe(fetchImpl.mock.calls[0][1]?.body);
+  });
+
+  test('bounds queue allowance by the transport reserve, not the larger run deadline', async () => {
+    const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(async () =>
+      success(),
+    );
+    await executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+      maxRequestTimeoutMs: 65_000,
+      maxRunTimeoutMs: 180_000,
+      admission: codeEnvironmentAdmissionSchema.parse({ queueWaitMs: 180_000 }),
+    });
+    expect(
+      new Headers(fetchImpl.mock.calls[0][1]?.headers).get('X-LibreChat-Workspace-Queue-Wait-Ms'),
+    ).toBe('25000');
+  });
+
+  test('honors an earlier caller deadline even when overall and transport budgets are larger', async () => {
+    const fetchImpl = jest.fn<ReturnType<CodeBridgeFetch>, Parameters<CodeBridgeFetch>>(async () =>
+      success(),
+    );
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request: command,
+        maxRequestTimeoutMs: 100_000,
+        maxRunTimeoutMs: 180_000,
+        deadlineAtMs: Date.now() + 40_000,
+      }),
+    ).rejects.toMatchObject({ reason: 'insufficient_time' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('adds exponential jitter only to whitelisted rejections and caps local backoff', async () => {
+    jest.spyOn(Math, 'random').mockReturnValue(1 - Number.EPSILON);
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(new Response('{"code":"WORKSPACE_QUEUE_TIMEOUT"}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{"code":"WORKSPACE_QUEUE_TIMEOUT"}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{"code":"WORKSPACE_QUEUE_TIMEOUT"}', { status: 503 }))
+      .mockResolvedValueOnce(success());
+    const result = executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+      admission: codeEnvironmentAdmissionSchema.parse({
+        initialDelayMs: 1_000,
+        maxDelayMs: 3_000,
+        multiplier: 2,
+        jitterRatio: 0.5,
+      }),
+    });
+    await jest.advanceTimersByTimeAsync(1_499);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(3_000);
+    await expect(result).resolves.toMatchObject({ stdout: 'ready' });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  test.each(['60', 'date', 'body'])(
+    'does not retry before a 60-second %s hint with jitter',
+    async (hint) => {
+      jest.spyOn(Math, 'random').mockReturnValue(1 - Number.EPSILON);
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              error: 'rate_limited',
+              ...(hint === 'body' ? { retry_after_seconds: 60 } : {}),
+            }),
+            {
+              status: 429,
+              headers:
+                hint === 'body'
+                  ? {}
+                  : {
+                      'Retry-After':
+                        hint === 'date' ? new Date(Date.now() + 60_000).toUTCString() : hint,
+                    },
+            },
+          ),
+        )
+        .mockResolvedValueOnce(success());
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request: command,
+        maxRequestTimeoutMs: 100_000,
+        maxRunTimeoutMs: 180_000,
+        codeApiMaxRetryWaitMs: 180_000,
+        admission: codeEnvironmentAdmissionSchema.parse({ jitterRatio: 0.5 }),
+      });
+      await jest.advanceTimersByTimeAsync(89_999);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({ stdout: 'ready' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test('keeps upstream bodies diagnostic-only for every rejection kind', () => {
+    for (const status of [429, 503, 502, 409]) {
+      const body = '{"code":"WORKSPACE_QUEUE_TIMEOUT","error":"private upstream diagnostic"}';
+      const error = new WorkspaceToolHttpError('rejected', status, body);
+      expect(error.message).not.toContain('private upstream diagnostic');
+      expect(error.upstreamBody).toBe(body);
+    }
+  });
+
+  test('emits one aggregate outcome without calling HTTP latency queue wait', async () => {
+    const log = jest.spyOn(logger, 'debug');
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(queueTimeout())
+      .mockResolvedValueOnce(success());
+    const result = executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      request: command,
+    });
+    await jest.advanceTimersByTimeAsync(100);
+    await result;
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(
+      '[WorkspaceAdmission] outcome',
+      expect.objectContaining({
+        attempts: 2,
+        queueRejections: 1,
+        retryWaitMs: 100,
+        outcome: 'completed',
+      }),
+    );
+    expect(log).toHaveBeenCalledWith(
+      '[WorkspaceAdmission] outcome',
+      expect.not.objectContaining({
+        queueWaitMs: expect.any(Number),
+      }),
+    );
   });
 });

@@ -270,7 +270,7 @@ export default function GenericGrantAccessDialog({
             aria-label={localize('com_ui_permissions_failed_load')}
             className={cn('h-9', buttonClassName)}
           >
-            <div className="flex min-w-[32px] items-center justify-center text-text-destructive">
+            <div className="text-text-destructive flex min-w-[2rem] items-center justify-center">
               <span className="flex h-6 w-6 items-center justify-center">
                 {isFetchingPermissions ? (
                   <Spinner className="h-4 w-4" />
@@ -298,12 +298,12 @@ export default function GenericGrantAccessDialog({
       disabled={disabled}
       className={cn('h-9', buttonClassName)}
     >
-      <div className="flex min-w-[32px] items-center justify-center gap-2 text-status-info">
+      <div className="text-status-info flex min-w-[2rem] items-center justify-center gap-2">
         <span className="flex h-6 w-6 items-center justify-center">
           <Share2Icon className="icon-md h-4 w-4" />
         </span>
         {totalCurrentShares > 0 && (
-          <Label className="cursor-pointer text-sm font-medium text-text-secondary">
+          <Label className="text-text-secondary cursor-pointer text-sm font-medium">
             {totalCurrentShares}
           </Label>
         )}
@@ -317,7 +317,7 @@ export default function GenericGrantAccessDialog({
       <OGDialogContent className="flex max-h-[90dvh] w-11/12 max-w-5xl flex-col gap-0 overflow-hidden p-0">
         <OGDialogHeader className="shrink-0 px-5 py-5 pr-14 text-left sm:px-6">
           <div className="flex items-start gap-3">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-border-light bg-surface-secondary text-text-secondary">
+            <div className="border-border-light bg-surface-secondary text-text-secondary flex size-10 shrink-0 items-center justify-center rounded-xl border">
               <Users className="size-5" aria-hidden="true" />
             </div>
             <div className="min-w-0 space-y-1">
@@ -342,12 +342,12 @@ export default function GenericGrantAccessDialog({
               <div className="flex items-center justify-between gap-3 px-1 pb-3">
                 <h3
                   id={peopleSectionId}
-                  className="flex min-w-0 items-center gap-2 text-sm font-semibold text-text-primary"
+                  className="text-text-primary flex min-w-0 items-center gap-2 text-sm font-semibold"
                 >
-                  <UserCheck className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+                  <UserCheck className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
                   <span className="truncate">{localize('com_ui_user_group_permissions')}</span>
                 </h3>
-                <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-xs font-medium text-text-secondary">
+                <span className="bg-surface-tertiary text-text-secondary flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium">
                   {allShares.length}
                 </span>
               </div>
@@ -357,8 +357,8 @@ export default function GenericGrantAccessDialog({
                   <div className="space-y-2" aria-live="polite">
                     <span className="sr-only">{localize('com_ui_loading')}</span>
                     <Skeleton className="h-10 w-full rounded-lg" />
-                    <Skeleton className="h-[62px] w-full rounded-xl" />
-                    <Skeleton className="h-[62px] w-full rounded-xl" />
+                    <Skeleton className="h-[3.875rem] w-full rounded-xl" />
+                    <Skeleton className="h-[3.875rem] w-full rounded-xl" />
                   </div>
                 ) : (
                   <>
@@ -377,14 +377,14 @@ export default function GenericGrantAccessDialog({
                     )}
 
                     {allShares.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-border-medium px-5 py-8 text-center">
-                        <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-surface-tertiary text-text-secondary">
+                      <div className="border-border-medium rounded-xl border border-dashed px-5 py-8 text-center">
+                        <div className="bg-surface-tertiary text-text-secondary mx-auto flex size-10 items-center justify-center rounded-full">
                           <Users className="size-5" aria-hidden="true" />
                         </div>
-                        <p className="mt-3 text-sm font-medium text-text-primary">
+                        <p className="text-text-primary mt-3 text-sm font-medium">
                           {localize('com_ui_no_individual_resource_access')}
                         </p>
-                        <p className="mt-1 text-xs text-text-secondary">
+                        <p className="text-text-secondary mt-1 text-xs">
                           {localize('com_ui_search_above_to_add_people')}
                         </p>
                       </div>
@@ -403,7 +403,7 @@ export default function GenericGrantAccessDialog({
               </div>
 
               {canSharePublic && (
-                <div className="mt-4 border-t border-border-light pt-4">
+                <div className="border-border-light mt-4 border-t pt-4">
                   <PublicSharingToggle
                     isPublic={isPublic}
                     publicRole={publicRole}

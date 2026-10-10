@@ -11,8 +11,7 @@ import { isImageURL } from '~/utils/icons';
 /** Callers frame the mark at two thirds of the round container around it. */
 const artScale = 2 / 3;
 
-const entityAvatarClassName =
-  'bg-token-surface-secondary h-full w-full rounded-full object-cover dark:bg-surface-tertiary';
+const entityAvatarClassName = 'bg-avatar-placeholder h-full w-full rounded-full object-cover';
 
 function AgentAvatar({
   avatar,

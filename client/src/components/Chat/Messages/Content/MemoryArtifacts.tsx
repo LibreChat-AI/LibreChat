@@ -90,7 +90,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
               fill="currentColor"
             />
             <path
-              d="M11.3512 15.5297L9.73505 15.8529C9.38519 15.9229 9.07673 15.6144 9.14671 15.2646L9.46993 13.6484C9.48929 13.5517 9.53687 13.4628 9.60667 13.393L12.9996 10C13.5519 9.44771 14.4473 9.44771 14.9996 10C15.5519 10.5523 15.5519 11.4477 14.9996 12L11.6067 15.393C11.5369 15.4628 11.448 15.5103 11.3512 15.5297Z"
+              d="M11.3512 15.5297L9.73505 15.8529C9.38519 15.9229 9.07673 15.6144 9.14671 15.2646L9.46993 13.6484C9.48929 13.5517 9.53687 13.4628 9.60667 13.393L12.9996 10C13.5519 9.44771 14.4473 9.44771 14.9996 10C15.5519 10.5523 15.5519 11.4477 14.9996 12L11.6067 15.393C11.5369 15.4629 11.448 15.5103 11.3512 15.5297Z"
               fill="currentColor"
             />
           </svg>
@@ -100,7 +100,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
           <ChevronDown
             className={cn(
               disclosureChevronVariants({ expanded: showInfo }),
-              'size-4 translate-y-[1px]',
+              'size-4 translate-y-[0.0625rem]',
             )}
             aria-hidden="true"
           />
@@ -117,7 +117,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
           <div
             className={cn(
               toolPanelSpacingClassName,
-              'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+              'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
             )}
           >
             {showInfo && <MemoryInfo key="memory-info" memoryArtifacts={memoryArtifacts} />}

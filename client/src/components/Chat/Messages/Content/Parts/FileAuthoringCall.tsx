@@ -18,6 +18,7 @@ import { AttachmentGroup } from './Attachment';
 import { langFromPath } from './ReadFileCall';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -169,11 +170,15 @@ export default function FileAuthoringCall({
     previewLang = fileLang;
   }
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase } = useToolCallState({
+  const { showCode, toggleCode, expandStyle, expandRef, phase, bare, rowRef } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
     hasInput: !!filePath || !!preview,
+    /** An overwrite reads "Updated" on the row while the group header keeps the
+     *  `create_file` name, so the row stays the only place that says it. */
+    panelReady: !!preview && !overwrote,
+    keepRow: intent != null,
     onExpand,
     runStepStatus,
   });
@@ -194,44 +199,48 @@ export default function FileAuthoringCall({
     finishedKey = overwrote ? 'com_ui_updated_file' : 'com_ui_created_file';
   }
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize(finishedKey, { 0: fileName }));
+
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={
-            intent ??
-            localize(isCreate ? 'com_ui_creating_file' : 'com_ui_editing_file', {
-              0: fileName,
-            })
-          }
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize(finishedKey, { 0: fileName }))
-          }
-          durationMs={runStepDurationMs}
-          icon={
-            <Icon
-              className={cn(
-                'size-4 shrink-0 text-text-secondary',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!filePath || !!preview}
-          isExpanded={showCode}
-        />
-      </div>
+      <BareStatus active={bare} text={finishedText} />
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={
+              intent ??
+              localize(isCreate ? 'com_ui_creating_file' : 'com_ui_editing_file', {
+                0: fileName,
+              })
+            }
+            finishedText={finishedText}
+            durationMs={runStepDurationMs}
+            icon={
+              <Icon
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!filePath || !!preview}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {!!preview && (
             <div
               className={cn(
                 toolPanelSpacingClassName,
-                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
               <CodeWindowHeader
@@ -249,7 +258,7 @@ export default function FileAuthoringCall({
                 <pre
                   ref={previewPaneRef}
                   onScroll={onPreviewPaneScroll}
-                  className="max-h-[300px] overflow-auto bg-surface-chat p-4 font-mono text-xs dark:bg-surface-primary-alt"
+                  className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
                 >
                   <code className={`hljs language-${previewLang} !whitespace-pre`}>
                     {highlighted ?? preview}
@@ -259,7 +268,7 @@ export default function FileAuthoringCall({
               {showOutputSection && (
                 <pre
                   className={cn(
-                    'max-h-[300px] overflow-auto whitespace-pre-wrap break-words border-t border-border-light px-3 py-2 font-mono text-xs',
+                    'border-border-inset max-h-[18.75rem] overflow-auto border-t px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap',
                     phase === 'failed' ? 'text-status-error' : 'text-text-secondary',
                   )}
                 >

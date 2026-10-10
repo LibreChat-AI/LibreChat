@@ -1,4 +1,4 @@
-import { hoverButtonClasses, messageFooterClasses, revealOnRowHoverClasses } from '../styles';
+import { hoverButtonClasses, revealOnRowHoverClasses } from '../styles';
 
 const FADE = '[@media(hover:hover)]:opacity-0';
 
@@ -90,13 +90,5 @@ describe('hoverButtonClasses', () => {
 
   it('appends caller classes', () => {
     expect(hoverButtonClasses({ className: 'ml-0' })).toContain('ml-0');
-  });
-});
-
-describe('messageFooterClasses', () => {
-  /** A hover button is a 19px icon with p-1.5 either side, so the row it forms is
-   *  31px. The footer holds that height even while it has nothing to show. */
-  it('reserves the height of the action row', () => {
-    expect(messageFooterClasses).toContain('min-h-[31px]');
   });
 });

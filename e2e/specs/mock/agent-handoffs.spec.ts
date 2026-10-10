@@ -65,6 +65,41 @@ async function waitForMCPTool(page: Page, token: string): Promise<void> {
   ).toEqual(expect.arrayContaining([expect.objectContaining({ pluginKey: MCP_TOOL_ID })]));
 }
 
+async function openOrchestration(page: Page, form: Locator) {
+  const settings = form
+    .getByRole('listitem')
+    .filter({ hasText: 'Handoffs' })
+    .getByRole('button', { name: 'Configure', exact: true });
+  if (await settings.count()) {
+    await settings.click();
+  } else {
+    await form.getByRole('button', { name: 'Add tools' }).click();
+    await page
+      .getByRole('dialog', { name: 'Tool Library', exact: true })
+      .getByRole('listitem')
+      .filter({ hasText: 'Handoffs' })
+      .getByRole('button', { name: 'Configure', exact: true })
+      .click();
+  }
+  return page.getByTestId('item-dialog').getByRole('region', { name: 'Handoffs' });
+}
+
+async function closeOrchestration(page: Page) {
+  if (!(await page.getByTestId('item-dialog').count())) {
+    return;
+  }
+  await page.getByTestId('item-dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page.getByTestId('item-dialog')).toBeHidden();
+  const marketplace = page.getByRole('dialog', {
+    name: 'Tool Library',
+    exact: true,
+    includeHidden: true,
+  });
+  if (await marketplace.count()) {
+    await marketplace.getByRole('button', { name: 'Close', exact: true }).click();
+  }
+}
+
 async function startNewAgent(page: Page): Promise<Locator> {
   let form = await openAgentBuilder(page);
   const createNewButton = form.getByRole('button', { name: 'Create New Agent' });
@@ -81,7 +116,7 @@ async function configureNewAgent(page: Page, name: string): Promise<Locator> {
   let form = await startNewAgent(page);
   await form.getByLabel('Agent name').fill(name);
   await form.getByLabel('Agent description').fill(DESCRIPTION);
-  await form.getByLabel('Instructions').fill(INSTRUCTIONS);
+  await form.getByRole('textbox', { name: 'Instructions', exact: true }).fill(INSTRUCTIONS);
   await selectMockModel(page, true);
   form = page.getByRole('form', { name: 'Agent configuration form' });
   return form;
@@ -89,6 +124,7 @@ async function configureNewAgent(page: Page, name: string): Promise<Locator> {
 
 async function createConfiguredAgent(form: Locator): Promise<AgentDetail> {
   const page = form.page();
+  await closeOrchestration(page);
   const [response] = await Promise.all([
     page.waitForResponse(
       (candidate) =>
@@ -176,11 +212,12 @@ test.describe('agent handoffs', () => {
       bareSpecialistId = bareSpecialist.id;
 
       const routerForm = await configureNewAgent(page, routerName);
-      await routerForm.getByRole('button', { name: 'Advanced' }).click();
-      const handoffs = routerForm.getByRole('region', { name: 'Handoffs' });
+      const handoffs = await openOrchestration(page, routerForm);
       await expect(handoffs).toBeVisible();
 
       await handoffs.getByRole('combobox', { name: 'Add agent' }).click();
+      await page.locator('input[placeholder="Search agent"]:visible').fill(specialistName);
+      await expect(page.locator('input[placeholder="Search agent"]:visible')).toBeFocused();
       await page.getByRole('option', { name: specialistName }).click();
       await expect(handoffs.getByText('1 / 10', { exact: true })).toBeVisible();
       await handoffs.getByRole('button', { name: 'Expand' }).click();
@@ -222,8 +259,7 @@ test.describe('agent handoffs', () => {
       const reopenedForm = await openAgentBuilder(page);
       await reopenedForm.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: routerName }).click();
-      await reopenedForm.getByRole('button', { name: 'Advanced' }).click();
-      const reopenedHandoffs = reopenedForm.getByRole('region', { name: 'Handoffs' });
+      const reopenedHandoffs = await openOrchestration(page, reopenedForm);
       await expect(reopenedHandoffs.getByText('2 / 10', { exact: true })).toBeVisible();
       const reopenedDestinations = reopenedHandoffs.getByRole('combobox', {
         name: 'Select agent',
@@ -240,6 +276,7 @@ test.describe('agent handoffs', () => {
         reopenedHandoffs.getByLabel("Content parameter name (default: 'instructions')"),
       ).toHaveValue(HANDOFF_PROMPT_KEY);
 
+      await closeOrchestration(page);
       await reopenedForm.getByRole('button', { name: 'Select Agent' }).click();
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 
@@ -344,8 +381,7 @@ test.describe('agent handoffs', () => {
       createdIds.push(first.id, second.id, third.id);
 
       const routerForm = await configureNewAgent(page, routerName);
-      await routerForm.getByRole('button', { name: 'Advanced' }).click();
-      const handoffs = routerForm.getByRole('region', { name: 'Handoffs' });
+      const handoffs = await openOrchestration(page, routerForm);
       const addAgent = handoffs.getByRole('combobox', { name: 'Add agent' });
 
       await addAgent.click();
@@ -375,6 +411,8 @@ test.describe('agent handoffs', () => {
       const destinationDialog = page.getByRole('dialog', { name: 'Select agent' }).last();
       await expect(destinationDialog.getByRole('option', { name: firstName })).toBeVisible();
       await expect(destinationDialog.getByRole('option', { name: thirdName })).toBeVisible();
+      await destinationDialog.getByPlaceholder('Search agent').fill(firstName);
+      await expect(destinationDialog.getByPlaceholder('Search agent')).toBeFocused();
       await destinationDialog.getByRole('option', { name: firstName }).click();
 
       await addAgent.click();
@@ -408,9 +446,7 @@ test.describe('agent handoffs', () => {
       await editForm.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: routerName }).click();
       await expect(editForm.getByLabel('Agent name')).toHaveValue(routerName);
-      await editForm.getByRole('button', { name: 'Advanced' }).click();
-
-      let editableHandoffs = editForm.getByRole('region', { name: 'Handoffs' });
+      let editableHandoffs = await openOrchestration(page, editForm);
       await expect(editableHandoffs.getByText('2 / 10', { exact: true })).toBeVisible();
       await editableHandoffs.getByRole('button', { name: 'Expand' }).first().click();
       await editableHandoffs
@@ -426,7 +462,7 @@ test.describe('agent handoffs', () => {
         .getByRole('option', { name: secondName })
         .click();
 
-      await editForm.getByRole('button', { name: 'Back to builder' }).click();
+      await closeOrchestration(page);
       const [updateResponse] = await Promise.all([
         page.waitForResponse(
           (response) =>
@@ -461,8 +497,7 @@ test.describe('agent handoffs', () => {
       editForm = await openAgentBuilder(page);
       await editForm.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: routerName }).click();
-      await editForm.getByRole('button', { name: 'Advanced' }).click();
-      editableHandoffs = editForm.getByRole('region', { name: 'Handoffs' });
+      editableHandoffs = await openOrchestration(page, editForm);
       await expect(editableHandoffs.getByText('2 / 10', { exact: true })).toBeVisible();
       await expect(
         editableHandoffs.getByRole('combobox', { name: 'Select agent' }).first(),
@@ -475,7 +510,7 @@ test.describe('agent handoffs', () => {
         'The updated persisted handoff',
       );
 
-      await editForm.getByRole('button', { name: 'Back to builder' }).click();
+      await closeOrchestration(page);
       await editForm.getByRole('button', { name: 'Version', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Version History' })).toBeVisible();
       const history = page.getByRole('list', { name: 'Version History' });
@@ -504,8 +539,7 @@ test.describe('agent handoffs', () => {
 
       await page.getByRole('button', { name: 'Back to builder' }).click();
       editForm = page.getByRole('form', { name: 'Agent configuration form' });
-      await editForm.getByRole('button', { name: 'Advanced' }).click();
-      editableHandoffs = editForm.getByRole('region', { name: 'Handoffs' });
+      editableHandoffs = await openOrchestration(page, editForm);
       await expect(
         editableHandoffs.getByRole('combobox', { name: 'Select agent' }).first(),
       ).toContainText(firstName);
@@ -541,8 +575,7 @@ test.describe('agent handoffs', () => {
       }
 
       const routerForm = await configureNewAgent(page, uniqueAgentName('E2E Handoff Limit Router'));
-      await routerForm.getByRole('button', { name: 'Advanced' }).click();
-      const handoffs = routerForm.getByRole('region', { name: 'Handoffs' });
+      const handoffs = await openOrchestration(page, routerForm);
 
       for (const targetName of targetNames) {
         await handoffs.getByRole('combobox', { name: 'Add agent' }).click();
@@ -584,12 +617,10 @@ test.describe('agent handoffs', () => {
       let form = await openAgentBuilder(page);
       await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: routerName }).click();
-      await form.getByRole('button', { name: 'Advanced' }).click();
-      await expect(
-        form.getByRole('region', { name: 'Handoffs' }).getByText('1 / 10', { exact: true }),
-      ).toBeVisible();
+      const configuredHandoffs = await openOrchestration(page, form);
+      await expect(configuredHandoffs.getByText('1 / 10', { exact: true })).toBeVisible();
 
-      await form.getByRole('button', { name: 'Back to builder' }).click();
+      await closeOrchestration(page);
       await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: targetName }).click();
       await expect(form.getByLabel('Agent name')).toHaveValue(targetName);
@@ -610,8 +641,7 @@ test.describe('agent handoffs', () => {
 
       form = page.getByRole('form', { name: 'Agent configuration form' });
       await expect(form.getByLabel('Agent name')).toHaveValue(routerName, { timeout: 30000 });
-      await form.getByRole('button', { name: 'Advanced' }).click();
-      const handoffs = form.getByRole('region', { name: 'Handoffs' });
+      const handoffs = await openOrchestration(page, form);
       await expect(handoffs.getByText('0 / 10', { exact: true })).toBeVisible({
         timeout: 30000,
       });

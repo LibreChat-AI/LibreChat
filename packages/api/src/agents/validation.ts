@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { isValidObjectIdString } from '@librechat/data-schemas';
 import {
   CODE_WORKSPACE_ID_PATTERN,
+  MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
   MemoryScope,
   SkillsScope,
   getMaxSubagents,
@@ -16,6 +18,7 @@ import type {
   AgentGitIdentity,
   TModelsConfig,
   AgentSubagentsConfig,
+  AgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 
@@ -156,6 +159,8 @@ export const toolOptionsSchema: z.ZodObject<
     allowed_callers: z.ZodOptional<z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>>;
     run_in_background: z.ZodOptional<z.ZodBoolean>;
     describe_intent: z.ZodOptional<z.ZodBoolean>;
+    approval_mode: z.ZodOptional<z.ZodEnum<['ask', 'allow', 'chat', 'always']>>;
+    approval_revision: z.ZodOptional<z.ZodString>;
   },
   'strip'
 > = z.object({
@@ -163,35 +168,13 @@ export const toolOptionsSchema: z.ZodObject<
   allowed_callers: z.array(z.enum(['direct', 'code_execution'])).optional(),
   run_in_background: z.boolean().optional(),
   describe_intent: z.boolean().optional(),
+  approval_mode: z.enum(['ask', 'allow', 'chat', 'always']).optional(),
+  approval_revision: z.string().uuid().optional(),
 });
 
 /** Agent tool options - map of tool_id to tool options */
 export const agentToolOptionsSchema: z.ZodOptional<
-  z.ZodRecord<
-    z.ZodString,
-    z.ZodObject<
-      {
-        defer_loading: z.ZodOptional<z.ZodBoolean>;
-        allowed_callers: z.ZodOptional<z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>>;
-        run_in_background: z.ZodOptional<z.ZodBoolean>;
-        describe_intent: z.ZodOptional<z.ZodBoolean>;
-      },
-      'strip',
-      z.ZodTypeAny,
-      {
-        defer_loading?: boolean | undefined;
-        allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-        run_in_background?: boolean | undefined;
-        describe_intent?: boolean | undefined;
-      },
-      {
-        defer_loading?: boolean | undefined;
-        allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-        run_in_background?: boolean | undefined;
-        describe_intent?: boolean | undefined;
-      }
-    >
-  >
+  z.ZodRecord<z.ZodString, typeof toolOptionsSchema>
 > = z.record(z.string(), toolOptionsSchema).optional();
 
 /**
@@ -415,14 +398,41 @@ export const agentSubagentsSchema: z.ZodOptional<z.ZodType<AgentSubagentsConfig>
 
 /** Base agent schema with all common fields */
 const agentCodeEnvironmentIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+const agentCodeEnvironmentIdsSchema: z.ZodArray<z.ZodString> = z
+  .array(agentCodeEnvironmentIdSchema)
+  .max(MAX_AGENT_CODE_ENVIRONMENT_CHOICES);
 const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefined> =
   agentGitIdentitySchema.nullable();
+
+/** A 24-character hexadecimal Mongo ObjectId string. */
+const objectIdStringSchema = z.string().refine(isValidObjectIdString);
+
+/** Selects which revision of a linked prompt group an agent's instructions follow. */
+const instructionsPromptSelectionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('production') }).strict(),
+  z.object({ type: z.literal('exact'), promptId: objectIdStringSchema }).strict(),
+]);
+
+/** Links an agent's instructions to a native LibreChat prompt group revision. */
+export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> = z
+  .object({
+    source: z.literal('native'),
+    groupId: objectIdStringSchema,
+    selection: instructionsPromptSelectionSchema,
+  })
+  .strict();
+
+/** Shared field schema: `.nullable().optional()` per contract, `null` removes the link. */
+const agentInstructionsPromptFieldSchema: z.ZodOptional<
+  z.ZodNullable<typeof agentInstructionsPromptSchema>
+> = agentInstructionsPromptSchema.nullable().optional();
 
 export const agentBaseSchema: z.ZodObject<
   {
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    instructionsPrompt: z.ZodOptional<z.ZodNullable<typeof agentInstructionsPromptSchema>>;
     avatar: z.ZodOptional<
       z.ZodNullable<
         z.ZodObject<
@@ -507,6 +517,7 @@ export const agentBaseSchema: z.ZodObject<
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
     code_environment_id: z.ZodOptional<z.ZodString>;
+    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
     code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
     repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
     git_identity: typeof agentGitIdentitySchema;
@@ -569,6 +580,7 @@ export const agentBaseSchema: z.ZodObject<
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   instructions: z.string().nullable().optional(),
+  instructionsPrompt: agentInstructionsPromptFieldSchema,
   avatar: agentAvatarSchema.nullable().optional(),
   model_parameters: z.record(z.unknown()).optional(),
   tools: z.array(z.string()).optional(),
@@ -585,6 +597,7 @@ export const agentBaseSchema: z.ZodObject<
   stateful_code_sessions: z.boolean().optional(),
   stateful_code_environment: z.enum(['user', 'agent-user', 'conversation']).optional(),
   code_environment_id: agentCodeEnvironmentIdSchema.optional(),
+  code_environment_ids: agentCodeEnvironmentIdsSchema.optional(),
   code_workspace_id: agentCodeWorkspaceIdSchema.optional(),
   repositoryInstructions: z.enum(['prefer', 'defer', 'off']).optional(),
   git_identity: agentGitIdentitySchema,
@@ -604,6 +617,7 @@ export const agentCreateSchema: z.ZodObject<
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    instructionsPrompt: z.ZodOptional<z.ZodNullable<typeof agentInstructionsPromptSchema>>;
     avatar: z.ZodOptional<
       z.ZodNullable<
         z.ZodObject<
@@ -686,6 +700,7 @@ export const agentCreateSchema: z.ZodObject<
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
     code_environment_id: z.ZodOptional<z.ZodString>;
+    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
     git_identity: typeof agentGitIdentitySchema;
     code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
     repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
@@ -760,6 +775,7 @@ export const agentUpdateSchema: z.ZodObject<
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    instructionsPrompt: z.ZodOptional<z.ZodNullable<typeof agentInstructionsPromptSchema>>;
     model_parameters: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
     tools: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     skills: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
@@ -823,6 +839,7 @@ export const agentUpdateSchema: z.ZodObject<
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
     code_environment_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
     code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
     repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
     git_identity: typeof agentGitIdentityUpdateSchema;

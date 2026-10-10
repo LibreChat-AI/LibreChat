@@ -301,6 +301,9 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
         payload: {
           id: session.user,
           sessionId: session._id,
+          /** `iat` is whole seconds, too coarse to order this token against a password reset that
+           * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
+          issuedAtMs: Date.now(),
         },
         secret: process.env.JWT_REFRESH_SECRET!,
         expirationTime: Math.floor((expiresIn - Date.now()) / 1000),

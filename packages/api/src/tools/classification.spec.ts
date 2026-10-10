@@ -12,6 +12,8 @@ import {
   getServerNameFromTool,
   agentHasDeferredTools,
 } from './classification';
+import { bindToolApproval, getToolApprovalAuthKind } from './approval';
+import { extractMCPToolDefinition } from './classification';
 
 describe('classification.ts', () => {
   describe('getServerNameFromTool', () => {
@@ -637,6 +639,9 @@ describe('classification.ts', () => {
               environmentType: 'attached',
               environmentId: 'attached',
               bridgeWorkerId: workerId,
+              codeEnvironmentConfigSchema: {
+                limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 },
+              },
               ...(selected
                 ? {
                     codeWorkspace: {
@@ -670,6 +675,26 @@ describe('classification.ts', () => {
               result.toolDefinitions.find((tool) => tool.name === 'run_tools_with_bash')
                 ?.description,
             ).toContain('selected persistent workspace');
+            const definition = result.toolDefinitions.find(
+              (tool) => tool.name === 'run_tools_with_bash',
+            );
+            expect(definition?.parameters).toMatchObject({
+              properties: {
+                code: { description: expect.stringContaining('ATTACHED WORKSPACE EXECUTION') },
+                timeout: {
+                  default: 60_000,
+                  description: expect.stringContaining('Configured cap: 80000 milliseconds'),
+                },
+              },
+            });
+            expect(definition?.parameters?.properties?.code?.description).toContain(
+              '${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}',
+            );
+            if (!definitionsOnly) {
+              expect(
+                result.additionalTools.find((tool) => tool.name === 'run_tools_with_bash')?.schema,
+              ).toEqual(definition?.parameters);
+            }
           } else expect(fetchSpy).not.toHaveBeenCalled();
         } finally {
           fetchSpy.mockRestore();
@@ -754,3 +779,36 @@ describe('classification.ts', () => {
     });
   });
 });
+
+test.each(['oauth', 'other'] as const)(
+  'classification and both registries preserve private %s auth provenance',
+  async (kind) => {
+    const tool = bindToolApproval(
+      {
+        name: 'query_mcp_db',
+        mcp: true,
+        mcpRawServerName: 'db',
+        mcpJsonSchema: { type: 'object' as const },
+      },
+      'source',
+      undefined,
+      undefined,
+      undefined,
+      kind,
+    );
+    const definition = extractMCPToolDefinition(tool);
+    expect(getToolApprovalAuthKind(definition)).toBe(kind);
+    const configured = buildToolRegistryFromAgentOptions([definition], {
+      query_mcp_db: { approval_mode: 'always' },
+    });
+    expect(getToolApprovalAuthKind(configured.get('query_mcp_db')!)).toBe(kind);
+    const plain = await buildToolClassification({
+      userId: 'user-a',
+      agentId: 'agent-a',
+      loadedTools: [tool as unknown as GenericTool],
+      definitionsOnly: true,
+      deferredToolsEnabled: false,
+    });
+    expect(getToolApprovalAuthKind(plain.toolRegistry!.get('query_mcp_db')!)).toBe(kind);
+  },
+);

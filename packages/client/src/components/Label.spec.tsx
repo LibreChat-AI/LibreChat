@@ -7,7 +7,15 @@ describe('Label', () => {
     render(<Label htmlFor="field">Name</Label>);
     const label = screen.getByText('Name');
 
-    expect(label).toHaveClass('block', 'w-full', 'break-all', 'leading-none', 'text-sm');
+    /** The theme's label roles, which default to `text-sm`, leading 1 and the surrounding weight. */
+    expect(label).toHaveClass(
+      'block',
+      'w-full',
+      'break-all',
+      'text-(length:--theme-label-size)',
+      'leading-(--theme-label-leading)',
+      'font-theme-label',
+    );
     expect(label).toHaveClass('text-text-primary', 'peer-disabled:opacity-70');
   });
 

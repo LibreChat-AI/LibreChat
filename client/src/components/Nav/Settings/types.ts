@@ -17,6 +17,7 @@ export type SettingsTab =
 export type SectionId =
   | 'appearance'
   | 'layout'
+  | 'notifications'
   | 'accessibility'
   | 'admin'
   | 'sending'
@@ -47,12 +48,19 @@ export interface SettingsContextValue {
   hasMultiConvo: boolean;
   hasPrompts: boolean;
   isLocalProvider: boolean;
+  emailEnabled: boolean;
+  allowEmailChange: boolean;
+  passkeyLoginEnabled: boolean;
+  isTwoFactorPolicyProvider: boolean;
   twoFactorEnabled: boolean;
   allowAccountDeletion: boolean;
   aboutEnabled: boolean;
   engineTTS: string;
   langfuseConnectionAccess: boolean;
   adminPanelURL: string;
+  replyTabBadgeAllowed: boolean;
+  replyNotificationsAllowed: boolean;
+  replyNotificationSoundAllowed: boolean;
 }
 
 export interface SettingEntry {
@@ -99,6 +107,7 @@ export const TABS: TabMeta[] = [
     sections: [
       { id: 'appearance', labelKey: 'com_ui_settings_section_appearance' },
       { id: 'layout', labelKey: 'com_ui_settings_section_layout' },
+      { id: 'notifications', labelKey: 'com_ui_settings_section_notifications' },
       { id: 'accessibility', labelKey: 'com_ui_settings_section_accessibility' },
       { id: 'admin', labelKey: 'com_ui_settings_section_admin' },
     ],

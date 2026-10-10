@@ -10,6 +10,7 @@ const pinCalls: Array<{ variables: PinVariables; options?: PinOptions }> = [];
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
+  useRemScale: () => 1,
   useToastContext: () => ({ showToast: jest.fn() }),
   Spinner: () => <div data-testid="spinner" />,
   TooltipAnchor: ({ render: trigger }: { render: React.ReactNode }) => trigger,
@@ -53,13 +54,15 @@ jest.mock('recoil', () => ({
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: { allConversationsSelector: 'allConversationsSelector' },
+  default: { conversationIdByIndex: () => 'conversationIdByIndex' },
 }));
 
 jest.mock('~/utils', () => ({
+  hasRealTitle: (title: string) => !!title && title !== 'New Chat',
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { error: jest.fn() },
   setDocumentTitle: jest.fn(),
+  isConversationUnseen: () => false,
 }));
 
 jest.mock('../ConvoOptions', () => ({

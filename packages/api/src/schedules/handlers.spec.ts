@@ -93,6 +93,20 @@ describe('toWireSchedule', () => {
     }
   });
 
+  it('projects typed consent availability without exposing the enrollment record', () => {
+    const enrollment = {
+      version: 1 as const,
+      revision: 'grant',
+      scheduleRevision: 0,
+      consents: [],
+    };
+    const wire = toWireSchedule(fullScheduleDoc({ mcpConsent: enrollment }));
+    const available: boolean | undefined = wire.hasMCPConsent;
+    expect(available).toBe(true);
+    expect(wire).not.toHaveProperty('mcpConsent');
+    expect(toWireSchedule(fullScheduleDoc()).hasMCPConsent).toBeUndefined();
+  });
+
   it('preserves the public field values', () => {
     const wire = toWireSchedule(fullScheduleDoc());
     expect(wire.id).toBe('sched-1');

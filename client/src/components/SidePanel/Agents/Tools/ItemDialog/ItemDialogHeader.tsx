@@ -21,7 +21,7 @@ function HeaderIcon({ item }: { item: AgentItem }) {
   if (iconUrl && !imgError) {
     return (
       <span
-        className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white"
+        className="bg-surface-fixed flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl"
         aria-hidden="true"
       >
         <img
@@ -51,13 +51,11 @@ export default function ItemDialogHeader({ item }: { item: AgentItem }) {
   const kindLabel = localize(KIND_LABEL_KEYS[item.kind]);
 
   return (
-    <OGDialogHeader className="flex flex-row items-center gap-3 space-y-0 px-6 pb-4 pt-5 text-left">
+    <OGDialogHeader className="flex flex-row items-center gap-3 space-y-0 px-6 pt-5 pb-4 text-left">
       <HeaderIcon item={item} />
       <div className="min-w-0 flex-1">
-        <OGDialogTitle className="truncate text-base font-semibold text-text-primary">
-          {displayName}
-        </OGDialogTitle>
-        <OGDialogDescription className="m-0 text-[11px] uppercase tracking-wide text-text-secondary">
+        <OGDialogTitle className="truncate text-base font-semibold">{displayName}</OGDialogTitle>
+        <OGDialogDescription className="text-text-secondary m-0 text-[11px] tracking-wide uppercase">
           {kindLabel}
         </OGDialogDescription>
       </div>

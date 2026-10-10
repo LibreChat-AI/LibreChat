@@ -26,6 +26,7 @@ import type {
   TFilePreview,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import { MessageContext } from '~/Providers/MessageContext';
 import store from '~/store';
 
 type AttachmentFixture = TFile & TAttachmentMetadata;
@@ -126,7 +127,9 @@ function setup({
           children: (
             <>
               <Bridge />
-              {children}
+              <MessageContext.Provider value={{ messageId, isExpanded: true, isSubmitting }}>
+                {children}
+              </MessageContext.Provider>
             </>
           ),
         }),
@@ -158,7 +161,10 @@ function setup({
  */
 function setupWithTransitions(
   initialPreview?: TFilePreview,
-  { isSubmittingAtMount = true }: { isSubmittingAtMount?: boolean } = {},
+  {
+    isSubmittingAtMount = true,
+    messageIsSubmittingAtMount = isSubmittingAtMount,
+  }: { isSubmittingAtMount?: boolean; messageIsSubmittingAtMount?: boolean } = {},
 ) {
   let currentPreview = initialPreview;
   mockUseFilePreview.mockReset();
@@ -174,7 +180,7 @@ function setupWithTransitions(
      * the transition. (A non-subscribing snapshot read inside an
      * effect would capture the value as of the previous commit, which
      * misses the flag set fired in *this* render's effect tick.) */
-    const flag = useRecoilValue(store.previewJustResolved(id));
+    const flag = useRecoilValue(store.previewJustResolved([messageId, id]));
     useEffect(() => {
       flagRef.current = flag;
     }, [flag]);
@@ -192,7 +198,11 @@ function setupWithTransitions(
           }}
         >
           <FlagProbe id={fileId} />
-          {children}
+          <MessageContext.Provider
+            value={{ messageId, isExpanded: true, isSubmitting: messageIsSubmittingAtMount }}
+          >
+            {children}
+          </MessageContext.Provider>
         </RecoilRoot>
       ),
     },
@@ -413,10 +423,10 @@ describe('useAttachmentPreviewSync', () => {
     /* The signal is the bridge to ToolArtifactCard's auto-open path:
      * the card mounts after the routing re-runs (post-transition), so
      * it can't observe the transition itself. Setting a one-shot flag
-     * keyed by file_id lets the card consume the signal on its very
-     * first effect tick. We assert on the flag directly here; the
+     * keyed by message and file lets only the owner consume the signal
+     * on its first effect tick. We assert on the flag directly here; the
      * consume+open behavior lives in `ToolArtifactCard`'s coverage. */
-    it('flips the per-file_id flag on the pending→ready transition', () => {
+    it('flips the owning message and file flag on the pending→ready transition', () => {
       const ctx = setupWithTransitions({ file_id: fileId, status: 'pending' });
       expect(ctx.justResolved).toBe(false);
       ctx.setPreview({
@@ -426,6 +436,100 @@ describe('useAttachmentPreviewSync', () => {
         textFormat: 'html',
       });
       expect(ctx.justResolved).toBe(true);
+    });
+
+    it('does not flag a previous response preview as newly resolved during regeneration', () => {
+      const ctx = setupWithTransitions(
+        { file_id: fileId, status: 'pending' },
+        { isSubmittingAtMount: true, messageIsSubmittingAtMount: false },
+      );
+      ctx.setPreview({
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>old response</table>',
+        textFormat: 'html',
+      });
+      expect(ctx.justResolved).toBe(false);
+    });
+
+    it('reclassifies a reused pending file when its owning response changes to the live one', () => {
+      let preview: TFilePreview | undefined = { file_id: fileId, status: 'pending' };
+      let owner = 'historical-response';
+      let isSubmitting = false;
+      mockUseFilePreview.mockReset();
+      mockUseFilePreview.mockImplementation(() => ({ data: preview, isFetching: false }));
+
+      const flags = { live: false, history: false };
+      const FlagProbe = () => {
+        flags.live = useRecoilValue(store.previewJustResolved(['live-response', fileId]));
+        flags.history = useRecoilValue(store.previewJustResolved(['historical-response', fileId]));
+        return null;
+      };
+      const { rerender } = renderHook(
+        ({ attachment }: { attachment: TAttachment }) => useAttachmentPreviewSync(attachment),
+        {
+          initialProps: { attachment: makeAttachment({ messageId: owner }) },
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <RecoilRoot>
+              <FlagProbe />
+              <MessageContext.Provider value={{ messageId: owner, isExpanded: true, isSubmitting }}>
+                {children}
+              </MessageContext.Provider>
+            </RecoilRoot>
+          ),
+        },
+      );
+      owner = 'live-response';
+      isSubmitting = true;
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      preview = {
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>new answer</table>',
+        textFormat: 'html',
+      };
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      expect(flags.live).toBe(true);
+      expect(flags.history).toBe(false);
+    });
+
+    it('does not flag a live file that becomes history before its preview resolves', () => {
+      let preview: TFilePreview | undefined = { file_id: fileId, status: 'pending' };
+      let owner = 'live-response';
+      let isSubmitting = true;
+      mockUseFilePreview.mockReset();
+      mockUseFilePreview.mockImplementation(() => ({ data: preview, isFetching: false }));
+
+      let historyFlag = false;
+      const FlagProbe = () => {
+        historyFlag = useRecoilValue(store.previewJustResolved(['historical-response', fileId]));
+        return null;
+      };
+      const { rerender } = renderHook(
+        ({ attachment }: { attachment: TAttachment }) => useAttachmentPreviewSync(attachment),
+        {
+          initialProps: { attachment: makeAttachment({ messageId: owner }) },
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <RecoilRoot>
+              <FlagProbe />
+              <MessageContext.Provider value={{ messageId: owner, isExpanded: true, isSubmitting }}>
+                {children}
+              </MessageContext.Provider>
+            </RecoilRoot>
+          ),
+        },
+      );
+      owner = 'historical-response';
+      isSubmitting = false;
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      preview = {
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>old answer</table>',
+        textFormat: 'html',
+      };
+      rerender({ attachment: makeAttachment({ messageId: owner }) });
+      expect(historyFlag).toBe(false);
     });
 
     it('does NOT flip the flag when the polled status is "failed"', () => {

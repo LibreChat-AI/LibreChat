@@ -28,6 +28,7 @@ const {
 } = require('~/server/services/ActionService');
 const { findAccessibleResources } = require('~/server/services/PermissionService');
 const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
+const { instructionsPromptAccess } = require('~/server/services/Agents/instructionsPrompt');
 const db = require('~/models');
 const { canAccessAgentResource } = require('~/server/middleware');
 
@@ -263,7 +264,16 @@ router.post(
         }
       }
 
-      res.json([updatedAgent, updatedAction]);
+      /** `updatedAgent` is the same EDIT-scoped, `versions[]`-carrying shape returned by
+       *  `controllers/agents/v1.js`'s write handlers, and the client writes this response
+       *  into the expanded agent cache — an unrelated action edit must not leak a link the
+       *  caller cannot VIEW. */
+      const presentedAgent = await instructionsPromptAccess.presentForEditor({
+        user: req.user,
+        agent: updatedAgent,
+      });
+
+      res.json([presentedAgent, updatedAction]);
     } catch (error) {
       const message = 'Trouble updating the Agent Action';
       logger.error(message, error);

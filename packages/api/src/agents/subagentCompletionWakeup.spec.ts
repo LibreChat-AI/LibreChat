@@ -127,7 +127,9 @@ describe('createSubagentCompletionWakeupHandler', () => {
   });
 });
 
-function wakeupEnvelope(): AgentContinueTriggerEnvelope {
+function wakeupEnvelope(
+  scheduleMCPIdentity?: SubagentTaskWakeupRegistration['scheduleMCPIdentity'],
+): AgentContinueTriggerEnvelope {
   const envelope = createAgentTriggerEnvelope({
     mode: 'continue',
     requestId: 'request-1',
@@ -139,7 +141,12 @@ function wakeupEnvelope(): AgentContinueTriggerEnvelope {
       type: 'subagent.completion',
       occurredAt: NOW,
       source: { id: 'subagent-completion', type: 'internal' },
-      payload: { taskId: 'task-1', threadId: 'thread-1', subagentType: 'researcher' },
+      payload: {
+        taskId: 'task-1',
+        threadId: 'thread-1',
+        subagentType: 'researcher',
+        scheduleMCPIdentity: scheduleMCPIdentity ?? null,
+      },
     },
     target: {
       agentId: 'agent_parent_1',
@@ -1563,4 +1570,48 @@ describe('createSubagentCompletionWakeupResolver', () => {
       claimId: 'trigger_claim_1',
     });
   });
+});
+
+it('refuses a queued legacy scheduled wakeup after enrollment before claiming its result', async () => {
+  const { methods } = resolverMethods();
+  const lookup = jest.fn(async () => ({
+    identity: {
+      scheduleId: 'schedule',
+      ownerId: 'user-1',
+      tenantId: 'tenant-1',
+      agentId: 'agent_parent_1',
+      invocationMode: 'delegated' as const,
+    },
+    enrolled: true,
+  }));
+  const prepare = createSubagentCompletionWakeupResolver({
+    methods: methods as never,
+    getGenerationJob: async () => null,
+    getScheduleMCPCompletionState: lookup,
+  });
+  await expect(
+    prepare(wakeupEnvelope((await lookup()).identity), {
+      idempotencyKey: 'wakeup',
+      attempt: 1,
+      maxAttempts: 3,
+    }),
+  ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+  expect(lookup).toHaveBeenCalledWith((await lookup()).identity);
+  expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
+});
+
+it('does not attach a historical schedule to an ordinary later subagent completion', async () => {
+  const { methods } = resolverMethods();
+  const lookup = jest.fn(async () => {
+    throw new Error('historical schedule must not be consulted');
+  });
+  const prepare = createSubagentCompletionWakeupResolver({
+    methods: methods as never,
+    getGenerationJob: async () => null,
+    getScheduleMCPCompletionState: lookup,
+  });
+  const prepared = await prepare(wakeupEnvelope(), { idempotencyKey: 'ordinary' });
+  expect(prepared).toMatchObject({ status: 'ready' });
+  expect(prepared).not.toHaveProperty('scheduleMCPIdentity');
+  expect(lookup).not.toHaveBeenCalled();
 });

@@ -4,7 +4,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
 import type { UseQueryOptions, QueryObserverResult, QueryClient } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
-import { isNotFoundError, logger } from '~/utils';
+import {
+  beginMessagesReplyFetch,
+  completeMessagesReplyFetch,
+  findConvoInAllQueries,
+  isNotFoundError,
+  logger,
+} from '~/utils';
 
 type StableMessagesParams = {
   pathname: string;
@@ -74,6 +80,51 @@ export function shouldPreserveMessagesOnNotFound({
   return hasPendingAssistantTail(currentMessages);
 }
 
+/**
+ * Loads a conversation's messages for the shared `[messages, id]` cache, with settled tool calls
+ * as bounded previews. Every writer of that cache uses this, so the cache never flips between
+ * preview and full payloads; a reader that needs every byte (export) asks for a full load.
+ */
+export function fetchConversationMessages(conversationId: string): Promise<t.TMessage[]> {
+  return dataService.getMessagesByConvoId(conversationId, { toolPreviews: true });
+}
+
+/**
+ * The stored content of one tool-call part, for a preview the reader opened. Kept under its own
+ * key and never merged into `[messages, id]`, so a refetch of the conversation cannot drop it and
+ * the conversation cache keeps only previews. `revision` (see `getToolCallPreviewRevision`) is
+ * part of the key, so a stored call that changes after it was fetched is fetched again.
+ */
+export const useToolCallPartQuery = (
+  params: t.ToolCallPartParams,
+  config?: UseQueryOptions<t.ToolCallPartResponse>,
+  revision = '',
+): QueryObserverResult<t.ToolCallPartResponse> => {
+  /** The index only rides along in the request; the server locates the call by identity, so the
+   *  cache does too, and a shifted index cannot fetch the same part twice. */
+  const { conversationId, messageId, toolCallId, stepId, agentId } = params;
+  return useQuery<t.ToolCallPartResponse>(
+    [
+      QueryKeys.toolCallPart,
+      conversationId,
+      messageId,
+      toolCallId ?? '',
+      stepId ?? '',
+      agentId ?? '',
+      revision,
+    ],
+    () => dataService.getToolCallPart(params),
+    {
+      staleTime: Infinity,
+      retry: 1,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      ...config,
+    },
+  );
+};
+
 function hasActiveJob(queryClient: QueryClient, id: string) {
   if (!id) {
     return false;
@@ -106,9 +157,14 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
         return messagesAtRequestStart ?? [];
       }
 
+      const request = beginMessagesReplyFetch(
+        queryClient,
+        id,
+        findConvoInAllQueries(queryClient, id)?.lastResponseAt,
+      );
       let result: t.TMessage[];
       try {
-        result = await dataService.getMessagesByConvoId(id);
+        result = await fetchConversationMessages(id);
       } catch (error) {
         const currentMessages = queryClient.getQueryData<t.TMessage[]>(queryKey);
         if (
@@ -116,6 +172,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
           currentMessages != null &&
           currentMessages !== messagesAtRequestStart
         ) {
+          completeMessagesReplyFetch(queryClient, id, request, false);
           return currentMessages;
         }
 
@@ -134,9 +191,11 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
             `Messages query for convo ${id} returned 404 while cache has a pending assistant tail; path: "${location.pathname}"`,
             currentMessages,
           );
+          completeMessagesReplyFetch(queryClient, id, request, false);
           return currentMessages;
         }
 
+        completeMessagesReplyFetch(queryClient, id, request, false);
         throw error;
       }
 
@@ -146,6 +205,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
         currentMessages != null &&
         currentMessages !== messagesAtRequestStart
       ) {
+        completeMessagesReplyFetch(queryClient, id, request, false);
         return currentMessages;
       }
 
@@ -165,6 +225,7 @@ export const useGetMessagesByConvoId = <TData = t.TMessage[]>(
         );
       }
 
+      completeMessagesReplyFetch(queryClient, id, request, stableMessages === result);
       return stableMessages;
     },
     {

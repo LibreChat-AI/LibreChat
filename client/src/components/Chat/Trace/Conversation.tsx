@@ -19,11 +19,11 @@ function Text({ content }: { content: TTraceContent }) {
   const localize = useLocalize();
   return (
     <>
-      <p className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-sm text-text-primary">
+      <p className="text-text-primary max-h-48 overflow-auto text-sm break-words whitespace-pre-wrap">
         {content.value}
       </p>
       {content.truncated && (
-        <p className="text-xs text-text-secondary">{localize('com_ui_trace_truncated')}</p>
+        <p className="text-text-secondary text-xs">{localize('com_ui_trace_truncated')}</p>
       )}
     </>
   );
@@ -42,8 +42,8 @@ function Message({
   const tool = message.role === 'tool' && message.toolName != null ? message.toolName : undefined;
   const toolTitle = tool != null ? toolTitleFor(tool) : undefined;
   return (
-    <li className="flex flex-col gap-1 rounded-lg border border-border-light bg-surface-primary-alt p-2">
-      <span className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
+    <li className="border-border-light bg-surface-primary-alt flex flex-col gap-1 rounded-lg border p-2">
+      <span className="text-text-secondary flex items-center gap-1.5 text-xs font-medium">
         {message.role === 'user' && <User className="size-3.5" aria-hidden="true" />}
         {message.role === 'assistant' && <Sparkles className="size-3.5" aria-hidden="true" />}
         {message.role === 'tool' && (
@@ -58,7 +58,7 @@ function Message({
       </span>
       {message.text != null && <Text content={message.text} />}
       {message.attachments != null && (
-        <p className="text-xs text-text-secondary">
+        <p className="text-text-secondary text-xs">
           {localize('com_ui_trace_message_attachments', { 0: message.attachments.join(', ') })}
         </p>
       )}
@@ -66,15 +66,15 @@ function Message({
         const { title, caption } = toolTitleFor(call.name);
         return (
           <details key={`${call.name}-${index}`} className="group text-xs">
-            <summary className="flex cursor-pointer items-center gap-1.5 rounded-md py-0.5 text-text-primary marker:content-none hover:bg-surface-hover">
+            <summary className="text-text-primary hover:bg-surface-hover flex cursor-pointer items-center gap-1.5 rounded-md py-0.5 marker:content-none">
               <StackedToolIcons toolNames={[call.name]} mcpIconMap={mcpIconMap} />
               <span className="min-w-0 truncate">
                 {localize('com_ui_trace_message_asked_tool', { 0: title })}
               </span>
-              {caption != null && <span className="truncate text-text-secondary">{caption}</span>}
+              {caption != null && <span className="text-text-secondary truncate">{caption}</span>}
             </summary>
             {call.args != null && (
-              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-text-secondary">
+              <pre className="text-text-secondary mt-1 max-h-40 overflow-auto font-mono text-xs break-words whitespace-pre-wrap">
                 {call.args.truncated ? call.args.value : formatJSON(call.args.value)}
               </pre>
             )}
@@ -120,8 +120,8 @@ function Conversation({
         <section className="flex flex-col gap-1.5">
           <h4 className={heading}>{localize('com_ui_trace_prompt')}</h4>
           {system?.text != null && (
-            <details className="rounded-lg border border-border-light bg-surface-primary-alt p-2 text-sm">
-              <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-text-secondary marker:content-none">
+            <details className="border-border-light bg-surface-primary-alt rounded-lg border p-2 text-sm">
+              <summary className="text-text-secondary flex cursor-pointer items-center gap-1.5 text-xs font-medium marker:content-none">
                 <ScrollText className="size-3.5" aria-hidden="true" />
                 {localize('com_ui_trace_message_system')}
               </summary>
@@ -131,7 +131,7 @@ function Conversation({
             </details>
           )}
           {prompt.omitted > 0 && (
-            <p className="px-2 text-xs text-text-secondary">
+            <p className="text-text-secondary px-2 text-xs">
               {localize('com_ui_trace_prompt_omitted', { 0: String(prompt.omitted) })}
             </p>
           )}
@@ -146,7 +146,7 @@ function Conversation({
             ))}
           </ul>
           {prompt.tools != null && (
-            <details className="px-2 text-xs text-text-secondary">
+            <details className="text-text-secondary px-2 text-xs">
               <summary className="cursor-pointer">
                 {localize('com_ui_trace_prompt_tools', { 0: String(prompt.tools.length) })}
               </summary>

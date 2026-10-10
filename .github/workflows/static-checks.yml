@@ -11,6 +11,12 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'eslint.config.mjs'
+      # Both spellings: the trigger has to start the workflow for the root
+      # baseline and for a nested one outside the source trees above, which is
+      # exactly what the `suppressions` filter below and validateSuppressions()
+      # claim to cover.
+      - 'eslint-suppressions.json'
+      - '**/eslint-suppressions.json'
       - '.github/workflows/static-checks.yml'
       - '!**.md'
 
@@ -54,11 +60,40 @@ jobs:
               - 'client/**'
               - 'packages/**'
               - 'eslint.config.mjs'
+              - 'eslint-suppressions.json'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
             eslint_config:
               - 'eslint.config.mjs'
               - '.github/workflows/static-checks.yml'
+            # The recorded design-rule backlog is data the lint reads, not code it
+            # lints, so a diff that only edits it matches no source file. Its own
+            # group runs the baseline validation below; it deliberately stays out
+            # of `eslint_config`, which gates the full-tree double sweep and could
+            # learn nothing from a count changing.
+            suppressions:
+              - 'eslint-suppressions.json'
+              - '**/eslint-suppressions.json'
+              - 'client/src/**'
+              - 'packages/client/src/**'
+              # The bundle the rules resolve primitives through is named by the
+              # library's manifest, produced by its build config and shaped by
+              # its compiler options.
+              - 'packages/client/package.json'
+              - 'packages/client/tsdown.config.mjs'
+              - 'packages/client/tsconfig.json'
+              - 'eslint.config.mjs'
+              # The plugin is a dependency: a bump changes what the rules
+              # classify and a removal takes them with it, and neither touches a
+              # source file.
+              - 'package.json'
+              - 'package-lock.json'
+              # The runner is the gate: `validateSuppressions` is what a recorded
+              # count is measured against, so a change to it has to run against
+              # the record — the ESLint step above only ever sees sources.
+              - 'scripts/static-checks.mts'
+              - '.github/workflows/static-checks.yml'
+              - '!**.md'
             config:
               - 'api/**'
               - 'config/**'
@@ -66,6 +101,8 @@ jobs:
               - '.github/workflows/static-checks.yml'
               - '!**.md'
             i18n:
+              - 'scripts/i18n*.mts'
+              - 'scripts/static-checks.mts'
               - 'api/**'
               - 'client/src/**'
               - 'packages/client/**'
@@ -74,6 +111,7 @@ jobs:
               - '.github/workflows/static-checks.yml'
               - '!**.md'
             runner:
+              - 'scripts/i18n*.mts'
               - 'scripts/static-checks.mts'
               - '.github/workflows/static-checks.yml'
             unused_packages:
@@ -101,6 +139,17 @@ jobs:
         id: install_dependencies
         continue-on-error: true
         run: npm ci
+
+      # The @shadcn/lint design rules read each primitive's `cva` variants through
+      # the @librechat/client entry point, which resolves to packages/client/dist.
+      # Without it they classify nothing and report strictly fewer violations than
+      # the same tree does on a machine that built the package — a lint that passes
+      # for the wrong reason, and a recorded baseline that cannot be trusted.
+      - name: Build client-package for the design rules
+        id: design_rules_build
+        if: always() && (steps.paths.outputs.eslint == 'true' || steps.paths.outputs.suppressions == 'true')
+        continue-on-error: true
+        run: npm run build:client-package
 
       # Run ESLint on changed files within the api/, client/, and packages/ directories.
       - name: Run ESLint on changed files
@@ -135,10 +184,15 @@ jobs:
           # command into one shell string, and Linux rejects a single argv
           # string over 128 KiB (MAX_ARG_STRLEN) — past ~2,200 changed files
           # npx dies with exit 249 and no output.
+          # --pass-on-unpruned-suppressions: the @shadcn/lint design rules run at error
+          # against a recorded backlog in eslint-suppressions.json. Fixing one of those
+          # violations leaves its suppression unused, which otherwise fails the PR that
+          # fixed it; `npm run lint:design:prune` tightens the counts.
           node_modules/.bin/eslint --no-error-on-unmatched-pattern \
             --config eslint.config.mjs \
             --no-warn-ignored \
             --max-warnings=0 \
+            --pass-on-unpruned-suppressions \
             -- "${CHANGED_FILES[@]}"
 
       # Run Prettier --check on the same set of changed files to catch
@@ -242,6 +296,20 @@ jobs:
           node_modules/.bin/eslint --config eslint.config.mjs \
             api/server/index.js client/src/main.jsx packages/api/src/index.ts
 
+      - name: Validate the design-rule suppressions baseline
+        id: suppressions
+        if: always() && steps.paths.outputs.suppressions == 'true'
+        continue-on-error: true
+        run: |
+          # The changed-file ESLint step above selects JS/TS sources, so a diff that
+          # only edits eslint-suppressions.json lints nothing and would otherwise
+          # merge unread. The runner owns the rules for what the baseline may say.
+          # --against the PR base, not just the baseline path: the check also asks
+          # whether the changed files still owe what they record, and that needs
+          # the diff rather than one file name.
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          node scripts/static-checks.mts --against "$BASE_SHA" --only suppressions
+
       - name: Restore data-provider build cache
         if: always() && steps.paths.outputs.config == 'true'
         id: cache-data-provider
@@ -312,98 +380,9 @@ jobs:
         if: always() && steps.paths.outputs.i18n == 'true'
         continue-on-error: true
         run: |
-          echo "🔍 Scanning for unused i18next keys..."
-
-          # Define paths
-          I18N_FILE="client/src/locales/en/translation.json"
-          SOURCE_DIRS=("client/src" "api" "packages/data-provider/src" "packages/client" "packages/data-schemas/src")
-
-          # Check if translation file exists
-          if [[ ! -f "$I18N_FILE" ]]; then
-            echo "::error title=Missing i18n File::Translation file not found: $I18N_FILE"
-            exit 1
-          fi
-
-          # Extract all keys from the JSON file
-          KEYS=$(jq -r 'keys[]' "$I18N_FILE")
-
-          # Track unused keys
-          UNUSED_KEYS=()
-
-          # Check if each key is used in the source code
-          for KEY in $KEYS; do
-            FOUND=false
-
-            # Special case for dynamically constructed special variable keys
-            if [[ "$KEY" == com_ui_special_var_* ]]; then
-              # Check if TSpecialVarLabel is used in the codebase
-              for DIR in "${SOURCE_DIRS[@]}"; do
-                if grep -r --include=\*.{js,jsx,ts,tsx} -q "TSpecialVarLabel" "$DIR"; then
-                  FOUND=true
-                  break
-                fi
-              done
-
-              # Also check if the key is directly used somewhere
-              if [[ "$FOUND" == false ]]; then
-                for DIR in "${SOURCE_DIRS[@]}"; do
-                  if grep -r --include=\*.{js,jsx,ts,tsx} -q "$KEY" "$DIR"; then
-                    FOUND=true
-                    break
-                  fi
-                done
-              fi
-            # Special case for agent category keys that are dynamically used from database
-            elif [[ "$KEY" == com_agents_category_* ]]; then
-              # Check if agent category localization is being used
-              for DIR in "${SOURCE_DIRS[@]}"; do
-                # Check for dynamic category label/description usage
-                if grep -r --include=\*.{js,jsx,ts,tsx} -E "category\.(label|description).*startsWith.*['\"]com_" "$DIR" > /dev/null 2>&1 || \
-                   # Check for the method that defines these keys
-                   grep -r --include=\*.{js,jsx,ts,tsx} "ensureDefaultCategories" "$DIR" > /dev/null 2>&1 || \
-                   # Check for direct usage in agentCategory.ts
-                   grep -r --include=\*.ts -E "label:.*['\"]$KEY['\"]" "$DIR" > /dev/null 2>&1 || \
-                   grep -r --include=\*.ts -E "description:.*['\"]$KEY['\"]" "$DIR" > /dev/null 2>&1; then
-                  FOUND=true
-                  break
-                fi
-              done
-
-              # Also check if the key is directly used somewhere
-              if [[ "$FOUND" == false ]]; then
-                for DIR in "${SOURCE_DIRS[@]}"; do
-                  if grep -r --include=\*.{js,jsx,ts,tsx} -q "$KEY" "$DIR"; then
-                    FOUND=true
-                    break
-                  fi
-                done
-              fi
-            else
-              # Regular check for other keys
-              for DIR in "${SOURCE_DIRS[@]}"; do
-                if grep -r --include=\*.{js,jsx,ts,tsx} -q "$KEY" "$DIR"; then
-                  FOUND=true
-                  break
-                fi
-              done
-            fi
-
-            if [[ "$FOUND" == false ]]; then
-              UNUSED_KEYS+=("$KEY")
-            fi
-          done
-
-          # Output results
-          if [[ ${#UNUSED_KEYS[@]} -gt 0 ]]; then
-            echo "🛑 Found ${#UNUSED_KEYS[@]} unused i18n keys:"
-            echo "unused_keys=$(echo "${UNUSED_KEYS[@]}" | jq -R -s -c 'split(" ")')" >> $GITHUB_ENV
-            for KEY in "${UNUSED_KEYS[@]}"; do
-              echo "::warning title=Unused i18n Key::'$KEY' is defined but not used in the codebase."
-            done
-          else
-            echo "✅ No unused i18n keys detected!"
-            echo "unused_keys=[]" >> $GITHUB_ENV
-          fi
+          echo "unused_keys=[]" >> "$GITHUB_ENV"
+          node --test scripts/i18n.test.mts
+          node scripts/static-checks.mts client/src/locales/en/translation.json --only i18n
 
       - name: Fail workflow if unused keys found
         id: i18n
@@ -672,6 +651,8 @@ jobs:
           INSTALL_DEPENDENCIES_OUTCOME: ${{ steps.install_dependencies.outcome }}
           ESLINT_OUTCOME: ${{ steps.eslint.outcome }}
           ESLINT_CONFIG_OUTCOME: ${{ steps.eslint_config.outcome }}
+          DESIGN_RULES_BUILD_OUTCOME: ${{ steps.design_rules_build.outcome }}
+          SUPPRESSIONS_OUTCOME: ${{ steps.suppressions.outcome }}
           PRETTIER_OUTCOME: ${{ steps.prettier.outcome }}
           IMPORT_SORT_OUTCOME: ${{ steps.import_sort.outcome }}
           RUNNER_OUTCOME: ${{ steps.runner.outcome }}
@@ -709,6 +690,8 @@ jobs:
           record_failure "Dependency installation" "$INSTALL_DEPENDENCIES_OUTCOME"
           record_failure "ESLint" "$ESLINT_OUTCOME"
           record_failure "ESLint config validation" "$ESLINT_CONFIG_OUTCOME"
+          record_failure "Client-package build for the design rules" "$DESIGN_RULES_BUILD_OUTCOME"
+          record_failure "Design-rule suppressions" "$SUPPRESSIONS_OUTCOME"
           record_failure "Prettier" "$PRETTIER_OUTCOME"
           record_failure "Import sorting" "$IMPORT_SORT_OUTCOME"
           record_failure "Local static-checks runner" "$RUNNER_OUTCOME"
@@ -788,6 +771,15 @@ jobs:
       - name: Install dependencies
         if: steps.paths.outputs.eslint_config == 'true'
         run: npm ci
+
+      # This job has its own clean checkout, so it needs the primitive metadata
+      # the design rules read out of packages/client/dist as much as the Static
+      # checks job does: without it `shadcn/no-restyle` sees no `cva` variants
+      # and classifies fewer overrides, which would let the full-tree gate pass
+      # a component-ownership regression.
+      - name: Build client-package for the design rules
+        if: steps.paths.outputs.eslint_config == 'true'
+        run: npm run build:client-package
 
       # Full-tree sweep that gates on regression, not cleanliness: the tree
       # carries a pre-existing lint backlog (70 errors at time of wiring), so

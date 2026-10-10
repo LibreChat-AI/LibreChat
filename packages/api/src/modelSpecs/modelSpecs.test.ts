@@ -90,7 +90,7 @@ describe('modelSpecs helpers', () => {
       },
     };
 
-    const { parsedBody, appliedPrivateFields } = applyModelSpecPreset({
+    const { parsedBody, appliedPrivateFields, enforcedFields } = applyModelSpecPreset({
       modelSpec,
       parsedBody: {
         endpoint: EModelEndpoint.openAI,
@@ -108,6 +108,9 @@ describe('modelSpecs helpers', () => {
     expect(parsedBody.maxContextTokens).toBeUndefined();
     expect(parsedBody.iconURL).toBe(EModelEndpoint.openAI);
     expect(appliedPrivateFields.has('promptPrefix')).toBe(true);
+    /* The keys an enforced spec locks are exactly its preset's fields: the
+       reasoning-override refusal rule keys off this set. */
+    expect([...enforcedFields].sort()).toEqual([...Object.keys(modelSpec.preset)].sort());
   });
 
   it('should restore preset defaults when model specs are enforced', () => {

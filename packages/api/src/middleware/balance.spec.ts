@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, balanceSchema } from '@librechat/data-schemas';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IBalance, IBalanceUpdate } from '@librechat/data-schemas';
-import { createSetBalanceConfig } from './balance';
+import { buildBalanceUpdateFields, createSetBalanceConfig } from './balance';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -381,6 +381,41 @@ describe('createSetBalanceConfig', () => {
       // This should have fixed the issue - user should no longer get the error
     });
 
+    test('disables a due stored reset before balance reads and admission', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const lastRefill = new Date('2020-01-01');
+      await Balance.create({
+        user: userId,
+        tokenCredits: 500,
+        autoRefillEnabled: true,
+        refillMode: 'reset',
+        refillAmount: 1000,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        lastRefill,
+      });
+      const read = jest.fn(findBalanceByUser);
+      const middleware = createSetBalanceConfig({
+        getAppConfig: jest.fn().mockResolvedValue({
+          balance: { enabled: true, startBalance: 1000, autoRefillEnabled: false },
+        }),
+        findBalanceByUser: read,
+        upsertBalanceFields,
+      });
+      await middleware(
+        createMockRequest(userId) as ServerRequest,
+        createMockResponse() as ServerResponse,
+        mockNext,
+      );
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith(userId.toString(), { applyReset: false });
+      expect(await findBalanceByUser(userId.toString())).toMatchObject({
+        tokenCredits: 500,
+        autoRefillEnabled: false,
+        lastRefill,
+      });
+    });
+
     test('should not set lastRefill when auto-refill is disabled', async () => {
       const userId = new mongoose.Types.ObjectId();
 
@@ -729,5 +764,23 @@ describe('createSetBalanceConfig', () => {
         expect(balanceRecord?.lastRefill).toBeInstanceOf(Date);
       },
     );
+  });
+});
+
+describe('balance refill mode synchronization', () => {
+  const config = {
+    autoRefillEnabled: true,
+    refillAmount: 1000,
+    refillIntervalValue: 1,
+    refillIntervalUnit: 'weeks' as const,
+  };
+  test('persists reset mode for existing balances', () => {
+    expect(
+      buildBalanceUpdateFields({ ...config, refillMode: 'reset' }, null, 'user-1'),
+    ).toMatchObject({ refillMode: 'reset' });
+  });
+  test('restores additive mode when the reset option is removed', () => {
+    const record = { ...config, refillMode: 'reset', lastRefill: new Date() } as IBalance;
+    expect(buildBalanceUpdateFields(config, record, 'user-1')).toEqual({ refillMode: 'add' });
   });
 });

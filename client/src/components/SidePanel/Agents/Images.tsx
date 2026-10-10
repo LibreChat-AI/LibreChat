@@ -6,7 +6,7 @@ import { useLocalize } from '~/hooks';
 
 export function NoImage() {
   return (
-    <div className="border-token-border-medium flex h-full w-full items-center justify-center rounded-full border-2 border-dashed border-black">
+    <div className="border-border-medium flex h-full w-full items-center justify-center rounded-full border-2 border-dashed">
       <svg
         stroke="currentColor"
         fill="none"
@@ -40,7 +40,7 @@ export const AgentAvatarRender = ({ url }: { url?: string }) => {
     <div className="relative h-full w-full overflow-hidden rounded-full">
       <img
         src={url}
-        className="bg-token-surface-secondary h-full w-full rounded-full object-cover dark:bg-surface-tertiary"
+        className="bg-avatar-placeholder h-full w-full rounded-full object-cover"
         alt="Agent avatar"
         loading="lazy"
         key={url}

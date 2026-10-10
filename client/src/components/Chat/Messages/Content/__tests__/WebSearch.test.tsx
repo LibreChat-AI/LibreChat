@@ -8,6 +8,7 @@ import type {
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
+import { ToolContentRequestContext } from '../disclosure';
 import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
 import { ROW_GLYPH_SLOT } from '../rows';
@@ -432,6 +433,28 @@ describe('WebSearch', () => {
       ).toBeInTheDocument();
       expect(screen.getByText('largest context window LLM 2026')).toBeInTheDocument();
       expect(screen.getByText('1 source')).toBeInTheDocument();
+    });
+
+    it('asks for the stored call when the details card opens', async () => {
+      const request = jest.fn();
+      render(
+        <RecoilRoot>
+          <SearchContext.Provider value={{ searchResults: undefined }}>
+            <ToolContentRequestContext.Provider value={request}>
+              <WebSearch
+                initialProgress={1}
+                isSubmitting={false}
+                args={{ query: 'shortened quer…' }}
+                output="done"
+              />
+            </ToolContentRequestContext.Provider>
+          </SearchContext.Provider>
+        </RecoilRoot>,
+      );
+      expect(request).not.toHaveBeenCalled();
+      fireEvent.focus(screen.getByLabelText('Search details'));
+      await screen.findByText('shortened quer…');
+      expect(request).toHaveBeenCalled();
     });
 
     it('renders shopping, image, and place verticals in the expanded panel', () => {

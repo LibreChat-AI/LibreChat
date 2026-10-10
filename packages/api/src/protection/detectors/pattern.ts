@@ -111,7 +111,7 @@ const STARTER_PATTERNS: readonly CompiledPattern[] = [
   {
     id: 'api_key_header',
     label: 'api-key header',
-    pattern: /\b(api-key:?\s+)[^\s"']+/i,
+    pattern: /\b(api-key:\s+)[^\s"']+/i,
     category: 'credential',
   },
 ];

@@ -20,7 +20,7 @@ import type {
   PtcToolCallEvent,
   Agents,
 } from 'librechat-data-provider';
-import type { PtcTrace, PtcTraceEntry } from '~/store/ptc';
+import type { PtcTrace, PtcTraceEntry } from '~/common';
 import {
   subagentProgressByToolCallId,
   subagentProgressKey,
@@ -1817,6 +1817,338 @@ describe('useStepHandler', () => {
   });
 
   describe('on_run_step_delta event', () => {
+    it('separates streamed preparation, dispatch, and this call’s result', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      const latest = () => {
+        const messages = mockSetMessages.mock.lastCall?.[0] as TMessage[] | undefined;
+        const part = messages?.find((message) => message.messageId === 'response-msg-1')
+          ?.content?.[0];
+        return part?.type === ContentTypes.TOOL_CALL ? part.tool_call : undefined;
+      };
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_DELTA,
+            data: {
+              id: 'step-tool-1',
+              observed_at: 1_000,
+              delta: {
+                type: StepTypes.TOOL_CALLS,
+                tool_calls: [{ id: 'tool-call-1', index: 0, args: '{' }],
+              },
+            },
+          },
+          submission,
+        );
+      });
+      expect(latest()?.toolPreparationStartedAt).toBe(1_000);
+      expect(latest()?.toolDispatchedAt).toBeUndefined();
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+            data: {
+              dispatched_at: 248_000,
+              toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
+            },
+          },
+          submission,
+        );
+      });
+      expect(latest()?.toolDispatchedAt).toBe(248_000);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'step-tool-1',
+                index: 0,
+                completed_at: 248_340,
+                tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+              },
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-tool-1',
+              index: 0,
+              type: StepTypes.TOOL_CALLS,
+              status: 'completed',
+              created_at: 1_000,
+              closed_at: 248_340,
+            },
+          },
+          submission,
+        );
+      });
+      expect(latest()).toMatchObject({
+        runStepStatus: 'completed',
+        runStepDurationMs: 247_340,
+        runStepClosedAt: 248_340,
+        toolPreparationDurationMs: 247_000,
+        toolExecutionDurationMs: 340,
+      });
+    });
+
+    it('retains an ID-less first-fragment timestamp when the call receives its ID later', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_DELTA,
+            data: {
+              id: 'step-tool-1',
+              observed_at: 100,
+              delta: { type: StepTypes.TOOL_CALLS, tool_calls: [{ index: 0, args: '{' }] },
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_DELTA,
+            data: {
+              id: 'step-tool-1',
+              observed_at: 200,
+              delta: {
+                type: StepTypes.TOOL_CALLS,
+                tool_calls: [{ id: 'tool-call-1', index: 0, args: '"x":1}' }],
+              },
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+            data: {
+              dispatched_at: 500,
+              toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'step-tool-1',
+                index: 0,
+                completed_at: 530,
+                tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+              },
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-tool-1',
+              index: 0,
+              type: StepTypes.TOOL_CALLS,
+              status: 'completed',
+              created_at: 100,
+              closed_at: 530,
+            },
+          },
+          submission,
+        );
+      });
+      const messages = mockSetMessages.mock.lastCall?.[0] as TMessage[] | undefined;
+      const part = messages?.find((message) => message.messageId === 'response-msg-1')
+        ?.content?.[0];
+      expect(part?.type === ContentTypes.TOOL_CALL ? part.tool_call : undefined).toMatchObject({
+        toolPreparationDurationMs: 400,
+        toolExecutionDurationMs: 30,
+      });
+    });
+
+    it('restores the Preparing and Calling phases from compact replay events', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      const currentPart = () => {
+        const response = (mockSetMessages.mock.lastCall?.[0] as TMessage[] | undefined)?.find(
+          (message) => message.messageId === 'response-msg-1',
+        );
+        const part = response?.content?.[0];
+        return part?.type === ContentTypes.TOOL_CALL ? part.tool_call : undefined;
+      };
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_TOOL_PREPARATION,
+            data: { id: 'step-tool-1', toolCallId: 'tool-call-1', index: 0, observed_at: 100 },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP,
+            data: createToolCallRunStep(),
+          },
+          submission,
+        );
+      });
+      expect(currentPart()?.toolPreparationStartedAt).toBe(100);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+            data: {
+              dispatched_at: 500,
+              toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
+            },
+          },
+          submission,
+        );
+      });
+      expect(currentPart()?.toolDispatchedAt).toBe(500);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'step-tool-1',
+                index: 0,
+                completed_at: 540,
+                tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+              },
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-tool-1',
+              type: StepTypes.TOOL_CALLS,
+              index: 0,
+              status: 'completed',
+              created_at: 90,
+              closed_at: 540,
+            },
+          },
+          submission,
+        );
+      });
+      expect(currentPart()).toMatchObject({
+        toolPreparationDurationMs: 400,
+        toolExecutionDurationMs: 40,
+      });
+    });
+
+    it('isolates duplicate provider IDs across simultaneous run steps', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      for (const [id, index, observedAt, dispatchedAt, completedAt] of [
+        ['step-tool-1', 0, 100, 300, 310],
+        ['step-tool-2', 1, 200, 500, 550],
+      ] as const) {
+        act(() => {
+          result.current.stepHandler(
+            { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep({ id, index }) },
+            submission,
+          );
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_DELTA,
+              data: {
+                id,
+                observed_at: observedAt,
+                delta: {
+                  type: StepTypes.TOOL_CALLS,
+                  tool_calls: [{ id: 'tool-call-1', index: 0, args: '{' }],
+                },
+              },
+            },
+            submission,
+          );
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+              data: {
+                dispatched_at: dispatchedAt,
+                toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: id }],
+              },
+            },
+            submission,
+          );
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_COMPLETED,
+              data: {
+                result: {
+                  id,
+                  index,
+                  completed_at: completedAt,
+                  tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+                },
+              },
+            },
+            submission,
+          );
+        });
+      }
+      for (const [id, index, closedAt] of [
+        ['step-tool-1', 0, 310],
+        ['step-tool-2', 1, 550],
+      ] as const) {
+        act(() => {
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_CLOSED,
+              data: {
+                id,
+                index,
+                type: StepTypes.TOOL_CALLS,
+                status: 'completed',
+                created_at: 100,
+                closed_at: closedAt,
+              },
+            },
+            submission,
+          );
+        });
+      }
+      const parts = (mockSetMessages.mock.lastCall?.[0] as TMessage[] | undefined)?.find(
+        (message) => message.messageId === 'response-msg-1',
+      )?.content;
+      const first = parts?.[0];
+      const second = parts?.[1];
+      expect(first?.type === ContentTypes.TOOL_CALL ? first.tool_call : undefined).toMatchObject({
+        toolPreparationDurationMs: 200,
+        toolExecutionDurationMs: 10,
+      });
+      expect(second?.type === ContentTypes.TOOL_CALL ? second.tool_call : undefined).toMatchObject({
+        toolPreparationDurationMs: 300,
+        toolExecutionDurationMs: 50,
+      });
+    });
+
     it('should update tool call with delta args', () => {
       const responseMessage = createResponseMessage();
       mockGetMessages.mockReturnValue([responseMessage]);
@@ -2146,24 +2478,25 @@ describe('useStepHandler', () => {
       expect(mockOnSkillAuthoringComplete).not.toHaveBeenCalled();
     });
 
-    it('should warn when step not found for completed event', () => {
+    it('buffers a completion that arrives before its run step and applies it once the step lands', () => {
       const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
 
       const { result } = renderHook(() => useStepHandler(createHookParams()));
-
+      const submission = createSubmission();
       const completedEvent = {
         result: {
-          id: 'nonexistent-step',
+          id: 'step-tool-1',
           index: 0,
           tool_call: {
             id: 'tool-call-1',
-            name: 'test_tool',
-            args: '{}',
+            name: 'create_file',
+            args: JSON.stringify({ file_path: 'skills/demo/SKILL.md' }),
+            output: 'early output',
             type: ToolCallTypes.TOOL_CALL,
           },
         },
       };
-      const submission = createSubmission();
 
       act(() => {
         result.current.stepHandler(
@@ -2175,9 +2508,24 @@ describe('useStepHandler', () => {
         );
       });
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        'No run step or runId found for completed tool call event',
-      );
+      expect(mockOnSkillAuthoringComplete).not.toHaveBeenCalled();
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+      });
+
+      const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
+      const responseMsg = lastCall.find((m: TMessage) => !m.isCreatedByUser);
+      expect(responseMsg?.content?.[0]?.tool_call).toMatchObject({
+        id: 'tool-call-1',
+        output: 'early output',
+        progress: 1,
+      });
+      expect(mockOnSkillAuthoringComplete).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).not.toHaveBeenCalled();
       consoleSpy.mockRestore();
     });
 

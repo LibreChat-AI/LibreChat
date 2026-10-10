@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
-import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import {
   dataService,
@@ -26,13 +25,13 @@ import {
   retainFileDeletion,
 } from '~/utils';
 import { useDeleteFilesMutation, useGetFiles } from '~/data-provider';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import useFileUploadRouter from './useFileUploadRouter';
 import { getNewConversationDraftToken } from '~/utils';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useFileDeletion from './useFileDeletion';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 /** The attachment being edited, with its text already resolved so the dialog stays controlled. */
 export type PastedTextEdit = {
@@ -66,7 +65,7 @@ export default function usePastedTextEdit({
   const methods = useChatFormContext();
   const routeFiles = useFileUploadRouter();
   const { data: fileList } = useGetFiles<TFile[]>();
-  const saveDrafts = useRecoilValue(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const [editing, setEditing] = useState<PastedTextEdit | null>(null);
   /** Failed edits that could not reopen their dialog because another chip was open. Their
    * corrections have no other owner, so they wait for the dialog to free up. */

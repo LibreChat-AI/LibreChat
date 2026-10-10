@@ -5,10 +5,14 @@ import { Button } from '@librechat/client';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import {
+  useToolContentRequest,
+  useToolContentPending,
+  toolPanelSpacingClassName,
+} from './disclosure';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { unescapeJsonString } from './Parts/parseJsonField';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { toolPanelSpacingClassName } from './disclosure';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import { useAgentsMapContext } from '~/Providers';
 import { cn } from '~/utils';
@@ -107,6 +111,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
   const localize = useLocalize();
   const agentsMap = useAgentsMapContext();
   const [showInfo, setShowInfo] = useState(false);
+  useToolContentRequest(showInfo);
   const [isCopied, setIsCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const contentId = useId();
@@ -147,21 +152,22 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
    *  non-secure origin (a LAN deployment served over http), where
    *  dereferencing it throws before any rejection handler can run and the
    *  button silently does nothing. */
+  const contentPending = useToolContentPending();
   const handleCopy = useCallback(() => {
-    if (!copy(copyText, { format: 'text/plain' })) {
+    if (contentPending || !copy(copyText, { format: 'text/plain' })) {
       return;
     }
     clearTimeout(copiedTimerRef.current);
     setIsCopied(true);
     copiedTimerRef.current = setTimeout(() => setIsCopied(false), 2000);
-  }, [copyText]);
+  }, [contentPending, copyText]);
 
   return (
     <div className="my-2">
       <Button
         variant="ghost"
         className={cn(
-          'tool-status-text h-auto justify-start gap-2 rounded-none p-0 font-normal text-text-secondary hover:bg-transparent hover:text-text-primary',
+          'tool-status-text text-text-secondary hover:text-text-primary h-auto justify-start gap-2 rounded-none p-0 font-normal hover:bg-transparent',
           !hasInfo && 'pointer-events-none disabled:opacity-100',
         )}
         disabled={!hasInfo}
@@ -170,7 +176,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
         aria-controls={hasInfo ? contentId : undefined}
         aria-label={`${localize('com_ui_transferred_to')} ${agentName}`}
       >
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1 ring-border-light">
+        <div className="ring-border-light flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1">
           <MessageIcon
             message={
               {
@@ -182,11 +188,11 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
           />
         </div>
         <span className="select-none">{localize('com_ui_transferred_to')}</span>
-        <span className="select-none font-medium text-text-primary">{agentName}</span>
+        <span className="text-text-primary font-medium select-none">{agentName}</span>
         {hasInfo && (
           <ChevronDown
             className={cn(
-              'size-4 shrink-0 translate-y-[1px] text-text-secondary transition-transform duration-200 ease-out',
+              'text-text-secondary size-4 shrink-0 translate-y-[1px] transition-transform duration-200 ease-out',
               showInfo && 'rotate-180',
             )}
             aria-hidden="true"
@@ -200,13 +206,13 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
               aria-labelledby={headingId}
               className={cn(
                 toolPanelSpacingClassName,
-                'group/handoff ml-8 max-w-3xl border-l-2 border-border-medium py-1 pl-4 pr-1',
+                'group/handoff border-border-medium ml-8 max-w-3xl border-l-2 py-1 pr-1 pl-4',
               )}
             >
               <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
                 <span
                   id={headingId}
-                  className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary"
+                  className="text-text-secondary text-[11px] font-semibold tracking-wide uppercase"
                 >
                   {localize('com_ui_handoff_instructions')}
                 </span>
@@ -214,16 +220,17 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
                   isCopied={isCopied}
                   iconOnly
                   onClick={handleCopy}
+                  disabled={contentPending}
                   label={localize('com_ui_copy_to_clipboard')}
                   copiedLabel={localize('com_ui_copied_to_clipboard')}
                   /** Only the reveal-on-hover behavior is local; the icon
                    *  crossfade, tooltip, hover and focus ring come from the
                    *  shared primitive. */
-                  className="shrink-0 opacity-60 focus-visible:opacity-100 group-focus-within/handoff:opacity-100 group-hover/handoff:opacity-100"
+                  className="shrink-0 opacity-60 group-focus-within/handoff:opacity-100 group-hover/handoff:opacity-100 focus-visible:opacity-100"
                 />
               </div>
               {fields.length === 1 ? (
-                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+                <p className="text-text-primary text-sm leading-6 break-words whitespace-pre-wrap">
                   {fields[0].value}
                 </p>
               ) : (
@@ -231,11 +238,11 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
                   {fields.map(({ key, value }, index) => (
                     <div key={`${key ?? 'field'}-${index}`}>
                       {key && (
-                        <dt className="mb-0.5 text-xs font-medium text-text-secondary">
+                        <dt className="text-text-secondary mb-0.5 text-xs font-medium">
                           {fieldLabel(key, localize)}
                         </dt>
                       )}
-                      <dd className="whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+                      <dd className="text-text-primary text-sm leading-6 break-words whitespace-pre-wrap">
                         {value}
                       </dd>
                     </div>

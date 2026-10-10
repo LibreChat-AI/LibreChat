@@ -9,7 +9,15 @@ const PREVIEW_LENGTH = 160;
 const ELLIPSIS = '…';
 
 /** `args` is the one-line preview; `input` and `output` are what the chat's own tool card holds. */
-export type ToolCallPreview = { name: string; args: string; input?: string; output?: string };
+export type ToolCallPreview = {
+  name: string;
+  args: string;
+  input?: string;
+  output?: string;
+  /** The conversation holds a server preview of the input or output, not the stored value. */
+  inputTruncated?: boolean;
+  outputTruncated?: boolean;
+};
 
 /** What one model call of a response produced: the text it wrote and the tools it called. */
 export type StepPreview = { text: string; toolCalls: ToolCallPreview[] };
@@ -89,6 +97,10 @@ function callOf(call: ToolCallPart | undefined): ToolCallPreview | null {
       args: argsPreview(call.args),
       input: contentOf(call.args),
       output: 'output' in call ? contentOf(call.output) : undefined,
+      ...('argsTruncated' in call && call.argsTruncated === true ? { inputTruncated: true } : {}),
+      ...('outputTruncated' in call && call.outputTruncated === true
+        ? { outputTruncated: true }
+        : {}),
     };
   }
   return null;

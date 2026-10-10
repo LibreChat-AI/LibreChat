@@ -23,6 +23,7 @@ import type {
   TConversation,
   TEndpointsConfig,
 } from 'librechat-data-provider';
+import type { NewConversationOptions } from './Chat/contract';
 import type { AssistantListItem } from '~/common';
 import {
   updateLastSelectedModel,
@@ -45,11 +46,13 @@ import {
   retainFileDeletion,
   failedFileIdsFrom,
   logger,
+  setDocumentTitle,
 } from '~/utils';
 import { useDeleteFilesMutation, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { supersedeNavigation } from './Conversations/useNavigateToConvo';
 import useGetConversation from './Conversations/useGetConversation';
 import useAssistantListMap from './Assistants/useAssistantListMap';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { clearUploadRecovery } from './Files/useFileHandling';
 import { useResetChatBadges } from './useChatBadges';
 import { useApplyModelSpecEffects } from './Agents';
@@ -95,7 +98,7 @@ const useNewConvo = (index = 0) => {
   const modelsQuery = useGetModelsQuery();
   const assistantsListMap = useAssistantListMap();
   const { pauseGlobalAudio } = usePauseGlobalAudio(index);
-  const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const resetBadges = useResetChatBadges();
 
   const { mutateAsync } = useDeleteFilesMutation({
@@ -288,7 +291,7 @@ const useNewConvo = (index = 0) => {
         if (conversation.conversationId === Constants.NEW_CONVO && !modelsData) {
           const appTitle = localStorage.getItem(LocalStorageKeys.APP_TITLE) ?? '';
           if (appTitle) {
-            document.title = appTitle;
+            setDocumentTitle(appTitle, true);
           }
           const path = `/c/${Constants.NEW_CONVO}${getParams(conversation)}`;
           /** Honor disableFocus here too: the transient focus intent survives
@@ -327,19 +330,7 @@ const useNewConvo = (index = 0) => {
       keepAddedConvos = false,
       keepComposerState = false,
       disableParams,
-    }: {
-      template?: Partial<TConversation>;
-      preset?: Partial<TPreset>;
-      modelsData?: TModelsConfig;
-      buildDefault?: boolean;
-      disableFocus?: boolean;
-      keepAddedConvos?: boolean;
-      /** Set when the call re-renders a composer an earlier call already opened, such as agent
-       * metadata arriving late. The user never left that composer, so its draft identity and its
-       * in-flight attachments outlive the refresh. */
-      keepComposerState?: boolean;
-      disableParams?: boolean;
-    } = {}) {
+    }: NewConversationOptions = {}) {
       const nextConversationId = _template.conversationId ?? '';
       const keepsExistingDraft =
         keepComposerState ||

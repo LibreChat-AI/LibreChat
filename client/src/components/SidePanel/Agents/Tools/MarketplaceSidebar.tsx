@@ -154,14 +154,14 @@ function SidebarItem({ icon, label, active, onClick, count }: SidebarEntry) {
       className={cn(
         'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
         active
-          ? 'bg-surface-active font-medium text-text-primary'
+          ? 'bg-surface-active text-text-primary font-medium'
           : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
       )}
     >
       <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
       <span className="flex-1 truncate">{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="text-[11px] tabular-nums text-text-secondary">{count}</span>
+        <span className="text-text-secondary text-[11px] tabular-nums">{count}</span>
       )}
     </button>
   );
@@ -180,14 +180,14 @@ function SidebarChip({ icon, label, active, onClick, count }: SidebarEntry) {
         'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors',
         'touch:min-h-theme-control-touch touch:px-4',
         active
-          ? 'border-border-medium bg-surface-active font-medium text-text-primary'
+          ? 'border-border-medium bg-surface-active text-text-primary font-medium'
           : 'border-border-light text-text-secondary hover:bg-surface-hover hover:text-text-primary',
       )}
     >
       <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
       <span>{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="text-[10px] tabular-nums text-text-secondary">{count}</span>
+        <span className="text-text-secondary text-[10px] tabular-nums">{count}</span>
       )}
     </button>
   );
@@ -200,8 +200,8 @@ export default function MarketplaceSidebar(props: MarketplaceSidebarProps) {
   const createItems = useCreateItems(props.onCreateNew);
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col gap-0.5 border-r border-border-light bg-surface-primary-alt p-3">
-      <h2 className="px-2.5 pb-1 pt-1 text-base font-bold text-text-primary">
+    <aside className="border-border-light bg-surface-primary-alt flex w-[min(14rem,35%)] shrink-0 flex-col gap-0.5 border-r p-3">
+      <h2 className="text-text-primary px-2.5 pt-1 pb-1 text-base font-bold">
         {localize('com_ui_tools_marketplace')}
       </h2>
 
@@ -220,7 +220,7 @@ export default function MarketplaceSidebar(props: MarketplaceSidebarProps) {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="mb-2 mt-1 w-full justify-center gap-1.5"
+                  className="mt-1 mb-2 w-full justify-center gap-1.5"
                 >
                   <Plus className="size-4" aria-hidden="true" />
                   <span className="truncate">{localize('com_ui_tools_create_new')}</span>
@@ -236,7 +236,7 @@ export default function MarketplaceSidebar(props: MarketplaceSidebarProps) {
         <SidebarItem key={entry.id} {...entry} />
       ))}
 
-      <div className="mx-2 my-3 h-px bg-border-light" />
+      <div className="bg-border-light mx-2 my-3 h-px" />
 
       {viewEntries.map((entry) => (
         <SidebarItem key={entry.id} {...entry} />
@@ -259,7 +259,7 @@ export function MarketplaceFilterBar(props: MarketplaceSidebarProps) {
        than this row, so the bar is the only way to reach the trailing views. */
     <div
       role="group"
-      className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-border-light px-4 pb-2.5 touch:[scrollbar-width:none] touch:[&::-webkit-scrollbar]:hidden"
+      className="border-border-light touch:[scrollbar-width:none] touch:[&::-webkit-scrollbar]:hidden flex shrink-0 items-center gap-1.5 overflow-x-auto border-b px-4 pb-2.5"
       aria-label={localize('com_ui_tools_marketplace')}
     >
       {createItems.length > 0 && (
@@ -277,7 +277,7 @@ export function MarketplaceFilterBar(props: MarketplaceSidebarProps) {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-8 w-8 shrink-0 justify-center p-0 touch:size-theme-control-touch"
+                  className="touch:size-theme-control-touch h-8 w-8 shrink-0 justify-center p-0"
                   aria-label={localize('com_ui_tools_create_new')}
                 >
                   <Plus className="size-4" aria-hidden="true" />
@@ -291,7 +291,7 @@ export function MarketplaceFilterBar(props: MarketplaceSidebarProps) {
       {kindEntries.map((entry) => (
         <SidebarChip key={entry.id} {...entry} />
       ))}
-      <span className="h-4 w-px shrink-0 bg-border-light" aria-hidden="true" />
+      <span className="bg-border-light h-4 w-px shrink-0" aria-hidden="true" />
       {viewEntries.map((entry) => (
         <SidebarChip key={entry.id} {...entry} />
       ))}

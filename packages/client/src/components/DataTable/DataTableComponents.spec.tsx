@@ -1,7 +1,8 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
+import type { Row } from '@tanstack/react-table';
 import type { TableColumn } from './DataTable.types';
-import { SelectionCheckbox, SkeletonRows } from './DataTableComponents';
+import { MemoizedTableRow, SelectionCheckbox, SkeletonRows } from './DataTableComponents';
 
 // Mock the cn utility
 jest.mock('~/utils', () => ({
@@ -235,26 +236,6 @@ describe('DataTableComponents', () => {
       expect(skeletons).toHaveLength(2); // One per column
     });
 
-    it('should apply desktopOnly class to column cells', () => {
-      const columns = [
-        { accessorKey: 'name', header: 'Name' },
-        { accessorKey: 'status', header: 'Status', meta: { desktopOnly: true } },
-      ] as TableColumn<Record<string, unknown>, unknown>[];
-
-      render(
-        <table>
-          <tbody>
-            <SkeletonRows count={1} columns={columns} />
-          </tbody>
-        </table>,
-      );
-
-      const cells = screen.getAllByTestId('table-cell');
-      // Second cell should have desktopOnly class
-      expect(cells[1]).toHaveClass('hidden');
-      expect(cells[1]).toHaveClass('md:table-cell');
-    });
-
     it('should apply custom className from column meta', () => {
       const columns = [
         { accessorKey: 'name', header: 'Name', meta: { className: 'custom-class' } },
@@ -333,5 +314,25 @@ describe('DataTableComponents', () => {
       const cells = screen.queryAllByTestId('table-cell');
       expect(cells).toHaveLength(0);
     });
+  });
+});
+
+describe('MemoizedTableRow', () => {
+  it('takes a new height when the theme changes the row height of a mounted row', () => {
+    const row = { original: {}, getVisibleCells: () => [] } as unknown as Row<
+      Record<string, unknown>
+    >;
+    const renderRow = (height: number) => (
+      <table>
+        <tbody>
+          <MemoizedTableRow row={row} selected={false} style={{ height }} />
+        </tbody>
+      </table>
+    );
+    const { container, rerender } = render(renderRow(40));
+
+    rerender(renderRow(37));
+
+    expect((container.querySelector('tr') as HTMLElement).style.height).toBe('37px');
   });
 });

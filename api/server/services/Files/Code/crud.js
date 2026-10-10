@@ -73,6 +73,14 @@ async function getCodeOutputDownloadStream(fileIdentifier, identity, req, route 
 }
 
 /**
+ * A deployment that no longer serves a ref's profile rejects every retry the same
+ * way, so failing the delete would leave a record the user can never remove and an
+ * agent that aborts every code turn on it.
+ */
+const isProfileMismatch = (error) =>
+  error.response?.status === 409 && error.response?.data?.error === 'execution_profile_mismatch';
+
+/**
  * Deletes a file from the Code Environment server.
  *
  * @param {ServerRequest} req - Current authenticated request, used to mint Code API auth.
@@ -148,7 +156,8 @@ async function deleteCodeEnvFile(req, file) {
         timeout: 15000,
       });
     } catch (error) {
-      if (error.response?.status !== 404) {
+      const profileMismatch = isProfileMismatch(error);
+      if (error.response?.status !== 404 && !profileMismatch) {
         throw error;
       }
       /* Already gone. Logged rather than swallowed: a 404 from a
@@ -156,7 +165,9 @@ async function deleteCodeEnvFile(req, file) {
        * object, and this branch drops the file's record either way. */
       logAxiosError({
         error,
-        message: `Code environment object already absent: ${error.message}`,
+        message: profileMismatch
+          ? `Code environment no longer serves the ${executionProfile} profile; dropping the unreachable object: ${error.message}`
+          : `Code environment object already absent: ${error.message}`,
       });
     }
   }

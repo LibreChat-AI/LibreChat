@@ -24,6 +24,7 @@ const mockRegisterShutdownTask = jest.fn();
 const mockSetHandler = jest.fn();
 
 jest.mock('@librechat/api', () => ({
+  createMCPAppBindingCodec: jest.fn(() => ({ create: jest.fn(), verify: jest.fn() })),
   get getDeploymentPluginMcpServers() {
     return mockGetDeploymentPluginMcpServers;
   },

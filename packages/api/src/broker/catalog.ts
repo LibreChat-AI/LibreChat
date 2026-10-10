@@ -37,8 +37,11 @@ function parseCatalog(body: unknown): TchatModelCatalog {
   return parsed;
 }
 
+/** Only the call signature; `typeof fetch` also demands Node's `preconnect`. */
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
 export async function getTchatModelCatalog(
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: FetchLike = fetch,
 ): Promise<TchatModelCatalog> {
   const origin = (process.env.TCHAT_BROKER_ORIGIN ?? '').trim().replace(/\/+$/, '');
   const key = (process.env.TCHAT_BROKER_SHARED_KEY ?? '').trim();

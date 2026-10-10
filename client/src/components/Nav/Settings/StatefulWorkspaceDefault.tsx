@@ -65,14 +65,14 @@ export default function StatefulWorkspaceDefault() {
         <label id="default-stateful-workspace-label" htmlFor="default-stateful-workspace">
           {localize('com_ui_default_stateful_workspace')}
         </label>
-        <p id="default-stateful-workspace-description" className="mt-1 text-xs text-text-secondary">
+        <p id="default-stateful-workspace-description" className="text-text-secondary mt-1 text-xs">
           {localize('com_ui_default_stateful_workspace_description')}
         </p>
       </div>
       <Select value={environment} onValueChange={handleChange} disabled={mutation.isLoading}>
         <SelectTrigger
           id="default-stateful-workspace"
-          className="w-full shrink-0 sm:w-[220px]"
+          className="w-full shrink-0 sm:w-[13.75rem]"
           aria-labelledby="default-stateful-workspace-label"
           aria-describedby="default-stateful-workspace-description"
           data-testid="default-stateful-workspace"

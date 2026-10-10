@@ -370,6 +370,8 @@ export type TOptions = {
    * context even though the references still show on the user bubble.
    */
   overrideQuotes?: string[];
+  /** Request-scoped reasoning selection for this exact submission. */
+  overrideReasoning?: t.TReasoningOverride | null;
   /** Added conversation for multi-convo feature - sent to server as part of submission payload */
   addedConvo?: t.TConversation;
   /** Reuse a durable submission identity (terminal steer recovery). */
@@ -399,8 +401,11 @@ export type TMessageChatContext = {
   index: number;
   regenerate: (message: t.TMessage, options?: { addedConvo?: t.TConversation | null }) => void;
   conversation: t.TConversation | null;
-  latestMessageId: string | undefined;
-  latestMessageDepth: number | undefined;
+  /** Getter backed by a ref, for reads at call time. Rendering reads the row's
+   *  `latestMessageId` prop, which its comparator gates on the row's relation. */
+  readonly latestMessageId: string | undefined;
+  /** Getter backed by a ref, for reads at call time (see `latestMessageId`). */
+  readonly latestMessageDepth: number | undefined;
   handleContinue: (e: React.MouseEvent<HTMLButtonElement>) => void;
   /** Resolved once per chat from `interface.feedback`; false until the config loads */
   feedbackEnabled: boolean;
@@ -503,6 +508,7 @@ export type TAuthContext = {
   error: string | undefined;
   login: (data: t.TLoginUser) => void;
   logout: (redirect?: string) => void;
+  completeAuthentication: (token: string, user: t.TUser) => void;
   setError: React.Dispatch<React.SetStateAction<string | undefined>>;
   roles?: Record<string, t.TRole | null | undefined>;
 };

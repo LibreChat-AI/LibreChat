@@ -1,6 +1,7 @@
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import useRum from './useRum';
 
+const mockGetSessionId = jest.fn<string | undefined, []>();
 const mockInit = jest.fn();
 const mockAddAction = jest.fn();
 const mockSetGlobalAttributes = jest.fn();
@@ -13,6 +14,7 @@ jest.mock('@hyperdx/browser', () => ({
   default: {
     addAction: (...args: unknown[]) => mockAddAction(...args),
     init: (...args: unknown[]) => mockInit(...args),
+    getSessionId: () => mockGetSessionId(),
     setGlobalAttributes: (...args: unknown[]) => mockSetGlobalAttributes(...args),
   },
 }));
@@ -20,12 +22,20 @@ jest.mock('@hyperdx/browser', () => ({
 jest.mock('./diagnostics', () => ({
   discardEarlyRumQueue: jest.fn(),
   queueSpaRouteChange: jest.fn(),
+  forwardQueuedAssetEvents: jest.fn(),
   restoreRumEmitter: jest.fn(),
   startRumDiagnostics: jest.fn(),
 }));
 
 const { discardEarlyRumQueue, queueSpaRouteChange, restoreRumEmitter, startRumDiagnostics } =
   jest.requireMock('./diagnostics');
+
+jest.mock('./logs', () => ({
+  startClientLogs: jest.fn(),
+  stopClientLogs: jest.fn(),
+}));
+
+const { startClientLogs, stopClientLogs } = jest.requireMock('./logs');
 
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => mockUseGetStartupConfig(),
@@ -43,6 +53,8 @@ jest.mock('react-router-dom', () => ({
 describe('useRum', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetSessionId.mockReset();
+    mockInit.mockReset();
     mockUseGetStartupConfig.mockReturnValue({ data: undefined, isFetched: false });
     mockUseLocation.mockReturnValue({ pathname: '/c/conversation-123' });
     mockUseAuthContext.mockReturnValue({
@@ -312,5 +324,198 @@ describe('useRum', () => {
     rerender();
 
     expect(queueSpaRouteChange).toHaveBeenCalledWith('/c/:conversationId', '/login');
+  });
+  describe('client logs', () => {
+    const proxyRum = {
+      provider: 'hyperdx',
+      enabled: true,
+      url: '/api/rum',
+      serviceName: 'librechat-web',
+      authMode: 'proxy',
+      environment: 'demo',
+      clientLogs: true,
+    };
+
+    it('starts proxy-mode client logs on the same-origin logs path with the session token', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: '/api/rum/v1/logs',
+          serviceName: 'librechat-web',
+          environment: 'demo',
+        }),
+      );
+      const [{ getToken }] = startClientLogs.mock.calls[0];
+      expect(getToken()).toBe('jwt-token');
+    });
+
+    const currentSessionReader = (): (() => string | undefined) =>
+      startClientLogs.mock.calls.at(-1)[0].getSessionId;
+
+    const signInAsNextUser = () => {
+      mockUseAuthContext.mockReturnValue({
+        isAuthenticated: true,
+        token: 'next-user-token',
+        user: { id: 'user-456', role: 'USER', tenantId: 'org-456' },
+      });
+      mockInit.mockImplementationOnce(() => mockGetSessionId.mockReturnValue('sdk-session-next'));
+    };
+
+    it('never reads a retired hook SDK session when a new authenticated layout mounts', async () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      mockGetSessionId.mockReturnValue('sdk-session-prior');
+      const first = renderHook(() => useRum());
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(1));
+      const retiredReader = currentSessionReader();
+      expect(retiredReader()).toBe('sdk-session-prior');
+      first.unmount();
+      signInAsNextUser();
+      renderHook(() => useRum());
+      expect(retiredReader()).toBeUndefined();
+      expect(currentSessionReader()()).toBeUndefined();
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(2));
+      expect(currentSessionReader()()).toBe('sdk-session-next');
+    });
+
+    it('clears SDK correlation on logout and waits for the new login initialization', async () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      mockGetSessionId.mockReturnValue('sdk-session-prior');
+      const { rerender } = renderHook(() => useRum());
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(1));
+      const priorReader = currentSessionReader();
+      mockUseAuthContext.mockReturnValue({ token: undefined, user: undefined });
+      rerender();
+      expect(priorReader()).toBeUndefined();
+      signInAsNextUser();
+      rerender();
+      expect(currentSessionReader()()).toBeUndefined();
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(2));
+      expect(currentSessionReader()()).toBe('sdk-session-next');
+    });
+
+    it('replaces the exporter before correlating a direct account or tenant switch', async () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      mockGetSessionId.mockReturnValue('sdk-session-prior');
+      const { rerender } = renderHook(() => useRum());
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(1));
+      const stopCount = stopClientLogs.mock.calls.length;
+      signInAsNextUser();
+      rerender();
+      expect(stopClientLogs.mock.calls.length).toBeGreaterThan(stopCount);
+      expect(currentSessionReader()()).toBeUndefined();
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(2));
+      expect(currentSessionReader()()).toBe('sdk-session-next');
+    });
+
+    it('keeps SDK correlation on a same-account token refresh without reinitialization', async () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      mockGetSessionId.mockReturnValue('sdk-session-current');
+      const { rerender } = renderHook(() => useRum());
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(1));
+      mockUseAuthContext.mockReturnValue({
+        token: 'refreshed-token',
+        user: { id: 'user-123', role: 'USER', tenantId: 'org-123' },
+      });
+      rerender();
+      expect(currentSessionReader()()).toBe('sdk-session-current');
+      expect(startClientLogs.mock.calls.at(-1)[0].getToken()).toBe('refreshed-token');
+      await act(async () => undefined);
+      expect(mockInit).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps new-login logs on fallback correlation if SDK initialization fails', async () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      mockGetSessionId.mockReturnValue('sdk-session-prior');
+      const first = renderHook(() => useRum());
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(1));
+      first.unmount();
+      mockUseAuthContext.mockReturnValue({ token: 'next-user-token', user: { id: 'user-456' } });
+      mockInit.mockImplementationOnce(() => {
+        throw new Error('SDK unavailable');
+      });
+      renderHook(() => useRum());
+      await waitFor(() => expect(mockInit).toHaveBeenCalledTimes(2));
+      expect(currentSessionReader()()).toBeUndefined();
+      expect(startClientLogs.mock.calls.at(-1)[0].getToken()).toBe('next-user-token');
+    });
+
+    it('keeps client logs off when the server leaves them disabled', () => {
+      mockUseGetStartupConfig.mockReturnValue({
+        isFetched: true,
+        data: { rum: { ...proxyRum, clientLogs: false } },
+      });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
+
+    it('never starts client logs in public-token mode', () => {
+      mockUseGetStartupConfig.mockReturnValue({
+        isFetched: true,
+        data: {
+          rum: {
+            ...proxyRum,
+            url: 'https://rum.example.com',
+            authMode: 'publicToken',
+            publicToken: 'public-token',
+          },
+        },
+      });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+    });
+
+    it('follows RUM session sampling', () => {
+      mockUseGetStartupConfig.mockReturnValue({
+        isFetched: true,
+        data: { rum: { ...proxyRum, sampleRate: 0 } },
+      });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
+
+    it('stops client logs when the session token goes away', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      const { rerender } = renderHook(() => useRum());
+      expect(startClientLogs).toHaveBeenCalledTimes(1);
+
+      mockUseAuthContext.mockReturnValue({
+        isAuthenticated: false,
+        token: undefined,
+        user: undefined,
+      });
+      rerender();
+
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
+
+    it('stops client logs when the authenticated layout unmounts', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: { rum: proxyRum } });
+      const { unmount } = renderHook(() => useRum());
+      stopClientLogs.mockClear();
+
+      unmount();
+
+      expect(stopClientLogs).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops client logs when startup config has no RUM config', () => {
+      mockUseGetStartupConfig.mockReturnValue({ isFetched: true, data: {} });
+
+      renderHook(() => useRum());
+
+      expect(startClientLogs).not.toHaveBeenCalled();
+      expect(stopClientLogs).toHaveBeenCalled();
+    });
   });
 });

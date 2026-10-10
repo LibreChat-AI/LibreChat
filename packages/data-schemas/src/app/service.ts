@@ -1,7 +1,10 @@
 import {
   AgentCapabilities,
   EModelEndpoint,
+  chatProjectsConfigSchema,
   filtersConfigSchema,
+  conversationListConfigSchema,
+  toolCallPreviewsConfigSchema,
   hasActiveFiltersConfig,
   getConfigDefaults,
   langfuseConfigSchema,
@@ -91,6 +94,31 @@ export function loadLangfuseConfig(config: DeepPartial<TCustomConfig>): AppConfi
   return parsed.data;
 }
 
+/** Resolves the list filter limits, schema defaults included; an invalid block keeps the
+ *  defaults rather than lifting a bound the operator meant to set. */
+export function loadConversationListConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['conversationList']> {
+  const parsed = conversationListConfigSchema.safeParse(config.conversationList ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid conversationList config', parsed.error.flatten());
+  return conversationListConfigSchema.parse({});
+}
+
+/** Resolves the tool-call preview bounds; an invalid block keeps the defaults. */
+export function loadToolCallPreviewsConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['toolCallPreviews']> {
+  const parsed = toolCallPreviewsConfigSchema.safeParse(config.toolCallPreviews ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid toolCallPreviews config', parsed.error.flatten());
+  return toolCallPreviewsConfigSchema.parse({});
+}
+
 export function loadFiltersConfig(config: DeepPartial<TCustomConfig>): AppConfig['filters'] {
   const raw = config.filters;
   if (raw === undefined) {
@@ -161,9 +189,12 @@ export const AppService = async (params?: {
 
   const mcpServersConfig = config.mcpServers || null;
   const mcpSettings = config.mcpSettings || null;
+  const mcpAppSandbox = config.mcpAppSandbox ?? configDefaults.mcpAppSandbox;
   const actions = config.actions;
   const registration = config.registration ?? configDefaults.registration;
+  const emailChange = config.emailChange;
   const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+  const projects = chatProjectsConfigSchema.parse(config.projects ?? {});
   const turnstileConfig = loadTurnstileConfig(config, configDefaults);
   const speech = config.speech;
   const filters = loadFiltersConfig(config);
@@ -180,9 +211,14 @@ export const AppService = async (params?: {
     balance,
     skillSync,
     webSearch,
+    githubCompare: config.githubCompare,
     mcpSettings,
+    mcpAppSandbox,
     fileStrategy,
+    projects,
     registration,
+    emailChange,
+    passkeys: config.passkeys,
     transactions,
     filteredTools,
     includedTools,
@@ -198,6 +234,8 @@ export const AppService = async (params?: {
     fileStrategies: config.fileStrategies,
     cloudfront: config.cloudfront as AppConfig['cloudfront'],
     secureImageLinks: config.secureImageLinks !== false,
+    conversationList: loadConversationListConfig(config),
+    toolCallPreviews: loadToolCallPreviewsConfig(config),
   };
 
   const agentsDefaults = agentsConfigSetup(config);

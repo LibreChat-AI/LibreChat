@@ -23,11 +23,11 @@ const HoverToggle = ({
       <div
         onClick={onClick}
         className={cn(
-          'peer items-center gap-1.5 rounded-r-lg pl-2 pr-2 text-text-primary',
+          'peer text-text-primary items-center gap-1.5 rounded-r-lg pr-2 pl-2',
           isPopoverActive || isActiveConvo ? 'flex' : 'hidden group-hover:flex',
           isActiveConvo
-            ? 'from-surface-secondary from-85% to-transparent group-hover:bg-gradient-to-l group-hover:from-surface-active-alt'
-            : 'z-50 from-surface-secondary from-0% to-transparent hover:bg-gradient-to-l hover:from-surface-active-alt',
+            ? 'from-surface-secondary group-hover:from-surface-nav-selected from-85% to-transparent group-hover:bg-gradient-to-l'
+            : 'from-surface-secondary hover:from-surface-nav-hover z-50 from-0% to-transparent hover:bg-gradient-to-l',
           isPopoverActive && !isActiveConvo ? 'from-surface-secondary' : '',
           className,
         )}

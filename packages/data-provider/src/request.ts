@@ -2,6 +2,8 @@
 import axios from 'axios';
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type * as t from './types';
+import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
+import { persistTwoFactorSetupToken } from './twoFactor';
 import { setTokenHeader } from './headers-helpers';
 import * as endpoints from './api-endpoints';
 
@@ -188,6 +190,90 @@ const isAuthRedirectInProgress = () => {
   );
 };
 
+/** Stream transports surface the body as text, while axios and fetch have already parsed it. */
+const parseSetupPayload = (payload: unknown): unknown => {
+  if (typeof payload !== 'string') {
+    return payload;
+  }
+
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
+};
+
+const getTwoFactorSetupToken = (payload: unknown): string | null => {
+  if (typeof payload !== 'object' || payload == null) {
+    return null;
+  }
+
+  const response = payload as {
+    code?: unknown;
+    twoFASetupRequired?: unknown;
+    tempToken?: unknown;
+  };
+  if (
+    response.code !== TWO_FACTOR_ENROLLMENT_REQUIRED_CODE ||
+    response.twoFASetupRequired !== true ||
+    typeof response.tempToken !== 'string' ||
+    !response.tempToken.trim()
+  ) {
+    return null;
+  }
+
+  return response.tempToken.trim();
+};
+
+/**
+ * The setup token and the bearer it replaces are both tab-scoped, so a hand-off another tab
+ * started does nothing for this one: once the bearer is dropped, 401s skip recovery and the tab
+ * would stay on the app until reloaded. Only this tab's own navigation dedupes the hand-off.
+ */
+const isTabRedirectInProgress = () => {
+  const startedAt = getAuthRecoveryState().lastRedirectStartedAt;
+  return startedAt > 0 && Date.now() - startedAt < AUTH_REDIRECT_DEDUPE_MS;
+};
+
+const redirectToTwoFactorSetupOnce = (tempToken: string) => {
+  const isDurable = persistTwoFactorSetupToken(tempToken);
+  setTokenHeader(undefined);
+  if (isTabRedirectInProgress()) {
+    return;
+  }
+
+  const loginRedirect = endpoints.buildLoginRedirectUrl();
+  const redirectTo = new URL(loginRedirect, window.location.origin).searchParams.get('redirect_to');
+  const searchParams = new URLSearchParams();
+  if (redirectTo) {
+    searchParams.set('redirect_to', redirectTo);
+  }
+  const query = searchParams.toString();
+
+  const href = `${endpoints.apiBaseUrl()}/login/2fa/setup${query ? `?${query}` : ''}`;
+  setAuthRedirectStartedAt();
+  window.dispatchEvent(
+    new CustomEvent(AUTH_REDIRECT_EVENT, { detail: { href, inDocument: !isDurable } }),
+  );
+  if (isDurable) {
+    window.location.href = href;
+    return;
+  }
+
+  /**
+   * Session storage refused the token, so only the in-memory mirror holds it and replacing the
+   * document would throw it away, stranding the setup screen on its expired state. Move the router
+   * instead: the history entry is the same one the hard navigation would have produced, and the
+   * router picks it up either from this event or, if it has yet to mount, from the location.
+   *
+   * The document surviving is also why the event above reports the hand-off as in-document: the
+   * session this redirect replaces would otherwise live on in whatever state the app already
+   * holds, which a replaced document would have discarded.
+   */
+  window.history.pushState(null, '', href);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+};
+
 const dispatchAuthRecoveryEvent = (state: 'started' | 'finished') => {
   window.dispatchEvent(new CustomEvent(AUTH_RECOVERY_EVENT, { detail: { state } }));
 };
@@ -212,6 +298,11 @@ const startAuthRecovery = (retryRefresh?: boolean) => {
   dispatchAuthRecoveryEvent('started');
   state.refreshPromise = refreshToken(retryRefresh)
     .then((response) => {
+      const setupToken = getTwoFactorSetupToken(response);
+      if (setupToken) {
+        redirectToTwoFactorSetupOnce(setupToken);
+        return null;
+      }
       const token = response?.token ?? '';
       if (!token) {
         return null;
@@ -234,7 +325,9 @@ const redirectToLoginOnce = () => {
 
   const href = endpoints.apiBaseUrl() + endpoints.buildLoginRedirectUrl();
   setAuthRedirectStartedAt();
-  window.dispatchEvent(new CustomEvent(AUTH_REDIRECT_EVENT, { detail: { href } }));
+  window.dispatchEvent(
+    new CustomEvent(AUTH_REDIRECT_EVENT, { detail: { href, inDocument: false } }),
+  );
   window.location.href = href;
 };
 
@@ -305,6 +398,35 @@ const withAuthorization = (options: RequestInit | undefined, token: string | nul
   return { ...options, headers };
 };
 
+/**
+ * Enforcement reaches the SSE hooks as an error event rather than a `Response`, because the stream
+ * transport is a raw `XMLHttpRequest` with neither the axios interceptor nor `_authenticatedFetch`
+ * in front of it. They hand the event body here so an enrollment 403 opens setup instead of being
+ * reported as a generic transport failure and retried against a condition that cannot clear.
+ */
+const redirectIfTwoFactorSetupPayload = (payload: unknown): boolean => {
+  const setupToken = getTwoFactorSetupToken(parseSetupPayload(payload));
+  if (!setupToken) {
+    return false;
+  }
+
+  redirectToTwoFactorSetupOnce(setupToken);
+  return true;
+};
+
+const redirectIfTwoFactorSetupRequired = async (response: Response): Promise<boolean> => {
+  if (response.status !== 403) {
+    return false;
+  }
+
+  return redirectIfTwoFactorSetupPayload(
+    await response
+      .clone()
+      .json()
+      .catch(() => null),
+  );
+};
+
 async function _authenticatedFetch(url: string, options?: RequestInit): Promise<Response> {
   if (typeof window === 'undefined') {
     return fetch(url, options);
@@ -312,6 +434,9 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
 
   const token = (await refreshBeforeRequest(url)) ?? getBearerToken();
   const response = await fetch(url, withAuthorization(options, token));
+  if (await redirectIfTwoFactorSetupRequired(response)) {
+    return response;
+  }
   if (
     response.status !== 401 ||
     isAuthRecoveryEndpoint(url) ||
@@ -335,7 +460,9 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
   }
 
   await response.body?.cancel().catch(() => undefined);
-  return fetch(url, withAuthorization(options, refreshedToken));
+  const retriedResponse = await fetch(url, withAuthorization(options, refreshedToken));
+  await redirectIfTwoFactorSetupRequired(retriedResponse);
+  return retriedResponse;
 }
 
 if (typeof window !== 'undefined') {
@@ -356,6 +483,14 @@ if (typeof window !== 'undefined') {
       }
       if (!originalRequest) {
         return Promise.reject(error);
+      }
+
+      if (error.response.status === 403) {
+        const setupToken = getTwoFactorSetupToken(error.response.data);
+        if (setupToken) {
+          redirectToTwoFactorSetupOnce(setupToken);
+          return Promise.reject(error);
+        }
       }
 
       const isRefreshRequest = originalRequest.url?.includes('/api/auth/refresh') === true;
@@ -432,4 +567,5 @@ export default {
   authenticatedFetch: _authenticatedFetch,
   refreshToken,
   dispatchTokenUpdatedEvent,
+  redirectIfTwoFactorSetupPayload,
 };

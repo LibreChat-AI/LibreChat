@@ -1,9 +1,11 @@
 import type { MimeUploadCapability } from './file-config';
+import type { ResponsesApiRouting } from './types';
 import type { FileConfig } from './types/files';
 import {
   fileConfig as baseFileConfig,
   fileConfigSchema,
   resolveEffectiveUseResponsesApi,
+  prefersResponsesApiByModel,
   isAnthropicTextDocumentType,
   getConfiguredMimeAccept,
   getDocumentFileExtension,
@@ -2131,6 +2133,30 @@ describe('server-effective Responses routing', () => {
       resolveEffectiveUseResponsesApi({ endpoint: EModelEndpoint.azureOpenAI, model: 'gpt-6-sol' }),
     ).toBeUndefined();
   });
+  it('routes a native point release by its family until the server publishes its own policy', () => {
+    const optIn = { default: false, on: true, off: false };
+    const familyOnly = { 'gpt-6-sol': enabled, '*': disabled };
+    const route = (endpoint: EModelEndpoint, model: string, routing: ResponsesApiRouting) =>
+      resolveEffectiveUseResponsesApi({ endpoint, model, routing });
+    expect(prefersResponsesApiByModel('gpt-6.1-sol')).toBe(true);
+    expect(route(EModelEndpoint.openAI, 'gpt-6.1-sol', familyOnly)).toBe(true);
+    // Snapshots and Azure deployments keep their existing wildcard-only inheritance.
+    expect(route(EModelEndpoint.openAI, 'gpt-6.1-sol-2026-10-01', familyOnly)).toBe(false);
+    expect(route(EModelEndpoint.azureOpenAI, 'gpt-6.1-sol', familyOnly)).toBe(false);
+    expect(
+      route(EModelEndpoint.azureOpenAI, 'gpt-6.1-sol-2026-10-01', {
+        ...familyOnly,
+        'gpt-6-sol-*': enabled,
+      }),
+    ).toBe(true);
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-6.1-sol',
+        routing: { ...familyOnly, 'gpt-6.1-sol': optIn },
+      }),
+    ).toBe(false);
+  });
   it('uses native snapshot policy but does not invent an Azure deployment', () => {
     const routing = { 'gpt-6-sol': enabled, 'gpt-6-sol-*': enabled, '*': disabled };
     expect(
@@ -2195,4 +2221,24 @@ it('selects web-search routing without changing stored route selection', () => {
       routing,
     }),
   ).toBe(false);
+});
+
+describe('mergeFileConfig memoization', () => {
+  it('returns the same instance for the same dynamic object and for undefined', () => {
+    const dynamic = fileConfigSchema.parse({ serverFileSizeLimit: 5 });
+    expect(mergeFileConfig(dynamic)).toBe(mergeFileConfig(dynamic));
+    expect(mergeFileConfig(undefined)).toBe(mergeFileConfig(undefined));
+    expect(mergeFileConfig(fileConfigSchema.parse({ serverFileSizeLimit: 5 }))).not.toBe(
+      mergeFileConfig(dynamic),
+    );
+  });
+
+  it('clears the cache when the regex compiler is swapped', () => {
+    const dynamic = fileConfigSchema.parse({ serverFileSizeLimit: 5 });
+    const before = mergeFileConfig(dynamic);
+    const beforeStatic = mergeFileConfig(undefined);
+    setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+    expect(mergeFileConfig(dynamic)).not.toBe(before);
+    expect(mergeFileConfig(undefined)).not.toBe(beforeStatic);
+  });
 });

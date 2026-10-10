@@ -244,7 +244,7 @@ const standardDependencies = {
   'class-variance-authority': '^0.6.0',
   clsx: '^1.2.1',
   'date-fns': '^3.3.1',
-  'tailwind-merge': '^1.9.1',
+  'tailwind-merge': '^2.6.1',
   'tailwindcss-animate': '^1.0.5',
   recharts: '2.12.7',
   '@radix-ui/react-accordion': '^1.1.2',
@@ -283,7 +283,7 @@ const mermaidDependencies = {
   'react-zoom-pan-pinch': '^3.6.1',
   'class-variance-authority': '^0.6.0',
   clsx: '^1.2.1',
-  'tailwind-merge': '^1.9.1',
+  'tailwind-merge': '^2.6.1',
   '@radix-ui/react-slot': '^1.1.0',
 };
 

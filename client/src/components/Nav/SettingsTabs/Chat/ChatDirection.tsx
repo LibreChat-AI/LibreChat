@@ -13,7 +13,7 @@ const ChatDirection = () => {
   };
 
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex items-center space-x-2">
         <span id="chat-direction-label">{localize('com_nav_chat_direction')}</span>
       </div>

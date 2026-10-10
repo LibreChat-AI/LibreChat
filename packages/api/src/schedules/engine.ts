@@ -1,4 +1,5 @@
 import { logger, runAsSystem } from '@librechat/data-schemas';
+import { projectScheduleMCPReceipt, readScheduleMCPReceipts } from 'librechat-data-provider';
 import type { IScheduleRun } from '@librechat/data-schemas';
 import type { ScheduleEngineDeps, JobState } from './types';
 import { hasAbortInFlight, hasResumeHandoffInFlight, retainedOutcome } from './types';
@@ -55,6 +56,9 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
    */
   async function reconcile() {
     try {
+      await runAsSystem(async () => deps.reconcileRetainedJobs?.()).catch((error) =>
+        logger.warn('[schedules] retained job recovery deferred:', error),
+      );
       const limits = await deps.getLimits();
       const runs = await runAsSystem(() =>
         deps.methods.getRunsForReconciliation(
@@ -85,26 +89,33 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
               : limits;
             // All transitions go through recordRunOutcome so the schedule's lastRun
             // (and the card's status chip) tracks the run, including the pause.
-            const finalize = (
+            const finalize = async (
               status: 'success' | 'interrupted' | 'error' | 'requires_action' | 'skipped_balance',
               error?: string,
               opts?: { omitConversationId?: boolean },
-            ) =>
-              deps.methods.recordRunOutcome({
+            ) => {
+              const projection = projectScheduleMCPReceipt(
+                { status, error, mcp: run.mcp },
+                jobIdentityMatches(jobState, run)
+                  ? [
+                      ...readScheduleMCPReceipts(jobState?.scheduleOutcomeError),
+                      ...(jobState?.scheduleMCPFailure ? [jobState.scheduleMCPFailure] : []),
+                    ]
+                  : [],
+              );
+              await deps.methods.recordRunOutcome({
                 scheduleId: run.scheduleId,
                 scheduledFor: run.scheduledFor,
-                status,
-                ...(status === 'requires_action' && jobState?.checkpointNamespace != null
+                ...projection,
+                ...(projection.status === 'requires_action' && jobState?.checkpointNamespace != null
                   ? { checkpointNamespace: jobState.checkpointNamespace }
                   : {}),
-                // Pre-start aborts have a reserved id but no conversation was ever
-                // created; projecting it gives the card a link to a missing chat.
                 conversationId: opts?.omitConversationId ? undefined : run.conversationId,
                 clearConversationId: opts?.omitConversationId,
-                error,
-                ...(run.mcp ? { mcp: run.mcp } : {}),
                 autoDisableAfterFailures: runLimits.autoDisableAfterFailures,
               });
+              return projection;
+            };
             // Admission-only rows never reached the delivery or generation layers.
             // Their deterministic failure was stored with the reservation, so replay it
             // directly instead of waiting for the generic orphan timeout.
@@ -115,7 +126,8 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
               continue;
             }
             jobState = run.conversationId ? await deps.getJobStatus(run.conversationId) : null;
-            const jobStatus = jobIdentityMatches(jobState, run) ? jobState!.status : null;
+            if (!jobIdentityMatches(jobState, run)) jobState = null;
+            const jobStatus = jobState?.status ?? null;
             const ageMs = Date.now() - (run.firedAt?.getTime() ?? 0);
             // The clear runs AFTER finalize (the retained job is the only evidence if
             // the finalize write fails), which means a clear that keeps failing has no
@@ -141,6 +153,14 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
             if (jobStatus === 'running') {
               continue;
             }
+            if (
+              jobStatus != null &&
+              (jobState?.terminalPersistencePending === true ||
+                jobState?.providerDrained === false ||
+                jobState?.terminalHostActionPending === true)
+            )
+              continue;
+
             // Surface a pause on the card (lastRun → requires_action). Also re-invoked for
             // a row ALREADY `requires_action`: recordRunOutcome flips the row before
             // projecting the card, so a crash between the two leaves the pause invisible
@@ -157,7 +177,26 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
               if (run.status === 'started' && hasResumeHandoffInFlight(run, Date.now())) {
                 continue;
               }
-              await finalize('requires_action');
+              const denied =
+                projectScheduleMCPReceipt(
+                  { status: 'requires_action', mcp: run.mcp },
+                  readScheduleMCPReceipts(jobState?.scheduleOutcomeError),
+                ).status === 'error';
+              if (
+                denied &&
+                !(await deps.abortScheduledJob(
+                  run.conversationId as string,
+                  {
+                    scheduleId: run.scheduleId,
+                    scheduledFor: run.scheduledFor,
+                    createdAt: jobState?.createdAt,
+                  },
+                  { preserve: true },
+                ))
+              )
+                continue;
+              const projection = await finalize('requires_action');
+              if (projection.status === 'error') await clearRetainedJob();
               continue;
             }
             // A retained terminal job whose inline outcome hook failed transiently —
@@ -357,7 +396,11 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
       await runAsSystem(async () => {
         const deleting = await deps.methods.getDeletingSchedules(RECONCILE_BATCH);
         for (const schedule of deleting) {
-          await deps.methods.eraseScheduleIfDrained(schedule.id).catch(() => undefined);
+          await (
+            deps.eraseSettledSchedule
+              ? deps.eraseSettledSchedule(schedule.id)
+              : deps.methods.eraseScheduleIfDrained(schedule.id)
+          ).catch(() => undefined);
         }
         // Rotate the window (never-attempted first) so a batch of undrainable rows
         // cannot re-fill it every pass and starve the rows behind them.

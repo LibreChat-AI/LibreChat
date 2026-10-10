@@ -4,6 +4,24 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { TooltipAnchor } from './Tooltip';
 
 describe('TooltipAnchor', () => {
+  describe('zIndex', () => {
+    /** Lets a tooltip clear a host layer above the stylesheet's default (150). */
+    test('applies the zIndex prop to the tooltip popup', async () => {
+      render(
+        <TooltipAnchor description="Layered" zIndex={250} aria-label="Layered" tabIndex={0}>
+          <span>icon</span>
+        </TooltipAnchor>,
+      );
+
+      const anchor = screen.getByLabelText('Layered');
+      fireEvent.mouseEnter(anchor);
+      fireEvent.mouseMove(anchor);
+
+      const tooltip = await screen.findByRole('tooltip', undefined, { timeout: 3000 });
+      expect(tooltip).toHaveStyle({ zIndex: '250' });
+    });
+  });
+
   describe('role="button" keyboard activation', () => {
     /** Renders a non-native element, so Enter and Space must both be handled (WCAG 2.1.1). */
     const renderButtonAnchor = (onClick: jest.Mock) => {

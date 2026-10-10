@@ -139,6 +139,11 @@ const visibleStatus = (value: unknown): 'running' | 'completed' | 'failed' | 'ca
 const finiteNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
+const nonNegativeTiming = (value: unknown): number | undefined => {
+  const parsed = finiteNumber(value);
+  return parsed != null && parsed >= 0 ? parsed : undefined;
+};
+
 const stringArray = (value: unknown): string[] | undefined => {
   if (!Array.isArray(value)) return undefined;
   const result = value.filter((candidate): candidate is string => typeof candidate === 'string');
@@ -227,6 +232,10 @@ export function projectPersistedMessageActivity(
       finiteNumber(candidate.progress) != null && finiteNumber(candidate.progress)! >= 1;
     const output = typeof candidate.output === 'string' ? candidate.output : undefined;
     const runStepStatus = visibleStatus(candidate.runStepStatus);
+    const toolPreparationStartedAt = nonNegativeTiming(candidate.toolPreparationStartedAt);
+    const toolDispatchedAt = nonNegativeTiming(candidate.toolDispatchedAt);
+    const toolPreparationDurationMs = nonNegativeTiming(candidate.toolPreparationDurationMs);
+    const toolExecutionDurationMs = nonNegativeTiming(candidate.toolExecutionDurationMs);
     let status: MutableToolActivity['status'] = runStepStatus;
     if (candidate.runStepStatus == null) {
       status = completed || output != null ? 'completed' : 'running';
@@ -241,6 +250,10 @@ export function projectPersistedMessageActivity(
           : {}),
         ...(output == null || output === '' ? {} : { output }),
         status,
+        ...(toolPreparationStartedAt == null ? {} : { toolPreparationStartedAt }),
+        ...(toolDispatchedAt == null ? {} : { toolDispatchedAt }),
+        ...(toolPreparationDurationMs == null ? {} : { toolPreparationDurationMs }),
+        ...(toolExecutionDurationMs == null ? {} : { toolExecutionDurationMs }),
         ...(candidate.inputValidationError === true ? { inputValidationError: true } : {}),
         ...(candidate.inputTruncated === true ? { inputTruncated: true } : {}),
         ...(candidate.outputTruncated === true ? { outputTruncated: true } : {}),

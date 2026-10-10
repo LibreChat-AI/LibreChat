@@ -24,6 +24,7 @@ import {
   isSteerTerminalContinuationSupported,
 } from '../runtime';
 import type { TerminalSteerHookInput } from '../runtime';
+import { handleSteerRequest, handleSteerArm } from '../request';
 
 jest.spyOn(console, 'log').mockImplementation();
 
@@ -921,6 +922,46 @@ describe('preempt wake channel', () => {
    * falls back to the per-chunk poll rather than subscribing to a signal
    * nothing reads.
    */
+  it('downgrades pre-armed messages before provider-hosted tools can execute', async () => {
+    const streamId = `provider-hosted-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1', undefined, {
+      initialMetadata: { preemptCapable: true },
+    });
+    await GenerationJobManager.steering.enqueue(streamId, {
+      ...buildSteer('s1', 'change direction'),
+      preempt: true,
+    });
+    await GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt);
+    const poll = createSteerPreemptPoll(streamId, job.createdAt);
+    await poll.disable();
+    expect(poll.shouldPreempt()).toBe(false);
+    expect((await GenerationJobManager.getJob(streamId))?.metadata?.preemptCapable).toBe(false);
+    expect((await GenerationJobManager.steering.peek(streamId))[0].preempt).not.toBe(true);
+    expect(
+      await handleSteerArm({ id: 'user-1' }, { conversationId: streamId, steerId: 's1' }),
+    ).toMatchObject({ body: { armed: false, code: 'PREEMPT_UNSUPPORTED' } });
+    expect(
+      await handleSteerRequest(
+        { id: 'user-1' },
+        { conversationId: streamId, text: 'another message', preempt: true },
+      ),
+    ).toMatchObject({ status: 202, body: { preempt: false } });
+  });
+
+  it('cannot disable a replacement generation with a stale capability callback', async () => {
+    const streamId = `provider-replaced-${Date.now()}`;
+    const oldJob = await GenerationJobManager.createJob(streamId, 'user-1');
+    const oldPoll = createSteerPreemptPoll(streamId, oldJob.createdAt);
+    await GenerationJobManager.abortJob(streamId);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const replacement = await GenerationJobManager.createJob(streamId, 'user-1', undefined, {
+      initialMetadata: { preemptCapable: true },
+    });
+    expect(replacement.createdAt).not.toBe(oldJob.createdAt);
+    await oldPoll.disable();
+    expect((await GenerationJobManager.getJob(streamId))?.metadata?.preemptCapable).toBe(true);
+  });
+
   it('supplies the channel only when the SDK can act on it', async () => {
     const streamId = `preempt-wake-probe-${Date.now()}`;
     await GenerationJobManager.createJob(streamId, 'user-1');

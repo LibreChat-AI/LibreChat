@@ -1,19 +1,23 @@
 .popover-ui {
   display: flex;
   max-height: min(var(--popover-available-height, 1700px), 1700px);
+  max-width: min(calc(100vw - 1rem), var(--popover-available-width, 100vw));
   flex-direction: column;
   overflow: auto;
   overscroll-behavior: contain;
-  border-radius: 0.7rem;
+  border-radius: var(--theme-menu-radius, 0.7rem);
   border-width: 1px;
   border-style: solid;
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
-  background-color: rgb(var(--surface-primary));
+  border-color: rgb(var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1)));
+  background-color: rgb(var(--surface-popover));
   padding: 0.5rem;
   color: rgb(var(--text-primary));
-  box-shadow:
+  /* The `menuShadow` role, whose light default is this literal. */
+  box-shadow: var(
+    --theme-menu-shadow,
     0 10px 15px -3px rgb(0 0 0 / 0.1),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+    0 4px 6px -4px rgb(0 0 0 / 0.1)
+  );
   transform-origin: var(--popover-transform-origin, top);
   opacity: 0;
   transition-property: opacity, scale;
@@ -46,16 +50,18 @@ html.high-contrast .popover-ui {
 
 .popover-ui:focus-visible,
 .popover-ui[data-focus-visible] {
-  outline: 2px solid rgb(var(--text-primary));
+  outline: 2px solid rgb(var(--focus-control));
   outline-offset: -1px;
 }
 
 .popover-ui:where(.dark, .dark *) {
-  background-color: rgb(var(--surface-secondary));
+  background-color: rgb(var(--surface-popover));
   color: rgb(var(--text-secondary));
-  box-shadow:
+  box-shadow: var(
+    --theme-menu-shadow,
     0 10px 15px -3px rgb(0 0 0 / 0.25),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+    0 4px 6px -4px rgb(0 0 0 / 0.1)
+  );
 }
 
 .select-item {
@@ -64,7 +70,7 @@ html.high-contrast .popover-ui {
   scroll-margin: 0.5rem;
   align-items: center;
   gap: 0.5rem;
-  border-radius: 0.5rem;
+  border-radius: var(--theme-radius-lg, 0.5rem);
   padding: 0.5rem;
   outline: none !important;
 }

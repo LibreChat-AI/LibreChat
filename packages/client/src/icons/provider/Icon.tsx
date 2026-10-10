@@ -3,6 +3,7 @@ import type { ProviderId } from 'librechat-data-provider';
 import type { NamedExoticComponent } from 'react';
 import type { JSX } from 'react/jsx-runtime';
 import { getProviderIconDef } from './registry';
+import { pxToRem } from '../../utils/theme';
 import { cn } from '../../utils';
 
 export interface ProviderIconProps {
@@ -31,7 +32,7 @@ function ProviderIconComponent({
       <span
         role="img"
         aria-label={def.label}
-        style={{ width: size, height: size }}
+        style={{ width: pxToRem(size), height: pxToRem(size) }}
         className={cn('inline-flex items-center justify-center', classes)}
       >
         <Component size={size} className={cn(classes, 'h-full w-full')} />
@@ -45,6 +46,7 @@ function ProviderIconComponent({
       alt={def.label}
       width={size}
       height={size}
+      style={{ width: pxToRem(size), height: pxToRem(size) }}
       className={cn('object-contain', classes)}
     />
   );

@@ -132,6 +132,15 @@ export interface ChatCompletionDependencies {
   getRoleByName?: Parameters<typeof resolveToolRoleGrants>[0]['getRoleByName'];
   /** Tool execute options for event-driven tool execution */
   toolExecuteOptions?: ToolExecuteOptions;
+  /**
+   * Resolves an agent's `instructionsPrompt` link. Unlike `getRoleByName`,
+   * this has no default resolution path — the embedder must build it (a
+   * prompt service, cache, and logger) and supply it here for a linked agent
+   * to receive resolved instructions instead of falling back to empty.
+   */
+  resolveLinkedInstructions?: CoreInitializeAgentParams['resolveLinkedInstructions'];
+  /** Forwarded to `initializeAgent`; defaults to `true` when omitted. */
+  recordLinkedPromptUsage?: CoreInitializeAgentParams['recordLinkedPromptUsage'];
 }
 
 /**
@@ -221,6 +230,15 @@ interface InitializeAgentParams {
    * search when it resolves `false`.
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
+  /**
+   * Resolves this agent's `instructionsPrompt` link (a linked native prompt
+   * group). `initializeAgent` calls it only when the agent carries a
+   * resolvable link; absent, a linked agent falls back to empty instructions
+   * with a warning, since there is no default resolution path.
+   */
+  resolveLinkedInstructions?: CoreInitializeAgentParams['resolveLinkedInstructions'];
+  /** Forwarded to `initializeAgent`; defaults to `true` when omitted. */
+  recordLinkedPromptUsage?: CoreInitializeAgentParams['recordLinkedPromptUsage'];
   /**
    * Whether the admin-level `stateful_code_sessions` capability is enabled.
    * Threaded to `initializeAgent` alongside `codeEnvAvailable` so this
@@ -779,6 +797,8 @@ export async function createAgentChatCompletion(
       codeEnvAvailable,
       fileSearchAvailable,
       resolveWebSearchGrant,
+      resolveLinkedInstructions: deps.resolveLinkedInstructions,
+      recordLinkedPromptUsage: deps.recordLinkedPromptUsage,
       statefulSessionsAvailable,
       allowedStatefulCodeEnvironments,
       backgroundToolsAvailable,

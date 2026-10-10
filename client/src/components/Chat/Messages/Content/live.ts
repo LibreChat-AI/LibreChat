@@ -133,6 +133,14 @@ function toolCallLine(
       generic: false,
     };
   }
+  if (meta?.preparing === true) {
+    return {
+      text: label
+        ? localize('com_ui_tool_preparing', { 0: label })
+        : localize('com_assistants_preparing_action'),
+      generic: true,
+    };
+  }
   if (intent != null) {
     return { text: intent, generic: false };
   }
@@ -273,6 +281,7 @@ function isAwaitingStartup(
     !meta.failed &&
     !meta.cancelled &&
     meta.background == null &&
+    !meta.preparing &&
     getToolCallIntent(toolCall.args) == null
   );
 }

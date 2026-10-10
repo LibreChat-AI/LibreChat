@@ -46,6 +46,19 @@ function makeAttachment(overrides: Partial<AttachmentFixture> = {}): AttachmentF
   };
 }
 
+function makeNonFileAttachment(
+  overrides: Partial<TAttachment & { agentId?: string; stepId?: string }> = {},
+): AttachmentFixture {
+  return {
+    type: Tools.ui_resources,
+    toolCallId: 'call_0',
+    agentId: 'agent-a',
+    stepId: 'step-1',
+    messageId,
+    ...overrides,
+  } as unknown as AttachmentFixture;
+}
+
 function setup({
   attachments,
   liveMap,
@@ -215,6 +228,108 @@ describe('useAttachments', () => {
     /* The final message event replays the same persisted file_search
      * citation the SSE handler already stored — one card, not two. */
     expect(result.current.attachments).toHaveLength(1);
+  });
+
+  it('dedupes an agent-less replay of an agent-owned non-file row', () => {
+    const db = makeNonFileAttachment();
+    const replay = makeNonFileAttachment({ agentId: undefined });
+
+    const { result } = setup({
+      attachments: [db],
+      liveMap: { [messageId]: [replay] },
+    });
+
+    expect(result.current.attachments).toEqual([db]);
+  });
+
+  it('keeps a non-file row owned by a different live agent', () => {
+    const db = makeNonFileAttachment();
+    const sibling = makeNonFileAttachment({ agentId: 'agent-b' });
+
+    const { result } = setup({
+      attachments: [db],
+      liveMap: { [messageId]: [sibling] },
+    });
+
+    expect(result.current.attachments).toEqual([db, sibling]);
+  });
+
+  it('dedupes a non-file replay with the same known agent and step', () => {
+    const db = makeNonFileAttachment();
+    const replay = makeNonFileAttachment();
+
+    const { result } = setup({
+      attachments: [db],
+      liveMap: { [messageId]: [replay] },
+    });
+
+    expect(result.current.attachments).toEqual([db]);
+  });
+
+  it('keeps non-file rows with distinct known steps', () => {
+    const db = makeNonFileAttachment({ stepId: 'step-1' });
+    const sibling = makeNonFileAttachment({ stepId: 'step-2' });
+
+    const { result } = setup({
+      attachments: [db],
+      liveMap: { [messageId]: [sibling] },
+    });
+
+    expect(result.current.attachments).toEqual([db, sibling]);
+  });
+
+  it('keeps a known step conflict when the live agent is missing', () => {
+    const db = makeNonFileAttachment({ stepId: 'step-1' });
+    const sibling = makeNonFileAttachment({ agentId: undefined, stepId: 'step-2' });
+
+    const { result } = setup({
+      attachments: [db],
+      liveMap: { [messageId]: [sibling] },
+    });
+
+    expect(result.current.attachments).toEqual([db, sibling]);
+  });
+
+  it('keeps a known agent conflict when the live step is missing', () => {
+    const db = makeNonFileAttachment({ agentId: 'agent-a' });
+    const sibling = makeNonFileAttachment({ agentId: 'agent-b', stepId: undefined });
+
+    const { result } = setup({
+      attachments: [db],
+      liveMap: { [messageId]: [sibling] },
+    });
+
+    expect(result.current.attachments).toEqual([db, sibling]);
+  });
+
+  it.each([
+    [
+      'DB-specific / live missing step',
+      makeNonFileAttachment(),
+      makeNonFileAttachment({ stepId: undefined }),
+    ],
+    [
+      'DB-missing / live specific step',
+      makeNonFileAttachment({ stepId: undefined }),
+      makeNonFileAttachment(),
+    ],
+    [
+      'DB-specific / live missing agent',
+      makeNonFileAttachment(),
+      makeNonFileAttachment({ agentId: undefined }),
+    ],
+    [
+      'DB-missing / live specific agent',
+      makeNonFileAttachment({ agentId: undefined }),
+      makeNonFileAttachment(),
+    ],
+  ])('dedupes compatible non-file ownership: %s', (_label, db, replay) => {
+    const { result } = setup({
+      attachments: [db],
+      liveMap: { [messageId]: [replay] },
+    });
+
+    expect(result.current.attachments).toEqual([db]);
   });
 
   it('drops live entries with no stable identity at all', () => {

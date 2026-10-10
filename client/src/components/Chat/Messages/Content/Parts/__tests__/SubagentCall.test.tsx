@@ -3,7 +3,12 @@ import { RecoilRoot } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { SubagentUpdateEvent, SubagentIdentity, PartMetadata } from 'librechat-data-provider';
+import type {
+  PartMetadata,
+  SubagentIdentity,
+  SubagentUpdateEvent,
+  ParentSubagentSummary,
+} from 'librechat-data-provider';
 import type {
   SubagentAggregatorState,
   SubagentContentPart,
@@ -25,8 +30,11 @@ import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MessageContext } from '~/Providers/MessageContext';
 import { FailedRevealContext } from '../../reveal';
 import { ChatSurfaceHarness } from 'test/harness';
+import { FOLD_GLYPH_SELECTOR } from '../../rows';
+import { litFoldPath } from '../../rail';
 
 const mockMCPServerNames: string[] = [];
+let mockIndexedChildren = new Map<string, ParentSubagentSummary>();
 
 jest.mock('~/hooks', () => ({
   useLocalize:
@@ -57,15 +65,23 @@ jest.mock('../Attachment', () => ({
 
 jest.mock('lucide-react', () => ({
   // eslint-disable-next-line i18next/no-literal-string
-  ChevronRight: () => <span>chevron</span>,
+  ChevronRight: () => <span aria-hidden="true">chevron</span>,
   // eslint-disable-next-line i18next/no-literal-string
-  Users: () => <span>users</span>,
+  Users: () => <span aria-hidden="true">users</span>,
 }));
 
 jest.mock('~/Providers', () => ({
   useAgentsMapContext: () => ({
     'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
+    agent_reviewer: {
+      id: 'agent_reviewer',
+      name: 'Code Reviewer',
+      avatar: { filepath: '/reviewer.png' },
+    },
   }),
+}));
+jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+  useParentSubagents: () => ({ byThreadId: mockIndexedChildren }),
 }));
 jest.mock('~/components/Share/MessageIcon', () => ({
   __esModule: true,
@@ -83,6 +99,7 @@ jest.mock('~/utils', () => ({
 afterEach(() => {
   jest.useRealTimers();
   mockMCPServerNames.length = 0;
+  mockIndexedChildren = new Map();
 });
 
 function foldEvents(events: SubagentUpdateEvent[]): {
@@ -192,6 +209,35 @@ const event = (
 });
 
 describe('SubagentCall', () => {
+  it('registers its existing header glyph for both containing fold rails', () => {
+    renderWithState({ toolCallId: 'fold-glyph', initialProgress: 1 });
+    const row = screen.getByRole('button', { name: 'Ran agent' }).cloneNode(true) as HTMLElement;
+    const glyph = row.querySelector<HTMLElement>(FOLD_GLYPH_SELECTOR);
+    expect(glyph).not.toBeNull();
+    expect(glyph).toHaveClass('h-5', 'w-5');
+    expect(glyph).not.toHaveClass('min-w-6');
+    glyph!.getBoundingClientRect = () => ({ top: 150, height: 20 }) as DOMRect;
+    const root = document.createElement('div');
+    let parent = root;
+    const rails: HTMLElement[] = [];
+    for (const top of [40, 104]) {
+      const panel = document.createElement('div');
+      panel.setAttribute('data-fold-panel', '');
+      const rail = document.createElement('button');
+      rail.setAttribute('data-fold-rail', '');
+      rail.getBoundingClientRect = () => ({ top }) as DOMRect;
+      panel.append(rail);
+      parent.append(panel);
+      parent = panel;
+      rails.push(rail);
+    }
+    parent.append(row);
+    expect(litFoldPath(root, row, 155)).toEqual([
+      { rail: rails[1], length: 54, end: true },
+      { rail: rails[0], length: 118, end: false },
+    ]);
+  });
+
   it('keeps the configured name and avatar after live progress is cleared', () => {
     const { setProgress } = renderWithState({
       toolCallId: 'identity',
@@ -472,6 +518,100 @@ describe('SubagentCall', () => {
       }),
     );
     expect(rendered.getSelection()?.legacyOutput).toBeUndefined();
+  });
+
+  it('leads a detached agent card with its name, face and the indexed task status', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'agent_reviewer',
+      status: 'running',
+      message:
+        'Started subagent "agent_reviewer" background task. Poll the host background-task tool with background_task_id "task-1".',
+    });
+    mockIndexedChildren = new Map([
+      [
+        'child-thread-1',
+        {
+          threadId: 'child-thread-1',
+          status: 'completed',
+          latestTaskId: 'task-1',
+          tasks: [{ taskId: 'task-1', status: 'completed' }],
+        } as ParentSubagentSummary,
+      ],
+    ]);
+    /** Saved identity disambiguates agent ids from graph aliases. */
+    renderWithState({
+      toolCallId: 'named-detached',
+      initialProgress: 1,
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_reviewer' },
+      output,
+      toolArgs: { subagent_type: 'agent_reviewer', run_in_background: true },
+    });
+
+    const card = screen.getByRole('button', {
+      name: 'Code Reviewer com_ui_subagent_thread_status_completed',
+    });
+    expect(within(card).getByText('Code Reviewer')).toBeInTheDocument();
+    expect(within(card).getByRole('img', { hidden: true })).toHaveAttribute('src', '/reviewer.png');
+    expect(within(card).getByText('com_ui_subagent_thread_status_completed')).toBeInTheDocument();
+    expect(within(card).queryByText(/agent_reviewer/)).not.toBeInTheDocument();
+  });
+
+  it.each(['self', 'researcher', 'agent_missing'])(
+    'exposes the indexed outcome for an unnamed detached %s child',
+    (subagentType) => {
+      mockIndexedChildren = new Map([
+        [
+          'child-thread-1',
+          {
+            threadId: 'child-thread-1',
+            latestTaskId: 'task-1',
+            status: 'failed',
+            tasks: [{ taskId: 'task-1', status: 'failed' }],
+          } as ParentSubagentSummary,
+        ],
+      ]);
+      renderWithState({
+        toolCallId: 'unnamed-detached',
+        initialProgress: 1,
+        toolArgs: { subagent_type: subagentType, run_in_background: true },
+        output: JSON.stringify({
+          background_task_id: 'task-1',
+          subagent_thread_id: 'child-thread-1',
+          tool: 'subagent',
+          subagent_type: subagentType,
+          status: 'running',
+          message: 'Started subagent background task. Poll with background_task_id task-1.',
+        }),
+      });
+      expect(
+        screen.getByRole('button', { name: 'com_ui_subagent_thread_status_failed' }),
+      ).not.toHaveAttribute('aria-label');
+    },
+  );
+
+  it('keeps the neutral label for a detached child the index has not reported', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'agent_reviewer',
+      status: 'running',
+      message:
+        'Started subagent "agent_reviewer" background task. Poll the host background-task tool with background_task_id "task-1".',
+    });
+    renderWithState({
+      toolCallId: 'unindexed-detached',
+      initialProgress: 1,
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_reviewer' },
+      output,
+      toolArgs: { subagent_type: 'agent_reviewer', run_in_background: true },
+    });
+
+    const card = screen.getByRole('button', { name: 'Code Reviewer Agent activity' });
+    expect(within(card).getByText('Agent activity')).toBeInTheDocument();
   });
 
   it('disables an inaccessible nested detached drilldown without renderable activity', () => {

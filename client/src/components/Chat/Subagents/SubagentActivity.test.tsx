@@ -216,6 +216,19 @@ const base: ChildActivity = {
   ],
 };
 
+it('keeps a host notice inside the floating-header clearance', () => {
+  const activity: ChildActivity = { title: 'Review', status: 'running', items: [] };
+  const { container } = render(
+    <SubagentActivity
+      activity={activity}
+      headerInset
+      notice={<div role="status">{String(19)}</div>}
+    />,
+  );
+  const inset = container.querySelector('[class~="pt-13"]');
+  expect(inset).toContainElement(screen.getByRole('status'));
+});
+
 describe('SubagentActivity', () => {
   it.each(['failed', 'cancelled'] as const)(
     'renders the %s lifecycle through the shared view',

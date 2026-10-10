@@ -273,4 +273,128 @@ describe('isActiveVersion', () => {
       expect(isActiveVersion(version, currentAgent, versions)).toBe(true);
     });
   });
+
+  describe('restricted instructions-prompt links', () => {
+    const restrictedStub = { source: 'native', restricted: true };
+    const visibleLink = {
+      source: 'native',
+      groupId: 'group-a',
+      selection: { type: 'production' },
+    };
+
+    test('a restricted stub with matchesCurrent true matches an equally restricted current link', () => {
+      const version = createVersion({
+        instructionsPrompt: { ...restrictedStub, matchesCurrent: true },
+      });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...restrictedStub },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(true);
+    });
+
+    test('a restricted stub with matchesCurrent false does not match, even on the latest/only version', () => {
+      const version = createVersion({
+        instructionsPrompt: { ...restrictedStub, matchesCurrent: false },
+      });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...restrictedStub },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('a restricted stub with no matchesCurrent flag does not match', () => {
+      const version = createVersion({
+        instructionsPrompt: { ...restrictedStub },
+      });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...restrictedStub },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('an older version with matchesCurrent true matches, even though a later snapshot does not', () => {
+      // A revert `$set`s the document without appending a version, so the current
+      // link can equal an older entry while the latest-appended one does not.
+      const olderVersion = createVersion({
+        name: 'Older Version',
+        instructionsPrompt: { ...restrictedStub, matchesCurrent: true },
+      });
+      const latestVersion = createVersion({
+        name: 'Latest Version',
+        instructionsPrompt: { ...restrictedStub, matchesCurrent: false },
+      });
+      const currentAgent = createAgentState({
+        name: 'Older Version',
+        instructionsPrompt: { ...restrictedStub },
+      });
+      const versions = [olderVersion, latestVersion];
+
+      expect(isActiveVersion(olderVersion, currentAgent, versions)).toBe(true);
+      expect(isActiveVersion(latestVersion, currentAgent, versions)).toBe(false);
+    });
+
+    test('a restricted stub on only the version side is not active, even with matchesCurrent true', () => {
+      const version = createVersion({
+        instructionsPrompt: { ...restrictedStub, matchesCurrent: true },
+      });
+      const currentAgent = createAgentState({ instructionsPrompt: { ...visibleLink } });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('a restricted stub on only the current-agent side is not active', () => {
+      const version = createVersion({ instructionsPrompt: { ...visibleLink } });
+      const currentAgent = createAgentState({ instructionsPrompt: { ...restrictedStub } });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('visible, equal links still match', () => {
+      const version = createVersion({ instructionsPrompt: { ...visibleLink } });
+      const currentAgent = createAgentState({ instructionsPrompt: { ...visibleLink } });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(true);
+    });
+
+    test('visible links with different groups do not match', () => {
+      const version = createVersion({ instructionsPrompt: { ...visibleLink } });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...visibleLink, groupId: 'group-b' },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('with currentAgent null, restricted stubs never match each other, even index 0 against itself', () => {
+      // There is no currentAgent here to resolve `matchesCurrent` against, so comparing
+      // one version's restricted stub to another's must not trust either side's flag —
+      // that flag only describes a comparison against the current agent. Base semantics
+      // (never match a restricted stub against anything, including itself) apply, so
+      // neither entry is reported active, matching how index 0 behaved before the
+      // `matchesCurrent`-trusting server flag existed.
+      const versions = [
+        createVersion({
+          name: 'Same Name',
+          instructionsPrompt: { ...restrictedStub, matchesCurrent: true },
+        }),
+        createVersion({
+          name: 'Same Name',
+          instructionsPrompt: { ...restrictedStub, matchesCurrent: false },
+        }),
+      ];
+
+      expect(isActiveVersion(versions[0], null, versions)).toBe(false);
+      expect(isActiveVersion(versions[1], null, versions)).toBe(false);
+    });
+  });
 });

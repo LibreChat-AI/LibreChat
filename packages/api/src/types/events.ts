@@ -14,6 +14,7 @@ export type CreatedEvent = {
     parentMessageId?: string;
     conversationId?: string;
     text?: string;
+    privacyRevision?: string;
     sender: string;
     isCreatedByUser: boolean;
     /** Quoted excerpts referenced on this turn, carried through resumable job

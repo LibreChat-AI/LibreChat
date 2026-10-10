@@ -1,3 +1,4 @@
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 /** Deadline after which an invocation owner requests cancellation. */
 export const BACKGROUND_TASK_TIMEOUT_MS: number = 30 * 60 * 1000;
 /** Gives a cooperative tool a short window to settle after cancellation before
@@ -16,6 +17,8 @@ export const BACKGROUND_SHUTDOWN_TEARDOWN_RESERVE_MS: number = 2_000;
 
 /** Host-owned identity recorded before ordinary background tool work begins. */
 export interface BackgroundToolWakeupRegistration {
+  /** Origin captured by the generation's host, null for an ordinary turn. */
+  scheduleMCPIdentity?: ScheduledMCPIdentity | null;
   taskId: string;
   toolCallId: string;
   toolName: string;
@@ -65,6 +68,9 @@ export interface BackgroundToolDeadClaimRecoveryInput {
   conversationId: string;
   messageId: string;
   claimId: string;
+  batchId?: string;
+  /** Automatic repair cannot reopen a committed manual handoff. */
+  onlyIfUnreconciled?: true;
   /** Omitted for the legacy automatic-wakeup recovery path. */
   kind?: 'manual' | 'wakeup';
   /** Required to prove that a manual claim's owning generation is no longer active. */

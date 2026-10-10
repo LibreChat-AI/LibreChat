@@ -1,5 +1,5 @@
-import { Constants, EModelEndpoint } from 'librechat-data-provider';
 import { getRequestId, getTenantId, getUserId } from '@librechat/data-schemas';
+import { Constants, EModelEndpoint, ReasoningEffort } from 'librechat-data-provider';
 import type { AgentTriggerExecutionHostDeps, AgentTriggerFetch } from './host';
 import {
   EVENT_ACTOR_DETACHED_COMPLETION_SOURCE,
@@ -576,6 +576,7 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
     const [input, init] = fetcher.mock.calls[0];
     expect(String(input)).toBe('http://127.0.0.1:3080/api/agents/chat/agents');
     expect(JSON.parse(String(init?.body))).toEqual({
+      agentCompletion: { version: 1, sourceId: 'subagent-completion' },
       text: envelope.input,
       endpoint: EModelEndpoint.agents,
       agent_id: 'agent-1',
@@ -646,6 +647,7 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
       quotes: ['quoted context'],
       manualSkills: ['research'],
       codeApprovalMode: 'acceptEdits' as const,
+      reasoningOverride: { key: 'reasoning_effort' as const, value: ReasoningEffort.high },
       admissionSource,
       settleOnAdmission,
     }));
@@ -668,6 +670,7 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
       quotes: ['quoted context'],
       manualSkills: ['research'],
       codeApprovalMode: 'acceptEdits',
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       agentContinuationAdmission: admissionSource,
     });
     expect(getBaseUrl).toHaveBeenCalledWith({ localOnly: true });

@@ -37,6 +37,7 @@ import { MCPTokenStorage, MCPTokenRefreshUnavailableError } from './tokens';
 import { probeResourceMetadataHint } from './resourceHint';
 import { createHardenedOAuthFetch } from './hardenedFetch';
 import { sanitizeUrlForLogging } from '~/mcp/utils';
+import { getOAuthCallbackUrl } from '~/oauth/url';
 import { getOAuthUrlPort } from './url';
 
 /** Type for the OAuth metadata from the SDK */
@@ -1680,9 +1681,10 @@ export class MCPOAuthHandler {
    */
   private static getDefaultRedirectUri(serverName?: string): string {
     const baseUrl = process.env.DOMAIN_SERVER || 'http://localhost:3080';
-    return serverName
-      ? `${baseUrl}/api/mcp/${serverName}/oauth/callback`
-      : `${baseUrl}/api/mcp/oauth/callback`;
+    const callbackPath = serverName
+      ? `/api/mcp/${serverName}/oauth/callback`
+      : '/api/mcp/oauth/callback';
+    return getOAuthCallbackUrl(baseUrl, callbackPath);
   }
 
   /**

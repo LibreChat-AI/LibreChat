@@ -1,24 +1,190 @@
+import { createHash } from 'node:crypto';
 import {
   PrincipalType,
   materializeModelSpecEndpoints,
+  getConfigDefaults,
+  normalizeEndpointName,
   setMaxSubagents,
 } from 'librechat-data-provider';
 import {
   logger,
   getTenantId,
   mergeConfigOverrides,
+  loadDefaultInterface,
+  tenantStorage,
   BASE_CONFIG_PRINCIPAL_ID,
+  SYSTEM_TENANT_ID,
 } from '@librechat/data-schemas';
 import type { AppConfig, IConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import type { CustomConfigLoadMode } from './loader';
+import { checkAppConfigTheme } from './theme';
 
 const BASE_CONFIG_KEY = '_BASE_';
+
+function hiddenCustomEndpoints(
+  config: AppConfig,
+  tenantId?: string,
+  inherited?: ReadonlySet<string>,
+): Set<string> {
+  const hidden = new Set(inherited);
+  const custom = config.endpoints?.custom;
+  const sourceCustom = config.config?.endpoints?.custom;
+  for (const endpoints of [custom, sourceCustom]) {
+    for (const endpoint of endpoints ?? []) {
+      if (endpoint.tenantId && endpoint.tenantId !== tenantId) {
+        hidden.add(normalizeEndpointName(endpoint.name ?? ''));
+      }
+    }
+  }
+  for (const endpoint of custom ?? sourceCustom ?? []) {
+    const name = normalizeEndpointName(endpoint.name ?? '');
+    if ((!endpoint.tenantId || endpoint.tenantId === tenantId) && !inherited?.has(name)) {
+      hidden.delete(name);
+    }
+  }
+  return hidden;
+}
+
+function scopeEndpointList<T extends { name?: string; tenantId?: string }>(
+  endpoints: T[] | undefined,
+  tenantId: string | undefined,
+  hiddenEndpoints: ReadonlySet<string>,
+): T[] | undefined {
+  if (!endpoints) return endpoints;
+  const tenantNames = new Set<string>();
+  const scoped = endpoints.filter((endpoint) => {
+    const name = normalizeEndpointName(endpoint.name ?? '');
+    if ((endpoint.tenantId && endpoint.tenantId !== tenantId) || hiddenEndpoints.has(name)) {
+      return false;
+    }
+    if (endpoint.tenantId) tenantNames.add(name);
+    return true;
+  });
+  const selected =
+    tenantNames.size === 0
+      ? scoped
+      : scoped.filter(
+          (endpoint) =>
+            endpoint.tenantId || !tenantNames.has(normalizeEndpointName(endpoint.name ?? '')),
+        );
+  return selected.length === endpoints.length ? endpoints : selected;
+}
+
+function scopeModelSpecs(
+  specs: AppConfig['modelSpecs'],
+  hiddenEndpoints: ReadonlySet<string>,
+): AppConfig['modelSpecs'] {
+  if (!specs || hiddenEndpoints.size === 0) {
+    return specs;
+  }
+  const list = specs.list?.filter(
+    (spec) => !hiddenEndpoints.has(normalizeEndpointName(spec.preset?.endpoint ?? '')),
+  );
+  const addedEndpoints = specs.addedEndpoints?.filter(
+    (endpoint) => !hiddenEndpoints.has(normalizeEndpointName(endpoint)),
+  );
+  if (
+    list?.length === specs.list?.length &&
+    addedEndpoints?.length === specs.addedEndpoints?.length
+  ) {
+    return specs;
+  }
+  if (specs.list?.length && list?.length === 0) {
+    return undefined;
+  }
+  return { ...specs, list, addedEndpoints };
+}
+
+/** Keep tenant-scoped YAML endpoints out of every other tenant's effective config. */
+function scopeCustomEndpoints(
+  config: AppConfig,
+  tenantId?: string,
+  inherited?: ReadonlySet<string>,
+): AppConfig {
+  const hiddenEndpoints = hiddenCustomEndpoints(config, tenantId, inherited);
+  const custom = config.endpoints?.custom;
+  const scoped = scopeEndpointList(custom, tenantId, hiddenEndpoints);
+  const sourceCustom = config.config?.endpoints?.custom;
+  const scopedSource = scopeEndpointList(sourceCustom, tenantId, hiddenEndpoints);
+  const modelSpecs = scopeModelSpecs(config.modelSpecs, hiddenEndpoints);
+  const sourceModelSpecs = scopeModelSpecs(config.config?.modelSpecs, hiddenEndpoints);
+  if (
+    scoped === custom &&
+    scopedSource === sourceCustom &&
+    modelSpecs === config.modelSpecs &&
+    sourceModelSpecs === config.config?.modelSpecs
+  ) {
+    return config;
+  }
+  return {
+    ...config,
+    ...(modelSpecs !== config.modelSpecs && { modelSpecs }),
+    ...(scoped !== custom && { endpoints: { ...config.endpoints, custom: scoped } }),
+    ...((scopedSource !== sourceCustom || sourceModelSpecs !== config.config?.modelSpecs) && {
+      config: {
+        ...config.config,
+        ...(scopedSource !== sourceCustom && {
+          endpoints: { ...config.config.endpoints, custom: scopedSource },
+        }),
+        ...(sourceModelSpecs !== config.config?.modelSpecs && { modelSpecs: sourceModelSpecs }),
+      },
+    }),
+  };
+}
+
+/** Re-derive only spec-dependent controls before principal overrides are applied. */
+async function scopeBaseConfig(config: AppConfig, tenantId?: string): Promise<AppConfig> {
+  const scoped = scopeCustomEndpoints(config, tenantId);
+  if (scoped.modelSpecs === config.modelSpecs || !config.interfaceConfig) {
+    return scoped;
+  }
+  const defaults = await loadDefaultInterface({
+    config: { ...scoped.config, modelSpecs: scoped.modelSpecs },
+    configDefaults: getConfigDefaults(),
+  });
+  return {
+    ...scoped,
+    interfaceConfig: {
+      ...config.interfaceConfig,
+      modelSelect: defaults?.modelSelect,
+      parameters: defaults?.parameters,
+      presets: defaults?.presets,
+    },
+  };
+}
 
 export type AppConfigPrincipal = {
   principalType: string;
   principalId?: string | Types.ObjectId;
 };
+
+/**
+ * Applies the loader's theme rules to a theme a DB override replaced. Unknown colors are left
+ * out as they are for the YAML theme; an override theme the client would reject counts as unset,
+ * so the principal keeps the base theme instead of losing its theme to a bad override.
+ */
+function checkOverrideTheme(baseConfig: AppConfig, merged: AppConfig): AppConfig {
+  const baseTheme = baseConfig.interfaceConfig?.theme;
+  if (merged.interfaceConfig?.theme === baseTheme) {
+    return merged;
+  }
+  const { appConfig, errors, warnings } = checkAppConfigTheme(merged);
+  if (warnings.length > 0) {
+    logger.warn(
+      '[getAppConfig] interface.theme from a config override names tokens this version ignores:\n' +
+        warnings.map((warning) => `- ${warning}`).join('\n'),
+    );
+  }
+  if (errors.length === 0) {
+    return appConfig;
+  }
+  logger.warn(
+    '[getAppConfig] Ignoring interface.theme from a config override; the base theme applies instead:\n' +
+      errors.map((error) => `- ${error}`).join('\n'),
+  );
+  return { ...merged, interfaceConfig: { ...merged.interfaceConfig, theme: baseTheme } };
+}
 
 /**
  * Materializes inferable model-spec fields (an omitted `preset.endpoint` for
@@ -117,6 +283,19 @@ export function getAppConfigOptionsFromUser(
   };
 }
 
+/**
+ * A route that decides policy from the resolved configuration must not be handed the base
+ * configuration when principal or override resolution fails, because the base can be broader
+ * than the scope that should have decided. The caller supplies the reader, so the selection
+ * of that policy lives here rather than in the middleware that assigns the result.
+ */
+export function resolveStrictAppConfig(
+  getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig | undefined>,
+  user?: AppConfigUserLike | null,
+): Promise<AppConfig | undefined> {
+  return getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true });
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 let _strictOverride: boolean | undefined;
@@ -132,21 +311,38 @@ export function _resetOverrideStrictCache(): void {
   _warnedNoTenantInStrictMode = false;
 }
 
-function overrideCacheKey(role?: string, userId?: string, tenantId?: string): string {
-  // Fall back to the ALS tenant context before `__default__`: callers that rely on the
-  // tenant middleware (the common path) pass no explicit tenantId, so without this the
-  // entry is keyed under the shared `__default__` bucket and leaks across tenants.
-  const tenant = tenantId || getTenantId() || '__default__';
-  if (userId) {
-    if (role) {
-      return `_OVERRIDE_:${tenant}:${role}:${userId}`;
-    }
-    return `_OVERRIDE_:${tenant}:${userId}`;
-  }
-  if (role) {
-    return `_OVERRIDE_:${tenant}:${role}`;
-  }
-  return `_OVERRIDE_:${tenant}:${BASE_CONFIG_PRINCIPAL_ID}`;
+/** Versioned so older heads cannot supply override entries built under a stale tenant ID. */
+function overrideCacheKey(
+  role: string | undefined,
+  userId: string | undefined,
+  tenantId: string | undefined,
+  scopeVersion: string,
+): string {
+  const tenant = tenantId ? `${tenantId}:tenant` : '__default__:global';
+  const principal =
+    userId && role ? `${role}:${userId}` : userId || role || BASE_CONFIG_PRINCIPAL_ID;
+  return `_OVERRIDE_:${tenant}:${principal}:tenant-v1:${scopeVersion}`;
+}
+
+/**
+ * Per-host late binding for method adapters constructed before the config service. The service
+ * installs its reader during composition; no module-global registry or cached budget is involved.
+ */
+export function createMessageBudgetReader(): {
+  initialize: (reader: (options?: GetAppConfigOptions) => Promise<AppConfig>) => void;
+  getBudget: () => Promise<number | undefined>;
+} {
+  let readConfig: ((options?: GetAppConfigOptions) => Promise<AppConfig>) | undefined;
+  return {
+    initialize(reader) {
+      readConfig = reader;
+    },
+    async getBudget() {
+      if (!readConfig) throw new Error('Message App budget reader has not been initialized');
+      const config = await readConfig({ baseOnly: true });
+      return config.mcpAppSandbox?.maxPersistedMessageBytes;
+    },
+  };
 }
 
 // ── Service factory ──────────────────────────────────────────────────
@@ -277,7 +473,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
    * `getApplicableConfigs` queries the DB for matching overrides and merges them by priority.
    *
    * When `baseOnly` is true, returns the YAML-derived config without any DB queries.
-   * `role`, `userId`, and `tenantId` are ignored in this mode.
+   * `role` and `userId` are ignored; tenantId still scopes YAML custom endpoints.
    * Use this for startup, auth strategies, and other pre-tenant code paths.
    */
   async function getAppConfig(options: GetAppConfigOptions = {}): Promise<AppConfig> {
@@ -293,10 +489,21 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       skipRuntimeAugmentation,
     } = options;
 
-    const baseConfig = await ensureBaseConfig(refresh);
+    const ambientTenantId = getTenantId();
+    const requestedTenantId = tenantId === SYSTEM_TENANT_ID ? undefined : tenantId;
+    const effectiveTenantId =
+      ambientTenantId && ambientTenantId !== SYSTEM_TENANT_ID ? ambientTenantId : requestedTenantId;
+    if (effectiveTenantId && effectiveTenantId !== ambientTenantId) {
+      return tenantStorage.run({ ...tenantStorage.getStore(), tenantId: effectiveTenantId }, () =>
+        getAppConfig(options),
+      );
+    }
 
+    const baseConfig = await ensureBaseConfig(refresh);
+    const scopedBaseConfig = await scopeBaseConfig(baseConfig, effectiveTenantId);
+    const hiddenEndpoints = hiddenCustomEndpoints(baseConfig, effectiveTenantId);
     if (baseOnly) {
-      return baseConfig;
+      return scopedBaseConfig;
     }
 
     const principals =
@@ -307,7 +514,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
         return null;
       }));
     if (principals === null) {
-      return baseConfig;
+      return scopedBaseConfig;
     }
 
     // Strict isolation + no tenant anywhere (neither param nor ALS) is pathological: a
@@ -316,7 +523,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     // without caching it under the shared `__default__` bucket. When ALS has a tenant,
     // overrideCacheKey scopes the key to it, so we fall through and cache per-tenant.
     if (principals.length === 0 && !tenantId && !getTenantId() && isStrictOverrideMode()) {
-      return baseConfig;
+      return scopedBaseConfig;
     }
 
     if (!tenantId && !getTenantId() && isStrictOverrideMode() && !_warnedNoTenantInStrictMode) {
@@ -328,17 +535,40 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
 
     const augment = async (appConfig: AppConfig): Promise<AppConfig> => {
-      if (augmentConfig == null || skipRuntimeAugmentation === true) return appConfig;
+      const scopedConfig = scopeCustomEndpoints(appConfig, effectiveTenantId, hiddenEndpoints);
+      if (augmentConfig == null || skipRuntimeAugmentation === true) return scopedConfig;
       try {
-        return await augmentConfig({ appConfig, baseConfig, principals, options });
+        return scopeCustomEndpoints(
+          await augmentConfig({
+            appConfig: scopedConfig,
+            baseConfig: scopedBaseConfig,
+            principals,
+            options: { ...options, tenantId: effectiveTenantId },
+          }),
+          effectiveTenantId,
+          hiddenEndpoints,
+        );
       } catch (error) {
         if (failClosed) throw error;
         logger.error('[getAppConfig] Error augmenting principal config:', error);
-        return appConfig;
+        return scopedConfig;
       }
     };
 
-    const cacheKey = overrideCacheKey(role, userId, tenantId);
+    const scopeVersion = createHash('sha256')
+      .update(
+        JSON.stringify([
+          baseConfig.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
+          baseConfig.config?.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
+        ]),
+      )
+      .digest('hex');
+    const cacheKey = overrideCacheKey(
+      role,
+      userId,
+      ambientTenantId ?? effectiveTenantId,
+      scopeVersion,
+    );
     if (!refresh) {
       const cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
       if (cachedMerged) {
@@ -346,16 +576,23 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       }
     }
 
-    let merged = baseConfig;
+    let merged = scopedBaseConfig;
     try {
       const configs = await getApplicableConfigs(principals);
       if (configs.length > 0) {
-        merged = materializeConfigModelSpecs(mergeConfigOverrides(baseConfig, configs));
+        merged = scopeCustomEndpoints(
+          checkOverrideTheme(
+            scopedBaseConfig,
+            materializeConfigModelSpecs(mergeConfigOverrides(scopedBaseConfig, configs)),
+          ),
+          effectiveTenantId,
+          hiddenEndpoints,
+        );
       }
     } catch (error) {
       if (failClosed) throw error;
       logger.error('[getAppConfig] Error resolving config overrides, falling back to base:', error);
-      return baseConfig;
+      return scopedBaseConfig;
     }
 
     await cache.set(cacheKey, merged, overrideCacheTtl);
@@ -374,12 +611,12 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
 
   /**
    * Clear per-principal override caches. When `tenantId` is provided, only caches
-   * matching `_OVERRIDE_:${tenantId}:*` are deleted. When omitted, ALL override
+   * matching `_OVERRIDE_:${tenantId}:tenant:*` are deleted. When omitted, ALL override
    * caches are cleared.
    */
   async function clearOverrideCache(tenantId?: string): Promise<void> {
     const namespace = cacheKeys.APP_CONFIG;
-    const overrideSegment = tenantId ? `_OVERRIDE_:${tenantId}:` : '_OVERRIDE_:';
+    const overrideSegment = tenantId ? `_OVERRIDE_:${tenantId}:tenant:` : '_OVERRIDE_:';
 
     // In-memory store — enumerate keys directly.
     // APP_CONFIG defaults to FORCED_IN_MEMORY_CACHE_NAMESPACES, so this is the

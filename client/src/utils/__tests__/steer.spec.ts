@@ -1,4 +1,4 @@
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, ReasoningEffort } from 'librechat-data-provider';
 import type { TMessage, TSteerAppliedEvent } from 'librechat-data-provider';
 import {
   getSteerPart,
@@ -6,10 +6,12 @@ import {
   resolveRunEndTarget,
   findSteerMessageIndex,
   appendAppliedSteerIds,
+  isLegacyDeliveryUncertain,
   resolveAbortSteerTarget,
   insertQueuedOrigin,
   mergeRestagedQuotes,
   collectDroppedSteerQuotes,
+  carriedSteerContext,
 } from '../steer';
 
 const buildEvent = (overrides: Partial<TSteerAppliedEvent> = {}): TSteerAppliedEvent => ({
@@ -35,6 +37,22 @@ const assistantMessage = (overrides: Partial<TMessage> = {}): TMessage =>
     ],
     ...overrides,
   }) as TMessage;
+
+describe('carriedSteerContext', () => {
+  it('preserves request-scoped reasoning through restore and recovery paths', () => {
+    expect(
+      carriedSteerContext({
+        quotes: ['excerpt'],
+        manualSkills: ['writer'],
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      }),
+    ).toEqual({
+      quotes: ['excerpt'],
+      manualSkills: ['writer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+    });
+  });
+});
 
 describe('applySteerPart', () => {
   it('places the part at its absolute index on a new message object', () => {
@@ -208,6 +226,19 @@ describe('appendAppliedSteerIds', () => {
     expect(next).toHaveLength(200);
     expect(next[0]).toBe('id-1');
     expect(next[next.length - 1]).toBe('id-new');
+  });
+});
+
+describe('isLegacyDeliveryUncertain', () => {
+  it('locks ambiguous v1 and unnegotiated deliveries, but not v2', () => {
+    expect(
+      isLegacyDeliveryUncertain({ deliveryUncertain: true, generationProtocolVersion: 1 }),
+    ).toBe(true);
+    expect(isLegacyDeliveryUncertain({ deliveryUncertain: true })).toBe(true);
+    expect(
+      isLegacyDeliveryUncertain({ deliveryUncertain: true, generationProtocolVersion: 2 }),
+    ).toBe(false);
+    expect(isLegacyDeliveryUncertain({ generationProtocolVersion: 1 })).toBe(false);
   });
 });
 

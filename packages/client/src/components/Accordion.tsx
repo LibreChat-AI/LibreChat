@@ -15,7 +15,7 @@ const AccordionItem: React.ForwardRefExoticComponent<
   React.ElementRef<typeof AccordionPrimitive.Item>,
   React.ComponentPropsWithoutRef<typeof AccordionPrimitive.Item>
 >(({ className = '', ...props }, ref) => (
-  <AccordionPrimitive.Item ref={ref} className={cn('border-b', className)} {...props} />
+  <AccordionPrimitive.Item ref={ref} className={cn(className)} {...props} />
 ));
 AccordionItem.displayName = 'AccordionItem';
 
@@ -36,7 +36,7 @@ const AccordionTrigger: React.ForwardRefExoticComponent<
       {...props}
     >
       {children}
-      <ChevronDownIcon className="h-4 w-4 shrink-0 text-text-secondary transition-transform duration-200" />
+      <ChevronDownIcon className="text-text-secondary h-4 w-4 shrink-0 transition-transform duration-200" />
     </AccordionPrimitive.Trigger>
   </AccordionPrimitive.Header>
 ));
@@ -51,10 +51,10 @@ const AccordionContent: React.ForwardRefExoticComponent<
 >(({ className = '', children, ...props }, ref) => (
   <AccordionPrimitive.Content
     ref={ref}
-    className="overflow-y-hidden overflow-x-visible text-sm transition-opacity data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down data-[state=closed]:opacity-0 data-[state=open]:opacity-100"
+    className="data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down overflow-x-visible overflow-y-hidden text-sm transition-opacity data-[state=closed]:opacity-0 data-[state=open]:opacity-100"
     {...props}
   >
-    <div className={cn('pb-4 pt-0', className)}>{children}</div>
+    <div className={cn('pt-0 pb-4', className)}>{children}</div>
   </AccordionPrimitive.Content>
 ));
 AccordionContent.displayName = AccordionPrimitive.Content.displayName;

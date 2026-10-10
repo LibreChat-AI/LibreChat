@@ -5,12 +5,13 @@ import { RouterProvider } from 'react-router-dom';
 import * as RadixToast from '@radix-ui/react-toast';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { QueryClient, QueryClientProvider, QueryCache } from '@tanstack/react-query';
-import { Toast, ThemeProvider, ToastProvider, useInputModality } from '@librechat/client';
+import { Toast, ToastViewport, ToastProvider, useInputModality } from '@librechat/client';
 import { ScreenshotProvider, useApiErrorBoundary } from './hooks';
 import WakeLockManager from '~/components/System/WakeLockManager';
 import QueryDevtoolsGate from '~/components/QueryDevtoolsGate';
 import LanguageSync from '~/components/System/LanguageSync';
-import { getThemeFromEnv } from './utils/getThemeFromEnv';
+import DeploymentTheme from '~/Providers/DeploymentTheme';
+import UiScaleSync from '~/components/System/UiScaleSync';
 import { initializeFontSize } from '~/store/fontSize';
 import { LiveAnnouncer } from '~/a11y';
 import { router } from './routes';
@@ -43,24 +44,13 @@ const App = () => {
     initializeFontSize();
   }, []);
 
-  // Load theme from environment variables if available
-  const envTheme = getThemeFromEnv();
-
   return (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
         <LanguageSync />
+        <UiScaleSync />
         <LiveAnnouncer>
-          <ThemeProvider
-            // Only pass initialTheme and themeRGB if environment theme exists
-            // This allows localStorage values to persist when no env theme is set
-            {...(envTheme && { initialTheme: 'system', themeRGB: envTheme })}
-          >
-            {/* The ThemeProvider will automatically:
-                1. Apply dark/light mode classes
-                2. Apply custom theme colors if envTheme is provided
-                3. Otherwise use stored theme preferences from localStorage
-                4. Fall back to default theme colors if nothing is stored */}
+          <DeploymentTheme>
             <RadixToast.Provider>
               <ToastProvider>
                 <DndProvider backend={HTML5Backend}>
@@ -87,11 +77,11 @@ const App = () => {
                   <WakeLockManager />
                   <QueryDevtoolsGate />
                   <Toast />
-                  <RadixToast.Viewport className="pointer-events-none fixed inset-x-0 top-0 z-[1000] mx-auto my-2 flex max-w-[560px] flex-col items-stretch justify-start" />
+                  <ToastViewport />
                 </DndProvider>
               </ToastProvider>
             </RadixToast.Provider>
-          </ThemeProvider>
+          </DeploymentTheme>
         </LiveAnnouncer>
       </RecoilRoot>
     </QueryClientProvider>
@@ -106,9 +96,7 @@ export default () => (
       allow="autoplay"
       id="audio"
       title="audio-silence"
-      style={{
-        display: 'none',
-      }}
+      className="hidden"
     />
   </ScreenshotProvider>
 );

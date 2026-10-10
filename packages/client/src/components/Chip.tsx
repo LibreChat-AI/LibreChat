@@ -6,16 +6,17 @@ import { IconButton } from './IconButton';
 import { cn } from '~/utils';
 
 type ChipVariantProps = {
-  tone?: 'neutral' | 'info' | 'success' | 'warning' | 'error' | null;
+  tone?: 'surface' | 'neutral' | 'info' | 'success' | 'warning' | 'error' | null;
   size?: 'sm' | 'md' | 'theme' | null;
   shape?: 'round' | 'theme' | null;
 };
 
 const chipVariants: (props?: ChipVariantProps & ClassProp) => string = cva(
-  'inline-flex max-w-full items-center gap-1 border text-xs font-medium transition-colors duration-theme-fast',
+  'inline-flex max-w-full items-center gap-1 border border-border-light text-xs font-medium transition-colors duration-theme-fast',
   {
     variants: {
       tone: {
+        surface: 'border-border-chrome bg-surface-secondary text-text-secondary',
         neutral: 'border-status-neutral-border bg-status-neutral-subtle text-status-neutral',
         info: 'border-status-info-border bg-status-info-subtle text-status-info',
         success: 'border-status-success-border bg-status-success-subtle text-status-success',
@@ -25,7 +26,7 @@ const chipVariants: (props?: ChipVariantProps & ClassProp) => string = cva(
       size: {
         sm: 'min-h-6 px-2 py-0.5',
         md: 'min-h-8 px-2.5 py-1',
-        theme: 'h-theme-control gap-theme-compact px-theme-normal',
+        theme: 'h-theme-control gap-theme-control-gap px-theme-control-x',
       },
       shape: {
         round: 'rounded-full',
@@ -76,7 +77,7 @@ const Chip: React.ForwardRefExoticComponent<ChipProps & React.RefAttributes<HTML
             label={removeLabel}
             size="xs"
             shape={shape === 'theme' ? 'theme' : 'round'}
-            className="-mr-1 text-current hover:bg-surface-hover/50"
+            className="hover:bg-surface-hover/50 -mr-1 text-current"
             onClick={(event) => {
               event.stopPropagation();
               onRemove(event);

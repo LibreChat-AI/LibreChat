@@ -5,7 +5,7 @@ export const CodeVariableGfm: React.ElementType = ({ children }: { children: Rea
   return (
     <code
       onDoubleClick={handleDoubleClick}
-      className="rounded-md bg-surface-primary-alt p-1 text-xs text-text-secondary md:text-sm"
+      className="bg-surface-primary-alt text-text-secondary rounded-md p-1 text-xs md:text-sm"
     >
       {children}
     </code>
@@ -21,7 +21,7 @@ const highlightVariables = (text: string): React.ReactNode[] => {
       return (
         <b
           key={index}
-          className="ml-[0.5] rounded-lg bg-amber-100 p-[1px] font-medium text-text-warning dark:bg-transparent"
+          className="bg-status-warning-subtle text-text-warning ml-[0.5] rounded-lg p-[1px] font-medium"
         >
           {`{{${part}}}`}
         </b>

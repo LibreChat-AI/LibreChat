@@ -2,6 +2,7 @@ import { atom } from 'recoil';
 import { SettingsViews, LocalStorageKeys } from 'librechat-data-provider';
 import type { TOptionSettings } from '~/common';
 import { CHAT_TITLE_IN_TAB_KEY } from '~/utils/documentTitle';
+import { isDrawerViewport } from '~/utils/breakpoints';
 import { atomWithLocalStorage } from '~/store/utils';
 import { STTEndpoints } from '~/common';
 
@@ -34,23 +35,18 @@ const staticAtoms = {
   speechSettingsInitialized: atom<boolean>({ key: 'speechSettingsInitialized', default: false }),
 };
 
-/** Read synchronously: `useMediaQuery` only resolves after the first paint. */
-function isSmallViewport(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches;
-}
-
 const localStorageAtoms = {
   // General settings
   sidebarExpanded: atomWithLocalStorage(
     'unifiedSidebarExpanded',
-    !isSmallViewport(),
+    !isDrawerViewport(),
     /**
      * The mobile drawer covers the viewport, so a persisted open state would
      * launch the app into the navigation instead of the conversation.
      * Normalized during atom initialization so the closed state reaches the
      * first paint rather than animating shut after it.
      */
-    (saved) => (isSmallViewport() ? false : saved),
+    (saved) => (isDrawerViewport() ? false : saved),
   ),
   enableUserMsgMarkdown: atomWithLocalStorage<boolean>(
     LocalStorageKeys.ENABLE_USER_MSG_MARKDOWN,
@@ -62,19 +58,6 @@ const localStorageAtoms = {
 
   // Chat settings
   enterToSend: atomWithLocalStorage('enterToSend', true),
-  /** What Enter does while a run is generating: steer (inject mid-run) or queue (send after). */
-  duringRunDefaultAction: atomWithLocalStorage<'steer' | 'queue'>(
-    'duringRunDefaultAction',
-    'steer',
-  ),
-  /**
-   * Whether a steer interrupts generation at the next safe boundary instead of
-   * waiting for the run's next tool step. Orthogonal to
-   * `duringRunDefaultAction`: that chooses steer-vs-queue, this chooses how
-   * soon a steer lands. The composer's interrupt button always interrupts
-   * regardless — this only governs the default Enter/steer route.
-   */
-  steerInterruptsByDefault: atomWithLocalStorage('steerInterruptsByDefault', false),
   maximizeChatSpace: atomWithLocalStorage('maximizeChatSpace', false),
   chatDirection: atomWithLocalStorage('chatDirection', 'LTR'),
   autoExpandTools: atomWithLocalStorage(LocalStorageKeys.AUTO_EXPAND_TOOLS, false),

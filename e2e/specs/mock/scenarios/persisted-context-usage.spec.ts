@@ -64,6 +64,93 @@ test.afterEach(async () => {
 });
 
 test.describe('persisted context usage', () => {
+  test('separates the selected turn from cumulative cache totals after reload @scenario:last-turn-cache-vs-branch', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const conversationId = randomUUID();
+    cleanupConversationIds.push(conversationId);
+
+    await insertConversation(conversationId, 'Latest-turn usage fixture', [
+      {
+        messageId: 'usage-user-1',
+        parentMessageId: NO_PARENT,
+        text: 'First request',
+        isCreatedByUser: true,
+        sender: 'User',
+        tokenCount: 8,
+      },
+      {
+        messageId: 'usage-assistant-1',
+        parentMessageId: 'usage-user-1',
+        text: 'First reply',
+        isCreatedByUser: false,
+        sender: 'Assistant',
+        tokenCount: 5,
+        metadata: { usage: { input: 30, output: 5, cacheRead: 100, cacheWrite: 0, cost: 0.01 } },
+      },
+      {
+        messageId: 'usage-user-2',
+        parentMessageId: 'usage-assistant-1',
+        text: 'Second request',
+        isCreatedByUser: true,
+        sender: 'User',
+        tokenCount: 8,
+      },
+      {
+        messageId: 'usage-assistant-2',
+        parentMessageId: 'usage-user-2',
+        text: 'Second reply',
+        isCreatedByUser: false,
+        sender: 'Assistant',
+        tokenCount: 5,
+        metadata: {
+          usage: { input: 20, output: 5, cacheRead: 400, cacheWrite: 50, cost: 0.02 },
+          contextUsage: {
+            runId: 'usage-run-2',
+            contextBudget: 300,
+            cacheRead: 400,
+            cacheWrite: 50,
+            breakdown: {
+              maxContextTokens: 300,
+              instructionTokens: 20,
+              messageTokens: 80,
+              toolCount: 0,
+              messageCount: 4,
+            },
+          },
+        },
+      },
+    ]);
+
+    const assertUsage = async () => {
+      await expect(page.getByTestId('token-usage')).toBeVisible({ timeout: 30000 });
+      await page.getByTestId('token-usage').click();
+      const popover = page.getByRole('region', { name: 'Context usage' });
+      const toggle = popover.getByTestId('context-breakdown-toggle');
+      if ((await toggle.getAttribute('aria-expanded')) === 'false') {
+        await toggle.click();
+      }
+      const lastTurn = popover.getByTestId('token-usage-last-turn');
+      const branch = popover.getByTestId('token-usage-totals');
+      await expect(lastTurn.getByRole('heading', { name: 'Last turn' })).toBeVisible();
+      await expect(lastTurn.getByText('Cache read').locator('../..')).toContainText('400');
+      await expect(lastTurn.getByText('Cache write').locator('../..')).toContainText('50');
+      await expect(branch.getByText('This branch')).toBeVisible();
+      await expect(branch.getByText('Cache read').locator('../..')).toContainText('500');
+      await expect(popover.getByTestId('token-usage-cost')).toContainText('Cost (last turn)');
+      await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+    };
+
+    await page.goto(`/c/${conversationId}`, { timeout: 30000 });
+    await expect(page.getByText('Second reply')).toBeVisible({ timeout: 30000 });
+    await assertUsage();
+    await page.reload({ timeout: 30000 });
+    await expect(page.getByText('Second reply')).toBeVisible({ timeout: 30000 });
+    await assertUsage();
+  });
+
   /** A snapshot persisted before `remainingContextTokens` existed carries only a
    *  budget and a breakdown. Reading the absent remaining count as zero scored
    *  such a snapshot as having spent its whole window, so an old conversation

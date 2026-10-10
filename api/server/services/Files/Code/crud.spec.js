@@ -366,6 +366,33 @@ describe('Code CRUD', () => {
       expect(mockAxios).toHaveBeenCalledTimes(1);
     });
 
+    it('treats objects on a profile the deployment no longer serves as unreachable', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 409'), {
+          response: {
+            status: 409,
+            data: {
+              error: 'execution_profile_mismatch',
+              expected_profile: 'default',
+              actual_profile: 'stateful',
+            },
+          },
+        }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).resolves.toBeUndefined();
+    });
+
+    it('throws on other conflicts', async () => {
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('conflict'), {
+          response: { status: 409, data: { error: 'session_busy' } },
+        }),
+      );
+
+      await expect(deleteCodeEnvFile(req, file)).rejects.toThrow('conflict');
+    });
+
     it('throws when code environment deletion fails', async () => {
       mockAxios.mockRejectedValue(
         Object.assign(new Error('unavailable'), { response: { status: 500 } }),

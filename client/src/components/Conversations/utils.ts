@@ -6,6 +6,7 @@ export type ConversationRenderProps = {
   /** Announced on the row's focusable element, and it appears only once the
    *  owning list can act on it, so a change here has to reach the DOM. */
   keyShortcuts?: string;
+  showProjectBadge?: boolean;
 };
 
 export function areConversationIconFieldsEqual(
@@ -38,7 +39,13 @@ export function areConversationListItemFieldsEqual(
     prevConversation.isArchived === nextConversation.isArchived &&
     prevConversation.isShared === nextConversation.isShared &&
     prevConversation.createdAt === nextConversation.createdAt &&
-    prevConversation.updatedAt === nextConversation.updatedAt
+    prevConversation.updatedAt === nextConversation.updatedAt &&
+    /* Marking a conversation seen deliberately leaves `updatedAt` alone so the sidebar order
+       holds, which means these have to be compared in their own right. */
+    prevConversation.lastResponseAt === nextConversation.lastResponseAt &&
+    prevConversation.lastResponseIsManual === nextConversation.lastResponseIsManual &&
+    prevConversation.isMarkedUnread === nextConversation.isMarkedUnread &&
+    prevConversation.lastSeenAt === nextConversation.lastSeenAt
   );
 }
 
@@ -49,6 +56,7 @@ export function areConversationRenderPropsEqual(
   return (
     areConversationListItemFieldsEqual(prevProps.conversation, nextProps.conversation) &&
     prevProps.isGenerating === nextProps.isGenerating &&
-    prevProps.keyShortcuts === nextProps.keyShortcuts
+    prevProps.keyShortcuts === nextProps.keyShortcuts &&
+    prevProps.showProjectBadge === nextProps.showProjectBadge
   );
 }

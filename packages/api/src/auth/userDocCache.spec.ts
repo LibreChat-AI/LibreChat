@@ -13,6 +13,7 @@ import {
 import { cacheConfig } from '~/cache/cacheConfig';
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     warn: jest.fn(),
   },
@@ -188,8 +189,31 @@ describe('auth user document cache helpers', () => {
     expect(store.set).toHaveBeenCalledWith(
       buildAuthUserDocReverseIndexKey(userId.toString()),
       [cacheKey],
-      AUTH_USER_DOC_CACHE_TTL_MS,
+      AUTH_USER_DOC_CACHE_TTL_MS * 2,
     );
+  });
+
+  it('does not cache a document the reverse index could not record', async () => {
+    const store = makeStore();
+    const userId = new Types.ObjectId();
+    const indexKey = buildAuthUserDocReverseIndexKey(userId.toString());
+    store.set.mockImplementation(async (key: string, value: unknown) => {
+      if (key === indexKey) {
+        throw new Error('redis unavailable');
+      }
+      store.values.set(key, value);
+      return true;
+    });
+
+    await setCachedAuthUserDoc(store, 'auth-user-doc:v2:orphan', {
+      _id: userId,
+      email: 'user@example.com',
+    });
+
+    expect(store.values.has('auth-user-doc:v2:orphan')).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith('[authUserDocCache] Cache write failed', {
+      error: 'redis unavailable',
+    });
   });
 
   it('deduplicates reverse-index keys and caps the remembered set', async () => {

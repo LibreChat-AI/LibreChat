@@ -76,6 +76,7 @@ const mockSetMCPToolsChangedGenerationHandler = jest.fn();
 const mockSetMCPToolsChangedGenerationRenewalHandler = jest.fn();
 const mockSetMCPToolsChangedRevisionHandler = jest.fn();
 const mockRegisterShutdownTask = jest.fn();
+const mockAppBindingCodec = { create: jest.fn(), verify: jest.fn() };
 const mockUpdateMCPServerTools = jest.fn();
 const mockGetMCPToolsCacheGeneration = jest.fn();
 const mockRenewMCPToolsCacheGeneration = jest.fn();
@@ -83,6 +84,7 @@ const mockGetNextAppToolsPublicationRevision = jest.fn();
 const mockGetDeploymentPluginMcpServers = jest.fn(() => ({}));
 
 jest.mock('@librechat/api', () => ({
+  createMCPAppBindingCodec: jest.fn(() => mockAppBindingCodec),
   get registerShutdownTask() {
     return mockRegisterShutdownTask;
   },
@@ -150,6 +152,14 @@ describe('initializeMCPs', () => {
         ['localhost'],
         undefined,
         expect.any(Function), // per-request allowlist resolver
+        {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
       );
     });
 
@@ -167,6 +177,14 @@ describe('initializeMCPs', () => {
         allowedDomains,
         undefined,
         expect.any(Function),
+        {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
       );
     });
 
@@ -183,7 +201,69 @@ describe('initializeMCPs', () => {
         undefined,
         undefined,
         expect.any(Function),
+        {
+          enabled: false,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
       );
+    });
+
+    it.each([
+      [
+        true,
+        {
+          enabled: true,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
+      ],
+      [
+        false,
+        {
+          enabled: false,
+          legacyHtmlEnabled: false,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
+      ],
+    ])('normalizes the startup MCP Apps policy for apps=%s', async (apps, expected) => {
+      mockGetAppConfig.mockResolvedValue({ mcpConfig: null, mcpSettings: { apps } });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPServersRegistry.mock.calls[0][4]).toEqual(expected);
+    });
+
+    it('publishes the base admission ceiling once to the registry policy', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        mcpConfig: null,
+        mcpSettings: { apps: true },
+        mcpAppSandbox: {
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+          maxAdmissionRequestsPerMinute: 480,
+        },
+      });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPServersRegistry.mock.calls[0][4]).toEqual({
+        enabled: true,
+        legacyHtmlEnabled: true,
+        maxPersistedAppBytes: 1048576,
+        maxAdmissionRequestsPerMinute: 480,
+        maxActiveViews: 3,
+        maxActionPreviewChars: 16384,
+        sandboxUrl: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+      });
     });
 
     it('wires a per-request resolver that reads the merged (non-baseOnly) config', async () => {
@@ -199,14 +279,30 @@ describe('initializeMCPs', () => {
 
       // The resolver resolves the request's merged allowlists — not the boot YAML base.
       mockGetAppConfig.mockResolvedValue({
-        mcpSettings: { allowedDomains: ['merged.com'], allowedAddresses: ['10.0.0.0/8'] },
+        mcpSettings: {
+          apps: true,
+          allowedDomains: ['merged.com'],
+          allowedAddresses: ['10.0.0.0/8'],
+        },
       });
       const resolved = await resolver({ userId: 'u1', role: 'ADMIN' });
 
-      expect(mockGetAppConfig).toHaveBeenLastCalledWith({ role: 'ADMIN', userId: 'u1' });
+      expect(mockGetAppConfig).toHaveBeenLastCalledWith({
+        role: 'ADMIN',
+        userId: 'u1',
+        failClosed: true,
+      });
       expect(resolved).toEqual({
         allowedDomains: ['merged.com'],
         allowedAddresses: ['10.0.0.0/8'],
+        mcpApps: {
+          enabled: true,
+          legacyHtmlEnabled: true,
+          maxPersistedAppBytes: 1048576,
+          maxAdmissionRequestsPerMinute: 240,
+          maxActiveViews: 3,
+          maxActionPreviewChars: 16384,
+        },
       });
     });
 
@@ -240,6 +336,7 @@ describe('initializeMCPs', () => {
         {
           catalogRecoveryMaxStateEntries: undefined,
           catalogRecoveryMaxDetachedDiscoveries: undefined,
+          appBindingCodec: mockAppBindingCodec,
         },
       );
     });
@@ -256,6 +353,7 @@ describe('initializeMCPs', () => {
       expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers, {
         catalogRecoveryMaxStateEntries: undefined,
         catalogRecoveryMaxDetachedDiscoveries: undefined,
+        appBindingCodec: mockAppBindingCodec,
       });
     });
 
@@ -280,6 +378,7 @@ describe('initializeMCPs', () => {
         {
           catalogRecoveryMaxStateEntries: 2500,
           catalogRecoveryMaxDetachedDiscoveries: 8,
+          appBindingCodec: mockAppBindingCodec,
         },
       );
       expect(mockStartMCPAuthorizationFenceRetryWorker).toHaveBeenCalledWith(
@@ -470,6 +569,7 @@ describe('initializeMCPs', () => {
         {
           catalogRecoveryMaxStateEntries: undefined,
           catalogRecoveryMaxDetachedDiscoveries: undefined,
+          appBindingCodec: mockAppBindingCodec,
         },
       );
     });

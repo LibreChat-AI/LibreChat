@@ -1,11 +1,13 @@
 import React from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { ContentTypes, ForkOptions } from 'librechat-data-provider';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { ContentTypes, EModelEndpoint, ForkOptions, QueryKeys } from 'librechat-data-provider';
 import type {
-  ParentSubagentSummary,
+  TMessage,
   SubagentThreadView,
   TMessageContentParts,
+  ParentSubagentSummary,
 } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from './state';
 import type { JotaiStore } from 'test/harness';
@@ -16,6 +18,14 @@ import SubagentThreadPanel from './SubagentThreadPanel';
 import { getDraft } from '~/utils';
 
 const mockUseSubagentThreadQuery = jest.fn();
+const mockUseToolCallPartQuery = jest.fn(
+  (
+    ..._args: unknown[]
+  ): { data?: unknown; isError: boolean; refetch?: () => Promise<unknown> } => ({
+    data: undefined,
+    isError: false,
+  }),
+);
 const mockUseSubagentActivityStream = jest.fn();
 const mockForkMutate = jest.fn();
 const mockControlMutate = jest.fn();
@@ -26,6 +36,8 @@ const mockApprovalProviderMounted = jest.fn();
 const mockApprovalProviderUnmounted = jest.fn();
 let mockIsMobile = false;
 let mockCoarsePointer = false;
+let mockViewportWidth: number | null = null;
+let mockRemScale = 1;
 let mockParentChildrenByMessage = new Map<string, ParentSubagentSummary[]>();
 let mockParentChildrenByThread = new Map<string, ParentSubagentSummary>();
 const mockRefreshParentChildren = jest.fn().mockResolvedValue(undefined);
@@ -35,6 +47,9 @@ const mockRefreshParentChildren = jest.fn().mockResolvedValue(undefined);
 let mockEnterToSend = true;
 const mockClaimForeground = jest.fn();
 const mockHandOffComposerText = jest.fn();
+/** Real, per test: the panel reads the dispatching message from the parent
+ *  conversation's loaded thread, the cache main chat itself renders from. */
+let queryClient = new QueryClient();
 
 function Root({
   seed,
@@ -44,16 +59,18 @@ function Root({
   children: React.ReactNode;
 }) {
   return (
-    <ChatSurfaceHarness
-      seed={seed}
-      surface={testChatSurface({
-        enterToSend: mockEnterToSend,
-        claimForeground: mockClaimForeground,
-        handOffComposerText: mockHandOffComposerText,
-      })}
-    >
-      {children}
-    </ChatSurfaceHarness>
+    <QueryClientProvider client={queryClient}>
+      <ChatSurfaceHarness
+        seed={seed}
+        surface={testChatSurface({
+          enterToSend: mockEnterToSend,
+          claimForeground: mockClaimForeground,
+          handOffComposerText: mockHandOffComposerText,
+        })}
+      >
+        {children}
+      </ChatSurfaceHarness>
+    </QueryClientProvider>
   );
 }
 
@@ -74,6 +91,7 @@ jest.mock('~/data-provider', () => ({
    *  (`useConfiguredFooter`), so the panel now reads the startup config. */
   useGetStartupConfig: () => ({ data: undefined }),
   useSubagentThreadQuery: (...args: unknown[]) => mockUseSubagentThreadQuery(...args),
+  useToolCallPartQuery: (...args: unknown[]) => mockUseToolCallPartQuery(...args),
   subagentThreadHasTaskEvidence: (view: SubagentThreadView | undefined, taskId: string): boolean =>
     view?.messages.some(
       (message) =>
@@ -119,6 +137,26 @@ jest.mock('~/Providers', () => ({
     'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
     'agent-2': { id: 'agent-2', name: 'Analyst Two' },
   }),
+}));
+
+/** Main chat's author glyph, reduced to the face it draws: the agent's avatar
+ *  when it has one. */
+jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
+  __esModule: true,
+  default: ({
+    agent,
+    iconData,
+  }: {
+    agent?: { avatar?: { filepath?: string } };
+    iconData?: { iconURL?: string };
+  }) => {
+    const src = iconData?.iconURL ?? agent?.avatar?.filepath;
+    return src != null ? (
+      <img src={src} alt="" data-testid="author-face" />
+    ) : (
+      <span data-testid="author-face" />
+    );
+  },
 }));
 
 jest.mock('./ParentSubagentsProvider', () => ({
@@ -196,10 +234,14 @@ jest.mock('./SubagentConversation', () => ({
   __esModule: true,
   default: ({
     turns,
+    author,
+    parentAuthor,
     stateByTask,
     detailStateByTask,
     onLoadTurnDetails,
   }: {
+    author: { name: string; icon: React.ReactNode };
+    parentAuthor: { name: string };
     turns: Array<{
       taskId: string;
       trigger: { summary: string };
@@ -212,7 +254,10 @@ jest.mock('./SubagentConversation', () => ({
     <div
       data-testid="subagent-conversation"
       data-state={turns[0] == null ? undefined : stateByTask?.get(turns[0].taskId)}
+      data-author={author.name}
+      data-parent-author={parentAuthor.name}
     >
+      {author.icon}
       {turns.map((turn) => (
         <div key={turn.taskId} data-testid="conversation-turn">
           {turn.trigger.summary}
@@ -388,7 +433,12 @@ jest.mock('@librechat/client', () => ({
       )}
     </div>
   ),
-  useMediaQuery: (query: string) => (query.includes('hover') ? mockCoarsePointer : mockIsMobile),
+  useRemScale: () => mockRemScale,
+  useMediaQuery: (query: string) => {
+    if (query.includes('hover')) return mockCoarsePointer;
+    if (mockViewportWidth == null) return mockIsMobile;
+    return mockViewportWidth <= Number(/max-width:\s*([\d.]+)/.exec(query)?.[1]);
+  },
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
@@ -448,11 +498,25 @@ const completedView: SubagentThreadView = {
   ],
 };
 
+const completedTurns: SubagentThreadView['turns'] = [
+  {
+    taskId: 'task',
+    trigger: { kind: 'parent_dispatch', summary: 'Historical request.' },
+    status: 'completed',
+    activity: completedView.activity,
+    activityTruncated: false,
+    messages: completedView.messages,
+  },
+];
+
 describe('SubagentThreadPanel', () => {
   beforeEach(() => {
+    queryClient = new QueryClient();
     window.sessionStorage.clear();
     mockIsMobile = false;
     mockCoarsePointer = false;
+    mockViewportWidth = null;
+    mockRemScale = 1;
     mockEnterToSend = true;
     mockClaimForeground.mockClear();
     mockHandOffComposerText.mockClear();
@@ -480,21 +544,645 @@ describe('SubagentThreadPanel', () => {
         ...selection,
         durable: undefined,
         subagentType,
-        subagentIdentity: { subagentKind: 'agent' as const, subagentAgentId: subagentType },
+        subagentIdentity: {
+          subagentKind: 'agent' as const,
+          subagentAgentId: subagentType === 'self' ? 'agent-2' : subagentType,
+        },
       };
-      render(
+      /** The dispatching agent, as main chat holds it: a self-spawn is that
+       *  agent working on its own behalf, so it takes the parent's name. */
+      queryClient.setQueryData<TMessage[]>(
+        [QueryKeys.messages, 'parent-conversation'],
+        [
+          {
+            messageId: 'parent-message',
+            parentMessageId: null,
+            conversationId: 'parent-conversation',
+            isCreatedByUser: false,
+            endpoint: EModelEndpoint.agents,
+            model: 'agent-2',
+            sender: 'Analyst Two',
+            text: '',
+          } as unknown as TMessage,
+        ],
+      );
+      const { container } = render(
         <Root>
           <SubagentThreadPanel selection={foregroundSelection} />
         </Root>,
       );
-      const title =
-        subagentType === 'self'
-          ? 'com_ui_subagent_dialog_title_self'
-          : `com_ui_subagent_dialog_title: ${subagentType === 'agent-1' ? 'Analyst One' : subagentType}`;
-      expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+      const titles: Record<string, string> = {
+        'agent-1': 'Analyst One',
+        'missing-agent': 'com_ui_subagent_actor',
+        self: 'Analyst Two',
+      };
+      expect(screen.getByRole('heading', { name: titles[subagentType] })).toBeInTheDocument();
+      /** Never the id: an unresolvable agent is named generically. */
+      expect(screen.queryByText(/missing-agent/)).not.toBeInTheDocument();
       if (subagentType === 'agent-1') {
-        expect(screen.getByAltText('Analyst One avatar')).toHaveAttribute('src', '/analyst.png');
+        expect(container.querySelector('header img[src="/analyst.png"]')).toBeInTheDocument();
       }
+    },
+  );
+
+  it('uses the durable title when the child agent is unavailable', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, agentId: 'agent_deleted', title: 'Historical Reviewer' },
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: 'Historical Reviewer' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toHaveAttribute(
+      'placeholder',
+      'com_endpoint_message_new: Historical Reviewer',
+    );
+  });
+
+  it('restores a self-spawn with the complete historical parent author', () => {
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, 'parent-conversation'],
+      [
+        {
+          messageId: 'parent-message',
+          parentMessageId: null,
+          conversationId: 'parent-conversation',
+          isCreatedByUser: false,
+          endpoint: EModelEndpoint.agents,
+          model: 'agent_deleted',
+          sender: 'Historical Parent',
+          iconURL: '/historical-parent.png',
+          text: '',
+        },
+      ],
+    );
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: {
+        ...completedView,
+        subagentType: 'self',
+        agentId: 'agent_deleted',
+        turns: completedTurns,
+      },
+    });
+    const { container } = render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{
+            ...selection,
+            subagentType: 'self',
+          }}
+        />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: 'Historical Parent' })).toBeInTheDocument();
+    expect(container.querySelector('header img[src="/historical-parent.png"]')).toBeInTheDocument();
+    const conversation = screen.getByTestId('subagent-conversation');
+    expect(conversation).toHaveAttribute('data-author', 'Historical Parent');
+    expect(within(conversation).getByRole('img', { hidden: true })).toHaveAttribute(
+      'src',
+      '/historical-parent.png',
+    );
+  });
+
+  it.each(['selection', 'durable'])(
+    'keeps a graph named self distinct from its parent (%s identity)',
+    (source) => {
+      queryClient.setQueryData<TMessage[]>(
+        [QueryKeys.messages, 'parent-conversation'],
+        [
+          {
+            messageId: 'parent-message',
+            parentMessageId: null,
+            conversationId: 'parent-conversation',
+            isCreatedByUser: false,
+            endpoint: EModelEndpoint.agents,
+            model: 'agent_deleted',
+            sender: 'Historical Parent',
+            iconURL: '/historical-parent.png',
+            text: '',
+          },
+        ],
+      );
+      mockUseSubagentThreadQuery.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        data: {
+          ...completedView,
+          agentId: undefined,
+          subagentType: 'self',
+          title: 'self',
+          subagentKind: source === 'durable' ? 'graph' : undefined,
+          turns: completedTurns,
+        },
+      });
+      const { container } = render(
+        <Root>
+          <SubagentThreadPanel
+            selection={{
+              ...selection,
+              subagentType: 'self',
+              subagentIdentity:
+                source === 'selection'
+                  ? { subagentKind: 'graph', subagentAgentId: 'graph:self' }
+                  : undefined,
+            }}
+          />
+        </Root>,
+      );
+      expect(screen.getByRole('heading', { name: 'self' })).toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-author', 'self');
+      expect(container.querySelector('header img[src="/historical-parent.png"]')).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    'preserves indexed graph identity before query success (failed: %s)',
+    (failed) => {
+      const child: ParentSubagentSummary = {
+        threadId: 'child-thread',
+        parentMessageId: 'parent-message',
+        subagentType: 'self',
+        subagentKind: 'graph',
+        title: 'self',
+        origin: 'tool',
+        status: 'completed',
+        latestTaskId: 'task',
+        tasks: [{ taskId: 'task', status: 'completed' }],
+        tasksTruncated: false,
+      };
+      mockParentChildrenByThread.set(child.threadId, child);
+      queryClient.setQueryData<TMessage[]>(
+        [QueryKeys.messages, 'parent-conversation'],
+        [
+          {
+            messageId: 'parent-message',
+            parentMessageId: null,
+            conversationId: 'parent-conversation',
+            isCreatedByUser: false,
+            endpoint: EModelEndpoint.agents,
+            model: 'agent_deleted',
+            sender: 'Historical Parent',
+            iconURL: '/historical-parent.png',
+            text: '',
+          },
+        ],
+      );
+      mockUseSubagentThreadQuery.mockReturnValue({ isLoading: !failed, isError: failed });
+      const { container } = render(
+        <Root>
+          <SubagentThreadPanel selection={{ ...selection, subagentType: 'self' }} />
+        </Root>,
+      );
+      expect(screen.getByRole('heading', { name: 'self' })).toBeInTheDocument();
+      expect(container.querySelector('header img[src="/historical-parent.png"]')).toBeNull();
+    },
+  );
+
+  it('refreshes dispatch-lane attribution when switching streamed tool calls in one parent turn', async () => {
+    const first: TMessage = {
+      messageId: 'parent-message',
+      parentMessageId: null,
+      conversationId: 'parent-conversation',
+      isCreatedByUser: false,
+      text: '',
+      endpoint: EModelEndpoint.agents,
+      model: 'agent-2',
+      sender: 'Analyst Two',
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          agentId: 'agent-2',
+          tool_call: { id: 'first-call', name: 'subagent', args: {} },
+        },
+      ],
+    };
+    queryClient.setQueryData([QueryKeys.messages, 'parent-conversation'], [first]);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, turns: completedTurns },
+    });
+    const { rerender } = render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, toolCallId: 'first-call' }} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst Two',
+    );
+    await act(async () => {
+      queryClient.setQueryData(
+        [QueryKeys.messages, 'parent-conversation'],
+        [
+          {
+            ...first,
+            content: [
+              ...(first.content ?? []),
+              {
+                type: ContentTypes.TOOL_CALL,
+                agentId: 'agent-1',
+                tool_call: { id: 'second-call', name: 'subagent', args: {} },
+              },
+            ],
+          },
+        ],
+      );
+    });
+    rerender(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, toolCallId: 'second-call' }} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst One',
+    );
+    await act(async () => {
+      queryClient.setQueryData(
+        [QueryKeys.messages, 'parent-conversation'],
+        [{ ...first, sender: 'Changed snapshot', text: 'Later chunk' }],
+      );
+    });
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst One',
+    );
+  });
+
+  it('switches repeated provider IDs between parallel dispatch occurrences', async () => {
+    const first: TMessage = {
+      messageId: 'parent-message',
+      parentMessageId: null,
+      conversationId: 'parent-conversation',
+      isCreatedByUser: false,
+      text: '',
+      endpoint: EModelEndpoint.agents,
+      model: 'agent-2',
+      sender: 'Analyst Two',
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          agentId: 'agent-2',
+          tool_call: { id: 'repeat', name: 'subagent', args: {} },
+        },
+      ],
+    };
+    queryClient.setQueryData([QueryKeys.messages, 'parent-conversation'], [first]);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, turns: completedTurns },
+    });
+    const { rerender } = render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...selection, durable: undefined, toolCallId: 'repeat', partIndex: 0 }}
+        />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst Two',
+    );
+    await act(async () => {
+      queryClient.setQueryData(
+        [QueryKeys.messages, 'parent-conversation'],
+        [
+          {
+            ...first,
+            content: [
+              ...(first.content ?? []),
+              {
+                type: ContentTypes.TOOL_CALL,
+                agentId: 'agent-1',
+                tool_call: { id: 'repeat', name: 'subagent', args: {} },
+              },
+            ],
+          },
+        ],
+      );
+    });
+    rerender(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...selection, durable: undefined, toolCallId: 'repeat', partIndex: 1 }}
+        />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst One',
+    );
+  });
+
+  it.each([false, true])(
+    'retains an indexed saved agent while durable details are unavailable (failed: %s)',
+    (failed) => {
+      const child: ParentSubagentSummary = {
+        threadId: 'child-thread',
+        parentMessageId: 'parent-message',
+        subagentType: 'agent-2',
+        subagentKind: 'agent',
+        agentId: 'agent-2',
+        title: 'Analyst Two',
+        origin: 'tool',
+        status: 'completed',
+        latestTaskId: 'task',
+        tasks: [{ taskId: 'task', status: 'completed' }],
+        tasksTruncated: false,
+      };
+      mockParentChildrenByThread.set(child.threadId, child);
+      mockUseSubagentThreadQuery.mockReturnValue({ isLoading: !failed, isError: failed });
+      render(
+        <Root>
+          <SubagentThreadPanel
+            selection={{ ...selection, subagentType: 'agent-2', subagentIdentity: undefined }}
+          />
+        </Root>,
+      );
+      expect(screen.getByRole('heading', { name: 'Analyst Two' })).toBeInTheDocument();
+    },
+  );
+
+  it.each(
+    ['Historical Reviewer', 'Subagent: Reviewer', 'self', 'agent_research_team'].flatMap((title) =>
+      [false, true].map((failed) => ({ title, failed })),
+    ),
+  )('retains an unavailable indexed agent title $title (failed: $failed)', ({ title, failed }) => {
+    const child: ParentSubagentSummary = {
+      threadId: 'child-thread',
+      parentMessageId: 'parent-message',
+      subagentType: 'agent_deleted',
+      subagentKind: 'agent',
+      agentId: 'agent_deleted',
+      title,
+      origin: 'tool',
+      status: 'completed',
+      latestTaskId: 'task',
+      tasks: [{ taskId: 'task', status: 'completed' }],
+      tasksTruncated: false,
+    };
+    mockParentChildrenByThread.set(child.threadId, child);
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: !failed, isError: failed });
+    const view = render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...selection, subagentType: 'agent_deleted', subagentIdentity: undefined }}
+        />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-author', title);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, agentId: 'agent_deleted', title },
+    });
+    view.rerender(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...selection, subagentType: 'agent_deleted', subagentIdentity: undefined }}
+        />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toHaveAttribute(
+      'placeholder',
+      `com_endpoint_message_new: ${title}`,
+    );
+  });
+
+  it('preserves a literal graph display title beginning with Subagent:', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: {
+        ...completedView,
+        agentId: undefined,
+        subagentKind: 'graph',
+        subagentType: 'Subagent: research',
+        title: 'Subagent: research',
+        turns: completedTurns,
+      },
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, subagentType: 'Subagent: research' }} />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: 'Subagent: research' })).toBeInTheDocument();
+  });
+
+  it.each(['self', 'researcher'])(
+    'resolves a restored %s dispatch by thread handle rather than its placeholder index',
+    (type) => {
+      const handle = (threadId: string) =>
+        JSON.stringify({
+          background_task_id: 'task',
+          subagent_thread_id: threadId,
+          tool: 'subagent',
+          subagent_type: type,
+          status: 'running',
+          message: 'Poll using background_task_id task.',
+        });
+      const dispatch: TMessage = {
+        messageId: 'parent-message',
+        parentMessageId: null,
+        conversationId: 'parent-conversation',
+        isCreatedByUser: false,
+        text: '',
+        endpoint: EModelEndpoint.agents,
+        model: 'agent-2',
+        sender: 'Analyst Two',
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            agentId: 'agent-2',
+            tool_call: {
+              id: 'repeat',
+              name: 'subagent',
+              args: { run_in_background: true },
+              output: handle('first-child'),
+            },
+          },
+          {
+            type: ContentTypes.TOOL_CALL,
+            agentId: 'agent-1',
+            tool_call: {
+              id: 'repeat',
+              name: 'subagent',
+              args: { run_in_background: true },
+              output: handle('child-thread'),
+            },
+          },
+        ],
+      };
+      queryClient.setQueryData([QueryKeys.messages, 'parent-conversation'], [dispatch]);
+      mockUseSubagentThreadQuery.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        data: { ...completedView, subagentType: type, agentId: 'agent-1', turns: completedTurns },
+      });
+      render(
+        <Root>
+          <SubagentThreadPanel
+            selection={{ ...selection, subagentType: type, toolCallId: 'repeat', partIndex: 0 }}
+          />
+        </Root>,
+      );
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+        'data-parent-author',
+        'Analyst One',
+      );
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+        'data-author',
+        'Analyst One',
+      );
+    },
+  );
+
+  it('attributes restored parallel-lane self turns to the validated spawning agent', () => {
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, 'parent-conversation'],
+      [
+        {
+          messageId: 'parent-message',
+          parentMessageId: null,
+          conversationId: 'parent-conversation',
+          isCreatedByUser: false,
+          text: '',
+          endpoint: EModelEndpoint.agents,
+          model: 'agent-2',
+          sender: 'Analyst Two',
+        },
+      ],
+    );
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, subagentType: 'self', agentId: 'agent-1', turns: completedTurns },
+    });
+    const { container } = render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, subagentType: 'self' }} />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: 'Analyst One' })).toBeInTheDocument();
+    expect(container.querySelector('header img[src="/analyst.png"]')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-author',
+      'Analyst One',
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-parent-author',
+      'Analyst One',
+    );
+  });
+
+  it('resolves a missing historical parent after its reply arrives and retains that author', async () => {
+    queryClient.setQueryData<TMessage[]>([QueryKeys.messages, 'parent-conversation'], []);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: {
+        ...completedView,
+        agentId: 'agent_deleted',
+        subagentType: 'self',
+        turns: completedTurns,
+      },
+    });
+    const { container } = render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, subagentType: 'self' }} />
+      </Root>,
+    );
+    expect(
+      screen.getByRole('heading', { name: 'com_ui_subagent_parent_agent' }),
+    ).toBeInTheDocument();
+    const reply: TMessage = {
+      messageId: 'reply',
+      parentMessageId: 'parent-message',
+      conversationId: 'parent-conversation',
+      isCreatedByUser: false,
+      endpoint: EModelEndpoint.agents,
+      model: 'agent_deleted',
+      sender: 'Late Parent',
+      iconURL: '/late.png',
+      text: '',
+    };
+    await act(async () => {
+      queryClient.setQueryData([QueryKeys.messages, 'parent-conversation'], [reply]);
+    });
+    expect(screen.getByRole('heading', { name: 'Late Parent' })).toBeInTheDocument();
+    expect(container.querySelector('header img[src="/late.png"]')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-author',
+      'Late Parent',
+    );
+    await act(async () => {
+      queryClient.setQueryData(
+        [QueryKeys.messages, 'parent-conversation'],
+        [{ ...reply, sender: 'Changed snapshot', iconURL: '/changed.png', text: 'Next chunk' }],
+      );
+    });
+    expect(screen.getByRole('heading', { name: 'Late Parent' })).toBeInTheDocument();
+    expect(container.querySelector('header img[src="/late.png"]')).toBeInTheDocument();
+  });
+
+  it.each([true, false])(
+    'names an unavailable event actor by its projected label (indexed: %s)',
+    (indexed) => {
+      const child: ParentSubagentSummary = {
+        threadId: 'child-thread',
+        parentMessageId: 'parent-message',
+        subagentType: 'agent_deleted',
+        subagentKind: 'agent',
+        agentId: 'agent_deleted',
+        title: 'Agent actor: reviewer',
+        origin: 'event',
+        actorId: 'reviewer',
+        status: 'completed',
+        latestTaskId: 'task',
+        tasks: [{ taskId: 'task', status: 'completed' }],
+        tasksTruncated: false,
+      };
+      if (indexed) {
+        mockParentChildrenByMessage = new Map([['parent-message', [child]]]);
+        mockParentChildrenByThread = new Map([[child.threadId, child]]);
+      }
+      mockUseSubagentThreadQuery.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        data: {
+          ...completedView,
+          agentId: 'agent_deleted',
+          title: child.title,
+          turns: completedTurns,
+        },
+      });
+      render(
+        <Root>
+          <SubagentThreadPanel
+            selection={{
+              ...selection,
+              event: { actorId: 'reviewer', progressKey: 'event-task:child-thread:task' },
+            }}
+          />
+        </Root>,
+      );
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+        'data-author',
+        'reviewer',
+      );
+      expect(screen.getByRole('heading', { name: 'reviewer' })).toBeInTheDocument();
+      expect(screen.queryByText('Agent actor: reviewer')).not.toBeInTheDocument();
     },
   );
 
@@ -514,10 +1202,9 @@ describe('SubagentThreadPanel', () => {
           />
         </Root>,
       );
-      expect(
-        screen.getByRole('heading', { name: 'com_ui_subagent_dialog_title: agent-1' }),
-      ).toBeInTheDocument();
-      expect(screen.queryByAltText('Analyst One avatar')).not.toBeInTheDocument();
+      /** A non-agent type is a readable name of its own, not an agent to look up. */
+      expect(screen.getByRole('heading', { name: 'agent-1' })).toBeInTheDocument();
+      expect(document.querySelector('img[src="/analyst.png"]')).toBeNull();
     },
   );
 
@@ -554,7 +1241,7 @@ describe('SubagentThreadPanel', () => {
       { keepPreviousData: true },
     );
     expect(mockUseSubagentActivityStream).toHaveBeenCalledWith(selection, false);
-    expect(screen.getByText('Research child')).toBeInTheDocument();
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
     expect(screen.queryByText('com_ui_subagent_depth')).not.toBeInTheDocument();
     expect(screen.getByText('Investigate the release.')).toBeInTheDocument();
     expect(screen.getByText('The release is ready.')).toBeInTheDocument();
@@ -632,13 +1319,33 @@ describe('SubagentThreadPanel', () => {
       isReadinessPending: false,
     });
 
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, 'parent-conversation'],
+      [
+        {
+          messageId: 'parent-message',
+          parentMessageId: null,
+          conversationId: 'parent-conversation',
+          isCreatedByUser: false,
+          endpoint: EModelEndpoint.agents,
+          model: 'agent-2',
+          sender: 'Analyst Two',
+          text: '',
+        } as unknown as TMessage,
+      ],
+    );
     render(
       <Root>
         <SubagentThreadPanel selection={selection} />
       </Root>,
     );
 
-    expect(screen.getByTestId('subagent-conversation')).toBeInTheDocument();
+    /** One name for the child everywhere it appears, and the dispatching agent
+     *  as the author of every briefing — never an id or a role. */
+    const conversation = screen.getByTestId('subagent-conversation');
+    expect(conversation).toHaveAttribute('data-author', 'Analyst One');
+    expect(conversation).toHaveAttribute('data-parent-author', 'Analyst Two');
+    expect(screen.getByRole('heading', { name: 'Analyst One' })).toBeInTheDocument();
     expect(screen.getAllByTestId('conversation-turn')).toHaveLength(2);
     expect(screen.getByText(/Initial request/)).toBeInTheDocument();
     expect(screen.getByText(/Follow-up request/)).toBeInTheDocument();
@@ -694,6 +1401,8 @@ describe('SubagentThreadPanel', () => {
     );
 
     const composer = screen.getByLabelText('com_ui_message_input');
+    /** Addressed by name, as main chat's composer addresses its agent. */
+    expect(composer).toHaveAttribute('placeholder', 'com_endpoint_message_new: Analyst One');
     fireEvent.change(composer, { target: { value: 'Check the primary source.' } });
     fireEvent.keyDown(composer, { key: 'Enter' });
     expect(mockControlMutate).not.toHaveBeenCalled();
@@ -1491,6 +2200,123 @@ describe('SubagentThreadPanel', () => {
     ).not.toBeInTheDocument();
   });
 
+  describe('a foreground call the server sent as a preview', () => {
+    const previewed: ActiveSubagentPanel = {
+      host: 'conversation',
+      parentConversationId: 'parent-conversation',
+      parentMessageId: 'parent-message',
+      toolCallId: 'foreground-call',
+      partIndex: 3,
+      subagentType: 'researcher',
+      prompt: 'Review this change.',
+      legacyOutput: 'Shortened final ans…',
+      contentPreview: { revision: 'rev-1', stepId: 'step-9', agentId: 'agent-2' },
+      initialProgress: 1,
+      isSubmitting: false,
+    };
+
+    beforeEach(() => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+    });
+
+    afterEach(() => {
+      mockUseToolCallPartQuery.mockImplementation(() => ({ data: undefined, isError: false }));
+    });
+
+    it('loads the stored part and never shows the shortened output as the activity', () => {
+      render(
+        <Root>
+          <SubagentThreadPanel selection={previewed} />
+        </Root>,
+      );
+
+      expect(mockUseToolCallPartQuery).toHaveBeenCalledWith(
+        {
+          conversationId: 'parent-conversation',
+          messageId: 'parent-message',
+          partIndex: 3,
+          toolCallId: 'foreground-call',
+          stepId: 'step-9',
+          agentId: 'agent-2',
+        },
+        { enabled: true },
+        'rev-1',
+      );
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'loading');
+      expect(screen.queryByText('Shortened final ans…')).not.toBeInTheDocument();
+    });
+
+    it('renders the stored transcript once it arrives', () => {
+      mockUseToolCallPartQuery.mockImplementation(() => ({
+        data: {
+          conversationId: 'parent-conversation',
+          messageId: 'parent-message',
+          partIndex: 3,
+          tool_call: {
+            id: 'foreground-call',
+            name: 'subagent',
+            args: '{"prompt":"Review this change, including the migration and its rollback."}',
+            output: 'Full final answer.',
+            subagent_content: [{ type: 'text', text: 'Stored review transcript.' }],
+          },
+        },
+        isError: false,
+      }));
+
+      render(
+        <Root>
+          <SubagentThreadPanel selection={previewed} />
+        </Root>,
+      );
+
+      expect(screen.getByText('Stored review transcript.')).toBeInTheDocument();
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'ready');
+      expect(
+        screen.getByText('Review this change, including the migration and its rollback.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Review this change.')).not.toBeInTheDocument();
+    });
+
+    it('reports a failed load with a retry instead of rendering the preview', () => {
+      const refetch = jest.fn().mockResolvedValue(undefined);
+      mockUseToolCallPartQuery.mockImplementation(() => ({
+        data: undefined,
+        isError: true,
+        refetch,
+      }));
+
+      render(
+        <Root>
+          <SubagentThreadPanel selection={previewed} />
+        </Root>,
+      );
+
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'error');
+      expect(screen.queryByText('Shortened final ans…')).not.toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent('com_ui_tool_content_error');
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      expect(refetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads nothing for a call that arrived in full', () => {
+      render(
+        <Root>
+          <SubagentThreadPanel selection={{ ...previewed, contentPreview: undefined }} />
+        </Root>,
+      );
+      expect(mockUseToolCallPartQuery).toHaveBeenCalledWith(
+        expect.anything(),
+        { enabled: false },
+        undefined,
+      );
+    });
+  });
+
   it('continues a completed durable agent task as an ordinary conversation snapshot', () => {
     mockUseSubagentThreadQuery.mockReturnValue({
       data: completedView,
@@ -2095,8 +2921,9 @@ describe('SubagentThreadPanel', () => {
     expect(screen.queryByTestId('shared-activity')).not.toBeInTheDocument();
   });
 
-  it('exposes the focus-trapped mobile overlay as a modal dialog', () => {
-    mockIsMobile = true;
+  it('exposes the scaled overlay as a modal above the fixed mobile breakpoint', () => {
+    mockViewportWidth = 800;
+    mockRemScale = 1.5;
     mockUseSubagentThreadQuery.mockReturnValue({
       data: completedView,
       isLoading: false,

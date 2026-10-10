@@ -100,6 +100,16 @@ test('nightly and default manual runs retain full-suite coverage on both stores'
   assertPartition(defaults[1], 'redis', 'full', 2);
 });
 
+test('PR and nightly matrices preserve both registered-email change modes on one memory shard', () => {
+  for (const matrix of [prMatrix, ...defaults]) {
+    const emailLanes = matrix.include.filter((lane) => lane.email_change === 'true');
+    assert.equal(emailLanes.length, 1);
+    assert.equal(emailLanes[0].stream_store, 'memory');
+    assert.match(emailLanes[0].shard, /^1\//);
+  }
+  assert.equal(shards.steps.filter((step) => step.if === "matrix.email_change == 'true'").length, 2);
+});
+
 test('manual PR coverage opts into the PR fallback matrix without bypassing the PR author gate', () => {
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.coverage.options, ['full', 'pr']);
   assert.match(
@@ -188,11 +198,12 @@ test('graduated spec skips keep the same pool across shards and remain opt-in', 
 test('the required gate still waits for all shards and rejects failures without fighting cancellation', () => {
   const gate = workflow.jobs.e2e;
   assert.equal(gate.name, 'e2e');
-  assert.deepEqual(gate.needs, ['codegraph_select', 'e2e_shards', 'mcp_tool_list_changed']);
+  assert.deepEqual(gate.needs, ['codegraph_select', 'e2e_shards', 'mcp_tool_list_changed', 'mcp_apps']);
   assert.equal(shards.strategy['fail-fast'], false);
   assert.match(gate.if, /!cancelled\(\)/);
   assert.match(shards.if, /!cancelled\(\)/);
   assert.match(gate.steps[0].if, /needs\.e2e_shards\.result != 'success'/);
+  assert.match(gate.steps[0].if, /needs\.mcp_apps\.result != 'success'/);
   assert.match(gate.steps[0].if, /needs\.mcp_tool_list_changed\.result != 'success'/);
   assert.match(gate.steps[0].if, /needs\.codegraph_select\.outputs\.mcp_run == 'false'/);
   assert.equal(gate.steps[0].run, 'exit 1');

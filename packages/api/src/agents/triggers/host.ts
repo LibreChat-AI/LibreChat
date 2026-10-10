@@ -1,6 +1,7 @@
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
-import type { CodeApprovalMode, TFile } from 'librechat-data-provider';
+import type { CodeApprovalMode, TFile, TReasoningOverride } from 'librechat-data-provider';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type {
   AgentContinueTriggerEnvelope,
   AgentFireTriggerEnvelope,
@@ -50,6 +51,7 @@ export interface AgentContinuationAdmissionSource {
 export type AgentTriggerContinuePreparation =
   | {
       status: 'ready';
+      scheduleMCPIdentity?: ScheduledMCPIdentity;
       input: string;
       parentMessageId: string;
       expectedPredecessorCreatedAt?: number;
@@ -61,6 +63,7 @@ export type AgentTriggerContinuePreparation =
       /** Parent-selected coding preference for a completion turn. Admission
        * revalidates it against live policy; event payloads cannot supply it. */
       codeApprovalMode?: CodeApprovalMode;
+      reasoningOverride?: TReasoningOverride;
       /** Trusted source identity committed by execution enrollment before the
        * provider-start fence opens. */
       admissionSource?: AgentContinuationAdmissionSource;
@@ -69,6 +72,8 @@ export type AgentTriggerContinuePreparation =
       releaseOnDefiniteFailure?: (error?: AgentTriggerExecutionError) => MaybePromise<void>;
       /** Commits the source handoff after generation admission. Failure is
        * outcome-ambiguous: the same delivery retries with the same request id. */
+      /** Durable possible-handoff marker written immediately before transport. */
+      beginDispatch?: () => MaybePromise<void>;
       settleOnAdmission?: (result: AgentTriggerContinueResult) => MaybePromise<void>;
     }
   | { status: 'settled' };
@@ -171,7 +176,13 @@ export interface AgentTriggerExecutionHostDeps {
 export interface AgentTriggerExecutionHost {
   dispatch: (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
+    },
   ) => Promise<AgentTriggerExecutionResult>;
 }
 
@@ -635,6 +646,7 @@ async function startRun(
     const url = mode === 'fire' ? fireUrl(baseUrl) : continueUrl(baseUrl);
     const fetcher: AgentTriggerFetch = deps.fetch ?? globalThis.fetch;
     let response: Response;
+    await readyPreparation?.beginDispatch?.();
     try {
       response = await fetcher(url, {
         method: 'POST',
@@ -677,6 +689,9 @@ async function startRun(
           ...(readyPreparation?.manualSkills != null && {
             manualSkills: readyPreparation.manualSkills,
           }),
+          ...(readyPreparation?.reasoningOverride != null && {
+            reasoningOverride: readyPreparation.reasoningOverride,
+          }),
           isContinued: false,
           isRegenerate: false,
           clientRequestId: context.idempotencyKey,
@@ -702,6 +717,19 @@ async function startRun(
                   expectedAction: envelope.expectedAction,
                 }),
                 ...(detachedCompletion == null ? {} : { internalCompletion: detachedCompletion }),
+              },
+            }),
+          ...(envelope.mode === 'continue' &&
+            envelope.event.source.type === 'internal' &&
+            ['subagent-completion', 'background-tool-completion'].includes(
+              envelope.event.source.id,
+            ) && {
+              agentCompletion: {
+                version: 1,
+                sourceId: envelope.event.source.id,
+                ...(readyPreparation?.scheduleMCPIdentity && {
+                  scheduleMCPIdentity: readyPreparation.scheduleMCPIdentity,
+                }),
               },
             }),
           ...(envelope.mode === 'fire' && {

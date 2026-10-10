@@ -1,4 +1,9 @@
-const { getRumProxyClientUrl, isEnabled, isRumProxyEnabled } = require('@librechat/api');
+const {
+  isEnabled,
+  isRumProxyEnabled,
+  getRumProxyClientUrl,
+  isRumClientLogsEnabled,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 
 const DEFAULT_RUM_SERVICE_NAME = 'librechat-web';
@@ -145,6 +150,7 @@ function getRumConfig() {
     advancedNetworkCapture,
     ...(sampleRate != null ? { sampleRate } : {}),
     ...(process.env.RUM_ENVIRONMENT ? { environment: process.env.RUM_ENVIRONMENT } : {}),
+    clientLogs: isRumClientLogsEnabled(),
   };
 }
 

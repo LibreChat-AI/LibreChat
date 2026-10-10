@@ -91,8 +91,13 @@ export async function waitForPersistedAgent(
   return latestAgent!;
 }
 
-export async function openAgentBuilder(page: Page) {
-  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+export async function openAgentBuilder(
+  page: Page,
+  { navigate = true }: { navigate?: boolean } = {},
+) {
+  if (navigate) {
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+  }
 
   const form = page.getByRole('form', { name: 'Agent configuration form' });
   /** Which control exists is a layout decision, not a timing one: the rail is
@@ -134,6 +139,20 @@ export async function openAgentBuilder(page: Page) {
   }
   await expect(form).toBeVisible();
   return form;
+}
+
+/** Closes the narrow-layout drawer `openAgentBuilder` opened, so it cannot
+ *  cover the composer. A no-op on the desktop layout, where the builder is a rail. */
+export async function closeMobileDrawer(page: Page) {
+  if ((page.viewportSize()?.width ?? DESKTOP_WIDTH) > NARROW_MAX_WIDTH) {
+    return;
+  }
+  const drawer = page.locator(`#${MOBILE_DRAWER_ID}`);
+  if (await drawer.evaluate((element) => element.hasAttribute('inert'))) {
+    return;
+  }
+  await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
+  await expect(drawer).toHaveAttribute('inert', /.*/);
 }
 
 export async function selectMockModel(page: Page, clickBackToBuilder = false) {

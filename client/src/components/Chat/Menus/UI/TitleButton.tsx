@@ -10,7 +10,7 @@ export default function TitleButton({ primaryText = '', secondaryText = '' }) {
   return (
     <Trigger asChild>
       <button
-        className="group flex cursor-pointer items-center gap-2 rounded-lg px-3 py-1.5 text-lg font-medium transition-colors duration-200 hover:bg-surface-hover radix-state-open:bg-surface-hover"
+        className="group hover:bg-surface-hover data-[state=open]:bg-surface-hover flex cursor-pointer items-center gap-2 rounded-lg px-3 py-1.5 text-lg font-medium transition-colors duration-200"
         aria-label={localize('com_ui_endpoint_menu')}
         aria-expanded={isExpanded}
         role="combobox"
@@ -20,9 +20,9 @@ export default function TitleButton({ primaryText = '', secondaryText = '' }) {
       >
         <div>
           <span className="text-text-primary"> {primaryText} </span>
-          {!!secondaryText && <span className="text-token-text-secondary">{secondaryText}</span>}
+          {!!secondaryText && <span className="text-text-secondary">{secondaryText}</span>}
         </div>
-        <ChevronDown className="text-token-text-secondary size-4" aria-hidden="true" />
+        <ChevronDown className="text-text-secondary size-4" aria-hidden="true" />
       </button>
     </Trigger>
   );

@@ -17,6 +17,7 @@ import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCPDomainNotAllowedError } from '~/mcp/errors';
 import { detectOAuthRequirement } from '~/mcp/oauth';
+import { isToolHiddenFromModel } from '~/mcp/apps';
 import { isEnabled } from '~/utils';
 
 /**
@@ -210,6 +211,9 @@ export class MCPServerInspector {
       keyServerName,
     );
     tools.forEach((tool) => {
+      if (isToolHiddenFromModel(tool)) {
+        return;
+      }
       const keyToolName = keyToolNames.get(tool.name) ?? tool.name;
       const name = `${keyToolName}${Constants.mcp_delimiter}${keyServerName}`;
       toolFunctions[name] = {

@@ -1,6 +1,12 @@
-import type { SubagentTaskConfig } from '@librechat/agents';
+import { FileContext } from 'librechat-data-provider';
+import type { AgentInputs, SubagentTaskConfig, SubagentResolveContext } from '@librechat/agents';
+import type { TFile } from 'librechat-data-provider';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
+import type { ProvisionToolContext } from '~/files/provision/callback';
+import type { ServerRequest } from '~/types';
+import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
+import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { createRun } from '~/agents/run';
 
@@ -60,7 +66,13 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { HookRegistry, InMemorySubagentTaskStore, Run } from '@librechat/agents';
+import {
+  Constants,
+  HookRegistry,
+  InMemorySubagentTaskStore,
+  Run,
+  executeHooks,
+} from '@librechat/agents';
 
 function makeAgent(overrides?: Record<string, unknown>) {
   return {
@@ -101,6 +113,370 @@ async function captureAgentsRunConfig(
 
 describe('createRun code-tool eager/session wiring', () => {
   beforeEach(() => jest.clearAllMocks());
+
+  it('includes queued paths in model instructions and reserves live paths across agents', async () => {
+    const file: TFile = {
+      file_id: 'uploaded',
+      filename: 'data.csv',
+      filepath: '/uploads/data.csv',
+      type: 'text/csv',
+      user: 'user-1',
+      object: 'file',
+      bytes: 10,
+      embedded: false,
+      usage: 0,
+      context: FileContext.message_attachment,
+    };
+    const agents = ['a', 'b'].map((id) =>
+      makeAgent({
+        id,
+        fileConsumers: { executeCode: true, fileSearch: false },
+        provisionState: {
+          codeEnvFiles: [{ ...file }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set(),
+          agentScopedFileIds: new Set(),
+        },
+        dynamicToolContextMap: { execute_code: 'Previously primed file context' },
+        additional_instructions: 'Agent instructions',
+        tool_resources:
+          id === 'a' ? { execute_code: { files: [{ ...file, file_id: 'existing' }] } } : undefined,
+      }),
+    );
+    const config = await captureAgentsRunConfig(agents);
+    const inputs = (config.graphConfig as { agents: Array<{ additional_instructions: string }> })
+      .agents;
+    const paths = inputs.map(
+      (input) => input.additional_instructions.match(/\/mnt\/data\/\S+/)?.[0],
+    );
+
+    expect(paths[0]).toBeDefined();
+    expect(paths[0]).not.toBe('/mnt/data/data.csv');
+    expect(paths[1]).toBe(paths[0]);
+    for (const input of inputs) {
+      expect(input.additional_instructions).toContain('Previously primed file context');
+      expect(input.additional_instructions).toContain('Agent instructions');
+      expect(input.additional_instructions).toContain('read or edit');
+      expect(input.additional_instructions).not.toContain(file.filepath);
+    }
+  });
+
+  it('preserves parent paths when a lazy child has independently planned colliding files', async () => {
+    const shared: TFile = {
+      file_id: 'shared',
+      filename: 'data.csv',
+      filepath: '/uploads/data.csv',
+      type: 'text/csv',
+      user: 'user-1',
+      object: 'file',
+      bytes: 10,
+      embedded: false,
+      usage: 0,
+      context: FileContext.message_attachment,
+      createdAt: '2026-09-01',
+    };
+    const child = makeAgent({
+      id: 'child',
+      fileConsumers: { executeCode: true, fileSearch: false },
+      provisionState: {
+        codeEnvFiles: [{ ...shared }, { ...shared, file_id: 'new', createdAt: '2026-10-01' }],
+        vectorDBFiles: [],
+        aliveFileIds: new Set(),
+        agentScopedFileIds: new Set(),
+        codeEnvDestinations: new Map([
+          ['shared', 'draft-alias.csv'],
+          ['new', 'data.csv'],
+        ]),
+      },
+    });
+    const resolve = jest.fn().mockResolvedValue(child);
+    const config = await captureRunConfig(
+      makeAgent({
+        fileConsumers: { executeCode: true, fileSearch: false },
+        provisionState: {
+          codeEnvFiles: [{ ...shared }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set(),
+          agentScopedFileIds: new Set(),
+        },
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve }],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    expect(parentInput.additional_instructions).toContain('/mnt/data/data.csv');
+    expect(resolve).not.toHaveBeenCalled();
+    const lazyConfig = parentInput.subagentConfigs?.[0];
+    const resolveInputs = lazyConfig?.resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    const childInput = await resolveInputs({
+      signal: new AbortController().signal,
+    } as SubagentResolveContext);
+    expect(childInput.additional_instructions).toContain('/mnt/data/data.csv');
+    expect(childInput.additional_instructions).not.toContain('draft-alias.csv');
+    expect(childInput.additional_instructions?.match(/\/mnt\/data\/data\.csv/g)).toHaveLength(1);
+  });
+
+  it('settles a lazy child only after the run has its inputs, so a late cancel is given back', async () => {
+    const controller = new AbortController();
+    const outcomes: string[] = [];
+    const settle = jest.fn(<T>(_context: unknown, resolveInputs: () => Promise<T>) =>
+      resolveInputs().then(
+        (inputs) => {
+          outcomes.push('kept');
+          return inputs;
+        },
+        (error: unknown) => {
+          outcomes.push('given back');
+          throw error;
+        },
+      ),
+    );
+    const resolve = jest.fn(async () => {
+      controller.abort(new Error('canceled after resolving'));
+      return makeAgent({ id: 'child' });
+    });
+    const config = await captureRunConfig(
+      makeAgent({
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve, settle }],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+
+    await expect(
+      resolveInputs({ signal: controller.signal } as SubagentResolveContext),
+    ).rejects.toThrow('canceled after resolving');
+    expect(outcomes).toEqual(['given back']);
+  });
+
+  it('declares per-call machine choices only on lazy children that have them', async () => {
+    const resolve = jest.fn().mockResolvedValue(makeAgent({ id: 'child' }));
+    const subagentHostArgs = {
+      machine: { description: 'Machine the subagent runs on.', enum: ['laptop'] },
+    };
+    const config = await captureRunConfig(
+      makeAgent({
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child', 'plain'] },
+        lazySubagentConfigs: [
+          { id: 'child', configId: 'child:1', resolve, subagentHostArgs },
+          { id: 'plain', configId: 'plain:1', resolve },
+        ],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    const [routed, plain] = parentInput.subagentConfigs ?? [];
+
+    expect(routed).toHaveProperty('hostArgs', subagentHostArgs);
+    expect(plain).not.toHaveProperty('hostArgs');
+  });
+
+  it.each([false, true])(
+    'reconciles a lazy child’s live setup file, parent already provisioned=%s',
+    async (parentProvisioned) => {
+      const shared: TFile = {
+        file_id: 'shared',
+        filename: 'data.csv',
+        filepath: '/uploads/data.csv',
+        type: 'text/csv',
+        user: 'user-1',
+        object: 'file',
+        bytes: 10,
+        embedded: false,
+        usage: 0,
+        context: FileContext.message_attachment,
+      };
+      const live = {
+        id: 'setup-remote',
+        name: 'data.csv',
+        storage_session_id: 'setup-store',
+        resource_id: 'child',
+        kind: 'agent' as const,
+      };
+      const child = {
+        ...makeAgent({
+          id: 'child',
+          primedCodeFiles: [live],
+          fileConsumers: { executeCode: true, fileSearch: false },
+          tool_resources: { execute_code: { files: [{ ...shared, file_id: 'setup' }] } },
+        }),
+        provisionState: {
+          codeEnvFiles: [{ ...shared }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set(['setup']),
+          agentScopedFileIds: new Set(['setup']),
+          codeEnvDestinations: new Map([['shared', 'safe-child-alias.csv']]),
+        },
+      };
+      const resolve = jest.fn().mockResolvedValue(child);
+      const provisionState = {
+        codeEnvFiles: [{ ...shared }],
+        vectorDBFiles: [],
+        aliveFileIds: new Set(),
+        agentScopedFileIds: new Set(),
+      };
+      const toolResources = { execute_code: { files: [] as TFile[] } };
+      const config = await captureRunConfig(
+        makeAgent({
+          fileConsumers: { executeCode: true, fileSearch: false },
+          provisionState,
+          tool_resources: toolResources,
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve }],
+        }),
+      );
+      const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+      expect(parentInput.additional_instructions).toContain('/mnt/data/data.csv');
+      expect(resolve).not.toHaveBeenCalled();
+      if (parentProvisioned) {
+        provisionState.codeEnvFiles = [];
+        toolResources.execute_code.files.push({ ...shared });
+      }
+      const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+      if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+      const childInput = await resolveInputs({
+        signal: new AbortController().signal,
+      } as SubagentResolveContext);
+      const childPath = child.provisionState?.codeEnvDestinations?.get(shared.file_id);
+      expect(childPath).toBeDefined();
+      expect(childPath).not.toBe('data.csv');
+      expect(childInput.additional_instructions).toContain(`/mnt/data/${childPath}`);
+      expect(parentInput.additional_instructions).toContain('/mnt/data/data.csv');
+      expect(childInput.initialSessions?.get('execute_code')?.files).toEqual([live]);
+    },
+  );
+
+  it.each(
+    [
+      ['data.csv', 'data.csv'],
+      ['data', 'data/input.csv'],
+      ['data/input.csv', 'data'],
+    ].flatMap(([parentName, childName]) =>
+      ['sequential', 'parallel'].map((mode) => ({ parentName, childName, mode })),
+    ),
+  )(
+    'reconciles repeated $mode lazy instances against $parentName while uploading $childName',
+    async ({ mode, parentName, childName }) => {
+      const parentFile: TFile = {
+        file_id: 'parent-file',
+        filename: parentName,
+        filepath: '/uploads/data.csv',
+        type: 'text/csv',
+        user: 'user-1',
+        object: 'file',
+        bytes: 10,
+        embedded: false,
+        usage: 0,
+        context: FileContext.message_attachment,
+      };
+      const childFile = {
+        ...parentFile,
+        file_id: 'child-file',
+        filename: childName,
+        context: FileContext.agents,
+      };
+      const makeChild = () => ({
+        ...makeAgent({ id: 'child' }),
+        fileConsumers: { executeCode: true, fileSearch: false },
+        dynamicToolContextMap: {},
+        provisionState: {
+          codeEnvFiles: [{ ...childFile }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set<string>(),
+          agentScopedFileIds: new Set([childFile.file_id]),
+          codeEnvDestinations: new Map([[childFile.file_id, childFile.filename]]),
+        },
+      });
+      const children = [makeChild(), makeChild()];
+      const resolve = jest
+        .fn()
+        .mockResolvedValueOnce(children[0])
+        .mockResolvedValueOnce(children[1]);
+      const parent = {
+        ...makeAgent(),
+        tool_resources: { execute_code: { files: [parentFile] } },
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve }],
+      };
+      const config = await captureRunConfig(parent);
+      const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+      const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+      if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+      const resolutionContext = {
+        signal: new AbortController().signal,
+      } as SubagentResolveContext;
+      const inputs =
+        mode === 'parallel'
+          ? await Promise.all(children.map(() => resolveInputs(resolutionContext)))
+          : [await resolveInputs(resolutionContext), await resolveInputs(resolutionContext)];
+      const names = children.map((child) =>
+        child.provisionState.codeEnvDestinations.get(childFile.file_id),
+      );
+      for (let index = 0; index < children.length; index++) {
+        expect(names[index]).toBeDefined();
+        expect(names[index]).not.toBe(childFile.filename);
+        expect(inputs[index].additional_instructions).toContain(`/mnt/data/${names[index]}`);
+      }
+      expect(names[1]).toBe(names[0]);
+      expect(children[0].provisionState.codeEnvDestinations).not.toBe(
+        children[1].provisionState.codeEnvDestinations,
+      );
+
+      const contexts = new Map<string, ProvisionToolContext>([[parent.id, parent]]);
+      const provisionToCodeEnv = jest.fn(
+        async ({ file, sandboxFilename }: { file: TFile; sandboxFilename?: string }) => {
+          const ref = {
+            kind: 'agent' as const,
+            id: 'child',
+            storage_session_id: 'child-store',
+            file_id: file.file_id,
+            sandboxFilename,
+          };
+          return {
+            referenceSet: { codeEnvRefs: { default: ref } },
+            refUpdate: { file_id: file.file_id, routeKey: 'default', ref },
+            sandboxFilename: sandboxFilename ?? file.filename,
+          };
+        },
+      );
+      const provision = createProvisionFilesCallback({
+        req: { user: { id: 'user-1' } } as ServerRequest,
+        agentToolContexts: contexts,
+        provisionToCodeEnv,
+        provisionToVectorDB: jest.fn(),
+        updateFile: jest.fn(),
+        updateCodeEnvRef: jest.fn(),
+        addEmbeddedEntity: jest.fn(),
+      });
+      for (const child of children) {
+        contexts.set(child.id, child);
+        const refs = await provision(['execute_code'], child.id);
+        const merged = mergeCodeFilesIntoContext(
+          {
+            session_id: 'parent-store',
+            files: [
+              {
+                id: parentFile.file_id,
+                storage_session_id: 'parent-store',
+                name: parentFile.filename,
+                resource_id: 'user-1',
+                kind: 'user',
+              },
+            ],
+          },
+          refs,
+        );
+        expect(merged?.files.map((file) => file.name)).toEqual([parentFile.filename, names[0]]);
+      }
+      expect(provisionToCodeEnv).toHaveBeenCalledTimes(1);
+      const earlierPlan = children[0].provisionState.codeEnvDestinations;
+      resolve.mockResolvedValueOnce(children[0]);
+      await resolveInputs(resolutionContext);
+      expect(children[0].provisionState.codeEnvDestinations).toBe(earlierPlan);
+    },
+  );
 
   it('excludes side-effecting/large-arg tools from eager execution', async () => {
     const runConfig = await captureRunConfig();
@@ -254,5 +630,141 @@ describe('createRun code-tool eager/session wiring', () => {
         new AbortController().signal,
       ),
     ).resolves.toEqual(expect.objectContaining({ updatedOutput: expect.any(String) }));
+  });
+});
+
+describe('attached-machine policy for lazily initialized graph members', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const attachedOn = (environmentId: string, commandExecution: 'allow' | 'deny') => ({
+    environmentType: 'attached',
+    environmentId,
+    codeEnvironmentConfigSchema: {
+      permissions: { commandExecution: { allowed: ['allow', 'ask', 'deny'], default: 'ask' } },
+    },
+    codeEnvironmentSettings: { permissions: { commandExecution } },
+  });
+
+  it('stops applying attached-machine policy to a routable child that resolved on managed code', async () => {
+    const choice = { ...attachedOn('buildbox', 'deny'), statefulSessions: true };
+    const resolve = jest
+      .fn()
+      .mockResolvedValue(
+        makeAgent({ id: 'child', codeExecutionContext: { environmentType: 'managed' } }),
+      );
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [
+            { id: 'child', configId: 'child:1', resolve, codeExecutionChoices: [choice] },
+          ],
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      hitlCapable: true,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    /** The attached-machine policy's own verdict, apart from the run's other approval hooks. */
+    const attachedVerdicts = async () => {
+      const verdicts: unknown[] = [];
+      for (const matcher of (runConfig.hooks as HookRegistry).getMatchers('PreToolUse')) {
+        for (const hook of matcher.hooks) {
+          const result = await hook(
+            {
+              hook_event_name: 'PreToolUse',
+              runId: 'run-1',
+              toolName: Constants.BASH_TOOL,
+              toolInput: { command: 'touch out.txt' },
+              toolUseId: 'call-1',
+              executingAgentId: 'child',
+            },
+            new AbortController().signal,
+          );
+          if (String(result.reason ?? '').includes('attached code environment')) {
+            verdicts.push(result.decision);
+          }
+        }
+      }
+      return verdicts;
+    };
+
+    expect(await attachedVerdicts()).toEqual(['ask']);
+
+    const [parentInput] = (runConfig.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    await resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext);
+
+    expect(await attachedVerdicts()).toEqual([]);
+  });
+
+  it('applies the policy of the machine a routed child sent its graph member to', async () => {
+    const definition = {
+      type: 'review_team',
+      name: 'Review team',
+      description: 'A one-member team',
+      agent_ids: ['member'],
+      edges: [],
+      entry_agent_id: 'member',
+      result_agent_id: 'member',
+    };
+    const routedMember = makeAgent({
+      id: 'member',
+      codeExecutionContext: attachedOn('buildbox', 'deny'),
+    });
+    const child = makeAgent({
+      id: 'child',
+      subagentGraphConfigs: [{ definition, memberConfigs: [routedMember] }],
+    });
+    const resolve = jest.fn().mockResolvedValue(child);
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [
+            {
+              id: 'child',
+              configId: 'child:1',
+              resolve,
+              subagentGraphMemberMetadata: [
+                { id: 'member', codeExecutionContext: attachedOn('laptop', 'allow') },
+              ],
+            },
+          ],
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      hitlCapable: true,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    const decide = async () =>
+      (
+        await executeHooks({
+          registry: runConfig.hooks as HookRegistry,
+          input: {
+            hook_event_name: 'PreToolUse',
+            runId: 'run-1',
+            toolName: Constants.BASH_TOOL,
+            toolInput: { command: 'ls' },
+            toolUseId: 'call-1',
+            executingAgentId: 'member',
+          },
+          matchQuery: Constants.BASH_TOOL,
+        })
+      ).decision;
+
+    expect(await decide()).toBe('allow');
+
+    const [parentInput] = (runConfig.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    await resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext);
+
+    expect(await decide()).toBe('deny');
   });
 });

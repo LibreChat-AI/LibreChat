@@ -28,11 +28,11 @@ export default function ListCard({
     : localize('com_ui_prompt_group_button_no_category', { name });
 
   return (
-    <div className="relative flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 pb-4 pt-3 text-start align-top text-[15px]">
+    <div className="relative flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 pt-3 pb-4 text-start align-top text-[15px]">
       {onClick && (
         <button
           type="button"
-          className="absolute inset-0 z-0 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+          className="focus-visible:ring-ring-primary absolute inset-0 z-0 rounded-xl focus:outline-hidden focus-visible:ring-2"
           onClick={onClick}
           aria-label={ariaLabel}
           aria-describedby={snippetId}
@@ -43,7 +43,7 @@ export default function ListCard({
           <CategoryIcon category={category} className="icon-md shrink-0" aria-hidden="true" />
           <Label
             id={titleId}
-            className="min-w-0 select-none truncate text-sm font-semibold text-text-primary"
+            className="text-text-primary min-w-0 truncate text-sm font-medium select-none"
             title={name}
           >
             {name}
@@ -54,7 +54,7 @@ export default function ListCard({
       </div>
       <div
         id={snippetId}
-        className="ellipsis max-w-full select-none text-balance pt-1 text-sm text-text-secondary"
+        className="ellipsis text-text-secondary max-w-full pt-1 text-sm text-balance select-none"
       >
         {snippet}
       </div>

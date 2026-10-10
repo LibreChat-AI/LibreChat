@@ -13,6 +13,7 @@ import {
   getHeaderPrefixForScreenReader,
   areMessageFieldsEqual,
   areMessageRowPropsEqual,
+  isSameTailRelation,
   isSubmittableMessage,
   createDualMessageContent,
 } from '../messages';
@@ -287,6 +288,55 @@ describe('getMessageTimestamp', () => {
     expect(() => getMessageTimestamp(iso, 'not a locale!!')).not.toThrow();
     expect(getMessageTimestamp(iso, 'not a locale!!')).not.toBeNull();
   });
+
+  /** Every message row formats its timestamp on each render; constructing the
+   *  Intl formatters per call made them the costliest function of a send. */
+  it('reuses its formatters across calls for the same locale and clock', () => {
+    const { DateTimeFormat, RelativeTimeFormat } = Intl;
+    const replaceIntl = (key: 'DateTimeFormat' | 'RelativeTimeFormat', value: unknown) =>
+      Object.defineProperty(Intl, key, { value, configurable: true, writable: true });
+    const constructed = { absolute: 0, relative: 0 };
+    replaceIntl(
+      'DateTimeFormat',
+      class extends DateTimeFormat {
+        constructor(...args: ConstructorParameters<typeof DateTimeFormat>) {
+          super(...args);
+          constructed.absolute += 1;
+        }
+      },
+    );
+    replaceIntl(
+      'RelativeTimeFormat',
+      class extends RelativeTimeFormat {
+        constructor(...args: ConstructorParameters<typeof RelativeTimeFormat>) {
+          super(...args);
+          constructed.relative += 1;
+        }
+      },
+    );
+    try {
+      const iso = new Date(NOW - 5 * 60 * 1000).toISOString();
+      const first = getMessageTimestamp(iso, 'fr-CA', true);
+      const second = getMessageTimestamp(iso, 'fr-CA', true);
+      getMessageTimestamp(iso, 'fr-CA', true);
+
+      expect(second).toEqual(first);
+      expect(constructed).toEqual({ absolute: 1, relative: 1 });
+
+      getMessageTimestamp(iso, 'fr-CA', false);
+      expect(constructed).toEqual({ absolute: 2, relative: 1 });
+    } finally {
+      replaceIntl('DateTimeFormat', DateTimeFormat);
+      replaceIntl('RelativeTimeFormat', RelativeTimeFormat);
+    }
+  });
+
+  it('keeps a formatter per clock format', () => {
+    const iso = new Date(2026, 5, 12, 15, 5).toISOString();
+
+    expect(getMessageTimestamp(iso, 'en-US', true)?.absolute).toMatch(/3:05\sPM/);
+    expect(getMessageTimestamp(iso, 'en-US', false)?.absolute).toMatch(/15:05/);
+  });
 });
 
 const noop = () => {};
@@ -326,6 +376,7 @@ const FIELD_MUTATIONS: Array<[string, Partial<TMessage>]> = [
   ['createdAt', { createdAt: '2026-07-02T00:00:00.000Z' }],
   ['depth', { depth: 3 }],
   ['isCreatedByUser', { isCreatedByUser: true }],
+  ['isUserSubmitted', { isUserSubmitted: true }],
   ['children length', { children: [makeFieldsMsg(), makeFieldsMsg()] }],
   ['content reference', { content: [] as TMessage['content'] }],
   ['model', { model: 'gpt-5' }],
@@ -408,6 +459,42 @@ describe('areMessageRowPropsEqual', () => {
         makeProps({ message: makeFieldsMsg({ text: 'edited' }) }),
       ),
     ).toBe(false);
+  });
+});
+
+describe('isSameTailRelation', () => {
+  const tailProps = (
+    messageId: string,
+    depth: number,
+    latestMessageId: string | undefined,
+    latestMessageDepth: number | undefined,
+  ) => ({
+    message: makeMessage({ messageId, depth }),
+    latestMessageId,
+    latestMessageDepth,
+  });
+
+  it('ignores a tail move that neither reaches nor leaves the row', () => {
+    expect(isSameTailRelation(tailProps('a', 1, 'b', 3), tailProps('a', 1, 'c_', 5))).toBe(true);
+    expect(isSameTailRelation(tailProps('a', 1, 'c_', 5), tailProps('a', 1, 'c', 5))).toBe(true);
+  });
+
+  it('re-renders the row the tail leaves', () => {
+    expect(isSameTailRelation(tailProps('b', 3, 'b', 3), tailProps('b', 3, 'c_', 5))).toBe(false);
+  });
+
+  it('re-renders the row the tail reaches', () => {
+    expect(isSameTailRelation(tailProps('c', 5, 'c_', 5), tailProps('c', 5, 'c', 5))).toBe(false);
+  });
+
+  it('re-renders when the tail depth reaches or leaves the row depth', () => {
+    expect(isSameTailRelation(tailProps('x', 3, 'b', 3), tailProps('x', 3, 'c', 5))).toBe(false);
+  });
+
+  it('re-renders when the tail becomes known or unknown', () => {
+    expect(isSameTailRelation(tailProps('a', 1, 'b', 3), tailProps('a', 1, undefined, 3))).toBe(
+      false,
+    );
   });
 });
 

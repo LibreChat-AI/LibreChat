@@ -17,7 +17,7 @@ import type {
   TCodeEnvironmentStatusResponse,
   TCodeEnvironmentsResponse,
 } from 'librechat-data-provider';
-import type { QueryFilters } from '@tanstack/react-query';
+import type { QueryFilters, UseQueryOptions } from '@tanstack/react-query';
 import type { SetterOrUpdater } from 'recoil';
 import type { CodeEnvironmentReconciliationRequest } from '~/store/codeEnvironmentReconciliation';
 import {
@@ -57,8 +57,14 @@ export function useCodeEnvironmentStatusQuery(id: string, enabled = true) {
   return useQuery(codeEnvironmentStatusOptions(id, enabled));
 }
 
-export function useCodeEnvironmentStatusQueries(ids: string[], enabled = true) {
-  return useQueries({ queries: ids.map((id) => codeEnvironmentStatusOptions(id, enabled)) });
+export function useCodeEnvironmentStatusQueries(
+  ids: string[],
+  enabled = true,
+  options?: Pick<UseQueryOptions, 'notifyOnChangeProps'>,
+) {
+  return useQueries({
+    queries: ids.map((id) => ({ ...codeEnvironmentStatusOptions(id, enabled), ...options })),
+  });
 }
 
 /** Refresh discovery, not the conversation draft or expanded agent editor records. */

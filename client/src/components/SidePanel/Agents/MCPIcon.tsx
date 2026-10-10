@@ -29,23 +29,23 @@ export default function MCPIcon({ icon, onIconChange, errorId }: MCPIconProps) {
         aria-label={localize('com_ui_upload_icon')}
         aria-invalid={errorId != null}
         aria-describedby={errorId}
-        className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border-2 border-dashed border-border-medium bg-surface-secondary p-0 hover:bg-surface-hover"
+        className="border-border-medium bg-surface-secondary hover:bg-surface-hover flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border-2 border-dashed p-0"
       >
         {icon ? (
           <CustomIcon
             src={icon}
             alt=""
-            className="h-full w-full rounded-xl object-cover text-text-primary"
+            className="text-text-primary h-full w-full rounded-xl object-cover"
           />
         ) : (
           <SquirclePlusIcon />
         )}
       </Button>
       <div className="flex flex-col gap-1">
-        <span className="token-text-secondary text-sm">
+        <span className="text-text-secondary text-sm">
           {localize('com_ui_icon')} {localize('com_ui_optional')}
         </span>
-        <span className="text-xs text-text-secondary">{localize('com_agents_mcp_icon_size')}</span>
+        <span className="text-text-secondary text-xs">{localize('com_agents_mcp_icon_size')}</span>
       </div>
       <input
         accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/gif,.gif,image/webp,.webp,image/svg+xml,.svg"

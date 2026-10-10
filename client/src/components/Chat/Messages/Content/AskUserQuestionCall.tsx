@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
+import { useCallback } from 'react';
 import { MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents, PartMetadata } from 'librechat-data-provider';
 import {
@@ -9,11 +8,11 @@ import {
 } from '~/utils/approval';
 import AskUserQuestionProgress from './AskUserQuestionProgress';
 import { useLocalize, useExpandCollapse } from '~/hooks';
+import { useToolExpansion } from './disclosure';
 import ProgressText from './ProgressText';
 import EmptyText from './Parts/EmptyText';
 import { TOOL_ROW_CLASSES } from './rows';
 import Container from './Container';
-import store from '~/store';
 
 /**
  * Static rendering of a COMPLETED (or abandoned) `ask_user_question` tool call —
@@ -48,25 +47,15 @@ export default function AskUserQuestionCall({
   onExpand?: () => void;
 }) {
   const localize = useLocalize();
-  const autoExpand = useRecoilValue(store.autoExpandTools);
-  const [expanded, setExpanded] = useState(autoExpand);
+  const [expanded, setExpanded] = useToolExpansion(true);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(expanded);
 
-  useEffect(() => {
-    if (autoExpand) {
-      setExpanded(true);
-    }
-  }, [autoExpand]);
-
   const toggleExpanded = useCallback(() => {
-    setExpanded((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
-  }, [onExpand]);
+    setExpanded(!expanded);
+    if (!expanded) {
+      onExpand?.();
+    }
+  }, [expanded, onExpand, setExpanded]);
 
   const question = parseAskUserQuestionArgs(args);
   const batch = parseAskUserQuestionsArgs(args);
@@ -157,10 +146,10 @@ export default function AskUserQuestionCall({
           subtitle={summary}
           icon={
             terminalFailure ? (
-              <TriangleAlert className="size-4 shrink-0 text-text-warning" aria-hidden="true" />
+              <TriangleAlert className="text-text-warning size-4 shrink-0" aria-hidden="true" />
             ) : (
               <MessageCircleQuestion
-                className="size-4 shrink-0 text-text-secondary"
+                className="text-text-secondary size-4 shrink-0"
                 aria-hidden="true"
               />
             )
@@ -179,15 +168,15 @@ export default function AskUserQuestionCall({
       )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
-          <div className="my-2 flex w-full flex-col gap-4 rounded-lg border border-border-light bg-surface-secondary p-4">
+          <div className="border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-4 rounded-lg border p-4">
             {batch != null ? (
               batch.questions.map((item, index) => (
                 <div
                   key={item.id}
-                  className={index > 0 ? 'border-t border-border-light pt-4' : undefined}
+                  className={index > 0 ? 'border-border-inset border-t pt-4' : undefined}
                 >
                   {item.header != null && (
-                    <p className="mb-1 text-xs font-medium text-text-secondary">{item.header}</p>
+                    <p className="text-text-secondary mb-1 text-xs font-medium">{item.header}</p>
                   )}
                   <QuestionBody
                     question={item.question}
@@ -210,7 +199,7 @@ export default function AskUserQuestionCall({
               />
             )}
             {terminalFailure && (
-              <p className="text-sm leading-relaxed text-text-secondary">
+              <p className="text-text-secondary text-sm leading-relaxed">
                 {localize('com_ui_question_failed_description')}
               </p>
             )}
@@ -248,27 +237,27 @@ function QuestionBody({
   return (
     <div className="min-w-0">
       {question.length > 0 && (
-        <p className="whitespace-pre-wrap text-sm font-medium leading-relaxed text-text-primary [overflow-wrap:anywhere]">
+        <p className="text-text-primary text-sm leading-relaxed font-medium [overflow-wrap:anywhere] whitespace-pre-wrap">
           {question}
         </p>
       )}
       {description != null && description.length > 0 && (
-        <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-text-secondary [overflow-wrap:anywhere]">
+        <p className="text-text-secondary mt-1 text-sm leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap">
           {description}
         </p>
       )}
       {typeof answer === 'string' && (
-        <div className="mt-2.5 border-l-2 border-border-medium pl-3">
-          <p className="text-xs font-medium text-text-secondary">
+        <div className="border-border-medium mt-2.5 border-l-2 pl-3">
+          <p className="text-text-secondary text-xs font-medium">
             {localize('com_ui_you_answered')}
           </p>
-          <p className="mt-0.5 whitespace-pre-wrap text-sm leading-relaxed text-text-primary [overflow-wrap:anywhere]">
+          <p className="text-text-primary mt-0.5 text-sm leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap">
             {formatAnswerLabel({ question, options, multiSelect }, answer)}
           </p>
         </div>
       )}
       {typeof answer !== 'string' && !failed && (
-        <p className="mt-2.5 text-sm italic text-text-secondary">
+        <p className="text-text-secondary mt-2.5 text-sm italic">
           {localize('com_ui_question_unanswered')}
         </p>
       )}

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect } from 'react';
+import { useState, useRef, useMemo, useEffect, useId } from 'react';
 import { Plus } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useLocation } from 'react-router-dom';
@@ -11,8 +11,8 @@ import {
   useAuthContext,
   activateCatalog,
 } from '~/hooks';
+import { PanelFooter, PanelContent, PanelHeader } from '~/components/ui';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
-import { PanelFooter, PanelContent } from '~/components/ui';
 import MCPServerCardSkeleton from './MCPServerCardSkeleton';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
 import MCPAdminSettings from './MCPAdminSettings';
@@ -22,6 +22,7 @@ import store from '~/store';
 
 export default function MCPBuilderPanel() {
   const localize = useLocalize();
+  const headingId = useId();
   const location = useLocation();
   /** The panel stays mounted while the sidebar is hidden (collapsed, mobile
    * drawer, or the insights route collapsing it), so only a visible panel
@@ -63,20 +64,15 @@ export default function MCPBuilderPanel() {
   return (
     <div
       role="region"
-      aria-label={localize('com_ui_mcp_servers')}
+      aria-labelledby={headingId}
       className="flex h-full w-full flex-col overflow-hidden pt-2"
     >
-      {/* Sticky header: Search + Add Button */}
-      <div className="shrink-0 px-3 pb-2">
-        <div className="flex items-center gap-2">
-          <FilterInput
-            inputId="mcp-filter"
-            label={localize('com_ui_filter_mcp_servers')}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            containerClassName="flex-1"
-          />
-          {hasCreateAccess && (
+      {/* Sticky header: title, create, search */}
+      <PanelHeader
+        title={localize('com_ui_mcp_servers')}
+        titleId={headingId}
+        action={
+          hasCreateAccess && (
             <MCPServerDialog
               open={showDialog}
               onOpenChange={setShowDialog}
@@ -89,9 +85,9 @@ export default function MCPBuilderPanel() {
                   render={
                     <Button
                       ref={addButtonRef}
-                      variant="outline"
+                      variant="ghost"
                       size="icon"
-                      className="size-9 shrink-0 bg-transparent"
+                      className="size-8 shrink-0"
                       onClick={() => setShowDialog(true)}
                       aria-label={localize('com_ui_add_mcp')}
                     >
@@ -101,9 +97,17 @@ export default function MCPBuilderPanel() {
                 />
               </OGDialogTrigger>
             </MCPServerDialog>
-          )}
-        </div>
-      </div>
+          )
+        }
+        search={
+          <FilterInput
+            inputId="mcp-filter"
+            label={localize('com_ui_filter_mcp_servers')}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        }
+      />
 
       {/* Only the list scrolls */}
       <PanelContent

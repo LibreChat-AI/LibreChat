@@ -4,6 +4,14 @@ const mockRegistry = {
 };
 const mockUpstreamTokenProvider = jest.fn().mockResolvedValue(null);
 const mockCreateOpenIDSessionTokenProvider = jest.fn(() => mockUpstreamTokenProvider);
+const defaultMCPAppsPolicy = {
+  enabled: false,
+  legacyHtmlEnabled: true,
+  maxAdmissionRequestsPerMinute: 240,
+  maxActiveViews: 3,
+  maxActionPreviewChars: 16384,
+  maxPersistedAppBytes: 1048576,
+};
 
 jest.mock('~/config', () => ({
   getMCPServersRegistry: jest.fn(() => mockRegistry),
@@ -13,6 +21,7 @@ jest.mock('~/config', () => ({
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   getTenantId: jest.fn(() => 'tenant-1'),
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
@@ -90,7 +99,7 @@ const {
   cacheMCPServerTools,
 } = require('~/server/services/Config');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
-const { getUserMCPAuthMap } = require('@librechat/api');
+const { getUserMCPAuthMap, STANDARD_MCP_CAPABILITY_PROFILE } = require('@librechat/api');
 const {
   createMCPTool,
   healMcpToolNames,
@@ -132,7 +141,12 @@ describe('getAssistantToolDefinitions', () => {
       },
       accessibleServerNames: ['app-server'],
     });
-    expect(getMCPServerTools).toHaveBeenCalledWith('u1', 'app-server', serverConfig);
+    expect(getMCPServerTools).toHaveBeenCalledWith(
+      'u1',
+      'app-server',
+      serverConfig,
+      STANDARD_MCP_CAPABILITY_PROFILE,
+    );
   });
 
   it('recovers and re-caches a referenced server when its slice is missing', async () => {
@@ -158,6 +172,8 @@ describe('getAssistantToolDefinitions', () => {
       serverTools: { [toolKey]: mcpDefinition },
       serverConfig,
       publicationGeneration: 'connection-generation',
+      publicationRevision: undefined,
+      capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
     });
   });
 
@@ -184,6 +200,8 @@ describe('getAssistantToolDefinitions', () => {
       serverConfig,
       userMCPAuthMap,
       upstreamTokenProvider: mockUpstreamTokenProvider,
+      recoveryPolicy: undefined,
+      mcpApps: defaultMCPAppsPolicy,
       oboIdentityContext: {
         appUserId: 'u1',
         openidSubject: undefined,

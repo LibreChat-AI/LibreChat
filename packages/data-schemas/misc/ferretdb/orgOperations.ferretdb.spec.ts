@@ -30,9 +30,12 @@ const MODEL_COUNT = Object.keys(MODEL_SCHEMAS).length;
 const NEW_MODEL = 'OrgEvent';
 const NEW_COLLECTION = 'orgevents';
 
-function registerModels(conn: Connection): Record<string, Model<unknown>> {
+function registerModels(
+  conn: Connection,
+  schemas: Record<string, Schema> = MODEL_SCHEMAS,
+): Record<string, Model<unknown>> {
   const models: Record<string, Model<unknown>> = {};
-  for (const [name, schema] of Object.entries(MODEL_SCHEMAS)) {
+  for (const [name, schema] of Object.entries(schemas)) {
     models[name] = conn.models[name] || conn.model(name, schema);
   }
   return models;
@@ -97,7 +100,7 @@ async function migrateOrg(
   schemas: Record<string, Schema>,
 ): Promise<MigrationResult> {
   const t0 = Date.now();
-  const models = registerModels(conn);
+  const models = registerModels(conn, schemas);
   const existingCollections = new Set(
     (await conn.db!.listCollections().toArray()).map((c) => c.name),
   );

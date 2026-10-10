@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   workspace:
-    name: Saved chat attach and offline detach (macOS)
+    name: Machine choices and saved chat transitions (macOS)
     runs-on: macos-latest
     timeout-minutes: 25
     env:
@@ -67,6 +67,15 @@ jobs:
           npm run build --prefix .native-code/service
           cp .native-code/service/src/matplotlib-async.py .native-code/service/.build-service/src/matplotlib-async.py
 
+      - name: Verify harness lifecycle and generation readiness
+        run: node --test e2e/byom/*.test.mjs
+
+      - name: Exercise agent machine choices and native worker isolation
+        env:
+          BYOM_WORKSPACE_TRANSITIONS: 'false'
+          BYOM_CODE_REPO: ${{ github.workspace }}/.native-code
+        run: node e2e/byom/run.mjs
+
       - name: Exercise saved-chat workspace transitions
         env:
           BYOM_WORKSPACE_TRANSITIONS: 'true'
@@ -85,6 +94,6 @@ jobs:
             echo '### Native workspace acceptance'
             echo "Head: \`$HEAD\`"
             echo "Result: $RESULT"
-            echo 'Scope: saved chat, agent switch without implicit access, no-workspace send/reload, explicit attach, approved native command, offline detach, continued chat/reload.'
+            echo 'Scope: native approvals, physical worker isolation, one agent choosing allowed machines in new chats, restored choices, fixed default, stopped-worker failure; saved chat, agent switch without implicit access, no-workspace send/reload, explicit attach, offline detach, continued chat/reload.'
             echo 'Worker: `67d75d859aee891923c40cde1db073489d74a424`. Platform: macOS Seatbelt. No Linux/WSL certification.'
           } >> "$GITHUB_STEP_SUMMARY"

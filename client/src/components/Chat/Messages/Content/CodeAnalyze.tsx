@@ -1,12 +1,10 @@
-import { useState, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Terminal } from 'lucide-react';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useLocalize } from '~/hooks';
+import { useToolExpansion } from './disclosure';
 import ProgressText from './ProgressText';
 import MarkdownLite from './MarkdownLite';
 import { cn } from '~/utils';
-import store from '~/store';
 
 export default function CodeAnalyze({
   initialProgress = 0.1,
@@ -21,23 +19,13 @@ export default function CodeAnalyze({
 }) {
   const localize = useLocalize();
   const progress = useProgress(initialProgress);
-  const autoExpand = useRecoilValue(store.autoExpandTools);
-  const [showCode, setShowCode] = useState(autoExpand);
-
-  useEffect(() => {
-    if (autoExpand) {
-      setShowCode(true);
-    }
-  }, [autoExpand]);
+  const [showCode, setShowCode] = useToolExpansion(true);
 
   const handleToggleCode = () => {
-    setShowCode((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
+    setShowCode(!showCode);
+    if (!showCode) {
+      onExpand?.();
+    }
   };
 
   const logs = outputs.reduce((acc, output) => {
@@ -71,7 +59,7 @@ export default function CodeAnalyze({
           icon={
             <Terminal
               className={cn(
-                'size-4 shrink-0 text-text-secondary',
+                'text-text-secondary size-4 shrink-0',
                 phase === 'running' && 'animate-pulse',
               )}
               aria-hidden="true"
@@ -80,18 +68,13 @@ export default function CodeAnalyze({
         />
       </div>
       {showCode && (
-        <div className="code-analyze-block mb-3 mt-0.5 overflow-hidden rounded-xl bg-black">
+        <div className="code-analyze-block bg-surface-code mt-0.5 mb-3 overflow-hidden rounded-xl">
           <MarkdownLite content={code ? `\`\`\`python\n${code}\n\`\`\`` : ''} />
           {logs && (
-            <div className="bg-gray-700 p-4 text-xs">
-              <div className="mb-1 text-gray-400">{localize('com_ui_result')}</div>
-              <div
-                className="prose flex flex-col-reverse text-white"
-                style={{
-                  color: 'white',
-                }}
-              >
-                <pre className="shrink-0">{logs}</pre>
+            <div className="bg-surface-tertiary p-4 text-xs">
+              <div className="text-text-secondary mb-1">{localize('com_ui_result')}</div>
+              <div className="prose flex flex-col-reverse">
+                <pre className="text-text-primary! shrink-0">{logs}</pre>
               </div>
             </div>
           )}

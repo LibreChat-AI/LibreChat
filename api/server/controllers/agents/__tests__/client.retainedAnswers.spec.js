@@ -222,6 +222,11 @@ describe('AgentClient retained answers', () => {
     client.user = 'user-123';
     client.processMemory = jest.fn();
     const rows = compactedBranch();
+    /** The stored count covers the whole response, including what preceded its summary. */
+    const storedResponseTokens = 5000;
+    const response = rows.find((row) => row.messageId === 'a2');
+    response.tokenCount = storedResponseTokens;
+    response.content.unshift({ type: ContentTypes.TEXT, text: 'Checking the pipeline.' });
     getMessages.mockResolvedValue(rows);
     /** The real loader: one read of the conversation, then the summary-bounded walk. */
     const cut = await client.loadHistory('convo-123', 'u3');
@@ -239,6 +244,10 @@ describe('AgentClient retained answers', () => {
     expect(text.indexOf(ANSWER_LINE)).toBeLessThan(text.indexOf(LATEST_TEXT));
     expect(text.endsWith(LATEST_TEXT)).toBe(true);
     expect(client.options.agent.additional_instructions ?? '').not.toContain(ANSWER_LINE);
+    expect(text).toContain('Deployed.');
+    expect(text).not.toContain('Checking the pipeline.');
+    expect(tokenCountMap.a2).toBeGreaterThan(0);
+    expect(tokenCountMap.a2).toBeLessThan(storedResponseTokens);
     expect(cut[1].text).toBe(LATEST_TEXT);
     expect(cut[1].content).toBeUndefined();
     expect(counts[prompt.length - 1]).toBe(tokenCountMap.u3);

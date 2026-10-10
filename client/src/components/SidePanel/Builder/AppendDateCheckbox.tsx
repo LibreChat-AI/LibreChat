@@ -39,23 +39,23 @@ export default function AppendDateCheckbox({ control, setValue }: AppendDateChec
                 id="append_current_datetime"
                 checked={field.value}
                 onCheckedChange={handleChange}
-                className="relative float-left mr-2 inline-flex h-4 w-4 cursor-pointer"
+                className="relative float-left mr-2 inline-flex cursor-pointer"
                 value={field.value.toString()}
                 aria-labelledby="append-date-label"
               />
             )}
           />
-          <div className="flex items-center space-x-2">
+          <div className="text-text-tertiary flex items-center space-x-2">
             <label
               id="append-date-label"
               htmlFor="append_current_datetime"
-              className="form-check-label text-token-text-primary w-full cursor-pointer"
+              className="form-check-label text-text-primary w-full cursor-pointer"
             >
               {localize('com_assistants_append_date')}
             </label>
             <HoverCardTrigger>
               <CircleHelpIcon
-                className="h-5 w-5 text-gray-500"
+                className="h-5 w-5"
                 aria-label={localize('com_assistants_append_date_tooltip')}
               />
             </HoverCardTrigger>
@@ -63,7 +63,7 @@ export default function AppendDateCheckbox({ control, setValue }: AppendDateChec
           <HoverCardPortal>
             <HoverCardContent side={ESide.Top} className="w-80">
               <div className="space-y-2">
-                <p className="text-sm text-gray-600 dark:text-gray-300">
+                <p className="text-text-secondary text-sm">
                   {localize('com_assistants_append_date_tooltip')}
                 </p>
               </div>

@@ -6,14 +6,15 @@ import {
   ResetPassword,
   ApiErrorWatcher,
   TwoFactorScreen,
+  TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
-import { MarketplaceProvider } from '~/components/Agents/MarketplaceContext';
-import AgentMarketplace from '~/components/Agents/Marketplace';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import RouteErrorBoundary from './RouteErrorBoundary';
 import StartupLayout from './Layouts/Startup';
+import MarketplaceRoute from './Marketplace';
 import LoginLayout from './Layouts/Login';
 import dashboardRoutes from './Dashboard';
 import WithRum from '~/lib/rum/WithRum';
@@ -32,27 +33,27 @@ const AuthLayout = () => (
 );
 
 const loadInlinePromptsView = () =>
-  import('~/components/Prompts/layouts/InlinePromptsView').then((m) => ({
+  importWithRecovery(() => import('~/components/Prompts/layouts/InlinePromptsView')).then((m) => ({
     Component: m.default,
   }));
 
 const loadSkillsView = () =>
-  import('~/components/Skills/layouts/SkillsView').then((m) => ({
+  importWithRecovery(() => import('~/components/Skills/layouts/SkillsView')).then((m) => ({
     Component: m.default,
   }));
 
 const loadInsightsView = () =>
-  import('~/components/Insights').then((m) => ({
+  importWithRecovery(() => import('~/components/Insights')).then((m) => ({
     Component: m.default,
   }));
 
 const loadProjectsView = () =>
-  import('~/components/Projects').then((m) => ({
+  importWithRecovery(() => import('~/components/Projects')).then((m) => ({
     Component: m.ProjectsView,
   }));
 
 const loadProjectWorkspace = () =>
-  import('~/components/Projects').then((m) => ({
+  importWithRecovery(() => import('~/components/Projects')).then((m) => ({
     Component: m.ProjectWorkspace,
   }));
 
@@ -109,92 +110,93 @@ export const router = createBrowserRouter(
       errorElement: <RouteErrorBoundary />,
       children: [
         {
-          path: '/',
-          element: <LoginLayout />,
+          errorElement: <RouteErrorBoundary />,
           children: [
             {
-              path: 'login',
-              element: <Login />,
+              path: '/',
+              element: <LoginLayout />,
+              children: [
+                {
+                  path: 'login',
+                  element: <Login />,
+                },
+                {
+                  path: 'login/2fa',
+                  element: <TwoFactorScreen />,
+                },
+                {
+                  path: 'login/2fa/setup',
+                  element: <TwoFactorSetupScreen />,
+                },
+              ],
             },
+            dashboardRoutes,
             {
-              path: 'login/2fa',
-              element: <TwoFactorScreen />,
-            },
-          ],
-        },
-        dashboardRoutes,
-        {
-          path: '/',
-          element: <Root />,
-          children: [
-            {
-              index: true,
-              element: <Navigate to="/c/new" replace={true} />,
-            },
-            {
-              path: 'c/:conversationId?',
-              element: <ChatRoute />,
-            },
-            {
-              path: 'search',
-              element: <Search />,
-            },
-            {
-              path: 'prompts',
-              element: <Navigate to="/c/new" replace={true} />,
-            },
-            {
-              /** Prompts are created from a dialog, so there is no "new" page to land on */
-              path: 'prompts/new',
-              element: <Navigate to="/c/new" replace={true} />,
-            },
-            {
-              path: 'prompts/:promptId',
-              lazy: loadInlinePromptsView,
-            },
-            {
-              path: 'skills',
-              lazy: loadSkillsView,
-            },
-            {
-              path: 'insights',
-              lazy: loadInsightsView,
-            },
-            {
-              path: 'skills/new',
-              lazy: loadSkillsView,
-            },
-            {
-              path: 'skills/:skillId',
-              lazy: loadSkillsView,
-            },
-            {
-              path: 'skills/:skillId/edit',
-              lazy: loadSkillsView,
-            },
-            {
-              path: 'projects',
-              lazy: loadProjectsView,
-            },
-            {
-              path: 'projects/:projectId',
-              lazy: loadProjectWorkspace,
-            },
-            {
-              path: 'agents',
-              element: (
-                <MarketplaceProvider>
-                  <AgentMarketplace />
-                </MarketplaceProvider>
-              ),
-            },
-            {
-              path: 'agents/:category',
-              element: (
-                <MarketplaceProvider>
-                  <AgentMarketplace />
-                </MarketplaceProvider>
-              ),
+              path: '/',
+              element: <Root />,
+              children: [
+                {
+                  index: true,
+                  element: <Navigate to="/c/new" replace={true} />,
+                },
+                {
+                  path: 'c/:conversationId?',
+                  element: <ChatRoute />,
+                },
+                {
+                  path: 'search',
+                  element: <Search />,
+                },
+                {
+                  path: 'prompts',
+                  element: <Navigate to="/c/new" replace={true} />,
+                },
+                {
+                  /** Prompts are created from a dialog, so there is no "new" page to land on */
+                  path: 'prompts/new',
+                  element: <Navigate to="/c/new" replace={true} />,
+                },
+                {
+                  path: 'prompts/:promptId',
+                  lazy: loadInlinePromptsView,
+                },
+                {
+                  path: 'skills',
+                  lazy: loadSkillsView,
+                },
+                {
+                  path: 'insights',
+                  lazy: loadInsightsView,
+                },
+                {
+                  path: 'skills/new',
+                  lazy: loadSkillsView,
+                },
+                {
+                  path: 'skills/:skillId',
+                  lazy: loadSkillsView,
+                },
+                {
+                  path: 'skills/:skillId/edit',
+                  lazy: loadSkillsView,
+                },
+                {
+                  path: 'projects',
+                  lazy: loadProjectsView,
+                },
+                {
+                  path: 'projects/:projectId',
+                  lazy: loadProjectWorkspace,
+                },
+                {
+                  path: 'agents',
+                  element: <MarketplaceRoute />,
+                },
+                {
+                  path: 'agents/:category',
+                  element: <MarketplaceRoute />,
+                },
+              ],
             },
           ],
         },

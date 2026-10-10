@@ -1,11 +1,5 @@
-const { scopedCacheKey } = require('@librechat/data-schemas');
-const {
-  Time,
-  CacheKeys,
-  SEPARATORS,
-  parseTextParts,
-  findLastSeparatorIndex,
-} = require('librechat-data-provider');
+const { createSpeechChunkProcessor } = require('@librechat/api');
+const { CacheKeys, SEPARATORS, findLastSeparatorIndex } = require('librechat-data-provider');
 const { getLogStores } = require('~/cache');
 const { getMessage } = require('~/models');
 
@@ -51,88 +45,18 @@ function getRandomVoiceId(voiceIds) {
  * @property {string[]} normalizedAlignment.chars
  */
 
-const MAX_NOT_FOUND_COUNT = 6;
-const MAX_NO_CHANGE_COUNT = 10;
-
 /**
  * @param {string} user
  * @param {string} messageId
- * @returns {() => Promise<{ text: string, isFinished: boolean }[]>}
+ * @returns {() => Promise<{ text: string, isFinished: boolean }[] | string>}
  */
 function createChunkProcessor(user, messageId) {
-  let notFoundCount = 0;
-  let noChangeCount = 0;
-  let processedText = '';
-  if (!messageId) {
-    throw new Error('Message ID is required');
-  }
-
-  const messageCache = getLogStores(CacheKeys.MESSAGES);
-  // Captured at creation time — must be called within an active request ALS scope
-  const cacheKey = scopedCacheKey(messageId);
-
-  /**
-   * @returns {Promise<{ text: string, isFinished: boolean }[] | string>}
-   */
-  async function processChunks() {
-    if (notFoundCount >= MAX_NOT_FOUND_COUNT) {
-      return `Message not found after ${MAX_NOT_FOUND_COUNT} attempts`;
-    }
-
-    if (noChangeCount >= MAX_NO_CHANGE_COUNT) {
-      return `No change in message after ${MAX_NO_CHANGE_COUNT} attempts`;
-    }
-
-    /** @type { string | { text: string; complete: boolean } } */
-    let message = await messageCache.get(cacheKey);
-    if (!message) {
-      message = await getMessage({ user, messageId });
-    }
-
-    if (!message) {
-      notFoundCount++;
-      return [];
-    } else {
-      const text = message.content?.length > 0 ? parseTextParts(message.content) : message.text;
-      messageCache.set(
-        cacheKey,
-        {
-          text,
-          complete: true,
-        },
-        Time.FIVE_MINUTES,
-      );
-    }
-
-    const text = typeof message === 'string' ? message : message.text;
-    const complete = typeof message === 'string' ? false : (message.complete ?? true);
-
-    if (text === processedText) {
-      noChangeCount++;
-    }
-
-    const remainingText = text.slice(processedText.length);
-    const chunks = [];
-
-    if (!complete && remainingText.length >= 20) {
-      const separatorIndex = findLastSeparatorIndex(remainingText);
-      if (separatorIndex !== -1) {
-        const chunkText = remainingText.slice(0, separatorIndex + 1);
-        chunks.push({ text: chunkText, isFinished: false });
-        processedText += chunkText;
-      } else {
-        chunks.push({ text: remainingText, isFinished: false });
-        processedText = text;
-      }
-    } else if (complete && remainingText.trim().length > 0) {
-      chunks.push({ text: remainingText.trim(), isFinished: true });
-      processedText = text;
-    }
-
-    return chunks;
-  }
-
-  return processChunks;
+  return createSpeechChunkProcessor({
+    user,
+    messageId,
+    cache: getLogStores(CacheKeys.MESSAGES),
+    getMessage,
+  });
 }
 
 /**

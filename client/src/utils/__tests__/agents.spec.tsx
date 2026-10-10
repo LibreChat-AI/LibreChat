@@ -1,8 +1,8 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import { getAgentAvatarUrl, renderAgentAvatar, getContactDisplayName } from '../agents';
 import type t from 'librechat-data-provider';
+import { getAgentAvatarUrl, renderAgentAvatar, getContactDisplayName } from '../agents';
 
 // Mock the Feather icon from lucide-react
 jest.mock('lucide-react', () => ({
@@ -118,20 +118,6 @@ describe('Agent Utilities', () => {
 
       const container = screen.getByAltText('Test Agent avatar').parentElement;
       expect(container).toHaveClass('custom-class');
-    });
-
-    it('should handle showBorder option', () => {
-      const agent = {
-        id: '1',
-        name: 'Test Agent',
-        avatar: '/test-avatar.png',
-      } as unknown as t.Agent;
-
-      const { rerender } = render(<div>{renderAgentAvatar(agent, { showBorder: true })}</div>);
-      expect(screen.getByAltText('Test Agent avatar')).toHaveClass('border-1');
-
-      rerender(<div>{renderAgentAvatar(agent, { showBorder: false })}</div>);
-      expect(screen.getByAltText('Test Agent avatar')).not.toHaveClass('border-1');
     });
   });
 

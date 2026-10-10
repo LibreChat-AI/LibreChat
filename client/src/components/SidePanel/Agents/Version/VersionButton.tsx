@@ -13,6 +13,7 @@ const VersionButton = ({ setActivePanel }: VersionButtonProps) => {
   return (
     <Button
       variant="subtle"
+      shape="theme"
       onClick={() => setActivePanel(Panel.version)}
       aria-label={localize('com_ui_agent_version')}
       className="h-9 w-full px-3"

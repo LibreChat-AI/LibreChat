@@ -10,7 +10,8 @@ import {
   type ReactNode,
 } from 'react';
 import throttle from 'lodash/throttle';
-import { Spinner } from '@librechat/client';
+import { MessagesSquare } from 'lucide-react';
+import { Button, EmptyState, Spinner, useRemScale } from '@librechat/client';
 import { AutoSizer, CellMeasurer, CellMeasurerCache, List } from 'react-virtualized';
 import type { TConversation } from 'librechat-data-provider';
 import type { MeasuredCellParent } from '~/components/Conversations/Conversations';
@@ -27,8 +28,7 @@ type ChatSortField = 'updatedAt' | 'createdAt';
 type FlattenedItem =
   | { type: 'date'; groupName: string }
   | { type: 'convo'; convo: TConversation }
-  | { type: 'loading' }
-  | { type: 'empty' };
+  | { type: 'loading' };
 
 interface ProjectChatListProps {
   conversations: TConversation[];
@@ -53,8 +53,8 @@ const MeasuredRow: FC<MeasuredRowProps> = memo(
   ({ cache, rowKey, parent, index, style, children }) => (
     <CellMeasurer cache={cache} columnIndex={0} key={rowKey} parent={parent} rowIndex={index}>
       {({ registerChild }) => (
-        <div ref={registerChild as React.LegacyRef<HTMLDivElement>} style={style}>
-          {children}
+        <div ref={registerChild as React.LegacyRef<HTMLDivElement>} style={style} role="row">
+          <div role="gridcell">{children}</div>
         </div>
       )}
     </CellMeasurer>
@@ -66,8 +66,8 @@ MeasuredRow.displayName = 'ProjectWorkspaceMeasuredRow';
 const LoadingRow = memo(() => {
   const localize = useLocalize();
   return (
-    <div className="flex items-center justify-center gap-2 py-4 text-sm text-text-secondary">
-      <Spinner className="text-text-primary" />
+    <div className="text-text-secondary flex items-center justify-center gap-2 py-4 text-sm">
+      <Spinner className="shrink-0" />
       <span>{localize('com_ui_loading')}</span>
     </div>
   );
@@ -91,32 +91,31 @@ const ConversationRow = memo(
     return (
       <article
         className={cn(
-          'group/project-chat mb-2 flex items-center rounded-2xl border border-border-light bg-surface-secondary',
-          'transition-colors hover:bg-surface-hover',
+          'group/project-chat border-border-light bg-surface-secondary mb-2 flex items-center rounded-2xl border',
+          'hover:bg-surface-hover transition-colors',
           isMenuOpen && 'bg-surface-hover',
         )}
       >
-        <button
+        <Button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-3.5 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+          variant="card"
+          size="row"
+          className="min-w-0 flex-1"
           onClick={() => navigateToConvo(conversation)}
         >
           <span className="flex h-10 w-10 shrink-0 items-center justify-center">
             <ConversationEndpointIcon conversation={conversation} size={40} context="landing" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-text-primary">{title}</span>
-            <span className="block truncate text-xs tabular-nums text-text-secondary">
+            <span className="text-text-primary block truncate text-sm font-medium">{title}</span>
+            <span className="text-text-secondary block truncate text-xs tabular-nums">
               {formattedDate}
             </span>
           </span>
           {isGenerating ? (
-            <Spinner
-              className="h-4 w-4 shrink-0 text-text-primary"
-              aria-label={localize('com_ui_generating')}
-            />
+            <Spinner className="h-4 w-4 shrink-0" aria-label={localize('com_ui_generating')} />
           ) : null}
-        </button>
+        </Button>
         {conversationId ? (
           <div className="pr-2">
             <ProjectChatOptions
@@ -145,7 +144,9 @@ const ProjectChatList = ({
   emptyLabel,
   loadMore,
 }: ProjectChatListProps) => {
+  const localize = useLocalize();
   const { data: activeJobsData } = useActiveJobs();
+  const remScale = useRemScale();
   const activeJobIds = useMemo(
     () => new Set(activeJobsData?.activeJobIds ?? []),
     [activeJobsData?.activeJobIds],
@@ -153,9 +154,6 @@ const ProjectChatList = ({
   const flattenedItems = useMemo(() => {
     if (isLoading) {
       return [{ type: 'loading' as const }];
-    }
-    if (!conversations.length) {
-      return [{ type: 'empty' as const }];
     }
 
     const items: FlattenedItem[] = [];
@@ -176,7 +174,7 @@ const ProjectChatList = ({
     () =>
       new CellMeasurerCache({
         fixedWidth: true,
-        defaultHeight: 52,
+        defaultHeight: Math.round(52 * remScale),
         keyMapper: (index) => {
           const item = flattenedItemsRef.current[index];
           if (!item) {
@@ -191,7 +189,7 @@ const ProjectChatList = ({
           return `project-workspace-${item.type}`;
         },
       }),
-    [],
+    [remScale],
   );
 
   const listRef = useRef<List | null>(null);
@@ -219,14 +217,6 @@ const ProjectChatList = ({
         );
       }
 
-      if (item.type === 'empty') {
-        return (
-          <MeasuredRow key={key} {...rowProps}>
-            <div className="px-3 py-14 text-center text-sm text-text-secondary">{emptyLabel}</div>
-          </MeasuredRow>
-        );
-      }
-
       if (item.type === 'date') {
         return (
           <MeasuredRow key={key} {...rowProps}>
@@ -246,7 +236,7 @@ const ProjectChatList = ({
         </MeasuredRow>
       );
     },
-    [activeJobIds, cache, emptyLabel, flattenedItems],
+    [activeJobIds, cache, flattenedItems],
   );
 
   const getRowHeight = useCallback(
@@ -263,11 +253,23 @@ const ProjectChatList = ({
     [flattenedItems.length, hasNextPage, throttledLoadMore],
   );
 
+  /** Outside the virtualized list: as a measured row the message sits at the top of a
+   *  full-height viewport, and the panel is the thing that should center it. */
+  if (!isLoading && !conversations.length) {
+    return (
+      <div className="min-h-[280px] flex-1">
+        <EmptyState icon={MessagesSquare} description={emptyLabel} className="h-full" />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-[280px] flex-1 overflow-hidden">
+    <div className="min-h-[17.5rem] flex-1 overflow-hidden">
       <AutoSizer>
         {({ width, height }) => (
           <List
+            aria-label={localize('com_ui_chats')}
+            containerRole="rowgroup"
             ref={listRef}
             width={width}
             height={height}
@@ -277,7 +279,7 @@ const ProjectChatList = ({
             deferredMeasurementCache={cache}
             overscanRowCount={8}
             onRowsRendered={handleRowsRendered}
-            className="outline-none"
+            className="outline-hidden"
             style={{ outline: 'none' }}
           />
         )}

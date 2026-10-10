@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo } from 'react';
+import { useSetAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { useToastContext } from '@librechat/client';
 import { useMatch, useNavigate } from 'react-router-dom';
-import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
+import { PermissionTypes, Permissions, isForcedTemporaryRetention } from 'librechat-data-provider';
 import type { ShortcutBinding } from '~/utils/shortcuts';
 import type { ShortcutOverride } from '~/store/misc';
 import {
@@ -14,10 +15,12 @@ import {
   isMacPlatform,
   parseBinding,
 } from '~/utils/shortcuts';
+import { useArchiveConvoMutation, useGetStartupConfig } from '~/data-provider';
 import { mainTextareaId, NotificationSeverity } from '~/common';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
-import { useArchiveConvoMutation } from '~/data-provider';
+import { showFilesDialogAtom } from '~/store/filesDialog';
 import { useHasAccess, useLocalize } from '~/hooks';
+import { getFocusedChatPane } from '~/utils/pane';
 import useNewChat from '~/hooks/Chat/useNewChat';
 import store from '~/store';
 
@@ -299,6 +302,11 @@ export const EDITING_ALLOWED_SHORTCUTS: ReadonlySet<ShortcutActionId> = new Set(
   'submitMessage',
   'escalateSteer',
   'uploadFile',
+  /* The composer keeps focus across a send, so this is where a user reads the
+     hint naming it and where they press it. Filtering it out as an editing
+     chord made the one shortcut the composer advertises the one that did
+     nothing; it is a no-op whenever no reply is running. */
+  'stopGenerating',
 ]);
 
 export type ShortcutAction = ShortcutDefinition & {
@@ -332,6 +340,17 @@ function anyModalOpen(): boolean {
     if (dialog.getAttribute('data-state') === 'closed') {
       continue;
     }
+    if (dialog.hasAttribute('hidden')) {
+      continue;
+    }
+    const style = (dialog as HTMLElement).style;
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      continue;
+    }
+    const computedStyle = typeof window !== 'undefined' ? window.getComputedStyle(dialog) : null;
+    if (computedStyle?.display === 'none' || computedStyle?.visibility === 'hidden') {
+      continue;
+    }
     return true;
   }
   return false;
@@ -363,8 +382,34 @@ function clickTarget(el: HTMLElement | null | undefined): boolean {
   return true;
 }
 
+function isVisibleElement(el: HTMLElement): boolean {
+  for (let current: HTMLElement | null = el; current != null; current = current.parentElement) {
+    if (current.hidden) {
+      return false;
+    }
+    const style = current.style;
+    const computedStyle = typeof window !== 'undefined' ? window.getComputedStyle(current) : null;
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      computedStyle?.display === 'none' ||
+      computedStyle?.visibility === 'hidden'
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function clickElement(selector: string): boolean {
-  return clickTarget(document.querySelector<HTMLElement>(selector));
+  const elements = document.querySelectorAll<HTMLElement>(selector);
+  for (const element of elements) {
+    if (!isUnavailableElement(element) && isVisibleElement(element)) {
+      element.click();
+      return true;
+    }
+  }
+  return false;
 }
 
 function clickLastElement(selector: string): boolean {
@@ -504,12 +549,15 @@ export function useShortcutActions(): ShortcutAction[] {
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
   const { setSidebarOpen, toggleSidebar } = useSidebarToggle();
   const setShowShortcutsDialog = useSetRecoilState(store.showShortcutsDialog);
+  const setShowFilesDialog = useSetAtom(showFilesDialogAtom);
   const setIsTemporary = useSetRecoilState(store.isTemporary);
   const setDeleteTarget = useSetRecoilState(store.keyboardDeleteTarget);
   const hasAccessToTemporaryChat = useHasAccess({
     permissionType: PermissionTypes.TEMPORARY_CHAT,
     permission: Permissions.USE,
   });
+  const { data: startupConfig } = useGetStartupConfig();
+  const isRetentionEnforced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
 
   const archiveMutation = useArchiveConvoMutation();
 
@@ -603,10 +651,23 @@ export function useShortcutActions(): ShortcutAction[] {
     return copy(text.trim(), { format: 'text/plain' });
   }, []);
 
-  const handleStopGenerating = useCallback(
-    () => clickElement('[data-testid="stop-generation-button"]'),
-    [],
-  );
+  const handleStopGenerating = useCallback(() => {
+    const focusedPane = getFocusedChatPane();
+    const scoped = focusedPane?.querySelector<HTMLElement>(
+      '[data-testid="stop-generation-button"]',
+    );
+    if (focusedPane == null) {
+      /** A run with a drafted follow-up keeps its stop control mounted but
+       *  hidden behind the send button, and stop must still reach it. */
+      return (
+        clickElement('[data-testid="stop-generation-button"]') ||
+        Array.from(
+          document.querySelectorAll<HTMLElement>('[data-testid="stop-generation-button"]'),
+        ).some(clickTarget)
+      );
+    }
+    return scoped != null ? clickTarget(scoped) : false;
+  }, []);
 
   const handleRegenerateResponse = useCallback(
     () => clickElement('[data-testid="regenerate-generation-button"]'),
@@ -618,15 +679,15 @@ export function useShortcutActions(): ShortcutAction[] {
    *  button's semantics. A waiting steer bubble beats a queued follow-up (it
    *  is closer to the run); newest-last matches how both stacks append. */
   const handleEscalateSteer = useCallback(() => {
-    const active = document.querySelector<HTMLButtonElement>('[data-escalate-steer-active="true"]');
+    const focusedPane = getFocusedChatPane();
+    const scope: ParentNode = focusedPane ?? document;
+    const active = scope.querySelector<HTMLButtonElement>('[data-escalate-steer-active="true"]');
     if (clickTarget(active)) {
       return true;
     }
 
     const pick = (surface: string) => {
-      const list = document.querySelectorAll<HTMLButtonElement>(
-        `[data-escalate-steer="${surface}"]`,
-      );
+      const list = scope.querySelectorAll<HTMLButtonElement>(`[data-escalate-steer="${surface}"]`);
       for (let i = list.length - 1; i >= 0; i--) {
         if (!isUnavailableElement(list[i])) {
           return list[i];
@@ -689,7 +750,7 @@ export function useShortcutActions(): ShortcutAction[] {
   }, []);
 
   const handleToggleTemporaryChat = useCallback(() => {
-    if (hasAccessToTemporaryChat !== true) {
+    if (hasAccessToTemporaryChat !== true || isRetentionEnforced) {
       return false;
     }
     if (!routeConvoId) {
@@ -703,6 +764,7 @@ export function useShortcutActions(): ShortcutAction[] {
     return true;
   }, [
     hasAccessToTemporaryChat,
+    isRetentionEnforced,
     routeConvoId,
     conversation?.messages,
     isSubmitting,
@@ -710,7 +772,28 @@ export function useShortcutActions(): ShortcutAction[] {
   ]);
 
   const handleUploadFile = useCallback(() => {
+    /* Same resolution as the stop shortcut, and for the same reason: both
+       split panes mount a composer advertising this shortcut, so attach to the
+       one the user is focused in rather than always the first in the document.
+       The document-wide lookups behind it cover focus sitting outside any
+       composer, and `#attach-file` is the single-instance legacy control. */
+    const focusedPane = getFocusedChatPane();
+    const scoped = focusedPane?.querySelector<HTMLElement>(
+      '[data-testid="composer-palette-button"]',
+    );
+    if (scoped != null) {
+      /* During dictation this disclosure becomes Cancel. The upload shortcut
+         must remain a no-op instead of discarding the focused pane's take, and
+         must not fall through to a different pane. */
+      if (scoped.dataset.uploadShortcut !== 'true') {
+        return false;
+      }
+      return clickTarget(scoped);
+    }
     const btn =
+      document.querySelector<HTMLElement>(
+        '[data-testid="composer-palette-button"][data-upload-shortcut="true"]',
+      ) ??
       document.querySelector<HTMLButtonElement>('#attach-file-menu-button') ??
       document.querySelector<HTMLButtonElement>('#attach-file-button') ??
       document.querySelector<HTMLButtonElement>('#attach-file');
@@ -825,7 +908,12 @@ export function useShortcutActions(): ShortcutAction[] {
   const handleOpenPrompts = useCallback(() => handleOpenPanel('prompts'), [handleOpenPanel]);
   const handleOpenMemories = useCallback(() => handleOpenPanel('memories'), [handleOpenPanel]);
   const handleOpenParameters = useCallback(() => handleOpenPanel('parameters'), [handleOpenPanel]);
-  const handleOpenFiles = useCallback(() => handleOpenPanel('files'), [handleOpenPanel]);
+  /* The file manager moved out of the side panel and into a dialog, so there is
+     no `nav-panel-files` button left for `handleOpenPanel` to find. */
+  const handleOpenFiles = useCallback(() => {
+    setShowFilesDialog(true);
+    return true;
+  }, [setShowFilesDialog]);
   const handleOpenBookmarks = useCallback(() => handleOpenPanel('bookmarks'), [handleOpenPanel]);
   const handleOpenMCP = useCallback(() => handleOpenPanel('mcp-builder'), [handleOpenPanel]);
 
@@ -1069,11 +1157,12 @@ export default function useKeyboardShortcuts() {
 
       const target = e.target as HTMLElement | null;
 
+      const isStopGenerating = matchedId === 'stopGenerating';
       if (shortcutsDialogOpen) {
-        if (matchedId !== 'showShortcuts') {
+        if (matchedId !== 'showShortcuts' && !isStopGenerating) {
           return;
         }
-      } else if (anyModalOpen() || isWithinOpenMenu(target)) {
+      } else if (!isStopGenerating && (anyModalOpen() || isWithinOpenMenu(target))) {
         return;
       }
 
@@ -1082,8 +1171,6 @@ export default function useKeyboardShortcuts() {
         tagName === 'INPUT' || tagName === 'TEXTAREA' || target?.isContentEditable === true;
       const isMainTextarea = target?.id === mainTextareaId;
 
-      // The composer owns every Enter-based submit chord (native and custom), so defer all
-      // Enter presses there; other editing contexts handle their own submit too.
       if (
         matchedId === 'submitMessage' &&
         ((isMainTextarea && e.key === 'Enter') || (isEditing && !isMainTextarea))
@@ -1091,7 +1178,7 @@ export default function useKeyboardShortcuts() {
         return;
       }
 
-      if (isEditing && !EDITING_ALLOWED_SHORTCUTS.has(matchedId)) {
+      if (!isStopGenerating && isEditing && !EDITING_ALLOWED_SHORTCUTS.has(matchedId)) {
         return;
       }
 

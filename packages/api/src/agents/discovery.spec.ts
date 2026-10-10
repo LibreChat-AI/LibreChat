@@ -339,6 +339,41 @@ describe('discoverConnectedAgents', () => {
     );
   });
 
+  /** Unlike `resolveWebSearchGrant`, there is no default DB-backed resolution path
+   *  for a linked agent — dropping the resolver here silently loses its instructions
+   *  one hop into a handoff. */
+  it('forwards resolveLinkedInstructions and recordLinkedPromptUsage to every handoff initializeAgent call', async () => {
+    const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
+    const getAgent = jest.fn(async () => makeAgent('B', []));
+    // `ResolveLinkedInstructions` also carries a `recordUse` method (see
+    // `./instructions/linked`); a bare `jest.fn()` lacks it.
+    const resolveLinkedInstructions = Object.assign(jest.fn(), { recordUse: jest.fn() });
+
+    await discoverConnectedAgents(
+      {
+        req: makeReq(),
+        res: makeRes(),
+        primaryConfig,
+        allowedProviders: new Set(),
+        modelsConfig: { openai: ['gpt-4o'] },
+        loadTools: jest.fn(),
+        resolveLinkedInstructions,
+        recordLinkedPromptUsage: false,
+      },
+      {
+        getAgent,
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: {} as never,
+      },
+    );
+
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ resolveLinkedInstructions, recordLinkedPromptUsage: false }),
+      expect.anything(),
+    );
+  });
+
   it('forwards normalized request metadata to every handoff initializeAgent call', async () => {
     const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
     const getAgent = jest.fn(async () => makeAgent('B', []));

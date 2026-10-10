@@ -1,3 +1,18 @@
+import {
+  THEME_VERSION,
+  isThemeRGB,
+  collectThemeIssues,
+  isThemeAppearanceToken,
+  collectThemeWarningIssues,
+  defaultSwitchSize,
+  themeColorTokens as sharedColorTokens,
+  themeBrandTokens as sharedBrandTokens,
+} from 'librechat-data-provider';
+import type {
+  ThemeColorToken,
+  ThemeBrandToken,
+  ThemeAppearanceToken,
+} from 'librechat-data-provider';
 import type {
   IThemeAppearance,
   IThemeBrands,
@@ -11,7 +26,8 @@ import type {
 import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
-export const THEME_VERSION = 1 as const;
+
+export { THEME_VERSION };
 
 /**
  * Compile-time guard: the categorical series scale is declared across three
@@ -28,9 +44,23 @@ export type SeriesTokensAreDeclared = [
   Assert<DeclaredIn<`series-${SeriesSlot}`, IThemeColors>>,
 ];
 
-export const themeColorTokens: readonly (keyof IThemeRGB)[] = Object.freeze(
-  Object.keys(defaultTheme) as Array<keyof IThemeRGB>,
-);
+type SameKeys<A extends PropertyKey, B extends PropertyKey> = [A] extends [B]
+  ? [B] extends [A]
+    ? true
+    : false
+  : false;
+
+/** The token lists live in `librechat-data-provider` so the server validates against the same
+ *  set; these fail the build when the client types drift from them. */
+export type SharedTokensMatchTypes = [
+  Assert<SameKeys<ThemeColorToken, keyof IThemeRGB>>,
+  Assert<SameKeys<ThemeAppearanceToken, keyof IThemeAppearance>>,
+  Assert<SameKeys<ThemeBrandToken, keyof IThemeBrands>>,
+];
+
+export const themeColorTokens: readonly (keyof IThemeRGB)[] = sharedColorTokens;
+
+const colorTokenSet: ReadonlySet<string> = new Set<string>(themeColorTokens);
 
 /**
  * What the verified mark is measured against: the fill it wore before it had a
@@ -46,6 +76,136 @@ export const MARK_NEIGHBOURHOOD: readonly (keyof IThemeRGB)[] = Object.freeze([
   'rgb-surface-tertiary',
 ]);
 
+/**
+ * The control outline for a stored or environment theme that predates
+ * `rgb-border-control`. Fields, dropdowns and comboboxes drew `border-light`
+ * and selects and OTP slots drew `border-medium` before the role existed, so a
+ * theme that painted either keeps that edge on its controls, the light border
+ * first. A theme that painted neither keeps the bundled role, and one that
+ * names the role keeps it as written.
+ */
+export function controlBorderFallback(colors: IThemeRGB): string | undefined {
+  if (colors['rgb-border-control'] !== undefined) {
+    return undefined;
+  }
+  return colors['rgb-border-light'] ?? colors['rgb-border-medium'];
+}
+
+/**
+ * The pressed fills for a theme that predates them. A pointer press lands on a
+ * hovered control, so the press showed the hover fill; a theme that painted a
+ * hover keeps it for the press, and one that names a pressed fill keeps it.
+ */
+export function pressedFallbacks(colors: IThemeRGB): IThemeRGB {
+  const pressed = colors['rgb-surface-pressed'] ?? colors['rgb-surface-hover'];
+  const inverted = colors['rgb-surface-inverted-pressed'] ?? colors['rgb-surface-inverted-hover'];
+  return {
+    ...(pressed !== undefined ? { 'rgb-surface-pressed': pressed } : {}),
+    ...(inverted !== undefined ? { 'rgb-surface-inverted-pressed': inverted } : {}),
+  };
+}
+
+/**
+ * The Button's primary fills for a theme that predates them. The Button was painted in the
+ * inverted surface, so a theme that repaints that surface or its hover keeps its buttons on it.
+ */
+export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
+  const fill = colors['rgb-button-primary'] ?? colors['rgb-surface-inverted'];
+  const hover = colors['rgb-button-primary-hover'] ?? colors['rgb-surface-inverted-hover'];
+  return {
+    ...(fill !== undefined ? { 'rgb-button-primary': fill } : {}),
+    ...(hover !== undefined ? { 'rgb-button-primary-hover': hover } : {}),
+  };
+}
+
+/**
+ * Layering roles split out of the surface a component painted before each had a name: the role,
+ * and the surface it followed in light and in dark. A theme that repaints the surface keeps the
+ * layer on it, unless it names the role.
+ */
+export const layerRoleSources: ReadonlyArray<
+  readonly [keyof IThemeRGB, keyof IThemeRGB, keyof IThemeRGB]
+> = [
+  ['rgb-surface-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+  ['rgb-surface-user-message', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-card', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+  ['rgb-surface-card-hover', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-nav-hover', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-nav-selected', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-tab-selected', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-menu', 'rgb-presentation', 'rgb-presentation'],
+  ['rgb-surface-popover', 'rgb-surface-primary', 'rgb-surface-secondary'],
+  ['rgb-border-menu', 'rgb-border-light', 'rgb-border-light'],
+  ['rgb-surface-composer', 'rgb-surface-chat', 'rgb-surface-chat'],
+  ['rgb-surface-search', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+];
+
+export function layerRoleFallbacks(colors: IThemeRGB, mode: ThemeMode): IThemeRGB {
+  return Object.fromEntries(
+    layerRoleSources.flatMap(([role, light, dark]) => {
+      const source = colors[mode === 'dark' ? dark : light];
+      return colors[role] === undefined && source !== undefined ? [[role, source]] : [];
+    }),
+  );
+}
+
+/** Inks split out of the primary one: dialog titles, badge labels, the default avatar's glyph and
+ *  a field's typed value were all set in it. */
+export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
+  'rgb-dialog-title',
+  'rgb-badge-label',
+  'rgb-avatar-text',
+  'rgb-field-text',
+];
+
+/** A theme that repaints the primary ink keeps the inks split out of it on it, unless it names them. */
+export function primaryInkFallbacks(colors: IThemeRGB): IThemeRGB {
+  const primary = colors['rgb-text-primary'];
+  return Object.fromEntries(
+    primaryInkRoles.flatMap((role) => {
+      const ink = colors[role] ?? primary;
+      return ink === undefined ? [] : [[role, ink]];
+    }),
+  );
+}
+
+/** Roles that were painted in another role before they had their own. */
+export const overlayFallbackSources: ReadonlyArray<readonly [keyof IThemeRGB, keyof IThemeRGB]> = [
+  ['rgb-surface-tooltip', 'rgb-surface-primary'],
+  ['rgb-text-tooltip', 'rgb-text-primary'],
+  ['rgb-alert-error-fill', 'rgb-status-error-subtle'],
+  ['rgb-alert-error-border', 'rgb-status-error-border'],
+];
+
+/** A theme that repaints a source role keeps the tooltip and the error alert on it, unless it
+ *  names them. */
+export function overlayFallbacks(colors: IThemeRGB): IThemeRGB {
+  return Object.fromEntries(
+    overlayFallbackSources.flatMap(([role, source]) => {
+      const value = colors[source];
+      return colors[role] === undefined && value !== undefined ? [[role, value]] : [];
+    }),
+  );
+}
+
+/**
+ * The focus roles for a stored or environment theme that predates them. The
+ * global outline followed a theme's `rgb-ring-primary` whenever it named one,
+ * and the shared primitives drew their ring in `rgb-text-primary`, so a theme
+ * that painted either keeps that focus color. A theme that painted neither
+ * keeps the bundled roles, and one that names a role keeps it as written.
+ */
+export function focusFallbacks(colors: IThemeRGB): IThemeRGB {
+  const outline = colors['rgb-focus-outline'] ?? colors['rgb-ring-primary'];
+  const control = colors['rgb-focus-control'] ?? colors['rgb-text-primary'];
+  const field = colors['rgb-border-field-focus'] ?? control;
+  return {
+    ...(outline !== undefined ? { 'rgb-focus-outline': outline } : {}),
+    ...(control !== undefined ? { 'rgb-focus-control': control } : {}),
+    ...(field !== undefined ? { 'rgb-border-field-focus': field } : {}),
+  };
+}
+
 export const themeAppearanceProperties: Readonly<
   Record<keyof IThemeAppearance, `--theme-${string}`>
 > = Object.freeze({
@@ -53,13 +213,97 @@ export const themeAppearanceProperties: Readonly<
   roundControlRadius: '--theme-round-control-radius',
   surfaceRadius: '--theme-surface-radius',
   largeSurfaceRadius: '--theme-large-surface-radius',
+  menuRadius: '--theme-menu-radius',
+  popoverRadius: '--theme-popover-radius',
+  menuPanelRadius: '--theme-menu-panel-radius',
+  composerActionRadius: '--theme-composer-action-radius',
+  inlineCodeWeight: '--theme-inline-code-weight',
+  tooltipRadius: '--theme-tooltip-radius',
+  tooltipPaddingX: '--theme-tooltip-padding-x',
+  tooltipPaddingY: '--theme-tooltip-padding-y',
+  tooltipTextSize: '--theme-tooltip-text-size',
+  tabRadius: '--theme-tab-radius',
+  tabMinWidth: '--theme-tab-min-width',
+  listMinWidth: '--theme-list-min-width',
+  listMaxHeight: '--theme-list-max-height',
+  radiusSm: '--theme-radius-sm',
+  radiusMd: '--theme-radius-md',
+  radiusLg: '--theme-radius-lg',
+  radiusXl: '--theme-radius-xl',
+  radius2xl: '--theme-radius-2xl',
+  radius3xl: '--theme-radius-3xl',
   controlHeight: '--theme-control-height',
+  controlPaddingX: '--theme-control-padding-x',
+  controlGap: '--theme-control-gap',
+  iconSize: '--theme-icon-size',
+  iconSizeMd: '--theme-icon-size-md',
+  iconSizeLg: '--theme-icon-size-lg',
+  controlFontWeight: '--theme-control-font-weight',
+  buttonHeight: '--theme-button-height',
+  buttonHeightSm: '--theme-button-height-sm',
+  buttonHeightXs: '--theme-button-height-xs',
+  buttonHeightLg: '--theme-button-height-lg',
+  buttonHeightCompact: '--theme-button-height-compact',
+  iconButtonSizeSm: '--theme-icon-button-size-sm',
+  fieldHeight: '--theme-field-height',
+  fieldHeightLg: '--theme-field-height-lg',
+  fieldPaddingY: '--theme-field-padding-y',
+  fieldFocusStyle: '--theme-field-focus-style',
+  fieldFillStyle: '--theme-field-fill-style',
+  focusRingWidth: '--theme-focus-ring-width',
+  focusRingOffset: '--theme-focus-ring-offset',
+  labelSize: '--theme-label-size',
+  labelLeading: '--theme-label-leading',
+  labelFontWeight: '--theme-label-font-weight',
+  switchWidth: '--theme-switch-width',
+  switchHeight: '--theme-switch-height',
+  checkboxSize: '--theme-checkbox-size',
+  tableCellSpaceY: '--theme-table-cell-space-y',
+  tableRowStroke: '--theme-table-row-stroke',
   spaceCompact: '--theme-space-compact',
   spaceNormal: '--theme-space-normal',
+  disabledStyle: '--theme-disabled-style',
   fontFamily: '--theme-font-family',
+  monoFontFamily: '--theme-mono-font-family',
+  displayFontFamily: '--theme-display-font-family',
+  textXs: '--theme-text-xs',
+  textSm: '--theme-text-sm',
+  textBase: '--theme-text-base',
+  textLg: '--theme-text-lg',
+  textXl: '--theme-text-xl',
+  text2xl: '--theme-text-2xl',
+  leadingXs: '--theme-text-xs-leading',
+  leadingSm: '--theme-text-sm-leading',
+  leadingBase: '--theme-text-base-leading',
+  leadingLg: '--theme-text-lg-leading',
+  leadingXl: '--theme-text-xl-leading',
+  leading2xl: '--theme-text-2xl-leading',
+  dialogStroke: '--theme-dialog-stroke',
+  dialogPaddingX: '--theme-dialog-padding-x',
+  dialogHeaderGap: '--theme-dialog-header-gap',
+  dialogTitleSize: '--theme-dialog-title-size',
+  dialogTitleLeading: '--theme-dialog-title-leading',
+  dialogTitleFontWeight: '--theme-dialog-title-font-weight',
+  dialogTitleFontFamily: '--theme-dialog-title-font-family',
+  scrimOpacity: '--theme-scrim-opacity',
+  alertScrimOpacity: '--theme-alert-scrim-opacity',
+  modalScrimOpacity: '--theme-modal-scrim-opacity',
   elevationSurface: '--theme-elevation-surface',
+  elevationDrag: '--theme-elevation-drag',
+  shadow2xs: '--theme-shadow-2xs',
+  shadowXs: '--theme-shadow-xs',
+  shadowSm: '--theme-shadow-sm',
+  shadowMd: '--theme-shadow-md',
+  shadowLg: '--theme-shadow-lg',
+  shadowXl: '--theme-shadow-xl',
+  shadow2xl: '--theme-shadow-2xl',
+  menuShadow: '--theme-menu-shadow',
+  tooltipShadow: '--theme-tooltip-shadow',
   motionFast: '--theme-motion-fast',
   motionNormal: '--theme-motion-normal',
+  chromeBorderAlpha: '--theme-border-chrome-alpha',
+  insetBorderAlpha: '--theme-border-inset-alpha',
+  destructiveStyle: '--theme-destructive-style',
 });
 
 export const defaultAppearance: IThemeAppearance = Object.freeze({
@@ -67,24 +311,115 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   roundControlRadius: '9999px',
   surfaceRadius: '1rem',
   largeSurfaceRadius: '1.5rem',
+  menuRadius: '0.7rem',
+  popoverRadius: '1rem',
+  menuPanelRadius: '0.75rem',
+  composerActionRadius: '9999px',
+  inlineCodeWeight: '600',
+  tooltipRadius: '0.275rem',
+  tooltipPaddingX: '0.5rem',
+  tooltipPaddingY: '0.25rem',
+  tooltipTextSize: '1rem',
+  tabRadius: '0.185rem',
+  tabMinWidth: '100px',
+  listMinWidth: '8rem',
+  listMaxHeight: '24rem',
+  radiusSm: 'calc(0.5rem - 4px)',
+  radiusMd: 'calc(0.5rem - 2px)',
+  radiusLg: '0.5rem',
+  radiusXl: '0.75rem',
+  radius2xl: '1rem',
+  radius3xl: '1.5rem',
   controlHeight: '2.25rem',
+  controlPaddingX: '0.75rem',
+  controlGap: '0.375rem',
+  iconSize: '1rem',
+  iconSizeMd: '1.25rem',
+  iconSizeLg: '1.5rem',
+  controlFontWeight: '500',
+  buttonHeight: '2.5rem',
+  buttonHeightSm: '2.25rem',
+  buttonHeightXs: '1.75rem',
+  buttonHeightLg: '2.75rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '2rem',
+  fieldHeight: '2.5rem',
+  fieldHeightLg: '3rem',
+  fieldPaddingY: '0.5rem',
+  fieldFocusStyle: 'ring',
+  fieldFillStyle: 'transparent',
+  focusRingWidth: '2px',
+  focusRingOffset: '2px',
+  labelSize: '0.875rem',
+  labelLeading: '1',
+  labelFontWeight: 'inherit',
+  ...defaultSwitchSize,
+  checkboxSize: '1rem',
+  tableCellSpaceY: '1rem',
+  tableRowStroke: '0px',
   spaceCompact: '0.375rem',
   spaceNormal: '0.75rem',
+  disabledStyle: 'dim',
   fontFamily: 'Inter, sans-serif',
+  monoFontFamily:
+    "'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, 'Cascadia Mono', 'Liberation Mono', Consolas, monospace",
+  displayFontFamily: 'Inter, sans-serif',
+  textXs: '0.75rem',
+  textSm: '0.875rem',
+  textBase: '1rem',
+  textLg: '1.125rem',
+  textXl: '1.25rem',
+  text2xl: '1.5rem',
+  leadingXs: 'calc(1 / 0.75)',
+  leadingSm: 'calc(1.25 / 0.875)',
+  leadingBase: 'calc(1.5 / 1)',
+  leadingLg: 'calc(1.75 / 1.125)',
+  leadingXl: 'calc(1.75 / 1.25)',
+  leading2xl: 'calc(2 / 1.5)',
+  dialogStroke: '0px',
+  dialogPaddingX: '1.5rem',
+  dialogHeaderGap: '0.375rem',
+  dialogTitleSize: '1.125rem',
+  dialogTitleLeading: '1',
+  dialogTitleFontWeight: '600',
+  dialogTitleFontFamily: 'Inter, sans-serif',
+  scrimOpacity: '0.8',
+  alertScrimOpacity: '0.9',
+  modalScrimOpacity: '0.65',
   elevationSurface: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
+  elevationDrag: '0 10px 25px rgb(0 0 0 / 0.1)',
+  shadow2xs: '0 1px rgb(0 0 0 / 0.05)',
+  shadowXs: '0 1px 2px 0 rgb(0 0 0 / 0.05)',
+  shadowSm: '0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)',
+  shadowMd: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)',
+  shadowLg: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
+  shadowXl: '0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)',
+  shadow2xl: '0 25px 50px -12px rgb(0 0 0 / 0.25)',
+  menuShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
+  tooltipShadow: '0 2px 4px 0 rgb(0 0 0 / 0.25)',
   motionFast: '150ms',
   motionNormal: '200ms',
+  chromeBorderAlpha: '1',
+  insetBorderAlpha: '1',
+  destructiveStyle: 'fill',
 });
 
-export const themeBrandTokens: readonly (keyof IThemeBrands)[] = Object.freeze([
-  'provider-openai',
-  'provider-openai-gpt4',
-  'provider-openai-reasoning',
-  'provider-anthropic',
-  'provider-azure',
-  'provider-bedrock',
-  'provider-foreground',
-]);
+/**
+ * The defaults that differ in dark mode, over `defaultAppearance`. The menu panel and the tooltip
+ * always drew a heavier shadow on a dark page, so their dark defaults are those literals. A theme
+ * that names a role in a mode replaces the default for that mode only.
+ */
+export const darkAppearanceDefaults: Readonly<Partial<IThemeAppearance>> = Object.freeze({
+  menuShadow: '0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
+  tooltipShadow: '0 1px 2px 0 rgb(0 0 0 / 0.35)',
+});
+
+/** Every appearance default in `mode`. */
+export function defaultAppearanceFor(mode: ThemeMode): IThemeAppearance {
+  return mode === 'dark' ? { ...defaultAppearance, ...darkAppearanceDefaults } : defaultAppearance;
+}
+
+export const themeBrandTokens: readonly (keyof IThemeBrands)[] = sharedBrandTokens;
 
 export const defaultBrands: IThemeBrands = Object.freeze({
   'provider-openai': '#19C37D',
@@ -151,202 +486,116 @@ export const highContrastTheme: ThemeDefinition = Object.freeze({
   },
 });
 
-const rgbPattern = /^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})$/;
-const cssLengthPattern = /^(0|\d*\.?\d+(px|rem|em))$/;
-const cssDurationPattern = /^\d*\.?\d+(ms|s)$/;
-const hexColorPattern = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+/** Tailwind composes `--tw-shadow` into one list with the ring layers, where `none` is invalid. */
+const disabledShadow = '0 0 #0000';
 
-function isLinearGradient(value: string): boolean {
-  if (!value.startsWith('linear-gradient(') || /url\s*\(|image-set/i.test(value)) {
-    return false;
-  }
-  let depth = 0;
-  for (let i = 0; i < value.length; i++) {
-    const char = value[i];
-    if (char === '(') {
-      depth += 1;
-    } else if (char === ')') {
-      depth -= 1;
-      if (depth === 0) {
-        return i === value.length - 1;
-      }
-      if (depth < 0) {
-        return false;
-      }
-    }
-  }
-  return false;
-}
-
-const isRGB = (value: unknown): value is string => {
-  if (typeof value !== 'string') {
-    return false;
-  }
-  const match = value.match(rgbPattern);
-  return match !== null && match.slice(1).every((channel) => Number(channel) <= 255);
-};
-
-const isLength = (value: unknown): value is string =>
-  typeof value === 'string' && cssLengthPattern.test(value);
-const isDuration = (value: unknown): value is string =>
-  typeof value === 'string' && cssDurationPattern.test(value);
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === null || prototype.constructor?.name === 'Object';
-  } catch {
-    return false;
-  }
-};
-
-const appearanceValidators: Record<keyof IThemeAppearance, (value: unknown) => boolean> = {
-  controlRadius: isLength,
-  roundControlRadius: isLength,
-  surfaceRadius: isLength,
-  largeSurfaceRadius: isLength,
-  controlHeight: isLength,
-  spaceCompact: isLength,
-  spaceNormal: isLength,
-  fontFamily: (value) =>
-    typeof value === 'string' && value.trim().length > 0 && !/[;{}]/.test(value),
-  elevationSurface: (value) =>
-    typeof value === 'string' && value.trim().length > 0 && !/[;{}]|url\s*\(/i.test(value),
-  motionFast: isDuration,
-  motionNormal: isDuration,
-};
-
-/** Shared by the theme-wide `brands` and each mode's override block. */
-function collectBrandErrors(brands: unknown): string[] {
-  if (!isPlainRecord(brands)) {
-    return [];
-  }
-
-  return Object.entries(brands).flatMap(([key, value]) => {
-    if (!themeBrandTokens.includes(key as keyof IThemeBrands)) {
-      return [`Unknown brand token: ${key}`];
-    }
-    /** Only the glyph is a flat colour; a fill may also be a gradient. */
-    const isColorOnly = key === 'provider-foreground';
-    const isValidBrand =
-      typeof value === 'string' &&
-      (isColorOnly
-        ? hexColorPattern.test(value)
-        : hexColorPattern.test(value) || isLinearGradient(value));
-    return value !== undefined && !isValidBrand ? [`Invalid brand value for ${key}: ${value}`] : [];
-  });
+/** The color and appearance tokens this reader does not know, which `resolveTheme` leaves out. */
+export function collectThemeWarnings(theme: ThemeDefinition): string[] {
+  return collectThemeWarningIssues(theme).map(({ message }) => message);
 }
 
 export function validateThemeDefinition(theme: ThemeDefinition): string[] {
-  const errors: string[] = [];
-
-  if (!isPlainRecord(theme)) {
-    return ['Theme definition must be an object'];
-  }
-
-  Object.keys(theme).forEach((key) => {
-    if (key !== 'version' && key !== 'name' && key !== 'modes' && key !== 'brands') {
-      errors.push(`Unknown theme field: ${key}`);
-    }
-  });
-
-  if (theme.version !== THEME_VERSION) {
-    errors.push(`Unsupported theme version: ${theme.version}`);
-  }
-  if (typeof theme.name !== 'string' || !theme.name.trim()) {
-    errors.push('Theme name is required');
-  }
-  if (!isPlainRecord(theme.modes)) {
-    errors.push('Theme modes must be an object');
-    return errors;
-  }
-
-  Object.keys(theme.modes).forEach((mode) => {
-    if (mode !== 'light' && mode !== 'dark') {
-      errors.push(`Unknown theme mode: ${mode}`);
-    }
-  });
-
-  (['light', 'dark'] as const).forEach((mode) => {
-    const definition = theme.modes[mode];
-    if (definition === undefined) {
-      return;
-    }
-
-    if (!isPlainRecord(definition)) {
-      errors.push(`Theme mode ${mode} must be an object`);
-      return;
-    }
-
-    Object.keys(definition).forEach((key) => {
-      if (key !== 'colors' && key !== 'appearance' && key !== 'brands') {
-        errors.push(`Unknown ${mode} theme field: ${key}`);
-      }
-    });
-
-    if (definition.colors !== undefined && !isPlainRecord(definition.colors)) {
-      errors.push(`Theme colors for ${mode} must be an object`);
-    } else {
-      Object.entries(definition.colors ?? {}).forEach(([key, value]) => {
-        if (!themeColorTokens.includes(key as keyof IThemeRGB)) {
-          errors.push(`Unknown color token: ${key}`);
-          return;
-        }
-        if (value !== undefined && !isRGB(value)) {
-          errors.push(`Invalid RGB value for ${key}: ${value}`);
-        }
-      });
-    }
-
-    if (definition.appearance !== undefined && !isPlainRecord(definition.appearance)) {
-      errors.push(`Theme appearance for ${mode} must be an object`);
-    } else {
-      Object.entries(definition.appearance ?? {}).forEach(([key, value]) => {
-        const appearanceKey = key as keyof IThemeAppearance;
-        const validator = appearanceValidators[appearanceKey];
-        if (!validator) {
-          errors.push(`Unknown appearance token: ${key}`);
-          return;
-        }
-        if (value !== undefined && !validator(value)) {
-          errors.push(`Invalid appearance value for ${key}: ${value}`);
-        }
-      });
-    }
-
-    if (definition.brands !== undefined && !isPlainRecord(definition.brands)) {
-      errors.push(`Theme brands for ${mode} must be an object`);
-    } else {
-      errors.push(...collectBrandErrors(definition.brands));
-    }
-  });
-
-  if (theme.brands !== undefined && !isPlainRecord(theme.brands)) {
-    errors.push('Theme brands must be an object');
-  } else {
-    errors.push(...collectBrandErrors(theme.brands));
-  }
-
-  return errors;
+  return collectThemeIssues(theme).map(({ message }) => message);
 }
 
 /**
- * A partial theme promises that an omitted value falls back, and
- * `Partial<IThemeBrands>` lets a key be present with `undefined`. Spreading
- * that would overwrite the inherited brand with nothing, and unlike colors,
- * which `mapColors` skips when undefined, every brand token is written to the
- * DOM unconditionally, so the avatar would lose its fill entirely.
+ * A partial theme promises that an omitted value falls back, and `Partial<T>` lets a key be
+ * present with `undefined`. Spreading that would overwrite the inherited value with nothing:
+ * every brand and appearance token is written to the DOM unconditionally, so an avatar would
+ * lose its fill and a shadow or radius step its value, unlike colors, which `mapColors` skips.
  */
-function definedBrands(brands?: Partial<IThemeBrands>): Partial<IThemeBrands> {
-  if (!brands) {
+function definedEntries<T extends object>(values?: Partial<T>): Partial<T> {
+  if (!values) {
     return {};
   }
   return Object.fromEntries(
-    Object.entries(brands).filter(([, value]) => value !== undefined),
-  ) as Partial<IThemeBrands>;
+    Object.entries(values).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
+}
+
+/** A color token this reader does not know passed validation as a warning; it never reaches the DOM. */
+function knownColors(colors?: IThemeRGB): IThemeRGB | undefined {
+  if (!colors) {
+    return colors;
+  }
+  return Object.fromEntries(
+    Object.entries(colors).filter(([key]) => colorTokenSet.has(key)),
+  ) as IThemeRGB;
+}
+
+function knownAppearance(appearance?: Partial<IThemeAppearance>): Partial<IThemeAppearance> {
+  return Object.fromEntries(
+    Object.entries(definedEntries(appearance)).filter(([key]) => isThemeAppearanceToken(key)),
+  );
+}
+
+const shadowAppearanceKeys: ReadonlyArray<keyof IThemeAppearance> = [
+  'elevationSurface',
+  'elevationDrag',
+  'shadow2xs',
+  'shadowXs',
+  'shadowSm',
+  'shadowMd',
+  'shadowLg',
+  'shadowXl',
+  'shadow2xl',
+];
+
+function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
+  return shadowAppearanceKeys.reduce<IThemeAppearance>(
+    (result, key) =>
+      result[key].trim().toLowerCase() === 'none' ? { ...result, [key]: disabledShadow } : result,
+    appearance,
+  );
+}
+
+/**
+ * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
+ * family before the display role existed, theme-sized controls were padded by the shared spacing,
+ * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, so a theme that names
+ * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
+ * follow one that is itself inherited.
+ */
+const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAppearance]> = [
+  ['displayFontFamily', 'fontFamily'],
+  ['controlPaddingX', 'spaceNormal'],
+  ['controlGap', 'spaceCompact'],
+  ['labelSize', 'textSm'],
+  ['dialogTitleSize', 'textLg'],
+  ['dialogTitleFontFamily', 'displayFontFamily'],
+  ['popoverRadius', 'radius2xl'],
+  ['menuPanelRadius', 'radiusXl'],
+  ['composerActionRadius', 'roundControlRadius'],
+];
+
+/**
+ * Pairs that hold in one mode only. The light menu panel read `shadowLg` before it had a role, so
+ * a theme that names `shadowLg` keeps shading its light menus with it; the dark panel always drew
+ * its own literal, which is now its dark default.
+ */
+const modeInheritedAppearance: Record<
+  ThemeMode,
+  ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAppearance]>
+> = {
+  light: [['menuShadow', 'shadowLg']],
+  dark: [],
+};
+
+function withInheritedRoles(
+  mode: ThemeMode,
+  appearance?: Partial<IThemeAppearance>,
+): IThemeAppearance {
+  const known = knownAppearance(appearance);
+  const resolved = [...inheritedAppearance, ...modeInheritedAppearance[mode]].reduce<
+    Partial<IThemeAppearance>
+  >(
+    (roles, [role, source]) =>
+      roles[role] === undefined && roles[source] !== undefined
+        ? { ...roles, [role]: roles[source] }
+        : roles,
+    known,
+  );
+  return { ...defaultAppearanceFor(mode), ...resolved };
 }
 
 export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedThemeDefinition {
@@ -357,8 +606,10 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
 
   const baseColors = mode === 'dark' ? darkTheme : defaultTheme;
   const definition = theme.modes[mode];
-  const customColors = definition?.colors;
-  const composerHoverFallback =
+  const customColors = knownColors(definition?.colors);
+  /** Each fallback is typed as one `IThemeRGB`, not a `{ role } | {}` union: the colors below
+   *  spread them all, and every union spread would double the type checker's work. */
+  const composerHoverFallback: IThemeRGB =
     customColors?.['rgb-surface-composer-hover'] === undefined &&
     customColors?.['rgb-surface-hover'] !== undefined
       ? { 'rgb-surface-composer-hover': customColors['rgb-surface-hover'] }
@@ -373,9 +624,22 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-presentation']
       : customColors?.['rgb-surface-primary-alt'];
-  const codeSurfaceFallback =
+  const codeSurfaceFallback: IThemeRGB =
     customColors?.['rgb-surface-code'] === undefined && codeSurfaceSource !== undefined
       ? { 'rgb-surface-code': codeSurfaceSource }
+      : {};
+  /**
+   * The code pane painted `surface-chat` in light and `surface-primary-alt` in
+   * dark before it had a role, so a theme that names neither pane role keeps
+   * the pane it was drawn against.
+   */
+  const codeBodySource =
+    mode === 'dark'
+      ? customColors?.['rgb-surface-primary-alt']
+      : customColors?.['rgb-surface-chat'];
+  const codeBodyFallback: IThemeRGB =
+    customColors?.['rgb-surface-code-body'] === undefined && codeBodySource !== undefined
+      ? { 'rgb-surface-code-body': codeBodySource }
       : {};
   /**
    * Themes written before the shimmer stops existed cannot name them, and
@@ -385,26 +649,129 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    * sweep alongside custom text still gets it by naming the stop, the way
    * `rgb-surface-composer-hover` opts out of its own fallback above.
    */
-  const shimmerBaseFallback =
+  const shimmerBaseFallback: IThemeRGB =
     customColors?.['rgb-shimmer-base'] === undefined &&
     customColors?.['rgb-text-primary'] !== undefined
       ? { 'rgb-shimmer-base': customColors['rgb-text-primary'] }
       : {};
-  const textMutedFallback =
+  const textMutedFallback: IThemeRGB =
     customColors?.['rgb-text-muted'] === undefined &&
     customColors?.['rgb-text-tertiary'] !== undefined
       ? { 'rgb-text-muted': customColors['rgb-text-tertiary'] }
       : {};
-  const chartWidgetSurfaceFallback =
+  /**
+   * Markdown links read `link` in light and `text-primary` in dark before they
+   * had a role, so a theme that names neither prose role keeps whichever of
+   * those it painted, its own link colour first.
+   */
+  const proseLinkSource =
+    customColors?.['rgb-link'] ??
+    (mode === 'dark' ? customColors?.['rgb-text-primary'] : undefined);
+  const proseLinkFallback: IThemeRGB =
+    customColors?.['rgb-link-prose'] === undefined && proseLinkSource !== undefined
+      ? { 'rgb-link-prose': proseLinkSource }
+      : {};
+  /**
+   * The list marker, the blockquote bar and the inline code chip read border and surface roles
+   * before they had their own, so a theme that names none of the three keeps what it painted:
+   * `border-medium` for the marker, `border-light` in light and `border-medium` in dark for the
+   * bar, and `surface-active-alt` in light and `surface-hover-alt` in dark for the chip.
+   */
+  const proseBulletSource = customColors?.['rgb-border-medium'];
+  const proseQuoteBarSource = customColors?.['rgb-border-medium'];
+  const codeInlineSource =
+    mode === 'dark'
+      ? customColors?.['rgb-surface-hover-alt']
+      : customColors?.['rgb-surface-active-alt'];
+  const proseFallback: IThemeRGB = {
+    ...(customColors?.['rgb-prose-bullet'] === undefined && proseBulletSource !== undefined
+      ? { 'rgb-prose-bullet': proseBulletSource }
+      : {}),
+    ...(customColors?.['rgb-prose-quote-bar'] === undefined && proseQuoteBarSource !== undefined
+      ? { 'rgb-prose-quote-bar': proseQuoteBarSource }
+      : {}),
+    ...(customColors?.['rgb-surface-code-inline'] === undefined && codeInlineSource !== undefined
+      ? { 'rgb-surface-code-inline': codeInlineSource }
+      : {}),
+  };
+  /**
+   * Agent and assistant avatars sat on `surface-secondary` in light and `surface-tertiary` in dark
+   * before they had a role, so a theme that repaints the one its mode used keeps that backdrop.
+   */
+  const avatarPlaceholderSource =
+    mode === 'dark'
+      ? customColors?.['rgb-surface-tertiary']
+      : customColors?.['rgb-surface-secondary'];
+  const avatarPlaceholderFallback: IThemeRGB =
+    customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
+      ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
+      : {};
+  /**
+   * The mobile drawer drew its edge only in dark, in `border-xheavy`; in light the drawer's own
+   * fill. A theme that repaints the role its mode used keeps that edge.
+   */
+  const drawerEdgeSource =
+    mode === 'dark'
+      ? customColors?.['rgb-border-xheavy']
+      : customColors?.['rgb-surface-primary-alt'];
+  const drawerEdgeFallback: Partial<IThemeRGB> =
+    customColors?.['rgb-drawer-edge'] === undefined && drawerEdgeSource !== undefined
+      ? { 'rgb-drawer-edge': drawerEdgeSource }
+      : {};
+  const chartWidgetSurfaceFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-chart-widget-surface': customColors['rgb-surface-primary'] }
       : {};
-  const chartWidgetStrokeFallback =
+  /**
+   * The thumb was painted `surface-primary` before it had a role, so a theme that repaints that
+   * surface keeps the knob it drew against its tracks.
+   */
+  const switchThumbFallback: IThemeRGB =
+    customColors?.['rgb-switch-thumb'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-switch-thumb': customColors['rgb-surface-primary'] }
+      : {};
+  /** A field fill only shows under `fieldFillStyle: 'fill'`, on the theme's own canvas by default. */
+  const fieldFillFallback: IThemeRGB =
+    customColors?.['rgb-field-fill'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-field-fill': customColors['rgb-surface-primary'] }
+      : {};
+  /** Table column names were `text-secondary` before they had a role. */
+  const tableHeaderTextFallback: IThemeRGB =
+    customColors?.['rgb-table-header-text'] === undefined &&
+    customColors?.['rgb-text-secondary'] !== undefined
+      ? { 'rgb-table-header-text': customColors['rgb-text-secondary'] }
+      : {};
+  /** Self-sticking table headers were the dialog surface before they had a role. */
+  const tableHeaderFillFallback: IThemeRGB =
+    customColors?.['rgb-table-header-fill'] === undefined &&
+    customColors?.['rgb-surface-dialog'] !== undefined
+      ? { 'rgb-table-header-fill': customColors['rgb-surface-dialog'] }
+      : {};
+  const chartWidgetStrokeFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-stroke'] === undefined &&
     customColors?.['rgb-border-light'] !== undefined
       ? { 'rgb-chart-widget-stroke': customColors['rgb-border-light'] }
       : {};
+  const focusSubtleFallback: IThemeRGB =
+    customColors?.['rgb-focus-subtle'] === undefined &&
+    customColors?.['rgb-border-heavy'] !== undefined
+      ? { 'rgb-focus-subtle': customColors['rgb-border-heavy'] }
+      : {};
+  const borderControlSource =
+    customColors != null ? controlBorderFallback(customColors) : undefined;
+  const borderControlFallback: IThemeRGB =
+    borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
+  const layerFallback: IThemeRGB =
+    customColors != null ? layerRoleFallbacks(customColors, mode) : {};
+  const focusFallback: IThemeRGB = customColors != null ? focusFallbacks(customColors) : {};
+  const pressedFallback: IThemeRGB = customColors != null ? pressedFallbacks(customColors) : {};
+  const primaryButtonFallback: IThemeRGB =
+    customColors != null ? primaryButtonFallbacks(customColors) : {};
+  const primaryInks: IThemeRGB = customColors != null ? primaryInkFallbacks(customColors) : {};
+  const overlayFallback: IThemeRGB = customColors != null ? overlayFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -423,7 +790,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     ([1, 2, 3, 4, 5, 6, 7] as const).some(
       (slot) => customColors[`rgb-series-${slot}`] !== undefined,
     );
-  const seriesEightFallback =
+  const seriesEightFallback: IThemeRGB =
     customColors?.['rgb-series-8'] === undefined && ownsSeriesScale
       ? {
           'rgb-series-8': customColors?.['rgb-text-secondary'] ?? baseColors['rgb-text-secondary'],
@@ -442,7 +809,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    */
   const ownsMarkSurroundings =
     customColors != null && MARK_NEIGHBOURHOOD.some((token) => customColors[token] !== undefined);
-  const verifiedFallback =
+  const verifiedFallback: IThemeRGB =
     ownsMarkSurroundings && customColors?.['rgb-status-verified'] === undefined
       ? {
           'rgb-status-verified':
@@ -458,20 +825,37 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...baseColors,
       ...customColors,
       ...codeSurfaceFallback,
+      ...codeBodyFallback,
       ...composerHoverFallback,
       ...shimmerBaseFallback,
       ...textMutedFallback,
+      ...proseLinkFallback,
+      ...proseFallback,
+      ...avatarPlaceholderFallback,
+      ...drawerEdgeFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
+      ...focusSubtleFallback,
+      ...switchThumbFallback,
+      ...fieldFillFallback,
+      ...overlayFallback,
+      ...layerFallback,
+      ...tableHeaderTextFallback,
+      ...tableHeaderFillFallback,
+      ...borderControlFallback,
+      ...focusFallback,
+      ...pressedFallback,
+      ...primaryButtonFallback,
+      ...primaryInks,
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,
-    appearance: { ...defaultAppearance, ...definition?.appearance },
+    appearance: withComposableShadows(withInheritedRoles(mode, definition?.appearance)),
     /** Mode last: a mode override is more specific than the theme-wide set. */
     brands: {
       ...defaultBrands,
-      ...definedBrands(theme.brands),
-      ...definedBrands(definition?.brands),
+      ...definedEntries(theme.brands),
+      ...definedEntries(definition?.brands),
     },
   };
 }
@@ -480,7 +864,7 @@ export function fromLegacyTheme(colors: IThemeRGB, name = 'custom'): ThemeDefini
   const legacyName = name.trim() || 'custom';
   const sanitizedColors = themeColorTokens.reduce<IThemeRGB>((result, token) => {
     const value = colors[token];
-    if (isRGB(value)) {
+    if (isThemeRGB(value)) {
       result[token] = value;
     }
     return result;

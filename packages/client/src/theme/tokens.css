@@ -1,0 +1,309 @@
+/**
+ * The semantic Tailwind color tokens, and the single source for them.
+ *
+ * Every semantic token resolves to a CSS custom property that ThemeProvider/applyTheme
+ * rewrites at runtime, which is what `@theme inline` is for: the value is inlined into each
+ * utility instead of being frozen into a `--color-*` variable, so switching a theme
+ * re-colors the app without regenerating CSS. Those properties hold bare `R G B` triplets
+ * (see `defaults.css`), hence the `rgb()` wrapper; a token with an intrinsic alpha
+ * multiplies in its companion `--x-alpha` property, and Tailwind composes any `/50`
+ * modifier on top through color-mix.
+ *
+ * client/src/style.css imports this file, and `@librechat/client/theme.css` publishes it, with the
+ * stock value of every property it reads (`defaults.css`) and the font faces those values name
+ * (`fonts.css`), both imported below.
+ * Declaring a token here is what makes `bg-<token>` exist; @shadcn/lint reads these
+ * declarations, so a name that is not here is reported rather than silently rendering
+ * nothing.
+ */
+@import './defaults.css';
+@import './fonts.css';
+
+@theme inline {
+  /* brand and surfaces */
+  --color-brand-purple: rgb(var(--brand-purple));
+  --color-avatar-fill: rgb(var(--avatar-fill));
+  --color-avatar-text: rgb(var(--avatar-text));
+  --color-avatar-placeholder: rgb(var(--avatar-placeholder));
+  --color-avatar-edge: rgb(var(--avatar-edge));
+  --color-illustration-subtle: rgb(var(--illustration-subtle));
+  --color-illustration: rgb(var(--illustration));
+  --color-illustration-strong: rgb(var(--illustration-strong));
+  --color-file-document: rgb(var(--file-document));
+  --color-file-sheet: rgb(var(--file-sheet));
+  --color-file-code: rgb(var(--file-code));
+  --color-file-artifact: rgb(var(--file-artifact));
+  --color-file-audio: rgb(var(--file-audio));
+  --color-file-video: rgb(var(--file-video));
+  --color-file-generic: rgb(var(--file-generic));
+  --color-file-ink: rgb(var(--file-ink));
+  --color-presentation: rgb(var(--presentation));
+  --color-accent-primary: rgb(var(--accent-primary));
+  --color-accent-primary-hover: rgb(var(--accent-primary-hover));
+  --color-ring-primary: rgb(var(--ring-primary));
+  --color-focus-outline: rgb(var(--focus-outline));
+  --color-focus-control: rgb(var(--focus-control));
+  /* Follows the heavy border it replaced, for a stylesheet that predates it. */
+  --color-focus-subtle: rgb(var(--focus-subtle, var(--border-heavy)));
+  --color-header-primary: rgb(var(--header-primary));
+  --color-header-hover: rgb(var(--header-hover));
+  --color-header-button-hover: rgb(var(--header-button-hover));
+  --color-surface-active: rgb(var(--surface-active));
+  --color-surface-active-alt: rgb(var(--surface-active-alt));
+  --color-surface-hover: rgb(var(--surface-hover));
+  --color-surface-hover-alt: rgb(var(--surface-hover-alt));
+  --color-surface-pressed: rgb(var(--surface-pressed));
+  --color-surface-composer-hover: rgb(var(--surface-composer-hover));
+  --color-surface-primary: rgb(var(--surface-primary));
+  --color-surface-primary-alt: rgb(var(--surface-primary-alt));
+  --color-surface-primary-contrast: rgb(var(--surface-primary-contrast));
+  --color-surface-secondary: rgb(var(--surface-secondary));
+  --color-surface-secondary-alt: rgb(var(--surface-secondary-alt));
+  --color-surface-tertiary: rgb(var(--surface-tertiary));
+  --color-surface-tertiary-alt: rgb(var(--surface-tertiary-alt));
+  --color-surface-dialog: rgb(var(--surface-dialog));
+  /* Falls back to the ink dialog titles were set in, for a stylesheet that predates it. */
+  --color-dialog-title: rgb(var(--dialog-title, var(--text-primary)));
+  --color-surface-overlay: rgb(var(--surface-overlay));
+  --color-surface-media-overlay: rgb(var(--surface-media-overlay));
+  --color-text-on-media: rgb(var(--text-on-media));
+  /* The dialog scrims: the overlay at the opacity each dialog family's appearance
+   * role sets (OGDialog, AlertDialog, Dialog), defaulting to the 80%, 90% and 65%
+   * the families have always drawn. */
+  --color-scrim: rgb(var(--surface-overlay) / var(--theme-scrim-opacity, 0.8));
+  --color-scrim-alert: rgb(var(--surface-overlay) / var(--theme-alert-scrim-opacity, 0.9));
+  --color-scrim-modal: rgb(var(--surface-overlay) / var(--theme-modal-scrim-opacity, 0.65));
+  --color-surface-submit: rgb(var(--surface-submit));
+  --color-surface-submit-hover: rgb(var(--surface-submit-hover));
+  --color-surface-destructive: rgb(var(--surface-destructive));
+  --color-surface-destructive-hover: rgb(var(--surface-destructive-hover));
+  --color-surface-chat: rgb(var(--surface-chat));
+  --color-surface-code: rgb(var(--surface-code));
+  --color-surface-code-body: rgb(var(--surface-code-body));
+  --color-surface-code-inline: rgb(var(--surface-code-inline));
+  --color-prose-bullet: rgb(var(--prose-bullet));
+  --color-prose-quote-bar: rgb(var(--prose-quote-bar));
+  --color-surface-qr: rgb(var(--surface-qr));
+  --color-surface-inverted: rgb(var(--surface-inverted));
+  --color-surface-inverted-hover: rgb(var(--surface-inverted-hover));
+  --color-surface-inverted-pressed: rgb(var(--surface-inverted-pressed));
+  /* Fall back to the inverted fill they were painted with, for a stylesheet that predates them. */
+  --color-button-primary: rgb(var(--button-primary, var(--surface-inverted)));
+  --color-button-primary-hover: rgb(var(--button-primary-hover, var(--surface-inverted-hover)));
+  --color-surface-fixed: rgb(var(--surface-fixed));
+  --color-surface-fixed-hover: rgb(var(--surface-fixed-hover));
+  --color-surface-disabled: rgb(var(--surface-disabled));
+
+  /* text */
+  --color-text-primary: rgb(var(--text-primary));
+  --color-text-secondary: rgb(var(--text-secondary));
+  --color-text-secondary-alt: rgb(var(--text-secondary-alt));
+  --color-text-tertiary: rgb(var(--text-tertiary));
+  --color-text-muted: rgb(var(--text-muted));
+  /* Falls back to the ink badges were labeled in, for a stylesheet that predates it. */
+  --color-badge-label: rgb(var(--badge-label, var(--text-primary)));
+  --color-text-warning: rgb(var(--text-warning));
+  --color-text-destructive: rgb(var(--text-destructive));
+  --color-text-inverted: rgb(var(--text-inverted));
+  --color-text-fixed: rgb(var(--text-fixed));
+  --color-text-on-status: rgb(var(--text-on-status));
+  --color-text-disabled: rgb(var(--text-disabled));
+
+  /* links */
+  --color-link: rgb(var(--link));
+  --color-link-hover: rgb(var(--link-hover));
+  --color-link-visited: rgb(var(--link-visited));
+  --color-link-prose: rgb(var(--link-prose));
+
+  /* borders */
+  --color-border-light: rgb(var(--border-light) / var(--border-light-alpha, 1));
+  --color-border-medium: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+  /* border-light, at the share the theme keeps for chrome outlines and inset hairlines. */
+  --color-border-chrome: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-heavy, at the chrome share: the pressed or selected outline of a control that is chrome. */
+  --color-border-chrome-heavy: rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-medium, at the chrome share: the hover outline of a chrome control. */
+  --color-border-chrome-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-medium, at the inset share: the box edges of a form that sits on a stroked page. */
+  --color-border-inset-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)));
+  --color-border-inset: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)));
+  --color-border-medium-alt: rgb(var(--border-medium-alt));
+  --color-border-heavy: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));
+  --color-border-xheavy: rgb(var(--border-xheavy) / var(--border-xheavy-alpha, 1));
+  --color-drawer-edge: rgb(var(--drawer-edge));
+  --color-border-destructive: rgb(var(--border-destructive));
+  --color-border-control: rgb(var(--border-control));
+  /* Falls back to the focus ring color, for a stylesheet that predates it. */
+  --color-border-field-focus: rgb(var(--border-field-focus, var(--focus-control)));
+  /* Follow the canvas and the primary ink, for a stylesheet that predates them. */
+  --color-field-fill: rgb(var(--field-fill, var(--surface-primary)));
+  --color-field-text: rgb(var(--field-text, var(--text-primary)));
+  /* Follow the roles they were painted in before they had their own, for a stylesheet that
+     predates them. */
+  --color-surface-tooltip: rgb(var(--surface-tooltip, var(--surface-primary)));
+  --color-text-tooltip: rgb(var(--text-tooltip, var(--text-primary)));
+  --color-alert-error-fill: rgb(var(--alert-error-fill, var(--status-error-subtle)));
+  --color-alert-error-border: rgb(var(--alert-error-border, var(--status-error-border)));
+  --color-surface-canvas: rgb(var(--surface-canvas));
+  --color-surface-user-message: rgb(var(--surface-user-message));
+  --color-surface-card: rgb(var(--surface-card));
+  --color-surface-card-hover: rgb(var(--surface-card-hover));
+  --color-surface-nav-hover: rgb(var(--surface-nav-hover));
+  --color-surface-nav-selected: rgb(var(--surface-nav-selected));
+  --color-surface-tab-selected: rgb(var(--surface-tab-selected));
+  --color-surface-menu: rgb(var(--surface-menu));
+  --color-surface-popover: rgb(var(--surface-popover));
+  --color-border-menu: rgb(
+    var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1))
+  );
+  --color-surface-composer: rgb(var(--surface-composer));
+  --color-surface-search: rgb(var(--surface-search));
+  --color-border-disabled: rgb(var(--border-disabled));
+
+  /* status */
+  --color-status-success: rgb(var(--status-success));
+  --color-status-success-subtle: rgb(var(--status-success-subtle));
+  --color-status-success-border: rgb(var(--status-success-border));
+  --color-status-success-strong: rgb(var(--status-success-strong));
+  --color-status-info: rgb(var(--status-info));
+  --color-status-info-subtle: rgb(var(--status-info-subtle));
+  --color-status-info-border: rgb(var(--status-info-border));
+  --color-status-info-strong: rgb(var(--status-info-strong));
+  --color-status-warning: rgb(var(--status-warning));
+  --color-status-warning-subtle: rgb(var(--status-warning-subtle));
+  --color-status-warning-border: rgb(var(--status-warning-border));
+  --color-status-warning-strong: rgb(var(--status-warning-strong));
+  --color-status-error: rgb(var(--status-error));
+  --color-status-error-subtle: rgb(var(--status-error-subtle));
+  --color-status-error-border: rgb(var(--status-error-border));
+  --color-status-error-strong: rgb(var(--status-error-strong));
+  --color-status-neutral: rgb(var(--status-neutral));
+  --color-status-neutral-subtle: rgb(var(--status-neutral-subtle));
+  --color-status-neutral-border: rgb(var(--status-neutral-border));
+  --color-status-verified: rgb(var(--status-verified));
+
+  /* data series */
+  --color-series-1: rgb(var(--series-1));
+  --color-series-2: rgb(var(--series-2));
+  --color-series-3: rgb(var(--series-3));
+  --color-series-4: rgb(var(--series-4));
+  --color-series-5: rgb(var(--series-5));
+  --color-series-6: rgb(var(--series-6));
+  --color-series-7: rgb(var(--series-7));
+  --color-series-8: rgb(var(--series-8));
+
+  /* charts and controls */
+  --color-chart-widget-surface: rgb(var(--chart-widget-surface));
+  --color-chart-widget-stroke: rgb(var(--chart-widget-stroke));
+  --color-switch-unchecked: rgb(var(--switch-unchecked));
+  /* Each falls back to what it was painted with before its role, for a stylesheet that predates it. */
+  --color-switch-thumb: rgb(var(--switch-thumb, var(--surface-primary)));
+  --color-table-header-text: rgb(var(--table-header-text, var(--text-secondary)));
+  --color-table-header-fill: rgb(var(--table-header-fill, var(--surface-dialog)));
+}
+
+/* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
+ * definition reshapes the existing `rounded-*`, `font-sans`, `font-mono`, `text-*` and `shadow-*`
+ * call sites without a migration, in the app and in a consumer alike. The defaults in `defaults.css` reproduce the scale
+ * the app's utilities resolved to before. Bare `rounded` stays Tailwind's fixed 0.25rem: `sm` keeps
+ * its px offset, so the two part at a non-16px root. Bare `shadow` reads `--shadow`, which has
+ * always equalled `sm`, and follows it. A shadow held in a variable cannot be recolored by a
+ * `shadow-<color>` modifier; nothing in the app or the package uses one. */
+@theme inline {
+  --radius-sm: var(--theme-radius-sm);
+  --radius-md: var(--theme-radius-md);
+  --radius-lg: var(--theme-radius-lg);
+  --radius-xl: var(--theme-radius-xl);
+  --radius-2xl: var(--theme-radius-2xl);
+  --radius-3xl: var(--theme-radius-3xl);
+  --font-sans: var(--theme-font-family);
+  --font-mono: var(--theme-mono-font-family);
+  --text-xs: var(--theme-text-xs);
+  --text-xs--line-height: var(--theme-text-xs-leading);
+  --text-sm: var(--theme-text-sm);
+  --text-sm--line-height: var(--theme-text-sm-leading);
+  --text-base: var(--theme-text-base);
+  --text-base--line-height: var(--theme-text-base-leading);
+  --text-lg: var(--theme-text-lg);
+  --text-lg--line-height: var(--theme-text-lg-leading);
+  --text-xl: var(--theme-text-xl);
+  --text-xl--line-height: var(--theme-text-xl-leading);
+  --text-2xl: var(--theme-text-2xl);
+  --text-2xl--line-height: var(--theme-text-2xl-leading);
+  --shadow: var(--theme-shadow-sm);
+  --shadow-2xs: var(--theme-shadow-2xs);
+  --shadow-xs: var(--theme-shadow-xs);
+  --shadow-sm: var(--theme-shadow-sm);
+  --shadow-md: var(--theme-shadow-md);
+  --shadow-lg: var(--theme-shadow-lg);
+  --shadow-xl: var(--theme-shadow-xl);
+  --shadow-2xl: var(--theme-shadow-2xl);
+}
+
+/* The display family the shared dialog titles compose as `font-display`.
+ * `defaults.css` sets it to the stock family and a theme definition repaints
+ * it; a host that unsets it lets a title keep the family it inherits. */
+@theme inline {
+  --font-display: var(--theme-display-font-family, inherit);
+}
+
+/* A theme whose `disabledStyle` is `fill` paints a disabled control in the
+ * disabled roles instead of fading it. The choice is read from the
+ * `--theme-disabled-style` property `applyTheme` writes on every root it themes,
+ * so a control inherits it from the nearest themed root: a `dim` root nested in
+ * a `fill` one fades its controls again. The default `dim` style keeps the
+ * `disabled:opacity-50` every primitive already carries. `:is(:root *)` matches
+ * every element and carries a pseudo-class's weight, so the fill outranks a
+ * checked or variant fill. Radix marks a disabled part that is not a form
+ * control (a slider thumb, a menu item) with `data-disabled`, and a composite
+ * widget row with `aria-disabled`; both count too. */
+@custom-variant theme-disabled {
+  @container style(--theme-disabled-style: fill) {
+    &:is(:root *):is(:disabled, [data-disabled], [aria-disabled='true']) {
+      @slot;
+    }
+  }
+}
+
+/* The same fill for a wrapper whose disabled control sits inside it, as
+ * `rc-input-number` renders its input inside the element that takes the
+ * component's classes. */
+@custom-variant theme-disabled-within {
+  @container style(--theme-disabled-style: fill) {
+    &:is(:root *):has(:disabled) {
+      @slot;
+    }
+  }
+}
+
+/* A theme whose `destructiveStyle` is `soft` paints the `destructive` Button as a tint of the
+ * destructive surface under the destructive ink, as Click UI's danger button does. Read, like the
+ * disabled style, from the `--theme-destructive-style` property the nearest themed root carries. */
+@custom-variant theme-destructive-soft {
+  @container style(--theme-destructive-style: soft) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
+/* A theme whose `fieldFocusStyle` is `border` swaps a focused field's edge color instead of
+ * drawing a ring. Read, like the disabled style, from the `--theme-field-focus-style` property
+ * the nearest themed root carries. */
+@custom-variant theme-field-border {
+  @container style(--theme-field-focus-style: border) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
+/* A theme whose `fieldFillStyle` is `fill` paints its fields in `field-fill` instead of leaving
+ * them on the surface they sit on, read like the focus style from the nearest themed root. The
+ * default `transparent` style, and a browser without style queries, keep the fields clear. The
+ * fill carries a single class's weight, so a hover, open or disabled fill still paints over it. */
+@custom-variant theme-field-fill {
+  @container style(--theme-field-fill-style: fill) {
+    @slot;
+  }
+}

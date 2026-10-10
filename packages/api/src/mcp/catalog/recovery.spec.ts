@@ -17,6 +17,7 @@ import {
   readMCPRecoveryGenerationAround,
   recoverMCPServerCatalogs,
 } from './recovery';
+import { MCP_APPS_CAPABILITY_PROFILE, STANDARD_MCP_CAPABILITY_PROFILE } from '../capabilities';
 import { prepareMCPAuthorizationMutation } from '../authorization';
 import { MCPTokenRefreshUnavailableError } from '../oauth';
 
@@ -779,6 +780,54 @@ describe('recoverMCPServerCatalogs', () => {
       new Map([['shared', availableTools('shared-tool')]]),
       new Map([['shared', availableTools('shared-tool')]]),
     ]);
+  });
+
+  it('does not coalesce recovery across capability profiles', async () => {
+    const discoverServerTools = jest.fn().mockResolvedValue({ tools: [] });
+    const deps = {
+      loadUserMCPAuthMap: jest.fn().mockResolvedValue({}),
+      discoverServerTools,
+      formatServerTools: jest.fn().mockReturnValue({}),
+      recoveryTracker,
+    };
+    const config = serverConfig('profiled');
+
+    await Promise.all([
+      recoverMCPServerCatalogs(
+        {
+          user,
+          servers: [
+            {
+              serverName: 'profiled',
+              serverConfig: config,
+              capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+            },
+          ],
+        },
+        deps,
+      ),
+      recoverMCPServerCatalogs(
+        {
+          user,
+          servers: [
+            {
+              serverName: 'profiled',
+              serverConfig: config,
+              capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+            },
+          ],
+        },
+        deps,
+      ),
+    ]);
+
+    expect(discoverServerTools).toHaveBeenCalledTimes(2);
+    expect(discoverServerTools).toHaveBeenCalledWith(
+      expect.objectContaining({ capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE }),
+    );
+    expect(discoverServerTools).toHaveBeenCalledWith(
+      expect.objectContaining({ capabilityProfile: MCP_APPS_CAPABILITY_PROFILE }),
+    );
   });
 
   it('retains reauthorization state and recovered public tools during the retry window', async () => {

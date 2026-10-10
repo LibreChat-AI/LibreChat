@@ -21,7 +21,7 @@ const env = { ...process.env };
 const enabled = { default: true, on: true, off: false };
 const disabled = { default: false, on: false, off: false };
 const optIn = { default: false, on: true, off: false };
-const models = ['gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra'];
+const models = ['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'];
 function grouped(overrides: Partial<TAzureGroup> = {}) {
   const azure = validateAzureGroups([
     {

@@ -1,5 +1,10 @@
 import z from 'zod';
-import { EModelEndpoint, supportsContext1m, supportsOutput128k } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  supportsContext1m,
+  supportsOutput128k,
+  gptPointReleaseFamily,
+} from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
 /**
@@ -632,8 +637,20 @@ function findLongestKey(lowerModelName: string, tokensMap: ModelKeyedMap): strin
  * A key that carries the vendor itself is already the most specific answer and
  * is kept. `EndpointTokenConfig` is an arbitrary record, and one built from
  * OpenRouter is keyed by `org/model`, so those must still beat a bare `model`.
+ *
+ * A GPT point release with no key of its own (`gpt-6.1-sol`) resolves to its
+ * family's (`gpt-6-sol`), for context windows, output limits and pricing alike.
  */
 export function findMatchingPattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
+  const direct = findVendorAwarePattern(modelName, tokensMap);
+  if (direct != null) {
+    return direct;
+  }
+  const family = gptPointReleaseFamily(modelName);
+  return family == null ? null : findVendorAwarePattern(family, tokensMap);
+}
+
+function findVendorAwarePattern(modelName: string, tokensMap: ModelKeyedMap): string | null {
   const lowerModelName = modelName.toLowerCase();
   const slashIndex = lowerModelName.lastIndexOf('/');
   if (slashIndex === -1) {

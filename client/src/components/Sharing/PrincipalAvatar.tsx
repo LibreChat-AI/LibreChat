@@ -39,20 +39,20 @@ export default function PrincipalAvatar({
       case PrincipalType.USER:
         return {
           Icon: User,
-          containerClass: 'bg-blue-100 dark:bg-blue-900',
-          iconClass: 'text-blue-600 dark:text-blue-400',
+          containerClass: 'bg-series-1/15',
+          iconClass: 'text-series-1',
         };
       case PrincipalType.GROUP:
         return {
           Icon: Users,
-          containerClass: 'bg-green-100 dark:bg-green-900',
-          iconClass: 'text-green-600 dark:text-green-400',
+          containerClass: 'bg-series-7/15',
+          iconClass: 'text-series-7',
         };
       case PrincipalType.ROLE:
         return {
           Icon: Shield,
-          containerClass: 'bg-purple-100 dark:bg-purple-900',
-          iconClass: 'text-purple-600 dark:text-purple-400',
+          containerClass: 'bg-series-6/15',
+          iconClass: 'text-series-6',
         };
       default:
         return {
@@ -67,7 +67,7 @@ export default function PrincipalAvatar({
 
   if (avatar) {
     return (
-      <div className={cn('flex-shrink-0', className)}>
+      <div className={cn('shrink-0', className)}>
         <img
           src={avatar}
           alt={`${displayName} avatar`}
@@ -96,7 +96,7 @@ export default function PrincipalAvatar({
   }
 
   return (
-    <div className={cn('flex-shrink-0', className)}>
+    <div className={cn('shrink-0', className)}>
       <div
         className={cn(
           avatarSizeClass,

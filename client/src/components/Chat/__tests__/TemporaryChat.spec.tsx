@@ -1,9 +1,11 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type { TConversation } from 'librechat-data-provider';
 import { TemporaryChat, TemporaryChatIndicator } from '../TemporaryChat';
+import ChatSettingsProvider from '~/routes/ChatSettings';
 import store from '~/store';
 
 jest.mock('@librechat/client', () => ({
@@ -20,6 +22,16 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => (key === 'com_ui_temporary' ? 'Temporary Chat' : key),
 }));
 
+let mockRetentionMode: string | undefined;
+
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: { interface: { retentionMode: mockRetentionMode } } }),
+}));
+
+beforeEach(() => {
+  mockRetentionMode = undefined;
+});
+
 function renderChat(
   ui: React.ReactElement,
   { isTemporary, conversation }: { isTemporary: boolean; conversation?: Partial<TConversation> },
@@ -33,7 +45,7 @@ function renderChat(
         }
       }}
     >
-      {ui}
+      <ChatSettingsProvider>{ui}</ChatSettingsProvider>
     </RecoilRoot>,
   );
 }
@@ -53,6 +65,26 @@ describe('TemporaryChat', () => {
       'aria-pressed',
       'true',
     );
+  });
+
+  it('locks the toggle on when the administrator enforces temporary chats', () => {
+    mockRetentionMode = 'ephemeral';
+    renderChat(<TemporaryChat />, { isTemporary: false });
+
+    const toggle = screen.getByRole('button', { name: 'com_ui_temporary_enforced' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).not.toHaveAttribute('aria-keyshortcuts');
+  });
+
+  it('keeps the toggle on after a click under enforced temporary chats', async () => {
+    mockRetentionMode = 'ephemeral';
+    renderChat(<TemporaryChat />, { isTemporary: false });
+
+    const toggle = screen.getByRole('button', { name: 'com_ui_temporary_enforced' });
+    await userEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('retires the toggle once the conversation has started', () => {

@@ -51,6 +51,7 @@ export interface BackgroundToolResultState {
     claimId: string;
     claimedAt: Date;
     generationId?: string;
+    receiptReconciled?: true;
   };
 }
 

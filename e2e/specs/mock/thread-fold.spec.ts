@@ -92,7 +92,9 @@ test.describe('thread fold regressions', () => {
 
     /** Queue mid-run, then escalate to an interrupt: the closest scripted
      *  reproduction of the incident's preempt churn (mid-stream seal, new
-     *  generation, resume-path cache writes). */
+     *  generation, resume-path cache writes). Enter takes the default
+     *  during-run action, which is steer; Ctrl/Cmd+Enter takes the other one,
+     *  which is what queues the message this test needs. */
     const input = messageInput(page);
     await input.click();
     await input.fill(interruptText);

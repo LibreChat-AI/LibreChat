@@ -1,6 +1,11 @@
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
+import {
+  getReasoningStateKey,
+  clearPendingReasoningOverrides,
+} from '~/components/Chat/Input/Composer/state';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
 import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { clearLocalStorage } from '~/utils/localStorage';
 import store from '~/store';
@@ -15,8 +20,21 @@ export default function useClearStates() {
       async (skipFirst?: boolean) => {
         await clearSubmissions(skipFirst);
         await clearConversations(skipFirst);
+        /* Jotai's default store outlives the authenticated route: left alone, a
+           file manager open at logout reopens for the next session, still
+           holding the previous session's unmounted opener. */
+        jotaiStore.set(showFilesDialogAtom, false);
+        jotaiStore.set(filesDialogTriggerAtom, null);
 
         const keys = await snapshot.getPromise(store.conversationKeysAtom);
+        const keptReasoningKeys = new Set<string>();
+        if (skipFirst === true) {
+          const firstConvoId = (await snapshot.getPromise(store.conversationByIndex(0)))
+            ?.conversationId;
+          keptReasoningKeys.add(getReasoningStateKey(null, 0));
+          keptReasoningKeys.add(getReasoningStateKey(firstConvoId, 0));
+        }
+        clearPendingReasoningOverrides(jotaiStore, keptReasoningKeys);
 
         for (const key of keys) {
           if (skipFirst === true && key === 0) {

@@ -76,21 +76,21 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
   return (
     <Ariakit.ComboboxProvider store={combobox}>
       <Ariakit.ComboboxLabel
-        className={cn('mb-2 block font-medium text-text-primary', labelClassName)}
+        className={cn('text-text-primary mb-2 block font-medium', labelClassName)}
       >
         {label}
       </Ariakit.ComboboxLabel>
       <>
         <div
           className={cn(
-            'relative flex h-10 items-center gap-2 text-text-primary',
+            'text-text-primary relative flex h-10 items-center gap-2',
             isSmallScreen === true ? 'mb-2 h-14 rounded-2xl' : '',
           )}
         >
           {isLoading ? (
             <Spinner className="absolute left-3 h-4 w-4" />
           ) : (
-            <Search className="absolute left-3 h-4 w-4 text-text-secondary" aria-hidden="true" />
+            <Search className="text-text-secondary absolute left-3 h-4 w-4" aria-hidden="true" />
           )}
           <Ariakit.Combobox
             render={<Input />}
@@ -134,7 +134,7 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
         autoFocusOnShow={false}
         modal={false}
         className={cn(
-          'animate-popover z-[9999] min-w-64 overflow-hidden rounded-2xl border border-border-light bg-surface-secondary shadow-lg',
+          'animate-popover border-border-light bg-surface-secondary z-[9999] max-w-[calc(100vw-1rem)] min-w-[min(16rem,calc(100vw-1rem))] overflow-hidden rounded-2xl border shadow-lg',
           '[pointer-events:auto]', // Override body's pointer-events:none when in modal
         )}
       >
@@ -179,13 +179,13 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
               <div
                 className={cn(
                   'flex items-center justify-center px-4 py-8 text-center',
-                  'text-sm text-text-secondary',
+                  'text-text-secondary text-sm',
                 )}
               >
                 <div className="flex flex-col items-center gap-2">
-                  <Search className="h-8 w-8 text-text-tertiary opacity-50" />
+                  <Search className="text-text-tertiary h-8 w-8 opacity-50" />
                   <div className="font-medium">{localize('com_ui_no_results_found')}</div>
-                  <div className="text-xs text-text-tertiary">
+                  <div className="text-text-tertiary text-xs">
                     {localize('com_ui_try_adjusting_search')}
                   </div>
                 </div>

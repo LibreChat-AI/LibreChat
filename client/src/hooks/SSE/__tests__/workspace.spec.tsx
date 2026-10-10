@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, EModelEndpoint, QueryKeys } from 'librechat-data-provider';
-import type { EventSubmission, TConversation } from 'librechat-data-provider';
+import type { ChatCreatedFrame, EventSubmission, TConversation } from 'librechat-data-provider';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useEventHandlers from '../useEventHandlers';
 
@@ -123,10 +123,9 @@ function setup(current = initialConversation, isAddedRequest = false) {
       current.codeEnvironmentMode,
     ),
   };
-  const createdData = {
-    conversation: current,
-    requestMessage: submission.userMessage,
-    responseMessage: submission.initialResponse,
+  const createdData: ChatCreatedFrame = {
+    created: true,
+    message: submission.userMessage,
   };
   return { ...hook, submission, createdData, queryClient };
 }

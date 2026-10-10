@@ -7,6 +7,7 @@ import {
   getEphemeralSender,
   appendAgentIdSuffix,
   encodeEphemeralAgentId,
+  resolveMCPAppsPolicy,
 } from 'librechat-data-provider';
 import type {
   Agent,
@@ -17,8 +18,10 @@ import type {
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { IsUnmodifiedAppMCPServer } from '~/agents/lookup';
+import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
@@ -69,6 +72,7 @@ export interface LoadAddedAgentDeps {
     userId: string,
     serverName: string,
     serverConfig?: ParsedServerConfig,
+    capabilityProfile?: MCPClientCapabilityProfile,
   ) => Promise<Record<string, unknown> | null>;
   /** The MCP servers this user can reach, with the registry's tier precedence
    *  already applied — the resolution behind the client's catalog. Omitted, the
@@ -139,6 +143,9 @@ export async function loadAddedAgent(
   }
 
   const appConfig = req.config as AppConfig | undefined;
+  const capabilityProfile = resolveMCPClientCapabilityProfile(
+    resolveMCPAppsPolicy(appConfig?.mcpSettings?.apps),
+  );
   const ephemeralAgent = rest.ephemeralAgent as
     | {
         mcp?: string[];
@@ -275,7 +282,7 @@ export async function loadAddedAgent(
     );
     const serverTools = lookup.requestScoped
       ? null
-      : await deps.getMCPServerTools(userId, mcpServer, lookup.serverConfig);
+      : await deps.getMCPServerTools(userId, mcpServer, lookup.serverConfig, capabilityProfile);
     if (!serverTools && optionalServers.has(mcpServer)) {
       logger.warn(`[loadAddedAgent] Skipping pinned MCP server "${mcpServer}": no tools`);
       continue;

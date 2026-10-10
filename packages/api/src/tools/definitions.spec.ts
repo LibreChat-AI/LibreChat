@@ -1,4 +1,4 @@
-import { Providers, WebSearchToolDefinition } from '@librechat/agents';
+import { Providers, WebSearchToolDefinition, GitHubCompareToolDefinition } from '@librechat/agents';
 import type {
   LoadToolDefinitionsParams,
   LoadToolDefinitionsDeps,
@@ -6,7 +6,10 @@ import type {
 } from './definitions';
 import { toolkitExpansion, toolkitParent } from './toolkits/mapping';
 import { getToolDefinition } from './registry/definitions';
+import { getToolApprovalIdentity } from './approval';
 import { loadToolDefinitions } from './definitions';
+import { formatMCPServerTools } from '~/mcp/tools';
+import { getToolApprovalName } from './approval';
 
 const MAX_PROVIDER_TOOL_DESCRIPTION_LENGTH = 1024;
 
@@ -31,6 +34,43 @@ describe('definitions.ts', () => {
   });
 
   describe('loadToolDefinitions', () => {
+    it.each([undefined, false, true])(
+      'gates selected comparison definitions on explicit opt-in (%p)',
+      async (githubCompareEnabled) => {
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user',
+            agentId: 'reviewer',
+            tools: ['github_compare'],
+            githubCompareEnabled,
+          },
+          { getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools, isBuiltInTool: () => true },
+        );
+        expect(result.toolRegistry.has('github_compare')).toBe(githubCompareEnabled === true);
+        expect(result.toolDefinitions.map(({ name }) => name)).toEqual(
+          githubCompareEnabled === true ? ['github_compare'] : [],
+        );
+        if (githubCompareEnabled) {
+          expect(result.toolRegistry.get('github_compare')?.description).toBe(
+            GitHubCompareToolDefinition.description,
+          );
+        }
+        expect(mockGetOrFetchMCPServerTools).not.toHaveBeenCalled();
+      },
+    );
+    it('does not auto-register comparison for code execution agents', async () => {
+      const result = await loadToolDefinitions(
+        {
+          userId: 'user',
+          agentId: 'coder',
+          tools: ['calculator'],
+          githubCompareEnabled: true,
+        },
+        { getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools, isBuiltInTool: () => true },
+      );
+      expect(result.toolRegistry.has('github_compare')).toBe(false);
+    });
+
     it('should return empty result for empty tools array', async () => {
       const params: LoadToolDefinitionsParams = {
         userId: 'user-123',
@@ -1225,4 +1265,83 @@ describe('definitions.ts', () => {
       });
     });
   });
+});
+
+test('definitions-only loading retains the verified reset key without collapsing a collision sibling', async () => {
+  const current = 'query_mcp_db';
+  const legacy = 'db_query_mcp_db';
+  const catalog = {
+    [current]: {
+      function: { name: current, parameters: { type: 'object' as const } },
+      serverToolName: 'db_query',
+    },
+  };
+  const options = {
+    [current]: {
+      approval_mode: 'chat' as const,
+      approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+    },
+  };
+  const result = await loadToolDefinitions(
+    {
+      userId: 'user-a',
+      agentId: 'agent-a',
+      tools: [legacy],
+      toolOptions: options,
+      mcpServerNames: ['db'],
+      rawServerNames: ['db'],
+    },
+    {
+      getOrFetchMCPServerTools: async () => catalog,
+      isBuiltInTool: () => false,
+    },
+  );
+  expect(result.toolDefinitions[0].name).toBe(legacy);
+  expect(getToolApprovalName(result.toolDefinitions[0])).toBe(current);
+  const collision = await loadToolDefinitions(
+    {
+      userId: 'user-a',
+      agentId: 'agent-a',
+      tools: [legacy],
+      mcpServerNames: ['db'],
+      rawServerNames: ['db'],
+    },
+    {
+      getOrFetchMCPServerTools: async () => ({
+        ...catalog,
+        [legacy]: { function: { name: legacy, parameters: { type: 'object' as const } } },
+      }),
+      isBuiltInTool: () => false,
+    },
+  );
+  expect(getToolApprovalName(collision.toolDefinitions[0])).toBeUndefined();
+});
+
+test('live catalog reassignment changes consent while retaining the same displayed key and schema', async () => {
+  const upstream = (name: string) => ({
+    name,
+    description: 'Same description',
+    inputSchema: { type: 'object' as const, properties: {} },
+  });
+  const before = formatMCPServerTools('db', [upstream('query'), upstream('db_query')]);
+  const after = formatMCPServerTools('db', [upstream('db_query')]);
+  const params = {
+    userId: 'user-a',
+    agentId: 'agent-a',
+    tools: ['query_mcp_db'],
+    mcpServerNames: ['db'],
+    rawServerNames: ['db'],
+  };
+  const first = await loadToolDefinitions(params, {
+    isBuiltInTool: () => false,
+    getOrFetchMCPServerTools: async () => before,
+  });
+  const second = await loadToolDefinitions(params, {
+    isBuiltInTool: () => false,
+    getOrFetchMCPServerTools: async () => after,
+  });
+  expect(second.toolDefinitions[0].name).toBe(first.toolDefinitions[0].name);
+  expect(getToolApprovalIdentity(second.toolDefinitions[0])).not.toBe(
+    getToolApprovalIdentity(first.toolDefinitions[0]),
+  );
 });

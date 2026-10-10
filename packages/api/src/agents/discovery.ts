@@ -121,16 +121,27 @@ export interface DiscoverConnectedAgentsParams {
    * request-memoized read as its parent.
    */
   resolveWebSearchGrant?: InitializeAgentParams['resolveWebSearchGrant'];
+  /**
+   * Resolves a handoff/subagent's own `instructionsPrompt` link, forwarded so
+   * every discovered agent honors its link the same way the primary does.
+   * There is no default resolution path, unlike `resolveWebSearchGrant` —
+   * omitting it leaves a linked handoff agent with empty instructions.
+   */
+  resolveLinkedInstructions?: InitializeAgentParams['resolveLinkedInstructions'];
+  /** Forwarded verbatim; the resume path sets this `false` for every discovered agent. */
+  recordLinkedPromptUsage?: InitializeAgentParams['recordLinkedPromptUsage'];
   /** Sibling of `codeEnvAvailable` — the `stateful_code_sessions` capability flag, forwarded to every handoff `initializeAgent`. */
   statefulSessionsAvailable?: InitializeAgentParams['statefulSessionsAvailable'];
   /** Deployment policy for stateful workspace scopes, forwarded unchanged to every referenced agent. */
   allowedStatefulCodeEnvironments?: InitializeAgentParams['allowedStatefulCodeEnvironments'];
-  /**
-   * Run-level inline memory availability gate. Forwarded verbatim to every
-   * handoff agent so sub-agents that list the `memory` capability expand the
-   * `set_memory` + `delete_memory` pair only when the parent run permits it.
-   */
   memoryAvailable?: InitializeAgentParams['memoryAvailable'];
+  /**
+   * Explicitly enables the authoritative ChatProject guidance/resources for
+   * every discovered handoff and saved graph member. This is intentionally
+   * independent of the request marker so remote callers can opt in without
+   * broadening unrelated agent initialization.
+   */
+  useChatProjectContext?: InitializeAgentParams['useChatProjectContext'];
   /**
    * Run-level `run_in_background` capability gate. Forwarded verbatim so a
    * handoff/connected agent's own event-driven tools with
@@ -261,6 +272,7 @@ async function initializeReferencedAgent(
           endpoint: EModelEndpoint.agents,
         },
         allowedProviders: params.allowedProviders,
+        useChatProjectContext: params.useChatProjectContext,
         accessibleSkillIds: scopedSkillIds,
         skillAuthoringAvailable: params.computeSkillAuthoringAvailable?.(agent, scopedSkillIds),
         skillStates: params.skillStates,
@@ -268,6 +280,8 @@ async function initializeReferencedAgent(
         codeEnvAvailable: params.codeEnvAvailable,
         fileSearchAvailable: params.fileSearchAvailable,
         resolveWebSearchGrant: params.resolveWebSearchGrant,
+        resolveLinkedInstructions: params.resolveLinkedInstructions,
+        recordLinkedPromptUsage: params.recordLinkedPromptUsage,
         backgroundToolsAvailable: params.backgroundToolsAvailable,
         toolIntentsAvailable: params.toolIntentsAvailable,
         statefulSessionsAvailable: params.statefulSessionsAvailable,

@@ -15,6 +15,8 @@ export interface MenuItemProps {
   separate?: boolean;
   hideOnClick?: boolean;
   dialog?: React.ReactElement;
+  ariaHasPopup?: React.AriaAttributes['aria-haspopup'];
+  ariaControls?: string;
   ariaLabel?: string;
   ariaChecked?: boolean;
   ref?: React.Ref<any>;

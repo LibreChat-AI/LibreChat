@@ -1,12 +1,14 @@
 import React from 'react';
 import type { UIActionResult } from '@mcp-ui/client';
-import { TAskFunction } from '~/common';
+import type { TAskFunction } from '~/common';
 import logger from './logger';
 
 export * from './map';
+export * from './policies';
 export * from './json';
 export * from './icons';
 export * from './svg';
+export * from './row';
 export * from './email';
 export * from './share';
 export * from './files';
@@ -30,6 +32,7 @@ export * from './textarea';
 export * from './messages';
 export * from './focus';
 export * from './tokens';
+export * from './balance';
 export * from './redirect';
 export * from './links';
 export * from './languages';
@@ -48,6 +51,7 @@ export * from './toolLabels';
 export * from './favoritesError';
 export * from './approval';
 export * from './steer';
+export * from './pane';
 export * from './activityLabels';
 export * from './agentModelSelection';
 export * from './runStepDuration';
@@ -95,20 +99,19 @@ export const languages = [
 ];
 
 export const removeFocusOutlines = '';
-export const removeFocusRings =
-  'focus:outline-none focus:ring-0 focus:ring-opacity-0 focus:ring-offset-0';
+export const removeFocusRings = 'focus:outline-hidden focus:ring-0 focus:ring-offset-0';
 
 export const cardStyle =
-  'transition-colors rounded-md min-w-[75px] border border-border-medium font-normal bg-surface-secondary hover:bg-surface-hover text-text-primary focus:outline-none data-[state=open]:bg-surface-hover';
+  'transition-colors rounded-md min-w-[4.6875rem] border border-border-medium font-normal bg-surface-secondary hover:bg-surface-hover text-text-primary focus:outline-hidden data-[state=open]:bg-surface-hover';
 
 export const defaultTextProps =
-  'rounded-md border border-border-light focus:border-border-heavy focus:bg-surface-secondary bg-transparent text-sm text-text-primary shadow-[0_0_10px_rgba(0,0,0,0.05)] outline-none focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-text-primary focus:ring-opacity-20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
+  'rounded-md border border-border-light focus:border-border-heavy focus:bg-surface-secondary bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.05)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden focus:ring-text-primary/20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
 
 export const optionText =
   'p-0 shadow-none text-right pr-1 h-8 border-transparent hover:bg-surface-hover transition-colors';
 
 export const defaultTextPropsLabel =
-  'rounded-md border border-border-medium bg-transparent text-sm text-text-primary shadow-[0_0_10px_rgba(0,0,0,0.10)] outline-none focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-none disabled:cursor-not-allowed disabled:opacity-50';
+  'rounded-md border border-border-medium bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.10)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50';
 
 export function capitalizeFirstLetter(string: string) {
   return string.charAt(0).toUpperCase() + string.slice(1);
@@ -140,15 +143,9 @@ export const extractContent = (
   return '';
 };
 
+/** Converts supported legacy MCP-UI actions into the existing conversation submission path. */
 export const handleUIAction = async (result: UIActionResult, ask: TAskFunction) => {
-  const supportedTypes = ['intent', 'tool', 'prompt'];
-
   const { type, payload } = result;
-
-  if (!supportedTypes.includes(type)) {
-    return;
-  }
-
   let messageText = '';
 
   if (type === 'intent') {
@@ -184,6 +181,8 @@ ${prompt}
 
 Execute the intention of the prompt that is mentioned in the message using the tools available to you.
     `;
+  } else {
+    return;
   }
 
   logger.debug('MCP-UI', 'About to submit message:', messageText);

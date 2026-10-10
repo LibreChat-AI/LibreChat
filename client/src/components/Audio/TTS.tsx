@@ -27,14 +27,14 @@ export function BrowserTTS({
 
   const renderIcon = () => {
     if (isLoading === true) {
-      return <Spinner className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <Spinner className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
     if (isSpeaking === true) {
-      return <VolumeMuteIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <VolumeMuteIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
-    return <VolumeIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+    return <VolumeIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
   };
 
   useEffect(() => {
@@ -120,14 +120,14 @@ export function ExternalTTS({
 
   const renderIcon = () => {
     if (isLoading === true) {
-      return <Spinner className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <Spinner className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
     if (isSpeaking === true) {
-      return <VolumeMuteIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+      return <VolumeMuteIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
     }
 
-    return <VolumeIcon className="icon-md-heavy h-[18px] w-[18px]" />;
+    return <VolumeIcon className="icon-md-heavy h-[1.125rem] w-[1.125rem]" />;
   };
 
   useEffect(() => {

@@ -1,8 +1,8 @@
 import { createElement } from 'react';
 import { getDefaultStore } from 'jotai';
-import { dataService, QueryKeys } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { dataService, QueryKeys, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type {
   ConversationListResponse,
   TConversationTag,
@@ -10,18 +10,20 @@ import type {
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
+  useConversationTagMutation,
+  useDeleteConversationMutation,
+  useDeleteConversationTagMutation,
+  usePinConversationMutation,
+  useMarkConversationSeenMutation,
+  useMarkConversationUnreadMutation,
+} from '../mutations';
+import {
   removeConvoFromAllQueries,
   updateConvoInAllQueries,
   upsertConvoInAllQueries,
   collectPinnedConversations,
   withoutListFlags,
 } from '~/utils/convos';
-import {
-  useConversationTagMutation,
-  useDeleteConversationMutation,
-  useDeleteConversationTagMutation,
-  usePinConversationMutation,
-} from '../mutations';
 import {
   pinnedConversationsPageSize,
   useConversationsInfiniteQuery,
@@ -37,6 +39,8 @@ jest.mock('librechat-data-provider', () => {
       ...actual.dataService,
       listConversations: jest.fn(),
       pinConversation: jest.fn(),
+      markConversationSeen: jest.fn(),
+      markConversationUnread: jest.fn(),
       deleteConversation: jest.fn(),
       updateConversationTag: jest.fn(),
       deleteConversationTag: jest.fn(),
@@ -269,6 +273,101 @@ describe('pinned list cache synchronization', () => {
     expect(readPinnedCache(queryClient)?.conversations).toEqual([]);
   });
 
+  it.each([true, false])(
+    'accepts an authoritative unread clear while unpinning (listed: %s)',
+    async (listed) => {
+      const queryClient = createQueryClient();
+      const confirmed = {
+        ...pinnedConvo,
+        lastResponseAt: '2026-08-16T10:00:00.000Z',
+        lastResponseMessageId: 'reply',
+        isMarkedUnread: false,
+        lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      } as TConversation;
+      queryClient.setQueryData([QueryKeys.pinnedConversations], listResponse([confirmed]));
+      queryClient.setQueryData([QueryKeys.allConversations], {
+        pages: [listResponse(listed ? [confirmed] : [])],
+        pageParams: [null],
+      });
+      const server = JSON.parse(
+        JSON.stringify({ ...confirmed, lastSeenAt: undefined }),
+      ) as TConversation;
+      pinConversation.mockResolvedValue({ ...server, pinned: false } as TConversation);
+      const { result } = renderHook(() => usePinConversationMutation(), {
+        wrapper: createWrapper(queryClient),
+      });
+      await act(async () => {
+        await result.current.mutateAsync({ conversationId: pinnedConversationId, pinned: false });
+      });
+      const chats = queryClient.getQueryData<{ pages: ConversationListResponse[] }>([
+        QueryKeys.allConversations,
+      ]);
+      expect(chats?.pages[0].conversations[0].lastSeenAt).toBeUndefined();
+      expect(chats?.pages[0].conversations[0].isMarkedUnread).toBe(false);
+      expect(readPinnedCache(queryClient)?.conversations).toEqual([]);
+    },
+  );
+
+  it.each(['seen', 'unread'] as const)(
+    'does not overwrite later %s intent when an old pin snapshot settles',
+    async (intent) => {
+      const queryClient = createQueryClient();
+      const repliedAt = '2026-08-16T10:00:00.000Z';
+      const confirmed = {
+        ...pinnedConvo,
+        lastResponseAt: repliedAt,
+        lastResponseMessageId: 'reply',
+        isMarkedUnread: false,
+        lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      } as TConversation;
+      queryClient.setQueryData([QueryKeys.pinnedConversations], listResponse([confirmed]));
+      queryClient.setQueryData([QueryKeys.allConversations], {
+        pages: [listResponse([confirmed])],
+        pageParams: [null],
+      });
+      let releasePin!: (value: TConversation) => void;
+      pinConversation.mockReturnValue(
+        new Promise((resolve) => {
+          releasePin = resolve;
+        }),
+      );
+      jest.mocked(dataService.markConversationSeen).mockResolvedValue({ modified: true });
+      jest.mocked(dataService.markConversationUnread).mockResolvedValue({
+        modified: true,
+        lastResponseAt: repliedAt,
+        isMarkedUnread: true,
+      });
+      const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+      const { result } = renderHook(
+        () => ({
+          pin: usePinConversationMutation(),
+          seen: useMarkConversationSeenMutation(),
+          unread: useMarkConversationUnreadMutation(),
+        }),
+        { wrapper: createWrapper(queryClient) },
+      );
+      await act(async () => {
+        const pending = result.current.pin.mutateAsync({
+          conversationId: pinnedConversationId,
+          pinned: false,
+        });
+        await waitFor(() => expect(pinConversation).toHaveBeenCalledTimes(1));
+        await result.current[intent].mutateAsync({ conversationId: pinnedConversationId });
+        releasePin({ ...confirmed, pinned: false });
+        await pending;
+      });
+      const chats = queryClient.getQueryData<{ pages: ConversationListResponse[] }>([
+        QueryKeys.allConversations,
+      ]);
+      const row = chats?.pages[0].conversations[0];
+      expect(row?.pinned).toBe(false);
+      expect(row?.lastSeenAt).toBe(intent === 'seen' ? repliedAt : undefined);
+      expect(row?.isMarkedUnread).toBe(intent === 'unread');
+      expect(invalidate).toHaveBeenCalledWith([QueryKeys.allConversations]);
+      queryClient.clear();
+    },
+  );
+
   it('keeps a renamed pin in the section with its new title', () => {
     const queryClient = createQueryClient();
     queryClient.setQueryData([QueryKeys.pinnedConversations], listResponse([pinnedConvo]));
@@ -435,15 +534,25 @@ describe('pinned list cache synchronization', () => {
     );
   });
 
-  it('withoutListFlags drops only the sidebar-owned flags', () => {
+  it('withoutListFlags drops the sidebar-owned flags and read state', () => {
+    /* The chat's own state snapshots both when the chat is opened: writing them back would
+       drop the chat out of Pinned, or relight a dot the user has already cleared. */
     const stripped = withoutListFlags({
       ...pinnedConvo,
       pinned: false,
       isShared: true,
+      lastResponseAt: '2026-08-16T10:00:00.000Z',
+      lastResponseIsManual: true,
+      isMarkedUnread: true,
+      lastSeenAt: '2026-08-16T10:01:00.000Z',
     } as TConversation);
 
     expect('pinned' in stripped).toBe(false);
     expect('isShared' in stripped).toBe(false);
+    expect('lastResponseAt' in stripped).toBe(false);
+    expect('lastResponseIsManual' in stripped).toBe(false);
+    expect('isMarkedUnread' in stripped).toBe(false);
+    expect('lastSeenAt' in stripped).toBe(false);
     expect(stripped.conversationId).toBe(pinnedConversationId);
     expect(stripped.title).toBe(pinnedConvo.title);
   });

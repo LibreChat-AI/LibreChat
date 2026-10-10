@@ -56,13 +56,17 @@ export default function useMermaidZoom({ containerRef, wheelDep }: UseMermaidZoo
       });
     };
     const onUp = () => setIsPanning(false);
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    /* The diagram can be portaled into another window (the undocked artifacts
+     * pane), where pointer events stay in that document and never reach the
+     * opener's: drag and release must be observed where the canvas lives. */
+    const eventDocument = containerRef?.current?.ownerDocument ?? document;
+    eventDocument.addEventListener('mousemove', onMove);
+    eventDocument.addEventListener('mouseup', onUp);
     return () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
+      eventDocument.removeEventListener('mousemove', onMove);
+      eventDocument.removeEventListener('mouseup', onUp);
     };
-  }, [isPanning]);
+  }, [containerRef, isPanning]);
 
   useEffect(() => {
     const container = containerRef?.current;

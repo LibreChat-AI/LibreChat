@@ -63,7 +63,7 @@ function TaskCard({
   const expandable = row.detail != null;
 
   return (
-    <li className="rounded-lg bg-surface-tertiary px-3 py-2" data-testid="background-task-row">
+    <li className="bg-surface-tertiary rounded-lg px-3 py-2" data-testid="background-task-row">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           {expandable ? (
@@ -72,21 +72,21 @@ function TaskCard({
               aria-expanded={open}
               aria-controls={detailId}
               onClick={() => setOpen((value) => !value)}
-              className="flex max-w-full items-start gap-1 rounded text-left text-sm text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+              className="text-text-primary focus-visible:ring-ring-primary flex max-w-full items-start gap-1 rounded text-left text-sm focus-visible:ring-2 focus-visible:outline-none"
             >
               <span className="line-clamp-2 break-words">{title}</span>
               <ChevronDown
                 aria-hidden="true"
                 className={cn(
-                  'mt-1 size-3.5 shrink-0 text-text-secondary transition-transform motion-reduce:transition-none',
+                  'text-text-secondary mt-1 size-3.5 shrink-0 transition-transform motion-reduce:transition-none',
                   open && 'rotate-180',
                 )}
               />
             </button>
           ) : (
-            <p className="line-clamp-2 break-words text-sm text-text-primary">{title}</p>
+            <p className="text-text-primary line-clamp-2 text-sm break-words">{title}</p>
           )}
-          <p className="mt-0.5 flex items-center gap-2 text-xs text-text-secondary">
+          <p className="text-text-secondary mt-0.5 flex items-center gap-2 text-xs">
             {title !== kindLabel && <span className="font-medium">{kindLabel}</span>}
             {active ? null : (
               <span className={STATUS_CLASSES[row.status]}>
@@ -122,19 +122,19 @@ function TaskCard({
                 aria-label={`${stopLabel}: ${title}`}
                 disabled={isStopping}
                 onClick={() => onStop(row)}
-                className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border-medium text-text-primary hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary disabled:opacity-50"
+                className="border-border-medium text-text-primary hover:bg-surface-hover focus-visible:ring-ring-primary flex size-7 shrink-0 items-center justify-center rounded-md border focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
               >
                 <Square className="size-3" aria-hidden="true" />
               </button>
             }
           />
         )}
-        {row.status === 'stopping' && <Spinner className="size-4 shrink-0 text-text-secondary" />}
+        {row.status === 'stopping' && <Spinner className="size-4 shrink-0" />}
       </div>
       {expandable && open && (
         <pre
           id={detailId}
-          className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-primary p-2 font-mono text-xs text-text-primary"
+          className="bg-surface-primary text-text-primary mt-2 max-h-48 overflow-auto rounded-md p-2 font-mono text-xs break-words whitespace-pre-wrap"
         >
           {row.detail}
         </pre>

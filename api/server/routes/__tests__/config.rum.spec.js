@@ -69,6 +69,7 @@ afterEach(() => {
   delete process.env.RUM_ADVANCED_NETWORK_CAPTURE;
   delete process.env.RUM_SAMPLE_RATE;
   delete process.env.RUM_ENVIRONMENT;
+  delete process.env.RUM_CLIENT_LOGS;
 });
 
 describe('GET /api/config RUM config', () => {
@@ -98,6 +99,7 @@ describe('GET /api/config RUM config', () => {
       advancedNetworkCapture: false,
       sampleRate: 0.25,
       environment: 'test',
+      clientLogs: false,
     });
   });
 
@@ -136,9 +138,22 @@ describe('GET /api/config RUM config', () => {
         consoleCapture: false,
         disableReplay: true,
         advancedNetworkCapture: false,
+        clientLogs: false,
       });
     },
   );
+
+  it('turns client logs on in proxy mode only when RUM_CLIENT_LOGS=true', async () => {
+    mockGetAppConfig.mockResolvedValue(baseAppConfig);
+    process.env.RUM_ENABLED = 'true';
+    process.env.RUM_AUTH_MODE = 'proxy';
+    process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
+    process.env.RUM_CLIENT_LOGS = 'true';
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+
+    expect(response.body.rum).toEqual(expect.objectContaining({ clientLogs: true }));
+  });
 
   it('omits proxy RUM config without a target collector URL', async () => {
     mockGetAppConfig.mockResolvedValue(baseAppConfig);

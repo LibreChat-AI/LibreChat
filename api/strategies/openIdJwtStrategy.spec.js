@@ -34,6 +34,8 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 jest.mock('@librechat/api', () => ({
   isEnabled: jest.fn(() => false),
+  isTokenRetired: jest.requireActual('@librechat/api').isTokenRetired,
+  continueAfterBearerRetirement: jest.requireActual('@librechat/api').continueAfterBearerRetirement,
   findOpenIDUser: jest.fn(),
   getOpenIdEmail: jest.requireActual('@librechat/api').getOpenIdEmail,
   getOpenIdIssuer: jest.fn(() => 'https://issuer.example.com'),
@@ -253,6 +255,48 @@ describe('openIdJwtStrategy – token validation', () => {
 
     expect(result).toBeTruthy();
     expect(findOpenIDUser).toHaveBeenCalled();
+  });
+
+  describe('credentialsChangedAt revocation', () => {
+    /** Reset landed 500ms into second 1700000010 */
+    const credentialsChangedAt = new Date(1700000010500);
+
+    const runVerify = async (iat) => {
+      findOpenIDUser.mockResolvedValue({
+        user: {
+          _id: { toString: () => 'user-abc' },
+          role: SystemRoles.USER,
+          provider: 'openid',
+          credentialsChangedAt,
+        },
+        error: null,
+        migration: false,
+      });
+      updateUser.mockResolvedValue({});
+      openIdJwtLogin(mockOpenIdConfig);
+
+      const req = { headers: { authorization: 'Bearer tok' }, session: {} };
+      return invokeVerify(req, {
+        sub: 'oidc-123',
+        email: 'test@example.com',
+        iss: 'https://issuer.example.com',
+        exp: 9999999999,
+        iat,
+      });
+    };
+
+    it('rejects an OpenID JWT issued before the credential change', async () => {
+      const { user } = await runVerify(1700000009);
+
+      expect(user).toBe(false);
+    });
+
+    it('accepts an OpenID JWT issued after the credential change', async () => {
+      const { user } = await runVerify(1700000011);
+
+      expect(user).toBeTruthy();
+      expect(user.id).toBe('user-abc');
+    });
   });
 });
 
@@ -730,6 +774,119 @@ describe('openIdJwtStrategy – auth user document cache', () => {
       userId: 'user-abc',
       cacheKey: 'auth-user-doc-key',
     });
+  });
+});
+
+describe('openIdJwtStrategy: retired token cutoffs', () => {
+  const req = { headers: { authorization: 'Bearer tok' }, session: {} };
+
+  const baseUser = {
+    _id: { toString: () => 'user-abc' },
+    role: SystemRoles.USER,
+    provider: 'openid',
+    email: 'test@example.com',
+  };
+
+  const enrolledAt = new Date('2026-01-01T00:00:30.500Z');
+  const enrolledSecond = Math.floor(enrolledAt.getTime() / 1000);
+
+  /** The provider mints this token, so `iat` is the only stamp it can ever carry. */
+  const makePayload = (iat) => ({
+    sub: 'oidc-123',
+    email: 'test@example.com',
+    iss: 'https://issuer.example.com',
+    exp: 9999999999,
+    ...(iat === undefined ? {} : { iat }),
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetAuthUserDocCacheMocks();
+    updateUser.mockResolvedValue({});
+    openIdJwtLogin(mockOpenIdConfig);
+  });
+
+  it('refuses a federated bearer minted before enrollment', async () => {
+    findOpenIDUser.mockResolvedValue({
+      user: { ...baseUser, twoFactorEnrolledAt: enrolledAt },
+      error: null,
+      migration: false,
+    });
+
+    const { user, info } = await invokeVerify(req, makePayload(enrolledSecond - 1));
+
+    expect(user).toBe(false);
+    expect(info).toEqual({ message: 'Token predates enrollment or password reset' });
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('surrenders the resetting second, which whole-second `iat` cannot tell apart', async () => {
+    const credentialsChangedAt = new Date('2026-01-01T00:00:30.500Z');
+    findOpenIDUser.mockResolvedValue({
+      user: { ...baseUser, credentialsChangedAt },
+      error: null,
+      migration: false,
+    });
+
+    const { user } = await invokeVerify(
+      req,
+      makePayload(Math.floor(credentialsChangedAt.getTime() / 1000)),
+    );
+
+    expect(user).toBe(false);
+  });
+
+  it('accepts a federated bearer minted after both cutoffs', async () => {
+    findOpenIDUser.mockResolvedValue({
+      user: {
+        ...baseUser,
+        twoFactorEnrolledAt: enrolledAt,
+        credentialsChangedAt: new Date('2025-06-01T00:00:00.000Z'),
+      },
+      error: null,
+      migration: false,
+    });
+
+    const { user } = await invokeVerify(req, makePayload(enrolledSecond + 1));
+
+    expect(user).toMatchObject({ id: 'user-abc', email: 'test@example.com' });
+  });
+
+  it('leaves an account that carries neither cutoff alone, undatable token included', async () => {
+    findOpenIDUser.mockResolvedValue({ user: { ...baseUser }, error: null, migration: false });
+
+    const { user } = await invokeVerify(req, makePayload(undefined));
+
+    expect(user).toMatchObject({ id: 'user-abc' });
+  });
+
+  it('refuses a bearer it cannot date at all once a cutoff is set', async () => {
+    findOpenIDUser.mockResolvedValue({
+      user: { ...baseUser, twoFactorEnrolledAt: enrolledAt },
+      error: null,
+      migration: false,
+    });
+
+    const { user } = await invokeVerify(req, makePayload(undefined));
+
+    expect(user).toBe(false);
+  });
+
+  it('dates the bearer against a cached stamp that came back serialized', async () => {
+    getAuthUserDocCacheMode.mockReturnValue('on');
+    getCachedAuthUserDoc.mockResolvedValue({
+      _id: 'cached-user',
+      role: SystemRoles.USER,
+      provider: 'openid',
+      email: 'cached@example.com',
+      /** Redis round-trips `Date` through JSON, so the cutoff arrives as an ISO string */
+      twoFactorEnrolledAt: enrolledAt.toISOString(),
+    });
+
+    const { user } = await invokeVerify(req, makePayload(enrolledSecond - 1));
+
+    expect(user).toBe(false);
+    expect(findOpenIDUser).not.toHaveBeenCalled();
   });
 });
 

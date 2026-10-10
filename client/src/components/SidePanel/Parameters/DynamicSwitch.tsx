@@ -51,15 +51,15 @@ function DynamicSwitch({
       }`}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           <div className="flex justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-switch`}
-              className="break-words text-left text-xs font-medium"
+              className="text-left text-xs font-medium break-words"
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40 high-contrast:opacity-100">
+                <small className="high-contrast:opacity-100 opacity-40">
                   ({localize('com_endpoint_default')}:{' '}
                   {defaultValue != null ? localize('com_ui_on') : localize('com_ui_off')})
                 </small>

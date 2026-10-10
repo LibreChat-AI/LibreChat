@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-/** Minimum gap between highlights while the input keeps changing (streaming). */
+/** Quiet period before re-highlighting streaming code. */
 export const HIGHLIGHT_THROTTLE_MS = 300;
 export const CodeHighlightThrottleContext = React.createContext(HIGHLIGHT_THROTTLE_MS);
 
@@ -80,16 +80,14 @@ type HighlightState = { key: string; nodes: React.ReactNode[] | null };
 const highlightKey = (code: string | undefined, lang: string): string =>
   code ? `${lang}\0${code}` : '';
 
-const now = (): number => (typeof performance === 'undefined' ? Date.now() : performance.now());
-
 /**
  * Tokens for a block of code, once the grammars have loaded.
  *
  * Highlighting runs when the input changes, and once per input: the key the tokens were produced
  * from is tracked, so a mount that could highlight immediately is not repeated by the effect that
- * follows it. While the input keeps changing, as it does for a streaming tool call, highlights are
- * throttled to one per `CodeHighlightThrottleContext` interval and the caller is handed its raw
- * text in between, so a long code block stays readable without tokenizing every delta. Grammars
+ * follows it. While the input keeps changing, highlights wait for a quiet
+ * `CodeHighlightThrottleContext` interval. The caller receives current raw text until then,
+ * avoiding repeated switches between raw and highlighted code during streaming. Grammars
  * load on first use, so a caller renders its own raw text until this returns; passing `undefined`
  * while a pane is closed keeps a collapsed card from tokenizing output nobody is reading.
  */
@@ -108,7 +106,7 @@ export default function useLazyHighlight(
   /** The input the tokens held were produced from, or that a pending run will produce. */
   const scheduledKey = useRef(hasInitialHighlight ? currentKey : '');
   const prevThrottleMs = useRef<number | null>(hasInitialHighlight ? throttleMs : null);
-  const lastRunAt = useRef<number | null>(hasInitialHighlight ? now() : null);
+  const hasRun = useRef(hasInitialHighlight);
   const generation = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -137,7 +135,7 @@ export default function useLazyHighlight(
     }
 
     if (!code) {
-      lastRunAt.current = null;
+      hasRun.current = false;
       return;
     }
 
@@ -148,7 +146,7 @@ export default function useLazyHighlight(
 
     const run = () => {
       timer.current = null;
-      lastRunAt.current = now();
+      hasRun.current = true;
       const gen = ++generation.current;
 
       if (lowlightModule) {
@@ -169,9 +167,7 @@ export default function useLazyHighlight(
         });
     };
 
-    /** A clock that jumped backwards would otherwise hold the next highlight for a full window. */
-    const elapsed = lastRunAt.current === null ? throttleMs : now() - lastRunAt.current;
-    const wait = throttleMs - elapsed;
+    const wait = hasRun.current ? throttleMs : 0;
     if (wait <= 0) {
       run();
     } else {

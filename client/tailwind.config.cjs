@@ -1,8 +1,8 @@
-// const { fontFamily } = require('tailwindcss/defaultTheme');
-const {
-  createTailwindColors,
-} = require('../packages/client/src/theme/utils/createTailwindColors.js');
+// Semantic colors are declared in
+// packages/client/src/theme/tokens.css, which src/style.css imports. The radius scale and the
+// sans and mono families are theme-owned properties mapped in src/style.css.
 const libreChatTailwindPreset = require('../packages/client/tailwind.preset.cjs');
+const compatibilityColors = require('../packages/client/tailwind.compat.cjs');
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
@@ -15,36 +15,8 @@ module.exports = {
   darkMode: ['class'],
   presets: [libreChatTailwindPreset],
   theme: {
-    fontFamily: {
-      sans: ['Inter', 'sans-serif'],
-      /**
-       * Roboto Mono is self-hosted (the `@font-face` block in `style.css`), so code
-       * renders the same on every platform and carries real bold and italic faces
-       * rather than ones the browser synthesizes by smearing and shearing.
-       *
-       * The tail is reached while the font loads, if it fails, and per glyph for the
-       * characters the bundled latin subset omits — box drawing in terminal output
-       * most visibly. It is ordered so those glyphs come from a face whose advance
-       * width matches Roboto Mono's and keeps its columns: `ui-monospace` resolves
-       * to SF Mono on macOS, and Cascadia Mono ships with Windows Terminal.
-       * Consolas is last of the named faces because it is narrower than the rest.
-       */
-      mono: [
-        'Roboto Mono',
-        'ui-monospace',
-        'SFMono-Regular',
-        'Menlo',
-        'Cascadia Mono',
-        'Liberation Mono',
-        'Consolas',
-        'monospace',
-      ],
-    },
-    // fontFamily: {
-    //   sans: ['Söhne', 'sans-serif'],
-    //   mono: ['Söhne Mono', 'monospace'],
-    // },
     extend: {
+      colors: compatibilityColors,
       width: {
         authPageWidth: '370px',
       },
@@ -119,17 +91,17 @@ module.exports = {
         'refresh-link-spin': 'refresh-link-spin 650ms cubic-bezier(0.42, 0, 0.58, 1)',
         'reset-spin': 'reset-spin 500ms cubic-bezier(0.22, 1, 0.36, 1)',
       },
-      colors: createTailwindColors(),
-      borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
-      },
     },
   },
   plugins: [
-    require('tailwindcss-animate'),
-    require('tailwindcss-radix'),
+    // tailwindcss-radix is gone: its addVariant call produces nothing under Tailwind v4, and
+    // Radix sets the same attributes it keyed off, so callers use `data-[state=open]:` and
+    // `data-[disabled]:` directly. Its last caller was a table mockup nothing rendered, removed
+    // with this upgrade rather than migrated.
+    //
+    // tailwindcss-animate is not listed here: the published preset above registers it, and
+    // Tailwind runs a plugin once per registration, so naming it again would emit every
+    // `animate-in`/`fade-in-*` utility twice.
     // require('@tailwindcss/typography'),
   ],
 };

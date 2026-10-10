@@ -394,6 +394,13 @@ describe('GenerationJobManager start-generation claim', () => {
     });
   });
 
+  it('does not mistake a replayed recovery tombstone for actual admission proof', async () => {
+    const args = ['user-1', 'req-recovery-proof', 'stream-proof', 'stream-proof'] as const;
+    expect(await manager.fenceGenerationClaimForRecovery(...args)).toBe('fenced');
+    expect(await manager.fenceGenerationClaimForRecovery(...args)).toBe('fenced');
+    expect(await manager.getGenerationAdmissionEvidence(...args)).toBeNull();
+  });
+
   it('invalidates an unpublished continuation creator before manual recovery', async () => {
     const original = await manager.claimGeneration(
       'user-1',

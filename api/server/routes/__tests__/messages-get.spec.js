@@ -51,14 +51,23 @@ jest.mock('@librechat/api', () => {
   };
 
   return {
+    prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
+    createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+    rejectToolCallPreviewWrites: (_req, _res, next) => next(),
+    withMessageToolCallPreviews: (_req, message) => message,
     /** The real helper, without loading the rest of the package this suite mocks around. */
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
+    createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
+    stripPrivateMessageFields: jest.requireActual(
+      '../../../../packages/api/src/protection/private/view',
+    ).stripPrivateMessageFields,
     createContentFilter: jest.fn(() => (req, res, next) => next()),
     inspectContent,
     extractChatContent,
     extractFeedbackContent: jest.fn(() => []),
     extractStoredMessageContent,
+    applyForcedRetention: jest.fn(),
     contentFilterBlockResponse,
     getContentTraversalFragments,
     isContentTraversalLimitError,
@@ -120,6 +129,8 @@ jest.mock('@librechat/api', () => {
     requireFeedbackEnabled: (req, res, next) => next(),
   };
 });
+
+jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));
 
@@ -640,6 +651,8 @@ describe('message route conversation ownership filters', () => {
           messageId: 'hit-1',
           conversationId: 'convo-1',
           text: 'needle in a haystack',
+          privateText: 'v1:encrypted-original',
+          privacyRevision: 'public-revision',
           contextMeta: {
             calibrationRatio: 1.2,
             encoding: 'claude',
@@ -661,6 +674,8 @@ describe('message route conversation ownership filters', () => {
     expect(response.body.messages).toHaveLength(1);
     expect(response.body.messages[0]).toMatchObject({ messageId: 'hit-1', title: 'Found' });
     expect(response.body.messages[0]).not.toHaveProperty('contextMeta');
+    expect(response.body.messages[0]).not.toHaveProperty('privateText');
+    expect(response.body.messages[0].privacyRevision).toBe('public-revision');
   });
 
   it('returns indistinguishable not-found responses for child and missing query reads', async () => {

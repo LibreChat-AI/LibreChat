@@ -13,7 +13,11 @@ import {
 } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common/types';
 import type { TMessageProps } from '~/common';
-import { useCopyMessageToClipboard, hasCopyableText } from './useCopyToClipboard';
+import {
+  useCopyMessageToClipboard,
+  getMessageClipboardSource,
+  hasCopyableText,
+} from './useCopyToClipboard';
 import { useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useGetAddedConvo } from '~/hooks/Chat';
@@ -45,13 +49,11 @@ export default function useMessageActions(props: TMessageActions) {
     index,
     regenerate,
     conversation,
-    latestMessageId,
-    latestMessageDepth,
     handleContinue,
     feedbackEnabled,
-    // NOTE: isSubmitting is intentionally NOT destructured here.
-    // chatContext.isSubmitting is a getter backed by a ref — destructuring
-    // would capture a one-time snapshot. Always access via chatContext.isSubmitting.
+    // NOTE: isSubmitting, latestMessageId and latestMessageDepth are intentionally
+    // NOT destructured here. They are getters backed by a ref — destructuring
+    // would capture a one-time snapshot. Rows render them from their own props.
   } = chatContext;
 
   const getAddedConvo = useGetAddedConvo();
@@ -59,7 +61,7 @@ export default function useMessageActions(props: TMessageActions) {
   const agentsMap = useAgentsMapContext();
   const assistantMap = useAssistantsMapContext();
 
-  const { text, content, messageId = null, isCreatedByUser } = message ?? {};
+  const { messageId = null, isCreatedByUser } = message ?? {};
   const edit = useMemo(() => messageId === currentEditId, [messageId, currentEditId]);
 
   const [feedback, setFeedback] = useState<TFeedback | undefined>(() => {
@@ -123,17 +125,15 @@ export default function useMessageActions(props: TMessageActions) {
     regenerate(message, { addedConvo: getAddedConvo() });
   }, [chatContext, isCreatedByUser, message, regenerate, getAddedConvo]);
 
+  const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
   const copyToClipboard = useCopyMessageToClipboard({
-    text,
-    content,
+    ...clipboardSource,
     searchResults,
-    isCreatedByUser,
-    error: message?.error,
   });
 
   const getCanCopy = useCallback(
-    () => hasCopyableText({ text, content, searchResults }),
-    [text, content, searchResults],
+    () => hasCopyableText({ ...clipboardSource, searchResults }),
+    [clipboardSource, searchResults],
   );
 
   const messageLabel = useMemo(() => {
@@ -205,8 +205,6 @@ export default function useMessageActions(props: TMessageActions) {
     handleFeedback: feedbackEnabled ? handleFeedback : undefined,
     handleContinue,
     copyToClipboard,
-    latestMessageId,
     regenerateMessage,
-    latestMessageDepth,
   };
 }
