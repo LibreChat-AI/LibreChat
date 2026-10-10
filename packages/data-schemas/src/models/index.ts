@@ -11,6 +11,7 @@ import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createCodeEnvironmentModel } from './codeEnvironment';
+import { createBalanceRequestModel } from './balanceRequest';
 import { createAgentCategoryModel } from './agentCategory';
 import { createChatProjectModel } from './chatProject';
 import { createAgentApiKeyModel } from './agentApiKey';
@@ -58,6 +59,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   Session: ReturnType<typeof createSessionModel>;
   Passkey: ReturnType<typeof createPasskeyModel>;
   Balance: ReturnType<typeof createBalanceModel>;
+  BalanceRequest: ReturnType<typeof createBalanceRequestModel>;
   Conversation: ReturnType<typeof createConversationModel>;
   ChatProject: ReturnType<typeof createChatProjectModel>;
   CodeEnvironment: ReturnType<typeof createCodeEnvironmentModel>;
@@ -109,6 +111,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     Session: createSessionModel(mongoose),
     Passkey: createPasskeyModel(mongoose),
     Balance: createBalanceModel(mongoose),
+    BalanceRequest: createBalanceRequestModel(mongoose),
     Conversation: createConversationModel(mongoose),
     ChatProject: createChatProjectModel(mongoose),
     CodeEnvironment: createCodeEnvironmentModel(mongoose),

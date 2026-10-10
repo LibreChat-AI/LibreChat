@@ -1,5 +1,11 @@
 jest.mock('~/models', () => ({
   findBalanceByUser: jest.fn(),
+  findPendingBalanceRequestByUser: jest.fn().mockResolvedValue(null),
+  createBalanceRequest: jest.fn(),
+}));
+
+jest.mock('~/server/services/Config', () => ({
+  getAppConfig: jest.fn().mockResolvedValue({ balance: { enabled: true } }),
 }));
 
 const { findBalanceByUser } = require('~/models');
@@ -24,7 +30,7 @@ describe('balanceController', () => {
     const res = createResponse();
     res.locals.balanceConfigEnabled = false;
 
-    await balanceController(req, res);
+    await balanceController.getBalance(req, res);
 
     expect(findBalanceByUser).not.toHaveBeenCalled();
     expect(res.sendStatus).toHaveBeenCalledWith(204);
@@ -44,12 +50,13 @@ describe('balanceController', () => {
       autoRefillEnabled: false,
     };
 
-    await balanceController(req, res);
+    await balanceController.getBalance(req, res);
 
     expect(findBalanceByUser).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(200);
+    // Explicit whitelist, not a spread of the raw Balance doc — `user`,
+    // `_id`, and any other internal field must never reach the client.
     expect(res.json).toHaveBeenCalledWith({
-      user: 'user-1',
       tokenCredits: 100,
       autoRefillEnabled: false,
     });
@@ -63,7 +70,7 @@ describe('balanceController', () => {
     const res = createResponse();
     res.locals.balanceConfigEnabled = true;
 
-    await balanceController(req, res);
+    await balanceController.getBalance(req, res);
 
     expect(findBalanceByUser).toHaveBeenCalledWith('user-1');
     expect(res.status).toHaveBeenCalledWith(404);

@@ -35,6 +35,7 @@ import { OwnerTextProvider } from './Messages/PrivateText';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import Footer, { useConfiguredFooter } from './Footer';
 import { AskAnswerHostProvider } from './ask/state';
+import OutOfCreditNotice from './OutOfCreditNotice';
 import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
@@ -256,6 +257,7 @@ function ChatView({
                             )}
                           >
                             {isLandingPage && <ConversationStarters />}
+                            <OutOfCreditNotice />
                             {isSubagentThreadReadOnly ? (
                               <div
                                 className="text-text-secondary mx-auto w-full max-w-3xl px-4 py-3 text-center text-sm xl:max-w-4xl"

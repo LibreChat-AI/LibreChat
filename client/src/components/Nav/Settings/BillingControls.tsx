@@ -1,4 +1,5 @@
 import { Skeleton } from '@librechat/client';
+import RequestCreditsButton from '../SettingsTabs/Balance/RequestCreditsButton';
 import AutoRefillSettings from '../SettingsTabs/Balance/AutoRefillSettings';
 import useBalanceSummary from '~/hooks/useBalanceSummary';
 import { formatBalanceAmount } from '~/utils';
@@ -7,7 +8,14 @@ import { useLocalize } from '~/hooks';
 
 /** The same reading the context gauge shows, so both surfaces agree. */
 export function TokenCredits() {
-  return <Balance />;
+  return (
+    <div className="space-y-3">
+      <Balance />
+      <div className="flex justify-end">
+        <RequestCreditsButton />
+      </div>
+    </div>
+  );
 }
 
 export function AutoRefill() {

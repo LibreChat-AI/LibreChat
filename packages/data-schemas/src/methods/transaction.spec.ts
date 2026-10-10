@@ -31,8 +31,18 @@ let releaseBalanceReservation: ReturnType<
   typeof createTransactionMethods
 >['releaseBalanceReservation'];
 let findBalanceByUser: ReturnType<typeof createTransactionMethods>['findBalanceByUser'];
+let findBalancesByUsers: ReturnType<typeof createTransactionMethods>['findBalancesByUsers'];
 let upsertBalanceFields: ReturnType<typeof createTransactionMethods>['upsertBalanceFields'];
 let updateBalance: ReturnType<typeof createTransactionMethods>['updateBalance'];
+let applyIdempotentCredit: ReturnType<typeof createTransactionMethods>['applyIdempotentCredit'];
+let claimAuditRecording: ReturnType<typeof createTransactionMethods>['claimAuditRecording'];
+let markAuditRecorded: ReturnType<typeof createTransactionMethods>['markAuditRecorded'];
+let releaseAuditRecordingLease: ReturnType<
+  typeof createTransactionMethods
+>['releaseAuditRecordingLease'];
+let ensureTransactionIdempotencyIndex: ReturnType<
+  typeof createTransactionMethods
+>['ensureTransactionIdempotencyIndex'];
 let getMultiplier: ReturnType<typeof createTxMethods>['getMultiplier'];
 let getCacheMultiplier: ReturnType<typeof createTxMethods>['getCacheMultiplier'];
 
@@ -62,8 +72,14 @@ beforeAll(async () => {
   renewBalanceReservation = transactionMethods.renewBalanceReservation;
   releaseBalanceReservation = transactionMethods.releaseBalanceReservation;
   findBalanceByUser = transactionMethods.findBalanceByUser;
+  findBalancesByUsers = transactionMethods.findBalancesByUsers;
   upsertBalanceFields = transactionMethods.upsertBalanceFields;
   updateBalance = transactionMethods.updateBalance;
+  applyIdempotentCredit = transactionMethods.applyIdempotentCredit;
+  claimAuditRecording = transactionMethods.claimAuditRecording;
+  markAuditRecorded = transactionMethods.markAuditRecorded;
+  releaseAuditRecordingLease = transactionMethods.releaseAuditRecordingLease;
+  ensureTransactionIdempotencyIndex = transactionMethods.ensureTransactionIdempotencyIndex;
 
   const spendMethods = createSpendTokensMethods(mongoose, {
     createTransaction: transactionMethods.createTransaction,
@@ -82,6 +98,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await mongoose.connection.dropDatabase();
+  await ensureTransactionIdempotencyIndex();
 });
 
 describe('Regular Token Spending Tests', () => {
@@ -230,6 +247,81 @@ describe('Regular Token Spending Tests', () => {
     // Assert: Balance should remain unchanged.
     const updatedBalance = await Balance.findOne({ user: userId });
     expect(updatedBalance?.tokenCredits).toBe(initialBalance);
+  });
+});
+
+describe('administrative balance credits', () => {
+  test('applies a key once and returns the same result on retry', async () => {
+    const user = new mongoose.Types.ObjectId().toString();
+    const first = await applyIdempotentCredit({
+      user,
+      incrementValue: 500,
+      idempotencyKey: 'admin-credit-1',
+      context: 'admin',
+    });
+    const retry = await applyIdempotentCredit({
+      user,
+      incrementValue: 500,
+      idempotencyKey: 'admin-credit-1',
+      context: 'admin',
+    });
+
+    expect(first.applied).toBe(true);
+    expect(retry).toEqual({ ...first, applied: false });
+    expect(await Transaction.countDocuments({ idempotencyKey: 'admin-credit-1' })).toBe(1);
+    expect((await findBalanceByUser(user))?.tokenCredits).toBe(500);
+  });
+
+  test('concurrent calls with one key apply only one increment', async () => {
+    const user = new mongoose.Types.ObjectId().toString();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        applyIdempotentCredit({
+          user,
+          incrementValue: 250,
+          idempotencyKey: 'admin-credit-concurrent',
+          context: 'admin',
+        }),
+      ),
+    );
+
+    expect(results.filter((result) => result.applied)).toHaveLength(1);
+    expect((await findBalanceByUser(user))?.tokenCredits).toBe(250);
+  });
+
+  test('uses the canonical oldest record when legacy duplicate balances exist', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const first = await Balance.create({ user, tokenCredits: 100 });
+    await Balance.create({ user, tokenCredits: 900 });
+
+    const result = await applyIdempotentCredit({
+      user: user.toString(),
+      incrementValue: 50,
+      idempotencyKey: 'admin-credit-duplicate-records',
+      context: 'admin',
+    });
+
+    expect(result.resultingBalance).toBe(150);
+    expect((await Balance.findById(first._id).lean())?.tokenCredits).toBe(150);
+    const listed = await findBalancesByUsers([user.toString()]);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]._id.toString()).toBe(first._id.toString());
+  });
+
+  test('audit recording leases are reclaimable until permanently marked', async () => {
+    const { transactionId } = await applyIdempotentCredit({
+      user: new mongoose.Types.ObjectId().toString(),
+      incrementValue: 500,
+      idempotencyKey: 'admin-credit-audit',
+      context: 'admin',
+    });
+
+    expect(await claimAuditRecording(transactionId)).toBe(true);
+    expect(await claimAuditRecording(transactionId)).toBe(false);
+    await releaseAuditRecordingLease(transactionId);
+    expect(await claimAuditRecording(transactionId)).toBe(true);
+    await markAuditRecorded(transactionId);
+    expect(await claimAuditRecording(transactionId)).toBe(false);
   });
 });
 

@@ -535,6 +535,7 @@ const deleteUserController = async (req, res) => {
     await db.deleteTransactions({ user: user.id });
     await db.deleteUserKey({ userId: user.id, all: true });
     await db.deleteBalances({ user: user._id });
+    await db.deleteBalanceRequests({ user: user._id });
     await db.deletePresets(user.id);
     await deleteUserPluginAuth(user.id, null, true);
     await deleteAllSharedLinksWithCleanup(user.id);

@@ -31,6 +31,8 @@ export interface IBalance extends Document {
   /** Sum of `reservations` amounts, maintained by the same writes */
   reservedCredits?: number;
   pendingRefill?: IBalancePendingRefill;
+  /** Recently applied administrative credit keys for standalone MongoDB idempotency. */
+  recentIdempotencyKeys?: string[];
 }
 
 /** Plain data fields for creating or updating a balance record (no Mongoose Document methods) */

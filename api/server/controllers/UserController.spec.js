@@ -63,6 +63,7 @@ jest.mock('~/models', () => {
     deleteUserCodeEnvironments: jest.fn().mockResolvedValue(undefined),
     deleteMessages: jest.fn().mockResolvedValue(undefined),
     deleteBalances: jest.fn().mockResolvedValue(undefined),
+    deleteBalanceRequests: jest.fn().mockResolvedValue(undefined),
     deleteActions: jest.fn().mockResolvedValue(undefined),
     deletePresets: jest.fn().mockResolvedValue(undefined),
     deleteUserKey: jest.fn().mockResolvedValue(undefined),

@@ -23,6 +23,12 @@ const seedDatabase = async () => {
   await methods.seedDefaultRoles();
   await methods.ensureDefaultCategories();
   await methods.seedSystemGrants();
+  // Explicit provisioning: MONGO_AUTO_INDEX can disable implicit index
+  // creation for the whole connection, which would otherwise silently drop
+  // BalanceRequest's partial-unique (dedup) and TTL (retention) guarantees.
+  await methods.ensureBalanceRequestIndexes();
+  // Same rationale for the Transaction ledger's idempotencyKey unique index.
+  await methods.ensureTransactionIdempotencyIndex();
 };
 
 module.exports = {
