@@ -341,10 +341,9 @@ describe('messageCarriesFiles', () => {
 
 describe('file reference predicates', () => {
   it('recognizes each locator shape replay reads', () => {
-    expect(isFileContentPart({ type: 'file', file: { file_id: 'f' } } as Content[number])).toBe(
-      true,
-    );
-    expect(isFileContentPart({ type: 'input_file', file_id: 'f' } as Content[number])).toBe(true);
+    /** Provider-native locators that persisted rows carry outside the typed content union. */
+    expect(isFileContentPart({ file: { file_id: 'f' } })).toBe(true);
+    expect(isFileContentPart({ file_id: 'f' })).toBe(true);
     expect(isFileContentPart({ type: ContentTypes.TEXT, text: 'x' } as Content[number])).toBe(
       false,
     );

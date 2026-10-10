@@ -243,7 +243,7 @@ export function isCompactedLeaf(message?: Pick<TMessage, 'content'> | null): boo
 
 /** The shapes a persisted content part references a stored file by, as historical replay reads
  *  them: attached `files`, an `image_file` or `file` locator, or a direct `file_id`. */
-type FileLocatorPart = {
+export type FileLocatorPart = {
   files?: readonly object[] | null;
   image_file?: { file_id?: unknown } | null;
   file?: { file_id?: unknown } | null;
@@ -253,7 +253,9 @@ type FileLocatorPart = {
 const isFileId = (value: unknown): boolean => typeof value === 'string' && value !== '';
 
 /** Whether a content part is itself a stored file (a generated image, a provider file block). */
-export function isFileContentPart(part: TMessageContentParts | null | undefined): boolean {
+export function isFileContentPart(
+  part: TMessageContentParts | FileLocatorPart | null | undefined,
+): boolean {
   if (part == null) {
     return false;
   }
@@ -266,7 +268,9 @@ export function isFileContentPart(part: TMessageContentParts | null | undefined)
 }
 
 /** Whether a content part carries attached files of its own, as a steer part can. */
-export function hasContentPartFiles(part: TMessageContentParts | null | undefined): boolean {
+export function hasContentPartFiles(
+  part: TMessageContentParts | FileLocatorPart | null | undefined,
+): boolean {
   const files = (part as FileLocatorPart | null | undefined)?.files;
   return Array.isArray(files) && files.length > 0;
 }
