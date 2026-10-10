@@ -8,12 +8,18 @@ type ConversationFileRefs = Partial<Pick<TConversation, 'file_ids'>> & {
 };
 
 type ContentPart = NonNullable<TMessage['content']>[number];
+type Attachment = NonNullable<TMessage['attachments']>[number];
+
+/** Whether an attachment is a stored file (a code output) rather than tool metadata like search
+ *  sources, which the thread file walk never collects and the transcript still renders. */
+const isFileAttachment = (attachment: Attachment): boolean =>
+  'file_id' in attachment && typeof attachment.file_id === 'string' && attachment.file_id !== '';
 
 export type MessageWithoutFiles<T extends MessageFileRefs> = Omit<
   T,
   'files' | 'attachments' | 'tokenCount'
 > &
-  Pick<MessageFileRefs, 'tokenCount'>;
+  Pick<MessageFileRefs, 'attachments' | 'tokenCount'>;
 
 const carriesFiles = (files: readonly object[] | null | undefined): boolean =>
   (files?.length ?? 0) > 0;
@@ -29,14 +35,19 @@ function withoutSteerFiles(part: ContentPart): ContentPart {
 
 /**
  * Drops the file references a later turn collects from history and sends again: uploads on a
- * user turn (`files`), code-execution outputs (`attachments`), and attachments steered into a
- * response (`content[].files` on a steer part). A stored token count that covered dropped uploads
+ * user turn (`files`), file-backed attachments such as code-execution outputs (metadata-only
+ * attachments like search sources stay), and attachments steered into a response
+ * (`content[].files` on a steer part). A stored token count that covered dropped uploads
  * goes too, so the next turn recounts what is left instead of budgeting context for files it no
  * longer sends.
  */
 export function withoutMessageFiles<T extends MessageFileRefs>(message: T): MessageWithoutFiles<T> {
-  const { files, attachments: _attachments, tokenCount, ...rest } = message;
+  const { files, attachments, tokenCount, ...rest } = message;
   let droppedUploads = carriesFiles(files);
+  const keptAttachments = attachments?.filter((attachment) => !isFileAttachment(attachment));
+  if (keptAttachments != null && keptAttachments.length > 0) {
+    (rest as MessageFileRefs).attachments = keptAttachments;
+  }
   if (Array.isArray(rest.content)) {
     const content = rest.content.map(withoutSteerFiles);
     if (content.some((part, index) => part !== rest.content?.[index])) {

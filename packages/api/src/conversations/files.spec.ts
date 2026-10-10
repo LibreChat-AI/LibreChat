@@ -59,6 +59,16 @@ describe('withoutMessageFiles', () => {
     expect(content?.[1]).toHaveProperty('files', [upload]);
   });
 
+  it('keeps metadata-only attachments such as search sources', () => {
+    const sources = { type: 'web_search', toolCallId: 'call-2', messageId: 'a' } as TAttachment;
+    const message: Partial<TMessage> = { messageId: 'assistant-3', attachments: [output, sources] };
+
+    expect(withoutMessageFiles(message)).toEqual({
+      messageId: 'assistant-3',
+      attachments: [sources],
+    });
+  });
+
   it('treats an empty upload list as no uploads', () => {
     expect(withoutMessageFiles({ messageId: 'user-2', files: [], tokenCount: 7 })).toEqual({
       messageId: 'user-2',

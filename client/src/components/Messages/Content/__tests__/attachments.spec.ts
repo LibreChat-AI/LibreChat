@@ -61,6 +61,10 @@ describe('mayBeAttachmentError', () => {
     ['a missing key', JSON.stringify({ type: ErrorTypes.NO_USER_KEY })],
     ['a model rate limit', JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT })],
     ['a token balance', JSON.stringify({ type: 'token_balance', balance: 0 })],
+    [
+      'a legacy LangChain rate limit',
+      'An error occurred while processing the request: 429 Too many requests\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/MODEL_RATE_LIMIT/',
+    ],
     ['a nested quota code', JSON.stringify({ error: { code: 'insufficient_quota' } })],
     [
       'an Anthropic rate limit inside its generic envelope',
@@ -164,6 +168,19 @@ describe('findAttachmentRecovery', () => {
       canRetry: false,
       branchTargetId: 'a1',
     });
+  });
+
+  it('does not count search sources as files', () => {
+    const messages = [
+      user('u1', Constants.NO_PARENT),
+      answer('a1', 'u1', {
+        attachments: [{ type: 'web_search', toolCallId: 't' }] as TMessage['attachments'],
+      }),
+      user('u2', 'a1'),
+      answer('a2', 'u2', { error: true }),
+    ];
+
+    expect(findAttachmentRecovery(messages, messages[3])).toBeNull();
   });
 
   it('ignores files on a sibling branch', () => {

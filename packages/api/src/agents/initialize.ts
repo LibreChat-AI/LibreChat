@@ -1682,6 +1682,10 @@ export async function initializeAgent(
     /** Falsy anchors cannot match a parent chain, so they get no walk. */
     const threadAnchor =
       parentMessageId && parentMessageId !== Constants.NO_PARENT ? parentMessageId : null;
+    /* A turn sent at the root has no history at all. The conversation's file refs then
+     * belong to sibling roots (an edited first message, or one retried without its files),
+     * so a root turn takes none of them, unlike a continuation that names no anchor. */
+    const isRootTurn = parentMessageId === Constants.NO_PARENT;
     /* Either provisioning resource needs the anchor: deferred attachments for
      * file_search are found by thread file ids just as code files are. */
     const needsThreadWalk = wantsProvisioning && threadAnchor != null && getThreadMessages != null;
@@ -1697,7 +1701,10 @@ export async function initializeAgent(
      * every code-output ref.
      */
     const [convoFileIds, threadMessages] = await Promise.all([
-      readResolvedConversationFiles(runtime, conversationId) ?? db.getConvoFiles(conversationId),
+      isRootTurn
+        ? []
+        : (readResolvedConversationFiles(runtime, conversationId) ??
+          db.getConvoFiles(conversationId)),
       needsThreadWalk && getThreadMessages
         ? getThreadMessages({ conversationId }, 'messageId parentMessageId files attachments')
         : null,

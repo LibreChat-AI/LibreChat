@@ -1,4 +1,10 @@
-import { Constants, ErrorTypes, ContentTypes, findMessageById } from 'librechat-data-provider';
+import {
+  Constants,
+  ErrorTypes,
+  ContentTypes,
+  findMessageById,
+  parseLangChainErrorCode,
+} from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import { isSubmittableMessage } from '~/utils/messages';
 import { extractJson, isJson } from '~/utils/json';
@@ -39,6 +45,13 @@ const fileAgnosticErrorCodes = new Set<string>([
   ErrorTypes.EMPTY_MESSAGES,
 ]);
 
+/** LangChain codes with a remedy of their own: the model, its key, or its rate limit. */
+const remedialLangChainCodes = new Set([
+  'MODEL_NOT_FOUND',
+  'MODEL_RATE_LIMIT',
+  'MODEL_AUTHENTICATION',
+]);
+
 /** The code a typed payload names, top level first, then an OpenAI-style `error` envelope. */
 function readErrorCode(text: string): string | undefined {
   const json = extractJson(text);
@@ -67,14 +80,23 @@ export function mayBeAttachmentError(text: string): boolean {
   if (isAttachmentError(text)) {
     return true;
   }
+  /** Rows persisted before LangChain failures were typed carry the code in the message text. */
+  const langChainCode = parseLangChainErrorCode(text);
+  if (langChainCode != null && remedialLangChainCodes.has(langChainCode)) {
+    return false;
+  }
   const code = readErrorCode(text);
   return code == null || fileAgnosticErrorCodes.has(code);
 }
 
+/** A stored file (a code output), not tool metadata such as search sources. */
+const isFileAttachment = (attachment: NonNullable<TMessage['attachments']>[number]): boolean =>
+  'file_id' in attachment && typeof attachment.file_id === 'string' && attachment.file_id !== '';
+
 /** Uploads, code outputs, and attachments steered into a response: everything a turn resends. */
 const carriesFiles = (message: TMessage): boolean =>
   (message.files?.length ?? 0) > 0 ||
-  (message.attachments?.length ?? 0) > 0 ||
+  (message.attachments?.some(isFileAttachment) ?? false) ||
   (message.content?.some(
     (part) => part?.type === ContentTypes.STEER && (part.files?.length ?? 0) > 0,
   ) ??
