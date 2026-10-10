@@ -696,14 +696,32 @@ export function getGoogleConfig(
    */
   const maxOutputDropped =
     Array.isArray(options.dropParams) && options.dropParams.includes('maxOutputTokens');
+  const resolvedModel = (llmConfig as { model?: string }).model || modelName;
   if (
     !maxOutputDropped &&
     modelOptions?.maxOutputTokens == null &&
     (llmConfig as Record<string, unknown>).maxOutputTokens == null
   ) {
-    const resolvedModel = (llmConfig as { model?: string }).model || modelName;
     (llmConfig as GoogleClientOptions).maxOutputTokens =
       googleSettings.maxOutputTokens.reset(resolvedModel);
+  }
+
+  /**
+   * Cap the final value at the model's output limit: Google rejects anything above it
+   * with a 400, e.g. a Claude-sized 128000 kept when a conversation switches models.
+   * Legacy and unrecognized names (aliases like `gemini-flash-latest`) both resolve to
+   * the 8K legacy limit, so cap those only at the API-wide maximum.
+   */
+  const maxOutputTokens = (llmConfig as GoogleClientOptions).maxOutputTokens;
+  if (typeof maxOutputTokens === 'number') {
+    const modelLimit = googleSettings.maxOutputTokens.reset(resolvedModel);
+    const limit =
+      modelLimit > googleSettings.maxOutputTokens.default
+        ? modelLimit
+        : googleSettings.maxOutputTokens.max;
+    if (maxOutputTokens > limit) {
+      (llmConfig as GoogleClientOptions).maxOutputTokens = limit;
+    }
   }
 
   applyGeminiFlashOverrides({
