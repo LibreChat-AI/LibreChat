@@ -9,7 +9,7 @@ import type { Page } from '@playwright/test';
 
 const IOS_ZOOM_THRESHOLD = 16;
 
-test.use({ storageState: { cookies: [], origins: [] } });
+const loggedOut = { storageState: { cookies: [], origins: [] } };
 
 async function emailFontSize(page: Page): Promise<number> {
   await page.goto('/login', { timeout: 10000 });
@@ -20,7 +20,7 @@ async function emailFontSize(page: Page): Promise<number> {
 
 test.describe('focused text fields do not trigger iOS zoom', () => {
   test.describe('touch device', () => {
-    test.use({ hasTouch: true });
+    test.use({ ...loggedOut, hasTouch: true });
 
     test('the login email field is at least 16px @scenario:touch-login-field-no-zoom', async ({
       page,
@@ -30,12 +30,28 @@ test.describe('focused text fields do not trigger iOS zoom', () => {
   });
 
   test.describe('pointer only', () => {
+    test.use(loggedOut);
+
     test('the login email field keeps the compact scale on desktop @scenario:desktop-field-scale-unchanged', async ({
       page,
     }) => {
       const matchesCoarse = await page.evaluate(() => matchMedia('(any-pointer: coarse)').matches);
       test.skip(matchesCoarse, 'this project emulates a touch device');
       expect(await emailFontSize(page)).toBe(14);
+    });
+  });
+
+  test.describe('signed in touch device', () => {
+    test.use({ hasTouch: true });
+
+    test('the chat composer is at least 16px @scenario:touch-composer-no-zoom', async ({
+      page,
+    }) => {
+      await page.goto('/c/new', { timeout: 10000 });
+      const composer = page.getByRole('textbox', { name: 'Message input' });
+      await expect(composer).toBeVisible();
+      const size = await composer.evaluate((node) => parseFloat(getComputedStyle(node).fontSize));
+      expect(size).toBeGreaterThanOrEqual(IOS_ZOOM_THRESHOLD);
     });
   });
 });
