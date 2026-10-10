@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { logger } from '@librechat/data-schemas';
 import {
   THEME_BOOT_FILE,
   isBundledThemeName,
@@ -14,15 +15,23 @@ const TENANT_HEADER = 'X-Tenant-Id';
 
 /**
  * The bundled themes the client build resolved. Empty when the build predates them, which
- * leaves a bundled name to the bundle's first render, as for an inline definition.
+ * leaves a bundled name to the bundle's first render, as for an inline definition; a file that
+ * exists but cannot be read is reported, since the deployment then loses the first paint.
  */
 export function readBundledThemeBoot(distPath: string): BundledThemeBoot {
+  const file = path.join(distPath, THEME_BOOT_FILE);
   try {
-    const bundled = JSON.parse(fs.readFileSync(path.join(distPath, THEME_BOOT_FILE), 'utf8'));
-    return typeof bundled === 'object' && bundled !== null ? bundled : {};
-  } catch {
-    return {};
+    const bundled = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (typeof bundled === 'object' && bundled !== null) {
+      return bundled;
+    }
+    logger.warn(`[DeploymentTheme] Ignoring ${file}: it does not hold an object`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn(`[DeploymentTheme] Ignoring unreadable ${file}`, error);
+    }
   }
+  return {};
 }
 
 /**

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { logger } from '@librechat/data-schemas';
 import { THEME_BOOT_FILE, DEPLOYMENT_THEME_BOOT_ID } from 'librechat-data-provider';
 import type { BundledThemeBoot, DeploymentThemeBoot } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
@@ -123,16 +124,22 @@ describe('createDeploymentThemeShell', () => {
 });
 
 describe('readBundledThemeBoot', () => {
-  it('reads what the client build emitted, and nothing when it is missing', () => {
+  it('reads what the client build emitted, nothing when it is missing, and reports a broken one', () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
     const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'theme-boot-'));
     try {
       expect(readBundledThemeBoot(dist)).toEqual({});
       fs.writeFileSync(path.join(dist, THEME_BOOT_FILE), JSON.stringify(bundled));
       expect(readBundledThemeBoot(dist)).toEqual(bundled);
+      expect(warn).not.toHaveBeenCalled();
       fs.writeFileSync(path.join(dist, THEME_BOOT_FILE), 'null');
       expect(readBundledThemeBoot(dist)).toEqual({});
+      fs.writeFileSync(path.join(dist, THEME_BOOT_FILE), '{"clickhouse":');
+      expect(readBundledThemeBoot(dist)).toEqual({});
+      expect(warn).toHaveBeenCalledTimes(2);
     } finally {
       fs.rmSync(dist, { recursive: true, force: true });
+      warn.mockRestore();
     }
   });
 });
