@@ -404,6 +404,14 @@ describe('BackgroundTasksButton', () => {
     ).toHaveLength(3);
   });
 
+  it('renders tool navigation as an icon without visible button text', async () => {
+    jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+    renderButton();
+    await userEvent.click(await screen.findByTestId('header-background-tasks-button'));
+    const action = screen.getAllByRole('button', { name: 'com_ui_background_tasks_go_to_tool' })[0];
+    expect(action.textContent).toBe('');
+  });
+
   it('scrolls to the matching tool and dismisses the panel', async () => {
     jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
     renderButton();
@@ -456,6 +464,21 @@ describe('BackgroundTasksButton', () => {
     expect(screen.getByRole('status')).toHaveTextContent(
       'com_ui_background_tasks_tool_unavailable',
     );
+  });
+
+  it('uses tighter inset corners for Stop all', async () => {
+    jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+    renderButton();
+    await userEvent.click(await screen.findByTestId('header-background-tasks-button'));
+    expect(screen.getByTestId('background-tasks-stop-all')).toHaveClass('rounded-md');
+  });
+
+  it('uses compact inset Stop controls for tool and subagent items', async () => {
+    jest.spyOn(dataService, 'getBackgroundTasks').mockResolvedValue(index());
+    renderButton([runningChild]);
+    await userEvent.click(await screen.findByTestId('header-background-tasks-button'));
+    const stops = await screen.findAllByRole('button', { name: /com_ui_background_tasks_stop:/ });
+    for (const stop of stops) expect(stop).toHaveClass('size-6', 'rounded-md');
   });
 
   it('uses the solid stop surface for both tool and subagent rows', async () => {

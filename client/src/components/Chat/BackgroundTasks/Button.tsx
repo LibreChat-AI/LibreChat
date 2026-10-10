@@ -228,9 +228,9 @@ function BackgroundTasksButton({
                     >
                       <IconButton
                         type="button"
-                        variant="submit"
+                        variant="primary"
                         size="sm"
-                        shape="composer"
+                        shape="inset"
                         label={stopAllLabel}
                         disabled={!anyStoppable || view.isStopping}
                         onClick={() => void view.stopAll()}

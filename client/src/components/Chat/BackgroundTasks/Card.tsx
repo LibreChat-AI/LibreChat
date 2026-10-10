@@ -1,7 +1,7 @@
 import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
-import { Button, IconButton, Spinner, TooltipAnchor } from '@librechat/client';
+import { IconButton, Spinner, TooltipAnchor } from '@librechat/client';
 import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getRunStepDurationLabels, getToolDisplayLabel, cn } from '~/utils';
@@ -130,9 +130,9 @@ function TaskCard({
             render={
               <IconButton
                 type="button"
-                variant="submit"
-                size="sm"
-                shape="composer"
+                variant="primary"
+                size="xs"
+                shape="inset"
                 label={`${stopLabel}: ${title}`}
                 disabled={isStopping}
                 onClick={() => onStop(row)}
@@ -142,6 +142,21 @@ function TaskCard({
             }
           />
         )}
+        <TooltipAnchor
+          description={localize('com_ui_background_tasks_go_to_tool')}
+          portalElement={portalElement}
+          render={
+            <IconButton
+              variant="ghost"
+              size="xs"
+              shape="inset"
+              label={localize('com_ui_background_tasks_go_to_tool')}
+              onClick={() => setJumpUnavailable(!onJump(row))}
+            >
+              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+            </IconButton>
+          }
+        />
         {row.status === 'stopping' && <Spinner className="size-4 shrink-0" />}
       </div>
       {expandable && (
@@ -154,12 +169,6 @@ function TaskCard({
           </pre>
         </Collapse>
       )}
-      <div className="mt-2">
-        <Button variant="inline-link" onClick={() => setJumpUnavailable(!onJump(row))}>
-          <ArrowUpRight className="size-3.5" aria-hidden="true" />
-          {localize('com_ui_background_tasks_go_to_tool')}
-        </Button>
-      </div>
       {jumpUnavailable && (
         <p role="status" className="text-text-secondary mt-1 text-xs">
           {localize('com_ui_background_tasks_tool_unavailable')}
