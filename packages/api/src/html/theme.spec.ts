@@ -93,7 +93,7 @@ describe('createDeploymentThemeShell', () => {
     expect(vary).not.toHaveBeenCalled();
   });
 
-  it('serves a request scoped to a trusted tenant the shell without the base theme', () => {
+  it('serves a request scoped to a trusted tenant the shell without the base theme, as the config resolves it', () => {
     const shellFor = createDeploymentThemeShell(SHELL, 'clickhouse', bundled, {
       TRUST_TENANT_HEADER: 'true',
     });
@@ -103,6 +103,11 @@ describe('createDeploymentThemeShell', () => {
     expect(shellFor(request({ 'x-tenant-id': 'acme' }), tenant.res)).toBe(SHELL);
     expect(bootOf(shellFor(request(), base.res))?.source).toBe('clickhouse');
     expect(tenant.vary).toHaveBeenCalledWith('X-Tenant-Id');
+    for (const ignored of ['__SYSTEM__', 'a:b', 'x'.repeat(129), '  ']) {
+      expect(bootOf(shellFor(request({ 'x-tenant-id': ignored }), response().res))?.source).toBe(
+        'clickhouse',
+      );
+    }
     expect(base.vary).toHaveBeenCalledWith('X-Tenant-Id');
   });
 

@@ -7,6 +7,7 @@ import {
 } from 'librechat-data-provider';
 import type { BundledThemeBoot, DeploymentThemeBoot } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
+import { rejectTenantHeader } from '../middleware/tenantHeader';
 import { isEnabled } from '../utils/common';
 
 const TENANT_HEADER = 'X-Tenant-Id';
@@ -50,7 +51,8 @@ export function injectDeploymentThemeBoot(
 /**
  * The shell for a request. The deployment's base theme is only the right first paint where
  * the signed-out config resolves to the base: a request whose trusted `X-Tenant-Id` header
- * scopes it to a tenant gets the shell without it, since that tenant's theme may differ.
+ * scopes it to a tenant, by the rule `preAuthTenantMiddleware` applies, gets the shell without
+ * it, since that tenant's theme may differ.
  */
 export function createDeploymentThemeShell(
   html: string,
@@ -64,6 +66,7 @@ export function createDeploymentThemeShell(
   }
   return (req, res) => {
     res.vary(TENANT_HEADER);
-    return req.get(TENANT_HEADER)?.trim() ? html : themed;
+    const tenantId = req.get(TENANT_HEADER)?.trim();
+    return tenantId && !rejectTenantHeader(tenantId) ? html : themed;
   };
 }
