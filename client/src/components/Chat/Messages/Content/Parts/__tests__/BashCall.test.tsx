@@ -59,8 +59,7 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
   }) => (
     <div data-testid="progress-text" onClick={onClick}>
       {phase === 'running' ? inProgressText : finishedText}
-      {phase === 'failed' ? ' — tool failed' : ''}
-      {phase === 'failed' && verdict ? ` · ${verdict}` : ''}
+      {phase === 'failed' ? ` · ${verdict || 'tool failed'}` : ''}
     </div>
   ),
 }));
@@ -425,7 +424,7 @@ describe('BashCall sole tool disclosure', () => {
         </SoleToolContext.Provider>
       </RecoilRoot>,
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('tool failed');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('exit code 1');
   });
 
   it('keeps its row for a detached task whose dispatch step has closed', () => {
@@ -685,12 +684,12 @@ describe('BashCall exit status', () => {
 
   it('fails the same output when the server marked it attached-workspace', () => {
     renderSettled('stdout:\n[exit code: 1]');
-    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 1$/);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/Ran command · exit code 1$/);
   });
 
   it('fails a non-zero exit even when the output matches no error pattern', () => {
     renderSettled('stdout:\n1 test failed\n\n[exit code: 2]');
-    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 2$/);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/Ran command · exit code 2$/);
   });
 
   it('keeps a zero exit successful even when stderr reads like an error', () => {
@@ -715,7 +714,7 @@ describe('BashCall exit status', () => {
     ['Command completed with no output.\n[terminated by SIGTERM]', 'terminated by SIGTERM'],
   ])('names the reason for a stopped command: %s', (output, reason) => {
     renderSettled(output);
-    expect(screen.getByTestId('progress-text')).toHaveTextContent(`tool failed · ${reason}`);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(`Ran command · ${reason}`);
   });
 
   it('keeps the text heuristic for sandbox output without an exit trailer', () => {
