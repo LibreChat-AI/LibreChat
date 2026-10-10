@@ -1,7 +1,7 @@
 import { memo, useMemo, useRef, useState } from 'react';
 import { Clock, TextQuote, X } from 'lucide-react';
-import { Button, TooltipAnchor } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
+import { Button, TooltipAnchor } from '@librechat/client';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import useSteerCancel, { useSteerMoveToQueue, useSteerRehome } from '~/hooks/Chat/useSteerCancel';
