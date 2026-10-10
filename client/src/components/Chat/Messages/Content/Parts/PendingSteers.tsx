@@ -1,5 +1,6 @@
 import { memo, useMemo, useRef, useState } from 'react';
-import { TextQuote } from 'lucide-react';
+import { Clock, TextQuote, X } from 'lucide-react';
+import { Button, TooltipAnchor } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
@@ -209,7 +210,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
                 )}
               </div>
             ) : (
-              <div className="text-text-secondary -mt-2 mb-2 flex flex-wrap items-center justify-end gap-2 text-xs">
+              <div className="text-text-secondary -mt-2 mb-2 flex flex-wrap items-center justify-end gap-0.5 text-xs">
                 {/* Only a `pending` steer can be armed: `sending` has no server id
                     yet, and one already interrupting has nothing left to escalate. */}
                 {steer.status === 'pending' && steer.preempt !== true && (
@@ -229,33 +230,43 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
                   />
                 )}
                 {steer.status === 'pending' && (
-                  <>
-                    <button
-                      type="button"
-                      disabled={movingId != null}
-                      onClick={() => void queueSteer(steer)}
-                      className={ACTION_CLASS}
-                    >
-                      {localize('com_ui_convert_to_queue')}
-                    </button>
-                  </>
+                  <TooltipAnchor
+                    description={localize('com_ui_convert_to_queue')}
+                    render={
+                      <Button
+                        type="button"
+                        variant="message-action"
+                        aria-label={localize('com_ui_convert_to_queue')}
+                        disabled={movingId != null}
+                        onClick={() => void queueSteer(steer)}
+                      >
+                        <Clock className="h-[19px] w-[19px]" aria-hidden="true" />
+                      </Button>
+                    }
+                  />
                 )}
                 {(steer.status === 'pending' || steer.status === 'sending') && (
-                  <button
-                    type="button"
-                    ref={(node) => {
-                      if (node == null) {
-                        cancelButtonRefs.current.delete(steer.steerId);
-                        return;
-                      }
-                      cancelButtonRefs.current.set(steer.steerId, node);
-                    }}
-                    disabled={movingId != null}
-                    onClick={() => void cancelPendingSteer(steer)}
-                    className={ACTION_CLASS}
-                  >
-                    {localize('com_ui_cancel')}
-                  </button>
+                  <TooltipAnchor
+                    description={localize('com_ui_cancel')}
+                    render={
+                      <Button
+                        type="button"
+                        variant="message-action"
+                        aria-label={localize('com_ui_cancel')}
+                        ref={(node) => {
+                          if (node == null) {
+                            cancelButtonRefs.current.delete(steer.steerId);
+                            return;
+                          }
+                          cancelButtonRefs.current.set(steer.steerId, node);
+                        }}
+                        disabled={movingId != null}
+                        onClick={() => void cancelPendingSteer(steer)}
+                      >
+                        <X className="h-[19px] w-[19px]" aria-hidden="true" />
+                      </Button>
+                    }
+                  />
                 )}
               </div>
             )}

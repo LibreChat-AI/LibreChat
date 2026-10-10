@@ -1,7 +1,7 @@
 import { useEffect, useId, useSyncExternalStore } from 'react';
 import { ArrowUp } from 'lucide-react';
 import * as Ariakit from '@ariakit/react';
-import { IconButton } from '@librechat/client';
+import { Button, IconButton } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
 import { getChatPane, getFocusedChatPane } from '~/utils/pane';
 import { useLocalize } from '~/hooks';
@@ -144,6 +144,23 @@ export default function EscalateNowButton({
     return () => clearActiveTarget(targetId);
   }, [disabled, targetId]);
 
+  const actionProps = {
+    'aria-keyshortcuts': isActive ? ariaKey : undefined,
+    'data-escalate-steer': surface,
+    'data-escalate-steer-active': isActive ? 'true' : undefined,
+    'data-testid': surface === 'queued' ? 'queued-interrupt-now' : 'steer-escalate-now',
+    disabled,
+    onPointerEnter: (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (!disabled) {
+        updateActiveTarget('hover', targetId, true, event.currentTarget);
+      }
+    },
+    onPointerLeave: () => updateActiveTarget('hover', targetId, false),
+    onFocus: () => !disabled && updateActiveTarget('focus', targetId, true),
+    onBlur: () => updateActiveTarget('focus', targetId, false),
+    onClick,
+  };
+
   return (
     <Ariakit.TooltipProvider placement="top" timeout={300}>
       {/* The disabled IconButton already renders at half opacity; 70% of that
@@ -151,26 +168,26 @@ export default function EscalateNowButton({
       <span className={cn('transition-opacity', disabled && 'opacity-70')}>
         <Ariakit.TooltipAnchor
           render={
-            <IconButton
-              label={accessibleLabel}
-              size={size}
-              shape={shape}
-              variant="primary"
-              aria-keyshortcuts={isActive ? ariaKey : undefined}
-              data-escalate-steer={surface}
-              data-escalate-steer-active={isActive ? 'true' : undefined}
-              data-testid={surface === 'queued' ? 'queued-interrupt-now' : 'steer-escalate-now'}
-              disabled={disabled}
-              onPointerEnter={(event) =>
-                !disabled && updateActiveTarget('hover', targetId, true, event.currentTarget)
-              }
-              onPointerLeave={() => updateActiveTarget('hover', targetId, false)}
-              onFocus={() => !disabled && updateActiveTarget('focus', targetId, true)}
-              onBlur={() => updateActiveTarget('focus', targetId, false)}
-              onClick={onClick}
-            >
-              <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-            </IconButton>
+            surface === 'bubble' ? (
+              <Button
+                type="button"
+                variant="message-action"
+                aria-label={accessibleLabel}
+                {...actionProps}
+              >
+                <ArrowUp className="h-[19px] w-[19px]" aria-hidden="true" />
+              </Button>
+            ) : (
+              <IconButton
+                label={accessibleLabel}
+                size={size}
+                shape={shape}
+                variant="primary"
+                {...actionProps}
+              >
+                <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
+              </IconButton>
+            )
           }
         />
       </span>
