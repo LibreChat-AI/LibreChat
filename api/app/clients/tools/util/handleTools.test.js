@@ -37,6 +37,12 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/server/services/PluginService', () => mockPluginService);
 
+/** The image toolkit factory always yields both tools; the loader is expected
+ *  to narrow the result to the tools the agent actually selected. */
+jest.mock('../structured/OpenAIImageTools', () =>
+  jest.fn(async () => [{ name: 'image_gen_oai' }, { name: 'image_edit_oai' }]),
+);
+
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn().mockResolvedValue({
     // Default app config for tool tests
@@ -1034,6 +1040,42 @@ describe('Tool Handlers', () => {
           toolKey: secondToolKey,
         }),
       );
+    });
+  });
+
+  describe('image_gen_oai toolkit', () => {
+    const createOpenAIImageTools = require('../structured/OpenAIImageTools');
+
+    beforeEach(() => {
+      process.env.IMAGE_GEN_OAI_API_KEY = 'test-key';
+      createOpenAIImageTools.mockClear();
+    });
+
+    afterEach(() => {
+      delete process.env.IMAGE_GEN_OAI_API_KEY;
+    });
+
+    it('exposes only image_edit_oai for an edit-only agent', async () => {
+      const { loadedTools } = await loadTools({
+        user: fakeUser._id,
+        tools: ['image_edit_oai'],
+        options: { tool_resources: {}, req: { body: {} } },
+      });
+
+      expect(loadedTools.map((tool) => tool.name)).toEqual(['image_edit_oai']);
+    });
+
+    it('keeps both tools when the toolkit is selected', async () => {
+      const { loadedTools } = await loadTools({
+        user: fakeUser._id,
+        tools: ['image_gen_oai'],
+        options: { tool_resources: {}, req: { body: {} } },
+      });
+
+      expect(loadedTools.map((tool) => tool.name).sort()).toEqual([
+        'image_edit_oai',
+        'image_gen_oai',
+      ]);
     });
   });
 
