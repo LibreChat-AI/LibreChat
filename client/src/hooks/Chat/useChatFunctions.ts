@@ -26,7 +26,6 @@ import type {
   TMessage,
   TSubmission,
   TConversation,
-  TStartupConfig,
   TEndpointOption,
   TEndpointsConfig,
   EndpointSchemaKey,
@@ -65,9 +64,7 @@ import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import store, { useGetEphemeralAgent } from '~/store';
-import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
-import { useAuthContext } from '~/hooks';
 
 /** A revalidating cache younger than this is locally authoritative (the run
  * that just streamed wrote it) and stays sendable; older ones wait for the
@@ -251,12 +248,11 @@ export default function useChatFunctions({
   const navigate = useNavigate();
   const reasoningStore = useStore();
   const getSender = useGetSender();
-  const { user } = useAuthContext();
   const queryClient = useQueryClient();
   const setFilesToDelete = useSetFilesToDelete();
   const getEphemeralAgent = useGetEphemeralAgent();
   const agentsMap = useAgentsMapContext();
-  const { isTemporary } = useChatSettings();
+  const { isTemporary, config, auth } = useChatSettings();
   const { getExpiry } = useUserKey(immutableConversation?.endpoint ?? '');
   const setIsSubmitting = useSetRecoilState(store.isSubmittingFamily(index));
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));
@@ -477,7 +473,6 @@ export default function useChatFunctions({
 
     const ephemeralAgent = getEphemeralAgent(conversationId ?? Constants.NEW_CONVO);
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-    const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
     const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
     const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
     /**
@@ -605,7 +600,7 @@ export default function useChatFunctions({
     if (conversation?.promptPrefix) {
       conversation.promptPrefix = replaceSpecialVars({
         text: conversation.promptPrefix,
-        user,
+        user: auth.user,
       });
     }
 
@@ -869,7 +864,7 @@ export default function useChatFunctions({
           conversation,
           addedConvo,
           endpointsConfig,
-          startupConfig?.modelSpecs?.list,
+          config.modelSpecs,
         );
       } else {
         initialResponse.content = [];

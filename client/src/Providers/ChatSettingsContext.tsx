@@ -9,6 +9,8 @@ export const defaultChatSettings: ChatSettings = {
   saveDrafts: true,
   isTemporary: false,
   setIsTemporary: () => undefined,
+  config: { feedbackEnabled: false, canRenameRunningChat: false },
+  auth: {},
 };
 
 export const ChatSettingsContext = createContext<ChatSettings>(defaultChatSettings);

@@ -19,8 +19,9 @@ import {
   canRestoreRecovery,
 } from '~/components/Chat/Steering/recovery';
 import { acquireQueueSendLock, releaseQueueSendLock, hasQueuedIntent } from '~/utils/queueIntent';
-import { useGetStartupConfig, useMarkFilesUsageMutation } from '~/data-provider';
 import { selectQueuedTurnReveal } from '~/hooks/Chat/useQueuedTurnReveal';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import { useMarkFilesUsageMutation } from '~/data-provider';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import { mergeQueuedMessages } from '~/utils/queue';
 import { insertQueuedOrigin } from '~/utils/steer';
@@ -106,9 +107,8 @@ export default function useQueueDrain(
   const sendLockRef = useRef<QueueSendLock | null>(null);
   const revealLockRef = useRef(false);
   const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
-  const { data: startupConfig } = useGetStartupConfig();
-  const sendLockTimeoutMs =
-    startupConfig?.interface?.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
+  const { config } = useChatSettings();
+  const sendLockTimeoutMs = config.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const ownQueue = useAtomValue(
     queuedMessagesByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );

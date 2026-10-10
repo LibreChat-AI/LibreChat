@@ -2,7 +2,9 @@ import '@testing-library/jest-dom';
 import { QueryKeys } from 'librechat-data-provider';
 import { render, screen, renderHook, act } from '@testing-library/react';
 import type { QueryClient } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import type { MenuItemProps } from '~/common';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import useChatOptions from '../useChatOptions';
 
 const mockState = {
@@ -13,7 +15,7 @@ const mockState = {
   cached: undefined as Record<string, unknown> | undefined,
   route: 'convo-1' as string | undefined,
   activeJobs: [] as string[],
-  startupConfig: undefined as Record<string, unknown> | undefined,
+  canRenameRunningChat: false,
   projects: undefined as { _id: string; name: string }[] | undefined,
   projectsError: false,
   hasNextPage: false,
@@ -59,7 +61,6 @@ jest.mock('~/Providers', () => ({
 }));
 jest.mock('~/data-provider', () => ({
   useGetConvoIdQuery: () => ({ data: mockState.cached }),
-  useGetStartupConfig: () => ({ data: mockState.startupConfig }),
   useActiveJobs: () => ({ data: { activeJobIds: mockState.activeJobs } }),
   usePinConversationMutation: () => ({ mutate: mockPin }),
   useArchiveConvoMutation: () => ({ mutate: mockArchive }),
@@ -111,8 +112,29 @@ jest.mock('../useExportShare', () => ({
 }));
 
 const setup = (readOnly = false, isMenuOpen = false) =>
-  renderHook(() =>
-    useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, readOnly, isMenuOpen }),
+  renderHook(
+    () =>
+      useChatOptions({
+        isSharedButtonEnabled: true,
+        closeMenu: mockCloseMenu,
+        readOnly,
+        isMenuOpen,
+      }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <ChatSettingsContext.Provider
+          value={{
+            ...defaultChatSettings,
+            config: {
+              ...defaultChatSettings.config,
+              canRenameRunningChat: mockState.canRenameRunningChat,
+            },
+          }}
+        >
+          {children}
+        </ChatSettingsContext.Provider>
+      ),
+    },
   );
 const labels = (items: MenuItemProps[]) =>
   items.filter((item) => item.show !== false && item.separate !== true).map((item) => item.label);
@@ -132,7 +154,7 @@ describe('useChatOptions', () => {
     mockClient.current = new (jest.requireActual('@tanstack/react-query').QueryClient)();
     mockState.route = 'convo-1';
     mockState.activeJobs = [];
-    mockState.startupConfig = undefined;
+    mockState.canRenameRunningChat = false;
     mockState.projects = undefined;
     mockState.projectsError = false;
     mockState.hasNextPage = false;
@@ -537,10 +559,7 @@ describe('useChatOptions', () => {
 
   it('keeps rename enabled while generating when the deployment supports title ownership', () => {
     mockState.activeJobs = ['convo-1'];
-    mockState.startupConfig = {
-      conversationTitleOwnershipVersion: 1,
-      interface: { runningChatRename: true },
-    };
+    mockState.canRenameRunningChat = true;
     const { result } = setup();
 
     expect(find(result.current.items, 'com_ui_rename').disabled).toBe(false);

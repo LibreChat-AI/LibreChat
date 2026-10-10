@@ -3,7 +3,6 @@ import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
-import { supportsConversationTitleOwnership } from 'librechat-data-provider';
 import { Pen, Pin, Trash, Archive, CopyPlus, ArchiveRestore } from 'lucide-react';
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
@@ -11,7 +10,6 @@ import type * as t from '~/common';
 import {
   useActiveJobs,
   useGetConvoIdQuery,
-  useGetStartupConfig,
   useArchiveConvoMutation,
   usePinConversationMutation,
   useDuplicateConversationMutation,
@@ -19,6 +17,7 @@ import {
 import { findConvoInAllQueries, isTemporaryConversation, hasRealTitle } from '~/utils';
 import DeleteButton from '~/components/Conversations/ConvoOptions/DeleteButton';
 import { useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import useProjectMenuItem from './useProjectMenuItem';
 import { NotificationSeverity } from '~/common';
@@ -64,7 +63,7 @@ export default function useChatOptions({
   const { newConversation } = useNewConvo();
   const { setConversation } = useChatContext();
   const { navigateToConvo } = useNavigateToConvo(0);
-  const { data: startupConfig } = useGetStartupConfig();
+  const { config } = useChatSettings();
   const { data: activeJobs } = useActiveJobs();
   const { conversationId: routeConversationId } = useParams();
   /** A request outlives the click: the route that matters is the one open when it resolves. */
@@ -91,7 +90,7 @@ export default function useChatOptions({
   /** The sidebar's rule: a running chat can only be renamed where the deployment can protect
    *  the manual title from the pending generated one. */
   const canRename =
-    supportsConversationTitleOwnership(startupConfig) ||
+    config.canRenameRunningChat ||
     (!isGenerating && (current?.titleSetByUser === true || hasRealTitle(title)));
 
   const renameRef = useRef<HTMLButtonElement>(null);

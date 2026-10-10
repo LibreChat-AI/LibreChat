@@ -71,6 +71,10 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => mockFileMap,
 }));
 
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: undefined }),
+}));
+
 /** The reconciliation window is an operator lever; these specs exercise the
  *  shipped default unless a case overrides it. */
 let mockStartupConfig: { interface?: { queuedTurnReconciliationTimeoutMs?: number } } | undefined;

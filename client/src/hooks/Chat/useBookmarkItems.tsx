@@ -8,11 +8,8 @@ import { Constants, QueryKeys, isForcedTemporaryRetention } from 'librechat-data
 import type { TConversationTag } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type * as t from '~/common';
-import {
-  useConversationTagsQuery,
-  useGetStartupConfig,
-  useTagConversationMutation,
-} from '~/data-provider';
+import { useConversationTagsQuery, useTagConversationMutation } from '~/data-provider';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { BookmarkEditDialog } from '~/components/Bookmarks';
 import { useBookmarkSuccess, useLocalize } from '~/hooks';
 import { isTemporaryConversation, logger } from '~/utils';
@@ -42,7 +39,7 @@ export default function useBookmarkItems({
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
 
-  const { data: startupConfig } = useGetStartupConfig();
+  const { config } = useChatSettings();
   const conversation = useRecoilValue(store.conversationByIndex(0)) || undefined;
   const conversationId = conversation?.conversationId ?? '';
   const updateConvoTags = useBookmarkSuccess(conversationId);
@@ -53,8 +50,7 @@ export default function useBookmarkItems({
    * to keep permanent-chat bookmarking hidden on a chat that is already effectively temporary.
    */
   const isTemporary =
-    isTemporaryConversation(conversation) ||
-    isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
+    isTemporaryConversation(conversation) || isForcedTemporaryRetention(config.retentionMode);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const newBookmarkRef = useRef<HTMLButtonElement>(null);
 
