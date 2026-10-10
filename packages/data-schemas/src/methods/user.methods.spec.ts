@@ -8,6 +8,8 @@ import {
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
+import { createPRAutomationModel } from '~/models/prAutomation';
+import { createConversationModel } from '~/models/convo';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
 
@@ -51,6 +53,8 @@ beforeAll(async () => {
   /** Initialize methods */
   methods = createUserMethods(mongoose);
   createToolApprovalGrantModel(mongoose);
+  createPRAutomationModel(mongoose);
+  createConversationModel(mongoose);
 });
 
 afterAll(async () => {
@@ -2117,6 +2121,123 @@ describe('User Methods - Database Tests', () => {
       const users = await methods.findUsers({});
       expect(users).toHaveLength(5);
     });
+  });
+});
+
+describe('PR automation cleanup on account deletion', () => {
+  it('keeps the records exactly as they were when the account delete fails', async () => {
+    const user = await User.create({ email: 'delete-pr-fail@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a', repository: 'acme/one' });
+    const deletion = jest.spyOn(User, 'deleteOne').mockRejectedValueOnce(new Error('db down'));
+    try {
+      await expect(methods.deleteUserById(id)).rejects.toThrow('db down');
+      expect(await User.exists({ _id: user._id })).not.toBeNull();
+      expect(await PRAutomation.findOne({ user: id }).lean()).toMatchObject({
+        state: 'idle',
+        repository: 'acme/one',
+      });
+    } finally {
+      deletion.mockRestore();
+    }
+  });
+
+  it('invalidates the auth cache before a cleanup that fails', async () => {
+    enableAuthUserDocCache();
+    const user = await User.create({ email: 'delete-pr-cache@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const cache = {
+      get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
+      set: jest.fn().mockResolvedValue(true),
+      delete: jest.fn().mockResolvedValue(true),
+    };
+    const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache });
+    const cleanup = jest
+      .spyOn(mongoose.models.PRAutomation, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
+    try {
+      await methodsWithCache.deleteUserById(id);
+      expect(cache.delete).toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${id}`);
+    } finally {
+      cleanup.mockRestore();
+    }
+  });
+
+  it('reports the account deleted when only the cleanup after the delete fails', async () => {
+    const user = await User.create({ email: 'delete-pr-committed@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    const cleanup = jest
+      .spyOn(PRAutomation, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
+    try {
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+    } finally {
+      cleanup.mockRestore();
+    }
+  });
+
+  it('converges on a retry when the cleanup fails after the account was deleted', async () => {
+    const user = await User.create({ email: 'delete-pr-retry@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    const cleanup = jest
+      .spyOn(PRAutomation, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
+    try {
+      await methods.deleteUserById(id);
+      expect(await User.exists({ _id: user._id })).toBeNull();
+      expect(await PRAutomation.countDocuments({ user: id })).toBe(1);
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 0 });
+      expect(await PRAutomation.countDocuments({ user: id })).toBe(0);
+    } finally {
+      cleanup.mockRestore();
+    }
+  });
+
+  it('removes the records after the account delete committed, not before', async () => {
+    const user = await User.create({ email: 'delete-pr-order@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    const cleanup = jest.spyOn(PRAutomation, 'deleteMany');
+    const deletion = jest.spyOn(User, 'deleteOne');
+    try {
+      await methods.deleteUserById(id);
+      expect(deletion.mock.invocationCallOrder[0]).toBeLessThan(
+        cleanup.mock.invocationCallOrder[0],
+      );
+    } finally {
+      cleanup.mockRestore();
+      deletion.mockRestore();
+    }
+  });
+
+  it('removes the records of an account that no longer exists', async () => {
+    const id = new mongoose.Types.ObjectId().toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+
+    await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 0 });
+
+    expect(await PRAutomation.countDocuments({ user: id })).toBe(0);
+  });
+
+  it('removes the deleted user records and leaves other users alone', async () => {
+    const user = await User.create({ email: 'delete-pr@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    await PRAutomation.create({ user: id, conversationId: 'chat-b' });
+    await PRAutomation.create({ user: 'another-user', conversationId: 'chat-a' });
+
+    await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+
+    expect(await PRAutomation.countDocuments({ user: id })).toBe(0);
+    expect(await PRAutomation.countDocuments({ user: 'another-user' })).toBe(1);
   });
 });
 

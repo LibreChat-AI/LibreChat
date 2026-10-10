@@ -1,0 +1,87 @@
+import { Schema } from 'mongoose';
+import { randomUUID } from 'node:crypto';
+import { PR_AUTOMATION_STATES } from 'librechat-data-provider';
+import { MAX_PR_AUTOMATION_BOTS } from 'librechat-data-provider';
+import { PR_AUTOMATION_STOP_CODES } from 'librechat-data-provider';
+import { PR_AUTOMATION_TRUST_LEVELS } from 'librechat-data-provider';
+import type { IPRAutomationDocument } from '~/types/prAutomation';
+
+const trustedBotSchema = new Schema(
+  {
+    id: {
+      type: Number,
+      required: true,
+      min: 1,
+      validate: {
+        validator: Number.isSafeInteger,
+        message: 'A bot account id is a positive whole number',
+      },
+    },
+    login: { type: String, maxlength: 128 },
+  },
+  { _id: false },
+);
+
+const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
+  {
+    /** Served by the unique `{ user, conversationId }` index below; a second index only adds
+     *  write cost. */
+    user: {
+      type: String,
+      required: true,
+    },
+    tenantId: {
+      type: String,
+      index: true,
+    },
+    /** Unbounded, like the conversation schema it mirrors, so every stored conversation can enable. */
+    conversationId: { type: String, required: true },
+    repository: { type: String, maxlength: 256 },
+    pullNumber: {
+      type: Number,
+      min: 1,
+      validate: {
+        validator: Number.isInteger,
+        message: 'A pull request number is a whole number',
+      },
+    },
+    state: {
+      type: String,
+      enum: PR_AUTOMATION_STATES,
+      default: 'idle',
+      required: true,
+    },
+    stopCode: { type: String, enum: PR_AUTOMATION_STOP_CODES },
+    trust: {
+      type: String,
+      enum: PR_AUTOMATION_TRUST_LEVELS,
+      default: 'approvedBots',
+      required: true,
+    },
+    trustedBots: {
+      type: [trustedBotSchema],
+      default: [],
+      validate: {
+        validator: (bots: unknown[]) => bots.length <= MAX_PR_AUTOMATION_BOTS,
+        message: `At most ${MAX_PR_AUTOMATION_BOTS} approved bots`,
+      },
+    },
+    round: { type: Number, default: 0, min: 0, required: true },
+    startedAt: { type: Date },
+    lastHeadSha: { type: String, maxlength: 64 },
+    claimedHeads: { type: [{ type: String, maxlength: 64 }], default: [] },
+    runId: { type: String, maxlength: 64 },
+    epoch: { type: String, maxlength: 64, required: true, default: () => randomUUID() },
+    pending: { type: String, maxlength: 64 },
+  },
+  { timestamps: true },
+);
+
+/**
+ * One automation per user and conversation. The unique index makes enabling
+ * idempotent and race-free. It excludes `tenantId` for the same reason as
+ * `ToolFavorite`: user ObjectIds are globally unique.
+ */
+prAutomationSchema.index({ user: 1, conversationId: 1 }, { unique: true });
+
+export default prAutomationSchema;

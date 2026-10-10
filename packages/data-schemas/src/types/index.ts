@@ -30,6 +30,7 @@ export * from './pluginAuth';
 /* Memories */
 export * from './memory';
 export * from './favorite';
+export * from './prAutomation';
 /* Prompts */
 export * from './prompts';
 /* Skills */

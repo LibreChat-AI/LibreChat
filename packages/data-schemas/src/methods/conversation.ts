@@ -52,6 +52,7 @@ import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { createPRAutomationMethods } from './prAutomation';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
 import logger from '~/config/winston';
@@ -669,6 +670,7 @@ export function createConversationMethods(
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
+  const prAutomation = createPRAutomationMethods(mongoose);
 
   /**
    * Stamps a real assistant reply with a strictly increasing server value.
@@ -4129,6 +4131,13 @@ export function createConversationMethods(
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        /** Only after the delete committed, so a failed delete keeps the user's automation.
+         * A claim refuses any record whose conversation is gone and removes it, so a cleanup
+         * that still fails after its retry converges on the next claim. */
+        await retryCascadeOperation(() => prAutomation.deletePRAutomations(user, waveIds)).catch(
+          (error) =>
+            logger.warn('[deleteConvos] PR automation cleanup deferred to its next claim', error),
+        );
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
@@ -4162,6 +4171,11 @@ export function createConversationMethods(
       ];
 
       if (recoveryConversationIds.length > 0) {
+        await retryCascadeOperation(() =>
+          prAutomation.deletePRAutomations(user, recoveryConversationIds),
+        ).catch((error) =>
+          logger.warn('[deleteConvos] PR automation cleanup deferred to its next claim', error),
+        );
         await deps?.deleteAgentQueuedTurns?.(
           user,
           recoveryConversationIds.map((conversationId) => ({
