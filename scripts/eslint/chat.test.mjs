@@ -117,7 +117,11 @@ tester.run('chat/boundary', chat.rules.boundary, {
     ...cases('core/streaming/probe.ts', entrySpellings, 'entry'),
     ...cases('core/streaming/probe.ts', uiSpellings, 'ui'),
     ...cases('index.ts', ['react'], 'ui'),
-    ...cases('core/probe.ts', ['components', 'components/Part', 'src/components'], 'entry'),
+    ...cases(
+      'core/probe.ts',
+      ['components', 'components/Part', 'src/components', 'src/react', '@/react', '@/components/'],
+      'entry',
+    ),
     ...cases('index.ts', ['./react', './components/'], 'entry'),
     ...cases('core/probe.ts', appSpellings.slice(0, 4), 'app'),
     ...cases('react/probe.ts', appSpellings, 'app'),

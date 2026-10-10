@@ -110,7 +110,10 @@ const boundary = {
       if (name === '@librechat/frontend') return report('app');
       if (name === 'recoil') return report('recoil');
       if (name === self) return report('self');
-      const bareEntry = bareSegments.find((segment) => ENTRIES.has(segment) && segment !== 'react');
+      /** `react` itself is the UI package; any other bare path through `react` or `components`
+       *  (`src/react`, `@/components`) is an alias for an entry. */
+      const bareEntry =
+        name === 'react' ? undefined : bareSegments.find((segment) => ENTRIES.has(segment));
       if (isCore && bareEntry) return report('entry', { entry: bareEntry });
       if (isCore && (UI_PACKAGES.has(name) || UI_SCOPES.some((scope) => name.startsWith(scope)))) {
         return report('ui');
