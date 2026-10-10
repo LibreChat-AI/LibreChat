@@ -215,6 +215,7 @@ export const darkTheme: IThemeRGB = {
    *  thumb, 5.74:1 against the checked `surface-inverted` track. */
   'rgb-switch-unchecked': '102 102 102', // #666666
   'rgb-switch-thumb': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
+  'rgb-checkbox-fill': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
   'rgb-table-header-text': '205 205 205', // #cdcdcd (gray-300, matching text-secondary)
   'rgb-table-header-fill': '18 18 18', // #121212 (matching surface-dialog)
 

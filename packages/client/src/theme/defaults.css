@@ -174,6 +174,7 @@ html {
   --focus-subtle: var(--border-heavy);
   --field-fill: var(--surface-primary);
   --field-text: var(--text-primary);
+  --checkbox-fill: var(--surface-primary);
   --surface-tooltip: var(--surface-primary);
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);
@@ -307,6 +308,8 @@ html {
   --theme-switch-width: 2.75rem;
   --theme-switch-height: 1.5rem;
   --theme-checkbox-size: 1rem;
+  --theme-checkbox-radius: var(--theme-radius-sm, calc(0.5rem - 4px));
+  --theme-checkbox-fill-style: transparent;
   --theme-table-cell-space-y: 1rem;
   --theme-table-row-stroke: 0px;
   --theme-space-compact: 0.375rem;
@@ -478,6 +481,7 @@ html {
   --border-field-focus: var(--focus-control);
   --field-fill: var(--surface-primary);
   --field-text: var(--text-primary);
+  --checkbox-fill: var(--surface-primary);
   --surface-tooltip: var(--surface-primary);
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);

@@ -564,6 +564,14 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--field-text')).toBe('1 2 3');
   });
 
+  it('maps a legacy theme canvas onto the checkbox fill', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22' }, root);
+
+    expect(root.style.getPropertyValue('--checkbox-fill')).toBe('20 21 22');
+  });
+
   it('keeps the switch knob of a legacy theme on the surface it repainted', () => {
     const root = document.documentElement;
 

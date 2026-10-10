@@ -48,6 +48,40 @@ describe('menu and tooltip shadow roles in a theme definition', () => {
   });
 });
 
+describe('checkbox roles in a theme definition', () => {
+  const theme = {
+    version: 1,
+    name: 'checkbox-reference',
+    modes: {
+      light: {
+        colors: { 'rgb-checkbox-fill': '246 247 250' },
+        appearance: { checkboxFillStyle: 'fill', checkboxRadius: '0.125rem' },
+      },
+      dark: { appearance: { checkboxFillStyle: 'transparent' } },
+    },
+  };
+
+  it('accepts the fill style, the corner and an opaque fill', () => {
+    expect(deploymentThemeSchema.safeParse(theme).success).toBe(true);
+    expect(messages(theme)).toEqual([]);
+  });
+
+  it('rejects an unknown fill style, a non-length corner and a translucent fill', () => {
+    const glass = { ...theme, modes: { light: { appearance: { checkboxFillStyle: 'glass' } } } };
+    expect(messages(glass)).toEqual(['Invalid appearance value for checkboxFillStyle: glass']);
+
+    const round = { ...theme, modes: { light: { appearance: { checkboxRadius: 'round' } } } };
+    expect(messages(round)).toEqual(['Invalid appearance value for checkboxRadius: round']);
+
+    const translucent = {
+      ...theme,
+      modes: { light: { colors: { 'rgb-checkbox-fill': '1 2 3 / 0.5' } } },
+    };
+    expect(deploymentThemeSchema.safeParse(translucent).success).toBe(false);
+    expect(messages(translucent)).toHaveLength(1);
+  });
+});
+
 describe('field fill roles in a theme definition', () => {
   const theme = {
     version: 1,

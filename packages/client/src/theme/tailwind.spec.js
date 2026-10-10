@@ -160,6 +160,7 @@ describe('LibreChat Tailwind preset', () => {
       ],
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
       ['rounded-theme-popover', '--theme-popover-radius', defaultAppearance.popoverRadius],
+      ['rounded-theme-checkbox', '--theme-checkbox-radius', defaultAppearance.checkboxRadius],
       ['rounded-theme-menu-panel', '--theme-menu-panel-radius', defaultAppearance.menuPanelRadius],
       [
         'rounded-theme-composer-action',
@@ -316,6 +317,7 @@ describe('LibreChat Tailwind preset', () => {
       authControlRadius: 'radius2xl',
       authActionHeight: 'buttonHeight',
       authActionRadius: 'radiusLg',
+      checkboxRadius: 'radiusSm',
     };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]

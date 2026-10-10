@@ -70,6 +70,9 @@ panel `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`) and the send and s
 onto `menuRadius` or a square corner without moving the control or surface radii. An inline code
 chip in Markdown takes its weight from `inlineCodeWeight` (600).
 
+The checkbox reads `checkboxRadius` (`rounded-theme-checkbox`), which follows `radiusSm`, the
+`rounded-sm` it drew before, when a theme names that and not this.
+
 The sign-in forms' floating-label field reads `authFieldHeight` (2.75rem, `h-theme-auth-field`), their
 submit button `authButtonHeight` (3rem, the Button's `auth` size) and both the corner
 `authControlRadius` (1rem, the Button's `soft` shape), which follows `radius2xl` when a theme names
@@ -401,6 +404,11 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   names those and not these. Fields stay clear unless the theme's
   `fieldFillStyle` appearance role is `fill` (the default is `transparent`),
   read from the nearest themed root through the `theme-field-fill:` variant.
+- `bg-checkbox-fill` - An unchecked checkbox's fill. It follows `surface-primary`
+  when a theme names that and not this. The box stays clear unless the theme's
+  `checkboxFillStyle` appearance role is `fill` (the default is `transparent`),
+  read through the `theme-checkbox-fill:` variant; a checked box keeps
+  `surface-inverted`.
 - `bg-surface-tooltip` / `text-tooltip` - The tooltip chip and its label. They follow
   `surface-primary` and `text-primary` when a theme names those and not these. The padding and
   text size are the `tooltipPaddingX`, `tooltipPaddingY` and `tooltipTextSize` appearance roles

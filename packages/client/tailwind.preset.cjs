@@ -158,6 +158,7 @@ module.exports = {
         'theme-auth-action': 'var(--theme-auth-action-radius, 0.5rem)',
         'theme-surface-lg': 'var(--theme-large-surface-radius, 1.5rem)',
         'theme-tab': 'var(--theme-tab-radius, 0.185rem)',
+        'theme-checkbox': 'var(--theme-checkbox-radius, calc(0.5rem - 4px))',
       },
       boxShadow: {
         'theme-surface':

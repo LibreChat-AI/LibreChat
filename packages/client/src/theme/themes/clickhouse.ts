@@ -218,6 +218,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   // Switch
   'rgb-switch-unchecked': '204 207 211', // #cccfd3 (switch.color.background.default)
   'rgb-switch-thumb': '255 255 255', // #ffffff (switch.color.indicator.default)
+  'rgb-checkbox-fill': '246 247 250', // #f6f7fa (checkbox.color.background.default)
 
   // Table
   'rgb-table-header-text': '22 21 23', // #161517 (table.header.color.title.default)
@@ -415,6 +416,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   // Switch
   'rgb-switch-unchecked': '96 96 96', // #606060 (switch.color.background.default)
   'rgb-switch-thumb': '21 21 21', // #151515 (switch.color.indicator.default)
+  'rgb-checkbox-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (checkbox.color.background.default)
 
   // Table
   'rgb-table-header-text': '249 249 249', // #f9f9f9 (table.header.color.title.default, rgb(97.5% 97.5% 97.5%))
@@ -560,6 +562,9 @@ const clickHouseShape = {
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
   checkboxSize: '1rem', // checkbox.size.all
+  checkboxRadius: '0.125rem', // checkbox.radii.all
+  /** Click UI fills an unchecked checkbox in `checkbox.color.background.default`. */
+  checkboxFillStyle: 'fill' as const,
   /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
    *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
   /** The shared spacing takes two steps of Click UI's `spaces` scale: its 0.5rem gap step, the

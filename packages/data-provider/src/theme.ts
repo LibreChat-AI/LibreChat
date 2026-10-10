@@ -179,6 +179,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-category-icon-7',
   'rgb-switch-unchecked',
   'rgb-switch-thumb',
+  'rgb-checkbox-fill',
   'rgb-table-header-text',
   'rgb-table-header-fill',
   'rgb-presentation',
@@ -488,6 +489,10 @@ const appearanceValidators = {
   switchHeight: isSwitchLength,
   /** A checkbox's box and the check inside it, 1 to 1.5rem: never smaller than the box it was. */
   checkboxSize: lengthWithin(16, 24),
+  /** The checkbox's corner, and whether an unchecked box stays transparent or paints
+   *  `checkbox-fill`. */
+  checkboxRadius: isLength,
+  checkboxFillStyle: (value: unknown) => value === 'transparent' || value === 'fill',
   tableCellSpaceY: isTableLength,
   tableRowStroke: isTableLength,
   spaceCompact: isLength,

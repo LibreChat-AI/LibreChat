@@ -267,6 +267,9 @@ export interface IThemeRGB {
   'rgb-switch-unchecked'?: string;
   /** The switch's knob in both states, painted over the unchecked track and the checked fill. */
   'rgb-switch-thumb'?: string;
+  /** An unchecked checkbox's fill, painted only under `checkboxFillStyle: 'fill'`; follows
+   *  `rgb-surface-primary` when a theme omits it. */
+  'rgb-checkbox-fill'?: string;
   /** Column names in a table header, over its `surface-secondary` fill. */
   'rgb-table-header-text'?: string;
   /** The opaque fill of a header whose cells stick on their own, the dialog surface by default. */
@@ -452,6 +455,7 @@ export interface IThemeVariables {
 
   '--switch-unchecked': string;
   '--switch-thumb': string;
+  '--checkbox-fill': string;
   '--table-header-text': string;
   '--table-header-fill': string;
 
@@ -611,6 +615,7 @@ export interface IThemeColors {
   'series-7'?: string;
   'switch-unchecked'?: string;
   'switch-thumb'?: string;
+  'checkbox-fill'?: string;
   'table-header-text'?: string;
   'table-header-fill'?: string;
   'series-8'?: string;
@@ -732,6 +737,11 @@ export interface IThemeAppearance {
   switchHeight: string;
   /** A checkbox's box and the check inside it, 1 to 1.5rem. */
   checkboxSize: string;
+  /** The checkbox's corner; follows `radiusSm`, which it drew before, when a theme omits it. */
+  checkboxRadius: string;
+  /** `transparent` leaves an unchecked checkbox on the surface it sits on; `fill` paints it
+   *  `checkbox-fill`. */
+  checkboxFillStyle: 'transparent' | 'fill';
   tableCellSpaceY: string;
   tableRowStroke: string;
   spaceCompact: string;

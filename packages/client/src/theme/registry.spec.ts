@@ -1308,6 +1308,69 @@ describe('theme registry', () => {
     });
   });
 
+  describe('checkbox fill and corner', () => {
+    const checkboxTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'checkbox-reference',
+      modes,
+    });
+
+    it('keeps an unchecked checkbox clear and on the small corner by default', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors, appearance } = resolveTheme(checkboxTheme({}), mode);
+        const base = mode === 'dark' ? darkTheme : defaultTheme;
+        expect(appearance.checkboxFillStyle).toBe('transparent');
+        expect(appearance.checkboxRadius).toBe(appearance.radiusSm);
+        expect(colors['rgb-checkbox-fill']).toBe(base['rgb-surface-primary']);
+      }
+    });
+
+    it('keeps a theme that predates the roles on its own canvas and small corner', () => {
+      const { colors, appearance } = resolveTheme(
+        checkboxTheme({
+          light: {
+            colors: { 'rgb-surface-primary': '40 50 60' },
+            appearance: { radiusSm: '3px' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-checkbox-fill']).toBe('40 50 60');
+      expect(appearance.checkboxRadius).toBe('3px');
+      expect(appearance.checkboxFillStyle).toBe('transparent');
+    });
+
+    it('paints the checkbox from its own roles when a theme names them', () => {
+      const { colors, appearance } = resolveTheme(
+        checkboxTheme({
+          light: {
+            colors: { 'rgb-checkbox-fill': '246 247 250' },
+            appearance: { checkboxFillStyle: 'fill', checkboxRadius: '0.125rem', radiusSm: '4px' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-checkbox-fill']).toBe('246 247 250');
+      expect(colors['rgb-surface-primary']).toBe(defaultTheme['rgb-surface-primary']);
+      expect(appearance.checkboxFillStyle).toBe('fill');
+      expect(appearance.checkboxRadius).toBe('0.125rem');
+      expect(appearance.radiusSm).toBe('4px');
+    });
+
+    it('rejects a fill style it does not know, a translucent fill and a non-length corner', () => {
+      const issues = (mode: ThemeDefinition['modes']['light']) =>
+        validateThemeDefinition(checkboxTheme({ light: mode }));
+      expect(issues({ appearance: { checkboxFillStyle: 'fill' } })).toEqual([]);
+      expect(issues({ appearance: { checkboxFillStyle: 'glass' as 'fill' } })).toEqual([
+        'Invalid appearance value for checkboxFillStyle: glass',
+      ]);
+      expect(issues({ appearance: { checkboxRadius: 'round' } })).toEqual([
+        'Invalid appearance value for checkboxRadius: round',
+      ]);
+      expect(issues({ colors: { 'rgb-checkbox-fill': '1 2 3 / 0.5' } })).toHaveLength(1);
+    });
+  });
+
   it('rejects field and label values the shared validators refuse', () => {
     const issues = (appearance: Record<string, string>) =>
       validateThemeDefinition({

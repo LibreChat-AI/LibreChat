@@ -148,6 +148,7 @@
   /* Follow the canvas and the primary ink, for a stylesheet that predates them. */
   --color-field-fill: rgb(var(--field-fill, var(--surface-primary)));
   --color-field-text: rgb(var(--field-text, var(--text-primary)));
+  --color-checkbox-fill: rgb(var(--checkbox-fill, var(--surface-primary)));
   /* Follow the roles they were painted in before they had their own, for a stylesheet that
      predates them. */
   --color-surface-tooltip: rgb(var(--surface-tooltip, var(--surface-primary)));
@@ -352,6 +353,16 @@
  * fill carries a single class's weight, so a hover, open or disabled fill still paints over it. */
 @custom-variant theme-field-fill {
   @container style(--theme-field-fill-style: fill) {
+    @slot;
+  }
+}
+
+/* A theme whose `checkboxFillStyle` is `fill` paints an unchecked checkbox in `checkbox-fill`
+ * instead of leaving it on the surface it sits on, read like the field fill from the nearest
+ * themed root. The default `transparent` style, and a browser without style queries, keep the
+ * box clear; the checked fill carries a state selector's weight, so it still paints over it. */
+@custom-variant theme-checkbox-fill {
+  @container style(--theme-checkbox-fill-style: fill) {
     @slot;
   }
 }

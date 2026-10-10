@@ -274,6 +274,8 @@ export const themeAppearanceProperties: Readonly<
   switchWidth: '--theme-switch-width',
   switchHeight: '--theme-switch-height',
   checkboxSize: '--theme-checkbox-size',
+  checkboxRadius: '--theme-checkbox-radius',
+  checkboxFillStyle: '--theme-checkbox-fill-style',
   tableCellSpaceY: '--theme-table-cell-space-y',
   tableRowStroke: '--theme-table-row-stroke',
   spaceCompact: '--theme-space-compact',
@@ -384,6 +386,8 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   labelFontWeight: 'inherit',
   ...defaultSwitchSize,
   checkboxSize: '1rem',
+  checkboxRadius: 'calc(0.5rem - 4px)',
+  checkboxFillStyle: 'transparent',
   tableCellSpaceY: '1rem',
   tableRowStroke: '0px',
   spaceCompact: '0.375rem',
@@ -606,7 +610,7 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
 /**
  * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
  * family before the display role existed, theme-sized controls were padded by the shared spacing,
- * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, and the sign-in controls drew `rounded-2xl` and the other sign-in actions the default Button's height and corner, so a theme that names
+ * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, and the sign-in controls drew `rounded-2xl` and the other sign-in actions the default Button's height and corner, and the checkbox `rounded-sm`, so a theme that names
  * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
  * follow one that is itself inherited; the other sign-in actions resolve before the sign-in corner
  * is derived, so they follow only a corner the theme names and otherwise keep `radiusLg`.
@@ -626,6 +630,7 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['authControlRadius', 'radius2xl'],
   ['authActionHeight', 'authButtonHeight'],
   ['authActionHeight', 'buttonHeight'],
+  ['checkboxRadius', 'radiusSm'],
 ];
 
 /**
@@ -798,6 +803,13 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-field-fill': customColors['rgb-surface-primary'] }
       : {};
+  /** A checkbox fill only shows under `checkboxFillStyle: 'fill'`, on the theme's own canvas by
+   *  default. */
+  const checkboxFillFallback: IThemeRGB =
+    customColors?.['rgb-checkbox-fill'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-checkbox-fill': customColors['rgb-surface-primary'] }
+      : {};
   /** Table column names were `text-secondary` before they had a role. */
   const tableHeaderTextFallback: IThemeRGB =
     customColors?.['rgb-table-header-text'] === undefined &&
@@ -898,6 +910,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...focusSubtleFallback,
       ...switchThumbFallback,
       ...fieldFillFallback,
+      ...checkboxFillFallback,
       ...overlayFallback,
       ...layerFallback,
       ...tableHeaderTextFallback,
