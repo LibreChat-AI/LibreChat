@@ -117,16 +117,18 @@ describe('userGroup methods', () => {
       expect(results[0].name).toBe('Design');
     });
 
-    it('matches on description field', async () => {
+    it('does not match on the description field (search covers name and email)', async () => {
       const results = await methods.findGroupsByNamePattern('Eng team');
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Engineering');
+      expect(results).toEqual([]);
     });
 
     it('treats regex metacharacters as literal text', async () => {
       const results = await methods.findGroupsByNamePattern('.*');
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Literal .* Group');
+      expect(results).toEqual([]);
+
+      const literal = await methods.findGroupsByNamePattern('literal');
+      expect(literal).toHaveLength(1);
+      expect(literal[0].name).toBe('Literal .* Group');
     });
 
     it('filters by source when provided', async () => {
@@ -1412,6 +1414,14 @@ describe('userGroup methods', () => {
       expect(score).toBe(50);
     });
 
+    it('scores accent-folded matches like their plain spelling', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Zoë', source: 'local' },
+        'zoe',
+      );
+      expect(score).toBe(100);
+    });
+
     it('returns 10 (default) when no substring or exact match', () => {
       const score = methods.calculateRelevanceScore(
         { type: PrincipalType.USER, name: 'bob', source: 'local' },
@@ -1434,17 +1444,51 @@ describe('userGroup methods', () => {
       expect(score).toBe(100);
     });
 
-    it('checks description for GROUP type', () => {
-      const score = methods.calculateRelevanceScore(
+    it('ignores description for GROUP type, which search no longer matches', () => {
+      const weak = methods.calculateRelevanceScore(
         {
           type: PrincipalType.GROUP,
-          name: 'other',
-          description: 'alice team',
+          name: 'Corporate Platform',
+          description: 'plat',
           source: 'local',
         },
-        'alice',
+        'plat',
       );
-      expect(score).toBe(80);
+      const strong = methods.calculateRelevanceScore(
+        { type: PrincipalType.GROUP, name: 'Platform Team', source: 'local' },
+        'plat',
+      );
+      expect(weak).toBe(50);
+      expect(strong).toBeGreaterThan(weak);
+    });
+
+    it('scores a name equal to the query up to separators as an exact match', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Mary-Jane', source: 'local' },
+        'mary jane',
+      );
+      expect(score).toBe(100);
+    });
+
+    it('scores a reordered full-name query as exact, above a longer prefix match', () => {
+      const exact = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'John Smith', source: 'local' },
+        'smith john',
+      );
+      const prefix = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Smith Johnson', source: 'local' },
+        'smith john',
+      );
+      expect(exact).toBe(100);
+      expect(prefix).toBe(80);
+    });
+
+    it('scores query words matched across fields like a contains match', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'John Doe', email: 'jd@gmail.com', source: 'local' },
+        'john gmail',
+      );
+      expect(score).toBe(50);
     });
 
     it('picks the highest score across multiple fields', () => {
@@ -1569,9 +1613,11 @@ describe('userGroup methods', () => {
       });
 
       const results = await methods.searchPrincipals('.*', 10, [PrincipalType.USER]);
+      expect(results).toEqual([]);
 
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Literal .* User');
+      const literal = await methods.searchPrincipals('literal', 10, [PrincipalType.USER]);
+      expect(literal).toHaveLength(1);
+      expect(literal[0].name).toBe('Literal .* User');
     });
 
     it('handles invalid regex syntax as literal search text', async () => {

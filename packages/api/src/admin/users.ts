@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
-import { logger, isValidObjectIdString } from '@librechat/data-schemas';
+import { logger, isValidObjectIdString, buildUserSearchFilter } from '@librechat/data-schemas';
 import type {
   IUser,
   IConfig,
@@ -137,14 +137,13 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       }
 
       const searchLimit = Math.min(Math.max(1, parseInt(limitStr, 10) || 20), 50);
-      const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`^${escaped}`, 'i');
-
-      const users = await findUsers(
-        { $or: [{ name: regex }, { email: regex }, { username: regex }] },
-        '_id name email username avatar',
-        { limit: searchLimit, sort: { name: 1 } },
-      );
+      const filter = buildUserSearchFilter(trimmed, { legacyPrefix: true });
+      const users = filter
+        ? await findUsers(filter, '_id name email username avatar', {
+            limit: searchLimit,
+            sort: { name: 1 },
+          })
+        : [];
 
       const results: AdminUserSearchResult[] = users.map((u) => ({
         id: u._id?.toString() ?? '',

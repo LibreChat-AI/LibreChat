@@ -88,6 +88,10 @@ export interface IUser extends Document {
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
   tenantId?: string;
+  /** Derived search tokens (see `~/utils/search`); `select: false`. */
+  nameTokens?: string[];
+  emailTokens?: string[];
+  usernameTokens?: string[];
   federatedTokens?: OIDCTokens;
   openidTokens?: OIDCTokens;
 }

@@ -16,8 +16,8 @@ import type {
 } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocs } from '~/utils/eviction';
-import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -850,7 +850,7 @@ export function createUserMethods(
   }
 
   /**
-   * Search for users by pattern matching on name, email, or username (case-insensitive)
+   * Search for users by word prefix of name, email, or username (see `buildUserSearchFilter`)
    * @param searchPattern - The pattern to search for
    * @param limit - Maximum number of results to return
    * @param fieldsToSelect - The fields to include or exclude in the returned documents
@@ -934,12 +934,13 @@ export function createUserMethods(
     }
 
     const trimmedPattern = searchPattern.trim();
-    const regex = new RegExp(escapeRegExp(trimmedPattern), 'i');
+    const filter = buildUserSearchFilter(trimmedPattern);
+    if (!filter) {
+      return [];
+    }
     const User = mongoose.models.User;
 
-    const query = User.find({
-      $or: [{ email: regex }, { name: regex }, { username: regex }],
-    }).limit(limit * 2); // Get more results to allow for relevance sorting
+    const query = User.find(filter).limit(limit * 2); // Get more results to allow for relevance sorting
 
     if (fieldsToSelect) {
       query.select(fieldsToSelect);
@@ -947,41 +948,10 @@ export function createUserMethods(
 
     const users = await query.lean<IUser[]>();
 
-    // Score results by relevance
-    const startsWithPattern = trimmedPattern.toLowerCase();
-
-    const scoredUsers = users.map((user) => {
-      const searchableFields = [user.name, user.email, user.username].filter(
-        (field): field is string => typeof field === 'string' && field.length > 0,
-      );
-      let maxScore = 0;
-
-      for (const field of searchableFields) {
-        const fieldLower = field.toLowerCase();
-        let score = 0;
-
-        // Exact match gets highest score
-        if (fieldLower === startsWithPattern) {
-          score = 100;
-        }
-        // Starts with query gets high score
-        else if (fieldLower.startsWith(startsWithPattern)) {
-          score = 80;
-        }
-        // Contains query gets medium score
-        else if (fieldLower.includes(startsWithPattern)) {
-          score = 50;
-        }
-        // Default score for database match
-        else {
-          score = 10;
-        }
-
-        maxScore = Math.max(maxScore, score);
-      }
-
-      return { ...user, _searchScore: maxScore };
-    });
+    const scoredUsers = users.map((user) => ({
+      ...user,
+      _searchScore: scoreSearchMatch([user.name, user.email, user.username], trimmedPattern),
+    }));
 
     /** Top results sorted by relevance */
     return scoredUsers

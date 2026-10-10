@@ -4,6 +4,7 @@ import { CacheKeys, PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { TPrincipalSearchResult } from 'librechat-data-provider';
 import type { Model, ClientSession, FilterQuery } from 'mongoose';
 import type { CacheStore, IGroup, IRole, IUser } from '~/types';
+import { buildUserSearchFilter, scoreSearchMatch, buildGroupSearchFilter } from '~/utils/search';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { scopedCacheKey } from '~/config/tenantContext';
 import { escapeRegExp } from '~/utils/string';
@@ -611,7 +612,7 @@ export function createUserGroupMethods(
   }
 
   /**
-   * Find groups by name pattern (case-insensitive partial match)
+   * Find groups by word prefix of name or email (see `buildGroupSearchFilter`)
    * @param namePattern - The name pattern to search for
    * @param source - Optional source filter ('entra', 'local', or null for all)
    * @param limit - Maximum number of results to return
@@ -625,10 +626,11 @@ export function createUserGroupMethods(
     session?: ClientSession,
   ): Promise<IGroup[]> {
     const Group = mongoose.models.Group as Model<IGroup>;
-    const regex = new RegExp(escapeRegExp(namePattern), 'i');
-    const query: Record<string, unknown> = {
-      $or: [{ name: regex }, { email: regex }, { description: regex }],
-    };
+    const filter = buildGroupSearchFilter(namePattern);
+    if (!filter) {
+      return [];
+    }
+    const query: Record<string, unknown> = { ...filter };
 
     if (source) {
       query.source = source;
@@ -1013,39 +1015,12 @@ export function createUserGroupMethods(
    * @returns Relevance score (0-100)
    */
   function calculateRelevanceScore(item: TPrincipalSearchResult, searchPattern: string): number {
-    const normalizedPattern = searchPattern.toLowerCase();
-
-    /** Get searchable text based on type */
-    const searchableFields =
+    /** The fields each search matches on; a group's description is not one of them */
+    const values =
       item.type === PrincipalType.USER
-        ? [item.name, item.email, item.username].filter(Boolean)
-        : [item.name, item.email, item.description].filter(Boolean);
-
-    let maxScore = 0;
-
-    for (const field of searchableFields) {
-      if (!field) continue;
-      const fieldLower = field.toLowerCase();
-      let score = 0;
-
-      /** Exact match gets highest score */
-      if (fieldLower === normalizedPattern) {
-        score = 100;
-      } else if (fieldLower.startsWith(normalizedPattern)) {
-        /** Starts with query gets high score */
-        score = 80;
-      } else if (fieldLower.includes(normalizedPattern)) {
-        /** Contains query gets medium score */
-        score = 50;
-      } else {
-        /** Default score for database match */
-        score = 10;
-      }
-
-      maxScore = Math.max(maxScore, score);
-    }
-
-    return maxScore;
+        ? [item.name, item.email, item.username]
+        : [item.name, item.email];
+    return scoreSearchMatch(values, searchPattern);
   }
 
   /**
@@ -1114,7 +1089,8 @@ export function createUserGroupMethods(
   }
 
   /**
-   * Search for principals (users and groups) by pattern matching on name/email
+   * Search for principals: users and groups by word prefix (see `buildSearchTokenFilter`),
+   * roles by name
    * Returns combined results in TPrincipalSearchResult format without sorting
    * @param searchPattern - The pattern to search for
    * @param limitPerType - Maximum number of results to return
@@ -1136,17 +1112,11 @@ export function createUserGroupMethods(
     const escapedPattern = escapeRegExp(trimmedPattern);
     const promises: Promise<TPrincipalSearchResult[]>[] = [];
 
-    if (!typeFilter || typeFilter.includes(PrincipalType.USER)) {
-      /** Note: searchUsers is imported from ~/models and needs to be passed in or implemented */
+    const userFilter = buildUserSearchFilter(trimmedPattern);
+    if (userFilter && (!typeFilter || typeFilter.includes(PrincipalType.USER))) {
       const userFields = 'name email username avatar provider idOnTheSource role';
-      /** For now, we'll use a direct query instead of searchUsers */
       const User = mongoose.models.User as Model<IUser>;
-      const regex = new RegExp(escapedPattern, 'i');
-      const userQuery = User.find({
-        $or: [{ name: regex }, { email: regex }, { username: regex }],
-      })
-        .select(userFields)
-        .limit(limitPerType);
+      const userQuery = User.find(userFilter).select(userFields).limit(limitPerType);
 
       if (session) {
         userQuery.session(session);

@@ -1763,6 +1763,35 @@ describe('User Methods - Database Tests', () => {
       expect(results.length).toBeGreaterThan(0);
     });
 
+    test('should rank an accent-folded exact match above a prefix match', async () => {
+      await User.create([
+        { name: 'Zoe Adams', email: 'zadams@test.com', username: 'zadams', provider: 'local' },
+        { name: 'Zoë', email: 'zoe-umlaut@test.com', username: 'zumlaut', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'zoe', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('Zoë');
+    });
+
+    test('should rank a reordered full-name match above a longer prefix match', async () => {
+      await User.create([
+        {
+          name: 'Smith Johnson',
+          email: 'sjohnson@test.com',
+          username: 'sjohnson',
+          provider: 'local',
+        },
+        { name: 'John Smith', email: 'jsmith@test.com', username: 'jsmith', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'smith john', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('John Smith');
+    });
+
     test('should respect limit', async () => {
       const results = await methods.searchUsers({ searchPattern: 'example', limit: 2 });
 
@@ -1790,9 +1819,11 @@ describe('User Methods - Database Tests', () => {
       });
 
       const results = await methods.searchUsers({ searchPattern: '.*' });
+      expect(results).toEqual([]);
 
-      expect(results).toHaveLength(1);
-      expect((results[0] as unknown as t.IUser).name).toBe('Literal .* User');
+      const literal = await methods.searchUsers({ searchPattern: 'literal' });
+      expect(literal).toHaveLength(1);
+      expect((literal[0] as unknown as t.IUser).name).toBe('Literal .* User');
     });
 
     test('should handle invalid regex syntax as literal search text', async () => {

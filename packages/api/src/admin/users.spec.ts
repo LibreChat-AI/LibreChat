@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { buildUserSearchFilter } from '@librechat/data-schemas';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { IUser, UserDeleteResult } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -187,20 +188,23 @@ describe('createAdminUsersHandlers', () => {
       expect(response.capped).toBe(true);
     });
 
-    it('searches name, email, and username with anchored prefix regex', async () => {
+    it('searches the indexed word-prefix tokens of name, email, and username', async () => {
       const findUsers = jest.fn().mockResolvedValue([]);
       const deps = createDeps({ findUsers });
       const handlers = createAdminUsersHandlers(deps);
-      const { req, res } = createReqRes({ query: { q: 'test' } });
+      const { req, res } = createReqRes({ query: { q: 'Test' } });
 
       await handlers.searchUsers(req, res);
 
       const filter = findUsers.mock.calls[0][0];
-      expect(filter.$or).toHaveLength(3);
-      expect(filter.$or[0]).toHaveProperty('name');
-      expect(filter.$or[1]).toHaveProperty('email');
-      expect(filter.$or[2]).toHaveProperty('username');
-      expect(filter.$or[0].name.source).toBe('^test');
+      expect(filter).toEqual(buildUserSearchFilter('Test', { legacyPrefix: true }));
+      expect(filter.$or).toEqual(
+        expect.arrayContaining([
+          { nameTokens: /^test/ },
+          { emailTokens: /^test/ },
+          { usernameTokens: /^test/ },
+        ]),
+      );
     });
 
     it('projects username in the field selection', async () => {
@@ -224,8 +228,25 @@ describe('createAdminUsersHandlers', () => {
       await handlers.searchUsers(req, res);
 
       const filter = findUsers.mock.calls[0][0];
-      expect(filter.$or[0].name).toBeInstanceOf(RegExp);
-      expect(filter.$or[0].name.source).toBe('^test\\.user\\+1');
+      expect(filter.$and[0].$or).toContainEqual({ emailTokens: /^test\.user\+1/ });
+      /** Documents awaiting the backfill keep the old anchored prefix match. */
+      expect(filter.$and[0].$or).toContainEqual({
+        nameTokens: { $exists: false },
+        name: /^test\.user\+1/i,
+      });
+    });
+
+    it('returns no users without querying when the query has nothing to match', async () => {
+      const findUsers = jest.fn();
+      const deps = createDeps({ findUsers });
+      const handlers = createAdminUsersHandlers(deps);
+      const { req, res, status, json } = createReqRes({ query: { q: '\u0301\u0301' } });
+
+      await handlers.searchUsers(req, res);
+
+      expect(findUsers).not.toHaveBeenCalled();
+      expect(status).toHaveBeenCalledWith(200);
+      expect(json).toHaveBeenCalledWith({ users: [], total: 0, capped: false });
     });
 
     it('returns 400 when query is missing', async () => {
