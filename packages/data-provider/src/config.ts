@@ -1091,7 +1091,11 @@ export type ToolApprovalMode = z.infer<typeof toolApprovalModeSchema>;
  * just describes the surface.
  *
  * Conventions:
- * - All list entries are matched as globs (`*`). Use `mcp:server:*` to scope
+ * - All list entries are matched as globs (`*`). MCP tool keys are
+ *   `${rawToolName}${Constants.mcp_delimiter}${serverName}` (e.g.
+ *   `create_issue_mcp_github`; the server segment is the `normalizeServerName()`
+ *   form, and a raw tool name may itself contain the delimiter), so use
+ *   `*${Constants.mcp_delimiter}<serverName>` (i.e. `*_mcp_<serverName>`) to scope
  *   a rule to every tool from a single MCP server.
  * - `deny` always wins, including under `bypass`.
  * - `enabled: false` is a LibreChat-only kill switch that disables the entire
