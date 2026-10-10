@@ -9,7 +9,7 @@ import { Tools } from './types/tools';
 /**
  * A UI parts view of LibreChat message content, modelled on the AI SDK `UIMessage`.
  *
- * Matched against `ai@7.0.114` (`UIMessage`, `UIMessagePart`, `UIToolInvocation`) and
+ * Matched against `ai@7.0.137` (`UIMessage`, `UIMessagePart`, `UIToolInvocation`) and
  * `@ai-sdk/react@4.0.117` (`useChat`). The shapes are structural copies, not imports: this
  * package does not depend on the AI SDK.
  *
@@ -118,16 +118,26 @@ export type UISourceUrlPart = {
 /** AI SDK `StepStartUIPart`; stands in for a content slot no step has written yet. */
 export type UIStepStartPart = { type: 'step-start' };
 
-/** The subset of AI SDK tool states LibreChat content can express. */
+/** AI SDK tool states. */
 export type UIToolState =
   | 'input-streaming'
   | 'input-available'
   | 'approval-requested'
+  | 'approval-responded'
   | 'output-available'
-  | 'output-error';
+  | 'output-error'
+  | 'output-denied';
 
-/** AI SDK tool `approval`, for a call paused for human review. */
-export type UIToolApproval = { id: string; requestReason?: string };
+/**
+ * AI SDK tool `approval`, for a call paused for human review. `approved` and `reason` are set once
+ * the reviewer decided: `approve` and `edit` approve the call, `reject` and `respond` deny it.
+ */
+export type UIToolApproval = {
+  id: string;
+  requestReason?: string;
+  approved?: boolean;
+  reason?: string;
+};
 
 export type UIToolInput = Agents.ToolCall['args'] | object;
 export type UIToolOutput = string | CodeInterpreterOutputs;
@@ -144,7 +154,8 @@ export type UIToolPartMetadata = Omit<ToolCallContentPart, 'type' | 'tool_call'>
 /**
  * AI SDK `ToolUIPart`: `tool-<name>` with a lifecycle `state`. Cancelled, failed, rejected and
  * background-cancelled calls all surface as `output-error`; the exact marker stays on the stored
- * call. A call paused for human review is `approval-requested`.
+ * call. A call paused for human review is `approval-requested`, then `approval-responded` once the
+ * reviewer decided, and `output-denied` when a denied call has ended.
  */
 export type UIToolPart = {
   type: `tool-${string}`;
@@ -159,13 +170,43 @@ export type UIToolPart = {
 
 type DataOf<T extends ContentTypes> = Omit<ContentPartOf<T>, 'type'>;
 
-/** AI SDK `DataUIPart`: LibreChat parts with no AI SDK counterpart, carried whole. */
-export type UIDataPart =
+/** The content part type of an `ask_user_question` pause, which `ContentTypes` does not list. */
+export const ASK_USER_QUESTION = 'ask_user_question' as const;
+
+/** The pending question an `ask_user_question` pause shows inline with the message content. */
+export type AskUserQuestionData = {
+  actionId: string;
+  question: Agents.AskUserQuestionRequest;
+  questions?: Agents.AskUserQuestionBatchItem[];
+  /** The ask tool call that raised the pause, when the server reported it. */
+  tool_call_id?: string;
+};
+
+/**
+ * Client-written content part for an `ask_user_question` pause. It rides in the content array
+ * under a type outside `ContentTypes`, so it occupies a slot like any other part.
+ */
+export type AskUserQuestionContentPart = {
+  type: typeof ASK_USER_QUESTION;
+  [ASK_USER_QUESTION]: AskUserQuestionData;
+};
+
+/** Parts that map to a `data-*` part one to one through `ContentTypes`. */
+type ContentDataPart =
   | { type: 'data-agent-update'; data: DataOf<ContentTypes.AGENT_UPDATE> }
   | { type: 'data-summary'; data: DataOf<ContentTypes.SUMMARY> }
   | { type: 'data-activity-label'; data: DataOf<ContentTypes.ACTIVITY_LABEL> }
   | { type: 'data-steer'; data: DataOf<ContentTypes.STEER> }
   | { type: 'data-error'; data: DataOf<ContentTypes.ERROR> };
+
+/** A pending `ask_user_question` pause, carried whole. */
+export type UIAskUserQuestionPart = {
+  type: 'data-ask-user-question';
+  data: Omit<AskUserQuestionContentPart, 'type'>;
+};
+
+/** AI SDK `DataUIPart`: LibreChat parts with no AI SDK counterpart, carried whole. */
+export type UIDataPart = ContentDataPart | UIAskUserQuestionPart;
 
 /** AI SDK `UIMessagePart`, narrowed to what LibreChat content produces. */
 export type UIMessagePart =
@@ -220,7 +261,7 @@ export type UIMessage = {
   parts: UIMessagePart[];
 };
 
-type DataPartType = UIDataPart['type'];
+type DataPartType = ContentDataPart['type'];
 
 const dataPartTypes = {
   [ContentTypes.AGENT_UPDATE]: 'data-agent-update',
@@ -245,6 +286,14 @@ export const isUIToolPart = (part: UIMessagePart): part is UIToolPart =>
 
 export const isUIDataPart = (part: UIMessagePart): part is UIDataPart =>
   part.type.startsWith('data-');
+
+/** Whether a content part is an `ask_user_question` pause, whose type `ContentTypes` lacks. */
+export const isAskUserQuestionContent = (
+  part: object | null | undefined,
+): part is AskUserQuestionContentPart =>
+  part != null &&
+  (part as { type?: unknown }).type === ASK_USER_QUESTION &&
+  ASK_USER_QUESTION in part;
 
 const hasKeys = (value: object) => Object.keys(value).length > 0;
 
@@ -431,12 +480,19 @@ const resolveFailure = (
   return reason ? { reason, detail: false } : undefined;
 };
 
+const approvingDecisions = new Set<Agents.ToolApprovalDecisionType>(['approve', 'edit']);
+
 const getToolApproval = (toolCall: ToolCallValue): UIToolApproval | undefined => {
   if (!('name' in toolCall) || !toolCall.approval) {
     return undefined;
   }
-  const { actionId, description } = toolCall.approval;
-  return { id: actionId, ...(description && { requestReason: description }) };
+  const { actionId, description, decision, reason } = toolCall.approval;
+  return {
+    id: actionId,
+    ...(description && { requestReason: description }),
+    ...(decision && { approved: approvingDecisions.has(decision) }),
+    ...(decision && reason !== undefined && { reason }),
+  };
 };
 
 const toToolPart = (
@@ -449,16 +505,24 @@ const toToolPart = (
   const { input, complete } = parseToolInput(args);
   const { runStepStatus, progress } = toolCall;
   const failure = resolveFailure(toolCall, output, context);
-  const approval = submitted ? undefined : getToolApproval(toolCall);
+  const approval = getToolApproval(toolCall);
+  const ended = submitted || runStepStatus === 'completed' || (progress ?? 0) >= 1;
 
   let state: UIToolState = complete ? 'input-available' : 'input-streaming';
-  if (failure) {
+  if (approval?.approved === false && (ended || failure)) {
+    state = 'output-denied';
+  } else if (failure) {
     state = 'output-error';
-  } else if (submitted || runStepStatus === 'completed' || (progress ?? 0) >= 1) {
+  } else if (ended) {
     state = 'output-available';
   } else if (approval) {
-    state = 'approval-requested';
+    state = approval.approved === undefined ? 'approval-requested' : 'approval-responded';
   }
+  const showsApproval =
+    state === 'approval-requested' ||
+    state === 'approval-responded' ||
+    state === 'output-denied' ||
+    approval?.approved === true;
 
   return {
     type: `tool-${name}`,
@@ -469,7 +533,7 @@ const toToolPart = (
     ...(state === 'output-error' && {
       errorText: failure?.detail && typeof output === 'string' && output ? output : failure?.reason,
     }),
-    ...(state === 'approval-requested' && { approval }),
+    ...(showsApproval && { approval }),
     callProviderMetadata: { librechat: { ...partMetadata, toolCall } },
   };
 };
@@ -493,6 +557,11 @@ export function toUIPart(
 ): UIMessagePart {
   if (part == null) {
     return stepStart;
+  }
+  const unlisted: object = part;
+  if (isAskUserQuestionContent(unlisted)) {
+    const { type: _type, ...data } = unlisted;
+    return { type: 'data-ask-user-question', data };
   }
   switch (part.type) {
     case ContentTypes.TEXT: {
@@ -651,6 +720,17 @@ const fromFilePart = (
   }
 };
 
+const toStoredApproval = (approval: UIToolApproval): NonNullable<Agents.ToolCall['approval']> => ({
+  actionId: approval.id,
+  allowed_decisions: [],
+  ...(approval.requestReason && { description: approval.requestReason }),
+  ...(approval.approved !== undefined && {
+    decision: approval.approved ? ('approve' as const) : ('reject' as const),
+  }),
+  ...(approval.approved !== undefined &&
+    approval.reason !== undefined && { reason: approval.reason }),
+});
+
 const fromToolPart = (part: UIToolPart): TMessageContentParts => {
   const stored = part.callProviderMetadata?.librechat;
   if (stored) {
@@ -685,14 +765,10 @@ const fromToolPart = (part: UIToolPart): TMessageContentParts => {
       }),
       ...(output !== undefined && { output }),
       ...(part.state === 'output-error' && { runStepStatus: 'failed' as const }),
-      ...(part.state === 'output-available' && { runStepStatus: 'completed' as const }),
-      ...(part.approval && {
-        approval: {
-          actionId: part.approval.id,
-          allowed_decisions: [],
-          ...(part.approval.requestReason && { description: part.approval.requestReason }),
-        },
+      ...((part.state === 'output-available' || part.state === 'output-denied') && {
+        runStepStatus: 'completed' as const,
       }),
+      ...(part.approval && { approval: toStoredApproval(part.approval) }),
     },
   };
 };
@@ -727,6 +803,9 @@ export function fromUIPart(part: UIMessagePart): TMessageContentParts | undefine
     case 'step-start':
     case 'source-url':
       return undefined;
+  }
+  if (part.type === 'data-ask-user-question') {
+    return { type: ASK_USER_QUESTION, ...part.data } as unknown as TMessageContentParts;
   }
   if (isUIDataPart(part)) {
     return { type: contentTypesByDataPart[part.type], ...part.data } as TMessageContentParts;
