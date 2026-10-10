@@ -248,12 +248,17 @@ async function uploadFileToAzure({
  *
  * @param {object} _req - The Express request object.
  * @param {string} fileURL - The URL of the blob.
+ * @param {object} [options]
+ * @param {AbortSignal} [options.signal] - Aborts the blob download when signaled.
  * @returns {Promise<ReadableStream>} A readable stream of the blob.
  */
 async function getAzureFileStream(_req, fileURL, { signal } = {}) {
   try {
     const url = new URL(fileURL);
     const configuredClient = await getAzureContainerClient();
+    if (!configuredClient) {
+      throw new Error('Azure Blob Service not initialized');
+    }
     const configuredURL = configuredClient.url ? new URL(configuredClient.url) : undefined;
     const configuredPrefix = configuredURL?.pathname.replace(/\/$/, '');
     let containerClient = configuredClient;

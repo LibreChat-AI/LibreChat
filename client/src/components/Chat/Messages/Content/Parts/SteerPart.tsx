@@ -8,7 +8,7 @@ import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
-import Image from '~/components/Chat/Messages/Content/Image';
+import ImageFile from '~/components/Chat/Messages/Content/ImageFile';
 import CollapsibleText from './CollapsibleText';
 import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -136,12 +136,15 @@ const SteerPart = memo(function SteerPart({
               {imageFiles.length > 0 && (
                 <div className="ml-auto flex max-w-full flex-wrap justify-end gap-2">
                   {imageFiles.map((file) => (
-                    <Image
+                    <ImageFile
                       key={file.file_id}
-                      imagePath={file.preview ?? file.filepath ?? ''}
-                      height={file.height ?? 1920}
-                      width={file.width ?? 1080}
-                      altText={file.filename ?? localize('com_ui_attached_image')}
+                      localPreview={file.preview}
+                      file={{
+                        ...file,
+                        height: file.height ?? 1920,
+                        width: file.width ?? 1080,
+                        filename: file.filename ?? localize('com_ui_attached_image'),
+                      }}
                     />
                   ))}
                 </div>
