@@ -805,7 +805,11 @@ function validateEslintConfig(): CheckOutcome {
   const ruleTests = runCommand(
     {
       command: process.execPath,
-      args: ['--test', resolve(ROOT, 'scripts/eslint/design.test.mjs')],
+      args: [
+        '--test',
+        resolve(ROOT, 'scripts/eslint/design.test.mjs'),
+        resolve(ROOT, 'scripts/eslint/chat.test.mjs'),
+      ],
     },
     [],
   );
