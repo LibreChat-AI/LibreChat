@@ -6,6 +6,7 @@ import {
 } from '~/components/Chat/Input/Composer/state';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
+import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
 import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { clearLocalStorage } from '~/utils/localStorage';
 import store from '~/store';
@@ -44,8 +45,8 @@ export default function useClearStates() {
           reset(store.filesByIndex(key));
           reset(store.presetByIndex(key));
           reset(store.textByIndex(key));
-          reset(store.showStopButtonByIndex(key));
-          reset(store.abortScrollFamily(key));
+          jotaiStore.set(showStopButtonByIndex(key), false);
+          jotaiStore.set(abortScrollFamily(key), false);
           reset(store.isSubmittingFamily(key));
           reset(store.optionSettingsFamily(key));
           reset(store.showPopoverFamily(key));

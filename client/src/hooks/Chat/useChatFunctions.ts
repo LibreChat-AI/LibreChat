@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { v4 } from 'uuid';
-import { useStore } from 'jotai';
 import { cloneDeep } from 'lodash';
+import { useStore, useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
@@ -55,6 +55,7 @@ import {
 } from '~/hooks/Agents/codeDecision';
 import { activeUsageResponseIdFamily } from '~/components/Chat/Input/TokenUsage/store';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import { submissionStartFamily, showStopButtonByIndex } from '~/store/generation';
 import { usesReasoningCapabilities } from '~/hooks/Endpoint/useModelReasoning';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
@@ -259,8 +260,8 @@ export default function useChatFunctions({
   const { isTemporary } = useChatSettings();
   const { getExpiry } = useUserKey(immutableConversation?.endpoint ?? '');
   const setIsSubmitting = useSetRecoilState(store.isSubmittingFamily(index));
-  const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(index));
+  const setSubmissionStart = useSetAtom(submissionStartFamily(index));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(index));
   const focusRegeneratedResponse = useFocusRegeneratedResponse();
   const jotaiStore = useStore();
   const getConversation = useGetConversation(index);

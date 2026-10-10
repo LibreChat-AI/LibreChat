@@ -5,7 +5,9 @@ import { ReasoningEffort } from 'librechat-data-provider';
 import { createStore, Provider as JotaiProvider } from 'jotai';
 import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
+import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
 import useClearStates from '../useClearStates';
+import store from '~/store';
 
 describe('useClearStates', () => {
   /* Jotai's default store outlives the authenticated route, so a file manager
@@ -52,5 +54,33 @@ describe('useClearStates', () => {
     expect(
       jotaiStore.get(pendingReasoningOverrideFamily('unmounted-conversation')),
     ).toBeUndefined();
+  });
+
+  /* `skipFirst` keeps the landing pane's run state; every other pane's stop
+     button and scroll latch reset so the next session starts idle. */
+  it.each([
+    [false, [false, false]],
+    [true, [true, false]],
+  ])('resets per-pane run state (skipFirst %s)', async (skipFirst, expected) => {
+    const jotaiStore = createStore();
+    for (const key of [0, 1]) {
+      jotaiStore.set(showStopButtonByIndex(key), true);
+      jotaiStore.set(abortScrollFamily(key), true);
+    }
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <JotaiProvider store={jotaiStore}>
+        <RecoilRoot initializeState={({ set }) => set(store.conversationKeysAtom, [0, 1])}>
+          {children}
+        </RecoilRoot>
+      </JotaiProvider>
+    );
+
+    const { result } = renderHook(() => useClearStates(), { wrapper });
+    await act(async () => {
+      await result.current(skipFirst);
+    });
+
+    expect([0, 1].map((key) => jotaiStore.get(showStopButtonByIndex(key)))).toEqual(expected);
+    expect([0, 1].map((key) => jotaiStore.get(abortScrollFamily(key)))).toEqual(expected);
   });
 });

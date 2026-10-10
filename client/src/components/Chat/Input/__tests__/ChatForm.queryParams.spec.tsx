@@ -3,6 +3,7 @@ import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import { RecoilRoot, useRecoilState } from 'recoil';
 import { HTML5Backend } from 'react-dnd-html5-backend';
+import { Provider as JotaiProvider, createStore } from 'jotai';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -13,6 +14,7 @@ import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { showStopButtonByIndex } from '~/store/generation';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
@@ -161,34 +163,42 @@ function mountComposer(
     location = useLocation();
     return null;
   }
+  const jotaiStore = createStore();
+  if (liveRun) {
+    jotaiStore.set(showStopButtonByIndex(0), true);
+  }
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot
-        initializeState={({ set }) => {
-          if (liveRun) {
-            set(store.isSubmittingFamily(0), true);
-            set(store.showStopButtonByIndex(0), true);
-            set(store.activeGenerationCreatedAtByConvoId(conversation.conversationId ?? ''), 1000);
-            set(
-              store.activeGenerationProtocolVersionByConvoId(conversation.conversationId ?? ''),
-              2,
-            );
-          }
-          if (speechSettingsInitialized) {
-            set(store.engineSTT, 'external');
-            set(store.autoTranscribeAudio, false);
-          }
-        }}
-      >
-        <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
-          <NavigationBridge />
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <ChatTransportContext.Provider value={transport}>
-              <DndProvider backend={HTML5Backend}>{children}</DndProvider>
-            </ChatTransportContext.Provider>
-          </AuthContextProvider>
-        </MemoryRouter>
-      </RecoilRoot>
+      <JotaiProvider store={jotaiStore}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            if (liveRun) {
+              set(store.isSubmittingFamily(0), true);
+              set(
+                store.activeGenerationCreatedAtByConvoId(conversation.conversationId ?? ''),
+                1000,
+              );
+              set(
+                store.activeGenerationProtocolVersionByConvoId(conversation.conversationId ?? ''),
+                2,
+              );
+            }
+            if (speechSettingsInitialized) {
+              set(store.engineSTT, 'external');
+              set(store.autoTranscribeAudio, false);
+            }
+          }}
+        >
+          <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
+            <NavigationBridge />
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <ChatTransportContext.Provider value={transport}>
+                <DndProvider backend={HTML5Backend}>{children}</DndProvider>
+              </ChatTransportContext.Provider>
+            </AuthContextProvider>
+          </MemoryRouter>
+        </RecoilRoot>
+      </JotaiProvider>
     </QueryClientProvider>
   );
   const view = render(

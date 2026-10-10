@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
-import { useStore } from 'jotai';
 import { useSetRecoilState } from 'recoil';
+import { useStore, useSetAtom } from 'jotai';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
 import type {
   Agents,
@@ -19,6 +19,7 @@ import type { TResData, TFinalResData } from '~/common';
 import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
 import { startedAsNewConversation, buildCreatedInitialResponse } from './useEventHandlers';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -49,8 +50,8 @@ export default function useSSE(
   const { token, isAuthenticated } = useAuthContext();
   const transport = useChatTransport();
   const [completed, setCompleted] = useState(new Set());
-  const setAbortScroll = useSetRecoilState(store.abortScrollFamily(runIndex));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(runIndex));
+  const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
 
   const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } =
     chatHelpers;

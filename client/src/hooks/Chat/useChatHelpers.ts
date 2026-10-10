@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { useSetAtom, useStore } from 'jotai';
+import { useAtom, useSetAtom, useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
@@ -15,6 +15,7 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { drainAfterAbortByIndex, runEndByIndex } from '~/hooks/Chat/queue';
 import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { abortScrollFamily } from '~/store/generation';
 import { resolveAbortSteerTarget } from '~/utils';
 import useNewConvo from '~/hooks/useNewConvo';
 import { getMessageCacheIds } from './cache';
@@ -384,7 +385,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
 
   const [preset, setPreset] = useRecoilState(store.presetByIndex(index));
   const [showPopover, setShowPopover] = useRecoilState(store.showPopoverFamily(index));
-  const [abortScroll, setAbortScroll] = useRecoilState(store.abortScrollFamily(index));
+  const [abortScroll, setAbortScroll] = useAtom(abortScrollFamily(index));
   const [optionSettings, setOptionSettings] = useRecoilState(store.optionSettingsFamily(index));
 
   /** Read once per chat rather than per message row: message rows never unmount, so a

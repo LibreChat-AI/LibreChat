@@ -33,23 +33,6 @@ const submissionByIndex = atomFamily<TSubmission | null, string | number>({
   default: null,
 });
 
-/**
- * Epoch ms baseline for the streaming elapsed indicator at this chat index.
- * Stamped when this session submits a generation (every path through `ask`),
- * cleared by the terminal handlers when that generation ends, and only FILLED
- * — never overwritten — when resume-on-load attaches a run, preferring the
- * server-recorded generation start so a reload reports real elapsed time.
- * The reading therefore survives mid-stream remounts (new-conversation id
- * hydration, navigating away from a still-live run and back) without a later,
- * externally-started generation inheriting a stale baseline. Known residual:
- * a run whose end this pane never observed (left mid-stream, finished
- * elsewhere) leaves its stamp for the next attach at this index to inherit.
- */
-const submissionStartFamily = atomFamily<number | null, string | number>({
-  key: 'submissionStartByIndex',
-  default: null,
-});
-
 const submissionKeysSelector = selector<(string | number)[]>({
   key: 'submissionKeysSelector',
   get: ({ get }) => {
@@ -217,27 +200,6 @@ const presetByIndex = atomFamily<TPreset | null, string | number>({
 const textByIndex = atomFamily<string, string | number>({
   key: 'textByIndex',
   default: '',
-});
-
-const showStopButtonByIndex = atomFamily<boolean, string | number>({
-  key: 'showStopButtonByIndex',
-  default: false,
-});
-
-const abortScrollFamily = atomFamily<boolean, string | number>({
-  key: 'abortScrollByIndex',
-  default: false,
-  effects: [
-    ({ onSet, node }) => {
-      onSet(async (newValue) => {
-        const key = Number(node.key.split(Constants.COMMON_DIVIDER)[1]);
-        logger.log('message_scrolling', 'Recoil Effect: Setting abortScrollByIndex', {
-          key,
-          newValue,
-        });
-      });
-    },
-  ] as const,
 });
 
 const isSubmittingFamily = atomFamily({
@@ -522,10 +484,7 @@ export default {
   filesByIndex,
   presetByIndex,
   submissionByIndex,
-  submissionStartFamily,
   textByIndex,
-  showStopButtonByIndex,
-  abortScrollFamily,
   isSubmittingFamily,
   optionSettingsFamily,
   showPopoverFamily,

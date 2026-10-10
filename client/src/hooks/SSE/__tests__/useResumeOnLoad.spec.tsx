@@ -12,6 +12,7 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
+import { submissionStartFamily } from '~/store/generation';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
@@ -126,6 +127,9 @@ function renderUseResumeOnLoad({
 }) {
   const getMessages = jest.fn(getMessagesOverride ?? (() => messages));
   const jotaiStore = createStore();
+  if (submissionStart != null) {
+    jotaiStore.set(submissionStartFamily(0), submissionStart);
+  }
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -140,9 +144,6 @@ function renderUseResumeOnLoad({
       store.activeGenerationCreatedAtByConvoId(conversationId),
       attachedGenerationCreatedAt,
     );
-    if (submissionStart != null) {
-      snapshot.set(store.submissionStartFamily(0), submissionStart);
-    }
     if (pendingSteers) {
       snapshot.set(store.pendingSteersByConvoId(conversationId), pendingSteers);
     }
@@ -159,7 +160,7 @@ function renderUseResumeOnLoad({
     return null;
   };
   const SubmissionStartProbe = () => {
-    const currentStart = useRecoilValue(store.submissionStartFamily(0));
+    const currentStart = useAtomValue(submissionStartFamily(0));
     onSubmissionStart?.(currentStart);
     return null;
   };
