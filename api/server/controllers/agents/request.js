@@ -64,8 +64,7 @@ const {
   announceReply,
   announceErrorTurn,
   settleExistingRowsBeforeErrorTurn,
-  resolveDisconnectSnapshotMode,
-  markAbortedCompactionContent,
+  planDisconnectSnapshot,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -1919,20 +1918,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * overwrite this with the complete response using the same messageId pattern.
      */
     job.emitter.on('allSubscribersLeft', async (aggregatedContent) => {
-      if (partialResponseSaved || !aggregatedContent || aggregatedContent.length === 0) {
-        return;
-      }
-
-      /** The run is still live here: mark what streamed, but leave the outcome
-       *  to whichever path settles the turn (the terminal abort synthesizes
-       *  the typed failure a stopped compaction with no summary needs). */
-      const persistableContent = markAbortedCompactionContent(
-        filterPersistableAbortContent(aggregatedContent),
-        isCompaction,
-        { synthesizeFailure: false },
-      );
-      if (persistableContent.length === 0) {
-        logger.debug('[ResumableAgentController] No persistable content to save partial response');
+      /** Empty content is rejected only after the snapshot mode is known: a
+       *  reconciled compaction synthesizes its terminal outcome from nothing,
+       *  while a live run has nothing persistable. */
+      if (partialResponseSaved || !aggregatedContent) {
         return;
       }
 
@@ -1945,8 +1934,31 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
 
-      partialResponseSaved = true;
+      /** Whether and how this snapshot persists is planned in @librechat/api,
+       *  inside the request's tenant context like the write below. */
+      const responseMessageId =
+        resumeState.responseMessageId || `${resumeState.userMessage.messageId}_`;
       const responseConversationId = resumeState.conversationId || conversationId;
+      const planSnapshot = () =>
+        planDisconnectSnapshot(isCompaction, {
+          content: filterPersistableAbortContent(aggregatedContent),
+          jobRecord,
+          jobCreatedAt,
+          userId,
+          conversationId: responseConversationId,
+          anchorMessageId: resumeState.userMessage.messageId,
+          responseMessageId,
+          getMessages,
+        });
+      const snapshot = tenantId
+        ? await tenantStorage.run({ tenantId, userId }, planSnapshot)
+        : await planSnapshot();
+      if (!snapshot.write) {
+        logger.debug('[ResumableAgentController] No partial response to save on disconnect');
+        return;
+      }
+
+      partialResponseSaved = true;
       /** The run publishes its calibration and fading tiers onto the job; a
        * partial response saved on disconnect must carry them like the Stop and
        * pause paths do, or a turn continued from it re-derives its provider
@@ -1954,22 +1966,16 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
-      if (resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt) === 'skip') {
-        logger.debug(
-          '[ResumableAgentController] Skipping compaction partial save for a settled job',
-        );
-        return;
-      }
 
       try {
         const partialMessage = {
-          messageId: resumeState.responseMessageId || `${resumeState.userMessage.messageId}_`,
+          messageId: responseMessageId,
           conversationId: responseConversationId,
           parentMessageId: resumeState.userMessage.messageId,
           sender: client?.sender ?? 'AI',
-          content: persistableContent,
-          unfinished: true,
-          error: false,
+          content: snapshot.content,
+          unfinished: snapshot.unfinished,
+          error: snapshot.error,
           isCreatedByUser: false,
           user: userId,
           endpoint: endpointOption.endpoint,
@@ -2008,7 +2014,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         }
 
         logger.debug(
-          `[ResumableAgentController] Saved partial response for ${streamId}, content parts: ${persistableContent.length}`,
+          `[ResumableAgentController] Saved partial response for ${streamId}, content parts: ${snapshot.content.length}`,
         );
       } catch (error) {
         logger.error('[ResumableAgentController] Error saving partial response:', error);
