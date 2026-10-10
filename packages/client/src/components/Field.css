@@ -36,14 +36,11 @@ html[data-input-modality='pointer'] .lc-field:focus-visible {
   }
 }
 
-/* Touch devices raise the field's type to 16px (see the app stylesheet), so the line box and the
-   row height give it room at small UI scales instead of clipping the glyphs. */
+/* Touch devices raise the field's type to 16px (see the app stylesheet), so a single-line field's line
+   box and row height give it room at small UI scales instead of clipping the glyphs. */
 @media (any-pointer: coarse) {
-  .lc-field {
-    line-height: 1.25;
-  }
-
   input.lc-field {
     min-height: 40px;
+    line-height: 1.25;
   }
 }
