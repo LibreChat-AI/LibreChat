@@ -148,3 +148,77 @@ describe('skill create handler', () => {
     expect(res.status).toHaveBeenCalledWith(500);
   });
 });
+
+describe('skill file delete handler', () => {
+  const id = new Types.ObjectId().toString();
+  const file = {
+    _id: new Types.ObjectId(),
+    file_id: 'file-revision',
+    relativePath: 'references/guide.md',
+    filepath: '/uploads/guide.md',
+    source: 'local',
+    author: new Types.ObjectId(),
+    tenantId: 'tenant-1',
+  } as ISkillFile & { _id: Types.ObjectId };
+  const req = {
+    params: { id, relativePath: 'references/guide.md' },
+  } as unknown as ServerRequest;
+
+  it('waits for blob cleanup before conditionally deleting the file record', async () => {
+    let releaseBlob!: () => void;
+    const deleteBlob = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBlob = resolve;
+        }),
+    );
+    const deleteSkillFile = jest.fn(async () => ({ deleted: true }));
+    const handlers = createSkillsHandlers({
+      getSkillFileByPath: jest.fn(async () => file),
+      deleteSkillFile,
+      getStrategyFunctions: jest.fn(() => ({ deleteFile: deleteBlob })),
+    } as unknown as SkillsHandlersDeps);
+    const res = mockResponse();
+
+    const pending = handlers.deleteFile(req, res);
+    await Promise.resolve();
+    expect(deleteSkillFile).not.toHaveBeenCalled();
+    releaseBlob();
+    await pending;
+
+    expect(deleteSkillFile).toHaveBeenCalledWith(id, 'references/guide.md', 'file-revision');
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('keeps the file record retryable when blob cleanup fails', async () => {
+    const deleteSkillFile = jest.fn();
+    const handlers = createSkillsHandlers({
+      getSkillFileByPath: jest.fn(async () => file),
+      deleteSkillFile,
+      getStrategyFunctions: jest.fn(() => ({
+        deleteFile: jest.fn(async () => {
+          throw new Error('storage unavailable');
+        }),
+      })),
+    } as unknown as SkillsHandlersDeps);
+    const res = mockResponse();
+
+    await handlers.deleteFile(req, res);
+
+    expect(deleteSkillFile).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('reports a conflict when a concurrent writer replaces the path', async () => {
+    const handlers = createSkillsHandlers({
+      getSkillFileByPath: jest.fn(async () => file),
+      deleteSkillFile: jest.fn(async () => ({ deleted: false })),
+      getStrategyFunctions: jest.fn(() => ({ deleteFile: jest.fn(async () => undefined) })),
+    } as unknown as SkillsHandlersDeps);
+    const res = mockResponse();
+
+    await handlers.deleteFile(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+  });
+});

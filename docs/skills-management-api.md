@@ -7,16 +7,33 @@ execution router and does not accept browser sessions or execution API keys as f
 | Method | Path                                            | Operation                                     |
 | ------ | ----------------------------------------------- | --------------------------------------------- |
 | GET    | `/api/agents/v1/skills`                         | List accessible Skills (`limit` and `cursor`) |
+| POST   | `/api/agents/v1/skills`                         | Create an inline Skill                        |
 | GET    | `/api/agents/v1/skills/:id`                     | Read Skill metadata, body, and frontmatter    |
 | PATCH  | `/api/agents/v1/skills/:id`                     | Update an inline Skill                        |
+| DELETE | `/api/agents/v1/skills/:id`                     | Delete an inline Skill                        |
 | GET    | `/api/agents/v1/skills/:id/files`               | List file metadata                            |
 | GET    | `/api/agents/v1/skills/:id/files/*relativePath` | Read a file as JSON                           |
 | PUT    | `/api/agents/v1/skills/:id/files/*relativePath` | Create or replace a text file                 |
+| DELETE | `/api/agents/v1/skills/:id/files/*relativePath` | Delete a file                                 |
 
 Skill results expose `id`, configuration fields, `version`, `fileCount`, and ISO timestamps.
 Ownership, tenant, source metadata, and storage locations are excluded. Skill lists use the Agent
 management envelope: `object`, `data`, `first_id`, `last_id`, `has_more`, and `after`.
 Pass returned Skill IDs in the Agent management `skills` field to assign them to an Agent.
+
+Create an inline Skill with its required identity and instruction fields:
+
+```json
+{
+  "name": "query-review",
+  "description": "Review a query and recommend improvements.",
+  "body": "Review the supplied query for correctness and efficiency."
+}
+```
+
+Creation also accepts the editable optional fields described below. The authenticated principal is
+recorded as the owner; callers cannot set ownership, tenant, source, or permissions. Skill deletion
+uses the existing cleanup path for Agent allowlists, Skill files, permissions, and stored blobs.
 
 Updates require the version returned by the latest read:
 
@@ -36,11 +53,12 @@ permissions. Inaccessible and cross-tenant IDs return the same 404 envelope.
 
 Text-file writes accept `{ "content": "replacement text" }`, capped at 1 MiB of UTF-8 data.
 Use a relative path such as `references/guide.md`. Absolute paths, traversal, and NUL bytes are
-rejected. Update `SKILL.md` through the Skill's `body` field with `expectedVersion`, not the file
-endpoint. File writes use replacement semantics without a version precondition; serialize writers
+rejected. Delete the same path to remove the file. Update `SKILL.md` through the Skill's `body`
+field with `expectedVersion`, not the file endpoint. File writes use replacement semantics without a version precondition; serialize writers
 to the same path. After a file write, read the Skill again before a versioned metadata/body update: file writes also
 increment the parent version. Storage selection stays server-controlled. File JSON reads omit content for
-binary or oversized files; raw download mode is not supported on this surface.
+binary or oversized files; raw download mode is not supported on this surface. File deletion completes
+storage cleanup before returning success and reports a conflict if another writer replaced the path.
 
 Git-synced and deployment-provided Skills are readable but cannot be changed through this API.
 Change their upstream source instead. Browser routes keep their existing behavior.

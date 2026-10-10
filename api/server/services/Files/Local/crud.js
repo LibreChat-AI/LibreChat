@@ -154,16 +154,16 @@ async function getLocalFileURL({ fileName, basePath = 'images' }) {
  * Validates that a filepath is strictly contained within a subdirectory under a base path,
  * using path.relative to prevent prefix-collision bypasses.
  *
- * @param {ServerRequest} req - The request object from Express. It should contain a `user` property with an `id`.
  * @param {string} base - The base directory path.
  * @param {string} subfolder - The subdirectory under the base path.
+ * @param {string} ownerId - The persisted owner whose storage namespace contains the file.
  * @param {string} filepath - The complete file path to be validated.
  *
  * @returns {boolean}
  *          Returns true if the filepath is within the specified base and subfolder, false otherwise.
  */
-const isValidPath = (req, base, subfolder, filepath) => {
-  const normalizedBase = path.resolve(base, subfolder, req.user.id);
+const isValidPath = (base, subfolder, ownerId, filepath) => {
+  const normalizedBase = path.resolve(base, subfolder, ownerId);
   const normalizedFilepath = path.resolve(filepath);
   const rel = path.relative(normalizedBase, normalizedFilepath);
   return !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(`..${path.sep}`);
@@ -205,15 +205,15 @@ const unlinkFile = async (filepath) => {
 const deleteLocalFile = async (req, file) => {
   const appConfig = req.config;
   const { publicPath, uploads } = appConfig.paths;
+  const ownerId = file.user?.toString?.() || req.user.id;
 
   /** Filepath stripped of query parameters (e.g., ?manual=true, ?v=<timestamp>) */
   const cleanFilepath = stripCacheBust(file.filepath);
+  const uploadPrefix = `/uploads/${ownerId}/`;
 
-  await deleteRagFile({ userId: req.user.id, file });
-
-  if (cleanFilepath.startsWith(`/uploads/${req.user.id}`)) {
-    const userUploadDir = path.join(uploads, req.user.id);
-    const basePath = cleanFilepath.split(`/uploads/${req.user.id}/`)[1];
+  if (cleanFilepath.startsWith(uploadPrefix)) {
+    const userUploadDir = path.join(uploads, ownerId);
+    const basePath = cleanFilepath.slice(uploadPrefix.length);
 
     if (!basePath) {
       throw new Error(`Invalid file path: ${cleanFilepath}`);
@@ -226,6 +226,7 @@ const deleteLocalFile = async (req, file) => {
       throw new Error(`Invalid file path: ${cleanFilepath}`);
     }
 
+    await deleteRagFile({ userId: ownerId, file });
     await unlinkFile(filepath);
     return;
   }
@@ -238,10 +239,11 @@ const deleteLocalFile = async (req, file) => {
   }
   const filepath = path.join(publicPath, cleanFilepath);
 
-  if (!isValidPath(req, publicPath, subfolder, filepath)) {
+  if (!isValidPath(publicPath, subfolder, ownerId, filepath)) {
     throw new Error('Invalid file path');
   }
 
+  await deleteRagFile({ userId: ownerId, file });
   await unlinkFile(filepath);
 };
 

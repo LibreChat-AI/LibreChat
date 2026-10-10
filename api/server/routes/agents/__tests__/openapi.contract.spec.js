@@ -108,6 +108,7 @@ describe('Agents OpenAPI actual HTTP contract', () => {
     await mongoose.connect(mongoServer.getUri());
     createModels(mongoose);
     db = require('~/models');
+    await db.seedDefaultRoles();
 
     user = await mongoose.models.User.create({
       email: 'openapi-contract@example.test',
@@ -240,8 +241,9 @@ describe('Agents OpenAPI actual HTTP contract', () => {
     });
 
     const { getSkillManagementFileSaver } = require('~/server/services/Endpoints/agents/skillDeps');
+    const { getSkillsHandlers } = require('~/server/services/Skills/handlers');
     const skillHandlers = createSkillManagementHandlers({
-      handlers: {},
+      handlers: getSkillsHandlers(),
       getSkillById: db.getSkillById,
       getRoleByName,
       checkPermission: async () => true,
@@ -263,7 +265,10 @@ describe('Agents OpenAPI actual HTTP contract', () => {
       restoreTenantContextFromReq,
       fileHandlers.upload,
     );
+    app.post('/api/agents/v1/skills', skillHandlers.create);
     app.put('/api/agents/v1/skills/:id/files/*relativePath', skillHandlers.updateFile);
+    app.delete('/api/agents/v1/skills/:id/files/*relativePath', skillHandlers.deleteFile);
+    app.delete('/api/agents/v1/skills/:id', skillHandlers.delete);
     app.get('/api/agents/v1/agents/:id', (_req, _res, next) =>
       next(new Error('contract fixture escaped error')),
     );
@@ -351,6 +356,47 @@ describe('Agents OpenAPI actual HTTP contract', () => {
       path.basename(persisted.filepath),
     );
     expect(fs.readFileSync(diskPath, 'utf8')).toBe(content);
+  });
+
+  it('documents and validates Skill creation and complete deletion cleanup', async () => {
+    const created = await request(app)
+      .post('/api/agents/v1/skills')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'managed-contract-skill',
+        description: 'Created through the versioned management contract.',
+        body: '# Managed contract Skill',
+      });
+    expect(created.status).toBe(201);
+    expectResponseToMatchSpec(spec, 'createSkill', created);
+    expect(await mongoose.models.Skill.findById(created.body.id).lean()).toMatchObject({
+      tenantId,
+    });
+
+    const file = await request(app)
+      .put(`/api/agents/v1/skills/${created.body.id}/files/references/delete-me.md`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ content: 'temporary' });
+    expect(file.status).toBe(200);
+
+    const deletedFile = await request(app)
+      .delete(`/api/agents/v1/skills/${created.body.id}/files/references/delete-me.md`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(deletedFile.status).toBe(200);
+    expectResponseToMatchSpec(spec, 'deleteSkillFile', deletedFile);
+    expect(
+      await mongoose.models.SkillFile.findOne({
+        skillId: created.body.id,
+        relativePath: 'references/delete-me.md',
+      }).lean(),
+    ).toBeNull();
+
+    const deleted = await request(app)
+      .delete(`/api/agents/v1/skills/${created.body.id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(deleted.status).toBe(200);
+    expectResponseToMatchSpec(spec, 'deleteSkill', deleted);
+    expect(await mongoose.models.Skill.findById(created.body.id).lean()).toBeNull();
   });
 
   it('validates parser and normalized management errors against their documented JSON forms', async () => {
