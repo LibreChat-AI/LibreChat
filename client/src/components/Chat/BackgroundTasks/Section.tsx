@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { Collapse } from '~/components/ui';
 import { cn } from '~/utils';
 
 /** A labelled, collapsible group; `action` stays reachable while collapsed. */
@@ -19,7 +20,7 @@ export default function Section({
   const listId = useId();
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="space-y-2">
+    <section>
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -40,11 +41,11 @@ export default function Section({
         </button>
         {action}
       </div>
-      {open && (
-        <ul id={listId} className="space-y-2">
+      <Collapse open={open}>
+        <ul id={listId} className="space-y-2 pt-2">
           {children}
         </ul>
-      )}
+      </Collapse>
     </section>
   );
 }

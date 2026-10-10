@@ -1,10 +1,11 @@
 import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Square } from 'lucide-react';
-import { Spinner, TooltipAnchor } from '@librechat/client';
+import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
+import { IconButton, Spinner, TooltipAnchor } from '@librechat/client';
 import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import { getRunStepDurationLabels, getToolDisplayLabel, cn } from '~/utils';
+import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 
 const STATUS_KEYS: Record<TaskRowStatus, TranslationKeys> = {
@@ -36,6 +37,7 @@ function TaskCard({
   isStopping,
   onStop,
   portalElement,
+  onJump,
 }: {
   row: TaskRow;
   now: number;
@@ -43,11 +45,13 @@ function TaskCard({
   isStopping: boolean;
   onStop: (row: TaskRow) => void;
   portalElement: HTMLElement | null;
+  onJump: (row: TaskRow) => boolean;
 }) {
   const localize = useLocalize();
   const { i18n } = useTranslation();
   const detailId = useId();
   const [open, setOpen] = useState(false);
+  const [jumpUnavailable, setJumpUnavailable] = useState(false);
   const active = row.status === 'running' || row.status === 'stopping';
   const kindLabel =
     row.kind === 'subagent'
@@ -72,9 +76,9 @@ function TaskCard({
               aria-expanded={open}
               aria-controls={detailId}
               onClick={() => setOpen((value) => !value)}
-              className="text-text-primary focus-visible:ring-ring-primary flex max-w-full items-start gap-1 rounded text-left text-sm focus-visible:ring-2 focus-visible:outline-none"
+              className="text-text-primary focus-visible:ring-text-primary flex max-w-full items-start gap-1 rounded text-left text-sm focus-visible:ring-2 focus-visible:outline-none"
             >
-              <span className="line-clamp-2 break-words">{title}</span>
+              <span className={cn('line-clamp-2 break-words', active && 'shimmer')}>{title}</span>
               <ChevronDown
                 aria-hidden="true"
                 className={cn(
@@ -84,7 +88,14 @@ function TaskCard({
               />
             </button>
           ) : (
-            <p className="text-text-primary line-clamp-2 text-sm break-words">{title}</p>
+            <p
+              className={cn(
+                'text-text-primary line-clamp-2 text-sm break-words',
+                active && 'shimmer',
+              )}
+            >
+              {title}
+            </p>
           )}
           <p className="text-text-secondary mt-0.5 flex items-center gap-2 text-xs">
             {title !== kindLabel && <span className="font-medium">{kindLabel}</span>}
@@ -112,32 +123,56 @@ function TaskCard({
             )}
           </p>
         </div>
+        <TooltipAnchor
+          description={localize('com_ui_background_tasks_go_to_tool')}
+          portalElement={portalElement}
+          render={
+            <IconButton
+              variant="ghost"
+              size="xs"
+              shape="inset"
+              label={localize('com_ui_background_tasks_go_to_tool')}
+              onClick={() => setJumpUnavailable(!onJump(row))}
+            >
+              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+            </IconButton>
+          }
+        />
         {row.status === 'running' && canStop && (
           <TooltipAnchor
             description={stopLabel}
             portalElement={portalElement}
             render={
-              <button
+              <IconButton
                 type="button"
-                aria-label={`${stopLabel}: ${title}`}
+                variant="primary"
+                size="xs"
+                shape="inset"
+                label={`${stopLabel}: ${title}`}
                 disabled={isStopping}
                 onClick={() => onStop(row)}
-                className="border-border-medium text-text-primary hover:bg-surface-hover focus-visible:ring-ring-primary flex size-7 shrink-0 items-center justify-center rounded-md border focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
               >
-                <Square className="size-3" aria-hidden="true" />
-              </button>
+                <Square className="size-3 fill-current" aria-hidden="true" />
+              </IconButton>
             }
           />
         )}
         {row.status === 'stopping' && <Spinner className="size-4 shrink-0" />}
       </div>
-      {expandable && open && (
-        <pre
-          id={detailId}
-          className="bg-surface-primary text-text-primary mt-2 max-h-48 overflow-auto rounded-md p-2 font-mono text-xs break-words whitespace-pre-wrap"
-        >
-          {row.detail}
-        </pre>
+      {expandable && (
+        <Collapse open={open}>
+          <pre
+            id={detailId}
+            className="bg-surface-primary text-text-primary mt-2 max-h-48 overflow-auto rounded-md p-2 font-mono text-xs break-words whitespace-pre-wrap"
+          >
+            {row.detail}
+          </pre>
+        </Collapse>
+      )}
+      {jumpUnavailable && (
+        <p role="status" className="text-text-secondary mt-1 text-xs">
+          {localize('com_ui_background_tasks_tool_unavailable')}
+        </p>
       )}
     </li>
   );

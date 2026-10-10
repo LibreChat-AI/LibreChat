@@ -23,6 +23,8 @@
   "com_ui_private_text_unavailable": "Original unavailable. Showing the filtered message.",
   "com_ui_attachments": "Attachments",
   "com_ui_no_schedules_match": "No schedules match your search",
+  "com_ui_background_tasks_go_to_tool": "Take me to that tool",
+  "com_ui_background_tasks_tool_unavailable": "This tool is not in the loaded messages. Load earlier messages to find it.",
   "com_ui_background_tasks": "Background tasks",
   "com_ui_background_tasks_cancel_disabled": "Stopping background tools is not enabled on this server",
   "com_ui_background_tasks_checked": "Checked background tasks",
