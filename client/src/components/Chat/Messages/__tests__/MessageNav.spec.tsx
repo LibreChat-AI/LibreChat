@@ -2517,3 +2517,26 @@ describe('MessageNav', () => {
     });
   });
 });
+
+it('classifies a host-authored background wake-up as System navigation', () => {
+  const text =
+    'A background tool task has finished. Continue using its durable result below.\n' +
+    JSON.stringify([
+      {
+        background_task_id: 'task',
+        tool_call_id: 'call',
+        tool: 'bash_tool',
+        status: 'completed',
+        result: 'done',
+      },
+    ]);
+  const entry = buildEntry('system', asTMessage(buildMessage({ text, isCreatedByUser: true })));
+  expect(entry).toMatchObject({ isUser: false, isSystem: true });
+});
+
+it('classifies a DOM-only System row separately from assistant navigation', () => {
+  const node = document.createElement('div');
+  node.innerHTML =
+    '<div data-system-turn="true"><div data-testid="message-body">Task finished</div></div>';
+  expect(buildFallbackEntry(node, 'system')).toMatchObject({ isSystem: true });
+});

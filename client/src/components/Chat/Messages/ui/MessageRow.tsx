@@ -19,8 +19,8 @@ type MessageRowProps = {
   fullWidth?: boolean;
   isEditing?: boolean;
   /** Marks a host-authored turn with no author to name (background-tool
-   *  wake-ups, external events): it keeps the user's position and bubble shape,
-   *  outlined instead of filled, under this visible heading. */
+   *  wake-ups, external events): it uses the transcript side without a bubble,
+   *  under this visible heading. */
   systemLabel?: string;
   /** A user-side turn written by someone other than the reader — a parent agent
    *  briefing its subagent, a subagent reporting back. It keeps the user's
@@ -28,7 +28,7 @@ type MessageRowProps = {
    *  carries. */
   showAuthor?: boolean;
   /** Outline the user-side bubble instead of filling it: content the host
-   *  delivered rather than words someone typed. Implied by `systemLabel`. */
+   *  delivered rather than words someone typed. */
   outlined?: boolean;
   className?: string;
 };
@@ -109,7 +109,7 @@ export default function MessageRow({
   // up with the composer surface rather than the form's outer box.
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
   const isSystem = systemLabel != null && systemLabel !== '';
-  const isUserSide = isCreatedByUser || isSystem;
+  const isUserSide = isCreatedByUser && !isSystem;
 
   return (
     <div
@@ -125,9 +125,11 @@ export default function MessageRow({
       )}
     >
       <div
+        data-system-turn={isSystem || undefined}
         className={cn(
           'relative flex min-w-0 flex-col',
-          isUserSide ? 'user-turn' : 'agent-turn',
+          isUserSide && 'user-turn',
+          !isUserSide && !isSystem && 'agent-turn',
           (hasParallelContent || isEditing) && 'w-full',
           !hasParallelContent &&
             isUserSide &&
@@ -136,7 +138,7 @@ export default function MessageRow({
         )}
       >
         {isSystem && (
-          <h2 className="text-text-secondary mb-1 flex items-center gap-1.5 pr-1.5 text-xs font-medium tracking-wide uppercase select-none">
+          <h2 className="text-text-secondary mb-1 flex items-center gap-1.5 pr-1.5 text-xs font-medium select-none">
             <Zap size={12} aria-hidden="true" />
             {systemLabel}
             <span className="sr-only">

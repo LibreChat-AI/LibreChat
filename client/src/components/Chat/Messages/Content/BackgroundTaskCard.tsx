@@ -82,12 +82,9 @@ export default function BackgroundTaskCard({
   }
 
   return (
-    <div
-      className="border-border-light bg-surface-secondary/50 min-w-0 rounded-lg border p-3"
-      data-testid="background-task-card"
-    >
+    <div className="min-w-0" data-testid="background-task-card">
       <div className="flex min-w-0 items-start gap-2.5">
-        <span className="bg-surface-tertiary flex size-8 shrink-0 items-center justify-center rounded-md">
+        <span className="text-text-secondary flex size-5 shrink-0 items-center justify-center">
           <ToolIcon type={iconType} iconUrl={iconUrl} />
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
@@ -108,7 +105,7 @@ export default function BackgroundTaskCard({
         </div>
         <span
           className={cn(
-            'bg-surface-tertiary text-text-secondary inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs',
+            'text-text-secondary inline-flex shrink-0 items-center gap-1.5 text-xs',
             failed && 'text-status-error',
           )}
         >
@@ -135,7 +132,7 @@ export default function BackgroundTaskCard({
         </div>
       )}
       {result && (
-        <div className="border-border-inset mt-3 border-t pt-2.5">
+        <div className="mt-3">
           <div
             className={cn(
               'mb-1.5 text-xs font-medium',
@@ -144,7 +141,7 @@ export default function BackgroundTaskCard({
           >
             {localize(failed && !error ? 'com_ui_error' : 'com_ui_output')}
           </div>
-          <div className="bg-surface-primary min-w-0 rounded-md p-2.5">
+          <div className="border-border-light bg-surface-code min-w-0 rounded-lg border p-3">
             <OutputRenderer
               text={isCode ? formatBackgroundCodeOutput(result) : result}
               copyText={result}
@@ -153,11 +150,11 @@ export default function BackgroundTaskCard({
         </div>
       )}
       {error && (
-        <div className="border-border-inset mt-3 border-t pt-2.5">
+        <div className="mt-3">
           <div className="text-status-error mb-1.5 text-xs font-medium">
             {localize('com_ui_error')}
           </div>
-          <div className="bg-surface-primary min-w-0 rounded-md p-2.5">
+          <div className="border-border-light bg-surface-code min-w-0 rounded-lg border p-3">
             <OutputRenderer
               text={isCode ? formatBackgroundCodeOutput(error) : error}
               copyText={error}

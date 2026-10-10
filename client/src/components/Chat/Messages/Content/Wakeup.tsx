@@ -59,7 +59,7 @@ function WakeupTaskCard({
   const hasResult = task.result.trim() !== '';
 
   return (
-    <div className="border-border-light bg-surface-secondary/40 my-1.5 rounded-lg border p-3">
+    <div className="my-1.5 min-w-0">
       <div className="text-text-secondary flex min-h-6 items-center gap-1.5 text-xs">
         <StatusIcon
           size={13}
@@ -165,7 +165,7 @@ const Wakeup = memo(function Wakeup({
   return (
     <div className={cn('max-w-full', shouldRenderBody && 'w-[36rem]')}>
       <Button
-        variant="ghost"
+        variant="disclosure"
         type="button"
         className={systemEventHeaderClasses}
         onClick={handleToggle}
@@ -203,7 +203,7 @@ const Wakeup = memo(function Wakeup({
               )}
               {display.tasks.map((task) =>
                 display.kind === 'background_tool' ? (
-                  <div key={task.taskId} className="my-2">
+                  <div key={task.taskId} className="my-2 pl-7">
                     <BackgroundTaskCard
                       task={{
                         taskId: task.taskId,

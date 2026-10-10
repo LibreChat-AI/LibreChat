@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
+import { Button } from '@librechat/client';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { toolPanelSpacingClassName, useToolContentPending } from '../disclosure';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
@@ -57,6 +58,7 @@ export default function BashCall({
   toolCallId?: string;
 }) {
   const localize = useLocalize();
+  const [showTimeoutDetails, setShowTimeoutDetails] = useState(false);
   const command = useMemo(() => parseJsonField(args, commandField), [args, commandField]);
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
   const { useSandboxStarting } = useMessagePartsHost();
@@ -93,9 +95,11 @@ export default function BashCall({
               text: result.stderr,
               className: result.failed ? 'text-status-error' : 'text-text-secondary',
             },
-            { text: result.trailer, className: 'text-text-tertiary' },
+            ...(!result.timedOut || showTimeoutDetails
+              ? [{ text: result.trailer, className: 'text-text-tertiary' }]
+              : []),
           ],
-    [result],
+    [result, showTimeoutDetails],
   );
   /** A backgrounded call's persisted output stays the dispatch handle until
    *  the detached run settles and patches it; render a background state
@@ -275,6 +279,22 @@ export default function BashCall({
                     segments={outputSegments}
                     variant="terminal"
                   />
+                )}
+                {result?.timedOut === true && (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                    <span className="text-text-secondary">
+                      {localize('com_ui_command_timeout_note')}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="inline-link"
+                      size="bare"
+                      aria-expanded={showTimeoutDetails}
+                      onClick={() => setShowTimeoutDetails((previous) => !previous)}
+                    >
+                      {localize(showTimeoutDetails ? 'com_ui_hide' : 'com_ui_details')}
+                    </Button>
+                  </div>
                 )}
               </div>
             )}

@@ -125,6 +125,7 @@ jest.mock('lucide-react', () => ({
   ChevronDown: () => <span>{'ChevronDown'}</span>,
   ChevronUp: () => <span>{'ChevronUp'}</span>,
   TriangleAlert: () => <span>{'TriangleAlert'}</span>,
+  CircleX: () => <span>{'CircleX'}</span>,
 }));
 
 jest.mock('~/utils', () => ({

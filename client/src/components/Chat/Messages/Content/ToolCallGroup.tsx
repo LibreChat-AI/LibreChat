@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
-import { ChevronDown, ListChecks, MessageCircleQuestion, Users } from 'lucide-react';
+import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
 import type { ToolMeta } from './outcome';
@@ -133,7 +133,9 @@ export default function ToolCallGroup({
   );
   const activityLabel = getBatchActivityLabelPart(labelPart?.part);
   const activityLabelText = getActivityLabelText(activityLabel);
-  const activityFailed = activityLabel?.status === 'failed' || activityLabel?.status === 'partial';
+  /** The label's verdict outranks the calls' only when the whole batch failed;
+   *  a partial batch has mixed outcomes, and its failed rows say what went wrong. */
+  const activityFailed = activityLabel?.status === 'failed';
   /** A settled, filled label is itself a completion proof: the PostToolBatch
    *  claim only happens after every output in the batch returned. Without
    *  it, a tool that legitimately returns an empty string reads as
@@ -605,10 +607,16 @@ export default function ToolCallGroup({
   } else if (allAskQuestions) {
     CategoryIcon = MessageCircleQuestion;
   }
-  const iconStatus = getOutcomeStatus({
-    failed: activityFailed ? 1 : activitySummary.failedCount,
-    cancelled: activitySummary.cancelledCount,
-  });
+  const partialMarkerFallback =
+    activityLabel?.status === 'partial' &&
+    (activitySummary.failedCount === 0 || activitySummary.failedCount >= count);
+  const iconStatus = activityFailed
+    ? 'failed'
+    : getOutcomeStatus({
+        failed: activitySummary.failedCount,
+        cancelled: activitySummary.cancelledCount,
+        total: count,
+      });
 
   const hasActiveToolCall = useMemo(
     () => isSubmitting && toolMetadata.some((m) => m && !m.hasOutput),
@@ -642,37 +650,38 @@ export default function ToolCallGroup({
           aria-label={groupAriaLabel}
         >
           <RailGlyph hover={railHover}>
-            {iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
-              /** Homogeneous categories keep the same glyph as their individual
-               *  cards instead of stacking identical tool icons. */
-              <div
-                className={cn(
-                  ROW_GLYPH_SLOT,
-                  'text-text-secondary',
-                  isGroupLive && 'text-text-primary animate-pulse',
-                )}
-                aria-hidden="true"
-              >
-                <CategoryIcon size={14} />
-              </div>
-            ) : (
-              <div className={ROW_GLYPH_SLOT} aria-hidden="true">
-                <StackedToolIcons
-                  toolNames={iconToolNames}
-                  mcpIconMap={mcpIconMap}
-                  maxIcons={4}
-                  sourceDomains={sourceDomains}
-                  status={iconStatus}
-                  isAnimating={isGroupLive}
-                />
-              </div>
+            {partialMarkerFallback && (
+              <TriangleAlert className="text-status-warning size-4 shrink-0" aria-hidden="true" />
             )}
+            {!partialMarkerFallback &&
+              (iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
+                /** Homogeneous categories keep the same glyph as their individual
+                 *  cards instead of stacking identical tool icons. */
+                <div
+                  className={cn(
+                    ROW_GLYPH_SLOT,
+                    'text-text-secondary',
+                    isGroupLive && 'text-text-primary animate-pulse',
+                  )}
+                  aria-hidden="true"
+                >
+                  <CategoryIcon size={14} />
+                </div>
+              ) : (
+                <div className={ROW_GLYPH_SLOT} aria-hidden="true">
+                  <StackedToolIcons
+                    toolNames={iconToolNames}
+                    mcpIconMap={mcpIconMap}
+                    maxIcons={4}
+                    sourceDomains={sourceDomains}
+                    status={iconStatus}
+                    isAnimating={isGroupLive}
+                  />
+                </div>
+              ))}
           </RailGlyph>
           <span
-            className={cn(
-              'tool-status-text min-w-0 truncate font-medium',
-              activityFailed && 'text-text-warning',
-            )}
+            className="tool-status-text min-w-0 truncate font-medium"
             role="status"
             title={groupLabel}
           >
