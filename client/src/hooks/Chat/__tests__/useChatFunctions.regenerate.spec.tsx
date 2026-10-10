@@ -24,12 +24,12 @@ import {
   pendingUsageFamily,
 } from '~/components/Chat/Input/TokenUsage/store';
 import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
+import { submissionStartFamily, showStopButtonByIndex } from '~/store/generation';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import useChatFunctions from '../useChatFunctions';
 import { isPasteSubmitted } from '~/utils';
 
 const mockNavigate = jest.fn();
-const mockSetShowStopButton = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockGetEphemeralAgent = jest.fn((): TEphemeralAgent | null => null);
 const mockSetFilesToDelete = jest.fn();
@@ -86,7 +86,7 @@ jest.mock('@tanstack/react-query', () => ({
 jest.mock('recoil', () => ({
   useRecoilValue: () => false,
   useSetRecoilState: (atom: unknown) =>
-    String(atom).includes('isSubmitting') ? mockSetIsSubmitting : mockSetShowStopButton,
+    String(atom).includes('isSubmitting') ? mockSetIsSubmitting : jest.fn(),
   useRecoilCallback: (factory: any) =>
     factory({
       snapshot: {
@@ -124,8 +124,6 @@ jest.mock('~/store', () => ({
   __esModule: true,
   default: {
     isSubmittingFamily: () => 'isSubmitting',
-    submissionStartFamily: () => 'submissionStart',
-    showStopButtonByIndex: () => 'showStopButton',
     pendingManualSkillsByConvoId: () => 'pendingManualSkills',
     pendingQuotesByConvoId: () => 'pendingQuotes',
     messagesSiblingIdxFamily: () => 'messagesSiblingIdx',
@@ -479,7 +477,12 @@ describe('useChatFunctions ask', () => {
   });
 
   it('synchronously reports a refusal while another submit is in flight', () => {
-    const { result, setMessages, setSubmission } = renderAsk([], 'conversation-1', {
+    const {
+      result,
+      setMessages,
+      setSubmission,
+      reasoningStore: store,
+    } = renderAsk([], 'conversation-1', {
       isSubmitting: true,
     });
 
@@ -491,7 +494,20 @@ describe('useChatFunctions ask', () => {
     expect(askResult!).toBe(false);
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
-    expect(mockSetShowStopButton).not.toHaveBeenCalled();
+    expect(store.get(showStopButtonByIndex(0))).toBe(false);
+    expect(store.get(submissionStartFamily(0))).toBeNull();
+  });
+
+  it('shows the stop button and stamps the elapsed baseline for an accepted submit', () => {
+    const { result, reasoningStore: store } = renderAsk([]);
+    const before = Date.now();
+
+    act(() => {
+      result.current.ask({ text: 'first turn', conversationId: 'conversation-1' });
+    });
+
+    expect(store.get(showStopButtonByIndex(0))).toBe(true);
+    expect(store.get(submissionStartFamily(0))).toBeGreaterThanOrEqual(before);
   });
 
   it('refuses a second submit fired in the same task, before isSubmitting commits', () => {
@@ -529,7 +545,12 @@ describe('useChatFunctions ask', () => {
   });
 
   it('reports a refusal when no endpoint is available', () => {
-    const { result, setMessages, setSubmission } = renderAsk([], 'conversation-1', {
+    const {
+      result,
+      setMessages,
+      setSubmission,
+      reasoningStore: store,
+    } = renderAsk([], 'conversation-1', {
       endpoint: null,
     });
 
@@ -541,7 +562,8 @@ describe('useChatFunctions ask', () => {
     expect(askResult!).toBe(false);
     expect(setMessages).not.toHaveBeenCalled();
     expect(setSubmission).not.toHaveBeenCalled();
-    expect(mockSetShowStopButton).not.toHaveBeenCalled();
+    expect(store.get(showStopButtonByIndex(0))).toBe(false);
+    expect(store.get(submissionStartFamily(0))).toBeNull();
   });
 
   it.each([

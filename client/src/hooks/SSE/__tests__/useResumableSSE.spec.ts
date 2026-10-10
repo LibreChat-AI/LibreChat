@@ -104,9 +104,7 @@ const mockQueryClient = {
 };
 
 const mockActiveRunAtom = { key: 'activeRun' };
-const mockAbortScrollAtom = { key: 'abortScroll' };
 const mockSubmissionAtom = { key: 'submission' };
-const mockShowStopButtonAtom = { key: 'showStopButton' };
 const mockPendingSteersAtom = { key: 'pendingSteers' };
 /** The follow-up queue a restored submission lands back in. */
 const queuedIn = (conversationId: string) =>
@@ -140,14 +138,8 @@ const mockUseSetRecoilStateMock = jest.fn((atom: unknown) => {
   if (atom === mockActiveRunAtom) {
     return mockSetActiveRun;
   }
-  if (atom === mockAbortScrollAtom) {
-    return mockSetAbortScroll;
-  }
   if (atom === mockSubmissionAtom) {
     return mockSetSubmission;
-  }
-  if (atom === mockShowStopButtonAtom) {
-    return mockSetShowStopButton;
   }
   return jest.fn();
 });
@@ -187,8 +179,8 @@ jest.mock('recoil', () => ({
   useRecoilCallback: mockUseRecoilCallback,
 }));
 
-/** The run-end and interrupt-drain signals are Jotai atoms; their pane setters are swapped for
- *  spies, the same way the Recoil setters above are. */
+/** The run-end, interrupt-drain, abort-scroll and stop-button state are Jotai atoms; their pane
+ *  setters are swapped for spies, the same way the Recoil setters above are. */
 jest.mock('jotai', () => {
   const actual = jest.requireActual('jotai');
   return {
@@ -201,6 +193,13 @@ jest.mock('jotai', () => {
       if (atom === queue.drainAfterAbortByIndex(0)) {
         return mockSetDrainAfterAbort;
       }
+      const generation = jest.requireActual('~/store/generation');
+      if (atom === generation.abortScrollFamily(0)) {
+        return mockSetAbortScroll;
+      }
+      if (atom === generation.showStopButtonByIndex(0)) {
+        return mockSetShowStopButton;
+      }
       return actual.useSetAtom(atom);
     },
   };
@@ -210,9 +209,7 @@ jest.mock('~/store', () => ({
   __esModule: true,
   default: {
     activeRunFamily: jest.fn(() => mockActiveRunAtom),
-    abortScrollFamily: jest.fn(() => mockAbortScrollAtom),
     submissionByIndex: jest.fn(() => mockSubmissionAtom),
-    showStopButtonByIndex: jest.fn(() => mockShowStopButtonAtom),
     pendingSteersByConvoId: jest.fn(() => mockPendingSteersAtom),
   },
 }));

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, useAtom } from 'jotai';
+import { useStore, useAtom, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import {
@@ -42,6 +42,7 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { submissionStartFamily } from '~/store/generation';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import { useFileMapContext } from '~/Providers';
@@ -297,7 +298,7 @@ export default function useResumeOnLoad(
   const jotaiStore = useStore();
   const queryClient = useQueryClient();
   const setSubmission = useSetRecoilState(store.submissionByIndex(runIndex));
-  const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(runIndex));
+  const setSubmissionStart = useSetAtom(submissionStartFamily(runIndex));
   const currentSubmission = useRecoilValue(store.submissionByIndex(runIndex));
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(runIndex));
   const attachedGenerationCreatedAt = useRecoilValue(

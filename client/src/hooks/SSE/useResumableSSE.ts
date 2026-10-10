@@ -98,6 +98,7 @@ import useEventHandlers, {
 } from './useEventHandlers';
 import { drainAfterAbortByIndex, queuedMessagesByConvoId, runEndByIndex } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
 import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
@@ -969,9 +970,9 @@ export default function useResumableSSE(
   );
   const [_completed, setCompleted] = useState(new Set());
   const [streamId, setStreamId] = useState<string | null>(null);
-  const setAbortScroll = useSetRecoilState(store.abortScrollFamily(runIndex));
+  const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
   const setSubmission = useSetRecoilState(store.submissionByIndex(runIndex));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(runIndex));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
   const setLiveAppliedSteerIds = useSetAtom(liveAppliedSteerIdsAtom);
 
   const streamRef = useRef<AbortController | null>(null);
