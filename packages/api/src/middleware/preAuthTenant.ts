@@ -1,6 +1,7 @@
-import { logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction } from 'express';
 import { buildRequestContext, runWithTenantContext } from './tenant';
+import { rejectTenantHeader } from './tenantHeader';
 import { isEnabled } from '~/utils';
 
 /**
@@ -32,9 +33,6 @@ import { isEnabled } from '~/utils';
  * If no header is present, downstream runs without tenant ALS context (same as
  * single-tenant mode), while request logging context can still propagate.
  */
-const MAX_TENANT_ID_LENGTH = 128;
-const VALID_TENANT_ID = /^[-a-zA-Z0-9_.]+$/;
-
 export function preAuthTenantMiddleware(req: Request, res: Response, next: NextFunction): void {
   const raw = req.headers['x-tenant-id'];
   const requestContext = buildRequestContext(req);
@@ -51,7 +49,8 @@ export function preAuthTenantMiddleware(req: Request, res: Response, next: NextF
     return;
   }
 
-  if (tenantId === SYSTEM_TENANT_ID) {
+  const rejection = rejectTenantHeader(tenantId);
+  if (rejection === 'system') {
     runWithTenantContext(requestContext, () => {
       logger.warn('[preAuthTenant] Rejected __SYSTEM__ sentinel in X-Tenant-Id header', {
         ip: req.ip,
@@ -62,7 +61,7 @@ export function preAuthTenantMiddleware(req: Request, res: Response, next: NextF
     return;
   }
 
-  if (tenantId.length > MAX_TENANT_ID_LENGTH || !VALID_TENANT_ID.test(tenantId)) {
+  if (rejection === 'malformed') {
     runWithTenantContext(requestContext, () => {
       logger.warn('[preAuthTenant] Rejected malformed X-Tenant-Id header', {
         ip: req.ip,

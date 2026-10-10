@@ -11,18 +11,8 @@ import {
 import { useRecoilValue } from 'recoil';
 import { notifyManager, useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, MutationKeys, isBundledThemeName } from 'librechat-data-provider';
-import {
-  ThemeProvider,
-  clickHouseTheme,
-  libreChatTheme,
-  fromLegacyTheme,
-  validateThemeDefinition,
-} from '@librechat/client';
-import type {
-  TInterfaceConfig,
-  BundledThemeName,
-  TRefreshTokenResponse,
-} from 'librechat-data-provider';
+import { ThemeProvider, fromLegacyTheme, validateThemeDefinition } from '@librechat/client';
+import type { TInterfaceConfig, TRefreshTokenResponse } from 'librechat-data-provider';
 import type { IThemeRGB, ThemeDefinition } from '@librechat/client';
 import type { ComponentProps } from 'react';
 import {
@@ -30,6 +20,7 @@ import {
   appBasePath,
   isPublicRoute,
   setThemeOwner,
+  readShellTheme,
   clearThemeCache,
   buildThemeCache,
   writeThemeCache,
@@ -38,14 +29,10 @@ import {
 } from './themeCache';
 import { getThemeFromEnv } from '~/utils/getThemeFromEnv';
 import { useGetStartupConfig } from '~/data-provider';
+import { bundledThemes } from './bootVersion';
 import store from '~/store';
 
 type DeploymentThemeValue = TInterfaceConfig['theme'];
-
-const bundledThemes: Readonly<Record<BundledThemeName, ThemeDefinition>> = {
-  librechat: libreChatTheme,
-  clickhouse: clickHouseTheme,
-};
 
 /**
  * Resolves `interface.theme` from librechat.yaml to a theme definition: a bundled
@@ -259,6 +246,7 @@ export default function DeploymentTheme({ children }: { children: React.ReactNod
     signedOutAnswer.current = startupConfig;
   }
   const [cached, setCached] = useThemeCache(owner);
+  const [shell] = useState(() => readShellTheme(window.location.pathname, appBasePath()));
   const [override, setOverride] = useState<ThemeOverride>(undefined);
   /** A route override is another tenant's theme: it neither reads nor writes the cache. */
   const decision = override
@@ -271,6 +259,7 @@ export default function DeploymentTheme({ children }: { children: React.ReactNod
           current: !isPreviousData,
           signedOut: startupConfig === signedOutAnswer.current,
         },
+        shell,
       });
   const configTheme = decision.theme;
   const themeDefinition = useMemo(() => resolveDeploymentTheme(configTheme), [configTheme]);

@@ -38,6 +38,8 @@ const {
   loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
+  readBundledThemeBoot,
+  createDeploymentThemeShell,
   preAuthTenantMiddleware,
   requestContextMiddleware,
   configureServerTimeouts,
@@ -543,6 +545,11 @@ if (cluster.isMaster) {
     indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
       customFooter: process.env.CUSTOM_FOOTER,
     });
+    const indexShell = createDeploymentThemeShell(
+      indexHTML,
+      baseAppConfig?.interfaceConfig?.theme,
+      readBundledThemeBoot(appConfig.paths.dist),
+    );
 
     const cspPolicy = createCspPolicy();
     const shellCache = shellCacheHeaders(cspPolicy != null);
@@ -553,7 +560,10 @@ if (cluster.isMaster) {
 
       const lang = req.cookies.lang || req.headers['accept-language']?.split(',')[0] || 'en-US';
       const saneLang = escapeHtmlAttribute(lang);
-      let updatedIndexHtml = indexHTML.replace(/lang="en-US"/g, () => `lang="${saneLang}"`);
+      let updatedIndexHtml = indexShell(req, res).replace(
+        /lang="en-US"/g,
+        () => `lang="${saneLang}"`,
+      );
       updatedIndexHtml = maybeInjectQueryDevtoolsBootstrap(updatedIndexHtml, req);
 
       /* Nonce last: every injected script above must be stamped too. */

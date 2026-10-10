@@ -1,5 +1,10 @@
+import { resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import {
+  readBundledThemeBoot,
+  injectDeploymentThemeBoot,
+} from '../../../../packages/api/src/html/theme';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { resolveTheme } from '../../../../packages/client/src/theme/registry';
 
@@ -272,3 +277,150 @@ for (const mode of ['light', 'dark'] as const) {
     });
   });
 }
+
+/**
+ * A first-ever visit has nothing cached, so the server embeds the deployment's base
+ * `interface.theme` in the shell it serves (`createDeploymentThemeShell`). The mock lane's
+ * yaml sets no theme, so each document is fetched from the server and passed through the same
+ * injection, with the `theme-boot.json` this build emitted, as a server configured with
+ * `interface.theme: clickhouse` serves it.
+ */
+async function serveThemedShell(page: Page) {
+  const bundled = readBundledThemeBoot(resolve(__dirname, '../../../../client/dist'));
+  expect(bundled.clickhouse).toBeDefined();
+  await page.route(
+    () => true,
+    async (route) => {
+      if (route.request().resourceType() !== 'document') {
+        return route.fallback();
+      }
+      const response = await route.fetch();
+      const html = injectDeploymentThemeBoot(await response.text(), 'clickhouse', bundled);
+      await route.fulfill({ response, body: html });
+    },
+  );
+}
+
+/** Every `/api/config` answer, signed in or not: the first one ends the window under test. */
+async function holdConfig(page: Page) {
+  const answeredAt: number[] = [];
+  await page.route(
+    (url) => url.pathname === '/api/config',
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await new Promise((done) => setTimeout(done, CONFIG_HOLD_MS));
+      answeredAt.push(Date.now());
+      await route.fulfill({
+        response,
+        json: { ...body, interface: { ...body.interface, theme: 'clickhouse' } },
+      });
+    },
+  );
+  return answeredAt;
+}
+
+/** Opens `path` in a browser that has never cached a deployment theme, throttled, and returns the frames before the config answers. */
+async function firstVisitFrames(page: Page, path: string, ready: () => Promise<void>) {
+  await page.addInitScript((key) => {
+    localStorage.removeItem(key);
+    sessionStorage.clear();
+  }, CACHE_KEY);
+  await serveThemedShell(page);
+  const answeredAt = await holdConfig(page);
+  await sampleFrames(page);
+  await throttle(page);
+  await page.goto(path);
+  await ready();
+  await expect.poll(() => answeredAt.length).toBeGreaterThan(0);
+
+  const answered = Math.min(...answeredAt);
+  return (await page.evaluate(() => window.__themeFrames ?? [])).filter(
+    (frame) => frame.at < answered,
+  );
+}
+
+/** A signed-in first visit: every frame before the answer, shell and app alike, wears the theme. */
+async function expectFirstVisit(page: Page, mode: Mode) {
+  const { colors } = resolveTheme(clickHouseTheme, mode);
+  const frames = await firstVisitFrames(page, '/c/new', () =>
+    expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 }),
+  );
+
+  /** Frames of both the shell and the first render landed before the answer. */
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames[0].shell).not.toBeNull();
+  expect(frames.some((frame) => frame.app)).toBe(true);
+  for (const frame of frames) {
+    expect(frame.theme).toBe('clickhouse');
+    expect(frame.surface).toBe(colors['rgb-surface-primary']);
+    if (frame.shell !== null) {
+      expect(frame.shell).toBe(rgb(colors['rgb-surface-canvas']));
+    }
+  }
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme-boot');
+}
+
+/** A signed-out first visit to the login page, which is where a new browser lands. */
+async function expectFirstVisitLogin(page: Page, mode: Mode) {
+  const { colors } = resolveTheme(clickHouseTheme, mode);
+  const frames = await firstVisitFrames(page, '/login', () =>
+    expect(page.getByTestId('login-button')).toBeVisible({ timeout: 60000 }),
+  );
+
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames[0].shell).not.toBeNull();
+  for (const frame of frames) {
+    expect(frame.theme).toBe('clickhouse');
+    expect(frame.surface).toBe(colors['rgb-surface-primary']);
+    if (frame.shell !== null) {
+      expect(frame.shell).toBe(rgb(colors['rgb-surface-primary-alt']));
+    }
+  }
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+}
+
+test.describe('deployment theme first-ever visit (light)', () => {
+  test.use({ colorScheme: 'light', viewport: { width: 1280, height: 800 } });
+
+  test('a first-ever signed-in visit paints the operator theme from the first frame in light @scenario:deployment-theme-first-visit-light', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstVisit(page, 'light');
+  });
+
+  test.describe('signed out', () => {
+    test.use({ storageState: { cookies: [], origins: [] } });
+
+    test('a first-ever visit to the login page paints the operator theme from the first frame in light @scenario:deployment-theme-first-visit-login-light', async ({
+      page,
+    }) => {
+      test.setTimeout(120000);
+      await expectFirstVisitLogin(page, 'light');
+    });
+  });
+});
+
+test.describe('deployment theme first-ever visit (dark)', () => {
+  test.use({ colorScheme: 'dark', viewport: { width: 1280, height: 800 } });
+
+  test('a first-ever signed-in visit paints the operator theme from the first frame in dark @scenario:deployment-theme-first-visit-dark', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await expectFirstVisit(page, 'dark');
+  });
+
+  test.describe('signed out', () => {
+    test.use({ storageState: { cookies: [], origins: [] } });
+
+    test('a first-ever visit to the login page paints the operator theme from the first frame in dark @scenario:deployment-theme-first-visit-login-dark', async ({
+      page,
+    }) => {
+      test.setTimeout(120000);
+      await expectFirstVisitLogin(page, 'dark');
+    });
+  });
+});
