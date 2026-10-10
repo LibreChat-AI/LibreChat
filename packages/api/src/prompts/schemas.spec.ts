@@ -150,6 +150,22 @@ describe('updatePromptGroupSchema', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should reject source field', () => {
+      const result = updatePromptGroupSchema.safeParse({
+        name: 'Test',
+        source: 'langfuse',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject a source identity field', () => {
+      const result = updatePromptGroupSchema.safeParse({
+        name: 'Test',
+        sourcePromptName: 'langfuse-prompt',
+      });
+      expect(result.success).toBe(false);
+    });
+
     it('should reject multiple sensitive fields in a single request', () => {
       const result = updatePromptGroupSchema.safeParse({
         name: 'Legit Name',
