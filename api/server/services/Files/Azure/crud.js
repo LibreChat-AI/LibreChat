@@ -5,6 +5,8 @@ const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
+  getAzureBlobPath,
+  getAzureFileLink,
   assertRemoteFileURL,
   getSafeErrorMetadata,
   getAzureContainerClient,
@@ -44,7 +46,7 @@ async function saveBufferToAzure({
     const blobPath = `${basePath}/${userId}/${fileName}`;
     const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
     await blockBlobClient.uploadData(buffer);
-    return blockBlobClient.url;
+    return getAzureFileLink(blockBlobClient.url, blobPath, containerName);
   } catch (error) {
     logger.error('[saveBufferToAzure] Error uploading buffer:', error);
     throw error;
@@ -106,7 +108,7 @@ async function getAzureURL({ fileName, basePath = defaultBasePath, userId, conta
     const containerClient = await getAzureContainerClient(containerName);
     const blobPath = userId ? `${basePath}/${userId}/${fileName}` : `${basePath}/${fileName}`;
     const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
-    return blockBlobClient.url;
+    return getAzureFileLink(blockBlobClient.url, blobPath, containerName);
   } catch (error) {
     logger.error('[getAzureURL] Error retrieving blob URL:', error);
     throw error;
@@ -125,7 +127,8 @@ async function deleteFileFromAzure(req, file) {
 
   try {
     const containerClient = await getAzureContainerClient(AZURE_CONTAINER_NAME);
-    const blobPath = file.filepath.split(`${AZURE_CONTAINER_NAME}/`)[1];
+    const blobPath =
+      getAzureBlobPath(file.filepath) ?? file.filepath.split(`${AZURE_CONTAINER_NAME}/`)[1];
     if (!blobPath.includes(req.user.id)) {
       throw new Error('User ID not found in blob path');
     }
@@ -193,7 +196,7 @@ async function streamFileToAzure({
       },
     );
 
-    return blockBlobClient.url;
+    return getAzureFileLink(blockBlobClient.url, blobPath, containerName);
   } catch (error) {
     logger.error('[streamFileToAzure] Error streaming file:', error);
     throw error;
@@ -243,6 +246,16 @@ async function uploadFileToAzure({
   }
 }
 
+async function downloadBlob(containerClient, blobPath, signal) {
+  const response = await containerClient.getBlockBlobClient(blobPath).download(0, undefined, {
+    abortSignal: signal,
+  });
+  if (!response.readableStreamBody) {
+    throw new Error('Azure Blob download returned no readable stream');
+  }
+  return response.readableStreamBody;
+}
+
 /**
  * Retrieves a readable stream for a blob from Azure Blob Storage.
  *
@@ -252,6 +265,11 @@ async function uploadFileToAzure({
  */
 async function getAzureFileStream(_req, fileURL, { signal } = {}) {
   try {
+    /** LibreChat's own links hold the blob path in the configured container. */
+    const storedBlobPath = getAzureBlobPath(fileURL);
+    if (storedBlobPath != null) {
+      return await downloadBlob(await getAzureContainerClient(), storedBlobPath, signal);
+    }
     const url = new URL(fileURL);
     const configuredClient = await getAzureContainerClient();
     const configuredURL = configuredClient.url ? new URL(configuredClient.url) : undefined;
@@ -280,13 +298,7 @@ async function getAzureFileStream(_req, fileURL, { signal } = {}) {
     if (!blobPath) {
       throw new Error('Invalid Azure Blob URL');
     }
-    const response = await containerClient.getBlockBlobClient(blobPath).download(0, undefined, {
-      abortSignal: signal,
-    });
-    if (!response.readableStreamBody) {
-      throw new Error('Azure Blob download returned no readable stream');
-    }
-    return response.readableStreamBody;
+    return await downloadBlob(containerClient, blobPath, signal);
   } catch (error) {
     logger.error('[getAzureFileStream] Error getting blob stream:', getSafeErrorMetadata(error));
     throw error;

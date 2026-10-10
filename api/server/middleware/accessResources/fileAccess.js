@@ -77,6 +77,32 @@ const denyFileAccess = (res) =>
   });
 
 /**
+ * Whether a user may access a file: same tenant (for tenant-scoped files), then
+ * ownership, then agent-based access through the agents it is attached to.
+ * @param {{ id: string, role?: string, tenantId?: unknown }} user
+ * @param {{ file_id: string, user?: unknown, tenantId?: unknown }} file
+ * @returns {Promise<boolean>}
+ */
+const canAccessFile = async (user, file) => {
+  const fileTenantId = getTenantId(file.tenantId);
+  // Tenant-scoped files are restricted to their tenant. Legacy files without
+  // tenantId remain governed by owner/agent ACLs for non-tenant migrations.
+  if (fileTenantId && fileTenantId !== getTenantId(user.tenantId)) {
+    logger.warn(`[fileAccess] User ${user.id} denied cross-tenant access to file ${file.file_id}`);
+    return false;
+  }
+  if (file.user && file.user.toString() === user.id) {
+    return true;
+  }
+  return checkAgentBasedFileAccess({
+    userId: user.id,
+    role: user.role,
+    fileId: file.file_id,
+    fileOwner: file.user,
+  });
+};
+
+/**
  * Middleware to check if user can access a file
  * Checks: 1) File ownership, 2) Agent-based access through attached agents
  */
@@ -107,30 +133,7 @@ const fileAccess = async (req, res, next) => {
       });
     }
 
-    const fileTenantId = getTenantId(file.tenantId);
-    const userTenantId = getTenantId(req.user?.tenantId);
-    // Tenant-scoped files are restricted to their tenant. Legacy files without
-    // tenantId remain governed by owner/agent ACLs for non-tenant migrations.
-    if (fileTenantId && fileTenantId !== userTenantId) {
-      logger.warn(
-        `[fileAccess] User ${userId} denied cross-tenant access to file ${fileId} (route ${req.originalUrl})`,
-      );
-      return denyFileAccess(res);
-    }
-
-    if (file.user && file.user.toString() === userId) {
-      req.fileAccess = { file };
-      return next();
-    }
-
-    /** Agent-based access (file inherits agent permissions) */
-    const hasAgentAccess = await checkAgentBasedFileAccess({
-      userId,
-      role: userRole,
-      fileId,
-      fileOwner: file.user,
-    });
-    if (hasAgentAccess) {
+    if (await canAccessFile({ id: userId, role: userRole, tenantId: req.user?.tenantId }, file)) {
       req.fileAccess = { file };
       return next();
     }
@@ -150,4 +153,5 @@ const fileAccess = async (req, res, next) => {
 
 module.exports = {
   fileAccess,
+  canAccessFile,
 };

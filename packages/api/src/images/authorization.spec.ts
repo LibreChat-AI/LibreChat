@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import { createHash } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { ImageAuthorizationDeps } from './authorization';
-import { createImageAuthorizationMiddleware } from './authorization';
+import { authenticateViewer, createImageAuthorizationMiddleware } from './authorization';
 
 const VIEWER_ID = '65cfb246f7ecadb8b1e8036b';
 const OWNER_ID = '65cfb246f7ecadb8b1e8036c';
@@ -662,5 +662,93 @@ describe('createImageAuthorizationMiddleware', () => {
     expect(response.status).toHaveBeenCalledWith(403);
     expect(deps.getAgent).not.toHaveBeenCalled();
     expect(deps.getAssistant).not.toHaveBeenCalled();
+  });
+});
+
+describe('authenticateViewer', () => {
+  const originalEnforcement = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+  let deps: ImageAuthorizationDeps;
+
+  beforeEach(() => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'false';
+    process.env.JWT_REFRESH_SECRET = 'image-authorization-secret';
+    deps = createDeps();
+  });
+
+  afterAll(() => {
+    if (originalEnforcement === undefined) {
+      delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+    } else {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = originalEnforcement;
+    }
+  });
+
+  const viewerRequest = (token?: string) =>
+    createRequest(
+      '/api/stored-files/s3/images/x/y.png',
+      token ? `refreshToken=${token}` : undefined,
+    );
+
+  it('reports a request without a session cookie as missing', async () => {
+    await expect(authenticateViewer(viewerRequest(), deps)).resolves.toEqual({
+      status: 'missing',
+    });
+    expect(deps.findSession).not.toHaveBeenCalled();
+    expect(deps.getUserById).not.toHaveBeenCalled();
+  });
+
+  it('authenticates an active session of a current account', async () => {
+    const token = signUser(VIEWER_ID);
+
+    const auth = await authenticateViewer(viewerRequest(token), deps);
+
+    expect(auth).toEqual(
+      expect.objectContaining({
+        status: 'authenticated',
+        userId: VIEWER_ID,
+        role: 'USER',
+        tenantId: 'tenant-a',
+      }),
+    );
+    expect(deps.findSession).toHaveBeenCalledWith({ userId: VIEWER_ID, refreshToken: token });
+    expect(deps.getUserById).toHaveBeenCalledWith(VIEWER_ID, expect.any(String));
+  });
+
+  it('refuses a token without a session', async () => {
+    (deps.findSession as jest.Mock).mockResolvedValue(null);
+
+    await expect(authenticateViewer(viewerRequest(signUser(VIEWER_ID)), deps)).resolves.toEqual({
+      status: 'invalid',
+    });
+  });
+
+  it('refuses a token issued before the credentials changed', async () => {
+    (deps.getUserById as jest.Mock).mockResolvedValue({
+      credentialsChangedAt: new Date(Date.now() + 60_000),
+    });
+
+    await expect(authenticateViewer(viewerRequest(signUser(VIEWER_ID)), deps)).resolves.toEqual({
+      status: 'invalid',
+    });
+  });
+
+  it('refuses an account that must still enroll in two-factor authentication', async () => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    (deps.getUserById as jest.Mock).mockResolvedValue({
+      provider: 'local',
+      twoFactorEnabled: false,
+    });
+
+    await expect(authenticateViewer(viewerRequest(signUser(VIEWER_ID)), deps)).resolves.toEqual({
+      status: 'invalid',
+    });
+  });
+
+  it('refuses a token whose account no longer exists', async () => {
+    (deps.getUserById as jest.Mock).mockResolvedValue(null);
+
+    await expect(authenticateViewer(viewerRequest(signUser(VIEWER_ID)), deps)).resolves.toEqual({
+      status: 'invalid',
+    });
   });
 });
