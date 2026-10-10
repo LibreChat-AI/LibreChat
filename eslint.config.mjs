@@ -649,14 +649,14 @@ export default [
     },
   },
   {
-    files: ['packages/chat/src/**/*.{ts,tsx}'],
+    files: ['packages/chat/src/**/*.{ts,tsx,js,jsx}'],
     rules: {
       'no-restricted-imports': ['error', { patterns: chatPackageRestrictions }],
     },
   },
   {
-    files: ['packages/chat/src/index.ts', 'packages/chat/src/core/**/*.{ts,tsx}'],
-    ignores: ['**/*.{spec,test}.{ts,tsx}'],
+    files: ['packages/chat/src/index.ts', 'packages/chat/src/core/**/*.{ts,tsx,js,jsx}'],
+    ignores: ['**/*.{spec,test}.{ts,tsx,js,jsx}'],
     rules: {
       'no-restricted-imports': ['error', { patterns: chatCoreRestrictions }],
     },
