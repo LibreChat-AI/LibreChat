@@ -76,6 +76,22 @@ projects:
 #     userIdField: email
 #     userMetadataFields: [email, username, role, provider]
 #     conversationMetadataFields: [conversationId, endpoint, model, modelLabel, spec]
+#
+# Content privacy controls for exported traces. With `metricsOnly`, message
+# content (user, system, and assistant), tool arguments and outputs, trace
+# metadata, and media are replaced by a redaction marker before trace data
+# leaves the server; trace structure, timing, model, token usage, cost, and
+# error status remain available. The `trace` user and request fields, the
+# userId override, and tenant tags are not exported; the trace keeps the
+# internal user id. The default `full` mode exports content unchanged.
+#
+# Fails closed: if the installed tracing runtime cannot enforce the policy,
+# trace export is disabled for the run instead of sending unmasked content.
+#
+# langfuse:
+#   privacy:
+#     mode: metricsOnly
+#     redactionText: "[CONTENT REDACTED]"
 
 # File storage configuration
 # Single strategy for all file types (legacy format, still supported)

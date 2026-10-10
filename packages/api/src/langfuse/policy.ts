@@ -1,3 +1,5 @@
+import * as agentsRuntime from '@librechat/agents';
+import type { AppConfig } from '@librechat/data-schemas';
 import { isFalseEnv, isTrueEnv } from './utils';
 import { normalizeString } from '~/utils/text';
 
@@ -6,6 +8,32 @@ const MAX_TRACE_ID_ACCUMULATION = 0xffffffff;
 
 export function isLangfuseTenantExportEnabled(): boolean {
   return !isTrueEnv(process.env.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED);
+}
+
+/**
+ * Whether the deployment's Langfuse privacy policy suppresses exported
+ * content. Applies to every Langfuse egress, not only trace spans: feedback
+ * scores must drop user-written text and personal names too, keeping only
+ * the rating and correlation ids.
+ */
+export function isLangfuseMetricsOnlyPrivacy(appConfig?: Pick<AppConfig, 'langfuse'>): boolean {
+  return appConfig?.langfuse?.privacy?.mode === 'metricsOnly';
+}
+
+/**
+ * Whether the installed `@librechat/agents` runtime enforces
+ * `LangfuseConfig.privacy` (content redaction and media suppression).
+ * Runtimes without the export ignore the field, so a privacy mode must
+ * disable trace export for the run rather than send unmasked content.
+ */
+export function isLangfusePrivacyMaskingSupported(): boolean {
+  return (
+    (
+      agentsRuntime as {
+        LANGFUSE_PRIVACY_ENFORCEMENT_SUPPORTED?: boolean;
+      }
+    ).LANGFUSE_PRIVACY_ENFORCEMENT_SUPPORTED === true
+  );
 }
 
 export function isLangfuseCentralMediaUploadDisabled(): boolean {

@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import { getScoreDestinations, type LangfuseScoreDestination } from './destinations';
+import { isLangfuseMetricsOnlyPrivacy } from './policy';
 import { mergeHeaders } from '~/utils/headers';
 import { redirectPolicyFor } from './utils';
 
@@ -90,27 +91,48 @@ async function createScore(
   }
 }
 
+/** Metadata keys carrying user-written or personal values, dropped under
+ *  metricsOnly: the sender is a person's display name, tag is user input. */
+const FEEDBACK_CONTENT_METADATA_KEYS = new Set(['sender', 'tag']);
+
+function stripFeedbackContent(
+  metadata: Record<string, string | number | boolean>,
+): Record<string, string | number | boolean> {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([key]) => !FEEDBACK_CONTENT_METADATA_KEYS.has(key)),
+  );
+}
+
 function buildScorePayload({
   scoreId,
   traceId,
   feedback,
   metadata,
   observationId,
+  metricsOnly,
 }: {
   scoreId: string;
   traceId: string;
   feedback: LangfuseFeedback;
   metadata: LangfuseFeedbackMetadata;
   observationId?: string;
+  metricsOnly: boolean;
 }): LangfuseScorePayload {
+  const fullMetadata = cleanMetadata({
+    ...metadata,
+    rating: feedback.rating,
+    tag: feedback.tag,
+  });
   return {
     id: scoreId,
     traceId,
     name: 'user-feedback',
     value: feedback.rating === 'thumbsUp' ? 1 : 0,
     dataType: 'BOOLEAN',
-    comment: [feedback.tag, feedback.text].filter(Boolean).join(' — ') || undefined,
-    metadata: cleanMetadata({ ...metadata, rating: feedback.rating, tag: feedback.tag }),
+    comment: metricsOnly
+      ? undefined
+      : [feedback.tag, feedback.text].filter(Boolean).join(': ') || undefined,
+    metadata: metricsOnly ? stripFeedbackContent(fullMetadata) : fullMetadata,
     ...(observationId ? { observationId } : {}),
     ...(ENVIRONMENT ? { environment: ENVIRONMENT } : {}),
   };
@@ -140,7 +162,14 @@ export async function sendFeedbackScore({
 
   const scoreId = `feedback-${traceId}`;
   const payload = feedback?.rating
-    ? buildScorePayload({ scoreId, traceId, feedback, metadata, observationId })
+    ? buildScorePayload({
+        scoreId,
+        traceId,
+        feedback,
+        metadata,
+        observationId,
+        metricsOnly: isLangfuseMetricsOnlyPrivacy(appConfig),
+      })
     : undefined;
 
   const results = await Promise.allSettled(

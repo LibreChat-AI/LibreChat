@@ -9,6 +9,9 @@ const envKeys = [
   'TENANT_ISOLATION_STRICT',
 ];
 
+const mockAgentsRuntimeExports: { LANGFUSE_PRIVACY_ENFORCEMENT_SUPPORTED?: boolean } = {};
+jest.mock('@librechat/agents', () => mockAgentsRuntimeExports);
+
 function clearEnv() {
   for (const key of envKeys) {
     delete process.env[key];
@@ -117,5 +120,19 @@ describe('Langfuse policy', () => {
 
     process.env.LANGFUSE_SAMPLE_RATE = 'invalid';
     expect(getLangfuseSampleRate()).toBe(1);
+  });
+
+  it('detects privacy masking support from the agents runtime export', async () => {
+    mockAgentsRuntimeExports.LANGFUSE_PRIVACY_ENFORCEMENT_SUPPORTED = true;
+    await jest.isolateModulesAsync(async () => {
+      const { isLangfusePrivacyMaskingSupported } = await import('./policy');
+      expect(isLangfusePrivacyMaskingSupported()).toBe(true);
+    });
+
+    mockAgentsRuntimeExports.LANGFUSE_PRIVACY_ENFORCEMENT_SUPPORTED = undefined;
+    await jest.isolateModulesAsync(async () => {
+      const { isLangfusePrivacyMaskingSupported } = await import('./policy');
+      expect(isLangfusePrivacyMaskingSupported()).toBe(false);
+    });
   });
 });
