@@ -7,6 +7,8 @@ const envKeys = [
   'LANGFUSE_FANOUT_COLLECTOR_URL',
   'LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED',
   'TENANT_ISOLATION_STRICT',
+  'LANGFUSE_PROMPT_SYNC_AVAILABLE',
+  'LANGFUSE_PROMPT_SYNC_TIMEOUT_MS',
 ];
 
 function clearEnv() {
@@ -117,5 +119,55 @@ describe('Langfuse policy', () => {
 
     process.env.LANGFUSE_SAMPLE_RATE = 'invalid';
     expect(getLangfuseSampleRate()).toBe(1);
+  });
+
+  it('hides Langfuse prompt sync by default', async () => {
+    const { isLangfusePromptSyncAvailable } = await import('./policy');
+
+    expect(isLangfusePromptSyncAvailable()).toBe(false);
+  });
+
+  it('makes Langfuse prompt sync available when the environment switch is on', async () => {
+    process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+    const { isLangfusePromptSyncAvailable } = await import('./policy');
+
+    expect(isLangfusePromptSyncAvailable()).toBe(true);
+  });
+
+  it('hides Langfuse prompt sync when the environment switch is explicitly off', async () => {
+    process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'false';
+    const { isLangfusePromptSyncAvailable } = await import('./policy');
+
+    expect(isLangfusePromptSyncAvailable()).toBe(false);
+  });
+
+  it('defaults the Langfuse prompt sync timeout to 10 seconds', async () => {
+    const { getLangfusePromptSyncTimeoutMs } = await import('./policy');
+
+    expect(getLangfusePromptSyncTimeoutMs()).toBe(10000);
+  });
+
+  it('uses a configured Langfuse prompt sync timeout', async () => {
+    process.env.LANGFUSE_PROMPT_SYNC_TIMEOUT_MS = '5000';
+    const { getLangfusePromptSyncTimeoutMs } = await import('./policy');
+
+    expect(getLangfusePromptSyncTimeoutMs()).toBe(5000);
+  });
+
+  it('clamps the Langfuse prompt sync timeout to 1000-60000', async () => {
+    const { getLangfusePromptSyncTimeoutMs } = await import('./policy');
+
+    process.env.LANGFUSE_PROMPT_SYNC_TIMEOUT_MS = '1';
+    expect(getLangfusePromptSyncTimeoutMs()).toBe(1000);
+
+    process.env.LANGFUSE_PROMPT_SYNC_TIMEOUT_MS = '1000000';
+    expect(getLangfusePromptSyncTimeoutMs()).toBe(60000);
+  });
+
+  it('falls back to the default Langfuse prompt sync timeout for non-numeric values', async () => {
+    process.env.LANGFUSE_PROMPT_SYNC_TIMEOUT_MS = 'invalid';
+    const { getLangfusePromptSyncTimeoutMs } = await import('./policy');
+
+    expect(getLangfusePromptSyncTimeoutMs()).toBe(10000);
   });
 });

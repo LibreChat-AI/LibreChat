@@ -1354,6 +1354,13 @@ export type TLangfuseConnectionStatus = {
   publicKey?: string;
   secretKeyPreview?: string;
   updatedAt?: string;
+  promptSync: TLangfusePromptSyncStatus;
+};
+
+/** Whether DevOps made Langfuse prompt sync available, and whether the tenant admin turned it on. */
+export type TLangfusePromptSyncStatus = {
+  available: boolean;
+  enabled: boolean;
 };
 
 export type TLangfuseDestinationOption = {
@@ -1393,4 +1400,64 @@ export type TLangfuseSessionLinkResponse = {
   url: string | null;
   /** Opaque identity of the project `url` opens, so a caller can tell whether it holds what it showed. */
   destinationId?: string;
+};
+
+export type TUpdateLangfusePromptSyncRequest = {
+  enabled: boolean;
+};
+
+export type TLangfusePromptListParams = {
+  name?: string;
+  label?: string;
+  tag?: string;
+  page?: number;
+  limit?: number;
+  fromUpdatedAt?: string;
+  toUpdatedAt?: string;
+};
+
+export type TLangfusePromptListItem = {
+  name: string;
+  type: 'text' | 'chat';
+  versions: number[];
+  labels: string[];
+  tags: string[];
+  lastUpdatedAt: string;
+};
+
+export type TLangfusePromptListResponse = {
+  items: TLangfusePromptListItem[];
+  meta: {
+    page: number;
+    limit: number;
+    totalItems: number;
+    totalPages: number;
+  };
+};
+
+export type TLangfusePromptGetParams = {
+  name: string;
+  version?: number;
+};
+
+export type TLangfusePromptGetResponse = {
+  name: string;
+  version: number;
+  labels: string[];
+  prompt: string;
+};
+
+export type TLangfusePromptErrorCode =
+  | 'not_configured'
+  | 'unauthorized'
+  | 'timeout'
+  | 'upstream'
+  | 'invalid_response'
+  | 'not_found'
+  | 'unsupported_type'
+  | 'invalid_request';
+
+export type TLangfusePromptErrorBody = {
+  code: TLangfusePromptErrorCode;
+  status?: number;
 };

@@ -5,7 +5,12 @@ import LangfuseConnection from '../LangfuseConnection';
 const mockGet = jest.fn();
 const mockUpdate = jest.fn();
 const mockTest = jest.fn();
+const mockUpdatePromptSync = jest.fn();
 const mockRefetch = jest.fn();
+// Mutable so a test can simulate an in-flight mutation; `jest.mock` factories may only
+// reference identifiers whose name starts with `mock`.
+let mockUpdateIsLoading = false;
+let mockPromptSyncIsLoading = false;
 const destinationLabels = {
   eu: 'eu - https://cloud.langfuse.com',
   us: 'us - https://us.cloud.langfuse.com',
@@ -18,8 +23,15 @@ async function selectDestination(destination: keyof typeof destinationLabels) {
 
 jest.mock('~/data-provider', () => ({
   useGetLangfuseConnectionQuery: () => mockGet(),
-  useUpdateLangfuseConnectionMutation: () => ({ mutate: mockUpdate, isLoading: false }),
+  useUpdateLangfuseConnectionMutation: () => ({
+    mutate: mockUpdate,
+    isLoading: mockUpdateIsLoading,
+  }),
   useTestLangfuseConnectionMutation: () => ({ mutate: mockTest, isLoading: false }),
+  useUpdateLangfusePromptSyncMutation: () => ({
+    mutate: mockUpdatePromptSync,
+    isLoading: mockPromptSyncIsLoading,
+  }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -31,6 +43,15 @@ jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: jest.fn() }),
 }));
 
+// Covered on its own in LangfusePromptsDialog.spec.tsx; stubbed here so these tests do not
+// depend on the dialog's own list/get hooks. A jest.fn stub (rather than a bare `() => null`)
+// lets a test tell "unmounted" from "mounted but closed" by whether React called it at all.
+const mockPromptsDialog = jest.fn((_props: Record<string, unknown>) => null);
+jest.mock('../LangfusePromptsDialog', () => ({
+  __esModule: true,
+  default: (props: Record<string, unknown>) => mockPromptsDialog(props),
+}));
+
 beforeEach(() => {
   global.ResizeObserver = class MockedResizeObserver {
     observe = jest.fn();
@@ -40,7 +61,11 @@ beforeEach(() => {
   mockGet.mockReset();
   mockUpdate.mockReset();
   mockTest.mockReset();
+  mockUpdatePromptSync.mockReset();
   mockRefetch.mockReset();
+  mockPromptsDialog.mockClear();
+  mockUpdateIsLoading = false;
+  mockPromptSyncIsLoading = false;
   mockTest.mockImplementation((_payload, options) => {
     options?.onSuccess?.({ success: true });
   });
@@ -56,6 +81,7 @@ beforeEach(() => {
         { key: 'eu', baseUrl: 'https://cloud.langfuse.com' },
         { key: 'us', baseUrl: 'https://us.cloud.langfuse.com' },
       ],
+      promptSync: { available: false, enabled: false },
     },
   });
 });
@@ -611,5 +637,241 @@ describe('LangfuseConnection', () => {
     );
     expect(screen.queryByText('com_ui_save')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_langfuse_disable' })).toBeEnabled();
+  });
+
+  it('hides the Langfuse prompts switch when prompt sync is not available', () => {
+    render(<LangfuseConnection />);
+
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the Langfuse prompts switch when prompt sync is available', () => {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: false },
+      },
+    });
+
+    render(<LangfuseConnection />);
+
+    expect(screen.getByRole('switch')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_langfuse_prompt_sync')).toBeInTheDocument();
+  });
+
+  it('shows the sync button only when prompt sync is enabled', () => {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: false },
+      },
+    });
+    const { rerender } = render(<LangfuseConnection />);
+
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' }),
+    ).not.toBeInTheDocument();
+
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: true },
+      },
+    });
+    rerender(<LangfuseConnection />);
+
+    expect(
+      screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' }),
+    ).toBeInTheDocument();
+  });
+
+  it('calls the prompt sync mutation with the next enabled value when the switch is toggled', async () => {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: false },
+      },
+    });
+
+    render(<LangfuseConnection />);
+    await userEvent.click(screen.getByRole('switch'));
+
+    expect(mockUpdatePromptSync).toHaveBeenCalledWith({ enabled: true }, expect.any(Object));
+  });
+
+  it('keeps an unsaved public key edit when the prompt sync switch is toggled', async () => {
+    mockUpdatePromptSync.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: true },
+      });
+    });
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: false },
+      },
+    });
+
+    render(<LangfuseConnection />);
+    fireEvent.change(screen.getByLabelText('com_ui_langfuse_public_key'), {
+      target: { value: 'pk-lf-unsaved' },
+    });
+
+    await userEvent.click(screen.getByRole('switch'));
+
+    expect(mockUpdatePromptSync).toHaveBeenCalledWith({ enabled: true }, expect.any(Object));
+    expect(screen.getByLabelText('com_ui_langfuse_public_key')).toHaveValue('pk-lf-unsaved');
+  });
+
+  it('unmounts the Langfuse prompts dialog, dropping its submitted state, when prompt sync is turned off', async () => {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: true },
+      },
+    });
+
+    render(<LangfuseConnection />);
+
+    // Mounted, closed by default.
+    expect(mockPromptsDialog).toHaveBeenCalledWith(expect.objectContaining({ open: false }));
+
+    // The admin opens it for a dry run, the way the bug was reported.
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' }));
+    expect(mockPromptsDialog).toHaveBeenLastCalledWith(expect.objectContaining({ open: true }));
+
+    // Turning the switch off resolves with the disabled status, the way the
+    // real mutation's `onSuccess` would.
+    mockUpdatePromptSync.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: false },
+      });
+    });
+    mockPromptsDialog.mockClear();
+    await userEvent.click(screen.getByRole('switch'));
+
+    // Unmounted entirely — not merely passed `open={false}` — so its submitted
+    // list/get state (and any in-flight query) is gone rather than just hidden.
+    expect(mockPromptsDialog).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' }),
+    ).not.toBeInTheDocument();
+
+    // Re-enabling must not pop the dialog back open from leftover `open` state.
+    mockUpdatePromptSync.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: true },
+      });
+    });
+    await userEvent.click(screen.getByRole('switch'));
+
+    expect(mockPromptsDialog).toHaveBeenLastCalledWith(expect.objectContaining({ open: false }));
+  });
+
+  it('disables the prompt-sync switch while a connection save is in flight', () => {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: false },
+      },
+    });
+    mockUpdateIsLoading = true;
+
+    render(<LangfuseConnection />);
+
+    expect(screen.getByRole('switch')).toBeDisabled();
+  });
+
+  it('disables the Save control while the prompt-sync mutation is in flight', async () => {
+    const { rerender } = render(<LangfuseConnection />);
+    await selectDestination('us');
+    fireEvent.change(screen.getByLabelText('com_ui_langfuse_public_key'), {
+      target: { value: 'pk-lf-1' },
+    });
+    fireEvent.change(screen.getByLabelText(/com_ui_langfuse_secret_key/), {
+      target: { value: 'sk-lf-secret' },
+    });
+    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeEnabled();
+
+    mockPromptSyncIsLoading = true;
+    rerender(<LangfuseConnection />);
+
+    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeDisabled();
+  });
+
+  it('disables the Enable/Disable control while the prompt-sync mutation is in flight', () => {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: true,
+        enabled: false,
+        destinations: [{ key: 'eu', baseUrl: 'https://cloud.langfuse.com' }],
+        destination: 'eu',
+        publicKey: 'pk-lf-1',
+        secretKeyPreview: 'sk-lf-...515f',
+      },
+    });
+    mockPromptSyncIsLoading = true;
+
+    render(<LangfuseConnection />);
+
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_enable' })).toBeDisabled();
   });
 });

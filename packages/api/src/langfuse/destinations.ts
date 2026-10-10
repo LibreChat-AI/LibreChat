@@ -83,7 +83,7 @@ export function getLangfuseDestinationId(baseUrl: string, projectId: string): st
     .digest('hex');
 }
 
-function getCentralEnvBaseUrl(): string {
+export function getCentralEnvBaseUrl(): string {
   return (
     normalizeString(process.env.LANGFUSE_BASE_URL) ??
     normalizeString(process.env.LANGFUSE_HOST) ??

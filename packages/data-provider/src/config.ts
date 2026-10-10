@@ -3832,6 +3832,13 @@ export const langfuseConfigSchema = z.object({
   headers: z.record(z.string()).optional(),
   /** Trace user identity and allowlisted user/request metadata. */
   trace: langfuseTraceConfigSchema.optional(),
+  /** Tenant admin switch for Langfuse prompt sync. Effective only when the
+   *  deployment sets LANGFUSE_PROMPT_SYNC_AVAILABLE. */
+  promptSync: z
+    .object({
+      enabled: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 export type LangfuseConfig = z.infer<typeof langfuseConfigSchema>;
