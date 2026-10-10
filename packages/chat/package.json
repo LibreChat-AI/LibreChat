@@ -1,0 +1,75 @@
+{
+  "name": "@librechat/chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chat state, transport and message components for LibreChat",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LibreChat-AI/LibreChat"
+  },
+  "sideEffects": false,
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "./dist/index.d.cts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.mts",
+        "default": "./dist/react.mjs"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    },
+    "./components": {
+      "import": {
+        "types": "./dist/components.d.mts",
+        "default": "./dist/components.mjs"
+      },
+      "require": {
+        "types": "./dist/components.d.cts",
+        "default": "./dist/components.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rimraf dist",
+    "b:clean": "bun run rimraf dist",
+    "build": "npm run clean && tsdown",
+    "b:build": "bun run b:clean && bun run tsdown",
+    "build:watch": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:ci": "jest --ci"
+  },
+  "peerDependencies": {
+    "librechat-data-provider": "*"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.29.5",
+    "@babel/preset-react": "^7.22.15",
+    "@babel/preset-typescript": "^7.21.0",
+    "@types/jest": "^29.5.2",
+    "babel-plugin-replace-ts-export-assignment": "^0.0.2",
+    "jest": "^30.2.0",
+    "librechat-data-provider": "*",
+    "rimraf": "^6.1.3",
+    "tsdown": "0.22.2",
+    "typescript": "^5.9.3"
+  }
+}

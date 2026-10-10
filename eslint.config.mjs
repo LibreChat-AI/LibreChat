@@ -42,6 +42,99 @@ const tenantModelRestrictions = [
   },
 ];
 
+/** `@librechat/chat` is consumed by the app, never the reverse: nothing in it reaches into `client/src`. */
+const chatPackageRestrictions = [
+  {
+    group: [
+      '~/*',
+      '**/client/src',
+      '**/client/src/**',
+      '@librechat/frontend',
+      '@librechat/frontend/*',
+    ],
+    message: '@librechat/chat cannot import the app; take what it needs from the host instead.',
+  },
+  {
+    group: ['recoil'],
+    message:
+      '@librechat/chat holds no Recoil state; per-pane run state is Jotai in the React binding.',
+  },
+  {
+    group: ['@librechat/chat', '@librechat/chat/*'],
+    message: '@librechat/chat imports its own modules by relative path, not through its entries.',
+  },
+];
+
+/**
+ * `no-restricted-imports` reads only static imports, so the same boundaries are restated for
+ * `import()` and `require()` of a literal specifier. Each pattern is an esquery regex body, which
+ * cannot hold a slash, so `\x2F` stands for one.
+ */
+const restrictedLoads = (pattern, message) => ({
+  selector: [
+    `ImportExpression[source.value=/${pattern}/]`,
+    `ImportExpression[source.quasis.0.value.cooked=/${pattern}/]`,
+    `CallExpression[callee.name='require'][arguments.0.value=/${pattern}/]`,
+    `CallExpression[callee.name='require'][arguments.0.quasis.0.value.cooked=/${pattern}/]`,
+  ].join(', '),
+  message,
+});
+
+const chatPackageLoads = [
+  restrictedLoads(
+    '^~\\x2F|^@librechat\\x2Ffrontend(\\x2F|$)|(^|\\x2F)client\\x2Fsrc(\\x2F|$)',
+    chatPackageRestrictions[0].message,
+  ),
+  restrictedLoads('^recoil(\\x2F|$)', chatPackageRestrictions[1].message),
+  restrictedLoads('^@librechat\\x2Fchat(\\x2F|$)', chatPackageRestrictions[2].message),
+];
+
+/** Attributes a person reads or hears; a literal in one ships untranslated copy. */
+const chatLiteralAttributeNames =
+  '/^(title|alt|placeholder|label|aria-label|aria-description|aria-placeholder|aria-roledescription|aria-valuetext)$/';
+const chatLiteralAttributes = {
+  selector: [
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}][value.type='Literal'][value.value=/[A-Za-z]/]`,
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}] > JSXExpressionContainer > Literal[value=/[A-Za-z]/]`,
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}] > JSXExpressionContainer > TemplateLiteral[expressions.length=0][quasis.0.value.cooked=/[A-Za-z]/]`,
+  ].join(', '),
+  message: 'Localize user-facing attribute text with useLocalize().',
+};
+
+/** The core entry runs without a UI framework, so a non-React host or a worker can drive a chat. */
+const chatCoreRestrictions = [
+  ...chatPackageRestrictions,
+  {
+    group: [
+      'react',
+      'react-dom',
+      'react-dom/*',
+      'jotai',
+      'jotai/*',
+      '@tanstack/*',
+      '@librechat/client',
+    ],
+    message:
+      'The @librechat/chat core has no UI dependency; React and Jotai belong in the /react entry.',
+  },
+  {
+    group: ['**/components', '**/components/**', '**/components.*', '../**/react.*', './react.*'],
+    message: 'The core cannot import the /react or /components entries; they build on the core.',
+  },
+];
+
+const chatCoreLoads = [
+  ...chatPackageLoads,
+  restrictedLoads(
+    '^(react|react-dom|jotai|@librechat\\x2Fclient)(\\x2F|$)|^@tanstack\\x2F',
+    chatCoreRestrictions[chatPackageRestrictions.length].message,
+  ),
+  restrictedLoads(
+    '(^|\\x2F)components(\\.[cm]?[jt]sx?)?(\\x2F|$)|^\\.\\.?\\x2F(.*\\x2F)?react(\\.[cm]?[jt]sx?)?(\\x2F|$)',
+    chatCoreRestrictions[chatPackageRestrictions.length + 1].message,
+  ),
+];
+
 export default [
   {
     ignores: [
@@ -54,6 +147,7 @@ export default [
       'packages/api/test_bundle/**/*',
       'api/demo/**/*',
       'packages/client/dist/**/*',
+      'packages/chat/dist/**/*',
       'packages/data-provider/types/**/*',
       'packages/data-provider/dist/**/*',
       'packages/data-provider/test_bundle/**/*',
@@ -199,7 +293,11 @@ export default [
   // The client's entry points and helpers are `.jsx`/`.js` — App.jsx among them — so the globs
   // name those extensions too: the rules have to see them.
   {
-    files: ['client/src/**/*.{ts,tsx,js,jsx}', 'packages/client/src/**/*.{ts,tsx,js,jsx}'],
+    files: [
+      'client/src/**/*.{ts,tsx,js,jsx}',
+      'packages/client/src/**/*.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/*.{ts,tsx,js,jsx}',
+    ],
     plugins: { shadcn, design },
     settings: {
       shadcn: {
@@ -341,6 +439,8 @@ export default [
       'client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
       'packages/client/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
       'packages/client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
     ],
     rules: {
       'design/disabled-recipe': 'off',
@@ -603,6 +703,45 @@ export default [
             'Avoid Model.collection.* — raw driver calls bypass all Mongoose middleware including tenant isolation. Use Mongoose model methods or tenantSafeBulkWrite() instead.',
         },
         ...tenantModelRestrictions,
+      ],
+    },
+  },
+  {
+    files: ['packages/chat/src/**/*.{ts,tsx,js,jsx}'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: chatPackageRestrictions }],
+      'no-restricted-syntax': ['error', ...chatPackageLoads],
+    },
+  },
+  {
+    // The app's literal-copy rule skips `packages/**`; chat components render visible text, so it
+    // reaches them. Specs assert rendered strings and stay exempt, as they are in the app.
+    files: ['packages/chat/src/**/*.{tsx,jsx}'],
+    ignores: ['**/*.{spec,test}.{tsx,jsx}', '**/__tests__/**'],
+    rules: {
+      'i18next/no-literal-string': [
+        'error',
+        {
+          mode: 'jsx-text-only',
+          'should-validate-template': true,
+        },
+      ],
+      'no-restricted-syntax': ['error', ...chatPackageLoads, chatLiteralAttributes],
+    },
+  },
+  {
+    files: ['packages/chat/src/index.ts', 'packages/chat/src/core/**/*.{ts,tsx,js,jsx}'],
+    ignores: ['**/*.{spec,test}.{ts,tsx,js,jsx}'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: chatCoreRestrictions }],
+      'no-restricted-syntax': [
+        'error',
+        ...chatCoreLoads,
+        {
+          selector: 'JSXElement, JSXFragment',
+          message:
+            'The @librechat/chat core has no UI dependency; JSX compiles to react/jsx-runtime.',
+        },
       ],
     },
   },

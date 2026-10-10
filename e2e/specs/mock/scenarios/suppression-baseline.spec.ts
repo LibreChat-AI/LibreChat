@@ -1125,6 +1125,8 @@ function syntheticRoot(): string {
   write('client/src/Other.tsx', 'export default () => <div className="bg-surface-primary" />;\n');
   write('client/src/components/ui/Thing.tsx', 'export const Thing = () => null;\n');
   write('packages/client/src/Primitive.tsx', 'export const Primitive = () => null;\n');
+  /** The third root `lint:design:record` names; ESLint fails on a root that matches nothing. */
+  write('packages/chat/src/index.ts', 'export {};\n');
   /** A spec beside each of them, under both metadata roots. The real roots are
    *  full of these — every primitive in `packages/client/src/components` has
    *  one — and the flat config turns every design rule off inside them, so what

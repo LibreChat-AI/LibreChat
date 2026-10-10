@@ -91,6 +91,7 @@ const FILTERS = {
     '**/eslint-suppressions.json',
     'client/src/**',
     'packages/client/src/**',
+    'packages/chat/src/**',
     /** The bundle the rules resolve primitives through is named by the library's
      *  manifest, produced by its build config and shaped by its compiler
      *  options. */
@@ -114,8 +115,10 @@ const FILTERS = {
   css_colors: [
     'client/src/*.css',
     'packages/client/src/*.css',
+    'packages/chat/src/*.css',
     'client/src/**/*.css',
     'packages/client/src/**/*.css',
+    'packages/chat/src/**/*.css',
     'packages/client/src/theme/allowlist.md',
     /** The scanner parses with postcss: an upgrade changes what it reads. */
     'package.json',
@@ -132,6 +135,7 @@ const FILTERS = {
     'api/**',
     'client/src/**',
     'packages/client/**',
+    'packages/chat/src/**',
     'packages/data-provider/src/**',
     'packages/data-schemas/src/**',
     '.github/workflows/static-checks.yml',
@@ -163,6 +167,7 @@ const FILTERS = {
     'client/**',
     'packages/api/**',
     'packages/client/**',
+    'packages/chat/**',
     // Every workspace manifest PACKAGE_JSON_FILES validates, plus the ones
     // whose dependencies feed the unused-package calculation through
     // api/package.json's @librechat/data-schemas entry.
@@ -193,6 +198,7 @@ const PACKAGE_JSON_FILES = [
   'api/package.json',
   'packages/api/package.json',
   'packages/client/package.json',
+  'packages/chat/package.json',
   'packages/data-provider/package.json',
   'packages/data-schemas/package.json',
 ];
@@ -242,8 +248,8 @@ const DESIGN_METADATA_FILES = [
   'packages/client/tsconfig.json',
 ];
 
-/** The two trees the design rules police, and what `lint:design:record` records. */
-const DESIGN_ROOTS = ['client/src', 'packages/client/src'];
+/** The trees the design rules police, and what `lint:design:record` records. */
+const DESIGN_ROOTS = ['client/src', 'packages/client/src', 'packages/chat/src'];
 
 /**
  * This runner is the gate the record is measured against: `unusedCapacity` and
@@ -302,6 +308,7 @@ const I18N_SOURCE_DIRS = [
   'api',
   'packages/data-provider/src',
   'packages/client',
+  'packages/chat/src',
   'packages/data-schemas/src',
 ];
 
@@ -1946,6 +1953,17 @@ const TYPECHECK_PROJECTS = [
     requires: ['build:data-provider'],
   },
   {
+    project: 'packages/chat/tsconfig.json',
+    paths: [
+      'packages/data-provider/**',
+      'packages/chat/**',
+      ...ROOT_MANIFESTS,
+      FRONTEND_REVIEW,
+      '!**.md',
+    ],
+    requires: ['build:data-provider'],
+  },
+  {
     project: 'client/tsconfig.json',
     paths: [
       'client/**',
@@ -2094,22 +2112,31 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
     return { ok: true, skipped: 'depcheck is not installed — npm install -g depcheck' };
   }
 
-  const [rootManifest, clientManifest, apiManifest, packagesClientManifest, packagesApiManifest] =
-    await Promise.all([
-      readManifest('package.json'),
-      readManifest('client/package.json'),
-      readManifest('api/package.json'),
-      readManifest('packages/client/package.json'),
-      readManifest('packages/api/package.json'),
-    ]);
-
-  const [rootCode, clientCode, apiCode, packagesClientCode, packagesApiCode] = await Promise.all([
-    importedPackages('.'),
-    importedPackages('client'),
-    importedPackages('api'),
-    importedPackages('packages/client'),
-    importedPackages('packages/api'),
+  const [
+    rootManifest,
+    clientManifest,
+    apiManifest,
+    packagesClientManifest,
+    packagesApiManifest,
+    packagesChatManifest,
+  ] = await Promise.all([
+    readManifest('package.json'),
+    readManifest('client/package.json'),
+    readManifest('api/package.json'),
+    readManifest('packages/client/package.json'),
+    readManifest('packages/api/package.json'),
+    readManifest('packages/chat/package.json'),
   ]);
+
+  const [rootCode, clientCode, apiCode, packagesClientCode, packagesApiCode, packagesChatCode] =
+    await Promise.all([
+      importedPackages('.'),
+      importedPackages('client'),
+      importedPackages('api'),
+      importedPackages('packages/client'),
+      importedPackages('packages/api'),
+      importedPackages('packages/chat'),
+    ]);
 
   const targets = [
     {
@@ -2141,6 +2168,12 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
         packagesApiCode,
         manifestDependencies(packagesApiManifest),
       ],
+      ignored: new Set<string>(),
+    },
+    {
+      name: 'Chat',
+      dir: resolve(ROOT, 'packages/chat'),
+      allowed: [scriptWords(packagesChatManifest), packagesChatCode],
       ignored: new Set<string>(),
     },
   ];
