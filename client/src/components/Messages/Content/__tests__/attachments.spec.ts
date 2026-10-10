@@ -1,4 +1,4 @@
-import { Constants, ErrorTypes } from 'librechat-data-provider';
+import { Constants, ErrorTypes, ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import {
   isAttachmentError,
@@ -62,6 +62,10 @@ describe('mayBeAttachmentError', () => {
     ['a model rate limit', JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT })],
     ['a token balance', JSON.stringify({ type: 'token_balance', balance: 0 })],
     ['a nested quota code', JSON.stringify({ error: { code: 'insufficient_quota' } })],
+    [
+      'an Anthropic rate limit inside its generic envelope',
+      JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }),
+    ],
   ])('does not point at files for %s', (_label, text) => {
     expect(mayBeAttachmentError(text)).toBe(false);
   });
@@ -132,6 +136,25 @@ describe('findAttachmentRecovery', () => {
       answer('a1', 'u1', {
         attachments: [{ file_id: 'chart', toolCallId: 't' }] as TMessage['attachments'],
       }),
+      user('u2', 'a1'),
+      answer('a2', 'u2', { error: true }),
+    ];
+
+    expect(findAttachmentRecovery(messages, messages[3])).toEqual({
+      parent: messages[2],
+      canRetry: false,
+      branchTargetId: 'a1',
+    });
+  });
+
+  it('counts attachments steered into an earlier response as files', () => {
+    const steered = [
+      { type: ContentTypes.TEXT, text: 'Working on it.' },
+      { type: ContentTypes.STEER, steer: 'use this', steerId: 's1', files: [screenshot] },
+    ] as TMessage['content'];
+    const messages = [
+      user('u1', Constants.NO_PARENT),
+      answer('a1', 'u1', { content: steered }),
       user('u2', 'a1'),
       answer('a2', 'u2', { error: true }),
     ];

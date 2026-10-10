@@ -1,4 +1,6 @@
 import { useContext, useRef } from 'react';
+import { useStore } from 'jotai';
+import { useRecoilCallback } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { ContentTypes, ForkOptions, findMessageById } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
@@ -10,6 +12,10 @@ import {
   useOptionalMessagesOperations,
   useOptionalMessagesConversation,
 } from '~/Providers/MessagesViewContext';
+import {
+  getReasoningStateKey,
+  pendingReasoningOverrideFamily,
+} from '~/components/Chat/Input/Composer/state';
 import { findAttachmentRecovery, isAttachmentError, mayBeAttachmentError } from './attachments';
 import { useMessageContext } from '~/Providers/MessageContext';
 import { useLocalize, useNavigateToConvo } from '~/hooks';
@@ -17,7 +23,7 @@ import { useForkConvoMutation } from '~/data-provider';
 import { ChatContext } from '~/Providers/ChatContext';
 import { ErrorAction, ErrorActions } from './parts';
 import { useGetAddedConvo } from '~/hooks/Chat';
-import { setDraft } from '~/utils/drafts';
+import store from '~/store';
 
 /** What the card says the actions do, matched to the ones it offers. */
 function getExplanationKey({ canRetry, branchTargetId }: AttachmentRecovery): TranslationKeys {
@@ -73,20 +79,49 @@ function RecoveryActions({
   const getAddedConvo = useGetAddedConvo();
   const { navigateToConvo } = useNavigateToConvo();
   const { showToast } = useToastContext();
-  /** The failed message's text, put back in the copy's composer so it can be sent again. */
-  const draftRef = useRef<string | undefined>(undefined);
+  const reasoningStore = useStore();
+  /** The failed turn, staged in the copy's composer so it can be sent again as it was. */
+  const failedTurnRef = useRef<TMessage | undefined>(undefined);
+
+  /**
+   * Hands the failed turn to the copy's composer the way a message is put back for editing: its
+   * text through the in-memory handoff the composer drains on mount (never the draft store, which
+   * the Save Drafts preference may switch off), and its quotes, manual skills and reasoning
+   * override through their compose-time atoms. Only its files stay behind.
+   */
+  const stageFailedTurn = useRecoilCallback(
+    ({ set }) =>
+      (forkedId: string, turn: TMessage): boolean => {
+        const hasText = turn.text.trim() !== '';
+        if (hasText) {
+          set(store.pendingComposerTextByConvoId(forkedId), turn.text);
+        }
+        if ((turn.quotes?.length ?? 0) > 0) {
+          set(store.pendingQuotesByConvoId(forkedId), turn.quotes ?? []);
+        }
+        if ((turn.manualSkills?.length ?? 0) > 0) {
+          set(store.pendingManualSkillsByConvoId(forkedId), turn.manualSkills ?? []);
+        }
+        if (turn.reasoningOverride != null) {
+          reasoningStore.set(
+            pendingReasoningOverrideFamily(getReasoningStateKey(forkedId, 0)),
+            turn.reasoningOverride,
+          );
+        }
+        return hasText;
+      },
+    [reasoningStore],
+  );
 
   const forkConvo = useForkConvoMutation({
     onSuccess: (data) => {
-      const draft = draftRef.current;
+      const turn = failedTurnRef.current;
       const forkedId = data.conversation.conversationId;
-      if (draft != null && forkedId) {
-        setDraft({ id: forkedId, value: draft });
-      }
+      const staged = turn != null && forkedId != null && stageFailedTurn(forkedId, turn);
       navigateToConvo(data.conversation);
       showToast({
         message: localize(
-          draft != null ? 'com_ui_branch_without_files_draft' : 'com_ui_branch_without_files_done',
+          staged ? 'com_ui_branch_without_files_draft' : 'com_ui_branch_without_files_done',
         ),
         status: 'success',
       });
@@ -121,7 +156,7 @@ function RecoveryActions({
     if (branchTargetId == null) {
       return;
     }
-    draftRef.current = parent.text.trim() === '' ? undefined : parent.text;
+    failedTurnRef.current = parent;
     forkConvo.mutate({
       conversationId,
       messageId: branchTargetId,

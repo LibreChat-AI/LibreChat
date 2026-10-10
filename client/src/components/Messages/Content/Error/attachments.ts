@@ -1,4 +1,4 @@
-import { Constants, ErrorTypes, findMessageById } from 'librechat-data-provider';
+import { Constants, ErrorTypes, ContentTypes, findMessageById } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import { isSubmittableMessage } from '~/utils/messages';
 import { extractJson, isJson } from '~/utils/json';
@@ -50,7 +50,10 @@ function readErrorCode(text: string): string | undefined {
     type?: unknown;
     error?: { code?: unknown; type?: unknown } | null;
   };
-  const candidates = [payload.code, payload.type, payload.error?.code, payload.error?.type];
+  const outer = [payload.code, payload.type];
+  const nested = [payload.error?.code, payload.error?.type];
+  /** A generic `error` type is only the envelope; what failed is named inside it. */
+  const candidates = payload.type === 'error' ? [...nested, ...outer] : [...outer, ...nested];
   return candidates.find((value): value is string => typeof value === 'string' && value !== '');
 }
 
@@ -68,8 +71,14 @@ export function mayBeAttachmentError(text: string): boolean {
   return code == null || fileAgnosticErrorCodes.has(code);
 }
 
+/** Uploads, code outputs, and attachments steered into a response: everything a turn resends. */
 const carriesFiles = (message: TMessage): boolean =>
-  (message.files?.length ?? 0) > 0 || (message.attachments?.length ?? 0) > 0;
+  (message.files?.length ?? 0) > 0 ||
+  (message.attachments?.length ?? 0) > 0 ||
+  (message.content?.some(
+    (part) => part?.type === ContentTypes.STEER && (part.files?.length ?? 0) > 0,
+  ) ??
+    false);
 
 export type AttachmentRecovery = {
   /** The user turn the failed response answered, which a retry sends again. */

@@ -1,7 +1,9 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
-import { render, screen } from '@testing-library/react';
-import { Constants, ContentTypes, ForkOptions, LocalStorageKeys } from 'librechat-data-provider';
+import { RecoilRoot, useRecoilValue } from 'recoil';
+import { act, render, screen } from '@testing-library/react';
+import { Constants, ContentTypes, ForkOptions } from 'librechat-data-provider';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 import type { MessagesViewContextValue } from '~/Providers/MessagesViewContext';
 import type { ChatContract } from '~/hooks/Chat/contract';
@@ -10,11 +12,15 @@ import {
   MessagesSubmittingContext,
   MessagesOperationsContext,
 } from '~/Providers/MessagesViewContext';
+import {
+  getReasoningStateKey,
+  pendingReasoningOverrideFamily,
+} from '~/components/Chat/Input/Composer/state';
 import { MessageContext } from '~/Providers/MessageContext';
 import AttachmentRecoveryActions from '../Error/recovery';
 import translation from '~/locales/en/translation.json';
 import { ChatContext } from '~/Providers/ChatContext';
-import { decodeBase64 } from '~/utils/drafts';
+import store from '~/store';
 
 const catalog = translation as Record<string, string>;
 
@@ -67,6 +73,17 @@ const answer = (messageId: string, parentMessageId: string, fields: Partial<TMes
     ...fields,
   }) as TMessage;
 
+/** Reads what the forked conversation's composer was handed. */
+let composerHandoff: { text?: string; quotes: string[]; skills: string[] } | undefined;
+function ComposerProbe() {
+  composerHandoff = {
+    text: useRecoilValue(store.pendingComposerTextByConvoId('forked')),
+    quotes: useRecoilValue(store.pendingQuotesByConvoId('forked')),
+    skills: useRecoilValue(store.pendingManualSkillsByConvoId('forked')),
+  };
+  return null;
+}
+
 const uploadErrorText = 'Error uploading code environment file: 429';
 
 function renderRecovery({
@@ -117,13 +134,16 @@ function renderRecovery({
     </MessagesOperationsContext.Provider>
   );
   render(
-    inChat ? (
-      <ChatContext.Provider value={{ conversation } as unknown as ChatContract}>
-        {content}
-      </ChatContext.Provider>
-    ) : (
-      content
-    ),
+    <RecoilRoot>
+      <ComposerProbe />
+      {inChat ? (
+        <ChatContext.Provider value={{ conversation } as unknown as ChatContract}>
+          {content}
+        </ChatContext.Provider>
+      ) : (
+        content
+      )}
+    </RecoilRoot>,
   );
   return { ask };
 }
@@ -142,14 +162,19 @@ const retryFixture = () => [
 const branchFixture = () => [
   user('u1', Constants.NO_PARENT, { files: [screenshot] }),
   answer('a1', 'u1'),
-  user('u2', 'a1', { files: [screenshot] }),
+  user('u2', 'a1', {
+    files: [screenshot],
+    quotes: ['quoted line'],
+    manualSkills: ['charts'],
+    reasoningOverride: { key: 'reasoning_effort', value: 'high' } as TMessage['reasoningOverride'],
+  }),
   answer('a2', 'u2', { error: true }),
 ];
 
 describe('AttachmentRecoveryActions', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    localStorage.clear();
+    composerHandoff = undefined;
   });
 
   it('retries the failed turn as a new version without any files', async () => {
@@ -191,11 +216,17 @@ describe('AttachmentRecoveryActions', () => {
     });
 
     const forked = { conversationId: 'forked' } as TConversation;
-    mockForkOptions.onSuccess?.({ conversation: forked });
+    act(() => mockForkOptions.onSuccess?.({ conversation: forked }));
 
-    expect(decodeBase64(localStorage.getItem(`${LocalStorageKeys.TEXT_DRAFT}forked`) ?? '')).toBe(
-      'question u2',
-    );
+    /** Everything the failed turn carried except its files reaches the copy's composer. */
+    expect(composerHandoff).toEqual({
+      text: 'question u2',
+      quotes: ['quoted line'],
+      skills: ['charts'],
+    });
+    expect(
+      getDefaultStore().get(pendingReasoningOverrideFamily(getReasoningStateKey('forked', 0))),
+    ).toEqual({ key: 'reasoning_effort', value: 'high' });
     expect(mockNavigateToConvo).toHaveBeenCalledWith(forked);
     expect(mockShowToast).toHaveBeenCalledWith(
       expect.objectContaining({ message: catalog.com_ui_branch_without_files_draft }),

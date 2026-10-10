@@ -162,9 +162,9 @@ describe('HoverButtons edit affordance', () => {
     expect(screen.getByTestId('copy-response-button')).toBeEnabled();
   });
 
-  /** Copying the conversation, optionally without its files, is a way out of a branch that keeps
-   *  failing; editing the persisted error text is not, so Edit stays withheld. */
-  it('offers fork but not edit on an error response', () => {
+  /** A fork of the failed row would copy the provider's error as an ordinary answer, and its text
+   *  is the persisted error, so neither is offered; the error card carries the way out. */
+  it('withholds fork and edit on an error response', () => {
     const errorMessage = {
       ...userMessage,
       messageId: 'assistant-error',
@@ -182,7 +182,7 @@ describe('HoverButtons edit affordance', () => {
       thread: [userMessage, errorMessage],
     });
 
-    expect(screen.getByRole('button', { name: 'Open Fork Menu' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open Fork Menu' })).toBeNull();
     expect(container.querySelector(`#edit-${errorMessage.messageId}`)).toBeNull();
   });
 

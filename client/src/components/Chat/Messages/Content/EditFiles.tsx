@@ -58,9 +58,6 @@ export default function EditFiles({
         const name = file.filename ?? '';
         const removeLabel = localize('com_ui_remove_file_named', { 0: name });
         const remove = () => {
-          if (disabled) {
-            return;
-          }
           removedIndexRef.current = index;
           onRemove(file);
         };
@@ -76,6 +73,7 @@ export default function EditFiles({
                 }
                 onDelete={remove}
                 removeLabel={removeLabel}
+                removeDisabled={disabled}
                 progress={1}
                 source={file.source}
               />
@@ -84,6 +82,7 @@ export default function EditFiles({
                 file={file}
                 onDelete={remove}
                 removeLabel={removeLabel}
+                removeDisabled={disabled}
                 buttonClassName="h-[58px]"
               />
             )}

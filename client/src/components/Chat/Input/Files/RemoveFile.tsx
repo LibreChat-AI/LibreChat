@@ -3,8 +3,10 @@ import { useLocalize } from '~/hooks';
 export default function RemoveFile({
   onRemove,
   label,
+  disabled = false,
 }: {
   onRemove: () => void;
+  disabled?: boolean;
   /** Names the file, where several chips sit side by side and "Remove file" would not say which. */
   label?: string;
 }) {
@@ -15,6 +17,7 @@ export default function RemoveFile({
       data-remove-file
       className="bg-surface-secondary hover:bg-surface-primary absolute top-1 right-1 translate-x-1/2 -translate-y-1/2 rounded-full p-0.5 transition-colors duration-200"
       onClick={onRemove}
+      disabled={disabled}
       aria-label={label ?? localize('com_ui_attach_remove')}
     >
       <span aria-hidden="true">

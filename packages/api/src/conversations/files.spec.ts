@@ -1,5 +1,6 @@
+import { ContentTypes } from 'librechat-data-provider';
 import type { TAttachment, TConversation, TMessage } from 'librechat-data-provider';
-import { withoutConversationFiles, withoutMessageFiles } from './files';
+import { forkFileScope, withoutMessageFiles, withoutConversationFiles } from './files';
 
 const upload = { file_id: 'upload-1', filename: 'screenshot.png', type: 'image/png' };
 const output = { file_id: 'output-1', filename: 'chart.png', toolCallId: 'call-1' } as TAttachment;
@@ -39,6 +40,25 @@ describe('withoutMessageFiles', () => {
     });
   });
 
+  it('drops attachments steered into a response, and the count that covered them', () => {
+    const content = [
+      { type: ContentTypes.TEXT, text: 'Working on it.' },
+      { type: ContentTypes.STEER, steer: 'Use this one instead', steerId: 's1', files: [upload] },
+      { type: ContentTypes.STEER, steer: 'And be brief', steerId: 's2' },
+    ] as TMessage['content'];
+    const message: Partial<TMessage> = { messageId: 'assistant-2', content, tokenCount: 900 };
+
+    expect(withoutMessageFiles(message)).toEqual({
+      messageId: 'assistant-2',
+      content: [
+        { type: ContentTypes.TEXT, text: 'Working on it.' },
+        { type: ContentTypes.STEER, steer: 'Use this one instead', steerId: 's1' },
+        { type: ContentTypes.STEER, steer: 'And be brief', steerId: 's2' },
+      ],
+    });
+    expect(content?.[1]).toHaveProperty('files', [upload]);
+  });
+
   it('treats an empty upload list as no uploads', () => {
     expect(withoutMessageFiles({ messageId: 'user-2', files: [], tokenCount: 7 })).toEqual({
       messageId: 'user-2',
@@ -68,5 +88,22 @@ describe('withoutConversationFiles', () => {
       title: 'Screenshots',
       model: 'gpt-4o',
     });
+  });
+});
+
+describe('forkFileScope', () => {
+  const message: Partial<TMessage> = { messageId: 'user-1', files: [upload], tokenCount: 3 };
+  const conversation = { conversationId: 'convo-1', files: ['upload-1'] };
+
+  it('copies files unless exclusion is asked for', () => {
+    const scope = forkFileScope();
+    expect(scope.message(message)).toBe(message);
+    expect(scope.conversation(conversation)).toBe(conversation);
+  });
+
+  it('leaves every file reference out when excluding', () => {
+    const scope = forkFileScope(true);
+    expect(scope.message(message)).toEqual({ messageId: 'user-1' });
+    expect(scope.conversation(conversation)).toEqual({ conversationId: 'convo-1' });
   });
 });

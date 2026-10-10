@@ -5,9 +5,8 @@ const {
   createNativeCopyPreflight,
   withoutTraceRefs,
   isTemporaryRecord,
-  withoutMessageFiles,
+  forkFileScope,
   getAllMessagesUpToParent,
-  withoutConversationFiles,
   transferNativeCopyProvenance,
 } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
@@ -33,10 +32,10 @@ function cloneMessagesWithTimestamps(
   { detachSubagentRuntime = false, nativeCopy = false, excludeFiles = false } = {},
 ) {
   const { entries, idMapping } = cloneLineage(messagesToClone, uuidv4);
+  const fileScope = forkFileScope(excludeFiles);
   for (const { source, messageId, parentMessageId, createdAt } of entries) {
-    const traced = withoutTraceRefs(source);
     const clonedMessage = {
-      ...(excludeFiles ? withoutMessageFiles(traced) : traced),
+      ...fileScope.message(withoutTraceRefs(source)),
       messageId,
       parentMessageId,
       createdAt,
@@ -142,7 +141,7 @@ async function forkConversation({
     const result = importBatchBuilder.finishConversation(
       newTitle || originalConvo.title,
       new Date(),
-      excludeFiles ? withoutConversationFiles(originalConvo) : originalConvo,
+      forkFileScope(excludeFiles).conversation(originalConvo),
     );
     await importBatchBuilder.saveBatch();
     logger.debug(

@@ -11,7 +11,6 @@ import type { IMongoFile } from '@librechat/data-schemas';
 import type {
   DocumentBlock,
   AnthropicDocumentBlock,
-  BedrockDocumentBlock,
   StrategyFunctions,
   DocumentResult,
   ServerRequest,
@@ -27,8 +26,12 @@ import { runGuardedEncode } from './memoryGuard';
 /** The longest document name LibreChat sends to Bedrock. */
 const BEDROCK_DOCUMENT_NAME_LIMIT = 200;
 
-function isBedrockDocumentBlock(block: DocumentBlock): block is BedrockDocumentBlock {
-  return block.type === 'document' && 'document' in block;
+/** A content part of a formatted message, as far as document naming needs to read it. */
+export interface PayloadContentPart {
+  type?: string;
+  document?: { name?: string };
+  /** A replayed steer's own content, stamped for the formatter (`stampSteerPartMedia`). */
+  media?: PayloadContentPart[];
 }
 
 /** `name (n)`, trimmed so the suffix fits the limit and never follows a space. */
@@ -37,45 +40,69 @@ function numberedDocumentName(name: string, index: number): string {
   return `${name.slice(0, BEDROCK_DOCUMENT_NAME_LIMIT - suffix.length).trimEnd()}${suffix}`;
 }
 
-/**
- * Bedrock rejects a request in which two documents share a name, and every turn resends the
- * documents of earlier turns, so two uploads with the same filename would fail every later turn of
- * the conversation. Renames each repeat in conversation order (`report`, `report (2)`), leaving the
- * first occurrence and every non-Bedrock block untouched. Names compare case-insensitively, as
- * the restriction is not documented to be case-sensitive.
- */
-export function dedupeDocumentNames(messages: Array<{ documents?: DocumentBlock[] | null }>): void {
+/** Hands out each name once, numbering repeats in the order they are asked for. */
+function createDocumentNamer(): (name: string) => string {
   const used = new Set<string>();
   const nextIndex = new Map<string, number>();
+  return (original) => {
+    const baseKey = original.toLowerCase();
+    let name = original;
+    let index = nextIndex.get(baseKey) ?? 2;
+    while (used.has(name.toLowerCase())) {
+      name = numberedDocumentName(original, index);
+      index++;
+    }
+    nextIndex.set(baseKey, index);
+    used.add(name.toLowerCase());
+    return name;
+  };
+}
+
+/** The parts with every Bedrock document renamed by `nameOf`; the same array when none changed. */
+function renameDocumentParts(
+  parts: PayloadContentPart[],
+  nameOf: (name: string) => string,
+): PayloadContentPart[] {
+  let renamed: PayloadContentPart[] | undefined;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    let next = part;
+    const original = part?.type === 'document' ? part.document?.name : undefined;
+    if (typeof original === 'string') {
+      const name = nameOf(original);
+      next = name === original ? part : { ...part, document: { ...part.document, name } };
+    } else if (Array.isArray(part?.media)) {
+      const media = renameDocumentParts(part.media, nameOf);
+      next = media === part.media ? part : { ...part, media };
+    }
+    if (next !== part) {
+      renamed ??= [...parts];
+      renamed[i] = next;
+    }
+  }
+  return renamed ?? parts;
+}
+
+/**
+ * Bedrock rejects a request in which two documents share a name, and every turn resends the
+ * documents of earlier turns (and of steers replayed with their attachments), so two uploads with
+ * the same filename would fail every later turn of the conversation. Renames each repeat across the
+ * formatted payload in conversation order (`report`, `report (2)`), leaving the first occurrence,
+ * every other kind of part, and the parts themselves untouched: a message whose documents change
+ * gets a new content array. Names compare case-insensitively, as the restriction is not
+ * documented to be case-sensitive.
+ */
+export function dedupeDocumentNames(
+  messages: Array<{ content?: string | PayloadContentPart[] | null }>,
+): void {
+  const nameOf = createDocumentNamer();
   for (const message of messages) {
-    const documents = message.documents;
-    if (documents == null || documents.length === 0) {
+    if (!Array.isArray(message?.content)) {
       continue;
     }
-    let renamed: DocumentBlock[] | undefined;
-    for (let i = 0; i < documents.length; i++) {
-      const block = documents[i];
-      if (!isBedrockDocumentBlock(block)) {
-        continue;
-      }
-      const original = block.document.name;
-      let name = original;
-      const baseKey = original.toLowerCase();
-      let index = nextIndex.get(baseKey) ?? 2;
-      while (used.has(name.toLowerCase())) {
-        name = numberedDocumentName(original, index);
-        index++;
-      }
-      nextIndex.set(baseKey, index);
-      used.add(name.toLowerCase());
-      if (name === original) {
-        continue;
-      }
-      renamed ??= [...documents];
-      renamed[i] = { ...block, document: { ...block.document, name } };
-    }
-    if (renamed != null) {
-      message.documents = renamed;
+    const content = renameDocumentParts(message.content, nameOf);
+    if (content !== message.content) {
+      message.content = content;
     }
   }
 }

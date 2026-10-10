@@ -507,6 +507,24 @@ describe('EditMessage file removal', () => {
     expect(screen.getByRole('button', { name: 'com_ui_update_rerun' })).toBeDisabled();
   });
 
+  it('disables file removal while the editor is locked', () => {
+    render(
+      <EditMessage
+        text={withFiles.text}
+        message={withFiles}
+        isSubmitting={true}
+        ask={jest.fn()}
+        enterEdit={jest.fn()}
+        siblingIdx={0}
+        setSiblingIdx={jest.fn()}
+      />,
+    );
+
+    for (const button of screen.getAllByRole('button', { name: 'com_ui_remove_file_named' })) {
+      expect(button).toBeDisabled();
+    }
+  });
+
   it('shows no file chips on an answer', () => {
     renderEditor({ editedMessage: { ...assistantMessage, files: [report] } as TMessage });
 

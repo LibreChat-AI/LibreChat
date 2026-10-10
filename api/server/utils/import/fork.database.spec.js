@@ -49,6 +49,15 @@ const sourceMessages = [
     parentMessageId: 'user-1',
     text: 'A chart of weekly sales.',
     isCreatedByUser: false,
+    content: [
+      { type: 'text', text: 'A chart of weekly sales.' },
+      {
+        type: 'steer',
+        steer: 'Use this screenshot instead',
+        steerId: 'steer-1',
+        files: [screenshot],
+      },
+    ],
     attachments: [chart],
     tokenCount: 12,
   },
@@ -158,15 +167,21 @@ describe('forkConversation with excludeFiles (database)', () => {
       expect(message.files ?? []).toEqual([]);
       expect(message.attachments ?? []).toEqual([]);
     }
+    expect(persisted.messages[1].content).toEqual([
+      { type: 'text', text: 'A chart of weekly sales.' },
+      { type: 'steer', steer: 'Use this screenshot instead', steerId: 'steer-1' },
+    ]);
 
     const [question, answer, followUp, failure] = persisted.messages;
     expect(question.parentMessageId).toBe(Constants.NO_PARENT);
     expect(answer.parentMessageId).toBe(question.messageId);
     expect(followUp.parentMessageId).toBe(answer.messageId);
     expect(failure.parentMessageId).toBe(followUp.messageId);
-    /** The upload's share of the count goes with it; text-only turns keep theirs. */
+    /** A count that covered dropped uploads or steered files goes with them; text-only turns
+     *  keep theirs. */
     expect(question.tokenCount).toBeUndefined();
-    expect(answer.tokenCount).toBe(12);
+    expect(answer.tokenCount).toBeUndefined();
+    expect(followUp.tokenCount).toBe(8);
   });
 
   it('keeps the original conversation and its files intact', async () => {

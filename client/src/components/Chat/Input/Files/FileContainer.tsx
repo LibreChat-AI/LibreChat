@@ -22,6 +22,7 @@ const FileContainer = ({
   containerClassName,
   onDelete,
   removeLabel,
+  removeDisabled,
   onClick,
 }: {
   file: Partial<ExtendedFile | TFile>;
@@ -59,6 +60,7 @@ const FileContainer = ({
   onDelete?: () => void;
   /** Accessible name for the remove control; defaults to a generic "Remove file". */
   removeLabel?: string;
+  removeDisabled?: boolean;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
 }) => {
   const fileType = getFileType(overrideType ?? file.type);
@@ -147,7 +149,7 @@ const FileContainer = ({
           {details}
         </button>
       )}
-      {onDelete && <RemoveFile onRemove={onDelete} label={removeLabel} />}
+      {onDelete && <RemoveFile onRemove={onDelete} label={removeLabel} disabled={removeDisabled} />}
     </div>
   );
 };
