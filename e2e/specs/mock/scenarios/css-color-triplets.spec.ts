@@ -20,6 +20,7 @@ function scanStylesheet(css: string): { status: number; output: string } {
     mkdirSync(join(root, 'scripts'));
     mkdirSync(join(root, 'client/src'), { recursive: true });
     mkdirSync(join(root, 'packages/client/src'), { recursive: true });
+    mkdirSync(join(root, 'packages/chat/src'), { recursive: true });
     copyFileSync(resolve(repoRoot, 'scripts/css-colors.mts'), join(root, 'scripts/css-colors.mts'));
     symlinkSync(resolve(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
     writeFileSync(join(root, STYLESHEET), css);
