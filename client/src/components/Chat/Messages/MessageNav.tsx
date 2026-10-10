@@ -4,7 +4,9 @@ import { ChevronUp, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
 import { pxToRem, useRemScale } from '@librechat/client';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
 import { useMessagesConversation, useMessagesSubmission } from '~/Providers';
+import { parseWakeupMessage } from './Content/Parts/wakeup';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -12,6 +14,7 @@ import { cn } from '~/utils';
 type MessageEntry = {
   id: string;
   isUser: boolean;
+  isSystem?: boolean;
   preview: string;
   isEnd?: boolean;
   isStart?: boolean;
@@ -65,6 +68,9 @@ function rowText(node: HTMLElement): string {
 }
 
 export function buildEntry(id: string, msg: TMessage, node?: HTMLElement): MessageEntry {
+  const isSystem =
+    node?.querySelector('[data-system-turn]') != null ||
+    parseWakeupMessage(msg)?.kind === 'background_tool';
   const raw = msg.text?.trim() ? msg.text : extractPreviewFromContent(msg.content);
   const trimmed = raw.trim();
   /** Image-, tool-call- and reasoning-only messages carry no text part at all,
@@ -74,7 +80,8 @@ export function buildEntry(id: string, msg: TMessage, node?: HTMLElement): Messa
   const preview = trimmed === '' && node ? rowText(node) : trimmed;
   return {
     id,
-    isUser: !!msg.isCreatedByUser,
+    isUser: !!msg.isCreatedByUser && !isSystem,
+    ...(isSystem && { isSystem: true }),
     preview: truncatePreview(preview),
   };
 }
@@ -106,6 +113,7 @@ export function buildFallbackEntry(node: HTMLElement, id: string): MessageEntry 
   return {
     id,
     isUser,
+    ...(node.querySelector('[data-system-turn]') != null && { isSystem: true }),
     preview: truncatePreview(rowText(node)),
   };
 }
@@ -1654,10 +1662,15 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
         className="hide-scrollbar relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
       >
         {messageEntries.map((entry) => {
-          const label = localize(
-            entry.isUser ? 'com_ui_message_nav_go_to_user' : 'com_ui_message_nav_go_to_assistant',
-            { 0: previewTextFor(entry, localize, entry.id === pendingId).slice(0, 30) },
-          );
+          let labelKey: TranslationKeys = entry.isUser
+            ? 'com_ui_message_nav_go_to_user'
+            : 'com_ui_message_nav_go_to_assistant';
+          if (entry.isSystem) {
+            labelKey = 'com_ui_message_nav_go_to_system';
+          }
+          const label = localize(labelKey, {
+            0: previewTextFor(entry, localize, entry.id === pendingId).slice(0, 30),
+          });
           return (
             <MessageIndicator
               key={entry.id}

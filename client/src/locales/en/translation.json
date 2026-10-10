@@ -2275,6 +2275,7 @@
   "com_ui_message_model": "Model: {{0}}",
   "com_ui_message_nav": "Message navigation",
   "com_ui_message_nav_go_to_assistant": "Go to assistant message: {{0}}",
+  "com_ui_message_nav_go_to_system": "Go to System event: {{0}}",
   "com_ui_message_nav_go_to_user": "Go to user message: {{0}}",
   "com_ui_message_nav_next": "Navigate to next message",
   "com_ui_message_nav_no_preview": "No preview",
