@@ -1704,3 +1704,6 @@ endpoints:
 # ACL writes retry only conflicts on an individual document.
 # permissions:
 #   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.
+#   # Login sync updates only Entra ID groups already in the database instead of creating
+#   # every group the user is in. Unset defers to ENTRA_ID_SYNC_ONLY_EXISTING_GROUPS.
+#   syncOnlyExistingEntraGroups: false
