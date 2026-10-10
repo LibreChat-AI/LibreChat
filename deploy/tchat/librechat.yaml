@@ -128,6 +128,7 @@ endpoints:
         # embedding and transcription models are deliberately left out because
         # they cannot serve a chat completion.
         default:
+          - 'gpt-6-luna'
           - 'gpt-5.6-terra'
           - 'gpt-5.6-sol'
           - 'gpt-5.6-luna'
@@ -201,7 +202,7 @@ modelSpecs:
       default: true
       preset:
         endpoint: 'TensorGrid'
-        model: 'gpt-5.6-terra'
+        model: 'gpt-6-luna'
 
     - name: 'tensorgrid-claude'
       label: 'TensorGrid Claude'
