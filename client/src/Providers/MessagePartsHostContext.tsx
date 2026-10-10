@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
+import { setDefaultMessagePartsHost } from '@librechat/chat/react';
 import {
   useRecoilCallback,
   useRecoilState,
@@ -8,7 +9,6 @@ import {
   useResetRecoilState,
   useSetRecoilState,
 } from 'recoil';
-import type { ReactNode } from 'react';
 import type {
   MessagePartArtifactPanel,
   MessagePartsUserTextPreferences,
@@ -90,7 +90,10 @@ function useAppLiveAppliedSteer(steerId: string): [boolean, (steerId: string) =>
   return [isLiveApplied, consume];
 }
 
-/** The host the app's own views supply: the Recoil and Jotai stores and the app providers. */
+/**
+ * The host the app's own views supply: the Recoil and Jotai stores and the app providers. It is
+ * registered as the default, so parts rendered outside a provider read the app's stores.
+ */
 export const appMessagePartsHost: MessagePartsHost = {
   useMessage: useAppMessage,
   useFontSize: () => useAtomValue(fontSizeAtom),
@@ -116,19 +119,6 @@ export const appMessagePartsHost: MessagePartsHost = {
   useLiveAppliedSteer: useAppLiveAppliedSteer,
 };
 
-const MessagePartsHostContext = createContext<MessagePartsHost>(appMessagePartsHost);
+setDefaultMessagePartsHost(appMessagePartsHost);
 
-/** Supplies the host the message parts read from. Without one, parts read the app's stores. */
-export function MessagePartsHostProvider({
-  host,
-  children,
-}: {
-  host: MessagePartsHost;
-  children: ReactNode;
-}) {
-  return (
-    <MessagePartsHostContext.Provider value={host}>{children}</MessagePartsHostContext.Provider>
-  );
-}
-
-export const useMessagePartsHost = () => useContext(MessagePartsHostContext);
+export { MessagePartsHostProvider, useMessagePartsHost } from '@librechat/chat/react';

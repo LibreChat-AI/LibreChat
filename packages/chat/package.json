@@ -58,16 +58,24 @@
     "test:ci": "jest --ci"
   },
   "peerDependencies": {
-    "librechat-data-provider": "*"
+    "@librechat/client": "*",
+    "librechat-data-provider": "*",
+    "react": "^18.2.0 || ^19.1.0"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.29.5",
     "@babel/preset-react": "^7.22.15",
     "@babel/preset-typescript": "^7.21.0",
+    "@librechat/client": "*",
+    "@testing-library/react": "^14.0.0",
     "@types/jest": "^29.5.2",
+    "@types/react": "^18.2.11",
     "babel-plugin-replace-ts-export-assignment": "^0.0.2",
     "jest": "^30.2.0",
+    "jest-environment-jsdom": "^30.2.0",
     "librechat-data-provider": "*",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "rimraf": "^6.1.3",
     "tsdown": "0.22.2",
     "typescript": "^5.9.3"

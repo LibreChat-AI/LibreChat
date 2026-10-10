@@ -1,5 +1,4 @@
 import type {
-  TFile,
   TUser,
   TPreset,
   TMessage,
@@ -10,7 +9,6 @@ import type {
   ChatTransportRequest,
 } from 'librechat-data-provider';
 import type { SetStateAction, Dispatch, MouseEvent } from 'react';
-import type { TShowToast } from '@librechat/client';
 import type {
   ArmSteerParams,
   ArmSteerResponse,
@@ -270,33 +268,13 @@ export interface Transport {
   }) => Promise<AgentQueuedTurnReceipt>;
 }
 
-/** The message a part renders in, as its host reports it. */
-export type MessagePartMessage = {
-  /** Id of the message that owns the part, or `''` outside a message. */
-  messageId: string;
-  /** Whether that message is still generating. */
-  isSubmitting?: boolean;
-  /** Whether that message is the tail of the active branch. */
-  isLatestMessage?: boolean;
-  /** Content type of the part after this one, when known. */
-  nextType?: string;
-};
-
-/** How the viewer prefers user-authored text to display. */
-export type MessagePartsUserTextPreferences = {
-  /** Whether user-authored text renders as markdown. */
-  enableUserMsgMarkdown: boolean;
-  /** Whether long user-authored text collapses behind a toggle. */
-  collapseLongUserMessages: boolean;
-  /** Whether user turns are labeled with the user's name. */
-  usernameDisplay: boolean;
-};
-
-/** The signed-in user as the parts label it; `undefined` on a public share. */
-export type MessagePartsUser = { name?: string; username?: string } | undefined;
-
-/** Shows a transient notification. */
-export type MessagePartsToast = (toast: TShowToast) => void;
+export type {
+  MessagePartsHost,
+  MessagePartsUser,
+  MessagePartsToast,
+  MessagePartMessage,
+  MessagePartsUserTextPreferences,
+} from '@librechat/chat/react';
 
 /** The artifact panel as one tool artifact card drives it. */
 export type MessagePartArtifactPanel = {
@@ -317,52 +295,14 @@ export type MessagePartArtifactPanel = {
   consumeJustResolved: (messageId: string, fileId: string) => boolean;
 };
 
-/**
- * Everything the message part components read from the app, supplied by the view that renders
- * them through `MessagePartsHostProvider`. Members are hooks, called unconditionally by the parts
- * that need them, so keyed reads subscribe to one key only. A host must stay the same object for
- * the life of the tree it wraps. Setters are typed as React dispatchers, so the contract names no
- * state library.
- */
-export type MessagePartsHost = {
-  /** The message the calling part renders in. */
-  useMessage: () => MessagePartMessage;
-  /** The viewer's font size utility, applied to reasoning and summary text. */
-  useFontSize: () => string;
-  /** Whether the viewer wants reasoning expanded by default. */
-  useShowThinking: () => boolean;
-  /** Whether the viewer wants tool cards and tool groups expanded by default. */
-  useAutoExpandTools: () => boolean;
-  /** How the viewer prefers user-authored text to display. */
-  useUserTextPreferences: () => MessagePartsUserTextPreferences;
-  /** The signed-in user. */
-  useUser: () => MessagePartsUser;
-  /** The user's uploaded files keyed by file id, used to hydrate attachment metadata. */
-  useFileMap: () => Record<string, TFile> | undefined;
-  /** The notification function. */
-  useToast: () => MessagePartsToast;
-  /** Whether the sandbox for a code tool call is still starting. */
-  useSandboxStarting: (toolCallId: string) => boolean;
-  /** Live inner-call trace of one programmatic tool call in one message. */
-  usePtcTrace: (messageId: string, toolCallId: string) => PtcTrace;
-  /**
-   * Which mounted card owns the row for a tool artifact, so one file renders once across tool
-   * calls and messages. The key is the artifact id.
-   */
-  useToolArtifactClaim: (
-    artifactId: string,
-  ) => [string | null, Dispatch<SetStateAction<string | null>>];
-  /** The artifact panel, scoped to one artifact. */
-  useArtifactPanel: (artifactId: string) => MessagePartArtifactPanel;
-  /** Steers sent to a conversation that the server has not confirmed yet. */
-  usePendingSteers: (conversationId: string) => PendingSteer[];
-  /** Whether a steer in a conversation is being escalated to an interrupt. */
-  useSteerEscalating: (conversationId: string) => boolean;
-  /** The conversation a pane is showing, or `null`. */
-  usePaneConversationId: (index: number) => string | null;
-  /**
-   * Whether a steer was just applied live (and should animate in), plus a stable function that
-   * clears that mark for a steer id once the part has seen it.
-   */
-  useLiveAppliedSteer: (steerId: string) => [boolean, (steerId: string) => void];
-};
+/** The host members of parts the app still owns, whose types the app still owns too. */
+declare module '@librechat/chat/react' {
+  interface MessagePartsHost {
+    /** Live inner-call trace of one programmatic tool call in one message. */
+    usePtcTrace: (messageId: string, toolCallId: string) => PtcTrace;
+    /** The artifact panel, scoped to one artifact. */
+    useArtifactPanel: (artifactId: string) => MessagePartArtifactPanel;
+    /** Steers sent to a conversation that the server has not confirmed yet. */
+    usePendingSteers: (conversationId: string) => PendingSteer[];
+  }
+}

@@ -36,6 +36,7 @@
     "@dicebear/core": "^9.4.3",
     "@headlessui/react": "^2.1.2",
     "@hyperdx/browser": "^0.24.0",
+    "@librechat/chat": "*",
     "@librechat/client": "*",
     "@marsidev/react-turnstile": "^1.1.0",
     "@mcp-ui/client": "^5.7.0",
