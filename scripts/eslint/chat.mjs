@@ -97,10 +97,21 @@ const boundary = {
       }
 
       if (specifier === '~' || specifier.startsWith('~/')) return report('app');
+      const bareSegments = normalizePath(specifier).split('/');
+      /** A path alias (`baseUrl`, a bundler alias) can still name the app or an entry bare. */
+      if (
+        bareSegments.some(
+          (segment, index) => segment === 'client' && bareSegments[index + 1] === 'src',
+        )
+      ) {
+        return report('app');
+      }
       const name = packageName(specifier);
       if (name === '@librechat/frontend') return report('app');
       if (name === 'recoil') return report('recoil');
       if (name === self) return report('self');
+      const bareEntry = bareSegments.find((segment) => ENTRIES.has(segment) && segment !== 'react');
+      if (isCore && bareEntry) return report('entry', { entry: bareEntry });
       if (isCore && (UI_PACKAGES.has(name) || UI_SCOPES.some((scope) => name.startsWith(scope)))) {
         return report('ui');
       }
