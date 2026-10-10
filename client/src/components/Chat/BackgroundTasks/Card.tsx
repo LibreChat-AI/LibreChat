@@ -123,6 +123,21 @@ function TaskCard({
             )}
           </p>
         </div>
+        <TooltipAnchor
+          description={localize('com_ui_background_tasks_go_to_tool')}
+          portalElement={portalElement}
+          render={
+            <IconButton
+              variant="ghost"
+              size="xs"
+              shape="inset"
+              label={localize('com_ui_background_tasks_go_to_tool')}
+              onClick={() => setJumpUnavailable(!onJump(row))}
+            >
+              <ArrowUpRight className="size-3.5" aria-hidden="true" />
+            </IconButton>
+          }
+        />
         {row.status === 'running' && canStop && (
           <TooltipAnchor
             description={stopLabel}
@@ -142,21 +157,6 @@ function TaskCard({
             }
           />
         )}
-        <TooltipAnchor
-          description={localize('com_ui_background_tasks_go_to_tool')}
-          portalElement={portalElement}
-          render={
-            <IconButton
-              variant="ghost"
-              size="xs"
-              shape="inset"
-              label={localize('com_ui_background_tasks_go_to_tool')}
-              onClick={() => setJumpUnavailable(!onJump(row))}
-            >
-              <ArrowUpRight className="size-3.5" aria-hidden="true" />
-            </IconButton>
-          }
-        />
         {row.status === 'stopping' && <Spinner className="size-4 shrink-0" />}
       </div>
       {expandable && (
