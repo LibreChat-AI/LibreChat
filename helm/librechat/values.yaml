@@ -178,6 +178,7 @@ securityContext:
 
 service:
   type: ClusterIP # LoadBalancer, NodePort, ClusterIP
+  loadBalancerClass: ""
   port: 3080
   targetPort: 3080
   containerPort: 3080
