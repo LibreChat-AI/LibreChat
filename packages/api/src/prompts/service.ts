@@ -38,6 +38,7 @@ import {
 import { safeValidatePromptGroupUpdate, safeValidatePromptPayload } from './schemas';
 import { createLangfuseSourceResolver } from '../langfuse/promptSync';
 import { createLangfusePromptAdapter } from './langfuse';
+import { getSafeErrorMetadata } from '~/utils';
 import { withPromptStage } from './errors';
 
 type WithPromptFilters<T> = T & { readonly filters?: FiltersConfig };
@@ -91,7 +92,11 @@ export interface PromptService {
   ): Promise<PromptServiceResult<PromptRecord> | null>;
   incrementPromptGroupUsage(groupId: string): Promise<{ readonly numberOfGenerations: number }>;
   updatePromptGroup(
-    input: WithPromptFilters<{ readonly groupId: string; readonly updates: unknown }>,
+    input: WithPromptFilters<{
+      readonly groupId: string;
+      readonly updates: unknown;
+      readonly loadedGroup?: PromptGroupRecord | null;
+    }>,
   ): Promise<PromptServiceResult<PromptGroupRecord>>;
   makePromptProduction(
     input: WithPromptFilters<{
@@ -102,19 +107,36 @@ export interface PromptService {
   deletePrompt(input: {
     readonly groupId: string;
     readonly promptId: string;
+    readonly loadedRevision?: PromptRecord | null;
   }): Promise<PromptServiceResult<TDeletePromptResponse>>;
-  deletePromptGroup(groupId: string): Promise<{ readonly message: string }>;
+  deletePromptGroup(input: {
+    readonly groupId: string;
+    readonly loadedGroup?: PromptGroupRecord | null;
+    /** Reads the group's revision IDs after the read-only guard, for a caller that
+     *  clears a per-revision cache once the group (and its revisions) are gone. */
+    readonly collectPromptIds?: boolean;
+  }): Promise<
+    PromptServiceResult<{ readonly message: string; readonly promptIds?: readonly string[] }>
+  >;
 }
 
 function invalidInput<T>(message: string, details?: unknown): PromptServiceResult<T> {
   return { ok: false, error: { type: 'invalid_input', message, details } };
 }
 
-function unsupported(operation: PromptOperation): {
-  readonly ok: false;
-  readonly error: PromptServiceError;
-} {
+function unsupported(operation: PromptOperation): PromptServiceResult<never> {
   return { ok: false, error: { type: 'unsupported', operation } };
+}
+
+function readOnly(source: PromptGroupRecord['source']): PromptServiceResult<never> {
+  return { ok: false, error: { type: 'read_only', source } };
+}
+
+/** A group not sourced from the native adapter is managed externally and rejects
+ *  every mutation. A missing group is left to the write or read it guards; only a
+ *  group that is known and external triggers the rejection. */
+function isExternal(group: PromptGroupRecord): boolean {
+  return group.source !== 'native';
 }
 
 function inspect(
@@ -253,15 +275,13 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!prompt) {
         return invalidInput('Prompt is required');
       }
+      const group = await readGroup(groupId, loadedGroup);
+      if (group != null && isExternal(group)) {
+        return readOnly(group.source);
+      }
       const validation = safeValidatePromptPayload(prompt);
       if (!validation.success) {
         return invalidInput(validation.error.issues[0]?.message ?? 'Invalid prompt');
-      }
-      // A missing group is left to the write below; only a group that is known and not
-      // native blocks a native revision from being added to it.
-      const group = await readGroup(groupId, loadedGroup);
-      if (group != null && group.source !== 'native') {
-        return unsupported('savePrompt');
       }
       const rejection = inspect({ prompt: validation.data }, filters);
       if (rejection != null) {
@@ -297,7 +317,11 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
 
     incrementPromptGroupUsage: (groupId) => catalog.incrementPromptGroupUsage(groupId),
 
-    async updatePromptGroup({ groupId, updates, filters }) {
+    async updatePromptGroup({ groupId, updates, filters, loadedGroup }) {
+      const group = await readGroup(groupId, loadedGroup);
+      if (group != null && isExternal(group)) {
+        return readOnly(group.source);
+      }
       const validation = safeValidatePromptGroupUpdate(updates);
       if (!validation.success) {
         return invalidInput('Invalid request body', validation.error.errors);
@@ -317,6 +341,12 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
         return unsupported('makePromptProduction');
       }
       const revision = await readPrompt(promptId, loadedRevision);
+      if (revision != null) {
+        const group = await readGroup(revision.groupId);
+        if (group != null && isExternal(group)) {
+          return readOnly(group.source);
+        }
+      }
       const rejection = inspect({ prompt: revision ?? undefined }, filters);
       if (rejection != null) {
         return rejection;
@@ -330,10 +360,41 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!native.deletePrompt) {
         return unsupported('deletePrompt');
       }
+      const revision = await readPrompt(input.promptId, input.loadedRevision);
+      if (revision != null) {
+        const group = await readGroup(revision.groupId);
+        if (group != null && isExternal(group)) {
+          return readOnly(group.source);
+        }
+      }
       return { ok: true, value: await native.deletePrompt(input) };
     },
 
-    deletePromptGroup: (groupId) => catalog.deletePromptGroup(groupId),
+    async deletePromptGroup({ groupId, loadedGroup, collectPromptIds }) {
+      const group = await readGroup(groupId, loadedGroup);
+      if (group != null && isExternal(group)) {
+        return readOnly(group.source);
+      }
+      // Revisions are gone once the group is deleted, so their IDs are read here, after
+      // the guard, while they still exist. A read failure is logged and left empty
+      // rather than blocking the delete; exact-revision cache entries then expire by TTL.
+      let promptIds: readonly string[] | undefined;
+      if (collectPromptIds) {
+        try {
+          promptIds = (await withPromptStage('read', () => native.getPrompts(groupId))).map(
+            (revision) => revision._id,
+          );
+        } catch (error) {
+          logger.error('[deletePromptGroup] Failed to read revisions for group', {
+            groupId,
+            ...getSafeErrorMetadata(error),
+          });
+          promptIds = [];
+        }
+      }
+      const value = await catalog.deletePromptGroup(groupId);
+      return { ok: true, value: promptIds == null ? value : { ...value, promptIds } };
+    },
   };
 }
 

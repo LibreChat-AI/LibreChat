@@ -107,6 +107,11 @@ function sendRejection(res: Response, error: PromptServiceError): Response {
           : { error: error.message, details: error.details },
       );
   }
+  if (error.type === 'read_only') {
+    return res
+      .status(403)
+      .send({ code: 'read_only', error: 'Externally managed prompts are read-only' });
+  }
   return res.status(400).send({ error: 'Prompt operation is not available' });
 }
 
@@ -387,6 +392,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           groupId: param(req, 'groupId'),
           updates: req.body,
           filters: req.config?.filters,
+          loadedGroup: loadedGroup(req),
         });
         if (!result.ok) {
           return sendRejection(res, result.error);
@@ -486,7 +492,11 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           return res.status(400).send({ error: 'Invalid or missing groupId' });
         }
         const promptId = param(req, 'promptId');
-        const result = await service.deletePrompt({ groupId, promptId });
+        const result = await service.deletePrompt({
+          groupId,
+          promptId,
+          loadedRevision: loadedRevision(req),
+        });
         if (!result.ok) {
           return sendRejection(res, result.error);
         }
@@ -501,23 +511,18 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
     async deletePromptGroup(req, res) {
       try {
         const groupId = param(req, 'groupId');
-        /* Revisions are gone once the group is deleted, so their IDs are read first —
-         * only when a cache is wired, since otherwise nothing is cleared. A read failure
-         * leaves exact-revision cache entries to expire by TTL; it is logged and the
-         * delete proceeds. */
-        let promptIds: readonly string[] = [];
-        if (deps.invalidateLinkedPrompt) {
-          try {
-            promptIds = (await service.getPrompts({ groupId })).map((revision) => revision._id);
-          } catch (error) {
-            logger.error('[prompts] Failed to read revisions before deleting the group', {
-              groupId,
-              ...getSafeErrorMetadata(error),
-            });
-          }
+        const result = await service.deletePromptGroup({
+          groupId,
+          loadedGroup: loadedGroup(req),
+          // Only the service needs to read revision IDs before the group (and its
+          // revisions) are gone; it is pointless when no cache is wired to clear.
+          collectPromptIds: Boolean(deps.invalidateLinkedPrompt),
+        });
+        if (!result.ok) {
+          return sendRejection(res, result.error);
         }
-        const value = await service.deletePromptGroup(groupId);
-        await clearLinkedPromptCache(deps, req, groupId, promptIds);
+        const { promptIds, ...value } = result.value;
+        await clearLinkedPromptCache(deps, req, groupId, promptIds ?? []);
         return res.send(value);
       } catch (error) {
         logger.error('Error deleting prompt group', error);

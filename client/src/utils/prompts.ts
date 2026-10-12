@@ -1,5 +1,7 @@
 import { specialVariables } from 'librechat-data-provider';
 import type { TPromptGroup } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
+import { getResponseErrorCode } from './errors';
 
 /**
  * Detects the presence of variables in the given text, excluding those found in `specialVariables`.
@@ -93,4 +95,18 @@ export const mapPromptGroups = (groups: TPromptGroup[]): Record<string, TPromptG
     },
     {} as Record<string, TPromptGroup>,
   );
+};
+
+/**
+ * Maps a failed prompt mutation to a localized toast message. The server rejects a write
+ * to an externally managed (e.g. Langfuse) prompt group with `{ code: 'read_only' }`
+ * (`packages/api/src/prompts/handlers.ts`); every other failure keeps the caller's
+ * existing generic message.
+ */
+export const getPromptMutationErrorKey = (
+  error: unknown,
+  fallbackKey: TranslationKeys,
+): TranslationKeys => {
+  const code = getResponseErrorCode<'read_only'>(error);
+  return code === 'read_only' ? 'com_ui_prompt_read_only_error' : fallbackKey;
 };
