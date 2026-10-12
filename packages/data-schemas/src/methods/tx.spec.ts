@@ -2838,6 +2838,25 @@ describe('Mistral Large Pricing', () => {
     });
   });
 
+  it('should price Mistral Large 4 at its sale $0.68 / $2.09 per MTok', () => {
+    const modelVariations = [
+      'mistral-large-4',
+      'mistral-large-4-0',
+      'mistralai/mistral-large-4',
+    ];
+
+    modelVariations.forEach((model) => {
+      expect(getValueKey(model)).toBe('mistral-large-4');
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(0.68);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(2.09);
+    });
+  });
+
+  it('should not let Mistral Large 4 shadow the Mistral Large 3 rates', () => {
+    expect(getValueKey('mistral-large-2512')).not.toBe('mistral-large-4');
+    expect(getMultiplier({ model: 'mistral-large-latest', tokenType: 'prompt' })).toBe(0.5);
+  });
+
   it('should keep Mistral Large 2.1 (2411) at $2 / $6 per MTok', () => {
     expect(getValueKey('mistral-large-2411')).toBe('mistral-large-2411');
     expect(getMultiplier({ model: 'mistral-large-2411', tokenType: 'prompt' })).toBe(2);
@@ -3254,6 +3273,44 @@ describe('Opus 5.5 pricing', () => {
     }
     expect(tokenValues[key].prompt).toBeLessThan(tokenValues['claude-opus-5'].prompt);
     expect(cacheTokenValues[key].read).toBeLessThan(cacheTokenValues['claude-opus-5'].read);
+  });
+});
+
+describe('Haiku 5.5 pricing', () => {
+  it.each([
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ])('prices %s at $0.10 / $0.50 for prompts up to 100K tokens', (model) => {
+    for (const inputTokenCount of [1000, 99999, 100000]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(0.1);
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(0.5);
+    }
+  });
+
+  it.each([
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ])('prices %s at $0.50 / $2.50 for prompts over 100K tokens', (model) => {
+    for (const inputTokenCount of [100001, 500000, 1000000]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(0.5);
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(2.5);
+    }
+  });
+
+  it('applies Haiku 5.5 cache rates', () => {
+    expect(getCacheMultiplier({ model: 'claude-haiku-5-5', cacheType: 'write' })).toBe(0.125);
+    expect(getCacheMultiplier({ model: 'claude-haiku-5-5', cacheType: 'read' })).toBe(0.01);
+  });
+
+  it('keeps Haiku 4.5 on its own flat rates', () => {
+    expect(getValueKey('claude-haiku-4-5')).toBe('claude-haiku-4-5');
+    expect(premiumTokenValues['claude-haiku-4-5']).toBeUndefined();
+    expect(getMultiplier({ model: 'claude-haiku-4-5', tokenType: 'prompt' })).toBe(1);
+    expect(getMultiplier({ model: 'claude-haiku-4-5', tokenType: 'completion' })).toBe(5);
   });
 });
 
