@@ -391,6 +391,25 @@ describe('usePaletteEntries', () => {
       mockContext = { ...fullContext(), imageGen: toggle(true) };
       expect(imageGenRow()?.chipModes).toBeUndefined();
     });
+
+    it('adds a parameter menu only for an active model that declares options', () => {
+      mockStartupConfig = {
+        modelSpecs: {
+          imageList: [
+            { name: 'gpt-image', label: 'GPT Image', default: true, options: {} },
+            { name: 'hd', label: 'HD', options: { sizes: ['1536x1024'] } },
+          ],
+        },
+      };
+      mockContext = { ...fullContext(), imageGen: toggle(true) };
+      expect(imageGenRow()?.chipExtra).toBeUndefined();
+
+      mockContext = { ...fullContext(), imageGen: toggle('hd') };
+      expect(imageGenRow()?.chipExtra).toBeDefined();
+
+      mockContext = { ...fullContext(), imageGen: toggle(false) };
+      expect(imageGenRow()?.chipExtra).toBeUndefined();
+    });
   });
 
   /* Tchat: `webSearch.alwaysOn` equips search server-side on every chat. */

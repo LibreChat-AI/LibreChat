@@ -21,6 +21,7 @@ const {
   getCodeApiAuthHeaders,
   buildImageToolContext,
   resolveImageSpec,
+  resolveImageChoice,
   SET_MEMORY_TOOL_NAME,
   buildWebSearchContext,
   DELETE_MEMORY_TOOL_NAME,
@@ -230,10 +231,17 @@ const loadTools = async ({
 
   /** The Image Gen picker's selection, resolved the same way the ephemeral
    *  loader resolves it, so the tool generates with the model the user chose. */
-  const selectedImageModel = resolveImageSpec(
+  const selectedImage = resolveImageSpec(
     options.req?.body?.ephemeralAgent?.image_gen,
     options.req?.config?.modelSpecs?.imageList,
-  )?.model;
+  );
+  const selectedImageModel = selectedImage?.model;
+  /** What that model honours, and what the user pinned of it. */
+  const imageSpec = selectedImage?.spec;
+  const imageChoice = resolveImageChoice(
+    imageSpec,
+    options.req?.body?.ephemeralAgent?.image_options,
+  );
 
   const customConstructors = {
     github_compare: () =>
@@ -260,6 +268,8 @@ const loadTools = async ({
         isAgent: !!agent,
         req: options.req,
         imageModel: selectedImageModel,
+        imageSpec,
+        imageChoice,
         imageOutputType,
         fileStrategy,
         imageFiles,
@@ -282,6 +292,8 @@ const loadTools = async ({
         isAgent: !!agent,
         req: options.req,
         imageModel: selectedImageModel,
+        imageSpec,
+        imageChoice,
         imageFiles,
         userId: user,
         fileStrategy,

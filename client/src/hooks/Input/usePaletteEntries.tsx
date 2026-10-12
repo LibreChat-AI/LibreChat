@@ -35,10 +35,12 @@ import {
   useSkillActiveState,
   useImageGenAvailable,
 } from '~/hooks';
+import ImageOptionsMenu from '~/components/Chat/Menus/Endpoints/Tchat/ImageOptionsMenu';
+import { hasImageOptions } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptions';
 import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtils';
 import { filterSkillsForPopover } from '~/components/Chat/Input/SkillsCommand';
-import { useAgentsMapContext, useBadgeRowContext } from '~/Providers';
 import { useSkillsInfiniteQuery, useGetStartupConfig } from '~/data-provider';
+import { useAgentsMapContext, useBadgeRowContext } from '~/Providers';
 import store, { ephemeralAgentByConvoId } from '~/store';
 import { favoriteKey } from './useToolFavorites';
 import useLocalize from '~/hooks/useLocalize';
@@ -83,6 +85,8 @@ export interface PaletteEntry {
   /** Overrides `modes` on the bar chip only, for a choice too long to sit on
    *  the palette row as pills (Image Gen's model list). */
   chipModes?: PaletteMode[];
+  /** Extra control on the bar chip after its mode menu (Image Gen's parameters). */
+  chipExtra?: React.ReactNode;
   /** The catalog record behind a skill row, for the "Show all" dialog's card. */
   skill?: TSkillSummary;
   /** A server's own branding, for the "Show all" dialog's card. */
@@ -301,6 +305,7 @@ export default function usePaletteEntries({
       onUnpin: () => void,
       modes?: PaletteMode[],
       chipModes?: PaletteMode[],
+      chipExtra?: React.ReactNode,
     ) => {
       entries.push({
         key: `builtin:${itemId}`,
@@ -315,6 +320,7 @@ export default function usePaletteEntries({
         onUnpin,
         modes,
         chipModes,
+        chipExtra,
       });
     };
 
@@ -385,6 +391,7 @@ export default function usePaletteEntries({
       const activeName = specs.some((spec) => spec.name === selectedName)
         ? selectedName
         : defaultSpec?.name;
+      const activeSpec = specs.find((spec) => spec.name === activeName);
       pushTool(
         'image_gen',
         localize('com_ui_image_gen'),
@@ -403,6 +410,9 @@ export default function usePaletteEntries({
               onSelect: () => imageGen.debouncedChange({ value: spec.name }),
             }))
           : undefined,
+        imageGenOn && activeSpec != null && hasImageOptions(activeSpec) ? (
+          <ImageOptionsMenu spec={activeSpec} />
+        ) : undefined,
       );
     }
 

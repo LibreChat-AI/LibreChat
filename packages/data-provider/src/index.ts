@@ -25,6 +25,7 @@ export * from './parsers';
 /* custom/dynamic configurations  */
 export * from './generate';
 export * from './models';
+export * from './imageOptions';
 export * from './families';
 /* mcp */
 export * from './mcp';

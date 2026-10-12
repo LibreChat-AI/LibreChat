@@ -50,6 +50,7 @@ import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
+import { withImageChoice } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptions';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
@@ -471,9 +472,13 @@ export default function useChatFunctions({
 
     setShowStopButton(false);
 
-    const ephemeralAgent = getEphemeralAgent(conversationId ?? Constants.NEW_CONVO);
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
     const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
+    /* TCHAT: the pinned image parameters travel with the Image Gen selection. */
+    const ephemeralAgent = withImageChoice(
+      getEphemeralAgent(conversationId ?? Constants.NEW_CONVO),
+      startupConfig?.modelSpecs?.imageList,
+    );
     const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
     const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
     /**

@@ -227,17 +227,43 @@ modelSpecs:
   # the Gateway grants them, because an entry that 403s is worse than no entry.
   # Note that /v1/models is per user, so catalog visibility is not access.
   imageList:
+    # `options` lists the parameters each model honours, probed end to end
+    # through the Gateway on 2026-10-12, because a relay can accept a field and
+    # ignore it. Each parameter was kept only if it changed the output. The
+    # probe covered square, 3:2, 2:3, 16:9 and 4K sizes, and the 16:9, 21:9,
+    # 9:16, 1:1 and 1:4 ratios; the untested values in each list (portrait
+    # 16:9 sizes, the other documented ratios) follow the shape that passed.
+    # The composer offers them on the Image Gen chip and the tool schema
+    # narrows to them; `{}` means none worked, so neither the user nor the
+    # chat model gets a choice that would do nothing. Findings:
+    #   - gpt-image-2 (served first by the CLIProxy relay, #224) ignores size
+    #     and quality: every request came back ~1312x1199, quality low.
+    #   - gpt-image-2-h / 2.5 sunburst-h / flare-h honour any size up to
+    #     3840x2160 exactly; quality is ignored (always medium) and 2-h rejects
+    #     a transparent background.
+    #   - gpt-image-2.5-c keeps the requested shape but caps the pixels
+    #     (2048x1152 and 3840x2160 both return 1672x941), so 4K is not offered.
+    #   - Gemini 3 Pro (all three) and 3.1 Flash (+ preview) do 1K/2K/4K; only
+    #     3.1 Flash and its preview do 512. 3.1 Flash Lite is 1K only. 2.5
+    #     Flash ignores imageSize. The 1:4/4:1/1:8/8:1 ratios work on 3.1 Flash
+    #     and Flash Lite; 3 Pro preview and 2.5 Flash reject them, 3 Pro
+    #     silently substitutes another shape, and 3.1 Flash preview returns no
+    #     image.
     - name: 'gpt-image'
       label: 'GPT Image'
       description: "OpenAI's image model. Generation and editing."
       model: 'gpt-image-2'
       default: true
+      options: {}
 
     - name: 'gemini-image'
       label: 'Gemini Image'
       description: "Google's Gemini 3 Pro image model."
       model: 'gemini-3-pro-image-c'
       protocol: 'gemini'
+      options:
+        aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+        imageSizes: ['1K', '2K', '4K']
 
     # LinkAPI's image lineup (2026-09-29), each verified end to end through the
     # Gateway with this tool's own request shape. `-c`/`-h` and the Gemini
@@ -253,55 +279,79 @@ modelSpecs:
       label: 'GPT Image 2 · HD'
       description: 'Higher-detail GPT Image 2, flat price per image.'
       model: 'gpt-image-2-h'
+      options:
+        sizes: ['1024x1024', '1536x1024', '1024x1536', '2048x1152', '1152x2048', '3840x2160', '2160x3840']
 
     - name: 'gpt-image-2-5'
       label: 'GPT Image 2.5'
       description: "OpenAI's GPT Image 2.5, flat price per image."
       model: 'gpt-image-2.5-c'
+      options:
+        sizes: ['1024x1024', '1536x1024', '1024x1536', '2048x1152', '1152x2048']
 
     - name: 'gpt-image-2-5-sunburst'
       label: 'GPT Image 2.5 Sunburst'
       description: 'GPT Image 2.5 Sunburst variant, flat price per image.'
       model: 'gpt-image-2.5-sunburst-h'
+      options:
+        sizes: ['1024x1024', '1536x1024', '1024x1536', '2048x1152', '1152x2048', '3840x2160', '2160x3840']
 
     - name: 'gpt-image-2-5-flare'
       label: 'GPT Image 2.5 Flare'
       description: 'GPT Image 2.5 Flare variant, flat price per image.'
       model: 'gpt-image-2.5-flare-h'
+      options:
+        sizes: ['1024x1024', '1536x1024', '1024x1536', '2048x1152', '1152x2048', '3840x2160', '2160x3840']
 
     - name: 'gemini-3-pro-image'
       label: 'Gemini 3 Pro Image · per token'
       description: 'Gemini 3 Pro image model, billed by output tokens instead of per image.'
       model: 'gemini-3-pro-image'
       protocol: 'gemini'
+      options:
+        aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+        imageSizes: ['1K', '2K', '4K']
 
     - name: 'gemini-3-pro-image-preview'
       label: 'Gemini 3 Pro Image Preview'
       description: 'Preview release of Gemini 3 Pro image, flat price per image.'
       model: 'gemini-3-pro-image-preview'
       protocol: 'gemini'
+      options:
+        aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+        imageSizes: ['1K', '2K', '4K']
 
     - name: 'gemini-3-1-flash-image'
       label: 'Gemini 3.1 Flash Image'
       description: 'Faster, cheaper Gemini image model, billed by output tokens.'
       model: 'gemini-3.1-flash-image'
       protocol: 'gemini'
+      options:
+        aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1']
+        imageSizes: ['512', '1K', '2K', '4K']
 
     - name: 'gemini-3-1-flash-image-preview'
       label: 'Gemini 3.1 Flash Image Preview'
       description: 'Preview release of Gemini 3.1 Flash image, billed by output tokens.'
       model: 'gemini-3.1-flash-image-preview'
       protocol: 'gemini'
+      options:
+        aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
+        imageSizes: ['512', '1K', '2K', '4K']
 
     - name: 'gemini-3-1-flash-lite-image'
       label: 'Gemini 3.1 Flash Lite Image'
       description: 'Lightest Gemini image model, flat price per image.'
       model: 'gemini-3.1-flash-lite-image'
       protocol: 'gemini'
+      options:
+        aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1']
 
     - name: 'gemini-2-5-flash-image'
       label: 'Gemini 2.5 Flash Image'
       description: 'Previous-generation Gemini Flash image model, flat price per image.'
       model: 'gemini-2.5-flash-image'
       protocol: 'gemini'
+      options:
+        aspectRatios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']
 

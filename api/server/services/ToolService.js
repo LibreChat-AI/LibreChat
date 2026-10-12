@@ -74,6 +74,7 @@ const {
   splitAssistantMCPToolResult,
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
+  imageToolSchemasFor,
 } = require('@librechat/api');
 const {
   Time,
@@ -1368,6 +1369,12 @@ async function loadToolDefinitionsWrapper({
     return definitions;
   };
 
+  /** TCHAT: the selected Image Gen model's tool schemas, narrowed to what it honours. */
+  const imageToolSchemas = imageToolSchemasFor(
+    req.body?.ephemeralAgent,
+    req.config?.modelSpecs?.imageList,
+  );
+
   let {
     toolDefinitions,
     toolRegistry,
@@ -1392,6 +1399,7 @@ async function loadToolDefinitionsWrapper({
       mcpServerNames,
       rawServerNames: mcpRawServerNames,
       accessibleServerNames: defsAccessibleServerNames,
+      imageToolSchemas,
     },
     {
       isBuiltInTool,
@@ -1495,6 +1503,7 @@ async function loadToolDefinitionsWrapper({
           mcpServerNames,
           rawServerNames: mcpRawServerNames,
           accessibleServerNames: defsAccessibleServerNames,
+          imageToolSchemas,
         },
         {
           isBuiltInTool,

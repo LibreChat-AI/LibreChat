@@ -12,6 +12,8 @@ const {
   brokerUserHeaders,
   getProxyDispatcher,
   applyAxiosProxyConfig,
+  bindImageChoice,
+  imageToolSchema,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getFiles } = require('~/models');
@@ -156,6 +158,20 @@ function createOpenAIImageTools(fields = {}) {
   }
 
   const imageFiles = fields.imageFiles ?? [];
+  /** Tchat: what the Image Gen model honours, and what the user pinned of it. */
+  const { imageSpec, imageChoice } = fields;
+  const imageGenSchema = imageToolSchema(
+    oaiToolkit.image_gen_oai.name,
+    oaiToolkit.image_gen_oai.schema,
+    imageSpec,
+    imageChoice,
+  );
+  const imageEditSchema = imageToolSchema(
+    oaiToolkit.image_edit_oai.name,
+    oaiToolkit.image_edit_oai.schema,
+    imageSpec,
+    imageChoice,
+  );
 
   /**
    * Image Generation Tool
@@ -278,7 +294,7 @@ Error Message: ${error.message}`);
       ];
       return [response, { content, file_ids }];
     },
-    oaiToolkit.image_gen_oai,
+    { ...oaiToolkit.image_gen_oai, schema: imageGenSchema },
   );
 
   /**
@@ -461,10 +477,13 @@ Error Message: ${error.message || 'Unknown error'}`);
         }
       }
     },
-    oaiToolkit.image_edit_oai,
+    { ...oaiToolkit.image_edit_oai, schema: imageEditSchema },
   );
 
-  return [imageGenTool, imageEditTool];
+  return [
+    bindImageChoice(imageGenTool, imageSpec, imageChoice),
+    bindImageChoice(imageEditTool, imageSpec, imageChoice),
+  ];
 }
 
 module.exports = createOpenAIImageTools;

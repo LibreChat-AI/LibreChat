@@ -346,9 +346,10 @@ function Bar({
         label={entry.label}
         icon={entry.icon}
         trailing={
-          modeMenu != null || activate != null ? (
+          modeMenu != null || activate != null || entry.chipExtra != null ? (
             <span className="flex items-center gap-0.5">
               {modeMenu}
+              {entry.active ? entry.chipExtra : null}
               {activate}
             </span>
           ) : undefined

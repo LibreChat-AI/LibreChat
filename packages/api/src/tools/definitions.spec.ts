@@ -1173,6 +1173,33 @@ describe('definitions.ts', () => {
         const editDefs = result.toolDefinitions.filter((d) => d.name === 'image_edit_oai');
         expect(editDefs).toHaveLength(1);
       });
+
+      it('uses the narrowed image schemas for both halves of the toolkit (Tchat)', async () => {
+        mockIsBuiltInTool.mockImplementation((name) => name === 'image_gen_oai');
+        const narrowed = {
+          type: 'object' as const,
+          properties: { prompt: { type: 'string' as const } },
+          required: ['prompt'],
+        };
+
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: ['image_gen_oai'],
+            imageToolSchemas: { image_gen_oai: narrowed, image_edit_oai: narrowed },
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+
+        const genDef = result.toolDefinitions.find((d) => d.name === 'image_gen_oai');
+        const editDef = result.toolDefinitions.find((d) => d.name === 'image_edit_oai');
+        expect(genDef?.parameters).toBe(narrowed);
+        expect(editDef?.parameters).toBe(narrowed);
+      });
     });
 
     describe('toolkit mapping invariants', () => {

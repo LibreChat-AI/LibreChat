@@ -8,6 +8,7 @@ import {
   AuthType,
   authTypeSchema,
 } from './schemas';
+import { tImageOptionsSchema } from './imageOptions';
 import { getMaxSubagents } from './limits';
 
 type ModelSpecSubagentsConfig = Omit<AgentSubagentsConfig, 'graphs'>;
@@ -235,6 +236,8 @@ export const tImageSpecSchema = z.object({
   iconURL: z.union([z.string(), eModelEndpointSchema]).optional(),
   /** Used when the user has not chosen one. First entry wins if none is marked. */
   default: z.boolean().optional(),
+  /** Parameters this model honours, which the picker offers and the tool schema narrows to. */
+  options: tImageOptionsSchema.optional(),
 });
 
 export type TImageSpec = z.infer<typeof tImageSpecSchema>;

@@ -73,4 +73,50 @@ describe('OpenAIImageTools - Tchat broker identity', () => {
     const [config] = OpenAI.mock.calls[0];
     expect(config.defaultHeaders).toBeUndefined();
   });
+
+  /** Tchat image options: the real `applyImageChoice`/`imageToolSchema` decide what is sent. */
+  describe('image options', () => {
+    const imageSpec = {
+      name: 'gpt-image-2-hd',
+      label: 'HD',
+      model: 'gpt-image-2-h',
+      protocol: 'openai',
+      options: { sizes: ['1024x1024', '1536x1024'] },
+    };
+
+    it("sends the user's pinned size over the chat model's, and no unhonoured fields", async () => {
+      process.env.IMAGE_GEN_OAI_BASEURL = 'http://tchat-broker:8081/v1';
+      const generate = mockGeneration();
+      const [imageGenTool] = createOpenAIImageTools({
+        isAgent: true,
+        override: false,
+        req,
+        imageSpec,
+        imageChoice: { size: '1536x1024' },
+      });
+
+      expect(Object.keys(imageGenTool.schema.properties ?? {})).toEqual(['prompt']);
+      await imageGenTool.func({ prompt: 'a teal grid', size: '1024x1024', quality: 'high' });
+
+      const [body] = generate.mock.calls[0];
+      expect(body.size).toBe('1536x1024');
+      expect(body.quality).toBe('auto');
+      expect(body.background).toBe('auto');
+    });
+
+    it('drops a size the model does not list', async () => {
+      process.env.IMAGE_GEN_OAI_BASEURL = 'http://tchat-broker:8081/v1';
+      const generate = mockGeneration();
+      const [imageGenTool] = createOpenAIImageTools({
+        isAgent: true,
+        override: false,
+        req,
+        imageSpec,
+      });
+
+      await imageGenTool.func({ prompt: 'a teal grid', size: '3840x2160' });
+
+      expect(generate.mock.calls[0][0].size).toBe('auto');
+    });
+  });
 });

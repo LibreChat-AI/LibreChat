@@ -27,6 +27,7 @@ import type { CodeApprovalMode } from './code/approval';
 import type { EToolResources } from './types/tools';
 import type { SettingDefinition } from './generate';
 import type { TMinimalFeedback } from './feedback';
+import type { TImageChoice } from './imageOptions';
 import type { ContentTypes } from './types/runs';
 import type { ProviderId } from './providers';
 import type { Agent } from './types/agents';
@@ -138,6 +139,12 @@ export type TEphemeralAgent = {
    * conversations saved before the picker existed carry.
    */
   image_gen?: boolean | string;
+  /**
+   * Parameters the user pinned for the selected image model (Tchat). Each one
+   * overrides the chat model's tool argument; the server drops any value the
+   * entry's `options` do not list.
+   */
+  image_options?: TImageChoice;
   /**
    * Let the model dispatch this ephemeral agent's eligible tool calls in the
    * background (poll results via `check_background_task`). Requires the

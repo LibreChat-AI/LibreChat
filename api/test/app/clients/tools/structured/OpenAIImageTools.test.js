@@ -28,6 +28,8 @@ jest.mock('@librechat/api', () => ({
   brokerUserHeaders: jest.fn(() => ({})),
   getProxyDispatcher: jest.fn(() => undefined),
   applyAxiosProxyConfig: jest.fn(),
+  bindImageChoice: jest.fn((imageTool) => imageTool),
+  imageToolSchema: jest.fn((_name, schema) => schema),
 }));
 
 jest.mock('~/server/services/Files/strategies', () => ({

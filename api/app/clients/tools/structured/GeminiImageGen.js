@@ -12,6 +12,8 @@ const {
   getBalanceConfig,
   getEnvProxyDispatcher,
   getTransactionsConfig,
+  bindImageChoice,
+  imageToolSchema,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { spendTokens, getFiles } = require('~/models');
@@ -502,11 +504,17 @@ function createGeminiImageTool(fields = {}) {
     },
     {
       ...geminiToolkit.gemini_image_gen,
+      schema: imageToolSchema(
+        geminiToolkit.gemini_image_gen.name,
+        geminiToolkit.gemini_image_gen.schema,
+        fields.imageSpec,
+        fields.imageChoice,
+      ),
       responseFormat: 'content_and_artifact',
     },
   );
 
-  return geminiImageGenTool;
+  return bindImageChoice(geminiImageGenTool, fields.imageSpec, fields.imageChoice);
 }
 
 // Export both for compatibility

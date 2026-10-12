@@ -57,6 +57,8 @@ export interface LoadToolDefinitionsParams {
   codeExecutionContext?: CodeExecutionContext;
   codeEnvironments?: readonly CodeEnvironmentConfig[];
   getAppConfig?: CodeCapabilityConfigLoader;
+  /** TCHAT: image tool schemas narrowed to the selected Image Gen model, keyed by tool name. */
+  imageToolSchemas?: Record<string, JsonSchemaType>;
   /** Agent provider — Gemini/Vertex tool schemas get union-flattened for compatibility */
   provider?: Providers;
   /** Configured server names, used to resolve the tool-key boundary exactly */
@@ -142,6 +144,7 @@ export async function loadToolDefinitions(
     mcpServerNames,
     rawServerNames,
     accessibleServerNames,
+    imageToolSchemas,
   } = params;
   const {
     getOrFetchMCPServerTools,
@@ -206,7 +209,8 @@ export async function loadToolDefinitions(
       builtInToolDefs.push({
         name: toolName,
         description: registryDef.description,
-        parameters: registryDef.schema as JsonSchemaType | undefined,
+        parameters:
+          imageToolSchemas?.[toolName] ?? (registryDef.schema as JsonSchemaType | undefined),
       });
 
       const extraTools = toolkitExpansion[toolName as keyof typeof toolkitExpansion];
@@ -217,7 +221,8 @@ export async function loadToolDefinitions(
             builtInToolDefs.push({
               name: extra,
               description: extraDef.description,
-              parameters: extraDef.schema as JsonSchemaType | undefined,
+              parameters:
+                imageToolSchemas?.[extra] ?? (extraDef.schema as JsonSchemaType | undefined),
             });
           }
         }
