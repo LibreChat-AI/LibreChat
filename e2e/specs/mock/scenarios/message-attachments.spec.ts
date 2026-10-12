@@ -37,6 +37,7 @@ for (const definition of ['stock', 'clickhouse'] as const) {
       );
       const conversationId = randomUUID();
       const messageId = randomUUID();
+      const structuredId = randomUUID();
       const filesOnlyId = randomUUID();
       const { email } = getE2EUser();
       const files = [
@@ -61,9 +62,19 @@ for (const definition of ['stock', 'clickhouse'] as const) {
           files,
         },
         {
-          messageId: filesOnlyId,
+          messageId: structuredId,
           parentMessageId: messageId,
+          text: TEXT,
+          content: [{ type: 'text', text: TEXT }],
+          isCreatedByUser: true,
+          sender: 'User',
+          files,
+        },
+        {
+          messageId: filesOnlyId,
+          parentMessageId: structuredId,
           text: '',
+          content: [{ type: 'text', text: '' }],
           isCreatedByUser: true,
           sender: 'User',
           files: [files[0]],
@@ -76,6 +87,11 @@ for (const definition of ['stock', 'clickhouse'] as const) {
         const body = row.getByTestId('message-body');
         await expect(body).toContainText(TEXT);
         await expect(attachments.getByRole('button')).toHaveCount(2);
+        const structured = page.locator(`[id="${structuredId}"]`);
+        await expect(structured.getByTestId('message-attachments').getByRole('button')).toHaveCount(
+          2,
+        );
+        await expect(structured.getByTestId('message-body')).toContainText(TEXT);
         expect(await body.getByRole('button').count()).toBe(0);
         const bubbleColor = await body.evaluate((node) => getComputedStyle(node).backgroundColor);
         for (const button of await attachments.getByRole('button').all()) {

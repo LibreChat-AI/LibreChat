@@ -1,4 +1,4 @@
-import { TMessage } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import MessageQuotes from './MessageQuotes';
 import SkillPills from './SkillPills';
 
