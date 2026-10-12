@@ -152,6 +152,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Exporter selector labels
+*/}}
+{{- define "librechat-exporter.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "librechat-exporter.fullname" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "librechat.serviceAccountName" -}}
