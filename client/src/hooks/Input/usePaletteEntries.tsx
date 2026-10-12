@@ -1,4 +1,5 @@
 import React, { useMemo, useEffect, useRef, useCallback } from 'react';
+import { useAtom } from 'jotai';
 import { MCPIcon } from '@librechat/client';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import {
@@ -24,7 +25,7 @@ import {
   defaultAgentCapabilities,
   resolveAgentSkillsScope,
 } from 'librechat-data-provider';
-import type { TSkillSummary, TToolFavoriteType } from 'librechat-data-provider';
+import type { TImageChoice, TSkillSummary, TToolFavoriteType } from 'librechat-data-provider';
 import type { ItemStatus } from '~/components/SidePanel/Agents/Tools/items/types';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import {
@@ -35,8 +36,8 @@ import {
   useSkillActiveState,
   useImageGenAvailable,
 } from '~/hooks';
-import ImageOptionsMenu from '~/components/Chat/Menus/Endpoints/Tchat/ImageOptionsMenu';
-import { hasImageOptions } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptions';
+import { imageOptionChips } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptionChips';
+import { imageChoicesAtom } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptions';
 import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtils';
 import { filterSkillsForPopover } from '~/components/Chat/Input/SkillsCommand';
 import { useSkillsInfiniteQuery, useGetStartupConfig } from '~/data-provider';
@@ -85,8 +86,11 @@ export interface PaletteEntry {
   /** Overrides `modes` on the bar chip only, for a choice too long to sit on
    *  the palette row as pills (Image Gen's model list). */
   chipModes?: PaletteMode[];
-  /** Extra control on the bar chip after its mode menu (Image Gen's parameters). */
-  chipExtra?: React.ReactNode;
+  /** Bar-only chips placed right after this one while it is on (Image Gen's
+   *  parameters). They are never palette rows. */
+  chipCompanions?: PaletteEntry[];
+  /** False hides the bar chip's ✕; a parameter chip at Auto has nothing to clear. */
+  chipRemovable?: boolean;
   /** The catalog record behind a skill row, for the "Show all" dialog's card. */
   skill?: TSkillSummary;
   /** A server's own branding, for the "Show all" dialog's card. */
@@ -222,6 +226,20 @@ export default function usePaletteEntries({
      here could only mislead. */
   const webSearchAlwaysOn = startupConfig?.webSearch?.alwaysOn === true;
   const imageSpecs = startupConfig?.modelSpecs?.imageList;
+  /* Tchat: the parameters pinned per image model, which the parameter chips edit. */
+  const [imageChoices, setImageChoices] = useAtom(imageChoicesAtom);
+  const pickImageOption = useCallback(
+    (name: string, field: keyof TImageChoice, value: string | undefined) =>
+      setImageChoices((prev) => {
+        const next: TImageChoice = { ...(prev[name] ?? {}), [field]: value };
+        if (value == null) {
+          delete next[field];
+        }
+        const { [name]: _previous, ...rest } = prev;
+        return Object.keys(next).length > 0 ? { ...rest, [name]: next } : rest;
+      }),
+    [setImageChoices],
+  );
   const { user } = useAuthContext();
   /* Personalization is the user's own opt-out and the backend refuses to
      register the memory tools once it is off, so role access and the global
@@ -305,7 +323,7 @@ export default function usePaletteEntries({
       onUnpin: () => void,
       modes?: PaletteMode[],
       chipModes?: PaletteMode[],
-      chipExtra?: React.ReactNode,
+      chipCompanions?: PaletteEntry[],
     ) => {
       entries.push({
         key: `builtin:${itemId}`,
@@ -320,7 +338,7 @@ export default function usePaletteEntries({
         onUnpin,
         modes,
         chipModes,
-        chipExtra,
+        chipCompanions,
       });
     };
 
@@ -410,9 +428,14 @@ export default function usePaletteEntries({
               onSelect: () => imageGen.debouncedChange({ value: spec.name }),
             }))
           : undefined,
-        imageGenOn && activeSpec != null && hasImageOptions(activeSpec) ? (
-          <ImageOptionsMenu spec={activeSpec} />
-        ) : undefined,
+        imageGenOn && activeSpec != null
+          ? imageOptionChips({
+              spec: activeSpec,
+              choice: imageChoices[activeSpec.name],
+              pick: (field, value) => pickImageOption(activeSpec.name, field, value),
+              localize,
+            })
+          : undefined,
       );
     }
 
@@ -682,6 +705,8 @@ export default function usePaletteEntries({
     webSearchAlwaysOn,
     imageGenAvailable,
     imageSpecs,
+    imageChoices,
+    pickImageOption,
     artifactsEnabled,
     canUseFileSearch,
     fileSearchEnabled,

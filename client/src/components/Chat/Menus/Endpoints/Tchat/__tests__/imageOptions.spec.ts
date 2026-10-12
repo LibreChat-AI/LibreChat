@@ -1,11 +1,5 @@
 import type { TImageSpec } from 'librechat-data-provider';
-import {
-  IMAGE_CHOICES_KEY,
-  activeImageSpec,
-  hasImageOptions,
-  sizeLabel,
-  withImageChoice,
-} from '../imageOptions';
+import { IMAGE_CHOICES_KEY, activeImageSpec, sizeLabel, withImageChoice } from '../imageOptions';
 
 const list: TImageSpec[] = [
   { name: 'gpt-image', label: 'GPT Image', model: 'gpt-image-2', protocol: 'openai', options: {} },
@@ -34,12 +28,6 @@ describe('imageOptions', () => {
     expect(activeImageSpec('gemini', list)?.name).toBe('gemini');
     expect(activeImageSpec('retired', list)?.name).toBe('hd');
     expect(activeImageSpec(false, list)).toBeUndefined();
-  });
-
-  it('offers a menu only when an entry lists something', () => {
-    expect(hasImageOptions(list[0])).toBe(false);
-    expect(hasImageOptions(list[1])).toBe(true);
-    expect(hasImageOptions({ ...list[1], options: undefined })).toBe(false);
   });
 
   it('labels a size by the shape it makes', () => {

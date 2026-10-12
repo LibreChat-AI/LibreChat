@@ -28,16 +28,6 @@ export function activeImageSpec(
   return named ?? imageList.find((spec) => spec.default === true) ?? imageList[0];
 }
 
-/** Whether `spec` offers anything to pin; an entry without options gets no menu. */
-export function hasImageOptions(spec: TImageSpec | undefined): boolean {
-  const options = spec?.options;
-  return (
-    (options?.sizes?.length ?? 0) > 0 ||
-    (options?.aspectRatios?.length ?? 0) > 0 ||
-    (options?.imageSizes?.length ?? 0) > 0
-  );
-}
-
 function readChoices(): Record<string, TImageChoice> {
   try {
     const raw = localStorage.getItem(IMAGE_CHOICES_KEY);

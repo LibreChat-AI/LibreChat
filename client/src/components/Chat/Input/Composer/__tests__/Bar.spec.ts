@@ -26,6 +26,16 @@ describe('projectBarEntries', () => {
 
     expect(projectBarEntries([active, pinned, inactive, skill])).toEqual([active, pinned]);
   });
+
+  it('places companion chips right after their active entry only', () => {
+    const ratio = entry('image_option:aspectRatio', { active: true });
+    const imageGen = entry('image_gen', { active: true, chipCompanions: [ratio] });
+    const pinnedOff = entry('image_gen_off', { pinned: true, chipCompanions: [ratio] });
+    const other = entry('other', { active: true });
+
+    expect(projectBarEntries([imageGen, other])).toEqual([imageGen, ratio, other]);
+    expect(projectBarEntries([pinnedOff])).toEqual([pinnedOff]);
+  });
 });
 
 describe('chipMenuModes', () => {

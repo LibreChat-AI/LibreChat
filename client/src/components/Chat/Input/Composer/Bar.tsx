@@ -71,7 +71,11 @@ export function chipMenuModes(modes?: PaletteMode[]) {
 
 /** Projects palette state into the persistent quick controls in one pass. */
 export function projectBarEntries(entries: PaletteEntry[]): PaletteEntry[] {
-  return entries.filter((entry) => entry.section !== 'skill' && (entry.active || entry.pinned));
+  return entries
+    .filter((entry) => entry.section !== 'skill' && (entry.active || entry.pinned))
+    .flatMap((entry) =>
+      entry.active && entry.chipCompanions?.length ? [entry, ...entry.chipCompanions] : [entry],
+    );
 }
 
 interface RoundButtonProps {
@@ -340,21 +344,27 @@ function Bar({
       </IconButton>
     ) : null;
 
+    let removeChip: (() => void) | undefined = entry.onSelect;
+    if (pinnedInactive) {
+      removeChip = entry.onUnpin;
+    } else if (entry.chipRemovable === false) {
+      removeChip = undefined;
+    }
+
     return (
       <Chip
         key={entry.key}
         label={entry.label}
         icon={entry.icon}
         trailing={
-          modeMenu != null || activate != null || entry.chipExtra != null ? (
+          modeMenu != null || activate != null ? (
             <span className="flex items-center gap-0.5">
               {modeMenu}
-              {entry.active ? entry.chipExtra : null}
               {activate}
             </span>
           ) : undefined
         }
-        onRemove={pinnedInactive ? entry.onUnpin : entry.onSelect}
+        onRemove={removeChip}
         removeLabel={
           pinnedInactive
             ? localize('com_ui_unpin')

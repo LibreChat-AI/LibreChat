@@ -392,23 +392,37 @@ describe('usePaletteEntries', () => {
       expect(imageGenRow()?.chipModes).toBeUndefined();
     });
 
-    it('adds a parameter menu only for an active model that declares options', () => {
+    it('adds a chip per honoured parameter only while a model with options is on', () => {
       mockStartupConfig = {
         modelSpecs: {
           imageList: [
             { name: 'gpt-image', label: 'GPT Image', default: true, options: {} },
-            { name: 'hd', label: 'HD', options: { sizes: ['1536x1024'] } },
+            {
+              name: 'gemini',
+              label: 'Gemini',
+              protocol: 'gemini',
+              options: { aspectRatios: ['1:1', '16:9'], imageSizes: ['1K', '4K'] },
+            },
           ],
         },
       };
       mockContext = { ...fullContext(), imageGen: toggle(true) };
-      expect(imageGenRow()?.chipExtra).toBeUndefined();
+      expect(imageGenRow()?.chipCompanions).toEqual([]);
 
-      mockContext = { ...fullContext(), imageGen: toggle('hd') };
-      expect(imageGenRow()?.chipExtra).toBeDefined();
+      mockContext = { ...fullContext(), imageGen: toggle('gemini') };
+      const chips = imageGenRow()?.chipCompanions ?? [];
+      expect(chips.map((chip) => chip.key)).toEqual([
+        'image_option:aspectRatio',
+        'image_option:imageSize',
+      ]);
+      expect(chips[0].chipModes?.map((mode) => mode.id)).toEqual(['auto', '1:1', '16:9']);
+      expect(chips[0].chipModes?.find((mode) => mode.active)?.id).toBe('auto');
+      expect(chips[0].chipRemovable).toBe(false);
+      // Parameter chips live on the bar only, never as palette rows.
+      expect(keysOf(entries().result)).not.toContain('image_option:aspectRatio');
 
       mockContext = { ...fullContext(), imageGen: toggle(false) };
-      expect(imageGenRow()?.chipExtra).toBeUndefined();
+      expect(imageGenRow()?.chipCompanions).toBeUndefined();
     });
   });
 

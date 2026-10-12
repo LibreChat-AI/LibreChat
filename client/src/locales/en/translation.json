@@ -1854,7 +1854,7 @@
   "com_ui_image_edited": "Image edited",
   "com_ui_image_gen": "Image Gen",
   "com_ui_image_gen_failed": "Image generation failed",
-  "com_ui_image_options": "Image options",
+  "com_ui_image_size": "Image size",
   "com_ui_image_model_moved": "{{0}} only makes images, so it now runs through Image Gen. This chat continues on {{1}}.",
   "com_ui_import": "Import",
   "com_ui_import_conversation_error": "There was an error importing your conversations",
