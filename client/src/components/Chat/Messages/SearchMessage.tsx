@@ -121,6 +121,7 @@ function SearchMessage({ message }: Pick<TMessageProps, 'message'>) {
         className={cn('border-border-light mx-auto border-b px-4 py-4', getMessageRowWidthClass())}
       >
         <MessageRow
+          message={message}
           id={message.messageId}
           icon={<Icon iconData={iconData} />}
           label={messageLabel}
