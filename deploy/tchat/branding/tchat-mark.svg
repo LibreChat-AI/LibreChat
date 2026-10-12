@@ -1,14 +1,12 @@
-<!-- Placeholder Tchat wordmark, drawn from the TensorGrid palette (#0c0f1a
-     ground, #4f8cff accent). Replace with the real asset; the nginx alias in
-     deploy/tchat/nginx.conf picks up whatever file sits here. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="Tchat">
-  <defs>
-    <linearGradient id="tchat-mark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#4f8cff"/>
-      <stop offset="100%" stop-color="#8b5cf6"/>
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="88" height="88" rx="22" fill="url(#tchat-mark)"/>
-  <path d="M30 34h36M48 34v30" stroke="#0c0f1a" stroke-width="8" stroke-linecap="round"/>
-  <circle cx="48" cy="72" r="4.5" fill="#0c0f1a"/>
+<!-- Tchat mark: the TensorGrid chip family (TensorGrid/frontend/design/brand/tg-mark.svg)
+     with its cells arranged as a T. Source of truth is branding/source/; regenerate
+     everything in branding/ with: python3 deploy/tchat/branding/source/build.py -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Tchat">
+  <rect width="24" height="24" rx="6" fill="#081312"/>
+  <path d="M12 8.5V15.5" stroke="#df911a" stroke-width="1.5" opacity="0.85"/>
+  <rect x="4" y="4" width="4.5" height="4.5" rx="1.1" fill="#df911a"/>
+  <rect x="9.75" y="4" width="4.5" height="4.5" rx="1.1" fill="#df911a"/>
+  <rect x="16.25" y="4.75" width="3" height="3" rx="0.6" fill="none" stroke="#df911a" stroke-width="1.5"/>
+  <path d="M12 10.25 13.75 12 12 13.75 10.25 12Z" fill="#df911a"/>
+  <rect x="10.5" y="16.25" width="3" height="3" rx="0.6" fill="none" stroke="#df911a" stroke-width="1.5"/>
 </svg>

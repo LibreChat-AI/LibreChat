@@ -1,0 +1,12 @@
+<!-- Tchat mark: the TensorGrid chip family (TensorGrid/frontend/design/brand/tg-mark.svg)
+     with its cells arranged as a T. Source of truth is branding/source/; regenerate
+     everything in branding/ with: python3 deploy/tchat/branding/source/build.py -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Tchat">
+  <rect width="24" height="24" rx="6" fill="#081312"/>
+  <path d="M12 8.5V15.5" stroke="#df911a" stroke-width="1.5" opacity="0.85"/>
+  <rect x="4" y="4" width="4.5" height="4.5" rx="1.1" fill="#df911a"/>
+  <rect x="9.75" y="4" width="4.5" height="4.5" rx="1.1" fill="#df911a"/>
+  <rect x="16.25" y="4.75" width="3" height="3" rx="0.6" fill="none" stroke="#df911a" stroke-width="1.5"/>
+  <path d="M12 10.25 13.75 12 12 13.75 10.25 12Z" fill="#df911a"/>
+  <rect x="10.5" y="16.25" width="3" height="3" rx="0.6" fill="none" stroke="#df911a" stroke-width="1.5"/>
+</svg>

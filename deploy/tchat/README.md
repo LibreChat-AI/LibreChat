@@ -138,8 +138,10 @@ builds this fork (`tchat-librechat`), so the compiled-in items -- the
 loading-screen background colour and the structure of `client/index.html` --
 can be changed directly if branding ever needs to reach them.
 
-To swap the placeholder marks, drop new files into `branding/` under the same
-names and redeploy — no image rebuild, since `branding/` is bind-mounted.
+The mark is the TensorGrid chip family arranged as a T. Its sources live in
+`branding/source/`; `python3 deploy/tchat/branding/source/build.py`
+regenerates every file nginx serves under the same names. Then redeploy — no
+image rebuild, since `branding/` is bind-mounted.
 
 ## Deploy
 
