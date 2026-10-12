@@ -121,7 +121,10 @@ export default function MessageRow({
     Boolean(
       message?.text?.trim() ||
         message?.content?.some(
-          (part) => part != null && (part.type !== ContentTypes.TEXT || part.text?.trim()),
+          (part) =>
+            part != null &&
+            (part.type !== ContentTypes.TEXT ||
+              (typeof part.text === 'string' ? part.text : part.text?.value)?.trim()),
         ) ||
         message?.error ||
         message?.unfinished ||

@@ -10,7 +10,7 @@ import {
 import { getE2EUser } from '../../../setup/user';
 
 const IMAGE =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 const TEXT = 'Keep these attachments separate from the text bubble.';
 
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -51,7 +51,9 @@ for (const definition of ['stock', 'clickhouse'] as const) {
           height: 180,
         },
       ];
-      await seedConversations(email, [{ conversationId, title: 'Separate attachments' }]);
+      await seedConversations(email, [
+        { conversationId, title: 'Separate attachments', updatedAt: new Date() },
+      ]);
       await seedMessages(email, conversationId, [
         {
           messageId,

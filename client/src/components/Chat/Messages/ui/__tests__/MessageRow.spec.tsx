@@ -82,6 +82,7 @@ describe('MessageRow', () => {
   it.each([
     { text: '' },
     { text: '  ', content: [{ type: 'text', text: '' }] },
+    { text: '', content: [{ type: 'text', text: { value: '', annotations: [] } }] },
   ] as Partial<TMessage>[])(
     'does not leave an empty bubble for attachments-only messages: %j',
     (overrides) => {
@@ -94,6 +95,7 @@ describe('MessageRow', () => {
   );
 
   it.each([
+    { content: [{ type: 'text', text: { value: 'Assistant prompt', annotations: [] } }] },
     { quotes: ['Excerpt'] },
     { manualSkills: ['review'] },
     { alwaysAppliedSkills: ['review'] },
