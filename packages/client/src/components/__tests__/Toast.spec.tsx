@@ -3,11 +3,20 @@ import { Provider } from 'jotai';
 import * as RadixToast from '@radix-ui/react-toast';
 import { render, act, fireEvent } from '@testing-library/react';
 import type { ReactElement } from 'react';
+import type { TShowToast } from '~/common';
 import { useToast } from '~/hooks';
 import { Toast } from '../Toast';
 
 const MESSAGE = 'The file is too large.';
 const REPLACEMENT = 'The upload finished.';
+const NOTICE = 'Still uploading report.pdf';
+
+let show: (toast: TShowToast) => void = () => undefined;
+
+function Trigger(): null {
+  show = useToast(0).showToast;
+  return null;
+}
 
 function ShowOnMount({ duration }: { duration?: number }): null {
   const { showToast } = useToast(0);
@@ -66,6 +75,15 @@ function advance(ms: number): void {
     jest.advanceTimersByTime(ms);
   });
 }
+
+function showNow(toast: TShowToast): void {
+  act(() => {
+    show(toast);
+    jest.advanceTimersByTime(0);
+  });
+}
+
+const persistentError: TShowToast = { message: MESSAGE, status: 'error', duration: Infinity };
 
 describe('Toast duration', () => {
   beforeEach(() => {
@@ -141,5 +159,54 @@ describe('Toast duration', () => {
 
     advance(2000);
     expect(state()).not.toBe('open');
+  });
+});
+
+describe('Persistent error toast', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    renderToast(<Trigger />);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test.each(['warning', 'success', 'info'] as const)(
+    'is not replaced by a later %s toast',
+    (status) => {
+      showNow(persistentError);
+      showNow({ message: NOTICE, status, duration: 10000 });
+      advance(60000);
+
+      expect(state()).toBe('open');
+      expect(message()).toContain(MESSAGE);
+      expect(message()).not.toContain(NOTICE);
+    },
+  );
+
+  test('is replaced by a later error', () => {
+    showNow(persistentError);
+    showNow({ message: REPLACEMENT, status: 'error', duration: Infinity });
+
+    expect(message()).toContain(REPLACEMENT);
+  });
+
+  test('lets a later toast show once it is dismissed', () => {
+    showNow(persistentError);
+    act(() => {
+      fireEvent.click(document.querySelector('[aria-label="com_ui_close"]') as Element);
+    });
+    showNow({ message: NOTICE, status: 'warning', duration: 10000 });
+
+    expect(state()).toBe('open');
+    expect(message()).toContain(NOTICE);
+  });
+
+  test('does not hold a self-dismissing error', () => {
+    showNow({ message: MESSAGE, status: 'error', duration: 5000 });
+    showNow({ message: NOTICE, status: 'warning', duration: 10000 });
+
+    expect(message()).toContain(NOTICE);
   });
 });
