@@ -147,6 +147,7 @@ export async function applyContextToAgent({
   logger,
   configServers,
   user,
+  mcpServers: fixedMcpServers,
 }: {
   agent: AgentWithTools;
   runContext?: RunContext;
@@ -156,6 +157,8 @@ export async function applyContextToAgent({
   logger?: Logger;
   configServers?: Record<string, ParsedServerConfig>;
   user?: MCPLookupUser;
+  /** Servers whose instructions to add; `[]` when the turn context renders them from its anchor. */
+  mcpServers?: string[];
 }): Promise<void> {
   const baseInstructions = agent.instructions || '';
   contributeContext(agent, ContextPartKeys.rag, runContext.rag);
@@ -163,7 +166,9 @@ export async function applyContextToAgent({
   contributeContext(agent, ContextPartKeys.agentFiles, runContext.agentFiles);
 
   try {
-    const mcpServers = ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent);
+    const mcpServers =
+      fixedMcpServers ??
+      (ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent));
     const mcpInstructions = await getMCPInstructionsForServers(
       mcpServers,
       mcpManager,

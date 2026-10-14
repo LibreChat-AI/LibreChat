@@ -522,6 +522,96 @@ describe('definitions.ts', () => {
         expect(result.mcpResolution).toEqual({ expectedToolCount: 0, resolvedToolCount: 0 });
       });
 
+      it('expands an mcp_all placeholder in tool name order regardless of catalog key order', async () => {
+        const makeEntry = (name: string) => ({
+          function: {
+            name,
+            description: name,
+            parameters: { type: 'object', properties: {} },
+          },
+        });
+        const names = ['zeta_mcp_warehouse', 'alpha_mcp_warehouse', 'mid_mcp_warehouse'];
+        const load = async (keys: string[]) => {
+          const catalog = Object.fromEntries(keys.map((k) => [k, makeEntry(k)]));
+          const result = await loadToolDefinitions(
+            {
+              userId: 'user-123',
+              agentId: 'agent-123',
+              tools: ['sys__all__sys_mcp_warehouse'],
+              sortMcpTools: true,
+            },
+            {
+              getOrFetchMCPServerTools: jest.fn().mockResolvedValue(catalog),
+              isBuiltInTool: mockIsBuiltInTool,
+            },
+          );
+          return result.toolDefinitions.map((d) => d.name);
+        };
+
+        const forward = await load(names);
+        const reversed = await load([...names].reverse());
+        expect(forward).toEqual(['alpha_mcp_warehouse', 'mid_mcp_warehouse', 'zeta_mcp_warehouse']);
+        expect(reversed).toEqual(forward);
+      });
+
+      it('keeps the catalog order of an mcp_all placeholder without sortMcpTools', async () => {
+        const catalog = Object.fromEntries(
+          ['zeta_mcp_warehouse', 'alpha_mcp_warehouse'].map((name) => [
+            name,
+            {
+              function: { name, description: name, parameters: { type: 'object', properties: {} } },
+            },
+          ]),
+        );
+        const result = await loadToolDefinitions(
+          { userId: 'user-123', agentId: 'agent-123', tools: ['sys__all__sys_mcp_warehouse'] },
+          {
+            getOrFetchMCPServerTools: jest.fn().mockResolvedValue(catalog),
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+        expect(result.toolDefinitions.map((d) => d.name)).toEqual([
+          'zeta_mcp_warehouse',
+          'alpha_mcp_warehouse',
+        ]);
+      });
+
+      it('keeps server groups in the requested order and sorts tools only inside each placeholder', async () => {
+        const entry = (name: string) => ({
+          function: { name, description: name, parameters: { type: 'object', properties: {} } },
+        });
+        const catalogs: Record<string, Record<string, unknown>> = {
+          one: { b_mcp_one: entry('b_mcp_one'), a_mcp_one: entry('a_mcp_one') },
+          two: { d_mcp_two: entry('d_mcp_two'), c_mcp_two: entry('c_mcp_two') },
+          empty: {},
+        };
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [
+              'sys__all__sys_mcp_two',
+              'sys__all__sys_mcp_empty',
+              'sys__all__sys_mcp_one',
+              'z_mcp_one',
+            ],
+            sortMcpTools: true,
+          },
+          {
+            getOrFetchMCPServerTools: jest
+              .fn()
+              .mockImplementation(async (_u: string, server: string) => catalogs[server] ?? null),
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+        expect(result.toolDefinitions.map((d) => d.name)).toEqual([
+          'c_mcp_two',
+          'd_mcp_two',
+          'a_mcp_one',
+          'b_mcp_one',
+        ]);
+      });
+
       it('refreshes a non-empty server catalog once when the selected tool is missing', async () => {
         const selectedTool = 'run_query_mcp_warehouse';
         const staleTools = {

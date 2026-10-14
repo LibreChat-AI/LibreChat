@@ -459,6 +459,9 @@ type RunAgent = Omit<Agent, 'tools'> & {
   contextParts?: Readonly<Record<string, string>>;
   /** Set by `applyTurnContext`: the turn context delivers the runtime context. */
   runtimeInLedger?: boolean;
+  /** Set by the turn context's tool plan: binds the SDK's dispatcher tool. */
+  toolDispatch?: boolean;
+  liveTools?: { toolDefinitions?: LCTool[]; toolRegistry?: LCToolRegistry };
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -2541,9 +2544,18 @@ export async function createRun({
      * has to gate the whole block (clearing fields post-return can't
      * undo registry writes).
      */
-    let toolDefinitions = agent.toolDefinitions ?? [];
-    let toolRegistry = agent.toolRegistry;
-    if (!isSubagent && discoveredTools.size > 0 && agent.toolRegistry) {
+    /** Isolated children see none of the turn context's announcements: they bind the tools as loaded. */
+    const loaded = isSubagent ? agent.liveTools : undefined;
+    let toolDefinitions = (loaded ? loaded.toolDefinitions : agent.toolDefinitions) ?? [];
+    let toolRegistry = loaded ? loaded.toolRegistry : agent.toolRegistry;
+    /** With the dispatcher, found tools stay deferred and are called through it. */
+    const toolDispatch = !isSubagent && agent.toolDispatch === true;
+    const dispatchable = new Set(
+      toolDispatch
+        ? toolDefinitions.filter((def) => def.defer_loading === true).map((def) => def.name)
+        : [],
+    );
+    if (!toolDispatch && !isSubagent && discoveredTools.size > 0 && agent.toolRegistry) {
       overrideDeferLoadingForDiscoveredTools(agent.toolRegistry, discoveredTools);
 
       /** Add discovered tools' definitions so the LLM can see their schemas */
@@ -2557,7 +2569,7 @@ export async function createRun({
           toolDefinitions = [...toolDefinitions, toolDef];
         }
       }
-    } else if (isSubagent && agent.toolRegistry) {
+    } else if (isSubagent && toolRegistry) {
       /**
        * Subagent children: hand the child a deep-enough clone of the
        * registry so later parent-graph builds (e.g. when the same
@@ -2568,8 +2580,9 @@ export async function createRun({
        * through to the tool object itself, so a shallow Map copy
        * alone wouldn't isolate the flag.
        */
+      const parentRegistry = toolRegistry;
       toolRegistry = new Map();
-      for (const [name, tool] of agent.toolRegistry.entries()) {
+      for (const [name, tool] of parentRegistry.entries()) {
         toolRegistry.set(name, { ...tool });
       }
       /** Child's own `toolDefinitions` list gets the same shallow-
@@ -2661,6 +2674,12 @@ export async function createRun({
       maxToolResultChars: agent.maxToolResultChars,
       initialSessions: buildAgentInitialToolSessions(agent, initialSessions),
       codeSessionKey: agent.codeSessionKey,
+      ...(toolDispatch && {
+        /** Only tools the turn context declared as deferred are reachable through the dispatcher. */
+        toolDispatch: {
+          canDispatch: (name: string) => dispatchable.has(name),
+        },
+      }),
     };
     if (runFilesActive && runFiles != null && (isSubagent || agent.subagents?.enabled === true)) {
       graphTools = [...(graphTools ?? []), ...createRunFileTools(runFiles, agent.id, signal)];

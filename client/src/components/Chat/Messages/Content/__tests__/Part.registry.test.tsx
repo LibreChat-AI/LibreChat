@@ -188,4 +188,23 @@ describe('Part registry parity with the replaced switch', () => {
   it.each(TOOL_NAMES)('routes a %s call with args %s to the same card', (name, args, expected) => {
     expect(drawn(agentCall(name, args))).toBe(expected);
   });
+
+  it('routes a dispatcher call to the card of the tool it ran', () => {
+    const dispatched = asPart({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'call_1',
+        name: 'call_tool',
+        args: '{"name":"web_search","arguments":"{}"}',
+        output: 'done',
+        progress: 1,
+        dispatched: { name: Tools.web_search, args: '{"query":"news"}' },
+      },
+    });
+    expect(drawn(dispatched)).toBe('web-search');
+    expect(drawn(agentCall('call_tool', '{"name":"set_memory","arguments":"{}"}'))).toBe(
+      'memory-call',
+    );
+    expect(drawn(agentCall('call_tool', '{"name":"set_mem'))).toBe('tool-call');
+  });
 });

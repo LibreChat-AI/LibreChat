@@ -2,8 +2,10 @@ import { EModelEndpoint, formatPromptTimestamp } from 'librechat-data-provider';
 import type { ContextAgent } from '../systemParts';
 import { AGENT_TEMPORAL_INSTRUCTIONS_KEY, hasConversationDateContext } from '../contextUpdates';
 import { agentHasInlineMemoryTools, formatMemoryContext, memoryInstructions } from '../memory';
+import type { LiveToolGroups, ToolPlanAgent } from './tools';
 import { QUEUED_CODE_FILES_CONTEXT_KEY } from '~/files/code/queued';
 import { generateArtifactsPrompt } from '~/prompts';
+import { toolGroupSource } from './tools';
 
 type Instant = string | number | Date;
 
@@ -13,7 +15,7 @@ export interface ContextEntry {
   value: string | null;
 }
 
-export interface TurnContextAgent extends ContextAgent {
+export interface TurnContextAgent extends ContextAgent, ToolPlanAgent {
   id?: string;
   provider?: string;
   artifacts?: unknown;
@@ -33,6 +35,8 @@ export interface SendSnapshot {
   memory?: string;
   /** Context retrieved for the text of the sent message (RAG). */
   rag?: string;
+  /** The agent's tool groups; undefined leaves its tools as loaded. */
+  toolGroups?: LiveToolGroups;
 }
 
 /**
@@ -49,6 +53,8 @@ export interface ContextSource {
   key: string;
   kind: 'state' | 'message';
   whenOff?: 'announce' | 'silent' | 'withhold';
+  /** Keys of a prefix source keep the order they are collected in instead of name order. */
+  keepOrder?: boolean;
   collect: (snapshot: SendSnapshot) => Iterable<[string, string]>;
   /**
    * The value an update stores for a state source whose live value changed, when it is
@@ -60,12 +66,18 @@ export interface ContextSource {
   apply?: (previous: string | null, stored: string) => string;
   /** System prompt text of an anchored value; omitted when the anchor states it elsewhere. */
   renderAnchor?: (key: string, value: string, agent: TurnContextAgent) => string;
-  /** The update line(s); `previous` is what the model knew before, null when nothing. */
+  /**
+   * The update line(s); `previous` is what the model knew before, null when nothing.
+   * `wasKnown`: the key had a value earlier in the segment (anchored or announced).
+   */
   renderUpdate: (
     key: string,
     value: string | null,
     previous: string | null,
     agent: TurnContextAgent,
+    wasKnown?: boolean,
+    /** The last value the segment had for the key before it was switched off, if any. */
+    lastSeen?: string | null,
   ) => string;
 }
 
@@ -89,12 +101,14 @@ export function createSendSnapshot({
   req,
   memories,
   rag,
+  toolGroups,
 }: {
   agent: TurnContextAgent;
   agents: Iterable<{ dynamicToolContextMap?: Record<string, unknown> } | null | undefined>;
   req: SnapshotRequest;
   memories?: { withKeys?: string; withoutKeys?: string } | null;
   rag?: string | null;
+  toolGroups?: LiveToolGroups;
 }): SendSnapshot {
   return {
     agent,
@@ -110,6 +124,7 @@ export function createSendSnapshot({
           )
         : undefined,
     rag: rag ?? undefined,
+    toolGroups,
   };
 }
 
@@ -281,6 +296,7 @@ function renderMemoryUpdate(_key: string, value: string | null, previous: string
 
 /** Registry order is the order of lines in an update and of parts in a new anchor. */
 const SOURCES: ContextSource[] = [
+  toolGroupSource,
   {
     key: ContextSourceKeys.memoryGuard,
     kind: 'state',
@@ -405,10 +421,10 @@ export function findContextSource(key: string): ContextSource | undefined {
   return SOURCES[findSourceIndex(key)];
 }
 
-/** Registry order; keys of one prefix source by name. */
+/** Registry order; keys of one prefix source by name unless the source keeps their order. */
 export function compareContextKeys(a: string, b: string): number {
   const rank = findSourceIndex(a) - findSourceIndex(b);
-  if (rank !== 0 || a === b) {
+  if (rank !== 0 || a === b || SOURCES[findSourceIndex(a)]?.keepOrder === true) {
     return rank;
   }
   return a < b ? -1 : 1;

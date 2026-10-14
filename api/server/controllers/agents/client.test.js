@@ -275,6 +275,7 @@ jest.mock('@librechat/agents', () => ({
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
+  getMCPServerInstructions: (...args) => mockGetInstructions(...args),
   buildAgentScopedContext: (...args) => mockBuildAgentScopedContext(...args),
   checkAccess: jest.fn(),
   createRun: (...args) => mockCreateRun(...args),
@@ -2075,6 +2076,7 @@ jest.mock('~/models', () => ({
 
 // Mock getMCPManager
 const mockFormatInstructions = jest.fn();
+const mockGetInstructions = jest.fn(async () => ({}));
 jest.mock('~/config', () => ({
   getMCPManager: jest.fn(() => ({
     formatInstructionsForContext: mockFormatInstructions,
@@ -7960,6 +7962,56 @@ describe('AgentClient - titleConvo', () => {
         expect(mockAgent.additional_instructions).toBe(
           `${WEB_SEARCH}\n\nCurrent date: 2026-03-09 (Mon)`,
         );
+      });
+
+      it('binds the anchored MCP tools and instructions, and defers a server selected since', async () => {
+        const mcpTool = (server) => ({
+          name: `query_mcp_${server}`,
+          description: `Queries ${server}.`,
+          parameters: { type: 'object', properties: {} },
+          serverName: server,
+        });
+        mockAgent.toolDefinitions = [mcpTool('beta'), mcpTool('alpha')];
+        mockAgent.toolRegistry = new Map(mockAgent.toolDefinitions.map((d) => [d.name, d]));
+        mockAgent.selectedToolNames = ['sys__all__sys_mcp_alpha', 'sys__all__sys_mcp_beta'];
+        mockGetInstructions.mockResolvedValue({ alpha: 'Alpha rule.', beta: 'Beta rule.' });
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          {
+            key: 'tool:mcp:alpha',
+            value: JSON.stringify({
+              instructions: 'Alpha rule.',
+              tools: [
+                {
+                  name: 'query_mcp_alpha',
+                  description: 'Queries alpha.',
+                  parameters: { type: 'object', properties: {} },
+                },
+              ],
+            }),
+          },
+        ]);
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(promptText(result.prompt[2])).toContain(
+          'Tools of MCP server `beta` are now available.',
+        );
+        expect(promptText(result.prompt[2])).toContain('Beta rule.');
+        expect(mockReq.turnContextUpdates.entries.map(({ key }) => key)).toEqual([
+          'tool:mcp:beta',
+          'date',
+        ]);
+        expect(mockAgent.toolDispatch).toBe(true);
+        expect(
+          mockAgent.toolDefinitions.map(({ name, defer_loading }) => [name, defer_loading]),
+        ).toEqual([
+          ['query_mcp_beta', true],
+          ['query_mcp_alpha', undefined],
+        ]);
+        expect(mockAgent.instructions).toContain('Alpha rule.');
+        expect(mockAgent.instructions).not.toContain('Beta rule.');
+        expect(mockFormatInstructions).not.toHaveBeenCalled();
       });
 
       it('stamps the sent message and replays stored send times when timestamps are on', async () => {

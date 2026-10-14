@@ -8,8 +8,10 @@ import {
   compareContextKeys,
   collectLiveContext,
 } from './registry';
+import type { ToolPlan } from './tools';
 import { createAnchor, reanchor, readEntries } from './anchor';
 import { findSummarySegment, formatContextUpdate } from '../contextUpdates';
+import { isToolGroupKey, planTools } from './tools';
 
 export interface TurnPlan {
   /** What the model knows from the system prompt in this segment, in system order. */
@@ -30,12 +32,15 @@ export interface TurnPlan {
   memoryTexts: string[];
   /** Retrieved file context the request carries, for content inspection. */
   ragTexts: string[];
+  /** The tools this turn binds; undefined when the snapshot sampled no tool groups. */
+  tools?: ToolPlan;
 }
 
 function diffLive(
   known: ReadonlyMap<string, string>,
   live: ReadonlyMap<string, string>,
   withheld: ReadonlySet<string>,
+  unavailable: ReadonlySet<string>,
 ): ContextEntry[] {
   const entries: ContextEntry[] = [];
   for (const key of [...new Set([...known.keys(), ...live.keys()])].sort(compareContextKeys)) {
@@ -50,7 +55,12 @@ function diffLive(
       }
       continue;
     }
-    if (withheld.has(key) || (value == null && source.whenOff === 'silent')) {
+    if (
+      withheld.has(key) ||
+      /** Unreachable for now, not switched off: the model keeps knowing it. */
+      (value == null && unavailable.has(key)) ||
+      (value == null && source.whenOff === 'silent')
+    ) {
       continue;
     }
     const previous = known.get(key) ?? null;
@@ -75,6 +85,8 @@ function previousAnchor(
 
 interface Fold {
   known: Map<string, string>;
+  /** The last value each key had at some point of the segment, kept after it is switched off. */
+  lastSeen: Map<string, string>;
   withheld: ReadonlySet<string>;
   snapshot: SendSnapshot;
   memoryTexts: string[];
@@ -105,15 +117,18 @@ function renderEntry(
   if (state === previous) {
     return undefined;
   }
+  const wasKnown = fold.lastSeen.has(key);
+  const lastSeen = fold.lastSeen.get(key) ?? null;
   if (state == null) {
     fold.known.delete(key);
   } else {
     fold.known.set(key, state);
+    fold.lastSeen.set(key, state);
   }
   if (fold.withheld.has(key) || (value == null && source.whenOff === 'silent')) {
     return undefined;
   }
-  const line = source.renderUpdate(key, value, previous, fold.snapshot.agent);
+  const line = source.renderUpdate(key, value, previous, fold.snapshot.agent, wasKnown, lastSeen);
   if (key === ContextSourceKeys.memory && value != null) {
     fold.memoryTexts.push(line);
   }
@@ -178,7 +193,14 @@ export function planTurnContext({
     }
   }
   const withheld = getWithheldKeys(live, known.keys());
-  const fold: Fold = { known, withheld, snapshot: sendSnapshot, memoryTexts: [], ragTexts: [] };
+  const fold: Fold = {
+    known,
+    lastSeen: new Map(known),
+    withheld,
+    snapshot: sendSnapshot,
+    memoryTexts: [],
+    ragTexts: [],
+  };
   const anchorMemory = known.get(ContextSourceKeys.memory);
   if (anchorMemory != null && !withheld.has(ContextSourceKeys.memory)) {
     fold.memoryTexts.push(anchorMemory);
@@ -202,7 +224,12 @@ export function planTurnContext({
     }
     let entries: ContextEntry[];
     if (i === currentIndex) {
-      currentEntries = diffLive(known, live, withheld);
+      currentEntries = diffLive(
+        known,
+        live,
+        withheld,
+        snapshot.toolGroups?.unavailable ?? new Set(),
+      );
       entries = currentEntries;
     } else {
       entries = readEntries(message.contextUpdates);
@@ -224,6 +251,14 @@ export function planTurnContext({
     }
   }
 
+  /** Bound once the branch has used tool groups, so `tools` stays fixed from then on. */
+  const hasToolGroups = (entries: readonly ContextEntry[] | null | undefined) =>
+    entries?.some(({ key }) => isToolGroupKey(key)) === true;
+  const dispatch =
+    hasToolGroups(anchor) ||
+    hasToolGroups(currentEntries) ||
+    messages.some(({ contextUpdates }, i) => i !== currentIndex && hasToolGroups(contextUpdates));
+
   return {
     anchor,
     anchorTarget,
@@ -234,5 +269,10 @@ export function planTurnContext({
     memoryBlock,
     memoryTexts: fold.memoryTexts,
     ragTexts: fold.ragTexts,
+    /** Without any group, now or earlier in the branch, the tools stay as loaded. */
+    tools:
+      snapshot.toolGroups != null && (dispatch || snapshot.toolGroups.groups.size > 0)
+        ? planTools({ agent: snapshot.agent, anchor, toolGroups: snapshot.toolGroups, dispatch })
+        : undefined,
   };
 }

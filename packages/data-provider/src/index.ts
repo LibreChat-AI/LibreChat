@@ -20,6 +20,7 @@ export * from './runSteps';
 export * from './parts';
 export * from './reasoning';
 export * from './toolTiming';
+export * from './toolDispatch';
 /* artifacts  */
 export * from './artifacts';
 /* schema helpers  */

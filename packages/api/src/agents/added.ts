@@ -19,6 +19,7 @@ import {
   validateMCPServerConfig,
 } from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { orderNames } from '~/agents/promptCache';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
@@ -245,7 +246,7 @@ export async function loadAddedAgent(
   }
 
   const addedServers = new Set<string>();
-  for (const mcpServer of mcpServers) {
+  for (const mcpServer of orderNames(req.config, mcpServers)) {
     if (addedServers.has(mcpServer)) {
       continue;
     }
@@ -262,7 +263,7 @@ export async function loadAddedAgent(
       addedServers.add(mcpServer);
       continue;
     }
-    tools.push(...Object.keys(serverTools));
+    tools.push(...orderNames(req.config, Object.keys(serverTools)));
     addedServers.add(mcpServer);
   }
 
