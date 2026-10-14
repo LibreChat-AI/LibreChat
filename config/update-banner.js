@@ -32,7 +32,7 @@ const connect = require('./connect');
     message = process.argv[4];
     isPublic = process.argv[5] === undefined ? undefined : process.argv[5] === 'true';
     persistable = process.argv[6] === undefined ? undefined : process.argv[6] === 'true';
-    variant = process.argv[7];
+    variant = process.argv[7] ?? (process.argv.length >= 7 ? '' : undefined);
   } else {
     console.orange(
       `Usage: npm run update-banner <displayFrom(Format: yyyy-mm-ddTHH:MM:SSZ)> <displayTo(Format: yyyy-mm-ddTHH:MM:SSZ)> <message> <isPublic(true/false)> <persistable(true/false)> [variant(${BANNER_VARIANTS.join('/')})]`,
