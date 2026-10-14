@@ -10,6 +10,7 @@ export * from './compatibility';
 export * from './compaction';
 export * from './contact';
 export * from './context';
+export * from './contextUpdates';
 export * from './control';
 export * from './conversation';
 export * from './creates';

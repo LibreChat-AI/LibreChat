@@ -298,15 +298,19 @@ function buildMessageSaveUpdate(
     unsetContextMeta: boolean;
     unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+    createdAtOnInsert?: Date;
   },
 ): UpdateQuery<IMessage> {
   return {
     $set: update,
     $inc: { __v: 1 },
-    ...((options.stampModelOutputOnInsert || options.retentionOnInsert != null) && {
+    ...((options.stampModelOutputOnInsert ||
+      options.retentionOnInsert != null ||
+      options.createdAtOnInsert != null) && {
       $setOnInsert: {
         ...(options.stampModelOutputOnInsert && { isUserSubmitted: false }),
         ...options.retentionOnInsert,
+        ...(options.createdAtOnInsert != null && { createdAt: options.createdAtOnInsert }),
       },
     }),
     ...((options.unsetContextMeta || options.unsetPrivateText) && {
@@ -334,6 +338,14 @@ function isTemporaryMessage(message: IMessage): boolean {
   return implicit && message.expiredAt != null;
 }
 
+/** An insert-time `createdAt` replaces Mongoose's stamp; `updatedAt` stays automatic. */
+function getSaveTimestamps(
+  timestamps: boolean | undefined,
+  createdAtOnInsert: Date | undefined,
+): boolean | { createdAt: false } | undefined {
+  return createdAtOnInsert != null && timestamps !== false ? { createdAt: false } : timestamps;
+}
+
 async function findOneAndMergeMessageProvenance(
   Message: Model<IMessage>,
   identity: FilterQuery<IMessage>,
@@ -346,6 +358,7 @@ async function findOneAndMergeMessageProvenance(
     unsetContextMeta?: boolean;
     unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+    createdAtOnInsert?: Date;
     prepareAppUpdate?: (
       current: Record<string, unknown> | null,
       update: Record<string, unknown>,
@@ -417,7 +430,12 @@ async function findOneAndMergeMessageProvenance(
           $set: admittedUpdate,
           $inc: { __v: 1 },
           ...(current == null &&
-            options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
+            (options.retentionOnInsert != null || options.createdAtOnInsert != null) && {
+              $setOnInsert: {
+                ...options.retentionOnInsert,
+                ...(options.createdAtOnInsert != null && { createdAt: options.createdAtOnInsert }),
+              },
+            }),
           ...((options.unsetContextMeta || options.unsetPrivateText) && {
             $unset: {
               ...(options.unsetContextMeta && { contextMeta: 1 }),
@@ -429,7 +447,11 @@ async function findOneAndMergeMessageProvenance(
             },
           }),
         },
-        { upsert: options.upsert && current == null, new: true, timestamps: options.timestamps },
+        {
+          upsert: options.upsert && current == null,
+          new: true,
+          timestamps: getSaveTimestamps(options.timestamps, options.createdAtOnInsert),
+        },
       );
       if (message != null) {
         options.onWrite?.(current == null, message._id);
@@ -768,7 +790,13 @@ export interface MessageMethods {
       newMessageId?: string;
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
+    metadata?: {
+      context?: string;
+      privateText?: PrivateTextWrite;
+      insertOnly?: boolean;
+      /** Creation time to store when this save inserts the row; an existing row keeps its own. */
+      createdAtOnInsert?: Date;
+    },
   ): Promise<IMessage | null | undefined>;
   /**
    * Reads the references a trace viewer needs for one of the user's
@@ -1085,6 +1113,7 @@ export function createMessageMethods(
       stampModelOutputOnInsert?: boolean;
       unsetContextMeta?: boolean;
       retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+      createdAtOnInsert?: Date;
       unsetPrivateText?: boolean;
       timestamps?: boolean;
       onWrite?: (inserted: boolean, id: unknown) => void;
@@ -1106,12 +1135,13 @@ export function createMessageMethods(
             stampModelOutputOnInsert: options.stampModelOutputOnInsert ?? false,
             unsetContextMeta: options.unsetContextMeta ?? false,
             retentionOnInsert: options.retentionOnInsert,
+            createdAtOnInsert: options.createdAtOnInsert,
             unsetPrivateText: options.unsetPrivateText,
           }),
           {
             upsert: options.upsert,
             new: true,
-            timestamps: options.timestamps,
+            timestamps: getSaveTimestamps(options.timestamps, options.createdAtOnInsert),
             includeResultMetadata: true,
           },
         );
@@ -1151,7 +1181,13 @@ export function createMessageMethods(
       /** `null` unsets a previously stored value; omission leaves it in place. */
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
+    metadata?: {
+      context?: string;
+      privateText?: PrivateTextWrite;
+      insertOnly?: boolean;
+      /** Creation time to store when this save inserts the row; an existing row keeps its own. */
+      createdAtOnInsert?: Date;
+    },
   ) {
     if (!userId) {
       throw new Error('User not authenticated');
@@ -1274,6 +1310,15 @@ export function createMessageMethods(
       delete update.__v;
       const stampModelOutputOnInsert =
         params.isCreatedByUser === false && params.isUserSubmitted === undefined;
+      const createdAtOnInsert =
+        metadata?.createdAtOnInsert instanceof Date &&
+        !Number.isNaN(metadata.createdAtOnInsert.getTime())
+          ? metadata.createdAtOnInsert
+          : undefined;
+      if (createdAtOnInsert != null) {
+        /** With Mongoose's own stamp off, a caller-supplied value would rewrite stored rows. */
+        delete update.createdAt;
+      }
       if (metadata?.insertOnly === true) {
         if (metadata.privateText != null) {
           throw new Error('A private message cannot use the ordinary insert-only writer.');
@@ -1287,7 +1332,7 @@ export function createMessageMethods(
               ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
               ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
               ...retentionOnInsert,
-              createdAt: now,
+              createdAt: createdAtOnInsert ?? now,
               updatedAt: now,
             },
           },
@@ -1303,6 +1348,7 @@ export function createMessageMethods(
           stampModelOutputOnInsert,
           unsetContextMeta,
           retentionOnInsert,
+          createdAtOnInsert,
           unsetPrivateText:
             metadata?.privateText == null && Object.prototype.hasOwnProperty.call(update, 'text'),
         },

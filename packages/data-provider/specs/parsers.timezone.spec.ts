@@ -1,4 +1,4 @@
-import { replaceSpecialVars } from '../src/parsers';
+import { formatPromptTimestamp, replaceSpecialVars } from '../src/parsers';
 
 /**
  * Exercises real `dayjs` timezone conversion (no module mock) so the assertions
@@ -62,5 +62,38 @@ describe('replaceSpecialVars timezone handling', () => {
     });
     const withNone = replaceSpecialVars({ text: '{{current_datetime}}', now: anchor });
     expect(withEmpty).toBe(withNone);
+  });
+});
+
+describe('formatPromptTimestamp', () => {
+  const anchor = '2024-01-15T18:30:45.000Z';
+
+  test('formats minute precision in the supplied timezone with a short weekday', () => {
+    expect(formatPromptTimestamp({ now: anchor, timezone: 'America/New_York' })).toBe(
+      '2024-01-15 13:30 -05:00 (Mon)',
+    );
+  });
+
+  test('formats second and date precision', () => {
+    expect(
+      formatPromptTimestamp({ now: anchor, timezone: 'Asia/Tokyo', precision: 'second' }),
+    ).toBe('2024-01-16 03:30:45 +09:00 (Tue)');
+    expect(formatPromptTimestamp({ now: anchor, timezone: 'Asia/Tokyo', precision: 'date' })).toBe(
+      '2024-01-16 (Tue)',
+    );
+  });
+
+  test('falls back to UTC for a missing or invalid timezone', () => {
+    expect(formatPromptTimestamp({ now: anchor })).toBe('2024-01-15 18:30 +00:00 (Mon)');
+    expect(formatPromptTimestamp({ now: anchor, timezone: 'Not/AZone' })).toBe(
+      '2024-01-15 18:30 +00:00 (Mon)',
+    );
+  });
+
+  test('accepts epoch milliseconds and Date instances', () => {
+    const epoch = new Date(anchor).getTime();
+    expect(formatPromptTimestamp({ now: epoch, timezone: 'UTC' })).toBe(
+      formatPromptTimestamp({ now: new Date(anchor), timezone: 'UTC' }),
+    );
   });
 });

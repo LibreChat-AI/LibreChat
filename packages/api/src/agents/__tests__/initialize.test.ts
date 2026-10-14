@@ -2189,10 +2189,10 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     jest.clearAllMocks();
   });
 
-  it('moves instructions with temporal special vars into the dynamic tail using the turn start', async () => {
+  it('moves instructions with temporal special vars into the dynamic tail anchored to the conversation start', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.instructions =
-      'Today is {{current_date}}. The turn began at {{current_datetime}} ({{iso_datetime}}).';
+      'Today is {{current_date}}. The chat began at {{current_datetime}} ({{iso_datetime}}).';
     req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
     req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
     req.body = { timezone: 'UTC' };
@@ -2213,11 +2213,11 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     expect(result.instructions).toBeUndefined();
     expect(result.additional_instructions).toBeUndefined();
     expect(result.dynamicToolContextMap?.agent_temporal_instructions).toBe(
-      'Today is 2026-08-31 (Monday). The turn began at 2026-08-31 06:20:00 +00:00 (Monday) (2026-08-31T06:20:00.000Z).',
+      'Today is 2026-08-25 (Tuesday). The chat began at 2026-08-25 10:00:00 +00:00 (Tuesday) (2026-08-25T10:00:00.000Z).',
     );
   });
 
-  it('resolves temporal special vars in the request timezone', async () => {
+  it('resolves temporal special vars in the request timezone, from the turn start without a conversation anchor', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.instructions = 'It is currently {{current_datetime}}.';
     req.turnStartedAt = new Date('2024-01-15T18:30:00.000Z').getTime();

@@ -432,6 +432,62 @@ describe('Message Operations', () => {
   });
 
   describe('saveMessage', () => {
+    describe('createdAtOnInsert', () => {
+      const turnStartedAt = new Date('2026-01-02T03:04:05.678Z');
+
+      it('stores the supplied creation time on insert and keeps it on later saves', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true, createdAt: new Date('2020-01-01') },
+          { createdAtOnInsert: turnStartedAt },
+        );
+        const inserted = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(inserted?.createdAt).toEqual(turnStartedAt);
+        expect(inserted?.updatedAt?.getTime()).toBeGreaterThan(turnStartedAt.getTime());
+
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true, text: 'edited' },
+          { createdAtOnInsert: new Date('2027-01-01T00:00:00.000Z') },
+        );
+        const resaved = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(resaved?.text).toBe('edited');
+        expect(resaved?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('applies on the provenance-merging writer', async () => {
+        await saveMessage(
+          mockCtx,
+          {
+            ...mockMessageData,
+            isCreatedByUser: true,
+            content: [{ type: 'text', text: 'Hello' }] as IMessage['content'],
+            userSubmittedPaths: ['/content/0/text'],
+          },
+          { createdAtOnInsert: turnStartedAt },
+        );
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('applies on the insert-only writer', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true },
+          { insertOnly: true, createdAtOnInsert: turnStartedAt },
+        );
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('leaves the automatic stamp in place without the option', async () => {
+        const before = Date.now();
+        await saveMessage(mockCtx, { ...mockMessageData, createdAt: new Date('2020-01-01') });
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt?.getTime()).toBeGreaterThanOrEqual(before);
+      });
+    });
+
     it('bounds aggregate App BSON without changing canonical output, even on a later full save', async () => {
       const content = [{ type: 'text', text: 'canonical message' }];
       const attachments = Array.from({ length: 17 }, (_, i) =>

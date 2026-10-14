@@ -7784,6 +7784,84 @@ describe('AgentClient - titleConvo', () => {
       expect(client.memoryPayload).toBeNull();
     });
 
+    describe('context updates', () => {
+      const conversationHistory = () => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'First question',
+          isCreatedByUser: true,
+          createdAt: '2026-03-09T20:00:00.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-2',
+          parentMessageId: 'msg-1',
+          sender: 'Assistant',
+          text: 'First answer',
+          isCreatedByUser: false,
+          createdAt: '2026-03-09T20:00:10.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-3',
+          parentMessageId: 'msg-2',
+          sender: 'User',
+          text: 'Next question',
+          isCreatedByUser: true,
+        },
+      ];
+
+      beforeEach(() => {
+        mockReq.conversationCreatedAt = '2026-03-09T20:00:00.000Z';
+        mockReq.turnStartedAt = Date.parse('2026-03-10T09:00:00.000Z');
+        mockReq.body.timezone = 'UTC';
+        require('@librechat/api').countFormattedMessageTokens.mockImplementation(({ content }) => {
+          const text = Array.isArray(content)
+            ? content.map((part) => part.text ?? '').join('\n')
+            : String(content ?? '');
+          return text.includes('<context_update>') ? 90 : 10;
+        });
+      });
+
+      it('prepends a date change to the prompt copy only and counts it for the prompt', async () => {
+        mockAgent.dynamicToolContextMap = { web_search: 'Conversation started: ...' };
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe('First question');
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tue)\n</context_update>\n\nNext question',
+        );
+        expect(result.tokenCountMap['msg-3']).toBe(10);
+        expect(client.indexTokenCountMap[2]).toBe(90);
+        expect(client.memoryPayload[2].content).toBe('Next question');
+      });
+
+      it('stamps every user message with its send time when promptMessageTimestamps is on', async () => {
+        mockReq.config.endpoints = { [EModelEndpoint.agents]: { promptMessageTimestamps: true } };
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-09 20:00:00 +00:00 (Mon)\n</context_update>\n\nFirst question',
+        );
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-10 09:00:00 +00:00 (Tue)\n</context_update>\n\nNext question',
+        );
+        expect(client.memoryPayload[0].content).toBe('First question');
+      });
+
+      it('leaves messages untouched when no prompt states the conversation date', async () => {
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[2].content).toBe('Next question');
+        expect(client.indexTokenCountMap[2]).toBe(10);
+        expect(client.memoryPayload).toBeNull();
+      });
+    });
+
     it('does not duplicate a file that is both request context and scoped context', async () => {
       const sharedFile = makeTextFile('shared-file', 'shared.txt', 'Shared duplicate context');
 

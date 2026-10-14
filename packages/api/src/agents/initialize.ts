@@ -135,6 +135,7 @@ import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -2615,7 +2616,7 @@ export async function initializeAgent(
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
       user: user ? (user as unknown as TUser) : null,
-      now: runtime.turnStartedAt,
+      now: runtime.conversationCreatedAt ?? runtime.turnStartedAt,
       timezone: runtime.requestBody.timezone,
     });
     if (hasTemporalSpecialVars(agent.instructions)) {
@@ -2889,7 +2890,7 @@ export async function initializeAgent(
     fileConsumers,
     toolContextMap: toolContextMap ?? {},
     dynamicToolContextMap: temporalInstructions
-      ? { ...dynamicToolContextMap, agent_temporal_instructions: temporalInstructions }
+      ? { ...dynamicToolContextMap, [AGENT_TEMPORAL_INSTRUCTIONS_KEY]: temporalInstructions }
       : (dynamicToolContextMap ?? {}),
     useLegacyContent: !!options.useLegacyContent,
     tools: (tools ?? []) as GenericTool[] & string[],

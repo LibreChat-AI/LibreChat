@@ -14,9 +14,9 @@ export interface AgentExecutionContext {
   user?: IUser;
   appConfig?: AppConfig;
   requestBody: RequestBody;
-  /** Server-captured logical turn start time used by prompt variables. */
+  /** Server-captured logical turn start time; dates the turn's own user message. */
   turnStartedAt: number;
-  /** Server-captured conversation creation time retained as historical metadata. */
+  /** Server-captured conversation creation time; anchors prompt date variables. */
   conversationCreatedAt?: string;
   /** Conversation already resolved by ingress. Presence distinguishes "not read" from absent. */
   resolvedConversation?: Partial<IConversation> | null;

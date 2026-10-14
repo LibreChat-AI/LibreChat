@@ -260,6 +260,8 @@ jest.mock('@librechat/api', () => ({
     '../../../../../packages/api/src/utils/message',
   ).getPreliminaryResponseMessageId,
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  getTurnUserMessageCreatedAt: (...args) =>
+    jest.requireActual('@librechat/api').getTurnUserMessageCreatedAt(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
   stampPreliminaryPrivateTextMessage: (_req, message) => message,
@@ -3320,7 +3322,10 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user-123' }),
       userMessage,
-      expect.objectContaining({ context: expect.stringContaining('resumable user message') }),
+      expect.objectContaining({
+        context: expect.stringContaining('resumable user message'),
+        createdAtOnInsert: new Date(req.turnStartedAt),
+      }),
     );
     expect(mockGenerationJobManager.steering.consumeRecovered).not.toHaveBeenCalled();
     expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
@@ -3390,7 +3395,10 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user-123' }),
       userMessage,
-      expect.objectContaining({ context: expect.stringContaining('before HITL pause') }),
+      expect.objectContaining({
+        context: expect.stringContaining('before HITL pause'),
+        createdAtOnInsert: new Date(req.turnStartedAt),
+      }),
     );
     expect(mockGenerationJobManager.steering.consumeRecovered).not.toHaveBeenCalled();
     expect(failArgs).toEqual([
