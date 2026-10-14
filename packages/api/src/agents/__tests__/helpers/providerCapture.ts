@@ -26,6 +26,9 @@ export interface Captured {
   system: unknown;
   tools: unknown;
   messages: unknown[];
+  /** Whether the provider asked for a streamed response. */
+  stream?: boolean;
+  url?: string;
 }
 
 const OPENAI_KEY = { apiKey: 'test-key', maxRetries: 0 };
@@ -170,11 +173,15 @@ export interface CaptureOptions {
   providerCase: ProviderCase;
   agent: Record<string, unknown>;
   messages: BaseMessage[];
-  /** Response body for the request at this position; undefined aborts the run there. */
+  /** Response for the request at this position: a JSON body, an event-stream string, or a
+   *  Bedrock output; undefined aborts the run there. */
   respond?: (index: number, request: Captured) => unknown;
   customHandlers?: Record<string, unknown>;
   /** The summary `formatAgentMessages` took from the history. */
   initialSummary?: { text: string; tokenCount: number };
+  streaming?: boolean;
+  /** Further `createRun` options. */
+  runOptions?: Record<string, unknown>;
 }
 
 /** Runs the turn and returns every provider request it made, in order. */
@@ -185,6 +192,8 @@ export async function captureRun({
   respond,
   customHandlers,
   initialSummary,
+  streaming = false,
+  runOptions,
 }: CaptureOptions): Promise<Captured[]> {
   const requests: Captured[] = [];
   const agent = {
@@ -205,8 +214,17 @@ export async function captureRun({
 
   const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
     const request = input instanceof Request ? input : undefined;
+    const url = request ? request.url : String(input);
     const raw = request ? await request.clone().text() : String(init?.body ?? '{}');
-    const response = answer(parseRequest(providerCase.format, JSON.parse(raw)));
+    const body = JSON.parse(raw) as Record<string, unknown>;
+    const stream = body.stream === true || url.includes('streamGenerateContent');
+    const response = answer({ ...parseRequest(providerCase.format, body), stream, url });
+    if (typeof response === 'string') {
+      return new Response(response, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
     return new Response(JSON.stringify(response), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -214,11 +232,12 @@ export async function captureRun({
   });
   if (providerCase.format === 'bedrock') {
     agent.model_parameters.client = {
-      send: async (command: { input: Record<string, unknown> }) =>
+      send: async (command: { input: Record<string, unknown>; constructor: { name: string } }) =>
         answer({
           system: command.input.system,
           tools: command.input.toolConfig,
           messages: command.input.messages as unknown[],
+          stream: command.constructor.name.includes('Stream'),
         }),
       config: {},
       destroy: () => undefined,
@@ -234,8 +253,9 @@ export async function captureRun({
       messages,
       runId,
       signal: new AbortController().signal,
-      streaming: false,
+      streaming,
       streamUsage: false,
+      ...runOptions,
       ...(initialSummary ? { initialSummary } : {}),
       ...(customHandlers ? { customHandlers: customHandlers as never } : {}),
     });

@@ -1,7 +1,9 @@
 import type { ContextEntry, TurnContextAgent } from './registry';
 import { LEDGER_PART_KEYS, compareContextKeys, findContextSource } from './registry';
+import type { ToolPlan } from './tools';
 import type { ContextAgent } from '../systemParts';
 import { ContextPartKeys, contributeContext, setConversationContext } from '../systemParts';
+import { applyToolPlan } from './tools';
 
 /** The fields of a history row the turn context reads. */
 export interface TurnContextMessage {
@@ -57,10 +59,25 @@ export function readEntries(entries: readonly ContextEntry[] | null | undefined)
 /**
  * Renders the agent's system prompt from the segment's anchor instead of the
  * live parts, so it stays byte-identical until the next compaction; the live
- * changes reach the model as updates in the history.
+ * changes reach the model as updates in the history. With a tool plan, the
+ * tools and the MCP server instructions come from the anchor too: the caller
+ * leaves the live MCP instructions out of `instructions`.
  */
-export function applyTurnContext(agent: TurnContextAgent, plan: { block: string }): void {
+export function applyTurnContext(
+  agent: TurnContextAgent,
+  plan: { block: string; tools?: ToolPlan },
+): void {
   setConversationContext(agent, LEDGER_PART_KEYS, plan.block);
+  if (plan.tools == null) {
+    return;
+  }
+  applyToolPlan(agent, plan.tools);
+  if (plan.tools.mcpInstructions !== '') {
+    agent.instructions = [agent.instructions, plan.tools.mcpInstructions]
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }
 }
 
 /**
@@ -96,6 +113,7 @@ export function applyTurnContextToRuntime(
   agent: TurnContextAgent,
   plan: {
     block: string;
+    tools?: ToolPlan;
     memoryTexts: readonly string[];
     ragTexts: readonly string[];
   },

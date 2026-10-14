@@ -784,6 +784,10 @@ export type InitializedAgent = Agent & {
   requestScopedConnections?: RequestScopedMCPConnectionStore;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
+  /** Tool names the agent asked for, before loading; tells an unavailable tool from a removed one. */
+  selectedToolNames?: string[];
+  /** Binds the agents SDK's dispatcher tool (set by the turn context's tool plan). */
+  toolDispatch?: boolean;
   /** Both-direction identity aliases for MCP tools whose key spelling changed */
   mcpToolAliases?: MCPToolAlias[];
   /** Precomputed flag indicating if any tools have defer_loading enabled (for efficient runtime checks) */
@@ -2856,6 +2860,7 @@ export async function initializeAgent(
     tool_resources: runtimeToolResources,
     userMCPAuthMap,
     toolDefinitions,
+    selectedToolNames: requestedToolNames,
     hasDeferredTools,
     mcpToolAliases,
     backgroundToolNames,

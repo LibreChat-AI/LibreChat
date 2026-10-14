@@ -36,3 +36,5 @@ export {
   prepareResumedTurnContext,
   storePendingContextAnchor,
 } from './prepare';
+export type { LiveToolGroups, ToolPlan } from './tools';
+export { collectToolGroups, getToolGroupKey, TOOL_GROUP_PREFIX } from './tools';
