@@ -27,8 +27,24 @@ import {
   isChatSelectableMCPServer,
   filterChatSelectableMCPServers,
   waitUntilDeadline,
+  sortNames,
 } from '~/mcp/utils';
 import { usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
+
+describe('sortNames', () => {
+  it('orders by code unit independent of input order, without mutating the input', () => {
+    const input = ['a_b', 'b', 'A', 'a', 'B', 'ä'];
+    const sorted = sortNames(input);
+    expect(sorted).toEqual(['A', 'B', 'a', 'a_b', 'b', 'ä']);
+    expect(sortNames([...input].reverse())).toEqual(sorted);
+    expect(input[0]).toBe('a_b');
+  });
+
+  it('accepts any iterable and handles empty input', () => {
+    expect(sortNames(new Set(['y', 'x']))).toEqual(['x', 'y']);
+    expect(sortNames([])).toEqual([]);
+  });
+});
 
 describe('normalizeServerName', () => {
   it('should not modify server names that already match the pattern', () => {
