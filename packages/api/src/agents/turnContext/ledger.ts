@@ -8,16 +8,18 @@ import {
   compareContextKeys,
   collectLiveContext,
 } from './registry';
-import type { ToolPlan } from './tools';
+import type { LiveToolGroups, ToolPlan } from './tools';
 import { createAnchor, reanchor, readEntries } from './anchor';
 import { findSummarySegment, formatContextUpdate } from '../contextUpdates';
-import { isToolGroupKey, planTools } from './tools';
+import { findToolResets, isToolGroupKey, planTools } from './tools';
 
 export interface TurnPlan {
   /** What the model knows from the system prompt in this segment, in system order. */
   anchor: ContextEntry[];
   /** Set when this turn opened the segment: where to store `anchor` (null: the conversation). */
   anchorTarget?: { messageId: string | null };
+  /** Why this turn re-anchored a segment without a compaction (a declared reset). */
+  reset?: string[];
   /** The `<context_update>` block of each user message that has one, by message index. */
   updates: Map<number, string>;
   /** Entries to store on the user message sent this turn; undefined when none is sent. */
@@ -56,6 +58,7 @@ function diffLive(
       continue;
     }
     if (
+      source.resets === true ||
       withheld.has(key) ||
       /** Unreachable for now, not switched off: the model keeps knowing it. */
       (value == null && unavailable.has(key)) ||
@@ -73,14 +76,55 @@ function diffLive(
   return entries;
 }
 
+interface Segment {
+  /** The message that stores the segment's anchor; -1 when the conversation does. */
+  carrier: number;
+  /** The first message whose stored changes the anchor does not include. */
+  eventsFrom: number;
+  /** The first message the model sees. */
+  visibleFrom: number;
+}
+
+/**
+ * The segment the branch ends in. A compaction opens one after its summary; a
+ * declared reset opens one on the user message that stores its anchor.
+ */
+function findSegment(messages: readonly TurnContextMessage[]): Segment {
+  const { carrier, visibleFrom } = findSummarySegment(messages);
+  for (let i = messages.length - 1; i > carrier; i--) {
+    if (messages[i].isCreatedByUser === true && messages[i].contextAnchor != null) {
+      return { carrier: i, eventsFrom: i, visibleFrom };
+    }
+  }
+  return { carrier, eventsFrom: carrier + 1, visibleFrom };
+}
+
 /** The anchor the segment before `carrier` started from, which orders a new one. */
 function previousAnchor(
   messages: readonly TurnContextMessage[],
   carrier: number,
   conversationAnchor: readonly ContextEntry[] | null | undefined,
 ): readonly ContextEntry[] | null | undefined {
-  const earlier = findSummarySegment(messages.slice(0, carrier)).carrier;
+  const earlier = findSegment(messages.slice(0, carrier)).carrier;
   return earlier >= 0 ? messages[earlier].contextAnchor : conversationAnchor;
+}
+
+/**
+ * Changes the anchor cannot absorb as updates: a source that resets, compared
+ * only when the anchor recorded it, and tool changes the dispatcher cannot reach.
+ */
+function findResets(
+  anchor: readonly ContextEntry[],
+  live: ReadonlyMap<string, string>,
+  toolGroups: LiveToolGroups | undefined,
+): string[] {
+  const reasons = anchor
+    .filter(
+      ({ key, value }) =>
+        findContextSource(key)?.resets === true && (live.get(key) ?? null) !== value,
+    )
+    .map(({ key }) => key.slice(ContextSourceKeys.segmentPrefix.length));
+  return [...reasons, ...(toolGroups != null ? findToolResets(anchor, toolGroups) : [])];
 }
 
 interface Fold {
@@ -148,7 +192,10 @@ function renderEntry(
  * A segment without a stored anchor is anchored to the live state this turn:
  * the conversation's first turn, the first turn after a compaction (keeping
  * the previous anchor's order), or the first turn of a conversation started
- * before anchors existed.
+ * before anchors existed. A sent message whose live state breaks the prefix
+ * anyway (another model, agent setup or provider tools, a schema-profile
+ * option, a tool group the dispatcher cannot reach) re-anchors the segment on
+ * itself the same way, and the plan reports why.
  */
 export function planTurnContext({
   messages,
@@ -161,7 +208,9 @@ export function planTurnContext({
   snapshot: SendSnapshot;
   currentIndex?: number;
 }): TurnPlan {
-  const { carrier, visibleFrom } = findSummarySegment(messages);
+  const segment = findSegment(messages);
+  const { visibleFrom } = segment;
+  let { carrier, eventsFrom } = segment;
   const stored = carrier >= 0 ? messages[carrier].contextAnchor : conversationAnchor;
   const storedAnchor = stored != null ? readEntries(stored) : undefined;
   const sendSnapshot: SendSnapshot = {
@@ -174,7 +223,19 @@ export function planTurnContext({
 
   let anchor: ContextEntry[];
   let anchorTarget: TurnPlan['anchorTarget'];
-  if (storedAnchor != null) {
+  let reset: string[] | undefined;
+  const resets =
+    storedAnchor != null && currentIndex != null
+      ? findResets(storedAnchor, live, snapshot.toolGroups)
+      : [];
+  const currentId = currentIndex != null ? messages[currentIndex]?.messageId : undefined;
+  if (resets.length > 0 && typeof currentId === 'string' && currentId !== '') {
+    anchor = reanchor(storedAnchor, live);
+    anchorTarget = { messageId: currentId };
+    reset = resets;
+    carrier = currentIndex as number;
+    eventsFrom = carrier;
+  } else if (storedAnchor != null) {
     anchor = storedAnchor;
   } else if (carrier < 0) {
     anchor = createAnchor(live);
@@ -240,7 +301,7 @@ export function planTurnContext({
         fold,
         findContextSource(entry.key) as ContextSource,
         entry,
-        i > carrier,
+        i >= eventsFrom,
       );
       if (line) {
         lines.push(line);
@@ -262,6 +323,7 @@ export function planTurnContext({
   return {
     anchor,
     anchorTarget,
+    ...(reset != null && { reset }),
     updates,
     currentEntries,
     withheld,

@@ -19,6 +19,12 @@
  * action is added; `alpha` unreachable at turn 5, where `tool_search` finds a
  * deferred tool the model then calls; a compaction summary on the reply of
  * turn 6 re-anchors turn 7.
+ *
+ * Built-in scenario: the code environment from the first turn; web search
+ * switched on at turn 2 and called through the dispatcher at turn 3; the code
+ * environment switched off at turn 4, where a direct call to it is refused, and
+ * on again at turn 5; another model at turn 6 is a declared reset that
+ * re-anchors without a compaction.
  */
 jest.mock('winston', () => ({
   createLogger: jest.fn(() => ({
@@ -152,6 +158,10 @@ const APPROVAL = { enabled: true, allow: [SEARCH, QUERY, LOOKUP, ACTION, 'tool_s
 
 interface TurnState {
   mcp: string[];
+  code?: boolean;
+  webSearch?: boolean;
+  /** The model the agent is configured with, when not the default. */
+  model?: string;
   /** Selected servers whose catalog cannot be loaded. */
   down?: string[];
   action?: boolean;
@@ -198,6 +208,43 @@ const SCENARIO: TurnState[] = [
 ];
 const SECOND_SEGMENT = 6;
 
+const WEB_SEARCH_GUIDE = 'Cite every web source you use.';
+
+/** The approval policy allows only the real tools: a call seen as the dispatcher would be held. */
+const BUILTIN_APPROVAL = {
+  enabled: true,
+  allow: [SEARCH, 'web_search', 'bash_tool', 'tool_search'],
+};
+/**
+ * The dispatched call runs while the code environment is off: with it on, the live run marks
+ * tool results with output references the next turn does not restore (a separate gap).
+ */
+const BUILTIN_SCENARIO: TurnState[] = [
+  { mcp: ['alpha'], code: true, replies: [answer(1)] },
+  { mcp: ['alpha'], code: true, webSearch: true, replies: [answer(2)] },
+  {
+    mcp: ['alpha'],
+    webSearch: true,
+    replies: [
+      {
+        calls: [
+          {
+            id: 'toolu_b3a',
+            name: TOOL_DISPATCHER_NAME,
+            args: { name: 'web_search', arguments: JSON.stringify({ query: 'bolts' }) },
+          },
+        ],
+      },
+      { calls: [{ id: 'toolu_b3b', name: 'bash_tool', args: { command: 'ls' } }] },
+      answer(3),
+    ],
+  },
+  { mcp: ['alpha'], code: true, webSearch: true, replies: [answer(4)] },
+  { mcp: ['alpha'], code: true, webSearch: true, model: 'other-model', replies: [answer(5)] },
+  { mcp: ['alpha'], code: true, webSearch: true, model: 'other-model', replies: [answer(6)] },
+];
+const RESET_TURN = 4;
+
 const mcpManager = {
   formatInstructionsForContext: jest.fn(async () => ''),
 } as unknown as MCPManager;
@@ -229,6 +276,8 @@ async function prepareAgent(state: TurnState, provider: string) {
     instructions: 'You are a careful support assistant.',
     tools: [
       'memory',
+      ...(state.code ? ['execute_code'] : []),
+      ...(state.webSearch ? ['web_search'] : []),
       ...selected.map((server) => `sys__all__sys_mcp_${server}`),
       LOOKUP,
       ...(state.action ? [ACTION] : []),
@@ -252,7 +301,7 @@ async function prepareAgent(state: TurnState, provider: string) {
             state.mcp.includes(server) || server === 'gamma'
               ? ((state.drift && server === 'alpha' ? DRIFTED_ALPHA : CATALOGS[server]) as never)
               : null,
-          isBuiltInTool: () => false,
+          isBuiltInTool: (name) => name === 'web_search',
           getActionToolDefinitions: async (_agentId, names) =>
             names.map((name) => ({
               name,
@@ -263,7 +312,7 @@ async function prepareAgent(state: TurnState, provider: string) {
       );
       return {
         tools: [],
-        toolContextMap: {},
+        toolContextMap: state.webSearch ? { web_search: WEB_SEARCH_GUIDE } : {},
         dynamicToolContextMap: {},
         toolDefinitions: loaded.toolDefinitions,
         toolRegistry: loaded.toolRegistry,
@@ -288,10 +337,17 @@ async function prepareAgent(state: TurnState, provider: string) {
       allowedProviders: new Set([provider]),
       isInitialAgent: true,
       memoryAvailable: true,
+      codeEnvAvailable: true,
     } as never,
     createDb(),
   )) as unknown as Record<string, unknown> & { toolRegistry?: Map<string, LCTool> };
   initialized.instructions = (initialized.instructions as string)?.trim() || undefined;
+  if (state.model != null) {
+    initialized.model_parameters = {
+      ...(initialized.model_parameters as object),
+      model: state.model,
+    };
+  }
   await applyContextToAgent({ agent: initialized as never, mcpManager, mcpServers: [] });
   return initialized;
 }
@@ -467,8 +523,8 @@ async function playTurn(
     conversation.anchor ??= plan.anchor;
   } else if (plan.anchorTarget != null) {
     const carrier = conversation.rows.find((row) => row.messageId === plan.anchorTarget?.messageId);
-    if (carrier != null) {
-      carrier.contextAnchor ??= plan.anchor;
+    if (carrier != null && carrier.contextAnchor == null) {
+      carrier.contextAnchor = plan.anchor;
     }
   }
   return { requests, plan, agent, stored };
@@ -527,6 +583,12 @@ const lastMessage = (request: Captured) => json(request.messages[request.message
  */
 const SDK_MOVES_SUMMARY = new Set(['anthropic with promptCache', 'openrouter with promptCache']);
 
+/**
+ * Known gap of every failed tool call, dispatched or not: the next turn restores the result
+ * without its error status (Bedrock `status: "error"`, Gemini `response.error`).
+ */
+const ERROR_STATUS_NOT_RESTORED = new Set(['bedrock', 'bedrock with promptCache', 'google']);
+
 describe('tool groups across providers', () => {
   describe.each(PROVIDERS.map((providerCase) => [providerCase.name, providerCase] as const))(
     '%s',
@@ -548,9 +610,9 @@ describe('tool groups across providers', () => {
       it('keeps tools and system byte-identical on every request of a segment', () => {
         const first = turns[0][0];
         expect(toolNames(first)).toEqual([
-          'tool_search',
-          'set_memory',
           'delete_memory',
+          'set_memory',
+          'tool_search',
           SEARCH,
           TOOL_DISPATCHER_NAME,
         ]);
@@ -742,4 +804,101 @@ describe('tool groups across providers', () => {
       );
     });
   });
+
+  describe.each(PROVIDERS.map((providerCase) => [providerCase.name, providerCase] as const))(
+    'built-in capabilities: %s',
+    (_name, providerCase) => {
+      let result: Awaited<ReturnType<typeof playConversation>>;
+      let turns: Captured[][];
+
+      beforeAll(async () => {
+        result = await playConversation(providerCase, BUILTIN_SCENARIO, {
+          approval: BUILTIN_APPROVAL,
+        });
+        turns = result.played.map(({ requests }) => requests);
+      });
+
+      it('answers every scripted request', () => {
+        turns.forEach((requests, i) =>
+          expect(requests).toHaveLength(BUILTIN_SCENARIO[i].replies?.length ?? 1),
+        );
+      });
+
+      it('keeps tools and system byte-identical while built-ins are switched', () => {
+        const first = turns[0][0];
+        expect(toolNames(first)).toEqual([
+          'bash_tool',
+          'create_file',
+          'edit_file',
+          'read_file',
+          'delete_memory',
+          'set_memory',
+          'tool_search',
+          SEARCH,
+          TOOL_DISPATCHER_NAME,
+        ]);
+        for (const request of turns.slice(0, RESET_TURN).flat()) {
+          expect(serialize(request.tools)).toBe(serialize(first.tools));
+          expect(serialize(request.system)).toBe(serialize(first.system));
+        }
+        expect(json(first.system)).not.toContain(WEB_SEARCH_GUIDE);
+      });
+
+      it('starts every request with all bytes of the one before it, except at the reset', () => {
+        const all = turns.flat();
+        const resetAt = turns.slice(0, RESET_TURN).flat().length;
+        /** The request right after the refused call, whose result ends the one before it. */
+        const afterRefusal = turns.slice(0, 3).flat().length;
+        for (let i = 1; i < all.length; i++) {
+          const previous =
+            i === afterRefusal && ERROR_STATUS_NOT_RESTORED.has(providerCase.name)
+              ? all[i - 1].messages.slice(0, -1)
+              : all[i - 1].messages;
+          const prefix = serialize(all[i].messages.slice(0, previous.length));
+          if (i === resetAt) {
+            expect(prefix).not.toBe(serialize(previous));
+          } else {
+            expect(prefix).toBe(serialize(previous));
+          }
+        }
+      });
+
+      it('announces a built-in with its instructions, switching off and on again', () => {
+        const sent = turns.map((requests) => requests[0]);
+        expect(lastMessage(sent[1])).toContain(
+          'Tools of built-in capability `web_search` are now available.',
+        );
+        expect(lastMessage(sent[1])).toContain(WEB_SEARCH_GUIDE);
+        expect(lastMessage(sent[2])).toContain(
+          'Tools of built-in capability `execute_code` were switched off',
+        );
+        expect(lastMessage(sent[3])).toContain(
+          'Tools of built-in capability `execute_code` are available again.',
+        );
+      });
+
+      it('runs a dispatched built-in under its own name and refuses a switched-off one', () => {
+        expect(result.calls).toEqual([{ name: 'web_search', args: { query: 'bolts' } }]);
+        expect(result.hookNames).toEqual(['web_search']);
+        const [, refused, followUp] = turns[2];
+        const appended = json(followUp.messages.slice(refused.messages.length));
+        expect(appended).toContain('is disabled in this conversation');
+      });
+
+      it('re-anchors at a declared reset: keeps the order and appends the deferred built-in', () => {
+        const reset = result.played[RESET_TURN];
+        expect(reset.plan.reset).toEqual(['model']);
+        expect(reset.plan.anchorTarget).toEqual({ messageId: `u${RESET_TURN + 1}` });
+        const before = toolNames(turns[0][0]);
+        const after = toolNames(turns[RESET_TURN][0]);
+        expect(after).toEqual([...before.slice(0, -1), 'web_search', TOOL_DISPATCHER_NAME]);
+        expect(json(turns[RESET_TURN][0].system)).toContain(WEB_SEARCH_GUIDE);
+        expect(json(turns[RESET_TURN][0].messages)).not.toContain('context_update');
+        const next = turns[RESET_TURN + 1][0];
+        expect(serialize(next.tools)).toBe(serialize(turns[RESET_TURN][0].tools));
+        expect(serialize(next.system)).toBe(serialize(turns[RESET_TURN][0].system));
+        expect(result.played[RESET_TURN + 1].plan.reset).toBeUndefined();
+      });
+    },
+  );
 });

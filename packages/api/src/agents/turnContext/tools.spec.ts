@@ -4,7 +4,7 @@ import type { ContextEntry, SendSnapshot, TurnContextAgent } from './registry';
 import type { LiveToolGroups } from './tools';
 import type { TurnContextMessage } from './anchor';
 import type { TurnPlan } from './ledger';
-import { collectToolGroups, getToolGroupKey } from './tools';
+import { collectToolGroups, getToolGroupKey, isToolGroupKey } from './tools';
 import { applyTurnContext } from './anchor';
 import { planTurnContext } from './ledger';
 
@@ -22,6 +22,16 @@ const mcpTool = (tool: string, server: string, description = `${tool} on ${serve
 });
 
 const MEMORY: LCTool = { name: 'set_memory', description: 'Saves a memory.' };
+const WEB_SEARCH: LCTool = { name: 'web_search', description: 'Searches the web.' };
+const BASH: LCTool = { name: 'bash_tool', description: 'Runs bash.' };
+const READ_FILE: LCTool = { name: 'read_file', description: 'Reads a file.' };
+const SKILL: LCTool = { name: 'skill', description: 'Runs a skill.' };
+const ASK: LCTool = { name: 'ask_user_question', description: 'Asks the user.' };
+const WEB_SEARCH_GUIDE = 'Cite every web source.';
+const withParameter = (tool: LCTool, name: string): LCTool => ({
+  ...tool,
+  parameters: { type: 'object', properties: { [name]: { type: 'string' } } },
+});
 const ACTION: LCTool = { name: 'getWeather_action_api---example---com', description: 'Weather.' };
 const CALCULATOR: LCTool = { name: 'calculator', description: 'Calculates.' };
 
@@ -35,12 +45,34 @@ interface ToolState {
   drift?: string;
   /** The tool names a server offers; `search` and `fetch` by default. */
   tools?: Record<string, string[]>;
+  /** Leaves out the memory tool, the only tool every other state has. */
+  bare?: boolean;
+  webSearch?: boolean;
+  code?: boolean;
+  skills?: boolean;
+  ask?: boolean;
+  /** Adds the tool intents parameter to the memory tool. */
+  intent?: boolean;
+  /** A provider web search tool in the agent's tools. */
+  providerSearch?: boolean;
+  model?: string;
+  /** Spawn targets of the agent's subagent tool, by description. */
+  subagents?: readonly string[];
+  /** Builds the same setup with its object keys in the opposite order. */
+  flipKeys?: boolean;
 }
+
+const flipped = <T extends Record<string, unknown>>(value: T, flip?: boolean): T =>
+  flip ? (Object.fromEntries(Object.entries(value).reverse()) as T) : value;
 
 function buildAgent(state: ToolState): TurnContextAgent {
   const servers = state.mcp ?? [];
   const definitions: LCTool[] = [
-    MEMORY,
+    ...(state.bare ? [] : [state.intent ? withParameter(MEMORY, 'intent') : MEMORY]),
+    ...(state.webSearch ? [WEB_SEARCH] : []),
+    ...(state.code ? [BASH, READ_FILE] : []),
+    ...(state.skills ? [SKILL, ...(state.code ? [] : [READ_FILE])] : []),
+    ...(state.ask ? [ASK] : []),
     ...(state.calculator ? [CALCULATOR] : []),
     ...(state.action ? [ACTION] : []),
     /** Loaded in selection order: the plan orders servers itself. */
@@ -51,10 +83,36 @@ function buildAgent(state: ToolState): TurnContextAgent {
     ),
   ];
   return {
+    provider: 'openAI',
+    model_parameters: { model: state.model ?? 'model-a' },
+    ...(state.subagents && {
+      subagents: flipped({ enabled: true, allowSelf: false }, state.flipKeys),
+      subagentAgentConfigs: new Map(
+        state.subagents.map((description, i) => [
+          `agent_${i}`,
+          flipped({ id: `agent_${i}`, description }, state.flipKeys),
+        ]),
+      ),
+    }),
+    tools: state.providerSearch
+      ? [
+          flipped(
+            {
+              type: 'web_search',
+              user_location: flipped({ country: 'US', city: 'X' }, state.flipKeys),
+            },
+            state.flipKeys,
+          ),
+        ]
+      : [],
+    codeEnvAvailable: state.code === true,
+    toolContextMap: state.webSearch ? { web_search: WEB_SEARCH_GUIDE } : {},
     toolDefinitions: definitions,
     toolRegistry: new Map(definitions.map((definition) => [definition.name, { ...definition }])),
     selectedToolNames: [
-      'memory',
+      ...(state.bare ? [] : ['memory']),
+      ...(state.webSearch ? ['web_search'] : []),
+      ...(state.code ? ['execute_code'] : []),
       ...servers.map((server) => `sys__all__sys_mcp_${server}`),
       ...(state.down ?? []).map((server) => `sys__all__sys_mcp_${server}`),
     ],
@@ -111,17 +169,37 @@ class Conversation {
           ]
         : [{ type: ContentTypes.TEXT, text: 'Answer' }],
     });
+    this.store(plan);
+    const agent = snapshot.agent;
+    applyTurnContext(agent, plan);
+    return { plan, agent, update: plan.updates.get(messages.length - 1) };
+  }
+
+  /** Stores the anchor where the server would: write-once. */
+  store(plan: TurnPlan) {
     if (plan.anchorTarget?.messageId === null) {
       this.anchor ??= plan.anchor;
     } else if (plan.anchorTarget != null) {
       const carrier = this.rows.find(({ messageId }) => messageId === plan.anchorTarget?.messageId);
-      if (carrier != null) {
-        carrier.contextAnchor ??= plan.anchor;
+      if (carrier != null && carrier.contextAnchor == null) {
+        carrier.contextAnchor = plan.anchor;
       }
     }
-    const agent = snapshot.agent;
-    applyTurnContext(agent, plan);
-    return { plan, agent, update: plan.updates.get(messages.length - 1) };
+  }
+
+  /** Regenerates the last turn: the user message is not sent again, so nothing is written. */
+  async regenerate(state: ToolState) {
+    const index = this.rows.length - 2;
+    const messages = this.rows.slice(0, index + 1);
+    const snapshot = await snapshotOf(state);
+    const plan = planTurnContext({
+      messages,
+      conversationAnchor: this.anchor,
+      snapshot,
+    });
+    this.store(plan);
+    applyTurnContext(snapshot.agent, plan);
+    return { plan, agent: snapshot.agent, update: plan.updates.get(index) };
   }
 
   async play(states: ToolState[]) {
@@ -155,15 +233,42 @@ describe('tool groups', () => {
     expect(getToolGroupKey(ACTION)).toBe('tool:action:api---example---com');
     expect(getToolGroupKey(CALCULATOR)).toBe('tool:agent:calculator');
     expect(getToolGroupKey({ name: 'image_edit_oai' })).toBe('tool:agent:image_gen_oai');
-    for (const name of [
-      'web_search',
-      'file_search',
-      'ask_user_question',
-      'set_memory',
-      'bash_tool',
-    ]) {
-      expect(getToolGroupKey({ name })).toBeUndefined();
-    }
+    expect(getToolGroupKey({ name: 'lc_custom_tool' })).toBeUndefined();
+  });
+
+  it('groups built-in tools by the capability that registers them', () => {
+    const groups = Object.fromEntries(
+      [
+        'web_search',
+        'file_search',
+        'bash_tool',
+        'search_workspace',
+        'run_tools_with_bash',
+        'skill',
+        'set_memory',
+        'delete_memory',
+        'ask_user_question',
+        'check_background_task',
+        'tool_search',
+      ].map((name) => [name, getToolGroupKey({ name })]),
+    );
+    expect(groups).toEqual({
+      web_search: 'tool:builtin:web_search',
+      file_search: 'tool:builtin:file_search',
+      bash_tool: 'tool:builtin:execute_code',
+      search_workspace: 'tool:builtin:execute_code',
+      run_tools_with_bash: 'tool:builtin:programmatic',
+      skill: 'tool:builtin:skills',
+      set_memory: 'tool:builtin:memory',
+      delete_memory: 'tool:builtin:memory',
+      ask_user_question: 'tool:builtin:ask_user_question',
+      check_background_task: 'tool:builtin:background',
+      tool_search: 'tool:builtin:tool_search',
+    });
+    /** The skills capability registers the file tools when the agent has no code environment. */
+    expect(getToolGroupKey(READ_FILE, true)).toBe('tool:builtin:execute_code');
+    expect(getToolGroupKey(READ_FILE, false)).toBe('tool:builtin:skills');
+    expect(getToolGroupKey({ name: 'edit_file' }, false)).toBe('tool:builtin:skills');
   });
 
   it('orders MCP servers and their tools by name, other groups as listed', async () => {
@@ -173,6 +278,7 @@ describe('tool groups', () => {
       calculator: true,
     });
     expect([...(toolGroups as LiveToolGroups).groups.keys()]).toEqual([
+      'tool:builtin:memory',
       'tool:mcp:alpha',
       'tool:mcp:beta',
       'tool:agent:calculator',
@@ -362,13 +468,18 @@ describe('planning tools against the anchor', () => {
   });
 
   it('leaves a conversation without groups untouched until it gets its first group', async () => {
-    const turns = await new Conversation().play([{}, {}, { mcp: ['beta'] }, {}]);
+    const turns = await new Conversation().play([
+      { bare: true },
+      { bare: true },
+      { bare: true, mcp: ['beta'] },
+      { bare: true },
+    ]);
     expect(turns[0].agent.toolDispatch).toBeUndefined();
     expect(turns[1].plan.tools).toBeUndefined();
     expect(turns[1].agent.liveTools).toBeUndefined();
-    expect(boundNames(turns[1].agent)).toEqual(['set_memory']);
+    expect(boundNames(turns[1].agent)).toEqual([]);
     expect(turns[2].agent.toolDispatch).toBe(true);
-    expect(boundNames(turns[2].agent)).toEqual(['set_memory']);
+    expect(boundNames(turns[2].agent)).toEqual([]);
     expect(turns[2].update).toContain('Tools of MCP server `beta` are now available.');
     /** Bound from then on, so the tool list does not change back. */
     expect(turns[3].agent.toolDispatch).toBe(true);
@@ -398,7 +509,8 @@ describe('planning tools against the anchor', () => {
         'fetch_mcp_delta',
         'search_mcp_delta',
       ]);
-      expect(before.plan.anchor.map(({ key }) => key)).toEqual([
+      expect(before.plan.anchor.map(({ key }) => key).filter(isToolGroupKey)).toEqual([
+        'tool:builtin:memory',
         'tool:mcp:gamma',
         'tool:agent:calculator',
         'tool:mcp:alpha',
@@ -408,6 +520,194 @@ describe('planning tools against the anchor', () => {
       expect(before.plan.tools?.mcpInstructions).toContain(INSTRUCTIONS.alpha);
       expect(before.agent.toolDispatch).toBe(true);
     });
+  });
+});
+
+describe('built-in capabilities as tool groups', () => {
+  it('binds built-ins first, in a fixed order, with their instructions from the anchor', async () => {
+    const [turn] = await new Conversation().play([
+      { mcp: ['alpha'], skills: true, code: true, webSearch: true },
+    ]);
+    expect(turn.plan.anchor.map(({ key }) => key).filter(isToolGroupKey)).toEqual([
+      'tool:builtin:web_search',
+      'tool:builtin:execute_code',
+      'tool:builtin:skills',
+      'tool:builtin:memory',
+      'tool:mcp:alpha',
+    ]);
+    expect(boundNames(turn.agent)).toEqual([
+      'web_search',
+      'bash_tool',
+      'read_file',
+      'skill',
+      'set_memory',
+      'fetch_mcp_alpha',
+      'search_mcp_alpha',
+    ]);
+    expect(turn.agent.toolContextMap).toEqual({ web_search: WEB_SEARCH_GUIDE });
+  });
+
+  it('defers a built-in enabled mid-segment and keeps its instructions out of the system prompt', async () => {
+    const turns = await new Conversation().play([
+      {},
+      { webSearch: true },
+      { webSearch: true },
+      {},
+      { webSearch: true },
+    ]);
+    for (const turn of turns.slice(1)) {
+      expect(boundTools(turn.agent)).toBe(boundTools(turns[0].agent));
+      expect(turn.agent.toolContextMap).toEqual({});
+    }
+    expect(find(turns[1].agent, 'web_search')?.defer_loading).toBe(true);
+    expect(turns[1].update).toContain(
+      'Tools of built-in capability `web_search` are now available.',
+    );
+    expect(turns[1].update).toContain(WEB_SEARCH_GUIDE);
+    expect(turns[1].update).toContain('- web_search: Searches the web.');
+    expect(turns[2].update).toBeUndefined();
+    expect(turns[3].update).toContain(
+      'Tools of built-in capability `web_search` were switched off',
+    );
+    expect(turns[4].update).toContain('are available again');
+  });
+
+  it('keeps an anchored built-in bound when switched off, refusing calls', async () => {
+    const turns = await new Conversation().play([{ webSearch: true }, {}]);
+    expect(boundTools(turns[1].agent)).toBe(boundTools(turns[0].agent));
+    expect(find(turns[1].agent, 'web_search')?.disabled).toEqual({ reason: 'switched off' });
+    /** The anchor keeps stating its instructions. */
+    expect(turns[1].agent.toolContextMap).toEqual({ web_search: WEB_SEARCH_GUIDE });
+  });
+
+  it('keeps a file tool enabled when it moves from the code group to the skills group', async () => {
+    const turns = await new Conversation().play([{ code: true }, { skills: true }]);
+    expect(boundTools(turns[1].agent)).toBe(boundTools(turns[0].agent));
+    expect(find(turns[1].agent, 'bash_tool')?.disabled).toEqual({ reason: 'switched off' });
+    expect(find(turns[1].agent, 'read_file')?.disabled).toBeUndefined();
+    expect(find(turns[1].agent, 'skill')?.defer_loading).toBe(true);
+    expect(turns[1].update).toContain('Tools of built-in capability `skills` are now available.');
+  });
+});
+
+describe('declared resets', () => {
+  const groupKeys = (plan: TurnPlan) => plan.anchor.map(({ key }) => key).filter(isToolGroupKey);
+
+  it('re-anchors on the sent message when the model changes, keeping the tool order', async () => {
+    const convo = new Conversation();
+    const turns = await convo.play([
+      { mcp: ['alpha', 'beta'] },
+      { mcp: ['beta', 'gamma'] },
+      { mcp: ['beta', 'gamma'], model: 'model-b' },
+      { mcp: ['beta', 'gamma'], model: 'model-b' },
+    ]);
+    expect(turns[2].plan.reset).toEqual(['model']);
+    expect(turns[2].plan.anchorTarget).toEqual({ messageId: 'u4' });
+    expect(convo.rows[4].contextAnchor).toEqual(turns[2].plan.anchor);
+    expect(groupKeys(turns[2].plan)).toEqual([
+      'tool:builtin:memory',
+      'tool:mcp:beta',
+      'tool:mcp:gamma',
+    ]);
+    expect(boundNames(turns[2].agent)).toEqual([
+      'set_memory',
+      'fetch_mcp_beta',
+      'search_mcp_beta',
+      'fetch_mcp_gamma',
+      'search_mcp_gamma',
+    ]);
+    /** Earlier announcements are part of the new anchor; the reset turn announces nothing. */
+    expect(turns[2].plan.updates.size).toBe(0);
+    expect(turns[2].plan.currentEntries).toEqual([]);
+    expect(turns[3].plan.reset).toBeUndefined();
+    expect(turns[3].plan.anchorTarget).toBeUndefined();
+    expect(boundTools(turns[3].agent)).toBe(boundTools(turns[2].agent));
+  });
+
+  it.each([
+    ['provider_tools', { providerSearch: true }],
+    ['agent', { subagents: ['Reviews code.'] }],
+    ['tool_profile', { intent: true }],
+    ['tools', { ask: true }],
+  ] as const)('re-anchors for %s', async (reason, change) => {
+    const turns = await new Conversation().play([{}, change]);
+    expect(turns[1].plan.reset).toEqual([reason]);
+  });
+
+  it('keeps an anchored question tool bound and refused once switched off, without a reset', async () => {
+    const turns = await new Conversation().play([{ ask: true }, {}]);
+    expect(turns[1].plan.reset).toBeUndefined();
+    expect(find(turns[1].agent, 'ask_user_question')?.disabled).toEqual({
+      reason: 'switched off',
+    });
+  });
+
+  it('keeps the anchor a reset turn stored when its reply is regenerated', async () => {
+    const convo = new Conversation();
+    const turns = await convo.play([{}, { model: 'model-b' }]);
+    const stored = convo.rows[2].contextAnchor;
+    expect(stored).toEqual(turns[1].plan.anchor);
+
+    const regenerated = await convo.regenerate({ model: 'model-c', webSearch: true });
+    expect(regenerated.plan.reset).toBeUndefined();
+    expect(regenerated.plan.anchorTarget).toBeUndefined();
+    expect(regenerated.plan.currentEntries).toBeUndefined();
+    expect(regenerated.update).toBeUndefined();
+    expect(convo.rows[2].contextAnchor).toBe(stored);
+    expect(boundTools(regenerated.agent)).toBe(boundTools(turns[1].agent));
+  });
+
+  it('leaves the other branch on its anchor when a reset turn is regenerated', async () => {
+    const convo = new Conversation();
+    await convo.play([{}, { model: 'model-b' }, { model: 'model-b' }]);
+    const resetAnchor = convo.rows[2].contextAnchor;
+    await convo.regenerate({ model: 'model-c' });
+    /** The branch that continues from the regenerated reply still starts from the reset's anchor. */
+    const next = await convo.send({ model: 'model-b' });
+    expect(next.plan.reset).toBeUndefined();
+    expect(next.plan.anchor).toEqual(resetAnchor);
+    expect(convo.rows[2].contextAnchor).toBe(resetAnchor);
+  });
+
+  it('announces a change made before the next message, not on the regeneration', async () => {
+    const convo = new Conversation();
+    await convo.play([{}, { model: 'model-b' }]);
+    const regenerated = await convo.regenerate({ model: 'model-b', webSearch: true });
+    expect(regenerated.update).toBeUndefined();
+    const next = await convo.send({ model: 'model-b', webSearch: true });
+    expect(next.update).toContain('Tools of built-in capability `web_search` are now available.');
+  });
+
+  it('does not reset when the same setup is built with its keys in another order', async () => {
+    const convo = new Conversation();
+    const setup = (flip: boolean): ToolState => ({
+      providerSearch: true,
+      subagents: ['Reviews code.', 'Writes tests.'],
+      model: 'model-a',
+      flipKeys: flip,
+    });
+    const turns = await convo.play([setup(false), setup(true), setup(false), setup(true)]);
+    for (const turn of turns) {
+      expect(turn.plan.reset).toBeUndefined();
+    }
+    expect(boundTools(turns[3].agent)).toBe(boundTools(turns[0].agent));
+  });
+
+  it('does not reset an anchor stored before it recorded the profile, nor a resumed turn', async () => {
+    const convo = new Conversation();
+    await convo.play([{}]);
+    convo.anchor = (convo.anchor ?? []).filter(({ key }) => !key.startsWith('segment:'));
+    const legacy = await convo.send({ model: 'model-b' });
+    expect(legacy.plan.reset).toBeUndefined();
+    /** Nothing to announce either: a reset source never becomes an update. */
+    expect(legacy.plan.currentEntries).toEqual([]);
+
+    const resumed = planTurnContext({
+      messages: convo.rows,
+      conversationAnchor: convo.anchor,
+      snapshot: await snapshotOf({ providerSearch: true }),
+    });
+    expect(resumed.reset).toBeUndefined();
   });
 });
 

@@ -2610,6 +2610,8 @@ export async function createRun({
     let tools = agent.tools;
     let graphTools: GenericTool[] | undefined;
     if (agentRequestsAskUserQuestion(agent)) {
+      /** The turn context's plan: a tool it switched off stays bound and refuses calls. */
+      const planned = toolDefinitions.find((def) => def.name === ASK_USER_QUESTION_TOOL_NAME);
       tools = tools?.filter(
         (tool) => (tool as { name?: string } | undefined)?.name !== ASK_USER_QUESTION_TOOL_NAME,
       );
@@ -2618,10 +2620,17 @@ export async function createRun({
         toolRegistry = new Map(toolRegistry);
         toolRegistry.delete(ASK_USER_QUESTION_TOOL_NAME);
       }
-      if (hitlCapable && !isSubagent && !askToolAdminDisabled) {
+      if (hitlCapable && !isSubagent && !askToolAdminDisabled && planned?.defer_loading !== true) {
         graphTools = [
           createAskUserQuestionTool(toolInputValidationErrors) as unknown as GenericTool,
         ];
+        if (planned?.disabled != null) {
+          toolRegistry = new Map(toolRegistry ?? []);
+          toolRegistry.set(ASK_USER_QUESTION_TOOL_NAME, {
+            name: ASK_USER_QUESTION_TOOL_NAME,
+            disabled: planned.disabled,
+          });
+        }
       }
     }
 

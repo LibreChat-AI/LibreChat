@@ -11,7 +11,7 @@ import type { TurnPlan } from './ledger';
 import { createHistoryContextUpdates } from '../contextUpdates';
 import { getMCPServerInstructions } from '~/mcp/instructions';
 import { createSendSnapshot } from './registry';
-import { isStableContextEnabled } from '../promptCache';
+import { hasProviderPromptCache, isStableContextEnabled } from '../promptCache';
 import { prependContextText } from '../client';
 import { collectToolGroups } from './tools';
 import { planTurnContext } from './ledger';
@@ -38,6 +38,11 @@ export interface PendingContextAnchor {
 export interface PreparedTurnContext {
   plan: TurnPlan;
   pending?: PendingContextAnchor;
+  /**
+   * Why this turn re-anchored a segment, for the notice under the reply. Only when the
+   * provider has a prompt cache the user can lose; elsewhere there is nothing to tell.
+   */
+  promptCacheReset?: string[];
 }
 
 type ConfigServers = Record<string, ParsedServerConfig> | undefined;
@@ -201,7 +206,11 @@ export async function prepareTurnContext({
   if (plan.currentEntries != null && plan.currentEntries.length > 0 && current?.messageId) {
     req.turnContextUpdates = { messageId: current.messageId, entries: plan.currentEntries };
   }
-  return { plan, pending: pendingFor(plan, conversationId) };
+  return {
+    plan,
+    pending: pendingFor(plan, conversationId),
+    ...(plan.reset != null && hasProviderPromptCache(agent) && { promptCacheReset: plan.reset }),
+  };
 }
 
 /**
