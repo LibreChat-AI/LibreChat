@@ -103,6 +103,44 @@ describe('prepareTurnContext', () => {
   });
 });
 
+describe('prepareTurnContext resets', () => {
+  const agentOf = (provider: string, promptCache: boolean, model: string) => ({
+    provider,
+    model_parameters: { model, promptCache },
+    dynamicToolContextMap: {},
+  });
+  const turn = (agent: ReturnType<typeof agentOf>, anchor: readonly ContextEntry[] | null) =>
+    prepareTurnContext({
+      req: request(),
+      agent,
+      allAgents: [{ agent }],
+      orderedMessages: history(),
+      conversationId: 'c1',
+      anchorPromise: Promise.resolve(anchor),
+    });
+
+  it.each([
+    ['anthropic', true, true],
+    ['openrouter', true, true],
+    ['bedrock', true, true],
+    ['anthropic', false, false],
+    ['openAI', true, false],
+    ['google', true, false],
+  ])('reports a model change for %s with promptCache %s: %s', async (provider, cache, reported) => {
+    const first = await turn(agentOf(provider, cache, 'model-a'), null);
+    const second = await turn(agentOf(provider, cache, 'model-b'), first?.plan.anchor ?? null);
+    expect(second?.plan.reset).toEqual(['model']);
+    expect(second?.promptCacheReset).toEqual(reported ? ['model'] : undefined);
+  });
+
+  it('reports nothing when the turn did not re-anchor', async () => {
+    const first = await turn(agentOf('anthropic', true, 'model-a'), null);
+    const second = await turn(agentOf('anthropic', true, 'model-a'), first?.plan.anchor ?? null);
+    expect(second?.plan.reset).toBeUndefined();
+    expect(second?.promptCacheReset).toBeUndefined();
+  });
+});
+
 describe('readConversationAnchor', () => {
   it('reads nothing without stableContext', async () => {
     const getConvoContextAnchor = jest.fn();

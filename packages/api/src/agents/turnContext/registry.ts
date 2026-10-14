@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { canonicalJson } from './canonical';
 import { EModelEndpoint, formatPromptTimestamp } from 'librechat-data-provider';
 import type { ContextAgent } from '../systemParts';
 import { AGENT_TEMPORAL_INSTRUCTIONS_KEY, hasConversationDateContext } from '../contextUpdates';
@@ -18,9 +20,20 @@ export interface ContextEntry {
 export interface TurnContextAgent extends ContextAgent, ToolPlanAgent {
   id?: string;
   provider?: string;
+  endpoint?: string | null;
+  model?: string | null;
+  model_parameters?: { model?: unknown; promptCache?: unknown } | null;
   artifacts?: unknown;
+  /** Provider tools (plain objects) and tool instances. */
   tools?: unknown[];
   memoryToolsRegistered?: boolean;
+  name?: string | null;
+  subagents?: unknown;
+  /** Spawn targets (an array or a map); the subagent tool's description lists them. */
+  subagentAgentConfigs?: {
+    values(): Iterable<{ id?: string; name?: string | null; description?: string | null }>;
+  };
+  edges?: unknown;
 }
 
 /** What the sources read, sampled once when the user sends the message. */
@@ -55,6 +68,11 @@ export interface ContextSource {
   whenOff?: 'announce' | 'silent' | 'withhold';
   /** Keys of a prefix source keep the order they are collected in instead of name order. */
   keepOrder?: boolean;
+  /**
+   * A change cannot reach the model as an update: the prompt prefix breaks
+   * anyway, so the turn re-anchors the segment (a declared reset).
+   */
+  resets?: boolean;
   collect: (snapshot: SendSnapshot) => Iterable<[string, string]>;
   /**
    * The value an update stores for a state source whose live value changed, when it is
@@ -140,6 +158,8 @@ export const ContextSourceKeys = {
   memory: 'memory',
   rag: 'rag',
   queuedCodeFiles: 'queued_code_files',
+  /** What the provider bills as one prompt prefix: model, agent setup, provider tools. */
+  segmentPrefix: 'segment:',
 } as const;
 
 /** System prompt parts the anchor owns for an agent whose context is ledgered. */
@@ -294,6 +314,48 @@ function renderMemoryUpdate(_key: string, value: string | null, previous: string
   ].join('\n');
 }
 
+const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+
+/** Tools the provider runs itself, given as plain objects (`{ type: 'web_search' }`), not instances. */
+const isProviderTool = (tool: unknown) =>
+  tool != null &&
+  typeof tool === 'object' &&
+  typeof (tool as { invoke?: unknown }).invoke !== 'function';
+
+/**
+ * The parts of a request a turn cannot change without breaking its prefix:
+ * the model, the agent's own setup (instructions, subagents, handoffs) and the
+ * provider tools, which the dispatcher cannot reach.
+ */
+function collectSegmentProfile({ agent }: SendSnapshot): Array<[string, string]> {
+  const key = (name: string) => `${ContextSourceKeys.segmentPrefix}${name}`;
+  const entries: Array<[string, string]> = [
+    [
+      key('agent'),
+      digest([
+        agent.instructions ?? '',
+        agent.edges ?? null,
+        agent.subagents ?? null,
+        agent.subagents != null ? (agent.name ?? null) : null,
+        Array.from(agent.subagentAgentConfigs?.values() ?? [], ({ id, name, description }) => [
+          id,
+          name,
+          description,
+        ]),
+      ]),
+    ],
+    [key('provider_tools'), canonicalJson((agent.tools ?? []).filter(isProviderTool))],
+  ];
+  if (agent.provider != null) {
+    const model = agent.model_parameters?.model ?? agent.model ?? null;
+    entries.unshift([
+      key('model'),
+      JSON.stringify([agent.provider, agent.endpoint ?? null, model]),
+    ]);
+  }
+  return entries;
+}
+
 /** Registry order is the order of lines in an update and of parts in a new anchor. */
 const SOURCES: ContextSource[] = [
   toolGroupSource,
@@ -406,6 +468,15 @@ const SOURCES: ContextSource[] = [
         : [];
     },
     renderUpdate: (_key, value) => value ?? '',
+  },
+  {
+    key: ContextSourceKeys.segmentPrefix,
+    kind: 'state',
+    keepOrder: true,
+    resets: true,
+    collect: collectSegmentProfile,
+    renderAnchor: () => '',
+    renderUpdate: () => '',
   },
 ];
 

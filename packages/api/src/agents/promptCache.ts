@@ -49,3 +49,18 @@ export function orderNames(
 ): string[] {
   return isStableContextEnabled(config) ? sortNames(names) : [...names];
 }
+
+/** Providers whose requests carry explicit prompt-cache breakpoints, switched on by `promptCache`. */
+const PROMPT_CACHE_PROVIDERS = new Set<string>(['anthropic', 'openrouter', 'bedrock']);
+
+/** Whether the agent's requests use a prompt cache the user can lose by changing the prompt. */
+export function hasProviderPromptCache(agent: {
+  provider?: string;
+  model_parameters?: { promptCache?: unknown } | null;
+}): boolean {
+  return (
+    agent.provider != null &&
+    PROMPT_CACHE_PROVIDERS.has(agent.provider) &&
+    agent.model_parameters?.promptCache === true
+  );
+}

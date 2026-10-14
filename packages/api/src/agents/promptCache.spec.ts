@@ -1,4 +1,4 @@
-import { isStableContextEnabled, orderNames } from './promptCache';
+import { isStableContextEnabled, orderNames, hasProviderPromptCache } from './promptCache';
 
 const ON = { endpoints: { agents: { promptCache: { stableContext: true } } } };
 
@@ -15,6 +15,24 @@ describe('isStableContextEnabled', () => {
 
   it('is on when configured and the SDK has the dispatcher', () => {
     expect(isStableContextEnabled(ON)).toBe(true);
+  });
+});
+
+describe('hasProviderPromptCache', () => {
+  it.each(['anthropic', 'openrouter', 'bedrock'])('is true for %s with promptCache', (provider) => {
+    expect(hasProviderPromptCache({ provider, model_parameters: { promptCache: true } })).toBe(
+      true,
+    );
+    expect(hasProviderPromptCache({ provider, model_parameters: { promptCache: false } })).toBe(
+      false,
+    );
+    expect(hasProviderPromptCache({ provider })).toBe(false);
+  });
+
+  it.each(['openAI', 'google', 'azureOpenAI', undefined])('is false for %s', (provider) => {
+    expect(hasProviderPromptCache({ provider, model_parameters: { promptCache: true } })).toBe(
+      false,
+    );
   });
 });
 

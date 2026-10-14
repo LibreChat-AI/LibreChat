@@ -7,26 +7,24 @@ import {
 import { TOOL_DISPATCHER_NAME } from '@librechat/agents';
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import type { ContextEntry, ContextSource, TurnContextAgent } from './registry';
-import { ASK_USER_QUESTION_TOOL_NAME } from '../hitl/askUserQuestionTool';
+import { builtinCapability, builtinRank, isUndispatchable, schemaProfile } from './builtins';
 import { getToolDefinition } from '~/tools/registry/definitions';
 import { formatMCPServerInstructions, sortNames } from '~/mcp/utils';
 import { toolkitParent } from '~/tools/toolkits/mapping';
 
-/** Ledger key prefix of a tool group: `tool:mcp:<server>`, `tool:action:<domain>`, `tool:agent:<tool>`. */
+/**
+ * Ledger key prefix of a tool group: `tool:builtin:<capability>`, `tool:mcp:<server>`,
+ * `tool:action:<domain>`, `tool:agent:<tool>`.
+ */
 export const TOOL_GROUP_PREFIX = 'tool:';
 
-const GroupKinds = { mcp: 'mcp', action: 'action', agent: 'agent' } as const;
-
-/** Capability tools that keep their live behavior until they become groups of their own. */
-const CAPABILITY_TOOL_NAMES = new Set<string>([
-  'web_search',
-  'file_search',
-  ASK_USER_QUESTION_TOOL_NAME,
-]);
+const GroupKinds = { builtin: 'builtin', mcp: 'mcp', action: 'action', agent: 'agent' } as const;
 
 export const isToolGroupKey = (key: string): boolean => key.startsWith(TOOL_GROUP_PREFIX);
 
 const groupKey = (kind: string, name: string) => `${TOOL_GROUP_PREFIX}${kind}:${name}`;
+const isBuiltinKey = (key: string) => key.startsWith(groupKey(GroupKinds.builtin, ''));
+const builtinName = (key: string) => key.slice(groupKey(GroupKinds.builtin, '').length);
 
 /** The schema part of a tool definition that reaches the provider. */
 interface ToolSchema {
@@ -64,6 +62,10 @@ export interface ToolPlanAgent {
   toolDispatch?: boolean;
   /** The tools as loaded, before a plan; isolated subagent copies of the agent run with these. */
   liveTools?: Pick<ToolPlanAgent, 'toolDefinitions' | 'toolRegistry'>;
+  /** Built-in tool instructions, by tool name. */
+  toolContextMap?: Record<string, unknown>;
+  /** The skills capability owns the file tools only without a code environment. */
+  codeEnvAvailable?: boolean;
 }
 
 const loadedDefinitions = (agent: ToolPlanAgent) =>
@@ -77,8 +79,11 @@ function mcpServerOf(definition: LCTool): string | undefined {
   return index > 0 ? definition.name.slice(index + Constants.mcp_delimiter.length) : undefined;
 }
 
-/** The group a tool belongs to; undefined for capability tools, which stay live. */
-export function getToolGroupKey(definition: LCTool): string | undefined {
+/** The group a tool belongs to; undefined for a tool no group owns, which stays live. */
+export function getToolGroupKey(
+  definition: LCTool,
+  codeEnvAvailable?: boolean,
+): string | undefined {
   const { name } = definition;
   if (isActionTool(name)) {
     return groupKey(
@@ -93,14 +98,18 @@ export function getToolGroupKey(definition: LCTool): string | undefined {
   if (server != null) {
     return groupKey(GroupKinds.mcp, server);
   }
-  if (getToolDefinition(name) != null && !CAPABILITY_TOOL_NAMES.has(name)) {
+  const capability = builtinCapability(name, codeEnvAvailable);
+  if (capability != null) {
+    return groupKey(GroupKinds.builtin, capability);
+  }
+  if (getToolDefinition(name) != null) {
     return groupKey(GroupKinds.agent, toolkitParent[name] ?? name);
   }
   return undefined;
 }
 
 /** Group keys named by the agent's selected tools, loaded or not. */
-function selectedGroupKeys(names: readonly string[]): Set<string> {
+function selectedGroupKeys(names: readonly string[], codeEnvAvailable?: boolean): Set<string> {
   const keys = new Set<string>();
   for (const name of names) {
     const mcpIndex = name.lastIndexOf(Constants.mcp_delimiter);
@@ -109,7 +118,7 @@ function selectedGroupKeys(names: readonly string[]): Set<string> {
     } else if (mcpIndex > 0) {
       keys.add(groupKey(GroupKinds.mcp, name.slice(mcpIndex + Constants.mcp_delimiter.length)));
     } else {
-      const key = getToolGroupKey({ name });
+      const key = getToolGroupKey({ name }, codeEnvAvailable);
       if (key != null) {
         keys.add(key);
       }
@@ -135,10 +144,19 @@ function byName(a: { name: string }, b: { name: string }): number {
   return a.name < b.name ? -1 : 1;
 }
 
+/** Instructions of a built-in group's tools, by tool name. */
+function builtinInstructions(agent: ToolPlanAgent, definitions: LCTool[]): string | undefined {
+  const texts = definitions
+    .map(({ name }) => agent.toolContextMap?.[name])
+    .filter((text): text is string => typeof text === 'string' && text !== '');
+  return texts.length > 0 ? texts.join('\n') : undefined;
+}
+
 /**
  * Samples the agent's tool groups. The initial order is the order a new anchor
- * binds them in: MCP servers by name, then the other groups in the order the
- * agent lists them; tools inside a group by name.
+ * binds them in: built-in capabilities in a fixed order, MCP servers by name,
+ * then the other groups in the order the agent lists them; tools inside a group
+ * by name.
  *
  * @param getInstructions - raw MCP server name to its instructions
  */
@@ -152,7 +170,7 @@ export async function collectToolGroups({
   const members = new Map<string, LCTool[]>();
   const rawServers = new Map<string, string>();
   for (const definition of loadedDefinitions(agent)) {
-    const key = getToolGroupKey(definition);
+    const key = getToolGroupKey(definition, agent.codeEnvAvailable);
     if (key == null || !isBindable(definition)) {
       continue;
     }
@@ -166,20 +184,29 @@ export async function collectToolGroups({
       ? await getInstructions(sortNames(new Set(rawServers.values())))
       : {};
 
+  const builtinKeys = [...members.keys()]
+    .filter(isBuiltinKey)
+    .sort((a, b) => builtinRank(builtinName(a)) - builtinRank(builtinName(b)));
   const mcpKeys = sortNames([...members.keys()].filter((key) => rawServers.has(key)));
-  const otherKeys = [...members.keys()].filter((key) => !rawServers.has(key));
+  const otherKeys = [...members.keys()].filter((key) => !rawServers.has(key) && !isBuiltinKey(key));
   const groups = new Map<string, LiveToolGroup>();
-  for (const key of [...mcpKeys, ...otherKeys]) {
+  for (const key of [...builtinKeys, ...mcpKeys, ...otherKeys]) {
     const definitions = members.get(key) as LCTool[];
     const server = rawServers.get(key);
+    const groupInstructions =
+      server != null
+        ? instructions[server]
+        : isBuiltinKey(key) && builtinInstructions(agent, definitions);
     const value: ToolGroupValue = {
-      ...(server != null && instructions[server] && { instructions: instructions[server] }),
+      ...(groupInstructions && { instructions: groupInstructions }),
       tools: definitions.map(toSchema).sort(byName),
     };
     groups.set(key, { value: JSON.stringify(value), definitions });
   }
   const unavailable = new Set(
-    [...selectedGroupKeys(agent.selectedToolNames ?? [])].filter((key) => !groups.has(key)),
+    [...selectedGroupKeys(agent.selectedToolNames ?? [], agent.codeEnvAvailable)].filter(
+      (key) => !groups.has(key),
+    ),
   );
   return { groups, unavailable };
 }
@@ -201,6 +228,9 @@ function describeGroup(key: string): string {
   const name = rest.join(':');
   if (kind === GroupKinds.mcp) {
     return `MCP server \`${name}\``;
+  }
+  if (kind === GroupKinds.builtin) {
+    return `built-in capability \`${name}\``;
   }
   return kind === GroupKinds.action ? `action \`${name}\`` : `tool \`${name}\``;
 }
@@ -313,6 +343,13 @@ export const toolGroupSource: ContextSource = {
   renderUpdate: renderToolGroupUpdate,
 };
 
+const byToolName = (groups: ReadonlyMap<string, LiveToolGroup>) =>
+  new Map(
+    [...groups.values()].flatMap(({ definitions }) =>
+      definitions.map((definition): [string, LCTool] => [definition.name, definition]),
+    ),
+  );
+
 /** What a turn binds, derived from the segment anchor and the live tool groups. */
 export interface ToolPlan {
   toolDefinitions: LCTool[];
@@ -321,13 +358,16 @@ export interface ToolPlan {
   dispatch: boolean;
   /** Instructions of the anchored MCP servers, for the stable system prompt. */
   mcpInstructions: string;
+  /** Instructions of the anchored built-in capabilities, by capability. */
+  toolContext: Record<string, string>;
 }
 
 /**
  * Plans the tools of one turn. Anchored groups are bound from their stored
  * schemas in anchor order, after the tools that are not grouped; an anchored
  * group that is off now stays bound with `disabled`. Live groups the anchor
- * does not bind are deferred.
+ * does not bind are deferred. Anchored MCP and built-in instructions are
+ * returned for the system prompt.
  */
 export function planTools({
   agent,
@@ -342,9 +382,12 @@ export function planTools({
 }): ToolPlan {
   const live = toolGroups?.groups ?? new Map<string, LiveToolGroup>();
   const registry = agent.liveTools?.toolRegistry ?? agent.toolRegistry;
+  /** By name across groups: a file tool moves between the code and skills groups with the code environment. */
+  const liveByName = byToolName(live);
   const bound: LCTool[] = [];
   const registryEntries: LCTool[] = [];
   const instructions: Record<string, string> = {};
+  const toolContext: Record<string, string> = {};
   for (const { key, value } of anchor) {
     const group = isToolGroupKey(key) ? readGroupValue(value) : undefined;
     if (group == null) {
@@ -352,17 +395,16 @@ export function planTools({
     }
     if (group.instructions && key.startsWith(groupKey(GroupKinds.mcp, ''))) {
       instructions[key.slice(groupKey(GroupKinds.mcp, '').length)] = group.instructions;
+    } else if (group.instructions && isBuiltinKey(key)) {
+      toolContext[builtinName(key)] = group.instructions;
     }
     const liveGroup = live.get(key);
-    const liveTools = new Map(
-      liveGroup?.definitions.map((definition) => [definition.name, definition]),
-    );
     const reason =
       liveGroup == null && toolGroups?.unavailable.has(key) !== true
         ? 'switched off'
         : 'unavailable';
     for (const tool of group.tools) {
-      const liveTool = liveTools.get(tool.name);
+      const liveTool = liveByName.get(tool.name);
       const definition: LCTool = {
         ...liveTool,
         name: tool.name,
@@ -380,7 +422,10 @@ export function planTools({
   const unbound = loadedDefinitions(agent)
     .filter(({ name }) => !boundNames.has(name))
     .map((definition) => {
-      if (definition.defer_loading === true || getToolGroupKey(definition) == null) {
+      if (
+        definition.defer_loading === true ||
+        getToolGroupKey(definition, agent.codeEnvAvailable) == null
+      ) {
         return definition;
       }
       const registered = registry?.get(definition.name);
@@ -392,6 +437,7 @@ export function planTools({
     registryEntries,
     dispatch,
     mcpInstructions: formatMCPServerInstructions(instructions),
+    toolContext,
   };
 }
 
@@ -407,4 +453,45 @@ export function applyToolPlan(agent: ToolPlanAgent, plan: ToolPlan): void {
     agent.toolRegistry = registry;
   }
   agent.toolDispatch = plan.dispatch || undefined;
+  /** Built-in instructions come from the anchor, like the tools they describe. */
+  const ungrouped = Object.entries(agent.toolContextMap ?? {}).filter(
+    ([name]) => getToolGroupKey({ name }, agent.codeEnvAvailable) == null,
+  );
+  agent.toolContextMap = { ...Object.fromEntries(ungrouped), ...plan.toolContext };
+}
+
+/**
+ * Why the live tools cannot keep the anchored `tools` byte for byte, if they
+ * cannot: an anchored tool gained or lost a schema-profile parameter (tool
+ * intents, background runs), or a group the dispatcher cannot reach was enabled.
+ */
+export function findToolResets(
+  anchor: readonly ContextEntry[],
+  toolGroups: LiveToolGroups,
+): string[] {
+  const reasons = new Set<string>();
+  const liveByName = byToolName(toolGroups.groups);
+  const anchored = new Set<string>();
+  for (const { key, value } of anchor) {
+    const group = isToolGroupKey(key) ? readGroupValue(value) : undefined;
+    if (group == null) {
+      continue;
+    }
+    anchored.add(key);
+    for (const tool of group.tools) {
+      const liveTool = liveByName.get(tool.name);
+      if (
+        liveTool != null &&
+        schemaProfile(liveTool.parameters) !== schemaProfile(tool.parameters)
+      ) {
+        reasons.add('tool_profile');
+      }
+    }
+  }
+  for (const key of toolGroups.groups.keys()) {
+    if (isBuiltinKey(key) && isUndispatchable(builtinName(key)) && !anchored.has(key)) {
+      reasons.add('tools');
+    }
+  }
+  return [...reasons];
 }

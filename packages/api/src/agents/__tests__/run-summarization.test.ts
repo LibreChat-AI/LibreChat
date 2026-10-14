@@ -4980,6 +4980,25 @@ describe('ask_user_question run wiring', () => {
     expect((agent.toolRegistry as Map<string, unknown>).has('other_tool')).toBe(true);
   });
 
+  it('keeps a switched-off planned tool bound in the graph and disabled in the registry', async () => {
+    const disabled = { reason: 'switched off' };
+    const config = await runAndGetConfig(
+      makeAgent({ toolDefinitions: [{ name: ASK, disabled }], toolRegistry: new Map() }),
+      { hitlCapable: true },
+    );
+    const agent = firstAgent(config);
+    expect((agent.graphTools as Array<{ name: string }>).map((t) => t.name)).toEqual([ASK]);
+    expect((agent.toolRegistry as Map<string, unknown>).get(ASK)).toEqual({ name: ASK, disabled });
+  });
+
+  it('binds no graph tool for a deferred planned tool, which the dispatcher cannot reach', async () => {
+    const config = await runAndGetConfig(
+      makeAgent({ toolDefinitions: [{ name: ASK, defer_loading: true }] }),
+      { hitlCapable: true },
+    );
+    expect(firstAgent(config).graphTools).toBeUndefined();
+  });
+
   it('does not mutate the caller-owned toolRegistry when stripping (clone-before-mutate)', async () => {
     const sharedRegistry = new Map([[ASK, { name: ASK }]]);
     await runAndGetConfig(makeAgent({ toolRegistry: sharedRegistry }), { hitlCapable: false });

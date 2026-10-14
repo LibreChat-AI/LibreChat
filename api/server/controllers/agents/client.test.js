@@ -8072,12 +8072,51 @@ describe('AgentClient - titleConvo', () => {
             { key: 'project', value: PROJECT },
             { key: 'runtime:web_search', value: WEB_SEARCH },
             { key: 'date', value: '2026-03-10 (Tue)' },
+            { key: 'segment:model', value: JSON.stringify(['openAI', 'openAI', 'gpt-4']) },
+            { key: 'segment:agent', value: expect.any(String) },
+            { key: 'segment:provider_tools', value: '[]' },
           ],
         });
         expect(result.prompt[2].content).toBe('Next question');
         expect(mockAgent.additional_instructions).toBe(
           `${PROJECT}\n\n${WEB_SEARCH}\n\nCurrent date: 2026-03-10 (Tue)`,
         );
+      });
+
+      it('re-anchors on the sent message when the model changed, without telling the user when the provider has no prompt cache', async () => {
+        const previousModel = JSON.stringify(['openAI', 'openAI', 'gpt-3.5']);
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          { key: 'segment:model', value: previousModel },
+        ]);
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(client.pendingContextAnchor).toMatchObject({
+          messageId: 'msg-3',
+          conversationId: 'convo-123',
+        });
+        expect(client.pendingContextAnchor).not.toHaveProperty('replace');
+        expect(client.pendingContextAnchor.anchor).toContainEqual({
+          key: 'segment:model',
+          value: JSON.stringify(['openAI', 'openAI', 'gpt-4']),
+        });
+        /** The new anchor states today's date: nothing to announce. */
+        expect(promptText(result.prompt[2])).toBe('Next question');
+        expect(client.buildResponseMetadata()).toBeUndefined();
+      });
+
+      it('reports the reset on the reply when the provider has a prompt cache', async () => {
+        mockAgent.provider = 'anthropic';
+        mockAgent.model_parameters = { model: 'claude-sonnet-4-5', promptCache: true };
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          { key: 'segment:model', value: JSON.stringify(['anthropic', 'anthropic', 'claude-old']) },
+        ]);
+
+        await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(client.buildResponseMetadata()).toEqual({ promptCacheReset: ['model'] });
       });
 
       it('keeps the anchored system prompt and announces toggles in the sent message', async () => {
@@ -8171,7 +8210,13 @@ describe('AgentClient - titleConvo', () => {
         expect(client.pendingContextAnchor).toEqual({
           messageId: 'msg-2',
           conversationId: 'convo-123',
-          anchor: [...ANCHOR, { key: 'artifacts', value: 'default' }],
+          anchor: [
+            ...ANCHOR,
+            { key: 'artifacts', value: 'default' },
+            { key: 'segment:model', value: JSON.stringify(['openAI', 'openAI', 'gpt-4']) },
+            { key: 'segment:agent', value: expect.any(String) },
+            { key: 'segment:provider_tools', value: '[]' },
+          ],
         });
         expect(mockAgent.additional_instructions).toContain(artifactsPrompt);
         expect(JSON.stringify(result.prompt)).not.toContain('<context_update>');
