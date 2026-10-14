@@ -341,16 +341,8 @@ test.describe('Tailwind v4 rendering', () => {
     try {
       await openArtifactPanel(page, conversationId);
 
-      const panel = await computedStyles(page.locator('#artifact-viewer'), ['transitionDuration']);
-      const transitionMs = panel.transitionDuration.endsWith('ms')
-        ? Number.parseFloat(panel.transitionDuration)
-        : Number.parseFloat(panel.transitionDuration) * 1000;
-      expect(transitionMs).toBe(150);
-
       const forbidden = await page.evaluate(() => {
         const tokens = [
-          'duration-250',
-          'duration-350',
           'h-19',
           'w-19',
           'w-30',

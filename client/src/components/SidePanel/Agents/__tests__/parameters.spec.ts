@@ -1,5 +1,5 @@
 import { agentParamSettings, EModelEndpoint } from 'librechat-data-provider';
-import type { AgentModelParameters } from 'librechat-data-provider';
+import type { AgentModelParameters, TModelReasoning } from 'librechat-data-provider';
 import { pruneAgentModelParameters, resolveAgentParameterSettings } from '../parameters';
 
 /**
@@ -157,4 +157,34 @@ it('preserves custom Anthropic settings while applying overrides only to visible
   expect(settings.visibleParameters.some(({ key }) => key === 'web_search')).toBe(false);
   const stored = { ...defaults, temperature: 0.7, thinking: false, web_search: true };
   expect(pruneAgentModelParameters(stored, settings)).toBe(stored);
+});
+
+describe('resolveAgentParameterSettings: OpenRouter reasoning efforts', () => {
+  const resolve = (modelReasoning?: TModelReasoning | null) =>
+    resolveAgentParameterSettings({
+      provider: 'openrouter',
+      model: 'openai/gpt-6.1-sol',
+      webSearchAllowed: true,
+      modelReasoning,
+    });
+  const keys = (list: { key: string }[]) => list.map(({ key }) => key);
+
+  it('hides the effort control while the efforts are unknown to be loading', () => {
+    expect(keys(resolve(null).visibleParameters)).not.toContain('reasoning_effort');
+  });
+
+  it('keeps the stored effort in the recognized schema while the control is hidden', () => {
+    const settings = resolve(null);
+    const stored = { reasoning_effort: 'max' } as unknown as AgentModelParameters;
+
+    expect(keys(settings.parameters)).toContain('reasoning_effort');
+    expect(pruneAgentModelParameters(stored, settings)).toBe(stored);
+  });
+
+  it('offers the effort control narrowed to what the model reports', () => {
+    const settings = resolve({ efforts: ['low', 'high'] });
+
+    const effort = settings.visibleParameters.find(({ key }) => key === 'reasoning_effort');
+    expect(effort?.options).toEqual(['', 'low', 'high']);
+  });
 });

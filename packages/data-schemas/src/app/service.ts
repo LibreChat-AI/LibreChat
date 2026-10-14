@@ -234,6 +234,7 @@ export const AppService = async (params?: {
     fileStrategies: config.fileStrategies,
     cloudfront: config.cloudfront as AppConfig['cloudfront'],
     secureImageLinks: config.secureImageLinks !== false,
+    credentials: { writeFormat: config.credentials?.writeFormat ?? 'v3' },
     conversationList: loadConversationListConfig(config),
     toolCallPreviews: loadToolCallPreviewsConfig(config),
   };

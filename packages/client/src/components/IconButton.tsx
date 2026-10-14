@@ -16,7 +16,7 @@ type IconButtonVariantProps = {
     | 'submit'
     | null;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'theme' | null;
-  shape?: 'round' | 'square' | 'control' | 'theme' | 'composer' | null;
+  shape?: 'round' | 'square' | 'control' | 'theme' | 'composer' | 'inset' | null;
 };
 
 const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string = cva(
@@ -54,6 +54,8 @@ const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string
       shape: {
         round: 'rounded-full',
         square: 'rounded-lg',
+        /** A compact control inset inside a rounded card, with a tighter inner corner. */
+        inset: 'rounded-md',
         /** The theme's control corner: softer than `square`, short of the full circle of `round`. */
         control: 'rounded-theme-control',
         theme: 'rounded-theme-control-round',

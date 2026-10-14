@@ -2,7 +2,7 @@ const express = require('express');
 const { createSkillManagementHandlers, mapAgentManagementError } = require('@librechat/api');
 const { createFileLimiters } = require('~/server/middleware/limiters/uploadLimiters');
 const { maybeRunGitHubSkillSyncForRequest } = require('~/server/services/Skills/sync');
-const { checkBan, configMiddleware } = require('~/server/middleware');
+const { checkBan, configMiddleware, requireTermsAcceptance } = require('~/server/middleware');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { getSkillsHandlers } = require('~/server/services/Skills/handlers');
@@ -25,7 +25,7 @@ const handlers = createSkillManagementHandlers({
   hasCapability,
   saveFile: getSkillManagementFileSaver(),
 });
-router.use(requireAgentManagementAuth, checkBan, configMiddleware);
+router.use(requireAgentManagementAuth, requireTermsAcceptance, checkBan, configMiddleware);
 router.get('/', handlers.list);
 router.get('/:id', handlers.get);
 router.patch('/:id', handlers.update);

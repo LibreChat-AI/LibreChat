@@ -6,7 +6,12 @@ import { RecoilRoot, useSetRecoilState, useRecoilValue } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TSubmission, TConversation } from 'librechat-data-provider';
 import type { DrainAfterAbort, RunEnd } from '~/hooks/Chat/queue';
-import { drainAfterAbortByIndex, runEndByIndex, resetQueueFamilies } from '~/hooks/Chat/queue';
+import {
+  stopRequestedByConvoId,
+  drainAfterAbortByIndex,
+  resetQueueFamilies,
+  runEndByIndex,
+} from '~/hooks/Chat/queue';
 import useChatHelpers from '../useChatHelpers';
 import { useAbortCleanup } from '../abort';
 import store from '~/store';
@@ -380,6 +385,9 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
     expect(observed.runEnd).toBeNull();
     expect(observed.drainAfterAbort).toBe(false);
+    expect(getDefaultStore().get(stopRequestedByConvoId('convo-held'))).toEqual({
+      generationCreatedAt: 41,
+    });
   });
 
   it('does not release the abort-drain queue when natural completion already settled the run', async () => {
@@ -401,6 +409,29 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
     expect(observed.runEnd).toBeNull();
     expect(observed.drainAfterAbort).toBe(false);
+    /** Stop lost the race, so the run's persisted outcome decides the queue if the user leaves. */
+    expect(getDefaultStore().get(stopRequestedByConvoId('convo-held'))).toBeNull();
+  });
+
+  it('keeps Stop when another Stop already aborted the run', async () => {
+    mockAbortMutateAsync.mockResolvedValue({
+      success: false,
+      settled: true,
+      code: 'RUN_ALREADY_SETTLED',
+      streamId: 'convo-held',
+      terminalStatus: 'aborted',
+      generationProtocolVersion: 2,
+    });
+    const { result } = setupStop('convo-held');
+
+    await act(async () => {
+      await result.current.stopGenerating();
+    });
+
+    expect(observed.runEnd).toBeNull();
+    expect(getDefaultStore().get(stopRequestedByConvoId('convo-held'))).toEqual({
+      generationCreatedAt: 41,
+    });
   });
 
   it('does not let a late abort response clear another conversation epoch', async () => {

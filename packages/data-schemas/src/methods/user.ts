@@ -44,6 +44,9 @@ const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(
 /** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
 const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
 
+/** Cached auth documents evicted at once when a reset touches every user. */
+const TERMS_RESET_EVICTION_BATCH = 100;
+
 function isAuthUserDocCacheEnabled(): boolean {
   return process.env.AUTH_USER_CACHE_MODE === 'on';
 }
@@ -95,6 +98,7 @@ export function createUserMethods(
     updateData: TwoFactorEnrollmentUpdate,
   ) => Promise<IUser | null>;
   acceptTerms: (userId: string) => Promise<IUser | null>;
+  resetTermsAcceptance: () => Promise<{ modifiedCount: number }>;
   searchUsers: ({
     searchPattern,
     limit,
@@ -550,13 +554,50 @@ export function createUserMethods(
    * updates are used instead of an aggregation pipeline with $$NOW, which
    * Amazon DocumentDB rejects.
    */
+  /** Withdraws every user's acceptance and evicts their cached auth documents, so a reset takes effect at once. */
+  async function resetTermsAcceptance(): Promise<{ modifiedCount: number }> {
+    const User = mongoose.models.User;
+    const result = await User.updateMany(
+      {},
+      {
+        $set: { termsAccepted: false, termsAcceptedAt: null },
+        $unset: { termsAcceptedSource: 1 },
+      },
+    );
+    /** Every user, not only those read as accepted beforehand: an acceptance racing the update may be cached. */
+    const cursor = User.find({}).select('_id').lean().cursor();
+    let batch: string[] = [];
+    for await (const user of cursor) {
+      batch.push(String(user._id));
+      if (batch.length === TERMS_RESET_EVICTION_BATCH) {
+        await Promise.all(batch.map(invalidateAuthUserDocCache));
+        batch = [];
+      }
+    }
+    await Promise.all(batch.map(invalidateAuthUserDocCache));
+    if (isAuthUserDocCacheEnabled()) {
+      /**
+       * A request that read the old document before the update can still fill the cache after
+       * the eviction above, so no eviction result proves the reset took effect. Only expiry does.
+       */
+      logger.info('[resetTermsAcceptance] Waiting for cached auth documents to expire', {
+        waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
+      });
+      await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+    }
+    return { modifiedCount: result.modifiedCount };
+  }
+
   async function acceptTerms(userId: string): Promise<IUser | null> {
     const User = mongoose.models.User;
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const firstAcceptance = await User.findOneAndUpdate(
         { _id: userId, termsAcceptedAt: null },
-        { $set: { termsAccepted: true, termsAcceptedAt: new Date() } },
+        {
+          $set: { termsAccepted: true, termsAcceptedAt: new Date() },
+          $unset: { termsAcceptedSource: 1 },
+        },
         { new: true, runValidators: true },
       ).lean<IUser>();
       if (firstAcceptance) {
@@ -1032,6 +1073,7 @@ export function createUserMethods(
     claimSamlIdentity,
     updateTwoFactorEnrollment,
     acceptTerms,
+    resetTermsAcceptance,
     searchUsers,
     getUserById,
     generateToken,

@@ -26,6 +26,7 @@ jest.mock('@librechat/api', () => ({
 jest.mock('../middleware', () => ({ requireAgentManagementAuth: (...args) => mockAuth(...args) }));
 jest.mock('~/server/middleware', () => ({
   checkBan: (_req, _res, next) => next(),
+  requireTermsAcceptance: (_req, _res, next) => next(),
   configMiddleware: (req, _res, next) => {
     req.config = { tenantConfig: true };
     next();

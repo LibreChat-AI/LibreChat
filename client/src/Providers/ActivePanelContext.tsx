@@ -1,12 +1,14 @@
-import { createContext, useCallback, useContext, useMemo, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, ReactNode } from 'react';
+import { atom, useAtom } from 'jotai';
 
-const STORAGE_KEY = 'side:active-panel';
 export const DEFAULT_PANEL = 'conversations';
 
-function getInitialActivePanel(): string {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  return saved ? saved : DEFAULT_PANEL;
-}
+/**
+ * Held in memory for the life of the document rather than in Web Storage, so every entry
+ * (a new visit, a reload, a tab opened from the app or duplicated) starts on chat history,
+ * while the sidebar remounting its provider at the mobile breakpoint keeps the selection.
+ */
+export const activePanelAtom = atom<string>(DEFAULT_PANEL);
 
 interface ActivePanelContextType {
   active: string;
@@ -16,12 +18,17 @@ interface ActivePanelContextType {
 const ActivePanelContext = createContext<ActivePanelContextType | undefined>(undefined);
 
 export function ActivePanelProvider({ children }: { children: ReactNode }) {
-  const [active, _setActive] = useState<string>(getInitialActivePanel);
+  const [active, setActive] = useAtom(activePanelAtom);
 
-  const setActive = useCallback((id: string) => {
-    localStorage.setItem(STORAGE_KEY, id);
-    _setActive(id);
-  }, []);
+  useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        setActive(DEFAULT_PANEL);
+      }
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
+  }, [setActive]);
 
   const value = useMemo(() => ({ active, setActive }), [active, setActive]);
 

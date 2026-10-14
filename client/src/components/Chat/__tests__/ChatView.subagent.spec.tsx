@@ -78,6 +78,7 @@ jest.mock('../Footer', () => ({
   __esModule: true,
   default: () => <div data-testid="footer" />,
   useConfiguredFooter: () => false,
+  useLandingFooter: () => true,
 }));
 jest.mock('../Header', () => ({ readOnly }: { readOnly?: boolean }) => (
   <div data-read-only={String(readOnly)} data-testid="header" />

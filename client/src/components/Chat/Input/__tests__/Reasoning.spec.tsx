@@ -7,6 +7,7 @@ import type {
   TConversation,
   TReasoningOverride,
   TSubmission,
+  TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../Composer/state';
@@ -21,10 +22,19 @@ type MockEndpointConfig = {
   };
 };
 let mockEndpointsConfig: Record<string, MockEndpointConfig> | undefined = {};
+let mockCapabilities: TReasoningCapabilityMap | undefined;
+let mockCapabilitiesLoading = false;
 
 jest.mock('~/data-provider', () => ({
   useGetAgentByIdQuery: () => ({ data: undefined }),
   useGetEndpointsQuery: () => ({ data: mockEndpointsConfig }),
+  useReasoningCapabilitiesQuery: (_endpoint: string, config?: { enabled?: boolean }) => ({
+    data:
+      config?.enabled === false || mockCapabilities == null
+        ? undefined
+        : { capabilities: mockCapabilities, expiresInMs: 3_600_000 },
+    isInitialLoading: config?.enabled !== false && mockCapabilitiesLoading,
+  }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -37,6 +47,8 @@ jest.mock('~/hooks', () => ({
 
 beforeEach(() => {
   mockEndpointsConfig = {};
+  mockCapabilities = undefined;
+  mockCapabilitiesLoading = false;
 });
 
 const enumSetting: SettingDefinition = {
@@ -798,5 +810,229 @@ describe('useComposerReasoning', () => {
       ).toBeUndefined(),
     );
     expect(rendered.result.current?.setting.key).toBe('reasoning_effort');
+  });
+});
+
+describe('useComposerReasoning: OpenRouter per-model efforts', () => {
+  const model = 'openai/gpt-6.1-sol';
+  const conversation = {
+    title: null,
+    conversationId: 'openrouter-conversation',
+    endpoint: 'OpenRouter',
+    endpointType: 'custom',
+    model,
+    createdAt: '',
+    updatedAt: '',
+  } as unknown as TConversation;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <RecoilRoot>
+      <JotaiProvider store={createStore()}>{children}</JotaiProvider>
+    </RecoilRoot>
+  );
+  const render = () =>
+    renderHook(() => useComposerReasoning({ conversation, index: 0, enabled: true }), { wrapper });
+
+  beforeEach(() => {
+    mockEndpointsConfig = {
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: 'reasoning_effort',
+        },
+      } as MockEndpointConfig,
+    };
+  });
+
+  it('offers no control while the capabilities are still loading', () => {
+    mockCapabilitiesLoading = true;
+
+    expect(render().result.current).toBeNull();
+  });
+
+  it('keeps an administrator-defined effort control while the capabilities load', () => {
+    mockCapabilitiesLoading = true;
+    mockEndpointsConfig = {
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          paramDefinitions: [enumSetting],
+        },
+      },
+    };
+
+    expect(render().result.current?.setting.key).toBe('reasoning_effort');
+  });
+
+  it('offers no control when the capabilities could not be read', () => {
+    mockCapabilities = undefined;
+    mockCapabilitiesLoading = false;
+
+    expect(render().result.current).toBeNull();
+  });
+
+  it('offers only the efforts the selected model supports', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+
+    expect(render().result.current?.setting.options).toEqual([
+      ReasoningEffort.unset,
+      ReasoningEffort.low,
+      ReasoningEffort.high,
+    ]);
+  });
+
+  it('hides the control for a model the provider lists without reasoning', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: [] } } };
+
+    expect(render().result.current).toBeNull();
+  });
+
+  it('keeps the generic efforts for a model the catalog does not list', () => {
+    mockCapabilities = { OpenRouter: { 'meta/other': { efforts: ['low'] } } };
+
+    expect(render().result.current?.setting.options).toContain(ReasoningEffort.max);
+  });
+});
+
+describe('useComposerReasoning: restored override while OpenRouter capabilities load', () => {
+  const model = 'openai/gpt-6.1-sol';
+  const conversation = {
+    title: null,
+    conversationId: 'restored-conversation',
+    endpoint: 'OpenRouter',
+    endpointType: 'custom',
+    model,
+    createdAt: '',
+    updatedAt: '',
+  } as unknown as TConversation;
+  const staged = { key: 'reasoning_effort', value: ReasoningEffort.low } as TReasoningOverride;
+  const stagedValue = (store: ReturnType<typeof createStore>) =>
+    store.get(pendingReasoningOverrideFamily('restored-conversation'));
+  const setup = () => {
+    const store = createStore();
+    store.set(pendingReasoningOverrideFamily('restored-conversation'), staged);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={store}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      () => useComposerReasoning({ conversation, index: 0, enabled: true }),
+      { wrapper },
+    );
+    return { store, rendered };
+  };
+
+  beforeEach(() => {
+    mockEndpointsConfig = {
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: 'reasoning_effort',
+        },
+      } as MockEndpointConfig,
+    };
+  });
+
+  it('keeps a staged override while the capabilities are loading', async () => {
+    mockCapabilitiesLoading = true;
+
+    const { store } = setup();
+    await act(async () => {});
+
+    expect(stagedValue(store)).toEqual(staged);
+  });
+
+  it('keeps a staged override while the capabilities request has failed', async () => {
+    mockCapabilities = undefined;
+    mockCapabilitiesLoading = false;
+
+    const { store } = setup();
+    await act(async () => {});
+
+    expect(stagedValue(store)).toEqual(staged);
+  });
+
+  it('keeps it once the loaded capabilities confirm it', async () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+
+    const { store } = setup();
+    await act(async () => {});
+
+    expect(stagedValue(store)).toEqual(staged);
+  });
+
+  it('drops a staged override at once when the target changes while the capabilities load', async () => {
+    mockCapabilitiesLoading = true;
+    const store = createStore();
+    store.set(pendingReasoningOverrideFamily('restored-conversation'), staged);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={store}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      ({ activeModel }: { activeModel: string }) =>
+        useComposerReasoning({
+          conversation: { ...conversation, model: activeModel } as TConversation,
+          index: 0,
+          enabled: true,
+        }),
+      { wrapper, initialProps: { activeModel: model } },
+    );
+    await act(async () => {});
+    expect(stagedValue(store)).toEqual(staged);
+
+    rendered.rerender({ activeModel: 'google/gemini-3.5-flash' });
+    await act(async () => {});
+    expect(stagedValue(store)).toBeUndefined();
+
+    mockCapabilitiesLoading = false;
+    mockCapabilities = {
+      OpenRouter: { 'google/gemini-3.5-flash': { efforts: ['low', 'high'] } },
+    };
+    rendered.rerender({ activeModel: 'google/gemini-3.5-flash' });
+    await act(async () => {});
+
+    expect(stagedValue(store)).toBeUndefined();
+  });
+
+  it('keeps a supported override across the loading to loaded transition', async () => {
+    mockCapabilitiesLoading = true;
+    const { store, rendered } = setup();
+    await act(async () => {});
+    expect(stagedValue(store)).toEqual(staged);
+
+    mockCapabilitiesLoading = false;
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    rendered.rerender();
+    await act(async () => {});
+
+    expect(rendered.result.current?.setting.options).toEqual(['', 'low', 'high']);
+    expect(stagedValue(store)).toEqual(staged);
+  });
+
+  it('keeps a supported override when a refresh changes the other advertised efforts', async () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    const { store, rendered } = setup();
+    await act(async () => {});
+    expect(stagedValue(store)).toEqual(staged);
+
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'medium', 'high'] } } };
+    rendered.rerender();
+    await act(async () => {});
+
+    expect(rendered.result.current?.setting.options).toEqual(['', 'low', 'medium', 'high']);
+    expect(stagedValue(store)).toEqual(staged);
+  });
+
+  it('clears it only after the loaded capabilities prove it unsupported', async () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['high'] } } };
+
+    const { store } = setup();
+
+    await waitFor(() => expect(stagedValue(store)).toBeUndefined());
   });
 });

@@ -148,9 +148,10 @@ function EventSubagentRows({
       /** `text-text-primary` on the root, like `SubagentActivity` and
        *  `SubagentThreadPanel`: the child rows are raw buttons that inherit
        *  their label color, and without a themed ancestor they bottom out at
-       *  the unthemed black body color — invisible on the dark surface. */
+       *  the unthemed black body color, invisible on the dark surface. */
       className="border-border-light bg-surface-secondary/40 text-text-primary my-2 overflow-hidden rounded-lg border"
       data-event-subagent-group={eventChildren[0]?.parentMessageId}
+      data-event-subagent-conversation={conversationId}
     >
       <Button
         variant="quiet"
@@ -184,6 +185,7 @@ function EventSubagentRows({
               type="button"
               disabled={!canOpen}
               onClick={() => openChild(child)}
+              data-subagent-thread={child.threadId}
               data-subagent-tool-call={`event-thread:${child.threadId}`}
               data-subagent-parent-message={child.parentMessageId}
               data-subagent-part-index="0"

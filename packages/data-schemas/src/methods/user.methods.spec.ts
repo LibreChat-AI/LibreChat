@@ -1289,6 +1289,58 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('resetTermsAcceptance', () => {
+    it('withdraws every acceptance, clears the source, and evicts cached auth documents', async () => {
+      enableAuthUserDocCache();
+      const accepted = await User.create({
+        name: 'Accepted',
+        email: 'accepted-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+        termsAcceptedSource: 'migration',
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-accepted']),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const cached = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      const { modifiedCount } = await cached.resetTermsAcceptance();
+
+      const stored = await User.findById(accepted._id).lean();
+      expect(modifiedCount).toBeGreaterThanOrEqual(1);
+      expect(stored?.termsAccepted).toBe(false);
+      expect(stored?.termsAcceptedAt).toBeNull();
+      expect(stored?.termsAcceptedSource).toBeUndefined();
+      expect(cache.delete).toHaveBeenCalledWith('cached-accepted');
+      expect(delay).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not wait when the auth user cache is off', async () => {
+      await User.create({
+        name: 'Cache Off',
+        email: 'cache-off-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const off = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      await off.resetTermsAcceptance();
+
+      expect(delay).not.toHaveBeenCalled();
+    });
+  });
+
   describe('acceptTerms', () => {
     test('sets termsAccepted and stamps termsAcceptedAt on first acceptance', async () => {
       const user = await User.create({
@@ -1365,6 +1417,33 @@ describe('User Methods - Database Tests', () => {
       expect((reaccepted?.termsAcceptedAt as Date).getTime()).toBeGreaterThanOrEqual(
         (first?.termsAcceptedAt as Date).getTime(),
       );
+    });
+
+    test('keeps the backfill marker only while the backfilled timestamp stands', async () => {
+      const backfilledAt = new Date('2023-01-01T00:00:00.000Z');
+      const user = await User.create({
+        name: 'Backfilled User',
+        email: 'backfilled-terms@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: backfilledAt,
+        termsAcceptedSource: 'migration',
+      });
+      const userId = user._id?.toString() ?? '';
+
+      const repeat = await methods.acceptTerms(userId);
+      expect((repeat?.termsAcceptedAt as Date).getTime()).toBe(backfilledAt.getTime());
+      expect(repeat?.termsAcceptedSource).toBe('migration');
+
+      await User.updateOne(
+        { _id: userId },
+        { $set: { termsAccepted: false, termsAcceptedAt: null } },
+      );
+      const reaccepted = await methods.acceptTerms(userId);
+
+      expect(reaccepted?.termsAcceptedAt).toBeInstanceOf(Date);
+      expect((reaccepted?.termsAcceptedAt as Date).getTime()).not.toBe(backfilledAt.getTime());
+      expect(reaccepted?.termsAcceptedSource).toBeUndefined();
     });
 
     test('stamps termsAcceptedAt for a legacy document missing the field entirely', async () => {

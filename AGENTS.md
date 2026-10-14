@@ -3,7 +3,8 @@
 `AGENTS.md` is the repository's contributor guidance. Backend code lives in `packages/api`
 (TypeScript) and `packages/data-schemas` (database methods); `api` is legacy Express wiring.
 Shared API types and services live in `packages/data-provider`, and the React app lives in
-`client` with shared primitives in `packages/client`.
+`client` with shared primitives in `packages/client`. Chat state, transport and message components
+are moving into `packages/chat` (`@librechat/chat`), which never imports the app.
 
 ## Branching and pull requests
 
@@ -60,7 +61,7 @@ reads and reuse loaded request data. Run `npm run lighthouse` before completion:
 the CI lane adds 250 ms per Mongo query and checks the visible conversation's LCP.
 See [budgets, reproduction and failure diagnosis](e2e/lighthouse/README.md).
 
-A green build is not a typecheck: `packages/api`, `packages/client` and `packages/data-schemas` build
+A green build is not a typecheck: `packages/api`, `packages/client`, `packages/chat` and `packages/data-schemas` build
 with `tsdown`, which emits without checking types. Run `npx tsc --noEmit` in the workspace you
 changed. `packages/client` excludes `*.spec.ts(x)` and `*.test.ts(x)` from typechecking entirely.
 `npm run sort-imports` with no arguments rewrites every source root — pass the paths you touched.

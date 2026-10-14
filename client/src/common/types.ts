@@ -683,6 +683,8 @@ export type TThread = { id: string; createdAt: string };
 declare global {
   interface Window {
     google_tag_manager?: unknown;
+    /** Google Tag Manager's command queue, present once the container has loaded. */
+    dataLayer?: unknown[];
     /** Answers the server emits with the document, ahead of the app's own
      *  scripts, for questions the first render must not guess at. */
     __LIBRECHAT_CONFIG__?: {
@@ -690,6 +692,9 @@ declare global {
       /** Whether this deployment configured footer content of its own, so the
        *  composer reserves the footer bar's band on its first frame. */
       hasConfiguredFooter?: boolean;
+      /** The deployment's `interface.landingFooter`, so the welcome screen does
+       *  not paint a footer the config is about to remove. */
+      landingFooter?: boolean;
     };
   }
 }

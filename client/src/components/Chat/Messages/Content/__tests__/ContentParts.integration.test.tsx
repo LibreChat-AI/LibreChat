@@ -100,6 +100,7 @@ jest.mock('lucide-react', () => ({
   ...jest.requireActual('lucide-react'),
   ChevronDown: () => <span>{'chevron'}</span>,
   TriangleAlert: () => <span>{'alert'}</span>,
+  CircleX: () => <span>{'failed'}</span>,
   Users: () => <span>{'users'}</span>,
 }));
 
@@ -1064,7 +1065,7 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
   });
 });
 
-describe('ContentParts — synthesized activity folds', () => {
+describe('ContentParts: synthesized activity folds', () => {
   /** Settled by default: the fold is content-derived, so history and a live
    *  run partition identically. The streaming case gets its own test below. */
   const baseProps = {
@@ -1134,7 +1135,9 @@ describe('ContentParts — synthesized activity folds', () => {
     const { rerender } = renderContentParts(props);
 
     const phase = screen.getByTestId('activity-phase-card');
-    expect(within(phase).getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(within(phase).getByTestId('failed-reveal-pill')).toHaveTextContent(
+      'com_ui_n_actions_failed',
+    );
     fireEvent.click(within(phase).getAllByRole('button')[0]);
 
     const group = screen.getByRole('button', { name: /Running 2 actions.*1\/2 failed/ });

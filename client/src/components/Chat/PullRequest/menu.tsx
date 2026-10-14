@@ -44,7 +44,7 @@ export default function usePullRequestMenu(conversationId: string): PullRequestM
   return {
     item: {
       id: 'header-pull-request',
-      label: localize('com_ui_pr_label', { 0: pullRequest.number }),
+      label: localize(view.labelKey, { 0: pullRequest.number }),
       ariaLabel: summarizePullRequest(pullRequest, localize),
       icon: <PullRequestIcon icon={view.icon} tone={view.iconTone} />,
       onClick: () => setOpenFor(conversationId),

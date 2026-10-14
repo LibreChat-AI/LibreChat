@@ -1,14 +1,15 @@
 import { ContentTypes } from 'librechat-data-provider';
+import {
+  ASK_USER_QUESTION,
+  isAskUserQuestionPart,
+  markAskUserQuestionAnswered,
+  isAnsweredAskUserQuestionPart,
+} from '@librechat/chat';
 import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { AskUserQuestionPart } from '@librechat/chat';
 
-/**
- * UI-only content-part type used to render an `ask_user_question` pause inline
- * with the assistant's other content parts. It rides on the standard `content`
- * array (which `Agents.MessageContentComplex` allows for arbitrary `type`
- * strings), so it survives SSE, sync, and DB rehydration without a new wire
- * type or an extra field on `TMessage`.
- */
-export const ASK_USER_QUESTION = 'ask_user_question' as const;
+export { ASK_USER_QUESTION, isAskUserQuestionPart, isAnsweredAskUserQuestionPart };
+export type { AskUserQuestionPart } from '@librechat/chat';
 
 /**
  * Answer sent when the user explicitly skips a question: the run must resume
@@ -19,31 +20,6 @@ export const ASK_USER_DECLINED_ANSWER = 'The user chose not to answer this quest
 const ASK_USER_QUESTION_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const MAX_ASK_USER_QUESTIONS = 4;
 const MAX_ASK_USER_QUESTION_HEADER_LENGTH = 80;
-
-/** Shape of the synthetic content part carrying an ask-user pending action. */
-export interface AskUserQuestionPart {
-  type: typeof ASK_USER_QUESTION;
-  [ASK_USER_QUESTION]: {
-    actionId: string;
-    question: Agents.AskUserQuestionRequest;
-    questions?: Agents.AskUserQuestionBatchItem[];
-    /** The ask tool call that raised the pause (present from
-     *  `@librechat/agents` > 3.3.8) — lets the answer stamp target the exact
-     *  tool-call part in multi-ask turns. */
-    tool_call_id?: string;
-  };
-}
-
-/**
- * The synthetic type isn't in the `ContentTypes` union, so this reads the
- * `type` field through a cast rather than a type-predicate (which TS rejects
- * because `AskUserQuestionPart` isn't assignable to the strict
- * `TMessageContentParts` union).
- */
-export const isAskUserQuestionPart = (part: Partial<TMessageContentParts> | undefined): boolean =>
-  (part as { type?: string } | undefined)?.type === ASK_USER_QUESTION &&
-  part != null &&
-  ASK_USER_QUESTION in part;
 
 const getToolCallId = (part: TMessageContentParts | undefined): string =>
   (part?.[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined)?.id ?? '';
@@ -346,27 +322,10 @@ export function removeAskUserQuestionPart(message: TMessage, actionId: string): 
  */
 const submittedAskAnswers = new Map<string, string>();
 
-/**
- * Ask actions the user has answered this session. Same rationale as
- * {@link submittedAskAnswers}: the SSE step handler evolves its own cached copy
- * of the streaming message, so the store-level strip below can't reach it —
- * writing that copy back would resurrect an answered card. Keyed by `actionId`
- * and only ever added to by {@link resolveAskUserQuestionPart}, so a step event
- * racing a still-LIVE pause can never mistake its card for an answered one.
- */
-const answeredAskActionIds = new Set<string>();
-
 /** The locally-submitted answer for an ask tool_call, if any. */
 export function getSubmittedAskAnswer(toolCallId: string | undefined): string | undefined {
   return toolCallId ? submittedAskAnswers.get(toolCallId) : undefined;
 }
-
-/** Whether `part` is an ask card whose question the user already answered. */
-export const isAnsweredAskUserQuestionPart = (
-  part: Partial<TMessageContentParts> | undefined,
-): boolean =>
-  isAskUserQuestionPart(part) &&
-  answeredAskActionIds.has((part as unknown as AskUserQuestionPart)[ASK_USER_QUESTION].actionId);
 
 /**
  * Resolve an answered ask-user-question pause on the client, mirroring the
@@ -394,7 +353,7 @@ export function resolveAskUserQuestionPart(
   if (!syntheticPart) {
     return message;
   }
-  answeredAskActionIds.add(actionId);
+  markAskUserQuestionAnswered(actionId);
   /** Exact-attribution target when the payload carried the interrupting call's
    *  id — several ask cards in one turn each resolve their own part. Absent
    *  (older server/SDK), the newest-unanswered fallback below applies. */

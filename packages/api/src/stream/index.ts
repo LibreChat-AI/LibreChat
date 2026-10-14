@@ -72,6 +72,18 @@ export type { StreamServicesConfig, StreamServices } from './createStreamService
 export { filterPersistableAbortContent, hasPersistableAbortContent } from './abortContent';
 export { getGenerationElapsedMs } from './elapsed';
 export {
+  SSE_KEEPALIVE_FRAME,
+  startSseKeepalive,
+  loadStreamKeepaliveMs,
+  resolveStreamKeepaliveMs,
+  createStreamKeepaliveLoader,
+} from './keepalive';
+export type {
+  SseKeepaliveResponse,
+  StreamKeepaliveConfig,
+  StreamKeepaliveRequest,
+} from './keepalive';
+export {
   projectTerminalEvent,
   TRANSIENT_MESSAGE_FIELDS,
   TRANSIENT_FILE_FIELDS,

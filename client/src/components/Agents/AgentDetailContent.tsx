@@ -74,20 +74,24 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
   const reducedMotion = useReducedMotion();
   const titleRef = useRef<HTMLHeadingElement>(null);
   const unavailableRef = useRef<HTMLParagraphElement>(null);
-  const focusedActionRef = useRef<HTMLElement | null>(null);
-  const previousActionsUnavailable = useRef(actionsUnavailable);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
   const id = useId();
   const { isFavoriteAgent, toggleFavoriteAgent, isUpdating } = useFavorites();
   const isFavorite = isFavoriteAgent(agent.id);
   const favoriteLabel = localize(isFavorite ? 'com_ui_unpin' : 'com_ui_pin');
   const FavoriteIcon = isFavorite ? PinOff : Pin;
 
+  /** Keyed by text and occurrence, so a refresh that drops an earlier starter keeps the
+   *  later ones mounted, and focused, instead of re-keying them by position. */
   const conversationStarters = useMemo(() => {
-    const starters: string[] = [];
+    const starters: Array<{ text: string; key: string }> = [];
+    const occurrences = new Map<string, number>();
     for (const value of agent.conversation_starters ?? []) {
       const starter = value.trim();
       if (starter) {
-        starters.push(starter);
+        const occurrence = occurrences.get(starter) ?? 0;
+        occurrences.set(starter, occurrence + 1);
+        starters.push({ text: starter, key: `${starter}-${occurrence}` });
       }
       if (starters.length === Constants.MAX_CONVO_STARTERS) {
         break;
@@ -173,22 +177,30 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
     ),
     ...shared,
   };
+  /**
+   * A revalidation can replace the agent with a record that drops the control the reader
+   * is on: a conversation starter the owner removed, or every action once access is
+   * revoked. Removing a focused element does not fire `blur` reliably across browsers,
+   * so the last focused control is remembered on focus alone and checked for
+   * `isConnected` after each commit. When it is gone and nothing else took focus, focus
+   * moves to the unavailable notice when it is shown, and to the dialog title otherwise.
+   */
   useLayoutEffect(() => {
-    const wasUnavailable = previousActionsUnavailable.current;
-    previousActionsUnavailable.current = actionsUnavailable;
-    if (!actionsUnavailable || wasUnavailable || focusedActionRef.current == null) {
+    const focused = lastFocusedRef.current;
+    if (focused == null || focused.isConnected) {
       return;
     }
-    focusedActionRef.current = null;
-    unavailableRef.current?.focus();
-  }, [actionsUnavailable]);
-  const handleActionFocusCapture = useCallback((event: React.FocusEvent<HTMLElement>) => {
-    focusedActionRef.current = event.target;
-  }, []);
-  const handleActionBlurCapture = useCallback((event: React.FocusEvent<HTMLElement>) => {
-    const relatedTarget = event.relatedTarget;
-    if (!(relatedTarget instanceof Node) || !event.currentTarget.contains(relatedTarget)) {
-      focusedActionRef.current = null;
+    lastFocusedRef.current = null;
+    const active = document.activeElement;
+    if (active != null && active !== document.body && active.isConnected) {
+      return;
+    }
+    (unavailableRef.current ?? titleRef.current)?.focus();
+  });
+  /** Focus inside a portaled child (a confirm dialog, a menu) is that child's to restore. */
+  const handleFocusCapture = useCallback((event: React.FocusEvent<HTMLElement>) => {
+    if (event.currentTarget.contains(event.target)) {
+      lastFocusedRef.current = event.target;
     }
   }, []);
 
@@ -205,6 +217,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
          dialog's mount so it can fade out across the whole contraction. */
       overlayClassName={morphing ? 'bg-transparent' : undefined}
       showCloseButton={false}
+      onFocusCapture={handleFocusCapture}
       onOpenAutoFocus={(event) => {
         event.preventDefault();
         titleRef.current?.focus();
@@ -345,13 +358,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
           )}
 
           {!actionsUnavailable && conversationStarters.length > 0 && (
-            <motion.section
-              {...detail}
-              className="mt-8"
-              aria-labelledby={`${id}-starters`}
-              onFocusCapture={handleActionFocusCapture}
-              onBlurCapture={handleActionBlurCapture}
-            >
+            <motion.section {...detail} className="mt-8" aria-labelledby={`${id}-starters`}>
               <h3 id={`${id}-starters`} className="text-text-primary text-sm font-semibold">
                 {localize('com_agents_starters_heading')}
               </h3>
@@ -359,19 +366,19 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                 {localize('com_agents_starters_hint')}
               </p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                {conversationStarters.map((starter, index) => (
+                {conversationStarters.map((starter) => (
                   <Button
-                    key={`${starter}-${index}`}
+                    key={starter.key}
                     variant="outline"
                     className="h-auto min-h-14 items-start justify-between gap-3 py-3 text-left whitespace-normal rtl:text-right"
                     aria-disabled={actionsDisabled || undefined}
                     onClick={() => {
                       if (!actionsDisabled) {
-                        handleStartChat(starter);
+                        handleStartChat(starter.text);
                       }
                     }}
                   >
-                    <span className="min-w-0 break-words">{starter}</span>
+                    <span className="min-w-0 break-words">{starter.text}</span>
                     <ArrowUpRight className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
                   </Button>
                 ))}
@@ -398,8 +405,6 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
               <motion.div
                 {...detail}
                 className="grid gap-2 sm:ms-auto sm:flex sm:items-center sm:gap-2"
-                onFocusCapture={handleActionFocusCapture}
-                onBlurCapture={handleActionBlurCapture}
               >
                 <div className="flex items-center gap-2">
                   <Button

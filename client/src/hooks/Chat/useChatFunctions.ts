@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { v4 } from 'uuid';
-import { useStore } from 'jotai';
 import { cloneDeep } from 'lodash';
+import { useStore, useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
@@ -9,8 +9,10 @@ import {
   Constants,
   QueryKeys,
   ContentTypes,
+  ReasoningEffort,
   EModelEndpoint,
   getEndpointField,
+  resolveModelReasoning,
   isAgentsEndpoint,
   parseCompactConvo,
   replaceSpecialVars,
@@ -24,10 +26,10 @@ import type {
   TMessage,
   TSubmission,
   TConversation,
-  TStartupConfig,
   TEndpointOption,
   TEndpointsConfig,
   EndpointSchemaKey,
+  TReasoningCapabilitiesResponse,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TAskFunction, ExtendedFile } from '~/common';
@@ -50,7 +52,10 @@ import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
+import { activeUsageResponseIdFamily } from '~/components/Chat/Input/TokenUsage/store';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import { submissionStartFamily, showStopButtonByIndex } from '~/store/generation';
+import { usesReasoningCapabilities } from '~/hooks/Endpoint/useModelReasoning';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -58,12 +63,9 @@ import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
-import { activeUsageResponseIdFamily } from '~/store/usage';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import store, { useGetEphemeralAgent } from '~/store';
-import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
-import { useAuthContext } from '~/hooks';
 
 /** A revalidating cache younger than this is locally authoritative (the run
  * that just streamed wrote it) and stays sendable; older ones wait for the
@@ -247,16 +249,15 @@ export default function useChatFunctions({
   const navigate = useNavigate();
   const reasoningStore = useStore();
   const getSender = useGetSender();
-  const { user } = useAuthContext();
   const queryClient = useQueryClient();
   const setFilesToDelete = useSetFilesToDelete();
   const getEphemeralAgent = useGetEphemeralAgent();
   const agentsMap = useAgentsMapContext();
-  const { isTemporary } = useChatSettings();
+  const { isTemporary, config, auth } = useChatSettings();
   const { getExpiry } = useUserKey(immutableConversation?.endpoint ?? '');
   const setIsSubmitting = useSetRecoilState(store.isSubmittingFamily(index));
-  const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(index));
+  const setSubmissionStart = useSetAtom(submissionStartFamily(index));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(index));
   const focusRegeneratedResponse = useFocusRegeneratedResponse();
   const jotaiStore = useStore();
   const getConversation = useGetConversation(index);
@@ -473,7 +474,6 @@ export default function useChatFunctions({
 
     const ephemeralAgent = getEphemeralAgent(conversationId ?? Constants.NEW_CONVO);
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-    const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
     const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
     const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
     /**
@@ -516,9 +516,13 @@ export default function useChatFunctions({
       }
     }
     let reasoningOverride = overrideReasoning ?? undefined;
-    if (overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited) {
-      reasoningOverride = drainPendingReasoning(getReasoningStateKey(conversationId, index));
+    const reasoningStateKey = getReasoningStateKey(conversationId, index);
+    const drainedReasoning =
+      overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited;
+    if (drainedReasoning) {
+      reasoningOverride = drainPendingReasoning(reasoningStateKey);
     }
+    const stagedReasoning = reasoningOverride;
     if (reasoningOverride != null) {
       const isAgent = isAgentsEndpoint(endpoint);
       const agentId = isAgent ? conversation?.agent_id : undefined;
@@ -532,6 +536,30 @@ export default function useChatFunctions({
       const effectiveEndpointType = getEndpointField(endpointsConfig, effectiveEndpoint, 'type');
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
+      const capabilitiesKey = [QueryKeys.reasoningCapabilities, effectiveEndpoint];
+      /* A failed or running refresh leaves the previous data cached, and so does an entry that is
+         past its lifetime while its refetch has not started (a throttled background tab): the
+         efforts are unknown in all three, as they are in the editors. */
+      const capabilitiesState = queryClient.getQueryState(capabilitiesKey);
+      const cachedCapabilities =
+        queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey);
+      const capabilitiesExpired =
+        cachedCapabilities != null &&
+        Date.now() - (capabilitiesState?.dataUpdatedAt ?? 0) >= cachedCapabilities.expiresInMs;
+      const capabilitiesData =
+        capabilitiesState?.status === 'error' ||
+        capabilitiesState?.fetchStatus === 'fetching' ||
+        capabilitiesExpired
+          ? undefined
+          : cachedCapabilities?.capabilities;
+      /* Auto sends no effort, so no catalog can refuse it and a restored one is always kept. */
+      const clearsEffort =
+        reasoningOverride.key === 'reasoning_effort' &&
+        reasoningOverride.value === ReasoningEffort.unset &&
+        usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '');
+      /* A replayed override is checked against the loaded per-model efforts. While they are
+         unknown (never requested, running or failed) `resolveModelReasoning` offers nothing, so
+         the override is omitted rather than sent and refused by the server. */
       const supportedSetting =
         effectiveEndpoint == null
           ? undefined
@@ -542,9 +570,28 @@ export default function useChatFunctions({
               defaultParamsEndpoint: customParams?.defaultParamsEndpoint,
               reasoningFormat: customParams?.reasoningFormat,
               paramDefinitions: customParams?.paramDefinitions,
+              modelReasoning:
+                effectiveModel == null || clearsEffort
+                  ? undefined
+                  : resolveModelReasoning({
+                      capabilities: capabilitiesData,
+                      endpoint: effectiveEndpoint,
+                      model: effectiveModel,
+                      paramDefinitions: customParams?.paramDefinitions,
+                    }),
             });
       if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
         reasoningOverride = undefined;
+        /* Refused only because the catalog is not known yet, not because it said no: the user's
+           one-shot choice is put back instead of being lost, and applies once it can be checked. */
+        if (
+          drainedReasoning &&
+          stagedReasoning != null &&
+          capabilitiesData == null &&
+          usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '')
+        ) {
+          reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), stagedReasoning);
+        }
       }
     }
     const isEditOrContinue = isEdited || isContinued;
@@ -554,7 +601,7 @@ export default function useChatFunctions({
     if (conversation?.promptPrefix) {
       conversation.promptPrefix = replaceSpecialVars({
         text: conversation.promptPrefix,
-        user,
+        user: auth.user,
       });
     }
 
@@ -818,7 +865,7 @@ export default function useChatFunctions({
           conversation,
           addedConvo,
           endpointsConfig,
-          startupConfig?.modelSpecs?.list,
+          config.modelSpecs,
         );
       } else {
         initialResponse.content = [];

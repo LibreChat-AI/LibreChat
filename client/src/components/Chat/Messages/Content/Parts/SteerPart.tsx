@@ -1,4 +1,5 @@
 import { memo, useMemo, useState, useEffect, useCallback } from 'react';
+import { CollapsibleText } from '@librechat/chat/components';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import SteerReceipt, { type SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
@@ -9,7 +10,6 @@ import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import Image from '~/components/Chat/Messages/Content/Image';
-import CollapsibleText from './CollapsibleText';
 import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 

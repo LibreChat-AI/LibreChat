@@ -9,3 +9,4 @@ export {
   getRandomValues,
 } from '@librechat/data-schemas';
 export * from './jwt';
+export * from './credentials';

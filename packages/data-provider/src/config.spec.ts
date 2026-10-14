@@ -69,6 +69,19 @@ describe('host-side file edit limits', () => {
   });
 });
 
+describe('stream keepalive interval', () => {
+  it('defaults to 25 seconds and accepts 0 to disable', () => {
+    expect(agentsEndpointSchema.parse({}).streamKeepaliveIntervalMs).toBe(25_000);
+    expect(
+      agentsEndpointSchema.parse({ streamKeepaliveIntervalMs: 0 }).streamKeepaliveIntervalMs,
+    ).toBe(0);
+  });
+
+  it.each([1, 999])('rejects a sub-second interval of %p ms', (streamKeepaliveIntervalMs) => {
+    expect(agentsEndpointSchema.safeParse({ streamKeepaliveIntervalMs }).success).toBe(false);
+  });
+});
+
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {
     for (const [input, expected] of [
@@ -1137,7 +1150,16 @@ describe('agent pull request config', () => {
       cacheMaxCredentials: 256,
       maxConcurrentLookups: 4,
       batchTimeoutSeconds: 20,
+      sharedCache: false,
+      sharedCacheTimeoutMs: 250,
+      sharedCacheSlots: 65_536,
     });
+  });
+
+  it('shares the cache between replicas only when asked to, and only as a boolean', () => {
+    expect(parse({ sharedCache: true }).success).toBe(true);
+    expect(parse({ sharedCache: false }).success).toBe(true);
+    expect(parse({ sharedCache: 'true' }).success).toBe(false);
   });
 
   const enabled = {
@@ -1169,12 +1191,63 @@ describe('agent pull request config', () => {
     expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(true);
   });
 
-  it.each(['*/*', '*', 'owner', 'o/r/extra', '../x', 'o/..', 'a b/c', 'o/*x', ''])(
+  it.each(['g/sub/r', 'g/sub/*', 'a/b/c/d'])('accepts the nested group path %s', (repo) => {
+    expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(true);
+  });
+
+  it.each(['github', 'gitlab', 'bitbucket'])('accepts the provider %s', (provider) => {
+    expect(parse({ ...enabled, provider }).success).toBe(true);
+  });
+
+  it('accepts an OAuth app given by environment references', () => {
+    const oauth = { clientId: '${GH_CLIENT_ID}', clientSecret: '${GH_CLIENT_SECRET}' };
+    expect(parse({ ...enabled, oauth }).success).toBe(true);
+    expect(parse({ ...enabled, oauth: { ...oauth, scope: 'read_api read_user' } }).success).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['a literal secret', { clientId: '${ID}', clientSecret: 'shhh' }],
+    ['a missing secret', { clientId: '${ID}' }],
+    ['a scope with odd characters', { clientId: '${ID}', clientSecret: '${S}', scope: 'a;b' }],
+  ])('rejects an OAuth app with %s', (_label, oauth) => {
+    expect(parse({ ...enabled, oauth }).success).toBe(false);
+  });
+
+  it('rejects a provider it does not know', () => {
+    expect(parse({ ...enabled, provider: 'gitea' }).success).toBe(false);
+  });
+
+  it.each(['*/*', '*', 'owner', 'g/*/r', '../x', 'o/..', 'g/../r', 'a b/c', 'o/*x', 'o//r', ''])(
     'rejects %p as an allowed repository',
     (repo) => {
       expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(false);
     },
   );
+
+  it.each([
+    'github.com',
+    'github.example.com',
+    'acme.ghe.com',
+    'GHE.Example.com',
+    'ghe.local:8443',
+  ])('accepts %s as the GitHub host', (host) => {
+    expect(parse({ ...enabled, host }).success).toBe(true);
+  });
+
+  it.each([
+    'https://github.example.com',
+    'github.example.com/api/v3',
+    'user@github.example.com',
+    '-github.com',
+    'github.com.',
+    'ghe.local:0',
+    'ghe.local:65536',
+    '',
+  ])('rejects %p as the GitHub host', (host) => {
+    expect(parse({ ...enabled, host }).success).toBe(false);
+  });
 
   it.each(['ghp_abcdef', '${bad name}', '$GITHUB_TOKEN', '${}'])(
     'rejects %s as a token because only a reference is allowed',
@@ -1210,6 +1283,12 @@ describe('agent pull request config', () => {
     ['batchTimeoutSeconds', 0],
     ['batchTimeoutSeconds', 121],
     ['batchTimeoutSeconds', 1.5],
+    ['sharedCacheTimeoutMs', 9],
+    ['sharedCacheTimeoutMs', 5001],
+    ['sharedCacheTimeoutMs', 1.5],
+    ['sharedCacheSlots', 63],
+    ['sharedCacheSlots', 1_000_001],
+    ['sharedCacheSlots', 1.5],
   ])('rejects %s of %s', (field, value) => {
     expect(parse({ [field]: value }).success).toBe(false);
   });
@@ -1226,9 +1305,13 @@ describe('agent pull request config', () => {
         cacheMaxEntries: 100_000,
         maxConcurrentLookups: 16,
         batchTimeoutSeconds: 120,
+        sharedCacheTimeoutMs: 5000,
       }).success,
     ).toBe(true);
     expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);
+    expect(parse({ sharedCacheTimeoutMs: 10 }).success).toBe(true);
+    expect(parse({ sharedCacheSlots: 64 }).success).toBe(true);
+    expect(parse({ sharedCacheSlots: 1_000_000 }).success).toBe(true);
   });
 
   it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {

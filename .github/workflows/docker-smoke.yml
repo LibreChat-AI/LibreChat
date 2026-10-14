@@ -16,6 +16,7 @@ on:
       - 'skill/**'
       - 'packages/api/**'
       - 'packages/client/**'
+      - 'packages/chat/**'
       - 'packages/data-provider/**'
       - 'packages/data-schemas/**'
       - '!**.md'

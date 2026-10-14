@@ -13,8 +13,8 @@ type RecorderOptions = Parameters<typeof createRecorder>[0];
 /** Places the recorder once, as the tool does, then reports through it in call order. */
 const createLaneGitRecorder = (options: Omit<RecorderOptions, 'enabled'>) => {
   const ready = createRecorder({ enabled: true, ...options });
-  return (laneGit: Parameters<NonNullable<Awaited<typeof ready>>>[0]) =>
-    ready.then((record) => (record ? record(laneGit) : false));
+  return (laneGit: Parameters<NonNullable<Awaited<typeof ready>>>[0], output?: string) =>
+    ready.then((record) => (record ? record(laneGit, output) : false));
 };
 
 const head = 'a'.repeat(40);
@@ -77,7 +77,15 @@ describe('createLaneGitRecorder', () => {
     );
   });
 
-  it.each(['../x', 'o/..', 'a b/c', 'owner', 'o/r/extra', 'x'.repeat(300)])(
+  it('stores a nested GitLab group path with the lane', async () => {
+    const { record, setConvoLaneGit } = make({ repo: 'group/sub/project' });
+    await record?.(laneGit);
+    expect(setConvoLaneGit).toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'group/sub/project' }),
+    );
+  });
+
+  it.each(['../x', 'o/..', 'o/./r', 'o//r', 'a b/c', 'owner', 'x'.repeat(300)])(
     'drops the unsafe repository %s but still records the lane',
     async (repo) => {
       const { record, setConvoLaneGit } = make({ repo });
@@ -101,6 +109,37 @@ describe('createLaneGitRecorder', () => {
     await expect(record?.(laneGit)).resolves.toBe(false);
     expect(setConvoLaneGit).not.toHaveBeenCalled();
     expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('secret');
+  });
+
+  it('records the pull request the output links to in the lane repository', async () => {
+    const { record, setConvoLaneGit } = make({ repo: 'o/r' });
+    await record?.(laneGit, 'Created https://github.com/o/r/pull/42\n');
+    expect(setConvoLaneGit).toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'o/r', pullRequest: 42 }),
+    );
+  });
+
+  it('records only a link on the configured host', async () => {
+    const { record, setConvoLaneGit } = make({ repo: 'o/r', host: 'ghe.example.com' });
+    await record?.(laneGit, 'https://ghe.example.com/o/r/pull/5 https://github.com/o/r/pull/9');
+    expect(setConvoLaneGit).toHaveBeenCalledWith(expect.objectContaining({ pullRequest: 5 }));
+  });
+
+  it.each([
+    ['output without a link', 'nothing to see', 'o/r', laneGit],
+    ['a link to another repository', 'https://github.com/x/y/pull/42', 'o/r', laneGit],
+    [
+      'no repository to match the link against',
+      'https://github.com/o/r/pull/42',
+      undefined,
+      laneGit,
+    ],
+    ['a detached lane', 'https://github.com/o/r/pull/42', 'o/r', { branch: null, head }],
+  ])('records no pull request for %s', async (_label, output, repo, lane) => {
+    const { record, setConvoLaneGit } = make({ repo });
+    await record?.(lane, output);
+    expect(setConvoLaneGit).toHaveBeenCalledTimes(1);
+    expect(setConvoLaneGit.mock.calls[0][0]).not.toHaveProperty('pullRequest');
   });
 
   it('writes nothing when the conversation is not saved yet', async () => {
@@ -140,7 +179,18 @@ describe('attached bash tool lane reporting', () => {
       jest.fn(async () => response({ laneGit })),
       onLaneGit,
     ).invoke({ command: 'git status' });
-    expect(onLaneGit).toHaveBeenCalledWith(laneGit);
+    expect(onLaneGit).toHaveBeenCalledWith(laneGit, 'ok\n');
+  });
+
+  it('hands over stdout and stderr, so a link printed to either is seen', async () => {
+    const onLaneGit = jest.fn();
+    await build(
+      jest.fn(async () =>
+        response({ laneGit, stdout: 'https://github.com/o/r/pull/7', stderr: 'warning' }),
+      ),
+      onLaneGit,
+    ).invoke({ command: 'gh pr create' });
+    expect(onLaneGit).toHaveBeenCalledWith(laneGit, 'https://github.com/o/r/pull/7\nwarning');
   });
 
   it('hands over a detached lane as nulls, not as unknown', async () => {
@@ -150,7 +200,7 @@ describe('attached bash tool lane reporting', () => {
       jest.fn(async () => response({ laneGit: detached })),
       onLaneGit,
     ).invoke({ command: 'git status' });
-    expect(onLaneGit).toHaveBeenCalledWith(detached);
+    expect(onLaneGit).toHaveBeenCalledWith(detached, 'ok\n');
   });
 
   it('does not call the recorder when the worker sent no laneGit', async () => {

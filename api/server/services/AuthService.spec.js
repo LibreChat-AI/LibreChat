@@ -16,6 +16,7 @@ jest.mock(
     ErrorTypes: {},
     SystemRoles: { USER: 'USER', ADMIN: 'ADMIN' },
     errorsToString: jest.fn(),
+    SESSION_HINT_COOKIE: 'session_hint',
   }),
   { virtual: false },
 );
@@ -27,6 +28,7 @@ jest.mock(
       isEnabled: jest.fn((val) => val === 'true' || val === true),
       checkEmailConfig: jest.fn(),
       isEmailDomainAllowed: jest.fn(),
+      getSafeErrorMetadata: jest.fn((error) => ({ type: error?.name ?? 'UnknownError' })),
       math: jest.fn((val, fallback) => (val ? Number(val) : fallback)),
       storeOpenIdSession: jest.fn(),
       shouldUseSecureCookie,
@@ -38,6 +40,7 @@ jest.mock(
           sameSite: 'strict',
         });
       }),
+      setLocalSessionCookies: jest.fn(),
       setOpenIDMarkerCookies: jest.fn((res, { userId, expires }) => {
         res.cookie('token_provider', 'openid', {
           expires,
@@ -137,17 +140,20 @@ let isEmailDomainAllowed;
 let resolveAppConfigForUser;
 let setRefreshTokenCookie;
 let setOpenIDMarkerCookies;
+let setLocalSessionCookies;
 let setCloudFrontCookies;
 let getCloudFrontConfig;
 let parseCloudFrontCookieScope;
 let storeOpenIdSession;
 let jwt;
 let logger;
+let registerSchema;
 let getTenantId;
 let findUser;
 let findToken;
 let createUser;
 let updateUser;
+let deleteUserById;
 let countUsers;
 let getUserById;
 let generateToken;
@@ -179,18 +185,21 @@ jest.isolateModules(() => {
     commitPasswordReset,
     setRefreshTokenCookie,
     setOpenIDMarkerCookies,
+    setLocalSessionCookies,
     setCloudFrontCookies,
     getCloudFrontConfig,
     parseCloudFrontCookieScope,
     storeOpenIdSession,
   } = require('@librechat/api'));
   jwt = require('jsonwebtoken');
+  ({ registerSchema } = require('~/strategies/validators'));
   ({ logger, getTenantId } = require('@librechat/data-schemas'));
   ({
     findUser,
     findToken,
     createUser,
     updateUser,
+    deleteUserById,
     countUsers,
     getUserById,
     generateToken,
@@ -689,6 +698,9 @@ describe('setOpenIDAuthTokens', () => {
   });
 });
 
+const loggedText = () =>
+  JSON.stringify(['info', 'warn', 'error', 'debug'].map((level) => logger[level].mock.calls));
+
 describe('registerUser', () => {
   const registrationPayload = {
     name: 'Test User',
@@ -764,6 +776,62 @@ describe('registerUser', () => {
         }),
       }),
     );
+  });
+
+  it('contains a failed cleanup of the temporary user and logs safe metadata only', async () => {
+    checkEmailConfig.mockReturnValue(true);
+    sendEmail.mockRejectedValueOnce(new Error('smtp rejected leak@example.com'));
+    deleteUserById.mockRejectedValueOnce(new Error('db failure leak@example.com'));
+
+    const result = await registerUser(registrationPayload);
+
+    expect(result).toEqual({ status: 500, message: 'Something went wrong' });
+    expect(loggedText()).not.toContain('leak@example.com');
+  });
+
+  it('logs a duplicate registration by id without the body or existing user', async () => {
+    findUser.mockResolvedValue({ _id: 'existing-id', email: 'dup@example.com' });
+
+    const result = await registerUser({ ...registrationPayload, email: 'dup@example.com' });
+
+    expect(result.status).toBe(200);
+    expect(createUser).not.toHaveBeenCalled();
+    expect(logger.info.mock.calls).toEqual([
+      ['[registerUser] Email in use [User ID: existing-id]'],
+    ]);
+    const logged = loggedText();
+    for (const secret of [
+      'dup@example.com',
+      'testuser',
+      'Test User',
+      registrationPayload.password,
+    ]) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+
+  it('does not log the registration body on validation failure', async () => {
+    registerSchema.safeParse.mockReturnValueOnce({
+      success: false,
+      error: { errors: [{ path: ['password'], message: 'Password too short' }] },
+    });
+
+    const result = await registerUser({
+      ...registrationPayload,
+      email: 'pii-leak@example.com',
+    });
+
+    expect(result.status).toBe(404);
+    expect(logger.info).toHaveBeenCalled();
+    const logged = loggedText();
+    for (const secret of [
+      'pii-leak@example.com',
+      'testuser',
+      'Test User',
+      registrationPayload.password,
+    ]) {
+      expect(logged).not.toContain(secret);
+    }
   });
 });
 
@@ -1188,6 +1256,19 @@ describe('resendVerificationEmail', () => {
     jest.clearAllMocks();
   });
 
+  it('logs a failed resend without the error message or address', async () => {
+    findUser.mockResolvedValue({ _id: 'user-fail', email: 'leak@example.com', name: 'Leaky' });
+    checkEmailConfig.mockReturnValue(true);
+    sendEmail.mockRejectedValueOnce(new Error('rejected leak@example.com'));
+
+    await resendVerificationEmail({ body: { email: 'leak@example.com' } });
+
+    expect(logger.error.mock.calls).toEqual([
+      ['[resendVerificationEmail] Error resending verification email:', { type: 'Error' }],
+    ]);
+    expect(loggedText()).not.toContain('leak@example.com');
+  });
+
   it('should not delete tokens when no user exists for the email', async () => {
     findUser.mockResolvedValue(null);
 
@@ -1257,7 +1338,8 @@ describe('resendVerificationEmail', () => {
       message: 'Please check your email to verify your email address.',
     });
     expect(logger.error).toHaveBeenCalledWith(
-      '[resendVerificationEmail] Error resending verification email: mail transport unavailable',
+      '[resendVerificationEmail] Error resending verification email:',
+      { type: 'Error' },
     );
   });
 });
@@ -1619,6 +1701,39 @@ describe('CloudFront cookie integration', () => {
         },
         { userId: 'old-user', tenantId: 'old-tenant' },
       );
+    });
+
+    it('names the session owner and expiry in the readable cookie the theme replay checks', async () => {
+      const expiration = new Date(Date.now() + 604800000);
+      createSession.mockResolvedValueOnce({
+        session: { expiration },
+        refreshToken: 'mock-refresh-token',
+      });
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res);
+
+      expect(setLocalSessionCookies).toHaveBeenCalledWith(res, {
+        refreshToken: 'mock-refresh-token',
+        expires: expiration,
+        userId: 'user-123',
+        tenantId: 'tenantA',
+      });
+    });
+
+    it('re-stamps the expiry of the session a refresh keeps', async () => {
+      const expiration = new Date(Date.now() + 3600000);
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res, { _id: 'session-1', expiration });
+
+      expect(createSession).not.toHaveBeenCalled();
+      expect(setLocalSessionCookies).toHaveBeenCalledWith(res, {
+        refreshToken: 'mock-refresh-token',
+        expires: expiration,
+        userId: 'user-123',
+        tenantId: 'tenantA',
+      });
     });
 
     it('succeeds even when setCloudFrontCookies returns false', async () => {

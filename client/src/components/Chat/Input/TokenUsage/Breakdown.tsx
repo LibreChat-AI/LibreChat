@@ -17,7 +17,7 @@ import type { MeterSegment } from '@librechat/client';
 import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
 import type { CurrencyConfig } from '~/utils';
 import { groupToolTokens, formatTokens, formatCost, normalizeTokenCount, cn } from '~/utils';
-import { contextBreakdownExpandedAtom } from '~/store/usage';
+import { contextBreakdownExpandedAtom } from './store';
 import { useLocalize } from '~/hooks';
 
 interface RowProps {

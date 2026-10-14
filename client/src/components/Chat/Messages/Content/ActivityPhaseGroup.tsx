@@ -2,7 +2,7 @@ import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useCont
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
-import { Check, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
+import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
 import type { RailHover } from './rail';
@@ -30,12 +30,11 @@ import {
 } from './rail';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import { getOutcomeStatus, isSpanFailed, summarizeSpan } from './outcome';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
-import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
-import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { sandboxStartingByToolCallId } from '~/store';
 import { MessageSurfaceContext } from '../ui/surface';
@@ -45,6 +44,7 @@ import { StackedToolIcons } from './ToolOutput';
 import useTimeTick from '~/hooks/useTimeTick';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
+import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
 
 /** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
@@ -92,13 +92,18 @@ function schedulePostPaint(callback: () => void): () => void {
  *  rendered without one sits to the left of the rows it replaces — the fold
  *  then moves its own text sideways at the moment the reader is trying to
  *  follow it. */
-function PhaseGlyph({ failed }: { failed: boolean }) {
-  const Icon = failed ? TriangleAlert : Check;
+function PhaseGlyph({ failed, partial = false }: { failed: boolean; partial?: boolean }) {
+  let Icon = Check;
+  let tone = 'text-text-secondary';
+  if (failed) {
+    Icon = CircleX;
+    tone = 'text-status-error';
+  } else if (partial) {
+    Icon = TriangleAlert;
+    tone = 'text-status-warning';
+  }
   return (
-    <span
-      className={cn(ROW_GLYPH_SLOT, failed ? 'text-text-warning' : 'text-text-secondary')}
-      aria-hidden="true"
-    >
+    <span className={cn(ROW_GLYPH_SLOT, tone)} aria-hidden="true">
       <Icon size={14} />
     </span>
   );
@@ -127,7 +132,6 @@ function LiveLine({ text }: { text: string }) {
 const PhaseLabel = memo(function PhaseLabel({
   text,
   animate,
-  failed,
   source,
   live = false,
   grow = true,
@@ -135,10 +139,9 @@ const PhaseLabel = memo(function PhaseLabel({
 }: {
   text: string;
   animate: boolean;
-  failed: boolean;
   /** Identity of what produced `text`. A streamed sentence keeps its source
    *  while it grows, and sliding a line out to bring a longer copy of itself
-   *  in would read as flicker — so an unchanged source extends in place. */
+   *  in would read as flicker, so an unchanged source extends in place. */
   source?: string;
   live?: boolean;
   /** Claim the row's free space, the default. Cleared when something has to
@@ -194,7 +197,6 @@ const PhaseLabel = memo(function PhaseLabel({
             'absolute inset-x-0 top-0 block truncate',
             'animate-out fade-out-0 slide-out-to-top-5 [animation-fill-mode:forwards]',
             FOLD_EASING,
-            failed && 'text-text-warning',
           )}
           /** The sweep on the inner span loops forever and its `animationend`
            *  never comes; only this element's own slide may clear the line. */
@@ -212,7 +214,6 @@ const PhaseLabel = memo(function PhaseLabel({
         className={cn(
           'block truncate',
           lines.entered && `animate-in fade-in-0 slide-in-from-bottom-5 ${FOLD_EASING}`,
-          failed && 'text-text-warning',
         )}
       >
         {live ? <LiveLine text={lines.current} /> : lines.current}
@@ -229,10 +230,11 @@ const SPAN_SITES = 3;
 /**
  * The settled header's glyph: what the span USED, not a bare check. A header
  * stands for the rows it hides, so it carries the most specific glyphs they
- * show — tool and MCP server icons, and the sites a web search read — and the
+ * show (tool and MCP server icons, and the sites a web search read), and the
  * row keeps the icons it had while live instead of trading them for a tick.
  * Its own component so only a card that was handed its parts pays for the MCP
- * lookup. A failed phase keeps the warning glyph: status outranks identity.
+ * lookup. A phase whose every call failed shows the failure glyph instead:
+ * status outranks identity only when nothing in the span succeeded.
  */
 function SpanGlyph({
   parts,
@@ -388,7 +390,7 @@ function LivePhaseHeader({
               mcpIconMap={mcpIconMap}
               maxIcons={SPAN_ICONS}
               sourceDomains={sourceDomains}
-              status={getOutcomeStatus(activity.outcome)}
+              status={getOutcomeStatus({ ...activity.outcome, total: activity.total })}
               isAnimating
             />
           </span>
@@ -405,7 +407,6 @@ function LivePhaseHeader({
         <PhaseLabel
           text={painted.text}
           source={painted.source}
-          failed={false}
           animate={animate}
           live
           grow={combo === ''}
@@ -479,11 +480,13 @@ function FailedPeek({
   parts,
   attachmentsById,
   count,
+  total,
   onReveal,
 }: {
   parts: ReadonlyArray<TMessageContentParts | undefined>;
   attachmentsById: Record<string, TAttachment[] | undefined>;
   count: number;
+  total: number;
   onReveal: () => void;
 }) {
   const localize = useLocalize();
@@ -506,10 +509,15 @@ function FailedPeek({
       data-testid="activity-phase-failed-peek"
     >
       <span className={cn(ROW_GLYPH_SLOT, 'text-status-error')} aria-hidden="true">
-        <TriangleAlert size={14} />
+        <CircleX size={14} />
       </span>
       <span className="tool-status-text flex min-w-0 items-center gap-2">
-        <span className="text-status-error max-w-full min-w-0 shrink-0 truncate font-medium">
+        <span
+          className={cn(
+            'max-w-full min-w-0 shrink-0 truncate',
+            isSpanFailed(count, total) ? 'text-status-error font-medium' : 'text-text-primary',
+          )}
+        >
           {first.text}
         </span>
         {first.detail !== '' && (
@@ -565,7 +573,10 @@ export default function ActivityPhaseGroup({
   const messageSurface = useContext(MessageSurfaceContext);
   const isLive = liveParts != null;
   const label = getActivityLabelText(labelPart);
-  const hasFailure = labelPart.status === 'failed' || labelPart.status === 'partial';
+  /** Only a phase in which every call failed reads as failed in its header.
+   *  A partial phase contains a mixture of outcomes; the count beside it and the failed
+   *  rows inside say what went wrong without restyling the title. */
+  const allFailed = labelPart.status === 'failed';
   const outcomeParts = spanParts ?? liveParts;
   const attachmentsById = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
   /** The span's failed calls, for the peek under a collapsed header and the
@@ -576,6 +587,10 @@ export default function ActivityPhaseGroup({
       outcomeParts == null ? { failed: 0, total: 0 } : summarizeSpan(outcomeParts, attachmentsById),
     [outcomeParts, attachmentsById],
   );
+
+  const partialMarkerFallback =
+    labelPart.status === 'partial' &&
+    (!hasContent || failedCount === 0 || isSpanFailed(failedCount, toolCount));
 
   /** Already `smoothStreaming && !reducedMotion` — it owns the media query, so
    *  a second subscription here would install one `matchMedia` listener per
@@ -717,6 +732,7 @@ export default function ActivityPhaseGroup({
         parts={outcomeParts}
         attachmentsById={attachmentsById}
         count={failedCount}
+        total={toolCount}
         onReveal={handleRevealFailed}
       />
     ) : null;
@@ -747,37 +763,13 @@ export default function ActivityPhaseGroup({
    *  right for the streaming-markdown cursor, wrong here — so `after:!static`
    *  puts that one pseudo-element back in flow for the slot to center; the
    *  `!` is what outranks the dot rule's three-class selector. */
-  /** The thought streaming at the tail of a collapsed live card, shown the
-   *  way an unfolded thought shows it: the trailing sentences in a short
-   *  fading window under the header (#14546). The fold had swallowed that
-   *  peek with the rows, leaving one throttled sentence on the header to
-   *  stand for a paragraph of live reasoning. It takes the cursor's place:
-   *  moving text is its own sign the run is alive. Only a card that is still
-   *  just thinking shows it: once tool calls fold in with the thought, the
-   *  header names the mix and the cursor stands in for the reasoning (#16680). */
-  const streamingThought = useMemo(() => {
-    if (!isLive || isExpanded || liveParts == null) {
-      return '';
-    }
-    const tail = liveParts[liveParts.length - 1];
-    if (tail?.type !== ContentTypes.THINK) {
-      return '';
-    }
-    if (liveParts.some((part) => part?.type === ContentTypes.TOOL_CALL)) {
-      return '';
-    }
-    return typeof tail.think === 'string' ? tail.think : (tail.think?.value ?? '');
-  }, [isLive, isExpanded, liveParts]);
-  const thoughtPeek =
-    streamingThought.trim() !== '' ? <StreamingThoughtPeek text={streamingThought} /> : null;
-  const cursor =
-    showCursor && thoughtPeek == null ? (
-      <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
-        <span className={cn(ROW_GLYPH_SLOT, 'submitting')} aria-hidden="true">
-          <span className="result-thinking block after:!static" />
-        </span>
-      </div>
-    ) : null;
+  const cursor = showCursor ? (
+    <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
+      <span className={cn(ROW_GLYPH_SLOT, 'submitting')} aria-hidden="true">
+        <span className="result-thinking block after:!static" />
+      </span>
+    </div>
+  ) : null;
   /** `AttachmentGroup` drops `web_search` attachments, and the nested segment
    *  renders with `hideAttachments` so its own `WebSearch` row stands down
    *  for this hoist — so without `SearchVerticals` here a phase containing a
@@ -807,12 +799,9 @@ export default function ActivityPhaseGroup({
       )}
       data-testid="activity-phase-card"
     >
-      <PhaseGlyph failed={hasFailure} />
+      <PhaseGlyph failed={allFailed} partial={partialMarkerFallback} />
       <span
-        className={cn(
-          'tool-status-text min-w-0 flex-1 truncate text-left font-medium',
-          hasFailure && 'text-text-warning',
-        )}
+        className="tool-status-text min-w-0 flex-1 truncate text-left font-medium"
         role="status"
         title={label}
       >
@@ -884,13 +873,13 @@ export default function ActivityPhaseGroup({
             ) : (
               <>
                 <RailGlyph hover={railHover}>
-                  {outcomeParts != null && !hasFailure ? (
+                  {outcomeParts != null && !allFailed && !partialMarkerFallback ? (
                     <SpanGlyph parts={outcomeParts} attachments={attachments} />
                   ) : (
-                    <PhaseGlyph failed={hasFailure} />
+                    <PhaseGlyph failed={allFailed} partial={partialMarkerFallback} />
                   )}
                 </RailGlyph>
-                <PhaseLabel text={label} failed={hasFailure} animate={smoothStreaming} />
+                <PhaseLabel text={label} animate={smoothStreaming} />
               </>
             )}
             <ChevronDown
@@ -932,7 +921,6 @@ export default function ActivityPhaseGroup({
   return (
     <>
       {group}
-      {thoughtPeek}
       {media}
       {cursor}
     </>

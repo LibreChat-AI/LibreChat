@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
-import { useStore } from 'jotai';
 import { useSetRecoilState } from 'recoil';
+import { useStore, useSetAtom } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
 import type {
   Agents,
@@ -19,11 +20,14 @@ import type { TResData, TFinalResData } from '~/common';
 import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
 import { startedAsNewConversation, buildCreatedInitialResponse } from './useEventHandlers';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
+import { reopenTermsOnRefusal } from '~/utils/terms';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useEventHandlers from './useEventHandlers';
 import useUsageHandler from './useUsageHandler';
+import useLocalize from '~/hooks/useLocalize';
 import store from '~/store';
 
 type ChatHelpers = Pick<
@@ -49,8 +53,8 @@ export default function useSSE(
   const { token, isAuthenticated } = useAuthContext();
   const transport = useChatTransport();
   const [completed, setCompleted] = useState(new Set());
-  const setAbortScroll = useSetRecoilState(store.abortScrollFamily(runIndex));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(runIndex));
+  const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
 
   const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } =
     chatHelpers;
@@ -81,6 +85,8 @@ export default function useSSE(
     setShowStopButton,
   });
 
+  const queryClient = useQueryClient();
+  const localize = useLocalize();
   const { data: startupConfig } = useGetStartupConfig();
   const balanceQuery = useGetUserBalance({
     enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
@@ -206,6 +212,7 @@ export default function useSSE(
 
     const handleError = (data: ChatErrorData | null | undefined) => {
       console.log('error in server stream.');
+      const termsRefused = reopenTermsOnRefusal(queryClient, data);
       (startupConfig?.balance?.enabled ?? false) && balanceQuery.refetch();
       resetLive(currentSubmission);
       if (data === undefined) {
@@ -216,7 +223,9 @@ export default function useSSE(
        * the last queued tokens must land before it is synthesized. */
       flushPendingDeltas();
       errorHandler({
-        data: data as TResData | undefined,
+        data: termsRefused
+          ? ({ text: localize('com_error_terms_not_accepted') } as unknown as TResData)
+          : (data as TResData | undefined),
         submission: currentSubmission,
       });
     };

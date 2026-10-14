@@ -123,11 +123,12 @@ function EndpointModelItemComponent({
           isFavorite
             ? 'visible'
             : // Visible by default so it's tappable on touch (no hover to
-              // reveal it); only hidden-until-hover on hover-capable pointers.
+              // reveal it); only hidden-until-hover where no pointer is coarse,
+              // so a 2-in-1's touchscreen keeps it beside its hovering trackpad.
               // A hover-gated child would otherwise make the whole item
               // hover-dependent, so the first tap only reveals it and a second
               // tap is needed to select (the iOS double-tap).
-              'group-focus-within:visible group-hover:visible group-data-[active-item]:visible [@media(hover:hover)]:invisible',
+              'no-touch:invisible group-focus-within:visible group-hover:visible group-data-[active-item]:visible',
         )}
       >
         <MorphIcon icon={isFavorite ? PinOff : Pin} className="h-4 w-4" />

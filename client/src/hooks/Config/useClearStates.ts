@@ -4,6 +4,11 @@ import {
   getReasoningStateKey,
   clearPendingReasoningOverrides,
 } from '~/components/Chat/Input/Composer/state';
+import {
+  abortScrollFamily,
+  showStopButtonByIndex,
+  submissionStartFamily,
+} from '~/store/generation';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
 import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
@@ -44,8 +49,9 @@ export default function useClearStates() {
           reset(store.filesByIndex(key));
           reset(store.presetByIndex(key));
           reset(store.textByIndex(key));
-          reset(store.showStopButtonByIndex(key));
-          reset(store.abortScrollFamily(key));
+          jotaiStore.set(showStopButtonByIndex(key), false);
+          jotaiStore.set(abortScrollFamily(key), false);
+          jotaiStore.set(submissionStartFamily(key), null);
           reset(store.isSubmittingFamily(key));
           reset(store.optionSettingsFamily(key));
           reset(store.showPopoverFamily(key));

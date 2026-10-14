@@ -17,7 +17,9 @@ const {
   getValidOpenIDReuseCredential,
   isTokenRetired,
   isTwoFactorEnrollmentRequired,
+  getSafeErrorMetadata,
   sanitizeUserForAuthResponse,
+  clearSessionHintCookie,
 } = require('@librechat/api');
 const {
   requestPasswordReset,
@@ -78,13 +80,16 @@ const registrationController = async (req, res) => {
       try {
         await deleteTokens({ token: req.invite.token });
       } catch (error) {
-        logger.error('[registrationController] Failed to consume invite after registration', error);
+        logger.error(
+          '[registrationController] Failed to consume invite after registration',
+          getSafeErrorMetadata(error),
+        );
       }
     }
     res.status(status).send({ message });
   } catch (err) {
-    logger.error('[registrationController]', err);
-    return res.status(500).json({ message: err.message });
+    logger.error('[registrationController]', getSafeErrorMetadata(err));
+    return res.status(500).json({ message: 'Something went wrong' });
   }
 };
 
@@ -288,8 +293,8 @@ const resetPasswordRequestController = async (req, res) => {
       return res.status(200).json(resetService);
     }
   } catch (e) {
-    logger.error('[resetPasswordRequestController]', e);
-    return res.status(400).json({ message: e.message });
+    logger.error('[resetPasswordRequestController]', getSafeErrorMetadata(e));
+    return res.status(400).json({ message: 'Something went wrong' });
   }
 };
 
@@ -324,6 +329,7 @@ const refreshController = async (req, res) => {
       selectOpenIDRefreshToken(req.session?.openidTokens, parsedCookies);
 
     if (!refreshToken) {
+      clearSessionHintCookie(res);
       return res.status(200).send('Refresh token not provided');
     }
 
@@ -391,6 +397,7 @@ const refreshController = async (req, res) => {
         req.session?.openidTokens?.appUserId ??
         getValidOpenIDReuseCredential(parsedCookies, process.env.JWT_REFRESH_SECRET)?.userId;
       if (!refreshUserId) {
+        clearSessionHintCookie(res);
         return res.status(403).send('Invalid OpenID refresh token');
       }
 
@@ -398,6 +405,7 @@ const refreshController = async (req, res) => {
         getUserById(refreshUserId, AUTH_REFRESH_USER_PROJECTION),
       );
       if (!refreshUser) {
+        clearSessionHintCookie(res);
         return res.status(403).send('Invalid OpenID refresh token');
       }
 
@@ -438,6 +446,7 @@ const refreshController = async (req, res) => {
           logger.warn(
             `[refreshController] Redirecting to /login: error=${error ?? 'null'}, user=${user ? 'exists' : 'null'}`,
           );
+          clearSessionHintCookie(res);
           return res.status(401).redirect('/login');
         }
 
@@ -449,6 +458,7 @@ const refreshController = async (req, res) => {
               resolvedUserId: user._id.toString(),
             },
           );
+          clearSessionHintCookie(res);
           return res.status(401).redirect('/login');
         }
 
@@ -535,6 +545,7 @@ const refreshController = async (req, res) => {
               getUserById(userId, AUTH_REFRESH_USER_PROJECTION),
             );
             if (!bridgeUser) {
+              clearSessionHintCookie(res);
               return res.status(403).send('Invalid OpenID refresh token');
             }
 
@@ -594,6 +605,7 @@ const refreshController = async (req, res) => {
         }
       }
 
+      clearSessionHintCookie(res);
       return res.status(403).send('Invalid OpenID refresh token');
     }
   }

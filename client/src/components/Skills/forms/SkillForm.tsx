@@ -196,7 +196,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                     id="skill-name"
                     type="text"
                     readOnly={readOnly}
-                    className="peer border-border-medium text-text-primary mr-2 w-full p-2 text-2xl"
+                    className="peer text-text-primary mr-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}
@@ -294,6 +294,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                   <span className="text-text-destructive ml-0.5">*</span>
                 </Label>
                 <TextareaAutosize
+                  variant="framed"
                   focusOutline="hidden"
                   {...field}
                   id="skill-description"
@@ -303,7 +304,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                   aria-label={localize('com_ui_description')}
                   aria-invalid={errors.description ? 'true' : 'false'}
                   aria-describedby={errors.description ? 'skill-description-error' : undefined}
-                  className="border-border-medium text-text-primary placeholder:text-text-secondary focus-visible:ring-ring-primary w-full resize-none rounded-xl border bg-transparent p-3 text-sm focus-visible:ring-2"
+                  className="w-full resize-none p-3 text-sm"
                 />
                 <p className="text-text-secondary mt-1 text-xs">
                   {localize('com_ui_skill_description_field_hint')}

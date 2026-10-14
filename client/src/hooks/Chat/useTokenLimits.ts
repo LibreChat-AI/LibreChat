@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
 import { isAgentsEndpoint, resolveModelCatalogKey } from 'librechat-data-provider';
 import type { TConversation, TModelTokenomics } from 'librechat-data-provider';
-import { useGetStartupConfig, useTokenConfigQuery, useGetAgentByIdQuery } from '~/data-provider';
-import { getModelSpec } from '~/utils';
+import { useTokenConfigQuery, useGetAgentByIdQuery } from '~/data-provider';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 
 export interface TokenLimits {
   /** Statically resolved max context; live snapshots override this at run time */
@@ -23,7 +23,7 @@ function toNumber(value: unknown): number | undefined {
  * server-resolved token config lookup.
  */
 export default function useTokenLimits(conversation: TConversation | null): TokenLimits {
-  const { data: startupConfig } = useGetStartupConfig();
+  const { modelSpecs } = useChatSettings().config;
   const { data: tokenConfig } = useTokenConfigQuery();
 
   const endpoint = conversation?.endpoint ?? '';
@@ -35,7 +35,7 @@ export default function useTokenLimits(conversation: TConversation | null): Toke
   const maxContextSetting = conversation?.maxContextTokens;
 
   return useMemo(() => {
-    const specPreset = getModelSpec({ specName: spec, startupConfig })?.preset;
+    const specPreset = spec ? modelSpecs?.find((s) => s.name === spec)?.preset : undefined;
 
     let lookupEndpoint = endpoint;
     let lookupModel = model ?? '';
@@ -56,5 +56,5 @@ export default function useTokenLimits(conversation: TConversation | null): Toke
       rates?.context;
 
     return { maxContextTokens, rates, endpoint: lookupEndpoint, model: lookupModel };
-  }, [endpoint, model, spec, maxContextSetting, agent, startupConfig, tokenConfig]);
+  }, [endpoint, model, spec, maxContextSetting, agent, modelSpecs, tokenConfig]);
 }

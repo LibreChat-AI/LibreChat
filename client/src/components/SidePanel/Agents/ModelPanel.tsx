@@ -12,8 +12,11 @@ import {
 import type * as t from 'librechat-data-provider';
 import type { AgentForm, AgentModelPanelProps, StringOption } from '~/common';
 import { pruneAgentModelParameters, resolveAgentParameterSettings } from './parameters';
+import { groupParameters, hasControl } from '~/components/SidePanel/Parameters/groups';
 import { componentMapping } from '~/components/SidePanel/Parameters/components';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
+import Sections from '~/components/SidePanel/Parameters/Sections';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
 import { Panel } from '~/common';
@@ -64,6 +67,7 @@ export default function ModelPanel({
 
   const { data: endpointsConfig = {} } = useGetEndpointsQuery();
   const { data: startupConfig } = useGetStartupConfig();
+  const { modelReasoning } = useModelReasoning(endpointsConfig, provider, model ?? '');
 
   const bedrockRegions = useMemo(() => {
     return endpointsConfig?.[provider]?.availableRegions ?? [];
@@ -82,8 +86,9 @@ export default function ModelPanel({
         provider,
         startupConfig,
         webSearchAllowed,
+        modelReasoning,
       }),
-    [endpointsConfig, model, provider, startupConfig, webSearchAllowed],
+    [endpointsConfig, model, modelReasoning, provider, startupConfig, webSearchAllowed],
   );
   /** The rendered set omits role-gated controls; `parameterSettings.parameters`
    *  stays complete so the pruning effect below still recognises them. */
@@ -108,6 +113,22 @@ export default function ModelPanel({
 
     setValue('model_parameters', prunedParameters);
   }, [parameterSettings, getValues, setValue]);
+
+  /** Same grouping as the chat panel: region choices are filled in first, and a
+   *  control with nothing to render is dropped so no section stands empty. */
+  const sections = useMemo(
+    () =>
+      groupParameters(
+        (parameters ?? [])
+          .map((setting) =>
+            setting.key === 'region' && bedrockRegions.length > 0
+              ? { ...setting, options: bedrockRegions }
+              : setting,
+          )
+          .filter((setting) => componentMapping[setting.component] != null && hasControl(setting)),
+      ),
+    [parameters, bedrockRegions],
+  );
 
   const setOption = (optionKey: keyof t.AgentModelParameters) => (value: t.AgentParameterValue) => {
     setValue(`model_parameters.${optionKey}`, value);
@@ -276,34 +297,13 @@ export default function ModelPanel({
         </Alert>
       )}
       {/* Model Parameters */}
-      {parameters && (
+      {sections.length > 0 && (
         <div className="h-auto max-w-full">
-          <div className="grid grid-cols-2 gap-3">
-            {/* This is the parent element containing all settings */}
-            {/* Below is an example of an applied dynamic setting, each be contained by a div with the column span specified */}
-            {parameters.map((setting) => {
-              const Component = componentMapping[setting.component];
-              if (!Component) {
-                return null;
-              }
-              const { key, default: defaultValue, ...rest } = setting;
-
-              if (key === 'region' && bedrockRegions.length) {
-                rest.options = bedrockRegions;
-              }
-
-              return (
-                <Component
-                  key={key}
-                  settingKey={key}
-                  defaultValue={defaultValue}
-                  {...rest}
-                  setOption={setOption as t.TSetOption}
-                  conversation={modelParameters as Partial<t.TConversation>}
-                />
-              );
-            })}
-          </div>
+          <Sections
+            sections={sections}
+            setOption={setOption as t.TSetOption}
+            conversation={modelParameters as Partial<t.TConversation>}
+          />
         </div>
       )}
       {/* Reset Parameters Button */}

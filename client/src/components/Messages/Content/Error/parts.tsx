@@ -340,14 +340,26 @@ export function ErrorActions({ children }: { children: React.ReactNode }) {
 export function ErrorAction({
   onClick,
   children,
+  variant,
+  disabled = false,
 }: {
   onClick: () => void;
   children: React.ReactNode;
+  /** A second action next to the primary one reads as the alternative, not a peer. */
+  variant?: 'outline';
+  disabled?: boolean;
 }) {
   return (
     /** One step tighter than the button default (8px) so the control reads as nested inside the
      *  error card's 12px corner rather than echoing it. */
-    <Button type="button" size="sm" className="rounded-md" onClick={onClick}>
+    <Button
+      type="button"
+      size="sm"
+      variant={variant}
+      className="rounded-md"
+      onClick={onClick}
+      disabled={disabled}
+    >
       {children}
     </Button>
   );

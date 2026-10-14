@@ -95,8 +95,7 @@ export const renderAgentAvatar = (
     xl: 'h-10 w-10',
   };
 
-  // Tailwind v3 never generated border-1, so avatars have never painted a border; deliberate width belongs in a follow-up.
-  const borderClasses = showBorder ? 'border-border-medium' : '';
+  const borderClasses = showBorder ? 'border border-border-medium' : '';
 
   if (avatarUrl) {
     return (

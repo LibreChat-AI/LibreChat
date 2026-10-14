@@ -67,9 +67,11 @@ async function authenticate(config: FullConfig, user: User) {
     const conversationURL = appURL(baseURL, 'c/new');
     const loginURL = appURL(baseURL, 'login');
 
-    // Set localStorage before navigating to the page
+    // Set localStorage before navigating to the page. Specs send with Enter, which the
+    // app no longer does by default, so the saved state opts into it.
     await page.context().addInitScript(() => {
       localStorage.setItem('navVisible', 'true');
+      localStorage.setItem('enterToSend', 'true');
     });
     console.log('🤖: ✔️  localStorage: set Nav as Visible', storageState);
 

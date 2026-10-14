@@ -7,6 +7,9 @@ cache: true
 interface:
   # Isolated test fleet contains only ownership-aware replicas.
   runningChatRename: true
+  # Off the 300 ms default, so highlight-throttle.spec.ts can tell a configured
+  # cadence from the schema default in the served config.
+  codeHighlightThrottleMs: 250
   # Exercises the cost row in the context usage gauge (off by default).
   # Mock models price at the default rate, so synthetic usage yields a value.
   contextCost: true
@@ -14,6 +17,9 @@ interface:
   # control in the composer. Mock Provider A resolves Anthropic's adaptive
   # `effort` setting through its custom endpoint configuration below.
   parameters: true
+  # Opts the shell into the `?theme=` colour-mode handoff (off by default).
+  # color-mode-handoff.spec.ts follows links that carry it.
+  colorModeFromUrl: true
   # Grants MULTI_CONVO.USE so the composer's `+` command opens the added-model
   # popover. agent-skills-added.spec.ts drives that flow; without an explicit
   # value the permission falls through to the seeded role default and
@@ -71,6 +77,22 @@ mcpServers:
     # __E2E_DYNAMIC_MCP_STDIO_ENV__
     title: E2E Memory
     description: Local MCP fixture used by mock end-to-end tests.
+    timeout: 30000
+  e2e-user-vars:
+    type: stdio
+    command: node
+    args:
+      - e2e/setup/fake-mcp-server.js
+    startup: false
+    env:
+      E2E_MCP_USER_TOKEN: '{{E2E_MCP_USER_TOKEN}}'
+      E2E_MCP_EXPECTED_USER_TOKEN: e2e-user-token-secret
+    customUserVars:
+      E2E_MCP_USER_TOKEN:
+        title: E2E User Token
+        description: Per-user token the fixture refuses to start without.
+    title: E2E User Vars
+    description: Stdio MCP fixture that starts only with the expected per-user token.
     timeout: 30000
   e2e-http:
     type: streamable-http
@@ -143,6 +165,14 @@ endpoints:
       - run_in_background
       - stateful_code_sessions
     # __E2E_CODE_BRIDGE_CONFIG__
+    # Pull request lookups reach the fake GitHub Enterprise host
+    # (e2e/setup/fake-git-host-server.js), and only for the repository the pull request
+    # scenarios seed, so no other conversation ever starts a lookup.
+    pullRequests:
+      host: localhost:8793
+      token: '${E2E_GIT_HOST_TOKEN}'
+      allowedRepositories:
+        - e2e-org/e2e-app
     # Keep the shared mock profile non-interactive except for the dedicated
     # approval probe. This exercises real HITL pause/resume without wedging the
     # existing file-authoring, steering, background-tool, or MCP specs.

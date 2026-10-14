@@ -1,4 +1,4 @@
-import type { ThemeDefinition } from '../types';
+import type { IThemeRGB, ThemeDefinition } from '../types';
 import applyTheme, {
   applyResolvedTheme,
   clearAppliedTheme,
@@ -73,6 +73,12 @@ describe('applyTheme', () => {
     expect(document.documentElement.style.getPropertyValue('--surface-composer-hover')).toBe(
       '66 66 66',
     );
+  });
+
+  it('writes a renamed category icon role from legacy colors to its slot 4 name', () => {
+    applyTheme({ 'rgb-category-icon': '7 8 9' } as IThemeRGB);
+
+    expect(document.documentElement.style.getPropertyValue('--category-icon-4')).toBe('7 8 9');
   });
 
   it('keeps existing custom hover colors on composer controls', () => {
@@ -176,9 +182,10 @@ describe('applyTheme', () => {
     );
   });
 
-  /** The plain `rounded-*`, `font-sans` and `font-mono` utilities read these properties, so a
-   *  theme reaches every call site only if the adapter writes them and a reset removes them. */
-  it('applies and clears the radius and shadow scales and the mono family', () => {
+  /** The plain `rounded-*`, `shadow-*`, `font-sans`, `font-mono` and control spacing utilities
+   *  read these properties, so one theme reaches every call site only if the adapter writes all
+   *  four families together and a reset removes them. */
+  it('applies and clears one reference theme across radius, font, shadow and spacing', () => {
     const root = document.documentElement;
     const scale = {
       radiusSm: ['--theme-radius-sm', '0px'],
@@ -187,7 +194,14 @@ describe('applyTheme', () => {
       radiusXl: ['--theme-radius-xl', '0.5rem'],
       radius2xl: ['--theme-radius-2xl', '0.75rem'],
       radius3xl: ['--theme-radius-3xl', '1rem'],
+      controlRadius: ['--theme-control-radius', '0.25rem'],
+      fontFamily: ['--theme-font-family', 'Inter, Arial, sans-serif'],
       monoFontFamily: ['--theme-mono-font-family', 'Inconsolata, monospace'],
+      spaceCompact: ['--theme-space-compact', '0.25rem'],
+      spaceNormal: ['--theme-space-normal', '0.5rem'],
+      controlPaddingX: ['--theme-control-padding-x', '0.625rem'],
+      buttonPaddingX: ['--theme-button-padding-x', '0.875rem'],
+      controlGap: ['--theme-control-gap', '0.25rem'],
       shadow2xs: ['--theme-shadow-2xs', '0 1px rgb(0 0 0 / 0.1)'],
       shadowXs: ['--theme-shadow-xs', '0 1px 2px rgb(0 0 0 / 0.15)'],
       shadowSm: ['--theme-shadow-sm', '0 2px 4px rgb(0 0 0 / 0.15)'],
@@ -219,6 +233,11 @@ describe('applyTheme', () => {
       defaultAppearance.monoFontFamily,
     );
     expect(root.style.getPropertyValue('--theme-shadow-lg')).toBe(defaultAppearance.shadowLg);
+    expect(root.style.getPropertyValue('--theme-font-family')).toBe(defaultAppearance.fontFamily);
+    expect(root.style.getPropertyValue('--theme-space-normal')).toBe(defaultAppearance.spaceNormal);
+    expect(root.style.getPropertyValue('--theme-control-padding-x')).toBe(
+      defaultAppearance.controlPaddingX,
+    );
 
     clearAppliedTheme(root);
     Object.values(scale).forEach(([property]) => {
@@ -543,6 +562,14 @@ describe('applyTheme', () => {
 
     expect(root.style.getPropertyValue('--field-fill')).toBe('20 21 22');
     expect(root.style.getPropertyValue('--field-text')).toBe('1 2 3');
+  });
+
+  it('maps a legacy theme canvas onto the checkbox fill', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22' }, root);
+
+    expect(root.style.getPropertyValue('--checkbox-fill')).toBe('20 21 22');
   });
 
   it('keeps the switch knob of a legacy theme on the surface it repainted', () => {

@@ -159,6 +159,7 @@ export interface IAgentTriggerDelivery {
   batchRootId?: Types.ObjectId;
   batchRootRequeueCount?: number;
   batchMembersSettledAt?: Date;
+  deadLetterExpiresAt?: Date;
   /** Keeps this binding lane serialized until its admitted child turn reaches
    *  an authoritative terminal handling outcome. */
   awaitTerminalHandling?: boolean;

@@ -38,6 +38,13 @@ type ButtonVariantOptions =
         | 'card'
         | 'disclosure'
         | 'option'
+        | 'text-action'
+        | 'row-content'
+        | 'chip-toggle'
+        | 'pill-toggle'
+        | 'composer-pill'
+        | 'composer-trigger'
+        | 'hit-area'
         | null
         | undefined;
       size?:
@@ -51,6 +58,8 @@ type ButtonVariantOptions =
         | 'xs'
         | 'sm'
         | 'lg'
+        | 'auth'
+        | 'auth-action'
         | 'wide'
         | 'snug'
         | 'bare'
@@ -59,7 +68,7 @@ type ButtonVariantOptions =
         | 'tile'
         | null
         | undefined;
-      shape?: 'default' | 'soft' | 'theme' | 'round' | null | undefined;
+      shape?: 'default' | 'soft' | 'auth-action' | 'theme' | 'round' | null | undefined;
     } & ClassProp)
   | undefined;
 
@@ -143,9 +152,10 @@ const buttonVariantRecipe = cva(
          */
         'row-action': 'rounded-md hover:bg-surface-hover-alt hover:text-text-primary',
         /** A row action revealed by hover or keyboard focus, and kept visible
-         * while its dialog or menu is open. Touch users always see it. */
+         * while its dialog or menu is open. Any touchscreen, including the one on
+         * a 2-in-1 whose trackpad reports hover, always sees it. */
         'row-action-reveal':
-          'shrink-0 rounded-md text-text-secondary transition-opacity hover:bg-surface-hover-alt hover:text-text-primary data-[open]:bg-surface-active data-[open]:text-text-primary data-[open]:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-visible:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100',
+          'shrink-0 rounded-md text-text-secondary transition-opacity hover:bg-surface-hover-alt hover:text-text-primary data-[open]:bg-surface-active data-[open]:text-text-primary data-[open]:opacity-100 no-touch:opacity-0 no-touch:focus-visible:opacity-100 no-touch:group-focus-within:opacity-100 no-touch:group-hover:opacity-100',
         link: 'text-text-primary underline-offset-4 hover:underline',
         /** A link-weight action in the accent color, such as the alternate way to confirm a sign-in. */
         'link-accent':
@@ -224,6 +234,32 @@ const buttonVariantRecipe = cva(
         option:
           'w-full select-none justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
+        /** A small text action in the secondary ink beside a status line, such as a failed
+         *  steer's Retry or a pending one's Cancel; it rises to the primary ink under the pointer. */
+        'text-action':
+          'rounded text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
+        /** The content of a list row whose row owns the highlight, such as a composer palette
+         *  entry: it lays the row out and takes the pointer, and leaves fill and ink to the row. */
+        'row-content':
+          'flex cursor-pointer justify-start gap-2.5 px-2 text-left font-normal transition-none',
+        /** An outlined chip that toggles a mode, its pressed state marked with `aria-pressed`. */
+        'chip-toggle':
+          'min-h-theme-target shrink-0 rounded-full border border-border-medium text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-offset-0 aria-pressed:border-transparent aria-pressed:bg-surface-active-alt aria-pressed:text-text-primary aria-pressed:hover:bg-surface-active-alt',
+        /** A borderless pill that toggles a mode, lit in the accent while `aria-pressed`. */
+        'pill-toggle':
+          'rounded-full text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary aria-pressed:bg-accent-primary/15 aria-pressed:text-accent-primary aria-pressed:hover:bg-accent-primary/15 aria-pressed:hover:text-accent-primary',
+        /** A composer pill that opens a popover with its value, such as Thinking: primary ink,
+         *  and kept lit while the popover it controls is expanded. */
+        'composer-pill':
+          'gap-1 rounded-theme-control-round font-normal text-text-primary hover:bg-surface-hover focus-visible:ring-offset-0 aria-expanded:bg-surface-hover',
+        /** A composer control that opens a popover from an icon, such as the reasoning menu: it
+         *  rests in the secondary ink and takes the primary one while hovered or expanded. */
+        'composer-trigger':
+          'gap-1.5 rounded-xl text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-offset-0 aria-expanded:bg-surface-hover aria-expanded:text-text-primary',
+        /** An invisible target laid over a custom-drawn control, such as a stop on a slider rail:
+         *  it draws only its focus ring, inside its own box. */
+        'hit-area':
+          'rounded-full bg-transparent focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
         default: 'h-theme-button px-theme-button-x py-2',
@@ -239,6 +275,10 @@ const buttonVariantRecipe = cva(
         xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
         sm: 'h-theme-button-sm rounded-lg px-3',
         lg: 'h-theme-button-lg rounded-lg px-8',
+        /** The height of a sign-in form's submit button, the `authButtonHeight` role. */
+        auth: 'h-theme-auth-button px-theme-button-x',
+        /** The other actions of the sign-in flow, the `authActionHeight` role. */
+        'auth-action': 'h-theme-auth-action px-theme-button-x',
         /** Default height with the generous pad of a dialog's confirming action. */
         wide: 'h-theme-button px-8',
         /** Default height with a snug pad, for a text action that sits close to its neighbors. */
@@ -262,8 +302,10 @@ const buttonVariantRecipe = cva(
       },
       shape: {
         default: 'rounded-lg',
-        /** The generous corner of a sign-in form's controls. */
-        soft: 'rounded-2xl',
+        /** The corner of a sign-in form's controls, the `authControlRadius` role. */
+        soft: 'rounded-theme-auth-control',
+        /** The corner of the sign-in flow's other actions, the `authActionRadius` role. */
+        'auth-action': 'rounded-theme-auth-action',
         theme: 'rounded-theme-control',
         round: 'rounded-theme-control-round',
         unset: '',
@@ -326,6 +368,14 @@ const buttonVariantRecipe = cva(
         shape: 'unset',
         class: 'rounded-xl',
       },
+      /* These carry their own box, which the default size's height and padding would otherwise win. */
+      { variant: 'text-action', size: 'default', class: 'h-auto p-0' },
+      { variant: 'row-content', size: 'default', class: 'h-auto px-2 py-0' },
+      { variant: 'chip-toggle', size: 'default', class: 'h-auto px-2 py-0.5' },
+      { variant: 'pill-toggle', size: 'default', class: 'h-auto px-2 py-0.5' },
+      { variant: 'composer-pill', size: 'default', class: 'h-theme-button-compact px-2.5 py-0' },
+      { variant: 'composer-trigger', size: 'default', class: 'h-theme-button-compact px-2 py-0' },
+      { variant: 'hit-area', size: 'default', class: 'h-auto p-0' },
     ],
     defaultVariants: {
       variant: 'default',

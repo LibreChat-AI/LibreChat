@@ -41,8 +41,8 @@ import type {
   TContextUsageEvent,
   ChatStreamConnection,
 } from 'librechat-data-provider';
+import type { QueuedMessageOrigin, DrainAfterAbort, RunEnd } from '~/hooks/Chat/queue';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
-import type { DrainAfterAbort, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
@@ -88,6 +88,16 @@ import {
   GENERATION_PROTOCOL_VERSION,
 } from '~/data-provider';
 import {
+  resolveDetachedRunEnd,
+  isDetachedRunManual,
+  stopRequestedByConvoId,
+  detachedRunByConvoId,
+  isStoppedRun,
+  drainAfterAbortByIndex,
+  queuedMessagesByConvoId,
+  runEndByIndex,
+} from '~/hooks/Chat/queue';
+import {
   recoveryDispositionsFamily,
   canRestoreRecovery,
   blockRecovery,
@@ -96,12 +106,13 @@ import useEventHandlers, {
   buildCreatedInitialResponse,
   keepLocalCodeApprovalMode,
 } from './useEventHandlers';
-import { drainAfterAbortByIndex, queuedMessagesByConvoId, runEndByIndex } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
 import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { liveAppliedSteerIdsAtom } from '~/store/steer';
+import { reopenTermsOnRefusal } from '~/utils/terms';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { fetchConvoSnapshot } from '~/utils/convos';
 import { useFileMapContext } from '~/Providers';
@@ -360,9 +371,9 @@ const getStreamStartFailureText = (errorData?: unknown): string => {
     : 'Error connecting to server, try refreshing the page.';
 };
 
-const getStreamStartFailureData = (errorData?: unknown): TResData =>
+const getStreamStartFailureData = (errorData?: unknown, termsRefusalText?: string): TResData =>
   ({
-    text: getStreamStartFailureText(errorData),
+    text: termsRefusalText ?? getStreamStartFailureText(errorData),
     metadata: markStreamStartFailedMetadata(),
   }) as unknown as TResData;
 
@@ -969,9 +980,9 @@ export default function useResumableSSE(
   );
   const [_completed, setCompleted] = useState(new Set());
   const [streamId, setStreamId] = useState<string | null>(null);
-  const setAbortScroll = useSetRecoilState(store.abortScrollFamily(runIndex));
+  const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
   const setSubmission = useSetRecoilState(store.submissionByIndex(runIndex));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(runIndex));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
   const setLiveAppliedSteerIds = useSetAtom(liveAppliedSteerIdsAtom);
 
   const streamRef = useRef<AbortController | null>(null);
@@ -1335,6 +1346,9 @@ export default function useResumableSSE(
     [convertSteersToQueued],
   );
 
+  /** The generation epoch the pane's stream is attached to, kept so a run left mid-stream can
+   *  carry it. A server that reports no epoch leaves it unset. */
+  const subscribedEpochRef = useRef<number | null>(null);
   /** Conversation ids are reused by successive agent turns. Keep the exact
    * live epoch beside the UI controls, and only clear it if the terminal event
    * still belongs to the epoch that installed it. */
@@ -1360,7 +1374,34 @@ export default function useResumableSSE(
     [],
   );
 
-  const setRunEnd = useSetAtom(runEndByIndex(runIndex));
+  const publishRunEnd = useSetAtom(runEndByIndex(runIndex));
+  /** Whether the current submission's run end already reached the queue drain. A run that
+   *  ended attached must not also be resolved as detached when the user later leaves. */
+  const runEndPublishedRef = useRef(false);
+  /** Whether the server named the current submission's user message (`created`, or a resume's
+   *  sync). Only a run whose identity it confirmed is remembered when the user leaves. */
+  const identityConfirmedRef = useRef(false);
+  const setRunEnd = useCallback(
+    (end: RunEnd, options?: { retainDetached?: boolean }) => {
+      runEndPublishedRef.current = true;
+      /** The run's end reached the drain here, so a marker this pane left for the same run is
+       *  settled and must not be resolved a second time on a later visit. A provisional end that
+       *  cannot drain the queue keeps the marker, so a later read of history can still settle it. */
+      if (end.conversationId != null && options?.retainDetached !== true) {
+        const detachedFamily = detachedRunByConvoId(end.conversationId);
+        const detached = jotaiStore.get(detachedFamily);
+        if (
+          detached != null &&
+          (end.generationCreatedAt == null ||
+            detached.generationCreatedAt === end.generationCreatedAt)
+        ) {
+          jotaiStore.set(detachedFamily, null);
+        }
+      }
+      publishRunEnd(end);
+    },
+    [jotaiStore, publishRunEnd],
+  );
   const setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(runIndex));
   const clearDrainAfterAbort = useCallback(
     (conversationId: string, generationCreatedAt?: number) => {
@@ -1464,6 +1505,7 @@ export default function useResumableSSE(
       if (lifecycleSignal?.aborted || submissionRef.current !== currentSubmission) {
         return;
       }
+      subscribedEpochRef.current = generationCreatedAt ?? null;
       const startedAsNewConversation = optimisticStreamIdsRef.current.has(currentStreamId);
       /** Terminal handlers below are fenced by this subscription and its generation.
        * Clear every key the same run may have occupied, including the temporary
@@ -2275,6 +2317,7 @@ export default function useResumableSSE(
               initialResponse: createdInitialResponse,
             };
             submissionRef.current = currentSubmission;
+            identityConfirmedRef.current = true;
             bindResponse(currentSubmission);
             createdHandler(data, currentSubmission as EventSubmission);
             replayPreCreatedStepEvents();
@@ -2378,6 +2421,9 @@ export default function useResumableSSE(
             currentSubmission = resumeSubmission;
             submissionRef.current = resumeSubmission;
             userMessage = resumeSubmission.userMessage;
+            if (data.resumeState?.userMessage != null) {
+              identityConfirmedRef.current = true;
+            }
             /**
              * Totals rebuild from the persisted backfill at sync. Replayed or
              * gap usage events already represented in the snapshot are skipped
@@ -3456,13 +3502,34 @@ export default function useResumableSSE(
           }
           // The true outcome is unknown here (job record already cleaned up):
           // a non-'completed' outcome releases parked interrupt flags without
-          // auto-sending queued messages the user may not want fired.
-          setRunEnd({
-            conversationId: recoveryConvoId,
-            outcome: 'aborted',
-            startedAsNewConvo: optimisticStreamIdsRef.current.has(currentStreamId),
-            endedAt: Date.now(),
-          });
+          // auto-sending queued messages the user may not want fired. A run this
+          // pane left and came back to is the exception: the history just read
+          // names its response by epoch, which is the outcome it would have had.
+          // History read before the job finished may not hold that response yet, or
+          // may hold only the unfinished snapshot saved when the pane left, so a
+          // marker that read leaves unresolved or stopped outlives this end for the
+          // next visit, which reads history after the job is known to be done.
+          const detachedRun = jotaiStore.get(detachedRunByConvoId(recoveryConvoId));
+          const detachedResolvable =
+            detachedRun != null &&
+            !isDetachedRunManual(jotaiStore.get, recoveryConvoId, detachedRun);
+          const detachedEnd =
+            detachedResolvable && persistedMessages != null
+              ? resolveDetachedRunEnd(recoveryConvoId, detachedRun, persistedMessages)
+              : null;
+          setRunEnd(
+            {
+              conversationId: recoveryConvoId,
+              outcome: 'aborted',
+              endedAt: Date.now(),
+              ...detachedEnd,
+              startedAsNewConvo: optimisticStreamIdsRef.current.has(currentStreamId),
+            },
+            {
+              retainDetached:
+                detachedResolvable && (detachedEnd == null || detachedEnd.outcome === 'aborted'),
+            },
+          );
           setStreamId(null);
           optimisticStreamIdsRef.current.delete(currentStreamId);
           createdStreamIdsRef.current.delete(currentStreamId);
@@ -4234,8 +4301,12 @@ export default function useResumableSSE(
       if (signal?.aborted) {
         return null;
       }
+      const termsRefused = reopenTermsOnRefusal(queryClient, errorData);
       errorHandler({
-        data: getStreamStartFailureData(errorData),
+        data: getStreamStartFailureData(
+          errorData,
+          termsRefused ? localize('com_error_terms_not_accepted') : undefined,
+        ),
         submission: currentSubmission as EventSubmission,
       });
       setShowStopButton(false);
@@ -4249,6 +4320,7 @@ export default function useResumableSSE(
       errorHandler,
       jotaiStore,
       localize,
+      queryClient,
       restoreQueuedSubmission,
       setIsSubmitting,
       setShowStopButton,
@@ -4293,6 +4365,29 @@ export default function useResumableSSE(
     });
 
     submissionRef.current = submission;
+    runEndPublishedRef.current = false;
+    identityConfirmedRef.current = false;
+    subscribedEpochRef.current = null;
+    if (submission.conversation?.conversationId != null) {
+      /** A different run starting here owns the conversation's end from now on: an earlier run
+       *  this pane left is superseded, and a Stop belonged to that earlier run. Reattaching to
+       *  the same generation keeps both, since that run's end is still owed and it was stopped. */
+      const startingConvoId = submission.conversation.conversationId;
+      const sameGeneration = (generationCreatedAt?: number) =>
+        resumeStreamId != null &&
+        resumeGenerationCreatedAt != null &&
+        generationCreatedAt === resumeGenerationCreatedAt;
+      const stopFamily = stopRequestedByConvoId(startingConvoId);
+      const stopped = jotaiStore.get(stopFamily);
+      if (stopped != null && !sameGeneration(stopped.generationCreatedAt)) {
+        jotaiStore.set(stopFamily, null);
+      }
+      const detachedFamily = detachedRunByConvoId(startingConvoId);
+      const detached = jotaiStore.get(detachedFamily);
+      if (detached != null && !sameGeneration(detached.generationCreatedAt)) {
+        jotaiStore.set(detachedFamily, null);
+      }
+    }
     const startController = new AbortController();
     const { signal } = startController;
     const isCurrentEffect = () => !signal.aborted && submissionRef.current === submission;
@@ -4822,6 +4917,33 @@ export default function useResumableSSE(
       stopForegroundReattachRef.current = null;
       // Reset reconnect counter before closing (so abort handler doesn't think we're reconnecting)
       reconnectAttemptRef.current = 0;
+      /** The pane is moving off a run that is still generating (another chat, a new chat, or
+       *  an unmount): the server keeps going with no subscriber and deletes the job when done,
+       *  so no terminal event will reach the queue drain. Remember the run; on return its end is
+       *  read from history. Only a run whose identity the server confirmed (its epoch, and the
+       *  user message `created` or a resume's sync named) is remembered, and not a regeneration,
+       *  a run that already published its end, or one the user stopped. */
+      const closing = submissionRef.current;
+      const closingConvoId = closing?.conversation?.conversationId;
+      const closingUserMessageId = closing?.userMessage?.messageId;
+      const generationCreatedAt = subscribedEpochRef.current;
+      if (
+        streamRef.current != null &&
+        identityConfirmedRef.current &&
+        !runEndPublishedRef.current &&
+        closing?.isRegenerate !== true &&
+        closingConvoId != null &&
+        closingConvoId !== Constants.NEW_CONVO &&
+        closingUserMessageId != null &&
+        generationCreatedAt != null &&
+        !isStoppedRun(jotaiStore.get(stopRequestedByConvoId(closingConvoId)), generationCreatedAt)
+      ) {
+        jotaiStore.set(detachedRunByConvoId(closingConvoId), {
+          userMessageId: closingUserMessageId,
+          responseMessageId: closing?.initialResponse?.messageId,
+          generationCreatedAt,
+        });
+      }
       streamRef.current?.abort();
       streamRef.current = null;
       // Clear handler maps to prevent memory leaks and stale state

@@ -220,7 +220,7 @@ export default function OutputRenderer({
         <Button
           variant="link"
           size="bare"
-          className="text-text-secondary focus-visible:ring-border-heavy mt-1 block text-xs underline"
+          className="text-text-secondary mt-1 block text-xs underline"
           onClick={() => setShowErrorDetails((prev) => !prev)}
         >
           {localize('com_ui_details')}

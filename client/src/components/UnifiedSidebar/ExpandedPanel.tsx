@@ -10,7 +10,6 @@ import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
 import useNewChat from '~/hooks/Chat/useNewChat';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 const AccountSettings = lazyWithRecovery(() => import('~/components/Nav/AccountSettings'));
 
@@ -43,7 +42,7 @@ const NewChatButton = memo(function NewChatButton({
           data-testid="new-chat-button"
           aria-label={localize('com_ui_new_chat')}
           aria-keyshortcuts={ariaKey}
-          className="hover:bg-surface-hover flex h-9 w-9 items-center justify-center rounded-lg transition-colors"
+          className="hover:bg-surface-nav-hover flex h-9 w-9 items-center justify-center rounded-lg transition-colors"
           onClick={handleNewChatClick}
         >
           <SquarePen className="text-text-primary h-5 w-5" />
@@ -104,15 +103,12 @@ const NavIconButton = memo(function NavIconButton({
       render={
         <Button
           size="icon"
-          variant="ghost"
+          variant="nav"
           aria-label={localize(link.title)}
           aria-pressed={isActive}
           disabled={link.disabled}
           data-testid={`nav-panel-${link.id}`}
-          className={cn(
-            'h-9 w-9 rounded-lg',
-            isActive ? 'bg-surface-active-alt text-text-primary' : 'text-text-secondary',
-          )}
+          className="h-9 w-9 rounded-lg"
           onClick={handleClick}
         >
           <link.icon className="h-5 w-5" aria-hidden="true" />
@@ -160,7 +156,7 @@ function ExpandedPanel({
             id={expanded ? CLOSE_SIDEBAR_ID : undefined}
             data-testid={expanded ? 'close-sidebar-button' : 'open-sidebar-button'}
             size="icon"
-            variant="ghost"
+            variant="nav"
             aria-label={localize(toggleLabel)}
             aria-expanded={expanded}
             aria-keyshortcuts={toggleSidebarAriaKey}

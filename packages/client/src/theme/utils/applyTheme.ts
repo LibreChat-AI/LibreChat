@@ -1,4 +1,6 @@
+import type { ThemeBootStyle } from 'librechat-data-provider';
 import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
+import type { RenamedThemeRGB } from '../registry';
 import {
   controlBorderFallback,
   focusFallbacks,
@@ -11,6 +13,7 @@ import {
   themeAppearanceProperties,
   themeBrandTokens,
   themeColorTokens,
+  withRenamedColors,
 } from '../registry';
 
 const colorProperty = (token: keyof IThemeRGB): `--${string}` => `--${token.slice(4)}`;
@@ -32,7 +35,8 @@ function validateRGB(rgb: string): boolean {
 /** `base` is the bundled palette for the mode being applied. The adapter writes
  *  only the keys a theme names, so a derivation whose source the theme inherits
  *  rather than restates has nothing to read without it. */
-function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]> {
+function mapColors(input: RenamedThemeRGB, base?: IThemeRGB): Array<[string, string]> {
+  const colors = withRenamedColors(input);
   const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
     const value = colors[token];
     if (value !== undefined) {
@@ -86,6 +90,11 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
   /** The field fill follows the canvas, as in `resolveTheme`. */
   if (colors['rgb-field-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
     variables.push(['--field-fill', colors['rgb-surface-primary']]);
+  }
+
+  /** The checkbox fill follows the canvas, as in `resolveTheme`. */
+  if (colors['rgb-checkbox-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--checkbox-fill', colors['rgb-surface-primary']]);
   }
 
   Object.entries(overlayFallbacks(colors)).forEach(([role, value]) => {
@@ -178,8 +187,15 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
   return variables;
 }
 
-/** The `theme-chrome-quiet:` variant matches the literal `0`, so every spelling of zero is written as it. */
+/**
+ * The `theme-chrome-quiet:` variant matches the literal `0`, so every spelling of zero is written as
+ * it. A `none` list height is written as the viewport's, which the list's available-height cap
+ * always undercuts; `none` itself would void the `min()` that applies that cap.
+ */
 function canonicalAppearance(key: keyof IThemeAppearance, value: string): string {
+  if (key === 'listMaxHeight' && value === 'none') {
+    return '100dvh';
+  }
   return key === 'chromeBorderAlpha' && Number(value) === 0 ? '0' : value;
 }
 
@@ -228,10 +244,7 @@ export function clearAppliedTheme(root: HTMLElement = document.documentElement):
 }
 
 /** What `applyResolvedTheme` writes on the root, as plain data a boot script can replay. */
-export type ResolvedThemeStyle = {
-  properties: Array<[string, string]>;
-  attributes: Record<string, string>;
-};
+export type ResolvedThemeStyle = ThemeBootStyle;
 
 export function describeResolvedTheme(theme: ResolvedThemeDefinition): ResolvedThemeStyle {
   return {

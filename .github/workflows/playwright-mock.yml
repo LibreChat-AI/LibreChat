@@ -211,6 +211,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
@@ -268,12 +269,16 @@ jobs:
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
 
+      # About a second, so it is not cached; the chat-package scenarios load the built entries.
+      - name: Build chat package
+        run: npm run build:chat
+
       - name: Restore client app build cache
         id: cache-client-app
         uses: actions/cache@v5
         with:
           path: client/dist
-          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/chat/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
 
       - name: Build client app
         if: steps.cache-client-app.outputs.cache-hit != 'true'
@@ -462,6 +467,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
@@ -608,6 +614,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules

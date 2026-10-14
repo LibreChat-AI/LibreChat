@@ -163,7 +163,7 @@ const EditPresetDialog = ({
               value={(title as string | undefined) ?? ''}
               onChange={onTitleChange}
               placeholder={localize('com_endpoint_set_custom_name')}
-              className="rounded-theme-control border-border-medium h-9 w-full"
+              className="rounded-theme-control h-9 w-full"
             />
           </div>
           <div className="flex w-full flex-col">

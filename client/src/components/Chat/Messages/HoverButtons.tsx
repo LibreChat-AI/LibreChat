@@ -230,9 +230,7 @@ const HoverButtons = ({
           disabled={!canCopy}
           className={cn(
             'ml-0 flex items-center gap-1.5 text-xs',
-            isSubmitting && isCreatedByUser
-              ? 'group-hover:opacity-100 [@media(hover:hover)]:opacity-0'
-              : '',
+            isSubmitting && isCreatedByUser ? 'no-touch:opacity-0 group-hover:opacity-100' : '',
           )}
           dataTestId={!isCreatedByUser ? 'copy-response-button' : undefined}
         />
@@ -251,7 +249,8 @@ const HoverButtons = ({
         />
       )}
 
-      {/* Fork Button */}
+      {/* Fork Button: withheld on a failed turn, whose copy would carry the provider's error as an
+          ordinary answer. The error card's "Branch without files" copies up to the turn before. */}
       {!error && !isActiveStreamingMessage && (
         <Fork
           messageId={message.messageId}
@@ -284,7 +283,7 @@ const HoverButtons = ({
         <HoverButton
           onClick={(e) => e && handleContinue(e)}
           title={localize('com_ui_continue')}
-          icon={<ContinueIcon className="-rotate-180" />}
+          icon={<ContinueIcon className="size-4.75" />}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
           className="active"

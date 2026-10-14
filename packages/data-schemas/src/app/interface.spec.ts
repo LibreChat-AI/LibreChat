@@ -169,6 +169,20 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.autoSubmitFromUrl).toBe(false);
   });
 
+  it('keeps the colour-mode URL handoff off unless configured', async () => {
+    const unset = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+    const enabled = await loadDefaultInterface({
+      config: { interface: { colorModeFromUrl: true } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(unset?.colorModeFromUrl).toBe(false);
+    expect(enabled?.colorModeFromUrl).toBe(true);
+  });
+
   it('preserves a disabled build info flag', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {
@@ -469,5 +483,25 @@ describe('running chat rename deployment fence', () => {
       configDefaults,
     });
     expect(interfaceConfig?.runningChatRename).toBe(expected);
+  });
+});
+
+describe('welcome screen heading and footer', () => {
+  it('keeps the entity heading and the full footer by default', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.landingHeading).toBe('entity');
+    expect(interfaceConfig?.landingFooter).toBe(true);
+  });
+
+  it('copies the configured settings through', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { landingHeading: 'greeting', landingFooter: false } },
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.landingHeading).toBe('greeting');
+    expect(interfaceConfig?.landingFooter).toBe(false);
   });
 });

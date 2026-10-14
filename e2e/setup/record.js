@@ -316,8 +316,10 @@ async function writeStorageState(env, storagePath) {
 
   try {
     const page = await browser.newPage();
+    /** Specs send with Enter, which the app no longer does by default. */
     await page.context().addInitScript(() => {
       localStorage.setItem('navVisible', 'true');
+      localStorage.setItem('enterToSend', 'true');
     });
 
     await page.goto(baseURL, { timeout });

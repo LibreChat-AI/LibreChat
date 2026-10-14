@@ -561,10 +561,10 @@ describe('createActionTool OAuth abort identity', () => {
     const { requestBuilder, preparedExecutor } = oauthToolFixture();
     /** No access token but a live refresh token: the branch that waits on the
      *  shared refresh flow rather than opening a login. */
+    const refreshToken = await dataSchemas.encryptV2('refresh-token');
     mockFindToken.mockImplementation(async ({ type }) =>
-      type === 'oauth_refresh' ? { token: 'encrypted-refresh-token' } : null,
+      type === 'oauth_refresh' ? { token: refreshToken } : null,
     );
-    jest.spyOn(dataSchemas, 'decryptV2').mockResolvedValue('refresh-token');
 
     /** The refresh never settles; the run stops while it is pending. */
     mockActionFlowManager.createFlowWithHandler.mockImplementation(() => new Promise(() => {}));

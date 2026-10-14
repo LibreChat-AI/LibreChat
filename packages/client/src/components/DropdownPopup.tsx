@@ -3,6 +3,7 @@ import * as Ariakit from '@ariakit/react';
 import type * as t from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
 import { cn, disabledInkClasses } from '~/utils';
+import useRemScale from '~/hooks/useRemScale';
 import './Dropdown.css';
 
 interface DropdownProps {
@@ -217,6 +218,9 @@ const SubMenuItem: React.FC<{
   itemClassName?: string;
 }> = ({ item, subItems, menuId, hideAll, iconClassName, itemClassName }) => {
   const store = Ariakit.useMenuStore();
+  /** Ariakit takes the gutter in pixels while the parent menu's padding is in rem: scaling it keeps
+   *  the submenu clear of the parent menu at every UI scale. */
+  const remScale = useRemScale();
   /** The parent's `hideAll` closes only its own store: a submenu that stays mounted would be left
    *  open in its portal, so this store is closed with it. */
   const hideSubmenuAndParents = () => {
@@ -254,7 +258,7 @@ const SubMenuItem: React.FC<{
       <Menu
         items={subItems}
         menuId={menuId}
-        gutter={20}
+        gutter={14 * remScale}
         portal={true}
         hideAll={hideSubmenuAndParents}
         style={{ maxHeight: 'min(24rem, var(--popover-available-height, 24rem))' }}

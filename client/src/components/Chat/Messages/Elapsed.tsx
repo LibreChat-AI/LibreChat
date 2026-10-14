@@ -1,9 +1,9 @@
 import { memo, useEffect, useState } from 'react';
-import { useRecoilValue } from 'recoil';
+import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import { submissionStartFamily } from '~/store/generation';
 import { getElapsedDurationLabels } from '~/utils';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 const elapsedSeconds = (start: number): number =>
   Math.max(0, Math.floor((Date.now() - start) / 1000));
@@ -49,7 +49,7 @@ export const shouldShowElapsed = ({
  * settled state for the animation to misrepresent.
  */
 const Elapsed = memo(function Elapsed({ index }: { index: number }) {
-  const submissionStart = useRecoilValue(store.submissionStartFamily(index));
+  const submissionStart = useAtomValue(submissionStartFamily(index));
   return <ElapsedTimer start={submissionStart ?? undefined} />;
 });
 
@@ -76,7 +76,7 @@ export const ElapsedTimer = memo(function ElapsedTimer({ start: startAt }: { sta
    *  that replace the timer sit behind the same `p-1.5`. Inline-start, so
    *  the alignment holds in RTL. */
   return (
-    <span className="flex items-center ps-1.5 text-text-secondary">
+    <span className="text-text-secondary flex items-center ps-1.5">
       <span aria-hidden="true" className="shimmer tabular-nums" data-testid="stream-elapsed">
         {localize(labels.key, labels.values)}
       </span>

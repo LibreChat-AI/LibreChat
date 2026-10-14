@@ -143,6 +143,7 @@ const {
   refreshController,
   registrationController,
   resetPasswordController,
+  resetPasswordRequestController,
 } = require('./AuthController');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const {
@@ -154,6 +155,7 @@ const {
   setAuthTokens,
   registerUser,
   resetPassword,
+  requestPasswordReset,
 } = require('~/server/services/AuthService');
 const { getOpenIdConfig, getOpenIdEmail } = require('~/strategies');
 const {
@@ -669,6 +671,7 @@ describe('refreshController – OpenID path', () => {
       status: jest.fn().mockReturnThis(),
       send: jest.fn().mockReturnThis(),
       redirect: jest.fn(),
+      clearCookie: jest.fn(),
     };
   });
 
@@ -1571,6 +1574,44 @@ describe('refreshController – OpenID path', () => {
     expect(res.send).toHaveBeenCalledWith('Invalid OpenID refresh token');
   });
 
+  it('retires the readable session hint when the IdP rejects the refresh token', async () => {
+    openIdClient.refreshTokenGrant.mockRejectedValue(new Error('invalid_grant'));
+
+    await refreshController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
+  });
+
+  it('retires the readable session hint when the refreshed identity resolves a different user', async () => {
+    findOpenIDUser.mockResolvedValue({
+      user: { ...defaultUser, _id: 'different-user-id' },
+      error: null,
+      migration: false,
+    });
+
+    await refreshController(req, res);
+
+    expect(res.redirect).toHaveBeenCalledWith('/login');
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
+  });
+
+  it('retires the readable session hint when the refresh owner no longer exists', async () => {
+    getUserById.mockResolvedValue(null);
+
+    await refreshController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
+  });
+
+  it('keeps the readable session hint on a successful OpenID refresh', async () => {
+    await refreshController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.clearCookie).not.toHaveBeenCalledWith('session_hint');
+  });
+
   it('does not use the bridge when signed user-id cookie payload is invalid', async () => {
     setOpenIDReuseCookies(jwt.sign({ id: 123 }, process.env.JWT_REFRESH_SECRET));
     openIdClient.refreshTokenGrant.mockRejectedValue(new Error('invalid_grant'));
@@ -2382,6 +2423,7 @@ describe('refreshController – OpenID path', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith('Refresh token not provided');
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
   });
 });
 
@@ -2680,6 +2722,44 @@ describe('refreshController – LibreChat path', () => {
     expect(res.send).toHaveBeenCalledWith('Refresh token expired or not found for this user');
   });
 
+  it('clears the readable session hint when no refresh token is sent', async () => {
+    req.headers.cookie = '';
+
+    await refreshController(req, res);
+
+    expect(res.send).toHaveBeenCalledWith('Refresh token not provided');
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
+  });
+
+  it('clears the readable session hint when the refresh session is gone', async () => {
+    getUserById.mockResolvedValue({ _id: 'local-user-id', provider: 'local' });
+    findSession.mockResolvedValue(null);
+
+    await refreshController(req, res);
+
+    expect(setAuthTokens).not.toHaveBeenCalled();
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('clears the readable session hint when the refresh token is invalid', async () => {
+    req.headers.cookie = 'refreshToken=not-a-jwt';
+
+    await refreshController(req, res);
+
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('keeps the readable session hint on a successful refresh', async () => {
+    getUserById.mockResolvedValue({ _id: 'local-user-id', provider: 'local' });
+
+    await refreshController(req, res);
+
+    expect(setAuthTokens).toHaveBeenCalled();
+    expect(res.clearCookie).not.toHaveBeenCalledWith('session_hint');
+  });
+
   it('preserves CI refresh compatibility without session lookup', async () => {
     process.env.NODE_ENV = 'CI';
     getUserById.mockResolvedValue({
@@ -2789,6 +2869,32 @@ describe('registrationController - invite consumption', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  it('answers an unexpected registration failure generically and logs safe metadata', async () => {
+    registerUser.mockRejectedValue(new Error('smtp rejected leak@example.com'));
+    const res = buildRes();
+
+    await registrationController({ body: {}, invite }, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ message: 'Something went wrong' });
+    expect(logger.error).toHaveBeenCalledWith('[registrationController]', { type: 'Error' });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('leak@example.com');
+  });
+
+  it('answers a failed password reset request generically and logs safe metadata', async () => {
+    requestPasswordReset.mockRejectedValue(new Error('smtp rejected leak@example.com'));
+    const res = buildRes();
+
+    await resetPasswordRequestController({ body: { email: 'leak@example.com' } }, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ message: 'Something went wrong' });
+    expect(logger.error).toHaveBeenCalledWith('[resetPasswordRequestController]', {
+      type: 'Error',
+    });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('leak@example.com');
+  });
+
   it('never forwards the creation signal to the client', async () => {
     registerUser.mockResolvedValue({ status: 200, message: 'ok', userCreated: true });
     const res = buildRes();
@@ -2819,6 +2925,7 @@ describe('resetPasswordController', () => {
     res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn(),
+      clearCookie: jest.fn(),
     };
   });
 
@@ -2833,6 +2940,7 @@ describe('resetPasswordController', () => {
     expect(resetPassword).toHaveBeenCalledWith('user-123', 'reset-token', 'new-password');
     expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-123' });
     expect(deletePasskeysByUser).toHaveBeenCalledWith('user-123');
+    expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(serviceResult);
   });

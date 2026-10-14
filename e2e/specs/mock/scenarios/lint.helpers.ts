@@ -120,9 +120,12 @@ export function lintFile(relativePath: string): LintMessage[] {
   );
 }
 
+/** The design rules: `@shadcn/lint`'s and the local `design` plugin's. */
+const isDesignRule = (ruleId: string): boolean => /^(?:shadcn|design)\//.test(ruleId);
+
 /** Only the design-system rules; the probes carry no other interesting output. */
 export function designMessages(messages: LintMessage[]): LintMessage[] {
-  return messages.filter((message) => message.ruleId?.startsWith('shadcn/'));
+  return messages.filter((message) => message.ruleId != null && isDesignRule(message.ruleId));
 }
 
 export const messagesFor = (messages: LintMessage[], ruleId: string): string[] =>
@@ -149,7 +152,7 @@ export function designRuleSeverities(paths: string[]): Record<string, Record<str
         const config = await eslint.calculateConfigForFile(path);
         const severities = {};
         for (const [rule, setting] of Object.entries(config.rules ?? {})) {
-          if (rule.startsWith('shadcn/')) {
+          if (rule.startsWith('shadcn/') || rule.startsWith('design/')) {
             severities[rule] = Array.isArray(setting) ? setting[0] : setting;
           }
         }

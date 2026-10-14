@@ -1,7 +1,8 @@
 import { atom } from 'jotai';
 import { atomFamily, RESET } from 'jotai/utils';
+import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import type { PrimitiveAtom } from 'jotai';
+import type { PrimitiveAtom, Getter } from 'jotai';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
 
 /**
@@ -226,6 +227,132 @@ export const drainAfterAbortByIndex = atomFamily((_index: string | number) =>
   atom<DrainAfterAbort | false>(false),
 );
 
+/** A run whose stream this pane closed while it was still generating, because the user left its
+ *  chat. The server keeps going and deletes the job once it finishes, so the run's end is learned
+ *  from the persisted response when the user comes back instead of from the stream. Only a run
+ *  whose identity the server confirmed is remembered: its epoch, and the user message `created`
+ *  or a resume's sync named. A run left before then, a regeneration (whose new reply history
+ *  cannot tell from the one it replaces), or a run on a server that reports no epoch is not, and
+ *  its follow-up waits for a manual send. */
+export type DetachedRun = {
+  /** The user message the run answers, as the server named it. */
+  userMessageId: string;
+  /** The response placeholder's id, when the submission carried one. */
+  responseMessageId?: string;
+  /** The run's generation epoch. It dates the run's response and lets the queue drain match
+   *  server admission receipts. */
+  generationCreatedAt: number;
+};
+
+export const detachedRunByConvoId = atomFamily((_conversationId: string) =>
+  atom<DetachedRun | null>(null),
+);
+
+/** The run the user pressed Stop on, named by its generation epoch. A stopped run's response
+ *  persists like a completed one, so a run stopped and then left before its abort event arrived
+ *  must not be resolved as detached and drain the queue. Only a different run resets it, so a
+ *  stopped run the user leaves, reattaches to and leaves again stays stopped. */
+export type StoppedRun = { generationCreatedAt: number };
+
+export const stopRequestedByConvoId = atomFamily((_conversationId: string) =>
+  atom<StoppedRun | null>(null),
+);
+
+/** Whether a Stop marker belongs to the run with this epoch. */
+export function isStoppedRun(stopped: StoppedRun | null, generationCreatedAt: number): boolean {
+  return stopped?.generationCreatedAt === generationCreatedAt;
+}
+
+/** Whether a detached run's end must be left for a manual send instead of read from history, which
+ *  retires its marker: the user stopped it, and a stopped response persists like a completed one
+ *  (a stopped compaction even settles with `unfinished: false`). */
+export function isDetachedRunManual(
+  get: Getter,
+  conversationId: string,
+  run: DetachedRun,
+): boolean {
+  return isStoppedRun(get(stopRequestedByConvoId(conversationId)), run.generationCreatedAt);
+}
+
+/** A compaction's outcome is the part the server stamps `initiatedBy: 'user'`. One that ended
+ *  without a usable summary persists the same failed summary or error part whether it failed or
+ *  was stopped, from this tab or another, and is settled rather than `unfinished`; history cannot
+ *  tell which, so it never drains the queue. Failed rounds of an ordinary run carry no stamp, and
+ *  a usable summary means the compaction succeeded. */
+const endedWithoutSummary = (message: TMessage): boolean => {
+  if (!Array.isArray(message.content)) {
+    return false;
+  }
+  let failed = false;
+  for (const part of message.content) {
+    if (part?.type === ContentTypes.SUMMARY && part.initiatedBy === 'user') {
+      if (part.failed !== true) {
+        return false;
+      }
+      failed = true;
+    } else if (part?.type === ContentTypes.ERROR && part.initiatedBy === 'user') {
+      failed = true;
+    }
+  }
+  return failed;
+};
+
+const writtenAt = (message: TMessage): number => {
+  const stamp = message.updatedAt ?? message.createdAt;
+  return stamp == null ? Number.NaN : Date.parse(stamp);
+};
+
+/**
+ * The run end a detached run implies, read from persisted history: `completed` lets the queue
+ * drain, while a stopped (`unfinished`) or failed response leaves the queue for a manual send, as
+ * it would had the stream been attached. Only a response the server wrote at or after the run's
+ * epoch can be its response, which rules out any row the run never touched. Returns `null` while
+ * no such response is persisted, so nothing is drained on a guess.
+ */
+export function resolveDetachedRunEnd(
+  conversationId: string,
+  run: DetachedRun,
+  messages: TMessage[] | undefined,
+): RunEnd | null {
+  const epoch = run.generationCreatedAt;
+  const responses = (messages ?? []).filter(
+    (message) =>
+      message.isCreatedByUser === false &&
+      message.parentMessageId === run.userMessageId &&
+      writtenAt(message) >= epoch,
+  );
+  /** A fresh turn's placeholder is the user message id padded with `_`, which names no response;
+   *  a real id is matched exactly first, since persisted ids may themselves end in `_`. */
+  const exact = run.responseMessageId;
+  const unpadded = exact?.replace(/_+$/, '');
+  const namesResponse = exact != null && unpadded !== run.userMessageId;
+  let response: TMessage | undefined;
+  if (namesResponse) {
+    response =
+      responses.find((message) => message.messageId === exact) ??
+      responses.find((message) => message.messageId === unpadded);
+  }
+  if (response == null && !namesResponse && responses.length === 1) {
+    response = responses[0];
+  }
+  if (response == null) {
+    return null;
+  }
+  let outcome: RunEnd['outcome'] = 'completed';
+  if (response.error === true) {
+    outcome = 'error';
+  } else if (response.unfinished === true || endedWithoutSummary(response)) {
+    outcome = 'aborted';
+  }
+  return {
+    conversationId,
+    outcome,
+    endedAt: Date.now(),
+    generationCreatedAt: epoch,
+    ...(outcome === 'completed' && { responseMessageId: response.messageId }),
+  };
+}
+
 const clearFamily = <Param>(family: {
   getParams(): Iterable<Param>;
   remove(param: Param): void;
@@ -246,4 +373,6 @@ export function resetQueueFamilies(): void {
   clearFamily(drainAfterAbortByIndex);
   clearFamily(runEndsByIndex);
   clearFamily(runEndByIndex);
+  clearFamily(detachedRunByConvoId);
+  clearFamily(stopRequestedByConvoId);
 }

@@ -14,6 +14,8 @@ import react from 'eslint-plugin-react';
 import jest from 'eslint-plugin-jest';
 import globals from 'globals';
 import js from '@eslint/js';
+import design from './scripts/eslint/design.mjs';
+import chat from './scripts/eslint/chat.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +43,18 @@ const tenantModelRestrictions = [
   },
 ];
 
+/** Attributes a person reads or hears; a literal in one ships untranslated copy. */
+const chatLiteralAttributeNames =
+  '/^(title|alt|placeholder|label|aria-label|aria-description|aria-placeholder|aria-roledescription|aria-valuetext)$/';
+const chatLiteralAttributes = {
+  selector: [
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}][value.type='Literal'][value.value=/[A-Za-z]/]`,
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}] > JSXExpressionContainer > Literal[value=/[A-Za-z]/]`,
+    `JSXAttribute[name.name=${chatLiteralAttributeNames}] > JSXExpressionContainer > TemplateLiteral[expressions.length=0][quasis.0.value.cooked=/[A-Za-z]/]`,
+  ].join(', '),
+  message: 'Localize user-facing attribute text with useLocalize().',
+};
+
 export default [
   {
     ignores: [
@@ -53,6 +67,7 @@ export default [
       'packages/api/test_bundle/**/*',
       'api/demo/**/*',
       'packages/client/dist/**/*',
+      'packages/chat/dist/**/*',
       'packages/data-provider/types/**/*',
       'packages/data-provider/dist/**/*',
       'packages/data-provider/test_bundle/**/*',
@@ -198,8 +213,12 @@ export default [
   // The client's entry points and helpers are `.jsx`/`.js` — App.jsx among them — so the globs
   // name those extensions too: the rules have to see them.
   {
-    files: ['client/src/**/*.{ts,tsx,js,jsx}', 'packages/client/src/**/*.{ts,tsx,js,jsx}'],
-    plugins: { shadcn },
+    files: [
+      'client/src/**/*.{ts,tsx,js,jsx}',
+      'packages/client/src/**/*.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/*.{ts,tsx,js,jsx}',
+    ],
+    plugins: { shadcn, design },
     settings: {
       shadcn: {
         ui: '@librechat/client',
@@ -265,6 +284,15 @@ export default [
         },
       ],
       'shadcn/require-static-classes': 'error',
+      // A disabled control that fades through `opacity-*` also has to compose a shared disabled
+      // recipe, or a theme with `disabledStyle: fill` cannot paint it (scripts/eslint/design.mjs).
+      'design/disabled-recipe': [
+        'error',
+        {
+          primitives: ['Button', 'IconButton', 'Input', 'Textarea', 'Checkbox', 'Switch'],
+          sources: ['@librechat/client'],
+        },
+      ],
       // Now answerable: the rule asks the installed Tailwind whether a class generates CSS, and
       // the app is on v4. Classes declared in a stylesheet Tailwind reads are recognized on their
       // own; these are the ones it cannot see, plain selectors in files loaded separately
@@ -319,9 +347,31 @@ export default [
             'hover-button-active',
             'open',
             'split-parent',
+            // Message-text markers the app's stylesheet paints; a @librechat/chat source cannot see
+            // that stylesheet, so its lint has no Tailwind entry that declares them.
+            'markdown',
+            'prose',
+            'message-content',
+            'submitting',
+            'result-streaming',
+            'result-thinking',
           ],
         },
       ],
+    },
+  },
+  {
+    // A spec asserts the class strings a control renders; it composes nothing a theme paints.
+    files: [
+      'client/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
+      'client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
+      'packages/client/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
+      'packages/client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
+      'packages/chat/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
+    ],
+    rules: {
+      'design/disabled-recipe': 'off',
     },
   },
   {
@@ -581,6 +631,57 @@ export default [
             'Avoid Model.collection.* — raw driver calls bypass all Mongoose middleware including tenant isolation. Use Mongoose model methods or tenantSafeBulkWrite() instead.',
         },
         ...tenantModelRestrictions,
+      ],
+    },
+  },
+  {
+    // What a chat source may load, judged on the resolved target however the specifier is
+    // spelled (scripts/eslint/chat.mjs): nothing from the app, and no UI code in the core.
+    files: ['packages/chat/src/**/*.{ts,tsx,js,jsx}'],
+    plugins: { chat },
+    rules: {
+      'chat/boundary': [
+        'error',
+        { sourceRoot: path.join(__dirname, 'packages/chat/src'), packageName: '@librechat/chat' },
+      ],
+      // The code moving in from `client/src` keeps the app's convention for intentionally unused names.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
+    },
+  },
+  {
+    // The app's literal-copy rule skips `packages/**`; chat components render visible text, so it
+    // reaches them. Specs assert rendered strings and stay exempt, as they are in the app.
+    files: ['packages/chat/src/**/*.{tsx,jsx}'],
+    ignores: ['**/*.{spec,test}.{tsx,jsx}', '**/__tests__/**'],
+    rules: {
+      'i18next/no-literal-string': [
+        'error',
+        {
+          mode: 'jsx-text-only',
+          'should-validate-template': true,
+        },
+      ],
+      'no-restricted-syntax': ['error', chatLiteralAttributes],
+    },
+  },
+  {
+    files: ['packages/chat/src/index.ts', 'packages/chat/src/core/**/*.{ts,tsx,js,jsx}'],
+    ignores: ['**/*.{spec,test}.{ts,tsx,js,jsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'JSXElement, JSXFragment',
+          message:
+            'The @librechat/chat core has no UI dependency; JSX compiles to react/jsx-runtime.',
+        },
       ],
     },
   },

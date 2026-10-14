@@ -173,6 +173,14 @@ export const conversationPullRequest = (conversationId: string) =>
 
 export const conversationPullRequests = () => `${conversationsRoot}/pull-requests`;
 
+const pullRequestOAuthRoot = `${BASE_URL}/api/pull-requests/oauth`;
+
+export const pullRequestConnection = () => `${pullRequestOAuthRoot}/status`;
+
+export const pullRequestConnect = () => `${pullRequestOAuthRoot}/connect`;
+
+export const pullRequestDisconnect = () => pullRequestOAuthRoot;
+
 export const genTitle = (conversationId: string) =>
   `${conversationsRoot}/gen_title/${encodeURIComponent(conversationId)}`;
 
@@ -226,6 +234,9 @@ export const deletePreset = () => `${BASE_URL}/api/presets/delete`;
 export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
 export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
+
+export const reasoningCapabilities = (endpoint: string) =>
+  `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
 export const models = () => `${BASE_URL}/api/models`;
 

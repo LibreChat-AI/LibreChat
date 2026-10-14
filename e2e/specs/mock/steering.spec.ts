@@ -180,6 +180,10 @@ test.describe('mid-run steering and queuing', () => {
     page,
   }) => {
     test.setTimeout(150000);
+    /* This covers code layout, not collapsing, which is on by default. */
+    await page.addInitScript(() => {
+      localStorage.setItem('collapseLongUserMessages', JSON.stringify(false));
+    });
     const label = uniqueLabel('steer-code-layout');
     const steerText = `Please use this example:\n\n\`\`\`js\n${`const payload = '${'x'.repeat(300)}';\n`.repeat(12)}\`\`\``;
 
@@ -233,7 +237,7 @@ test.describe('mid-run steering and queuing', () => {
       await language.scrollIntoViewIfNeeded();
       await expect(language).toBeInViewport();
     }
-    // Canary collapses long user messages only when that preference is enabled.
+    // Long user messages collapse only while that preference is on; it is off here.
     await expect(row.getByRole('button', { name: 'Show more' })).toHaveCount(0);
   });
 

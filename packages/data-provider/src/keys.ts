@@ -24,6 +24,7 @@ export enum QueryKeys {
   balance = 'balance',
   endpoints = 'endpoints',
   tokenConfig = 'tokenConfig',
+  reasoningCapabilities = 'reasoningCapabilities',
   presets = 'presets',
   searchResults = 'searchResults',
   tokenCount = 'tokenCount',
@@ -110,6 +111,7 @@ export enum QueryKeys {
   subagentThread = 'subagentThread',
   backgroundTasks = 'backgroundTasks',
   conversationPullRequest = 'conversationPullRequest',
+  pullRequestConnection = 'pullRequestConnection',
   codeEnvironments = 'codeEnvironments',
   agentQueuedTurns = 'agentQueuedTurns',
   /* Combined Pinned-section display order (favorites + pinned chats) */
@@ -197,4 +199,6 @@ export enum MutationKeys {
   moveConversationCodeEnvironment = 'moveConversationCodeEnvironment',
   convoSeen = 'convoSeen',
   convoUnread = 'convoUnread',
+  connectPullRequestAccount = 'connectPullRequestAccount',
+  disconnectPullRequestAccount = 'disconnectPullRequestAccount',
 }

@@ -39,6 +39,7 @@ import KeyboardShortcutsDialog from '~/components/Nav/KeyboardShortcutsDialog';
 import KeyboardDeleteDialog from '~/components/Nav/KeyboardDeleteDialog';
 import { useUserTermsQuery, useGetStartupConfig } from '~/data-provider';
 import { MobileDrawerScrim } from '~/components/UnifiedSidebar/mobile';
+import AnalyticsConsent from '~/components/System/AnalyticsConsent';
 import useKeyboardShortcuts from '~/hooks/useKeyboardShortcuts';
 import useDrawerDismiss from '~/hooks/Nav/useDrawerDismiss';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
@@ -251,6 +252,7 @@ function RootLayout() {
               <KeyboardShortcutsProvider />
               <ReplyNotifications />
               <MessagesRetention />
+              <AnalyticsConsent gtmId={config?.analyticsGtmId} />
             </AgentsMapContext.Provider>
             {config?.interface?.termsOfService?.modalAcceptance === true && (
               <TermsAndConditionsModal

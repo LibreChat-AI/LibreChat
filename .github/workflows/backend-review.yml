@@ -301,14 +301,19 @@ jobs:
           name: build-api
           path: packages/api/dist
 
+      - name: Use Bun 1.4.3
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+
       - name: Type check data-provider
-        run: npx tsc --noEmit -p packages/data-provider/tsconfig.json
+        run: bun check -p packages/data-provider/tsconfig.json
 
       - name: Type check data-schemas
-        run: npx tsc --noEmit -p packages/data-schemas/tsconfig.json
+        run: bun check -p packages/data-schemas/tsconfig.json
 
       - name: Type check @librechat/api
-        run: npx tsc --noEmit -p packages/api/tsconfig.json
+        run: bun check -p packages/api/tsconfig.json
 
       - name: OpenAPI spec drift check
         run: npm run -w @librechat/api openapi:check
@@ -317,7 +322,7 @@ jobs:
         run: npm run -w @librechat/api openapi:test
 
       - name: Type check @librechat/client
-        run: npx tsc --noEmit -p packages/client/tsconfig.json
+        run: bun check -p packages/client/tsconfig.json
 
   circular-deps:
     name: Circular dependency checks

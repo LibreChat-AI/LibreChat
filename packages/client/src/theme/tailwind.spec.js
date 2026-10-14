@@ -160,6 +160,7 @@ describe('LibreChat Tailwind preset', () => {
       ],
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
       ['rounded-theme-popover', '--theme-popover-radius', defaultAppearance.popoverRadius],
+      ['rounded-theme-checkbox', '--theme-checkbox-radius', defaultAppearance.checkboxRadius],
       ['rounded-theme-menu-panel', '--theme-menu-panel-radius', defaultAppearance.menuPanelRadius],
       [
         'rounded-theme-composer-action',
@@ -177,6 +178,19 @@ describe('LibreChat Tailwind preset', () => {
         defaultAppearance.buttonHeightCompact,
       ],
       ['h-theme-field-lg', '--theme-field-height-lg', defaultAppearance.fieldHeightLg],
+      ['h-theme-auth-field', '--theme-auth-field-height', defaultAppearance.authFieldHeight],
+      ['h-theme-auth-button', '--theme-auth-button-height', defaultAppearance.authButtonHeight],
+      ['h-theme-auth-action', '--theme-auth-action-height', defaultAppearance.authActionHeight],
+      [
+        'rounded-theme-auth-action',
+        '--theme-auth-action-radius',
+        defaultAppearance.authActionRadius,
+      ],
+      [
+        'rounded-theme-auth-control',
+        '--theme-auth-control-radius',
+        defaultAppearance.authControlRadius,
+      ],
       ['size-theme-button', '--theme-button-height', defaultAppearance.buttonHeight],
       [
         'size-theme-icon-button-sm',
@@ -207,6 +221,10 @@ describe('LibreChat Tailwind preset', () => {
       expect(css).toContain(`var(${property}, ${fallback})`);
     });
 
+    expect(rule(css, 'max-h-theme-list')).toContain(
+      'var(--radix-select-content-available-height, 100dvh)',
+    );
+
     /** The tap-target floor is the role's reason to exist, so the floor itself is asserted
      *  rather than only the control-height variable it is built from. */
     expect(css).toContain(
@@ -219,6 +237,19 @@ describe('LibreChat Tailwind preset', () => {
       expect(target).toContain(`${property}: 24px`),
     );
     expect(target).not.toContain('--theme-min-target-size');
+
+    /** The default and `sm` Button heights predate the target validator, so the floor is drawn
+     *  rather than validated: a stored theme naming less still loads. */
+    const buttons = await generate(['h-theme-button', 'h-theme-button-sm', 'size-theme-button']);
+    expect(buttons).toContain(
+      `height: max(var(--theme-button-height, ${defaultAppearance.buttonHeight}), 24px)`,
+    );
+    expect(buttons).toContain(
+      `height: max(var(--theme-button-height-sm, ${defaultAppearance.buttonHeightSm}), 24px)`,
+    );
+    expect(buttons).toContain(
+      `width: max(var(--theme-button-height, ${defaultAppearance.buttonHeight}), 24px)`,
+    );
 
     /** A stylesheet that predates the control spacing roles pads controls with the shared
      *  spacing they read before. */
@@ -266,9 +297,13 @@ describe('LibreChat Tailwind preset', () => {
     /** `any-pointer`, not `pointer`: the floor has to apply to a 2-in-1's
      *  touchscreen while its trackpad is the primary device and reports `fine`. */
     expect(variants.touch).toBe('@media (any-pointer: coarse)');
-    /** Its inverse gates hidden-until-hover states, so a 2-in-1's finger user —
-     *  whose trackpad makes `(hover: hover)` true — never loses the control. */
-    expect(variants['no-touch']).toBe('@media not all and (any-pointer: coarse)');
+    /** It gates hidden-until-hover states: only where hover exists, so a
+     *  pointerless or print context never hides what nothing can reveal, and
+     *  never where any pointer is coarse, so a 2-in-1's finger user, whose
+     *  trackpad makes `(hover: hover)` true, never loses the control. */
+    expect(variants['no-touch']).toEqual({
+      '@media (hover: hover)': { '@media not all and (any-pointer: coarse)': '@slot' },
+    });
     expect(variants['high-contrast']).toBe('html.high-contrast &');
   });
 
@@ -296,6 +331,10 @@ describe('LibreChat Tailwind preset', () => {
       popoverRadius: 'radius2xl',
       menuPanelRadius: 'radiusXl',
       composerActionRadius: 'roundControlRadius',
+      authControlRadius: 'radius2xl',
+      authActionHeight: 'buttonHeight',
+      authActionRadius: 'radiusLg',
+      checkboxRadius: 'radiusSm',
     };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]

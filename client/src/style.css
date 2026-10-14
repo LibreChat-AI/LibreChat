@@ -396,8 +396,10 @@ p > small {
   }
 }
 
-/* Show the message time when the row is hovered. Tailwind group-hover
-   loses to `[@media(hover:hover)]:opacity-0` (same specificity, :where()).
+/* Show the message time when the row is hovered. Hidden only where hover
+   exists and no pointer is coarse: `(hover: hover)` alone is true on a 2-in-1,
+   whose trackpad hovers while its touchscreen cannot, and the coarse check
+   alone matches pointerless and print contexts, where nothing reveals it.
 
    Keyboard focus reveals it too, but only `:focus-visible`: a pointer that
    clicks a tool card or an expand toggle inside the row leaves focus sitting
@@ -410,15 +412,17 @@ p > small {
    match `:focus-visible` on a plain mouse click. See `revealOnRowHoverClasses`
    in `components/Chat/Messages/styles.ts` for the full reasoning. */
 @media (hover: hover) {
-  .message-render .message-timestamp {
-    opacity: 0;
-  }
+  @media not all and (any-pointer: coarse) {
+    .message-render .message-timestamp {
+      opacity: 0;
+    }
 
-  .message-render:hover .message-timestamp,
-  .message-render:focus-visible .message-timestamp,
-  .message-render:has(:focus-visible:not(:is(input, textarea, [contenteditable])))
-    .message-timestamp {
-    opacity: 1;
+    .message-render:hover .message-timestamp,
+    .message-render:focus-visible .message-timestamp,
+    .message-render:has(:focus-visible:not(:is(input, textarea, [contenteditable])))
+      .message-timestamp {
+      opacity: 1;
+    }
   }
 }
 
@@ -1825,6 +1829,14 @@ html {
   font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
 }
 
+/* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. */
+@media (any-pointer: coarse) {
+  .message-editor-text,
+  .composer-text {
+    font-size: max(16px, var(--markdown-font-size, var(--font-size-base)));
+  }
+}
+
 .message-content pre {
   font-size: var(--markdown-font-size, var(--font-size-base));
 }
@@ -2103,6 +2115,10 @@ html[data-input-modality='keyboard']
     opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
     transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
   will-change: transform, opacity;
+}
+/* Resizable anchored panels share the composer entrance and exit clock. */
+.animate-composer-popover-resize {
+  transition-property: opacity, transform, width, max-height;
 }
 .animate-composer-popover[data-enter] {
   opacity: 1;

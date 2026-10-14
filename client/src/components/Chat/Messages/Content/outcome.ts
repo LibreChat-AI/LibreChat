@@ -232,12 +232,20 @@ export function getToolMeta(
 
 export type SpanOutcome = { failed: number; cancelled: number };
 
-/** The most severe terminal outcome replaces identity glyphs on every summary. */
+/** True when every call a summary stands for failed: the one case where the
+ *  summary itself, not only the failed rows and the count, reads as failed. */
+export function isSpanFailed(failed: number, total: number): boolean {
+  return failed > 0 && failed >= total;
+}
+
+/** Mixed outcomes keep tool identity. The count still exposes every failed
+ *  call, without turning the whole summary into an error indicator. */
 export function getOutcomeStatus({
   failed,
   cancelled,
-}: SpanOutcome): 'failed' | 'cancelled' | undefined {
-  if (failed > 0) {
+  total,
+}: SpanOutcome & { total: number }): 'failed' | 'cancelled' | undefined {
+  if (isSpanFailed(failed, total)) {
     return 'failed';
   }
   if (cancelled > 0) {

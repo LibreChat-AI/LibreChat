@@ -27,6 +27,9 @@ export interface IConversationLaneGit {
   head: string | null;
   /** `owner/name` of the lane's repository, as its worker registered it. */
   repo?: string;
+  /** A pull request of `repo` a command's output linked to while the lane was on `branch`. Kept
+   *  across later reports on the same branch and repository, dropped when either changes. */
+  pullRequest?: number;
   /** Reserved sequence number; internal, never returned by `getConvoLaneGit`. */
   seq?: number;
 }

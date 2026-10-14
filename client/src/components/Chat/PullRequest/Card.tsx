@@ -1,9 +1,18 @@
 import { memo } from 'react';
+import { ExternalLink, Gitlab } from 'lucide-react';
 import { Button, Chip, GithubIcon, TooltipAnchor } from '@librechat/client';
-import type { TConversationPullRequest } from 'librechat-data-provider';
+import type { PullRequestProvider, TConversationPullRequest } from 'librechat-data-provider';
+import type { ComponentType } from 'react';
 import { presentPullRequest } from './status';
 import { useLocalize } from '~/hooks';
 import PullRequestIcon from './Icon';
+
+/** Bitbucket has no mark in the icon sets the app ships, so its link shows a plain external one. */
+const PROVIDER_ICONS: Record<PullRequestProvider, ComponentType> = {
+  github: GithubIcon,
+  gitlab: Gitlab,
+  bitbucket: ExternalLink,
+};
 
 type CardProps = {
   pullRequest: TConversationPullRequest;
@@ -22,14 +31,15 @@ function PullRequestCard({
 }: CardProps) {
   const localize = useLocalize();
   const view = presentPullRequest(pullRequest);
-  const openLabel = localize('com_ui_pr_open_in_github');
+  const openLabel = localize(view.openKey);
+  const ProviderIcon = PROVIDER_ICONS[view.provider];
 
   return (
     <div className="flex flex-col gap-3 p-3" data-testid="pull-request-card">
       <div className="flex items-center gap-2.25">
         <PullRequestIcon icon={view.icon} tone={view.iconTone} className="size-4 shrink-0" />
         <span className="text-text-primary text-sm font-medium">
-          {localize('com_ui_pr_label', { 0: pullRequest.number })}
+          {localize(view.labelKey, { 0: pullRequest.number })}
         </span>
         <span className="ml-auto flex items-center gap-1.5 text-xs font-medium">
           <span
@@ -57,7 +67,7 @@ function PullRequestCard({
               data-testid="pull-request-github-link"
               className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary flex size-7 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2 [&_svg]:size-4"
             >
-              <GithubIcon />
+              <ProviderIcon />
             </a>
           }
         />

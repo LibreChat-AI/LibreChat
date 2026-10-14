@@ -30,6 +30,7 @@ import { createSessionMethods, DEFAULT_REFRESH_TOKEN_EXPIRY, type SessionMethods
 import { createPasskeyMethods, type PasskeyMethods } from './passkey';
 import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
 import { createTokenMethods, type TokenMethods } from './token';
+import { createTokenListMethods, type TokenListMethods } from './tokenList';
 import { createRoleMethods, RoleConflictError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
 import { createFileMethods } from './file';
@@ -252,6 +253,7 @@ export type AllMethods = ToolApprovalGrantStorage &
   UserMethods &
   SessionMethods &
   TokenMethods &
+  TokenListMethods &
   RefreshTokenBridgeMethods &
   OpenIDRefreshFlightMethods &
   PasskeyMethods &
@@ -490,6 +492,7 @@ export function createMethods(
     ...createToolApprovalGrantMethods(mongoose),
     ...createSessionMethods(mongoose),
     ...createTokenMethods(mongoose),
+    ...createTokenListMethods(mongoose),
     ...createRefreshTokenBridgeMethods(mongoose),
     ...createOpenIDRefreshFlightMethods(mongoose),
     ...createPasskeyMethods(mongoose),

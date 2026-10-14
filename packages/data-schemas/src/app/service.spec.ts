@@ -309,6 +309,20 @@ describe('AppService MCP App sandbox configuration', () => {
   });
 });
 
+describe('AppService credential write format', () => {
+  it('defaults stored credential writes to v3', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.credentials).toEqual({ writeFormat: 'v3' });
+  });
+
+  it('carries a configured legacy write format onto the app config', async () => {
+    const result = await AppService({
+      config: { credentials: { writeFormat: 'legacy' } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.credentials).toEqual({ writeFormat: 'legacy' });
+  });
+});
+
 describe('AppService conversation list limits', () => {
   it('carries the configured filter limits onto the app config', async () => {
     const result = await AppService({

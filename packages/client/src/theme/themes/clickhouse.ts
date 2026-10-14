@@ -208,10 +208,17 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-series-6': '187 51 255', // #bb33ff (chart.default.violet)
   'rgb-series-7': '0 203 235', // #00cbeb (chart.default.babyblue)
   'rgb-series-8': '8 155 131', // #089b83 (chart.default.teal)
+  'rgb-category-icon-1': '105 110 121', // #696e79 (text.muted; Click UI draws its icons neutral)
+  'rgb-category-icon-2': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-4': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-5': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-6': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-7': '105 110 121', // #696e79 (text.muted)
 
   // Switch
   'rgb-switch-unchecked': '204 207 211', // #cccfd3 (switch.color.background.default)
   'rgb-switch-thumb': '255 255 255', // #ffffff (switch.color.indicator.default)
+  'rgb-checkbox-fill': '246 247 250', // #f6f7fa (checkbox.color.background.default)
 
   // Table
   'rgb-table-header-text': '22 21 23', // #161517 (table.header.color.title.default)
@@ -399,10 +406,17 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-series-6': '187 51 255', // #bb33ff (chart.default.violet)
   'rgb-series-7': '0 203 235', // #00cbeb (chart.default.babyblue)
   'rgb-series-8': '109 248 225', // #6df8e1 (chart.default.teal)
+  'rgb-category-icon-1': '179 182 189', // #b3b6bd (text.muted; Click UI draws its icons neutral)
+  'rgb-category-icon-2': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-4': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-5': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-6': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-7': '179 182 189', // #b3b6bd (text.muted)
 
   // Switch
   'rgb-switch-unchecked': '96 96 96', // #606060 (switch.color.background.default)
   'rgb-switch-thumb': '21 21 21', // #151515 (switch.color.indicator.default)
+  'rgb-checkbox-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (checkbox.color.background.default)
 
   // Table
   'rgb-table-header-text': '249 249 249', // #f9f9f9 (table.header.color.title.default, rgb(97.5% 97.5% 97.5%))
@@ -456,10 +470,10 @@ const clickHouseShape = {
   tabMinWidth: '0',
   /** Click UI's select list is as wide as its trigger (`select-popover-content` in
    *  SelectComponents.module.css), which the list's viewport already enforces, so it takes no
-   *  floor of its own. Its height is capped only by the viewport's available height, which a
-   *  length role cannot express, so the cap keeps LibreChat's. */
+   *  floor of its own. Its height is capped only by the popover's available height
+   *  (`--radix-popover-content-available-height`). */
   listMinWidth: '0',
-  listMaxHeight: '24rem',
+  listMaxHeight: 'none',
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1
@@ -513,6 +527,11 @@ const clickHouseShape = {
   fieldHeight: '2rem',
   fieldHeightLg: '3.6876rem', // content-sized like fieldHeight: the 3rem title line (2rem at 1.5), field.space.y twice, a 1px stroke each side
   fieldPaddingY: '0.2813rem', // field.space.y
+  /** Click UI draws one field and one button size, so the sign-in form's controls take them and
+   *  the button's square corner instead of LibreChat's taller, rounder sign-in pair. */
+  authFieldHeight: '2rem',
+  authButtonHeight: '2rem',
+  authControlRadius: '0.25rem', // button.radii.all
   fieldFocusStyle: 'border' as const,
   /** Click UI fills its fields in `field.color.background.default`. */
   fieldFillStyle: 'fill' as const,
@@ -543,6 +562,9 @@ const clickHouseShape = {
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
   checkboxSize: '1rem', // checkbox.size.all
+  checkboxRadius: '0.125rem', // checkbox.radii.all
+  /** Click UI fills an unchecked checkbox in `checkbox.color.background.default`. */
+  checkboxFillStyle: 'fill' as const,
   /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
    *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
   /** The shared spacing takes two steps of Click UI's `spaces` scale: its 0.5rem gap step, the

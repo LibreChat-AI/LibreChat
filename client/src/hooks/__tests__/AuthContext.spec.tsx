@@ -15,17 +15,20 @@ import {
 } from 'librechat-data-provider';
 import type { TAuthConfig } from '~/common';
 import {
+  SESSION_KEY,
+  getCachedTTSAudio,
+  setCachedTTSAudio,
+  retainFileDeletion,
+  getTTSCacheGeneration,
+  clearRetainedFileDeletions,
+  takeRetainedFileDeletions,
+} from '~/utils';
+import {
   chatFilterStatusAtom,
   chatFilterTagsAtom,
   chatSortAtom,
   resetChatFilterSessionAtom,
 } from '~/components/Conversations/chatFilters';
-import {
-  SESSION_KEY,
-  retainFileDeletion,
-  clearRetainedFileDeletions,
-  takeRetainedFileDeletions,
-} from '~/utils';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
 
 const mockNavigate = jest.fn();
@@ -85,6 +88,7 @@ jest.mock('~/data-provider', () => ({
   })),
   useGetRole: jest.fn(() => ({ data: null })),
   endPullRequestSession: jest.fn(() => mockEndPullRequestSession()),
+  setPullRequestSessionOwner: jest.fn(),
   useListRoles: jest.fn(() => ({ data: undefined })),
 }));
 
@@ -1144,5 +1148,99 @@ describe('AuthContextProvider: enrollment hand-off that keeps the document', () 
     dispatchHandoff(true);
 
     expect(readTwoFactorSetupToken()).toBe('setup-token');
+  });
+});
+
+describe('AuthContextProvider: read-aloud cache at every session end', () => {
+  const mockUseGetUserQuery = jest.requireMock('~/data-provider').useGetUserQuery;
+  const cacheAudio = () =>
+    setCachedTTSAudio('departing', new Blob(['audio']), getTTSCacheGeneration());
+  const refreshOptions = () =>
+    mockRefreshMutate.mock.calls[0][1] as {
+      onSuccess: (data: unknown) => void;
+      onError: (error: unknown) => void;
+    };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(window.location, 'replace').mockImplementation(() => {});
+    cacheAudio();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('empties on logout', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' }));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties on an IdP logout redirect', () => {
+    renderProvider();
+    act(() =>
+      mockCapturedLogoutOptions.onSuccess({
+        message: 'Logout successful',
+        redirect: 'https://idp.example.com/logout',
+      }),
+    );
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the logout request fails', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onError(new Error('network')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the refresh token is rejected', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onError(new Error('401')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when a refresh returns no session', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onSuccess({}));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the user query fails', () => {
+    mockUseGetUserQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: new Error('401'),
+    });
+    renderProvider();
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+    mockUseGetUserQuery.mockReturnValue({ data: undefined, isError: false, error: null });
+  });
+
+  it('empties when a different account signs in without a logout', () => {
+    jest.useFakeTimers();
+    renderProviderLive();
+    act(() => {
+      refreshOptions().onSuccess({ user: { id: 'first', role: 'USER' }, token: 'first-token' });
+      jest.advanceTimersByTime(100);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('second-token', { id: 'second' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('keeps the cache when the same account signs in again', () => {
+    renderProvider();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token', { id: 'same' } as never);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token-2', { id: 'same' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeDefined();
   });
 });

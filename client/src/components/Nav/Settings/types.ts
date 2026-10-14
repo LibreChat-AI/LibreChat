@@ -35,6 +35,7 @@ export type SectionId =
   | 'danger'
   | 'profile'
   | 'security'
+  | 'connections'
   | 'billing'
   | 'about';
 
@@ -51,6 +52,7 @@ export interface SettingsContextValue {
   emailEnabled: boolean;
   allowEmailChange: boolean;
   passkeyLoginEnabled: boolean;
+  hasPullRequestConnect: boolean;
   isTwoFactorPolicyProvider: boolean;
   twoFactorEnabled: boolean;
   allowAccountDeletion: boolean;
@@ -62,6 +64,7 @@ export interface SettingsContextValue {
   replyTabBadgeAllowed: boolean;
   replyNotificationsAllowed: boolean;
   replyNotificationSoundAllowed: boolean;
+  analyticsConfigured: boolean;
 }
 
 export interface SettingEntry {
@@ -166,6 +169,7 @@ export const TABS: TabMeta[] = [
     sections: [
       { id: 'profile', labelKey: 'com_ui_settings_section_profile' },
       { id: 'security', labelKey: 'com_ui_settings_section_security' },
+      { id: 'connections', labelKey: 'com_ui_settings_section_connections' },
       { id: 'billing', labelKey: 'com_ui_settings_section_billing' },
       { id: 'danger', labelKey: 'com_ui_settings_section_danger_zone', danger: true },
     ],

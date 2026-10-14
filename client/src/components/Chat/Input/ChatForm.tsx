@@ -1,7 +1,8 @@
 import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
+import { useAtom } from 'jotai';
+import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
-import { useRecoilState, useRecoilValue } from 'recoil';
 import {
   composerSurfaceClasses,
   composerSurfaceShadow,
@@ -60,6 +61,7 @@ import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
 import useComposerItems from '~/hooks/Input/useComposerItems';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
+import { showStopButtonByIndex } from '~/store/generation';
 import Hints, { composerHintId } from './Composer/Hints';
 import PastedTextDialog from './Files/PastedTextDialog';
 import DuringRunSendButton from './DuringRunSendButton';
@@ -75,6 +77,7 @@ import PromptsCommand from './PromptsCommand';
 import { submitFromComposer } from './submit';
 import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
+import composerClearance from './clearance';
 import Waveform from './Composer/Waveform';
 import { mainTextareaId } from '~/common';
 import CollapseChat from './CollapseChat';
@@ -210,7 +213,7 @@ const ChatForm = memo(function ChatForm({
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const { isTemporary } = useChatSettings();
 
-  const [showStopButton, setShowStopButton] = useRecoilState(store.showStopButtonByIndex(index));
+  const [showStopButton, setShowStopButton] = useAtom(showStopButtonByIndex(index));
   const plusPopoverAtom = useMemo(() => store.showPlusPopoverFamily(index), [index]);
   const mentionPopoverAtom = useMemo(() => store.showMentionPopoverFamily(index), [index]);
 
@@ -703,29 +706,18 @@ const ChatForm = memo(function ChatForm({
   const baseClasses = useMemo(
     () =>
       cn(
-        'md:py-3.5 m-0 w-full resize-none py-3.25 placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
+        'composer-text md:py-3.5 m-0 w-full resize-none py-3.25 placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
         isCollapsed ? 'max-h-[3.25rem]' : 'max-h-[45vh] md:max-h-[55vh]',
         'px-5',
       ),
     [isCollapsed],
   );
 
-  /* From `sm` up the band leaves room under itself for the disclaimer, which only
-     the landing page carries — doubled while the centred landing composer floats,
-     and dropped back the moment a submission starts the thread. A started
-     conversation has nothing beneath it, so it keeps only enough to clear the
-     surface's own shadow. Below `sm` the composer runs to the viewport floor in
-     every state. */
-  const landingClearance =
-    centerFormOnLanding && !isSubmitting ? 'transition-all duration-200 sm:mb-28' : 'sm:mb-10';
-  let bottomClearance = 'sm:mb-4';
-  if (isLandingPage) {
-    bottomClearance = landingClearance;
-  } else if (footerBelow) {
-    /* A conversation that carries a configured footer keeps the band that bar
-       needs, exactly as the welcome screen does. */
-    bottomClearance = 'sm:mb-10';
-  }
+  const bottomClearance = composerClearance({
+    isLandingPage,
+    footerBelow,
+    floating: centerFormOnLanding && !isSubmitting,
+  });
 
   /** Answer mode, then during-run steering or queueing (a run in flight, or a
    *  queued follow-up about to start), then an ordinary send: the same route
@@ -1081,9 +1073,9 @@ function ChatFormWrapper({
   project,
   routePending = false,
   isLandingPage,
-  /** Defaults to the atom's own default (`atomWithLocalStorage('enterToSend',
-   *  true)`) so call sites that predate this prop, mainly tests, keep their
-   *  prior behavior without passing it explicitly. */
+  /** Enter sends unless told otherwise, so call sites that predate this prop,
+   *  mainly tests, keep their prior behavior without passing it explicitly.
+   *  ChatView always passes the user's preference, whose default is false. */
   enterToSend = true,
   /** Same reason, from `atomWithLocalStorage('autoSendText', -1)`. */
   autoSendText = -1,

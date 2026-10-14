@@ -310,7 +310,7 @@ export function createPromptMethods(
           .skip(skip)
           .limit(limit)
           .select(
-            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt',
+            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
           )
           .lean(),
         PromptGroup.countDocuments(query),
@@ -450,7 +450,7 @@ export function createPromptMethods(
     const findQuery = PromptGroup.find(matchQuery)
       .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
       .select(
-        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt',
+        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
       );
 
     if (isPaginated && normalizedLimit) {

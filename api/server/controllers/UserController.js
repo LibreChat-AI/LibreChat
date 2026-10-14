@@ -20,6 +20,7 @@ const {
   deleteAllSharedLinksWithCleanup,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
+  clearSessionHintCookie,
 } = require('@librechat/api');
 const { Tools, Constants, FileSources, ResourceType } = require('librechat-data-provider');
 const { updateUserPluginAuth, deleteUserPluginAuth } = require('~/server/services/PluginService');
@@ -312,7 +313,13 @@ const updateUserPluginsController = async (req, res) => {
         authService =
           pluginKey === Tools.web_search && value === ''
             ? await deleteUserPluginAuth(user.id, field)
-            : await updateUserPluginAuth(user.id, field, pluginKey, value);
+            : await updateUserPluginAuth(
+                user.id,
+                field,
+                pluginKey,
+                value,
+                appConfig?.credentials?.writeFormat,
+              );
         if (authService instanceof Error) {
           logger.error('[authService]', authService);
           ({ status, message } = normalizeHttpError(authService));
@@ -531,6 +538,7 @@ const deleteUserController = async (req, res) => {
 
     await db.deleteMessages({ user: user.id });
     await db.deleteAllUserSessions({ userId: user.id });
+    clearSessionHintCookie(res);
     await db.deletePasskeysByUser(user.id);
     await db.deleteTransactions({ user: user.id });
     await db.deleteUserKey({ userId: user.id, all: true });
@@ -581,7 +589,7 @@ const deleteUserController = async (req, res) => {
       logger.error('[deleteUserController] code environment cache invalidation failed:', error);
     });
     await purgeAgentTriggerDeliveriesForUser(user.id);
-    logger.info(`User deleted account. Email: ${user.email} ID: ${user.id}`);
+    logger.info(`User deleted account. ID: ${user.id} Tenant: ${tenantId ?? 'none'}`);
     res.status(200).send({ message: 'User deleted' });
   } catch (err) {
     // The account survives this failed attempt, so its schedules must too: restore the

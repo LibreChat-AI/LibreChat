@@ -37,6 +37,7 @@ export {
   themeAppearanceProperties,
   themeBrandTokens,
   themeColorTokens,
+  renamedColorTokens,
   validateThemeDefinition,
 } from './registry';
 

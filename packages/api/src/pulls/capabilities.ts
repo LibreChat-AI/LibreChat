@@ -1,7 +1,7 @@
 import { EModelEndpoint, PULL_REQUEST_BATCH_VERSION } from 'librechat-data-provider';
-import type { TAgentsEndpoint } from 'librechat-data-provider';
+import type { PullRequestProvider, TAgentsEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import { isPullRequestFeatureActive } from './settings';
+import { isPullRequestFeatureActive, resolvePullRequestOAuth } from './settings';
 
 export type PullRequestCapabilities = {
   pullRequestsEnabled: boolean;
@@ -10,6 +10,8 @@ export type PullRequestCapabilities = {
   /** The lookups one batch runs at once, so a client that falls back to the single route can
    *  keep to the same limit while a replica without the batch route is still serving it. */
   pullRequestsMaxConcurrentLookups?: number;
+  /** The provider users can connect their own account to, when the operator configured one. */
+  pullRequestsConnect?: PullRequestProvider;
 };
 
 /**
@@ -23,12 +25,16 @@ export function resolvePullRequestCapabilities(
 ): PullRequestCapabilities {
   const agents = appConfig?.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined;
   const enabled = isPullRequestFeatureActive(agents?.pullRequests, env);
+  const connect = enabled
+    ? resolvePullRequestOAuth(agents?.pullRequests, env)?.provider
+    : undefined;
   return {
     pullRequestsEnabled: enabled,
     ...(enabled
       ? {
           pullRequestsBatchVersion: PULL_REQUEST_BATCH_VERSION,
           pullRequestsMaxConcurrentLookups: agents?.pullRequests?.maxConcurrentLookups ?? 4,
+          ...(connect != null ? { pullRequestsConnect: connect } : {}),
         }
       : {}),
   };

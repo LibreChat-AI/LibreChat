@@ -160,7 +160,7 @@ export const useSharePointBatchDownload = (): UseMutationResult<
 
             return downloadedFile;
           } catch (error) {
-            console.error(`Failed to download ${file.name}:`, error);
+            console.error('SharePoint file download failed');
             failed.push(file.name);
             completed++;
             onProgress?.({
@@ -183,7 +183,7 @@ export const useSharePointBatchDownload = (): UseMutationResult<
       }
 
       if (failed.length > 0) {
-        console.warn(`Failed to download ${failed.length} files:`, failed);
+        console.warn(`Failed to download ${failed.length} files`);
       }
 
       return downloadedFiles;

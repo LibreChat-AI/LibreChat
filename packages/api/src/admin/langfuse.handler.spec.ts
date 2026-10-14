@@ -526,7 +526,7 @@ describe('createAdminLangfuseHandlers', () => {
       const fields = deps.patchConfigFields.mock.calls[0][3];
       expect(fields['langfuse.secretKey']).toMatch(/^v3:/);
       expect(fields['langfuse.secretKey']).not.toContain('sk-lf-secret');
-      expect(fields['langfuse.secretKeyPreview']).toBe('sk-lf-...cret');
+      expect(fields['langfuse.secretKeyPreview']).toBe('************');
       expect(fields['langfuse.enabled']).toBe(true);
       expect(fields['langfuse.destination']).toBe('eu');
       expect(fields['langfuse.publicKey']).toBe('pk-lf-1');

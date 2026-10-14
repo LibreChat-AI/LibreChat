@@ -110,7 +110,7 @@ describe('createAdminConfigHandlers', () => {
       }>;
       expect(configs[0].overrides.langfuse).toEqual({
         publicKey: 'pk-lf-1',
-        secretKeyPreview: 'sk-lf-...cret',
+        secretKeyPreview: '*************',
       });
     });
   });
@@ -664,14 +664,14 @@ describe('createAdminConfigHandlers', () => {
       const savedOverrides = deps.upsertConfig.mock.calls[0][3];
       const [saved, envRef] = savedOverrides.endpoints.custom as Array<Record<string, string>>;
       expect(saved.apiKey).toBe('v3:test:sk-or-secret-key');
-      expect(saved.apiKeyPreview).toBe('sk-or-...-key');
+      expect(saved.apiKeyPreview).toBe('...-key');
       expect(envRef.apiKey).toBe('${OPENROUTER_KEY}');
       expect(envRef.apiKeyPreview).toBeUndefined();
       const responseConfig = res.body!.config as {
         overrides: { endpoints: { custom: Array<Record<string, string>> } };
       };
       expect(responseConfig.overrides.endpoints.custom[0].apiKey).toBeUndefined();
-      expect(responseConfig.overrides.endpoints.custom[0].apiKeyPreview).toBe('sk-or-...-key');
+      expect(responseConfig.overrides.endpoints.custom[0].apiKeyPreview).toBe('...-key');
       expect(responseConfig.overrides.endpoints.custom[1].apiKey).toBe('${OPENROUTER_KEY}');
     });
 
@@ -2392,11 +2392,11 @@ describe('createAdminConfigHandlers', () => {
       };
       expect(responseConfig.langfuse).toEqual({
         publicKey: 'pk-lf-1',
-        secretKeyPreview: 'sk-lf-...cret',
+        secretKeyPreview: '*************',
       });
       expect(responseConfig.config.langfuse).toEqual({
         publicKey: 'pk-lf-1',
-        secretKeyPreview: 'sk-lf-...cret',
+        secretKeyPreview: '*************',
       });
     });
 

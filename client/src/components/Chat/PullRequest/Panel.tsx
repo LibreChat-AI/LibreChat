@@ -1,5 +1,6 @@
 import * as Ariakit from '@ariakit/react';
 import type { TConversationPullRequest } from 'librechat-data-provider';
+import type { RefObject } from 'react';
 import { useLocalize } from '~/hooks';
 import PullRequestCard from './Card';
 import { cn } from '~/utils';
@@ -32,9 +33,12 @@ export default function PullRequestPanel({
   pullRequest,
   refreshFailed,
   onRetry,
+  finalFocus,
   className = panelClass,
 }: {
   className?: string;
+  /** Where focus returns on close, when the anchor the card hangs from is not focusable. */
+  finalFocus?: RefObject<HTMLElement | null>;
   store: Ariakit.HovercardStore;
   pullRequest: TConversationPullRequest;
   refreshFailed: boolean;
@@ -51,6 +55,7 @@ export default function PullRequestPanel({
       portal
       unmountOnHide
       autoFocusOnShow={false}
+      finalFocus={finalFocus}
       aria-label={localize('com_ui_pull_request')}
       className={className}
       onClick={stop}

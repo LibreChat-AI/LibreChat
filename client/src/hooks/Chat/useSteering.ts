@@ -31,7 +31,6 @@ import type { ExtendedFile, FileSetter } from '~/common';
 import type { PendingSteer } from '~/hooks/Chat/queue';
 import type { DuringRunAction } from './contract';
 import {
-  useGetStartupConfig,
   useCancelSteerMutation,
   useSteerMessageMutation,
   useMarkFilesUsageMutation,
@@ -613,8 +612,11 @@ export default function useSteering({
   const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
   const { mutate: enqueueAgentQueuedTurn } = useEnqueueAgentQueuedTurnMutation();
   const { mutateAsync: cancelAgentQueuedTurn } = useCancelAgentQueuedTurnMutation();
-  const { duringRunDefaultAction: defaultAction, setDuringRunDefaultAction: setDefaultAction } =
-    useChatSettings();
+  const {
+    config,
+    duringRunDefaultAction: defaultAction,
+    setDuringRunDefaultAction: setDefaultAction,
+  } = useChatSettings();
 
   const { selected: codeApprovalMode } = useCodeApprovalMode(
     conversation,
@@ -633,16 +635,13 @@ export default function useSteering({
   const queuedMessages = useAtomValue(queuedMessagesByConvoId(queueKey));
   const pendingReasoningOverride = useAtomValue(pendingReasoningOverrideFamily(reasoningStateKey));
   const setQueuedMessages = useSetAtom(queuedMessagesByConvoId(queueKey));
-  const { data: startupConfig } = useGetStartupConfig();
   /** Bound transport-outcome reconciliation while still guaranteeing several
    * list reads after the enqueue promise settles. Focus/remount remains a later
    * reconciliation path; a slow proxy or a delayed read replica needs the
    * operator to widen this rather than wait for one. */
   const reconciliationWindowMs =
-    startupConfig?.interface?.queuedTurnReconciliationTimeoutMs ??
-    DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
-  const sendLockTimeoutMs =
-    startupConfig?.interface?.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
+    config.queuedTurnReconciliationTimeoutMs ?? DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
+  const sendLockTimeoutMs = config.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const knownClientRequestIds = useMemo(
     () =>
       Array.from(
@@ -1302,7 +1301,12 @@ export default function useSteering({
       return undefined;
     }
     const staged = Array.from(files.values());
-    const takenIds = staged.map((file) => file.file_id);
+    // Completed uploads keep their temporary map key after receiving a server id.
+    const takenIds = Array.from(files.entries()).flatMap(([key, file]) => [
+      key,
+      file.file_id,
+      ...(file.temp_file_id ? [file.temp_file_id] : []),
+    ]);
     const taken = staged.map((file) => ({
       file_id: file.file_id,
       filepath: file.filepath,

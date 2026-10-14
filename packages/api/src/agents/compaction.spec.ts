@@ -356,10 +356,12 @@ describe('markAbortedCompactionContent', () => {
   it('marks the partial summary a stopped compaction had streamed as failed', () => {
     const parts = [partialSummary('Half a summary')];
 
-    markAbortedCompactionContent(parts, true);
+    const marked = markAbortedCompactionContent(parts, true);
 
-    expect(parts).toHaveLength(1);
-    expect(parts[0]).toMatchObject({ initiatedBy: 'user', failed: true, summarizing: true });
+    expect(marked).toHaveLength(1);
+    expect(marked[0]).toMatchObject({ initiatedBy: 'user', failed: true, summarizing: true });
+    /** The aggregated parts belong to the live run: the input is untouched. */
+    expect(parts[0]).not.toHaveProperty('initiatedBy');
   });
 
   /** A round that finished before the Stop landed is a real checkpoint: the
@@ -367,11 +369,11 @@ describe('markAbortedCompactionContent', () => {
   it('marks a summary that completed before the stop without failing it', () => {
     const parts = [completedSummary('Finished before the stop.')];
 
-    markAbortedCompactionContent(parts, true);
+    const marked = markAbortedCompactionContent(parts, true);
 
-    expect(parts).toHaveLength(1);
-    expect(parts[0]).toMatchObject({ initiatedBy: 'user' });
-    expect(parts[0]).not.toHaveProperty('failed');
+    expect(marked).toHaveLength(1);
+    expect(marked[0]).toMatchObject({ initiatedBy: 'user' });
+    expect(marked[0]).not.toHaveProperty('failed');
   });
 
   /** Every part that can carry the marker gets it: the row's identity must not
@@ -382,10 +384,10 @@ describe('markAbortedCompactionContent', () => {
       { type: ContentTypes.ERROR, error: 'Something else failed first' },
     ];
 
-    markAbortedCompactionContent(parts, true);
+    const marked = markAbortedCompactionContent(parts, true);
 
-    expect(parts[0]).toMatchObject({ initiatedBy: 'user', failed: true });
-    expect(parts[1]).toMatchObject({ initiatedBy: 'user' });
+    expect(marked[0]).toMatchObject({ initiatedBy: 'user', failed: true });
+    expect(marked[1]).toMatchObject({ initiatedBy: 'user' });
   });
 
   /** A summary placeholder with no text is not an outcome: nothing of the
@@ -394,9 +396,9 @@ describe('markAbortedCompactionContent', () => {
   it('replaces a summary placeholder that streamed nothing with the typed failure', () => {
     const parts = [emptySummaryPlaceholder()];
 
-    markAbortedCompactionContent(parts, true);
+    const marked = markAbortedCompactionContent(parts, true);
 
-    expect(parts).toEqual([
+    expect(marked).toEqual([
       {
         type: ContentTypes.ERROR,
         error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
@@ -411,9 +413,9 @@ describe('markAbortedCompactionContent', () => {
   it('records the typed failure beside an earlier checkpoint when the current round streamed nothing', () => {
     const parts = [completedSummary('An earlier checkpoint.'), emptySummaryPlaceholder()];
 
-    markAbortedCompactionContent(parts, true);
+    const marked = markAbortedCompactionContent(parts, true);
 
-    expect(parts).toEqual([
+    expect(marked).toEqual([
       expect.objectContaining({
         type: ContentTypes.SUMMARY,
         initiatedBy: 'user',
@@ -431,9 +433,9 @@ describe('markAbortedCompactionContent', () => {
   it('synthesizes no failure when a later round completed after an empty one', () => {
     const parts = [emptySummaryPlaceholder(), completedSummary('The later checkpoint.')];
 
-    markAbortedCompactionContent(parts, true);
+    const marked = markAbortedCompactionContent(parts, true);
 
-    expect(parts).toEqual([
+    expect(marked).toEqual([
       expect.objectContaining({
         type: ContentTypes.SUMMARY,
         initiatedBy: 'user',
@@ -446,9 +448,9 @@ describe('markAbortedCompactionContent', () => {
   it('records the typed failure when nothing streamed before the stop', () => {
     const parts: TMessageContentParts[] = [];
 
-    markAbortedCompactionContent(parts, true);
+    const marked = markAbortedCompactionContent(parts, true);
 
-    expect(parts).toEqual([
+    expect(marked).toEqual([
       {
         type: ContentTypes.ERROR,
         error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
@@ -463,9 +465,10 @@ describe('markAbortedCompactionContent', () => {
   it('marks a non-terminal snapshot without failing or synthesizing anything', () => {
     const parts: TMessageContentParts[] = [partialSummary('Half a summary')];
 
-    markAbortedCompactionContent(parts, true, { synthesizeFailure: false });
+    const marked = markAbortedCompactionContent(parts, true, { synthesizeFailure: false });
 
-    expect(parts).toEqual([{ ...partialSummary('Half a summary'), initiatedBy: 'user' }]);
+    expect(marked).toEqual([{ ...partialSummary('Half a summary'), initiatedBy: 'user' }]);
+    expect(parts[0]).not.toHaveProperty('initiatedBy');
   });
 
   it('returns content from a turn that was not a compaction unchanged', () => {
@@ -575,7 +578,7 @@ describe('persistFinalizedCompactionTurn', () => {
     ]);
   });
 
-  it('writes only the envelope when the parts already carry the failure', async () => {
+  it('writes the envelope with the marking reapplied when the parts already carry the failure', async () => {
     const saved: Record<string, unknown>[] = [];
     const partialRow = {
       content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
@@ -600,6 +603,7 @@ describe('persistFinalizedCompactionTurn', () => {
       conversationId: 'conversation-1',
       unfinished: false,
       error: true,
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
     });
   });
 
@@ -692,9 +696,9 @@ describe('resolveFinalizedCompactionTurn', () => {
   });
 
   /** The parts already carry the failure, but the snapshot's live-run flags
-   *  are still unsettled: the write settles the envelope without touching
-   *  content. */
-  it('settles only the envelope of a row whose parts already carry the failure', () => {
+   *  are still unsettled: the write settles the envelope with the marking
+   *  reapplied (idempotent on marked parts). */
+  it('settles a row whose parts already carry the failure', () => {
     const failedSummary = {
       content: [
         {
@@ -712,9 +716,26 @@ describe('resolveFinalizedCompactionTurn', () => {
 
     expect(resolveFinalizedCompactionTurn(failedSummary, { compact: true })).toEqual({
       write: true,
+      content: failedSummary.content,
     });
     expect(resolveFinalizedCompactionTurn(recordedFailure, { compact: true })).toEqual({
       write: true,
+      content: recordedFailure.content,
+    });
+  });
+
+  /** Legacy and imported rows can carry failure parts that predate the
+   *  identity marker: the settle write stamps them, or the restored turn
+   *  keeps the wrong rerun target. */
+  it('stamps legacy failure parts that never carried the marker', () => {
+    const legacyRow = {
+      unfinished: true,
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed' }],
+    };
+
+    expect(resolveFinalizedCompactionTurn(legacyRow, { compact: true })).toEqual({
+      write: true,
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
     });
   });
 
@@ -733,7 +754,17 @@ describe('resolveFinalizedCompactionTurn', () => {
       ],
     };
 
-    expect(resolveFinalizedCompactionTurn(snapshot, { compact: true })).toEqual({ write: true });
+    expect(resolveFinalizedCompactionTurn(snapshot, { compact: true })).toEqual({
+      write: true,
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A finished checkpoint.' }],
+          boundary: completedBoundary,
+          initiatedBy: 'user',
+        },
+      ],
+    });
   });
 
   /** A stopped compaction is written settled by the abort route, and an
@@ -1222,7 +1253,9 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
   it('settles a compaction snapshot under its live id and blocks the error row', async () => {
     const { saved, deps: d } = deps({ 'live-response': [partialSummaryRow()] });
 
-    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: true,
+    });
 
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({
@@ -1262,10 +1295,44 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
       'live-response': [partialSummaryRow()],
     });
 
-    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: true,
+    });
 
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ messageId: 'live-response' });
+  });
+
+  /** The collision with no live row saved must not swallow the failure: the
+   *  error row proceeds under the failed run's own response id, where it can
+   *  never overwrite the anchor. */
+  it('redirects the error row to the live id when only the anchor matched', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'anchor-shaped-match' }],
+    });
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: false,
+      errorRowMessageId: 'live-response',
+    });
+
+    expect(saved).toHaveLength(0);
+  });
+
+  /** A failure before the response id was allocated leaves nowhere safe to
+   *  write the error row: writing it under the error id would overwrite the
+   *  anchor, so it is withheld instead. */
+  it('withholds the error row when the collision has no live id to redirect to', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'anchor-shaped-match' }],
+    });
+    const { liveResponseMessageId: _omitted, ...dWithoutLiveId } = d;
+
+    await expect(
+      settleExistingRowsBeforeErrorTurn({ compact: true }, dWithoutLiveId),
+    ).resolves.toEqual({ covered: true });
+
+    expect(saved).toHaveLength(0);
   });
 
   it('blocks the error row for an ordinary turn with an existing row, writing nothing', async () => {
@@ -1274,7 +1341,7 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
       'live-response': [{ messageId: 'live-response', _id: 'partial' }],
     });
 
-    await expect(settleExistingRowsBeforeErrorTurn({}, d)).resolves.toBe(true);
+    await expect(settleExistingRowsBeforeErrorTurn({}, d)).resolves.toEqual({ covered: true });
 
     expect(saved).toHaveLength(0);
     // The ordinary early return never reads the live row.
@@ -1284,7 +1351,10 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
   it('lets the error row through when no row covers the turn', async () => {
     const { saved, deps: d } = deps({});
 
-    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(false);
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: false,
+      errorRowMessageId: 'error-target',
+    });
 
     expect(saved).toHaveLength(0);
   });
@@ -1293,6 +1363,15 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
 describe('isSettledJobRecord', () => {
   it.each(['complete', 'error', 'aborted'])('treats a %s record as settled', (status) => {
     expect(isSettledJobRecord({ createdAt: 1000, status })).toBe(true);
+  });
+
+  /** The terminal claim precedes its row write, so the status alone does not
+   *  prove the row is durable: the snapshot stays the fallback until the
+   *  pending marker clears. */
+  it('treats a record with terminal persistence still pending as unsettled', () => {
+    expect(
+      isSettledJobRecord({ createdAt: 1000, status: 'error', terminalPersistencePending: true }),
+    ).toBe(false);
   });
 
   it('leaves live and missing records unsettled', () => {
@@ -1310,15 +1389,28 @@ describe('isSettledJobRecord', () => {
 });
 
 describe('resolveDisconnectSnapshotMode', () => {
-  it.each(['complete', 'error', 'aborted'])('withholds the snapshot of a %s job', (status) => {
-    expect(resolveDisconnectSnapshotMode({ createdAt: 1000, status }, 1000)).toBe('skip');
-  });
+  it.each(['complete', 'error', 'aborted'])(
+    'withholds the snapshot of a %s compaction job',
+    (status) => {
+      expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status }, 1000)).toBe('skip');
+    },
+  );
 
   it('writes the snapshot for a live, missing, or other-epoch record', () => {
-    expect(resolveDisconnectSnapshotMode({ createdAt: 1000, status: 'running' }, 1000)).toBe(
+    expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000)).toBe(
       'live',
     );
-    expect(resolveDisconnectSnapshotMode(null, 1000)).toBe('live');
-    expect(resolveDisconnectSnapshotMode({ createdAt: 2000, status: 'error' }, 1000)).toBe('live');
+    expect(resolveDisconnectSnapshotMode(true, null, 1000)).toBe('live');
+    expect(resolveDisconnectSnapshotMode(true, { createdAt: 2000, status: 'error' }, 1000)).toBe(
+      'live',
+    );
+  });
+
+  /** An ordinary turn's snapshot is the fallback row its terminal write may
+   *  still need, so it is written whatever the record says. */
+  it('writes the snapshot of a settled ordinary turn', () => {
+    expect(
+      resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'complete' }, 1000),
+    ).toBe('live');
   });
 });

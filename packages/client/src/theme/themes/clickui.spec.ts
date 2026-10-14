@@ -206,8 +206,15 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-6': 'global.color.chart.default.violet',
     'rgb-series-7': 'global.color.chart.default.babyblue',
     'rgb-series-8': 'global.color.chart.default.teal',
+    'rgb-category-icon-1': 'global.color.text.muted',
+    'rgb-category-icon-2': 'global.color.text.muted',
+    'rgb-category-icon-4': 'global.color.text.muted',
+    'rgb-category-icon-5': 'global.color.text.muted',
+    'rgb-category-icon-6': 'global.color.text.muted',
+    'rgb-category-icon-7': 'global.color.text.muted',
     'rgb-switch-unchecked': 'click.switch.color.background.default',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
+    'rgb-checkbox-fill': 'click.checkbox.color.background.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
@@ -365,8 +372,15 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-6': 'global.color.chart.default.violet',
     'rgb-series-7': 'global.color.chart.default.babyblue',
     'rgb-series-8': 'global.color.chart.default.teal',
+    'rgb-category-icon-1': 'global.color.text.muted',
+    'rgb-category-icon-2': 'global.color.text.muted',
+    'rgb-category-icon-4': 'global.color.text.muted',
+    'rgb-category-icon-5': 'global.color.text.muted',
+    'rgb-category-icon-6': 'global.color.text.muted',
+    'rgb-category-icon-7': 'global.color.text.muted',
     'rgb-switch-unchecked': 'click.switch.color.background.default',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
+    'rgb-checkbox-fill': 'click.checkbox.color.background.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
@@ -491,10 +505,10 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
       '0: Click UI draws its select list at var(--radix-popover-trigger-width) (select-popover-content), with no minimum of its own',
   },
   listMaxHeight: {
-    value: '24rem',
-    status: 'mismatch',
+    value: 'none',
+    status: 'match',
     reason:
-      "24rem: Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so the cap keeps LibreChat's; tracked under the not-expressible list",
+      'none: Click UI caps its select list only at var(--radix-popover-content-available-height), the cap the Select list keeps under every value',
   },
   iconButtonSizeSm: {
     value: '1.5rem',
@@ -513,6 +527,16 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason:
       '3.6876rem: the title field is content-sized like fieldHeight, a 3rem line (typography.font.sizes.6 at line-height 1.5), field.space.y (0.2813rem) twice and a 1px stroke each side',
+  },
+  authFieldHeight: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one field size, so the sign-in field matches fieldHeight',
+  },
+  authButtonHeight: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one button size, so the sign-in button matches buttonHeight',
   },
   fieldFocusStyle: {
     value: 'border',
@@ -550,6 +574,12 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       'fill: Click UI InputWrapper paints every field in field.color.background.default; LibreChat fields stay clear by default',
   },
+  checkboxFillStyle: {
+    value: 'fill',
+    status: 'match',
+    reason:
+      'fill: Click UI paints an unchecked checkbox in checkbox.color.background.default; LibreChat checkboxes stay clear by default',
+  },
   focusRingWidth: {
     value: '2px',
     status: 'match',
@@ -581,6 +611,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   popoverRadius: 'click.genericMenu.panel.radii.all',
   menuPanelRadius: 'click.genericMenu.panel.radii.all',
   composerActionRadius: 'click.button.radii.all',
+  authControlRadius: 'click.button.radii.all',
   inlineCodeWeight: 'typography.font.weights.2',
   tooltipRadius: 'click.tooltip.radii.all',
   tooltipPaddingX: 'click.tooltip.space.x',
@@ -637,6 +668,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   switchWidth: 'click.switch.size.width',
   switchHeight: 'click.switch.size.height',
   checkboxSize: 'click.checkbox.size.all',
+  checkboxRadius: 'click.checkbox.radii.all',
   iconSize: 'click.image.sm.size.width',
   iconSizeMd: 'click.image.md.size.width',
   iconSizeLg: 'click.image.lg.size.width',
@@ -1278,6 +1310,7 @@ const parityProbes: Record<string, ParityProbe> = {
     token: 'click.checkbox.color.background.default',
     kind: 'color',
     utility: 'bg',
+    variant: 'theme-checkbox-fill:',
     element: checkboxProbe(false),
   },
   'Checkbox check, checked': {
@@ -1396,27 +1429,7 @@ interface NotExpressible {
  * close it. Remove an entry when the change that closes it lands, and pin its decisions to what
  * they then measure.
  */
-const notExpressible: Record<string, NotExpressible> = {
-  'Checkbox unchecked fill': {
-    decisions: { light: ['Checkbox fill, unchecked'], dark: ['Checkbox fill, unchecked'] },
-    reason:
-      'the checkbox paints no fill of its own and shows the surface behind it; no role carries checkbox.color.background.default',
-    issue: 'https://github.com/berry-13/LibreChat/issues/250',
-  },
-  'Select list height': {
-    decisions: {},
-    appearance: ['listMaxHeight'],
-    reason:
-      "Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so listMaxHeight keeps LibreChat's 24rem",
-    issue: 'https://github.com/berry-13/LibreChat/issues/282',
-  },
-  'Checkbox corner': {
-    decisions: { light: ['Checkbox corner'], dark: ['Checkbox corner'] },
-    reason:
-      'the checkbox corner reads radiusSm, which the theme sets to border.radii.1 for every small corner; checkbox.radii.all is 0.125rem',
-    issue: 'https://github.com/berry-13/LibreChat/issues/250',
-  },
-};
+const notExpressible: Record<string, NotExpressible> = {};
 
 type Verdict = 'match' | 'near' | 'deviation' | 'not expressible';
 
@@ -1446,6 +1459,7 @@ const radiusRoles: Record<string, keyof IThemeAppearance> = {
   'theme-surface': 'surfaceRadius',
   'theme-surface-lg': 'largeSurfaceRadius',
   'theme-tab': 'tabRadius',
+  'theme-checkbox': 'checkboxRadius',
 };
 
 const fixedRadii: Record<string, string> = { full: '9999px', none: '0px' };

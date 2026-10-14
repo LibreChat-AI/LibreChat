@@ -270,7 +270,7 @@ test.describe('clickhouse reference theme', () => {
     try {
       for (const [mode, placeholder, ink] of [
         ['light', defaultTheme['rgb-surface-secondary'], 'rgb(33, 33, 33)'],
-        ['dark', darkTheme['rgb-surface-tertiary'], 'rgb(236, 236, 236)'],
+        ['dark', darkTheme['rgb-surface-tertiary'], 'rgb(255, 255, 255)'],
       ] as const) {
         await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
         await expect(page.getByText(REPLY_TEXT, { exact: true }).first()).toBeVisible({

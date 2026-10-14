@@ -27,6 +27,21 @@ describe('presentPullRequest', () => {
     });
   });
 
+  it("speaks of a GitLab merge request in GitLab's words, and of anything else as GitHub", () => {
+    expect(presentPullRequest(make({ provider: 'gitlab' }))).toMatchObject({
+      provider: 'gitlab',
+      nounKey: 'com_ui_merge_request',
+      labelKey: 'com_ui_pr_label_gitlab',
+      openKey: 'com_ui_pr_open_in_gitlab',
+    });
+    expect(presentPullRequest(base)).toMatchObject({
+      provider: 'github',
+      nounKey: 'com_ui_pull_request',
+      labelKey: 'com_ui_pr_label',
+      openKey: 'com_ui_pr_open_in_github',
+    });
+  });
+
   it('shows merge conflicts as an error on the icon and the state badge', () => {
     expect(presentPullRequest(make({ mergeable: 'conflicting' }))).toMatchObject({
       icon: 'open',

@@ -143,6 +143,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
             data-testid="login-button"
             disabled={isLoading}
             shape="soft"
+            size="auth-action"
             className="w-full disabled:opacity-80"
           >
             {isLoading ? localize('com_auth_email_verifying_ellipsis') : localize('com_ui_verify')}

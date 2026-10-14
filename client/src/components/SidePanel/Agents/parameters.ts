@@ -10,6 +10,7 @@ import {
 import type {
   AgentModelParameters,
   SettingDefinition,
+  TModelReasoning,
   TEndpointsConfig,
   TStartupConfig,
 } from 'librechat-data-provider';
@@ -40,6 +41,7 @@ export function resolveAgentParameterSettings({
   provider,
   startupConfig,
   webSearchAllowed,
+  modelReasoning,
 }: AgentParameterConfig & {
   model: string;
   provider: string;
@@ -47,6 +49,8 @@ export function resolveAgentParameterSettings({
    *  Anthropic and Google column sets, so without this the builder offers a
    *  switch the server will refuse. Narrows `visibleParameters` only. */
   webSearchAllowed: boolean;
+  /** Provider-reported efforts for `model` on an OpenRouter endpoint; `undefined` while unknown. */
+  modelReasoning?: TModelReasoning | null;
 }): ResolvedAgentParameterSettings {
   const resolvedEndpointsConfig = endpointsConfig ?? {};
   const endpointType = getEndpointField(resolvedEndpointsConfig, provider, 'type');
@@ -80,6 +84,7 @@ export function resolveAgentParameterSettings({
     overriddenEndpointKey,
     model,
     resolvedEndpointsConfig[provider]?.responsesApiRouting,
+    modelReasoning,
   )
     .map(applyOverride)
     .filter((param) => param.key !== 'web_search' || webSearchAllowed);

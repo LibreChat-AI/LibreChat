@@ -566,19 +566,10 @@ describe('verified fill defaults', () => {
   });
 });
 
-/**
- * The default avatar's glyph is a graphical object under WCAG 1.4.11, so it needs 3:1 on its fill.
- * The bundled dark theme keeps the 2.6:1 its avatar painted before the role existed: the glyph is
- * decorative (aria-hidden beside the account name), and raising it is tracked on its own.
- */
-it('keeps the bundled dark avatar glyph no fainter than it painted before its role', () => {
-  expect(
-    contrast(toRgb(darkTheme, 'rgb-avatar-text'), toRgb(darkTheme, 'rgb-avatar-fill')),
-  ).toBeGreaterThanOrEqual(2.6);
-});
-
+/** The default avatar's glyph is a graphical object under WCAG 1.4.11, so it needs 3:1 on its fill. */
 describe.each([
   ['default', defaultTheme],
+  ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
   ['clickhouse light', clickHouseLightTheme],
@@ -927,5 +918,54 @@ describe.each([
 describe('scrim defaults', () => {
   it('reproduce the opacities each dialog family drew before the roles', () => {
     expect(scrimRoles.map((role) => defaultAppearance[role])).toEqual(['0.8', '0.9', '0.65']);
+  });
+});
+
+const categoryIconSlots = ['1', '2', '4', '5', '6', '7'] as const;
+
+/** The stock and high contrast palettes keep each category icon on the series slot it drew in. */
+describe.each([
+  ['default', defaultTheme],
+  ['dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+])('%s category icons', (_name, theme: IThemeRGB) => {
+  it.each(categoryIconSlots)('paint category-icon-%s in its series slot', (slot) => {
+    expect(theme[`rgb-category-icon-${slot}`]).toBe(theme[`rgb-series-${slot}`]);
+  });
+});
+
+/** ClickHouse draws every category icon in its muted ink, apart from the chart slots, and each one
+ *  is a graphical object under WCAG 1.4.11, so it owes 3:1 on the panel and on a hovered or
+ *  selected row. */
+describe.each([
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s category icons', (_name, theme: IThemeRGB) => {
+  const surfaces: Array<keyof IThemeRGB> = [
+    'rgb-surface-primary',
+    'rgb-surface-primary-alt',
+    'rgb-surface-nav-hover',
+    'rgb-surface-nav-selected',
+  ];
+
+  it.each(categoryIconSlots)(
+    'clear the 3:1 mark floor for category-icon-%s on every row surface',
+    (slot) => {
+      const icon = toRgb(theme, `rgb-category-icon-${slot}`);
+      const failures = surfaces.flatMap((surface) => {
+        const ratio = contrast(icon, toRgb(theme, surface));
+        return ratio < WCAG_MARK_MIN ? [`${surface}: ${ratio.toFixed(2)}:1`] : [];
+      });
+
+      expect(failures).toEqual([]);
+    },
+  );
+
+  it('draw every category in the muted ink without moving the series slots', () => {
+    categoryIconSlots.forEach((slot) => {
+      expect(theme[`rgb-category-icon-${slot}`]).toBe(theme['rgb-text-secondary']);
+      expect(theme[`rgb-series-${slot}`]).not.toBe(theme['rgb-text-secondary']);
+    });
   });
 });

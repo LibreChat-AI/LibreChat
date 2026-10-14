@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { getLocalE2EEnv, getE2EBaseURL } from './setup/env';
@@ -38,6 +39,12 @@ const ragServerPath = path.resolve(rootPath, 'e2e/setup/fake-rag-server.js');
  *  Kept clear of the MCP (8765/8766) and label (8889) fixtures. */
 const CODE_API_PORT = process.env.E2E_CODE_API_PORT || '8790';
 const RAG_API_PORT = process.env.E2E_RAG_API_PORT || '8791';
+/** The fake GitHub Enterprise host pull request lookups reach (`pullRequests.host`). The template
+ *  hard-codes 8793; `writeRuntimeMockConfig` substitutes any override into the generated copy. */
+const gitHostServerPath = path.resolve(rootPath, 'e2e/setup/fake-git-host-server.js');
+const GIT_HOST_PORT = process.env.E2E_GIT_HOST_PORT || '8793';
+const gitHostKeyPath = path.resolve(rootPath, 'e2e/.generated/git-host.key');
+const gitHostCertPath = path.resolve(rootPath, 'e2e/.generated/git-host.crt');
 const fakeModelHookPath = path.resolve(rootPath, 'e2e/setup/fake-model.js');
 /** Model-fixture record mode: the run hook taps the REAL provider stream into a
  *  replayable fixture instead of overriding the model (e2e/setup/model-replay.js). */
@@ -219,6 +226,9 @@ const baseEnv = {
   ...(externalCodeBaseUrl ? { LIBRECHAT_CODE_BASEURL_STATEFUL: externalCodeBaseUrl } : {}),
   ...codeApiKeyEnv,
   RAG_API_URL: `http://127.0.0.1:${RAG_API_PORT}`,
+  /** Pull request lookups go to the fake git host, which trusts any bearer token. */
+  E2E_GIT_HOST_TOKEN: 'e2e-git-host-token',
+  NODE_EXTRA_CA_CERTS: gitHostCertPath,
   ...vanillaOverrides,
 };
 
@@ -383,6 +393,9 @@ function writeRuntimeMockConfig() {
   if (enableDynamicMcp && MCP_DYNAMIC_PORT !== '8766') {
     config = config.split('127.0.0.1:8766').join(`127.0.0.1:${MCP_DYNAMIC_PORT}`);
   }
+  if (GIT_HOST_PORT !== '8793') {
+    config = config.split('localhost:8793').join(`localhost:${GIT_HOST_PORT}`);
+  }
   if (MCP_OAUTH_PORT !== '8767') {
     config = config.split('127.0.0.1:8767').join(`127.0.0.1:${MCP_OAUTH_PORT}`);
   }
@@ -392,6 +405,65 @@ function writeRuntimeMockConfig() {
     fs.mkdirSync(path.dirname(MCP_STATE_PATH), { recursive: true });
     fs.writeFileSync(MCP_STATE_PATH, `${JSON.stringify({ revision: 0, tool: null })}\n`);
   }
+}
+
+/** A kept certificate is replaced when it expires within this window, so no run outlives it. */
+const GIT_HOST_CERT_MIN_SECONDS = 7 * 24 * 60 * 60;
+
+function hasFreshGitHostCertificate(): boolean {
+  if (!fs.existsSync(gitHostKeyPath) || !fs.existsSync(gitHostCertPath)) {
+    return false;
+  }
+  try {
+    /** Exits non-zero when the certificate expires within the window, or cannot be read. */
+    execFileSync(
+      'openssl',
+      ['x509', '-checkend', String(GIT_HOST_CERT_MIN_SECONDS), '-noout', '-in', gitHostCertPath],
+      { stdio: 'ignore' },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The fake git host speaks TLS, as every pull request host must, with a certificate for
+ * `localhost` the app server trusts through `NODE_EXTRA_CA_CERTS`. Node reads that file once at
+ * startup, so it is made here, before any web server starts, and kept while it is valid for a
+ * week more. The config module loads again in every worker, which must not swap the pair under a
+ * running server, so only the main process ever replaces one.
+ */
+function ensureGitHostCertificate() {
+  const exists = fs.existsSync(gitHostKeyPath) && fs.existsSync(gitHostCertPath);
+  if (exists && process.env.TEST_WORKER_INDEX != null) {
+    return;
+  }
+  if (hasFreshGitHostCertificate()) {
+    return;
+  }
+  fs.mkdirSync(path.dirname(gitHostCertPath), { recursive: true });
+  execFileSync(
+    'openssl',
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      gitHostKeyPath,
+      '-out',
+      gitHostCertPath,
+      '-days',
+      '30',
+      '-subj',
+      '/CN=localhost',
+      '-addext',
+      'subjectAltName=DNS:localhost',
+    ],
+    { stdio: 'ignore' },
+  );
 }
 
 function neutralizeCredentialEnv(env: NodeJS.ProcessEnv, keep: Set<string>) {
@@ -424,6 +496,7 @@ function neutralizeDotenvSecrets(envFile: string, keep: Set<string>) {
 }
 
 writeRuntimeMockConfig();
+ensureGitHostCertificate();
 neutralizeCredentialEnv(process.env, preservedCredentialEnvKeys);
 Object.assign(process.env, baseEnv);
 neutralizeDotenvSecrets(path.resolve(rootPath, '.env'), preservedCredentialEnvKeys);
@@ -545,6 +618,22 @@ export default defineConfig({
       cwd: rootPath,
       env: { ...process.env, E2E_CODE_API_PORT: CODE_API_PORT },
       url: `http://127.0.0.1:${CODE_API_PORT}/health`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
+    {
+      // Fake GitHub Enterprise host for the pull request scenarios (`pullRequests.host`).
+      command: `node ${gitHostServerPath}`,
+      cwd: rootPath,
+      env: {
+        ...process.env,
+        E2E_GIT_HOST_PORT: GIT_HOST_PORT,
+        E2E_GIT_HOST_KEY: gitHostKeyPath,
+        E2E_GIT_HOST_CERT: gitHostCertPath,
+      },
+      url: `https://localhost:${GIT_HOST_PORT}/`,
+      ignoreHTTPSErrors: true,
       stdout: 'pipe',
       timeout: 60_000,
       reuseExistingServer: false,

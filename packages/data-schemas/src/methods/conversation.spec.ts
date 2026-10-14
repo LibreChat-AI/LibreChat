@@ -9459,6 +9459,89 @@ describe('laneGit', () => {
     await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
   });
 
+  describe('linked pull request', () => {
+    const user = 'lane-user';
+    const lane = { branch: 'feat/x', head };
+    const read = (conversationId: string) => methods.getConvoLaneGit(user, conversationId);
+
+    it('stores the link and keeps it through later reports on the same branch', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      const moved = { branch: 'feat/x', head: 'b'.repeat(40) };
+      await expect(record({ user, conversationId, laneGit: moved, repo: 'o/r' })).resolves.toBe(
+        true,
+      );
+      await expect(read(conversationId)).resolves.toEqual({
+        ...moved,
+        repo: 'o/r',
+        pullRequest: 7,
+      });
+    });
+
+    it('returns the link from the batch read too', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await expect(methods.getConvosLaneGit(user, [conversationId])).resolves.toEqual([
+        { conversationId, laneGit: { ...lane, repo: 'o/r', pullRequest: 7 } },
+      ]);
+    });
+
+    it('drops the link when the branch changes', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: { branch: 'dev', head }, repo: 'o/r' });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('drops the link when the repository changes or is no longer known', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: 'o/other' });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('treats an empty repository like an unknown one when keeping the link', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: '' });
+      await expect(read(conversationId)).resolves.toEqual({ ...lane, pullRequest: 7 });
+    });
+
+    it('replaces the link with a newer one', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 9 });
+      await expect(read(conversationId)).resolves.toMatchObject({ pullRequest: 9 });
+    });
+
+    it('ignores a link carried by a report with a lower sequence number', async () => {
+      const conversationId = await seed();
+      const first = (await methods.reserveConvoLaneGitSeq(user, conversationId)) as number;
+      const second = (await methods.reserveConvoLaneGitSeq(user, conversationId)) as number;
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', seq: second });
+      await expect(
+        record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7, seq: first }),
+      ).resolves.toBe(false);
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('stores a branch or repository that looks like a field path as plain text', async () => {
+      const conversationId = await seed();
+      const dollar = { branch: '$laneGit.head', head };
+      await record({ user, conversationId, laneGit: dollar, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: dollar, repo: 'o/r' });
+      await expect(read(conversationId)).resolves.toEqual({
+        ...dollar,
+        repo: 'o/r',
+        pullRequest: 7,
+      });
+    });
+  });
+
   it('does not write for another owner or an unknown conversation', async () => {
     const conversationId = await seed();
     const laneGit = { branch: 'main', head };

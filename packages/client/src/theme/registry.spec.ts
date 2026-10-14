@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { ThemeDefinition } from './types';
+import type { IThemeAppearance, IThemeRGB, ThemeDefinition } from './types';
 import {
   collectThemeWarnings,
   darkAppearanceDefaults,
@@ -644,6 +644,67 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-alert-error-border']).toBe('7 8 9');
   });
 
+  it('keeps the category icons on the series slots a theme repainted, unless it names them', () => {
+    const inherited = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-series',
+        modes: { light: { colors: { 'rgb-series-2': '1 2 3', 'rgb-series-4': '4 5 6' } } },
+      },
+      'light',
+    );
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-category-icon',
+        modes: { light: { colors: { 'rgb-series-4': '4 5 6', 'rgb-category-icon-4': '7 8 9' } } },
+      },
+      'light',
+    );
+
+    expect(inherited.colors['rgb-category-icon-2']).toBe('1 2 3');
+    expect(inherited.colors['rgb-category-icon-4']).toBe('4 5 6');
+    expect(explicit.colors['rgb-category-icon-4']).toBe('7 8 9');
+    expect(explicit.colors['rgb-series-4']).toBe('4 5 6');
+  });
+
+  it('carries the slot 4 category icon from the role name it first shipped under', () => {
+    const legacy = { 'rgb-series-4': '4 5 6', 'rgb-category-icon': '7 8 9' } as IThemeRGB;
+    const renamed = resolveTheme(
+      { version: 1, name: 'renamed-category-icon', modes: { light: { colors: legacy } } },
+      'light',
+    );
+    const named = resolveTheme(
+      {
+        version: 1,
+        name: 'current-category-icon',
+        modes: { light: { colors: { ...legacy, 'rgb-category-icon-4': '1 2 3' } } },
+      },
+      'light',
+    );
+
+    expect(renamed.colors['rgb-category-icon-4']).toBe('7 8 9');
+    expect(named.colors['rgb-category-icon-4']).toBe('1 2 3');
+    expect(renamed.colors).not.toHaveProperty('rgb-category-icon');
+  });
+
+  it('keeps a renamed category icon role through the legacy color adapter', () => {
+    const legacy = { 'rgb-category-icon': '7 8 9' } as IThemeRGB;
+
+    expect(fromLegacyTheme(legacy).modes.light?.colors?.['rgb-category-icon-4']).toBe('7 8 9');
+    expect(fromLegacyTheme(legacy).modes.light?.colors).not.toHaveProperty('rgb-category-icon');
+  });
+
+  it('does not warn that a renamed category icon role is ignored', () => {
+    const theme = {
+      version: 1,
+      name: 'renamed-category-icon-warning',
+      modes: { light: { colors: { 'rgb-category-icon': '7 8 9' } as IThemeRGB } },
+    };
+
+    expect(collectThemeWarnings(theme)).toEqual([]);
+  });
+
   it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {
     const explicit = resolveTheme(
       {
@@ -941,6 +1002,19 @@ describe('theme registry', () => {
       buttonHeight: '3rem',
       buttonHeightSm: '2.75rem',
     });
+  });
+
+  it('writes a zero Button height as a length the 24px floor can compare', () => {
+    const { appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'zero-buttons',
+        modes: { light: { appearance: { buttonHeight: '0', buttonHeightSm: '0' } } },
+      },
+      'light',
+    );
+
+    expect(appearance).toMatchObject({ buttonHeight: '0px', buttonHeightSm: '0px' });
   });
 
   it('keeps LibreChat’s button weight and heights by default', () => {
@@ -1247,6 +1321,69 @@ describe('theme registry', () => {
     });
   });
 
+  describe('checkbox fill and corner', () => {
+    const checkboxTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'checkbox-reference',
+      modes,
+    });
+
+    it('keeps an unchecked checkbox clear and on the small corner by default', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors, appearance } = resolveTheme(checkboxTheme({}), mode);
+        const base = mode === 'dark' ? darkTheme : defaultTheme;
+        expect(appearance.checkboxFillStyle).toBe('transparent');
+        expect(appearance.checkboxRadius).toBe(appearance.radiusSm);
+        expect(colors['rgb-checkbox-fill']).toBe(base['rgb-surface-primary']);
+      }
+    });
+
+    it('keeps a theme that predates the roles on its own canvas and small corner', () => {
+      const { colors, appearance } = resolveTheme(
+        checkboxTheme({
+          light: {
+            colors: { 'rgb-surface-primary': '40 50 60' },
+            appearance: { radiusSm: '3px' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-checkbox-fill']).toBe('40 50 60');
+      expect(appearance.checkboxRadius).toBe('3px');
+      expect(appearance.checkboxFillStyle).toBe('transparent');
+    });
+
+    it('paints the checkbox from its own roles when a theme names them', () => {
+      const { colors, appearance } = resolveTheme(
+        checkboxTheme({
+          light: {
+            colors: { 'rgb-checkbox-fill': '246 247 250' },
+            appearance: { checkboxFillStyle: 'fill', checkboxRadius: '0.125rem', radiusSm: '4px' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-checkbox-fill']).toBe('246 247 250');
+      expect(colors['rgb-surface-primary']).toBe(defaultTheme['rgb-surface-primary']);
+      expect(appearance.checkboxFillStyle).toBe('fill');
+      expect(appearance.checkboxRadius).toBe('0.125rem');
+      expect(appearance.radiusSm).toBe('4px');
+    });
+
+    it('rejects a fill style it does not know, a translucent fill and a non-length corner', () => {
+      const issues = (mode: ThemeDefinition['modes']['light']) =>
+        validateThemeDefinition(checkboxTheme({ light: mode }));
+      expect(issues({ appearance: { checkboxFillStyle: 'fill' } })).toEqual([]);
+      expect(issues({ appearance: { checkboxFillStyle: 'glass' as 'fill' } })).toEqual([
+        'Invalid appearance value for checkboxFillStyle: glass',
+      ]);
+      expect(issues({ appearance: { checkboxRadius: 'round' } })).toEqual([
+        'Invalid appearance value for checkboxRadius: round',
+      ]);
+      expect(issues({ colors: { 'rgb-checkbox-fill': '1 2 3 / 0.5' } })).toHaveLength(1);
+    });
+  });
+
   it('rejects field and label values the shared validators refuse', () => {
     const issues = (appearance: Record<string, string>) =>
       validateThemeDefinition({
@@ -1376,10 +1513,42 @@ describe('theme registry', () => {
       buttonHeightLg: '2.75rem',
       iconButtonSizeSm: '2rem',
       fieldHeightLg: '3rem',
+      authFieldHeight: '2.75rem',
+      authButtonHeight: '3rem',
+      authControlRadius: '1rem',
+      authActionHeight: '2.5rem',
+      authActionRadius: '0.5rem',
       checkboxSize: '1rem',
       listMinWidth: '8rem',
       listMaxHeight: '24rem',
     });
+  });
+
+  it('sizes the other sign-in actions from the sign-in pair, then the Button roles they drew', () => {
+    const resolve = (appearance: Partial<IThemeAppearance>) =>
+      resolveTheme({ version: 1, name: 'auth-actions', modes: { light: { appearance } } }, 'light')
+        .appearance;
+
+    expect(resolve({})).toMatchObject({ authActionHeight: '2.5rem', authActionRadius: '0.5rem' });
+    expect(resolve({ buttonHeight: '2.25rem', radiusLg: '3px' })).toMatchObject({
+      authActionHeight: '2.25rem',
+      authActionRadius: '3px',
+    });
+    expect(
+      resolve({
+        buttonHeight: '2.25rem',
+        radiusLg: '3px',
+        authButtonHeight: '2rem',
+        authControlRadius: '0',
+      }),
+    ).toMatchObject({ authActionHeight: '2rem', authActionRadius: '0' });
+    expect(resolve({ radius2xl: '2px', radiusLg: '5px' })).toMatchObject({
+      authControlRadius: '2px',
+      authActionRadius: '5px',
+    });
+    expect(
+      resolve({ authButtonHeight: '2rem', authActionHeight: '3.5rem', authActionRadius: '1px' }),
+    ).toMatchObject({ authActionHeight: '3.5rem', authActionRadius: '1px' });
   });
 
   it("bounds a Select list's width and scroll height", () => {
@@ -1392,8 +1561,10 @@ describe('theme registry', () => {
 
     expect(issues({ listMinWidth: '0', listMaxHeight: '8rem' })).toEqual([]);
     expect(issues({ listMinWidth: '12rem', listMaxHeight: '640px' })).toEqual([]);
+    expect(issues({ listMaxHeight: 'none' })).toEqual([]);
     [
       { listMinWidth: 'auto' },
+      { listMaxHeight: 'auto' },
       { listMinWidth: '-1rem' },
       { listMaxHeight: '0' },
       { listMaxHeight: '7rem' },
@@ -1422,6 +1593,8 @@ describe('theme registry', () => {
       { fieldHeightLg: '20px' },
       { fieldHeightLg: '1rem' },
       { fieldHeightLg: '1.5em' },
+      { authFieldHeight: '20px' },
+      { authButtonHeight: 'auto' },
       { iconSize: '0' },
       { iconSize: '1.5rem' },
       { iconSize: '10px' },
@@ -2237,4 +2410,14 @@ describe('appearance families substitute through the emitted variables', () => {
       expect(themed.get(property)).not.toBe(base.get(property));
     },
   );
+
+  it('writes a `none` list height as the viewport height its available-height cap undercuts', () => {
+    const uncapped = emitted({
+      ...reference,
+      modes: { light: { appearance: { listMaxHeight: 'none' } } },
+    });
+
+    expect(emitted(libreChatTheme).get('--theme-list-max-height')).toBe('24rem');
+    expect(uncapped.get('--theme-list-max-height')).toBe('100dvh');
+  });
 });

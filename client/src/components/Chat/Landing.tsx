@@ -64,7 +64,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
     });
   }, [conversation?.endpoint, conversation?.iconURL, endpointsConfig]);
 
-  const { entity, isAgent, isAssistant } = getEntity({
+  const { entity, isAgent } = getEntity({
     endpoint: endpointType,
     agentsMap,
     assistantMap,
@@ -79,7 +79,10 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
 
   const brandedSpecLabel = modelSpec?.showOnLanding ? modelSpec.label : '';
   const brandedSpecDescription = (modelSpec?.showOnLanding && modelSpec.description) || '';
-  const name = isTemporary ? '' : (entity?.name ?? brandedSpecLabel);
+  const name =
+    isTemporary || startupConfig?.interface?.landingHeading === 'greeting'
+      ? ''
+      : (entity?.name ?? brandedSpecLabel);
   const description = isTemporary
     ? localize('com_ui_temporary_description')
     : ((entity?.description || brandedSpecDescription || conversation?.greeting) ?? '');
@@ -171,7 +174,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
               </TooltipAnchor>
             )}
           </div>
-          {((isAgent || isAssistant) && name) || name ? (
+          {name ? (
             <div className="flex flex-col items-center gap-0 p-2">
               <SplitText
                 key={`split-text-${name}`}

@@ -1,24 +1,17 @@
-import { useState, useId, useRef, memo, useCallback, useMemo } from 'react';
+import { useState, useId, useRef, memo, useMemo, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { QueryKeys } from 'librechat-data-provider';
-import { useQueryClient } from '@tanstack/react-query';
-import { useParams, useNavigate } from 'react-router-dom';
-import { DropdownPopup, Spinner, useToastContext } from '@librechat/client';
+import { DropdownPopup, Spinner } from '@librechat/client';
 import { Ellipsis, Archive, ArchiveRestore, Mail, Pen, Pin, Trash } from 'lucide-react';
-import type { TMessage } from 'librechat-data-provider';
 import type { MouseEvent } from 'react';
-import {
-  useDeleteConversationMutation,
-  useArchiveConvoMutation,
-  usePinConversationMutation,
-  useMarkConversationUnreadMutation,
-} from '~/data-provider';
-import { useChatContext, useLiveAnnouncer } from '~/Providers';
+import type { ConvoMenuHandlers, ConvoMenuLoading } from './Controller';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
-import { useLocalize, useNewConvo } from '~/hooks';
-import { NotificationSeverity } from '~/common';
 import { cn, rowActionClasses } from '~/utils';
+import ConvoMenuController from './Controller';
 import DeleteButton from './DeleteButton';
+import { useLocalize } from '~/hooks';
+
+const IDLE: ConvoMenuLoading = { pin: false, archive: false, delete: false };
+
 /** The overflow menu and the shift-held quick action show the same archive control in two
  *  sizes, and must never disagree about which direction it moves the conversation. */
 function renderArchiveIcon(isLoading: boolean, isArchived: boolean, className: string) {
@@ -64,171 +57,48 @@ function ConvoOptions({
   contextMenuPosition?: { x: number; y: number };
 }) {
   const localize = useLocalize();
-  const queryClient = useQueryClient();
   const isSmallScreen = useDrawerViewport();
-  const { setConversation } = useChatContext();
-  const { showToast } = useToastContext();
-  /* Archiving or restoring removes the row from the list that held it, unmounting this
-     menu: the announcement has to come from a live region that outlives the row. */
-  const { announcePolite } = useLiveAnnouncer();
-
-  const navigate = useNavigate();
-  const { conversationId: currentConvoId } = useParams();
-  /* A mutation callback outlives the click that made it: the route it should compare
-     against is whichever chat is open when the request resolves, not the one that was
-     open when the menu item was pressed. */
-  const openConvoIdRef = useRef(currentConvoId);
-  openConvoIdRef.current = currentConvoId;
-  const { newConversation } = useNewConvo();
 
   const menuId = useId();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const deleteButtonRef = useRef<HTMLButtonElement>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
-  const archiveConvoMutation = useArchiveConvoMutation();
-  const pinConvoMutation = usePinConversationMutation();
-  const markUnreadMutation = useMarkConversationUnreadMutation();
+  /* Every row the pointer reaches mounts this trigger and keeps it, so the trigger stays the
+     same element across the row's hover. What the menu does is kept off it until the menu is
+     first used: opened, shift-held for the quick actions, or asked to delete. From then on it
+     stays, because a request it started has to land in the handlers that made it. */
+  const showQuickActions = isShiftHeld && isActiveConvo && !isPopoverActive && !showDeleteDialog;
+  const [armed, setArmed] = useState(false);
+  if (!armed && (isPopoverActive || showDeleteDialog || showQuickActions)) {
+    setArmed(true);
+  }
+  const handlersRef = useRef<ConvoMenuHandlers | null>(null);
+  const [loading, setLoading] = useState<ConvoMenuLoading>(IDLE);
 
-  const deleteMutation = useDeleteConversationMutation({
-    onSuccess: () => {
-      if (currentConvoId === conversationId || currentConvoId === 'new') {
-        newConversation();
-        navigate('/c/new', { replace: true });
-      }
-      retainView();
-      showToast({
-        message: localize('com_ui_convo_delete_success'),
-        severity: NotificationSeverity.SUCCESS,
-        showIcon: true,
-      });
-    },
-    onError: () => {
-      showToast({
-        message: localize('com_ui_convo_delete_error'),
-        severity: NotificationSeverity.ERROR,
-        showIcon: true,
-      });
-    },
-  });
+  const isArchiveLoading = loading.archive;
+  const isPinLoading = loading.pin;
+  const isDeleteLoading = loading.delete;
 
-  const isArchiveLoading = archiveConvoMutation.isLoading;
-  const isPinLoading = pinConvoMutation.isLoading;
-  const isDeleteLoading = deleteMutation.isLoading;
-
-  const deleteHandler = useCallback(() => {
-    setShowDeleteDialog(true);
-  }, []);
-
+  const deleteHandler = useCallback(() => setShowDeleteDialog(true), []);
   const handleInstantDelete = useCallback(
-    (e: MouseEvent) => {
-      e.stopPropagation();
-      const convoId = conversationId ?? '';
-      if (!convoId) {
-        return;
-      }
-      const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, convoId]);
-      const thread_id = messages?.[messages.length - 1]?.thread_id;
-      const endpoint = messages?.[messages.length - 1]?.endpoint;
-      deleteMutation.mutate({ conversationId: convoId, thread_id, endpoint, source: 'button' });
-    },
-    [conversationId, deleteMutation, queryClient],
+    (e: MouseEvent) => handlersRef.current?.instantDelete(e),
+    [],
   );
-
-  const handleArchiveClick = useCallback(
-    async (e?: MouseEvent) => {
-      e?.stopPropagation();
-      const convoId = conversationId ?? '';
-      if (!convoId) {
-        return;
-      }
-
-      archiveConvoMutation.mutate(
-        { conversationId: convoId, isArchived: !isArchived },
-        {
-          onSuccess: () => {
-            /* The request outlives the row: by the time it resolves the user may have opened
-               another chat, so the open conversation is identified at commit time rather than
-               from the one this callback closed over. */
-            setConversation((prev) =>
-              prev?.conversationId === convoId ? { ...prev, isArchived: !isArchived } : prev,
-            );
-            announcePolite({
-              message: localize(isArchived ? 'com_ui_convo_unarchived' : 'com_ui_convo_archived'),
-              isStatus: true,
-            });
-            const openConvoId = openConvoIdRef.current;
-            if (!isArchived && (openConvoId === convoId || openConvoId === 'new')) {
-              newConversation();
-              navigate('/c/new', { replace: true });
-            }
-            retainView();
-            setIsPopoverActive(false);
-          },
-          onError: () => {
-            showToast({
-              message: localize(isArchived ? 'com_ui_unarchive_error' : 'com_ui_archive_error'),
-              severity: NotificationSeverity.ERROR,
-              showIcon: true,
-            });
-          },
-        },
-      );
-    },
-    [
-      conversationId,
-      isArchived,
-      setConversation,
-      archiveConvoMutation,
-      navigate,
-      newConversation,
-      retainView,
-      setIsPopoverActive,
-      announcePolite,
-      showToast,
-      localize,
-    ],
-  );
-
-  const handlePinClick = useCallback(() => {
-    const convoId = conversationId ?? '';
-    if (!convoId) {
-      return;
-    }
-    pinConvoMutation.mutate(
-      { conversationId: convoId, pinned: !isPinned },
-      {
-        onSuccess: () => setIsPopoverActive(false),
-        onError: () => {
-          showToast({
-            message: localize(isPinned ? 'com_ui_unpin_error' : 'com_ui_pin_error'),
-            severity: NotificationSeverity.ERROR,
-            showIcon: true,
-          });
-        },
-      },
-    );
-  }, [conversationId, isPinned, pinConvoMutation, setIsPopoverActive, showToast, localize]);
-
-  const handleMarkUnreadClick = useCallback(() => {
-    const convoId = conversationId ?? '';
-    if (!convoId) {
-      return;
-    }
-    markUnreadMutation.mutate(
-      { conversationId: convoId },
-      {
-        onSuccess: () => setIsPopoverActive(false),
-        onError: () => {
-          showToast({
-            message: localize('com_ui_mark_unread_error'),
-            severity: NotificationSeverity.ERROR,
-            showIcon: true,
-          });
-        },
-      },
-    );
-  }, [conversationId, markUnreadMutation, setIsPopoverActive, showToast, localize]);
+  const handleArchiveClick = useCallback((e?: MouseEvent) => handlersRef.current?.archive(e), []);
+  const handlePinClick = useCallback(() => handlersRef.current?.pin(), []);
+  const handleMarkUnreadClick = useCallback(() => handlersRef.current?.markUnread(), []);
+  const controller = armed ? (
+    <ConvoMenuController
+      conversationId={conversationId}
+      isPinned={isPinned}
+      isArchived={isArchived}
+      retainView={retainView}
+      setIsPopoverActive={setIsPopoverActive}
+      handlersRef={handlersRef}
+      onLoadingChange={setLoading}
+    />
+  ) : null;
 
   const dropdownItems = useMemo(
     () => [
@@ -295,35 +165,41 @@ function ConvoOptions({
     visible: isActiveConvo === true || isPopoverActive || isSmallScreen || isGenerating,
   });
 
-  if (isShiftHeld && isActiveConvo && !isPopoverActive && !showDeleteDialog) {
+  if (showQuickActions) {
+    /* The controller sits first in a fragment in both branches, so letting go of shift keeps
+       it mounted and a request it started still reaches its callbacks. */
     return (
-      <div className="flex items-center gap-0.5">
-        <button
-          aria-label={localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive')}
-          className={buttonClassName}
-          onClick={handleArchiveClick}
-          disabled={isArchiveLoading}
-        >
-          {renderArchiveIcon(isArchiveLoading, isArchived, 'icon-md text-text-secondary')}
-        </button>
-        <button
-          aria-label={localize('com_ui_delete')}
-          className={buttonClassName}
-          onClick={handleInstantDelete}
-          disabled={isDeleteLoading}
-        >
-          {isDeleteLoading ? (
-            <Spinner className="size-4" />
-          ) : (
-            <Trash className="icon-md text-text-secondary" aria-hidden={true} />
-          )}
-        </button>
-      </div>
+      <>
+        {controller}
+        <div className="flex items-center gap-0.5">
+          <button
+            aria-label={localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive')}
+            className={buttonClassName}
+            onClick={handleArchiveClick}
+            disabled={isArchiveLoading}
+          >
+            {renderArchiveIcon(isArchiveLoading, isArchived, 'icon-md text-text-secondary')}
+          </button>
+          <button
+            aria-label={localize('com_ui_delete')}
+            className={buttonClassName}
+            onClick={handleInstantDelete}
+            disabled={isDeleteLoading}
+          >
+            {isDeleteLoading ? (
+              <Spinner className="size-4" />
+            ) : (
+              <Trash className="icon-md text-text-secondary" aria-hidden={true} />
+            )}
+          </button>
+        </div>
+      </>
     );
   }
 
   return (
     <>
+      {controller}
       <DropdownPopup
         /**
          * Must portal: the row sits inside the nav's `overflow-hidden` and a

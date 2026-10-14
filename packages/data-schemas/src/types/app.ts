@@ -4,6 +4,7 @@ import type {
   TFileConfig,
   TAzureConfig,
   TCustomConfig,
+  TCredentialsConfig,
   TChatProjectsConfig,
   TMemoryConfig,
   EModelEndpoint,
@@ -118,6 +119,8 @@ export interface AppConfig {
   fileConfig?: TFileConfig;
   /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
+  /** Stored user credential write format, `v3` unless configured */
+  credentials?: TCredentialsConfig;
   /** Validation limits for the conversation list's filter facets */
   conversationList?: TConversationListConfig;
   /** Bounds for the tool-call previews sent on conversation loads */

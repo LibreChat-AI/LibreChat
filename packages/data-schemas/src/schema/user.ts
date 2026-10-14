@@ -158,6 +158,11 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: Date,
       default: null,
     },
+    /** Set only when termsAcceptedAt was backfilled rather than recorded at acceptance. */
+    termsAcceptedSource: {
+      type: String,
+      enum: ['migration'],
+    },
     agentTriggerDeletionStartedAt: {
       type: Date,
       select: false,

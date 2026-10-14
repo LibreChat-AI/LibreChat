@@ -171,6 +171,42 @@ test('reads a channel triplet in a custom property', () => {
   assert.deepEqual(literals('a { margin: 1 2 3; }'), []);
 });
 
+test('reads math function channels in a custom property triplet', () => {
+  assert.deepEqual(literals('a { --brand: calc(255) 0 0; }'), ['calc(255) 0 0']);
+  assert.deepEqual(literals('a { --brand: 255 MIN(100, 50 * 2) clamp(0, (1 + 2) * 3, 9); }'), [
+    '255 MIN(100, 50 * 2) clamp(0, (1 + 2) * 3, 9)',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(100% - 10%), 0%, 0% / calc(0.5); }'), [
+    'calc(100% - 10%), 0%, 0% / calc(0.5)',
+  ]);
+  assert.deepEqual(literals('a { --brand: var(--configured, calc(255) 0 0); }'), [
+    'var(--configured, calc(255) 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(min(100, max(0, 255))) 0 0; }'), [
+    'calc(min(100, max(0, 255))) 0 0',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base, calc(255) 0 0) r g b); }'), [
+    'rgb(from var(--base, calc(255) 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(1e2) calc(pi * 10) 2.5E1; }'), [
+    'calc(1e2) calc(pi * 10) 2.5E1',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(min(var(--r), max(0, 255))) 0 0; }'), []);
+  assert.deepEqual(literals('a { --brand: round(down, 255) round(to-zero, 2.5, 1) 0; }'), [
+    'round(down, 255) round(to-zero, 2.5, 1) 0',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) calc(255) 0 0); }'), [
+    'rgb(from var(--base) calc(255)',
+  ]);
+  assert.deepEqual(literals('a { --size: calc(1em + 1in) 0 0; }'), []);
+  assert.deepEqual(literals('a { --brand: calc(var(--r)) 0 0; }'), []);
+  assert.deepEqual(literals('a { --brand: calc(var(--r) * 2) 0 0; }'), []);
+  assert.deepEqual(
+    literals('a { --offset: calc(1px + 2px) 0 0; --size: max(1rem, 2vw) 0 0; }'),
+    [],
+  );
+});
+
 test('a token source exempts its custom properties only', () => {
   const css = ':root { --x: 255 0 0; --y: #fff; }\na { color: #fff; width: calc(1 * 2); }';
   assert.deepEqual(findCssColorLiterals(css, [], true), [{ line: 2, literal: '#fff' }]);

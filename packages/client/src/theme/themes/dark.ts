@@ -150,7 +150,9 @@ export const darkTheme: IThemeRGB = {
   // Brand colors
   'rgb-brand-purple': '171 104 255', // #ab68ff
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
-  'rgb-avatar-text': '236 236 236', // #ececec (gray-100, matching text-primary)
+  /** White, not the #ececec primary text: the glyph is a graphical object (WCAG 1.4.11) and
+   *  #ececec held only 2.6:1 on the #7989ff fill, where white reaches 3.07:1. */
+  'rgb-avatar-text': '255 255 255', // #ffffff
   'rgb-avatar-placeholder': '47 47 47', // #2f2f2f (gray-700, matching surface-tertiary)
   'rgb-avatar-edge': '240 246 252', // #f0f6fc at 10%, a hairline that only shows against a dark page
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
@@ -202,11 +204,18 @@ export const darkTheme: IThemeRGB = {
   'rgb-series-6': '171 104 254', // #ab68fe (violet)
   'rgb-series-7': '80 167 49', // #50a731 (green)
   'rgb-series-8': '120 130 190', // #8082be (indigo)
+  'rgb-category-icon-1': '9 140 238', // #098cee (matching series-1)
+  'rgb-category-icon-2': '217 87 35', // #d95723 (matching series-2)
+  'rgb-category-icon-4': '200 133 12', // #c8850c (matching series-4)
+  'rgb-category-icon-5': '213 82 130', // #d55282 (matching series-5)
+  'rgb-category-icon-6': '171 104 254', // #ab68fe (matching series-6)
+  'rgb-category-icon-7': '80 167 49', // #50a731 (matching series-7)
 
   /** Unchecked switch track. 3.38:1 against the page and the `surface-primary`
    *  thumb, 5.74:1 against the checked `surface-inverted` track. */
   'rgb-switch-unchecked': '102 102 102', // #666666
   'rgb-switch-thumb': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
+  'rgb-checkbox-fill': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
   'rgb-table-header-text': '205 205 205', // #cdcdcd (gray-300, matching text-secondary)
   'rgb-table-header-fill': '18 18 18', // #121212 (matching surface-dialog)
 

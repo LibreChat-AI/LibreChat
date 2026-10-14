@@ -14,6 +14,8 @@ jest.mock('~/server/services/Config', () => ({
 jest.mock('@librechat/api', () => {
   const actualApi = jest.requireActual('@librechat/api');
   return {
+    createTermsBlockCheck: actualApi.createTermsBlockCheck,
+    skipUntilTermsAccepted: actualApi.skipUntilTermsAccepted,
     createSkillSyncTriggerOrchestrator: actualApi.createSkillSyncTriggerOrchestrator,
     createGitHubSkillSyncRunner: jest.fn((deps) => {
       mockRunnerDeps = deps;
@@ -157,6 +159,21 @@ describe('GitHub skill sync service', () => {
 
     expect(result).toBeUndefined();
     expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+  });
+
+  it('does not start request-scoped sync for a user who must accept the terms first', async () => {
+    mockGetAppConfig.mockResolvedValue({
+      interfaceConfig: { termsOfService: { modalAcceptance: true } },
+    });
+
+    const service = require('./sync');
+    const started = await service.maybeRunGitHubSkillSyncForRequest({
+      config: { skillSync: { github: { enabled: true, sources: [] } }, config: {} },
+      user: { id: 'user-1', tenantId: 'tenant-a', termsAccepted: false },
+    });
+
+    expect(started).toBe(false);
+    expect(mockCreatedRunners).toHaveLength(0);
   });
 
   it('does not let user skill-list sync use server credentials from resolved config', async () => {

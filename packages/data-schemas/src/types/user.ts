@@ -66,6 +66,8 @@ export interface IUser extends Document {
   expiresAt?: Date;
   termsAccepted?: boolean;
   termsAcceptedAt?: Date | null;
+  /** Present only when termsAcceptedAt was backfilled by config/migrate-terms-timestamp.js. */
+  termsAcceptedSource?: 'migration';
   /** Internal fence that prevents agent-trigger admission during account deletion. */
   agentTriggerDeletionStartedAt?: Date;
   /** Expiring fences closing subagent admission while bulk deletions drain. */

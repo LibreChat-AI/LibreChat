@@ -174,6 +174,7 @@ html {
   --focus-subtle: var(--border-heavy);
   --field-fill: var(--surface-primary);
   --field-text: var(--text-primary);
+  --checkbox-fill: var(--surface-primary);
   --surface-tooltip: var(--surface-primary);
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);
@@ -225,6 +226,12 @@ html {
   --series-6: 126 35 205;
   --series-7: 1 131 1;
   --series-8: 63 81 181;
+  --category-icon-1: var(--series-1);
+  --category-icon-2: var(--series-2);
+  --category-icon-4: var(--series-4);
+  --category-icon-5: var(--series-5);
+  --category-icon-6: var(--series-6);
+  --category-icon-7: var(--series-7);
 
   /* Code syntax highlighting */
   --syntax-text: var(--gray-800);
@@ -285,6 +292,11 @@ html {
   --theme-icon-button-size-sm: 2rem;
   --theme-field-height: 2.5rem;
   --theme-field-height-lg: 3rem;
+  --theme-auth-field-height: 2.75rem;
+  --theme-auth-button-height: 3rem;
+  --theme-auth-control-radius: var(--theme-radius-2xl, 1rem);
+  --theme-auth-action-height: var(--theme-button-height, 2.5rem);
+  --theme-auth-action-radius: var(--theme-radius-lg, 0.5rem);
   --theme-field-padding-y: 0.5rem;
   --theme-field-focus-style: ring;
   --theme-field-fill-style: transparent;
@@ -296,6 +308,8 @@ html {
   --theme-switch-width: 2.75rem;
   --theme-switch-height: 1.5rem;
   --theme-checkbox-size: 1rem;
+  --theme-checkbox-radius: var(--theme-radius-sm, calc(0.5rem - 4px));
+  --theme-checkbox-fill-style: transparent;
   --theme-table-cell-space-y: 1rem;
   --theme-table-row-stroke: 0px;
   --theme-space-compact: 0.375rem;
@@ -377,7 +391,7 @@ html {
 .dark {
   --brand-purple: 171 104 255;
   --avatar-fill: 121 137 255;
-  --avatar-text: var(--text-primary);
+  --avatar-text: 255 255 255;
   --avatar-placeholder: var(--surface-tertiary);
   --avatar-edge: 240 246 252;
   --illustration-subtle: 175 193 255;
@@ -467,6 +481,7 @@ html {
   --border-field-focus: var(--focus-control);
   --field-fill: var(--surface-primary);
   --field-text: var(--text-primary);
+  --checkbox-fill: var(--surface-primary);
   --surface-tooltip: var(--surface-primary);
   --text-tooltip: var(--text-primary);
   --alert-error-fill: var(--status-error-subtle);
@@ -517,6 +532,12 @@ html {
   --series-6: 171 104 254;
   --series-7: 80 167 49;
   --series-8: 120 130 190;
+  --category-icon-1: var(--series-1);
+  --category-icon-2: var(--series-2);
+  --category-icon-4: var(--series-4);
+  --category-icon-5: var(--series-5);
+  --category-icon-6: var(--series-6);
+  --category-icon-7: var(--series-7);
 
   /* Code syntax highlighting. Comment and meta are the flattened equivalents of
      the 50% and 60% alpha whites this palette used before it was tokenized. */

@@ -109,7 +109,6 @@ export default function ActionsInput({
   });
 
   const saveAction = handleSubmit((authFormData) => {
-    console.log('authFormData', authFormData);
     const currentAssistantId = assistant_id ?? '';
     if (!currentAssistantId) {
       // alert user?

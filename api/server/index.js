@@ -45,6 +45,9 @@ const {
   loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
+  injectColorModeHandoff,
+  readBundledThemeBoot,
+  createDeploymentThemeShell,
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
@@ -300,7 +303,15 @@ const startServer = async () => {
      caller's and the client prefers it. */
   indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
     customFooter: process.env.CUSTOM_FOOTER,
+    landingFooter: appConfig?.interfaceConfig?.landingFooter,
   });
+
+  indexHTML = injectColorModeHandoff(indexHTML, appConfig.interfaceConfig?.colorModeFromUrl);
+  const indexShell = createDeploymentThemeShell(
+    indexHTML,
+    appConfig.interfaceConfig?.theme,
+    readBundledThemeBoot(appConfig.paths.dist),
+  );
 
   const cspPolicy = createCspPolicy();
   const shellCache = shellCacheHeaders(cspPolicy != null);
@@ -311,7 +322,10 @@ const startServer = async () => {
 
     const lang = req.cookies.lang || req.headers['accept-language']?.split(',')[0] || 'en-US';
     const saneLang = escapeHtmlAttribute(lang);
-    let updatedIndexHtml = indexHTML.replace(/lang="en-US"/g, () => `lang="${saneLang}"`);
+    let updatedIndexHtml = indexShell(req, res).replace(
+      /lang="en-US"/g,
+      () => `lang="${saneLang}"`,
+    );
     updatedIndexHtml = maybeInjectQueryDevtoolsBootstrap(updatedIndexHtml, req);
 
     /* Nonce last: every injected script above must be stamped too. */
@@ -421,6 +435,7 @@ const startServer = async () => {
   app.use('/api/search', routes.search);
   app.use('/api/messages', routes.messages);
   app.use('/api/convos', routes.convos);
+  app.use('/api/pull-requests', preAuthTenantMiddleware, routes.pullRequests);
   app.use('/api/traces', routes.traces);
   app.use('/api/presets', routes.presets);
   app.use('/api/projects', routes.projects);
@@ -511,6 +526,7 @@ const startServer = async () => {
           appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
         completionReceiptBatching:
           appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+        deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;

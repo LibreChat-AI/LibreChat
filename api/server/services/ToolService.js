@@ -51,7 +51,7 @@ const {
   isFatalAgentInitializationError,
   codeExecutionAuthHeaders,
   createLaneGitRecorder,
-  isPullRequestFeatureActive,
+  resolvePullRequestRecording,
   createAttachedWorkspaceBashTool,
   createRepositoryInstructionSource,
   createRepositoryInstructionLoader,
@@ -2369,7 +2369,7 @@ async function loadToolsForExecution({
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
               onLaneGit: await createLaneGitRecorder({
-                enabled: isPullRequestFeatureActive(
+                ...resolvePullRequestRecording(
                   req.config?.endpoints?.agents?.pullRequests,
                   process.env,
                 ),

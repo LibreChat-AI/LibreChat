@@ -70,6 +70,18 @@ panel `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`) and the send and s
 onto `menuRadius` or a square corner without moving the control or surface radii. An inline code
 chip in Markdown takes its weight from `inlineCodeWeight` (600).
 
+The checkbox reads `checkboxRadius` (`rounded-theme-checkbox`), which follows `radiusSm`, the
+`rounded-sm` it drew before, when a theme names that and not this.
+
+The sign-in forms' floating-label field reads `authFieldHeight` (2.75rem, `h-theme-auth-field`), their
+submit button `authButtonHeight` (3rem, the Button's `auth` size) and both the corner
+`authControlRadius` (1rem, the Button's `soft` shape), which follows `radius2xl` when a theme names
+that and not this. The flow's other actions, the second-factor verify and the reset-success continue
+buttons, read `authActionHeight` (the Button's `auth-action` size) and `authActionRadius` (its
+`auth-action` shape; the 2FA button keeps `soft`). They follow `authButtonHeight` and
+`authControlRadius` when a theme names those, and otherwise the `buttonHeight` and `radiusLg` they
+drew before (2.5rem and 0.5rem). Every height here rejects a value under 24px.
+
 Most appearance defaults hold in both modes. `darkAppearanceDefaults` lists the ones that differ in
 dark mode, and `defaultAppearanceFor(mode)` returns the full set for a mode: the menu panel's
 `menuShadow` and the tooltip's `tooltipShadow` are heavier on a dark page, as they always were. A
@@ -343,6 +355,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `bg-avatar-fill` / `text-avatar-text` - The default user avatar drawn when a
   user has no image, and its glyph. A theme that sets `rgb-text-primary` but not
   `rgb-avatar-text` inks the glyph in its primary text, as it did before the role.
+  The bundled dark theme inks it white, which clears the 3:1 WCAG 1.4.11 sets for
+  the glyph on the fill where its #ececec primary text does not.
 - `bg-avatar-placeholder` - Behind an agent or assistant avatar while its image
   loads or where it is transparent. A theme that sets only its surfaces keeps it
   on `surface-secondary` in light and `surface-tertiary` in dark, where it sat
@@ -377,25 +391,39 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
   input, and `h-theme-target` the switch's hit area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
   trigger. `min-w-theme-list` and `max-h-theme-list` (`listMinWidth`, `0` to size the list by
-  its trigger, and `listMaxHeight`, 8 to 40rem) bound the Select's list. Every default is the size the primitive drew before. The icon and checkbox roles
+  its trigger, and `listMaxHeight`, 8 to 40rem or `none`) bound the Select's list, which never
+  grows past the room the popper leaves between its trigger and the viewport's edge, so `none`
+  drops the fixed cap and keeps only that one. Every default is the size the primitive drew before. The icon and checkbox roles
   are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
   exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
   1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is
   a fixed 24px, WCAG 2.5.8's minimum, not a role, so a theme cannot lower it. The Button's
   `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg` reject a value under 24px;
-  `controlHeight`, `buttonHeight`, `buttonHeightSm` and `fieldHeight` predate the floor and
-  keep their earlier validation.
+  `buttonHeight` and `buttonHeightSm` predate the floor, so they keep their earlier validation
+  and are floored where they are drawn instead: `h-theme-button`, `h-theme-button-sm` and
+  `size-theme-button` never draw under 24px, so a stored theme naming less still loads.
+  `controlHeight` and `fieldHeight` keep their earlier validation. The exported Dialog's close
+  button takes the same 24px floor around its `iconSizeMd` glyph.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's
   `fieldFillStyle` appearance role is `fill` (the default is `transparent`),
   read from the nearest themed root through the `theme-field-fill:` variant.
+- `bg-checkbox-fill` - An unchecked checkbox's fill. It follows `surface-primary`
+  when a theme names that and not this. The box stays clear unless the theme's
+  `checkboxFillStyle` appearance role is `fill` (the default is `transparent`),
+  read through the `theme-checkbox-fill:` variant; a checked box keeps
+  `surface-inverted`.
 - `bg-surface-tooltip` / `text-tooltip` - The tooltip chip and its label. They follow
   `surface-primary` and `text-primary` when a theme names those and not these. The padding and
   text size are the `tooltipPaddingX`, `tooltipPaddingY` and `tooltipTextSize` appearance roles
   (0.5rem, 0.25rem and 1rem by default).
 - `bg-alert-error-fill` / `border-alert-error-border` - The error `Alert`'s fill and edge. They
   follow `status-error-subtle` and `status-error-border`, which the badges, tags and diffs keep.
+- `text-category-icon-1`, `-2`, `-4`, `-5`, `-6`, `-7` - The prompt category icons, one role per
+  series slot they were drawn in. Each follows its `series-N`, so a theme can quiet the icons
+  without moving the chart slots; ClickHouse draws all of them in its muted text, as Click UI
+  draws its icons.
 - Layering roles - `bg-surface-canvas` (the chat canvas and its header fade),
   `bg-surface-user-message` (the user turn's bubble), `bg-surface-card` and
   `bg-surface-card-hover` (marketplace cards), `bg-surface-nav-hover` and

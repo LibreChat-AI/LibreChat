@@ -1,4 +1,4 @@
-import { createGitHubPullRequestSource, summarizeChecks } from './github';
+import { createGitHubPullRequestSource, summarizeChecks, gitHubApiBase } from './github';
 import { PullRequestSourceError } from './types';
 
 const sha = 'a'.repeat(40);
@@ -67,6 +67,7 @@ describe('createGitHubPullRequestSource', () => {
       number: 7,
       title: 'Simplify single tool',
       url: 'https://github.com/o/r/pull/7',
+      provider: 'github',
       additions: 12,
       deletions: 3,
       state: 'open',
@@ -159,6 +160,13 @@ describe('createGitHubPullRequestSource', () => {
     await expect(find(source)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 
+  it('maps a 401 to CREDENTIAL_REJECTED, a refusal of the token itself', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () => new Response('', { status: 401 }),
+    });
+    await expect(find(source)).rejects.toMatchObject({ code: 'CREDENTIAL_REJECTED' });
+  });
+
   it.each([
     ['a 500', () => new Response('boom', { status: 500 })],
     ['a plain 403', () => new Response('', { status: 403 })],
@@ -187,10 +195,46 @@ describe('createGitHubPullRequestSource', () => {
     await expect(find(source)).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
   });
 
+  it('rejects a github.com page when the configured host is an Enterprise one', async () => {
+    const { source } = sourceFor(routes());
+    await expect(
+      source.find({ repo: 'o/r', branch: 'feat/x', token: 't', host: 'ghe.example.com' }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+  });
+
   it('bounds the title', async () => {
     const { source } = sourceFor(routes(pull({ title: 'x'.repeat(1000) })));
     const result = await find(source);
     expect(result?.title).toHaveLength(256);
+  });
+});
+
+describe('GitHub host', () => {
+  it.each([
+    ['github.com', 'https://api.github.com'],
+    ['acme.ghe.com', 'https://api.acme.ghe.com'],
+    ['ghe.example.com', 'https://ghe.example.com/api/v3'],
+    ['ghe.local:8443', 'https://ghe.local:8443/api/v3'],
+  ])('serves the API of %s from %s', (host, base) => {
+    expect(gitHubApiBase(host)).toBe(base);
+  });
+
+  it('sends every request of an Enterprise lookup to that host and accepts its pages', async () => {
+    const host = 'ghe.example.com';
+    const fetchFn = jest.fn(async (input: string) => {
+      const url = String(input);
+      if (url.includes('/pulls?state=open')) return json(listed());
+      if (url.includes('/pulls/7')) return json(pull({ html_url: `https://${host}/o/r/pull/7` }));
+      if (url.includes('/check-runs')) return json({ check_runs: [] });
+      throw new Error(`unexpected ${url}`);
+    });
+    const source = createGitHubPullRequestSource({ fetchFn });
+    const result = await source.find({ repo: 'o/r', branch: 'feat/x', token: 't', host });
+    expect(result).toMatchObject({ number: 7, url: `https://${host}/o/r/pull/7` });
+    expect(fetchFn.mock.calls.length).toBeGreaterThan(0);
+    for (const [url] of fetchFn.mock.calls) {
+      expect(String(url).startsWith(`https://${host}/api/v3/`)).toBe(true);
+    }
   });
 });
 
@@ -932,5 +976,110 @@ describe('reading more than one page of candidates', () => {
     expect(
       fetchFn.mock.calls.filter(([url]) => String(url).includes('/pulls?state=open')),
     ).toHaveLength(3);
+  });
+});
+
+describe('a pull request the conversation linked to', () => {
+  const recorded = 'c'.repeat(40);
+  const linkedHead = { sha, ref: 'feat/x', repo: { full_name: 'O/R' } };
+  const forkHead = { sha, ref: 'feat/x', repo: { full_name: 'someone/r' } };
+  const run = (
+    source: ReturnType<typeof createGitHubPullRequestSource>,
+    pullRequest: number | null = 7,
+  ) => source.find({ repo: 'o/r', branch: 'feat/x', head: recorded, pullRequest, token: 't' });
+  const urls = (fetchFn: jest.Mock) => fetchFn.mock.calls.map(([url]) => String(url));
+
+  it('reads it directly, without searching or comparing, so unpushed commits do not hide it', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls/7': () => json(pull({ head: linkedHead })),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(run(source)).resolves.toMatchObject({ number: 7, state: 'open' });
+    expect(urls(fetchFn).some((url) => url.includes('/pulls?'))).toBe(false);
+    expect(urls(fetchFn).some((url) => url.includes('/compare/'))).toBe(false);
+  });
+
+  it('reads checks for the head the linked pull request reports', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls/7': () => json(pull({ head: linkedHead })),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await run(source);
+    expect(urls(fetchFn).some((url) => url.includes(`/commits/${sha}/check-runs`))).toBe(true);
+  });
+
+  it('keeps a merged link, the way the branch search would', async () => {
+    const { source } = sourceFor({
+      '/pulls/7': () => json(pull({ state: 'closed', merged: true, head: linkedHead })),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(run(source)).resolves.toMatchObject({ number: 7, state: 'merged' });
+  });
+
+  it('searches the branch when the link is a pull request from another branch', async () => {
+    const { source } = sourceFor({
+      '/pulls/3': () => json(pull({ number: 3, head: { sha, ref: 'feat/parent' } })),
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
+    await expect(run(source, 3)).resolves.toBeNull();
+  });
+
+  it('searches the branch when the link names a pull request GitHub does not have', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls/9': () => new Response('', { status: 404 }),
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
+    await expect(run(source, 9)).resolves.toBeNull();
+    expect(urls(fetchFn).some((url) => url.includes('/pulls?state=open'))).toBe(true);
+  });
+
+  it('cannot verify a pull request whose head names no branch, and searches instead', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls/3': () => json(pull({ number: 3 })),
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
+    await expect(run(source, 3)).resolves.toBeNull();
+    expect(urls(fetchFn).some((url) => url.includes('/pulls?state=open'))).toBe(true);
+  });
+
+  it('does not take a fork pull request on a branch of the same name without the recorded commit', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls/7': () => json(pull({ head: forkHead })),
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
+    await expect(
+      source.find({ repo: 'o/r', branch: 'feat/x', pullRequest: 7, token: 't' }),
+    ).resolves.toBeNull();
+    expect(urls(fetchFn).some((url) => url.includes('/pulls?state=open'))).toBe(true);
+  });
+
+  it('does not take a fork pull request whose commits do not contain the recorded one', async () => {
+    const { source } = sourceFor({
+      '/pulls/7': () => json(pull({ head: forkHead })),
+      '/compare/': () => json({ status: 'diverged' }),
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
+    await expect(run(source)).resolves.toBeNull();
+  });
+
+  it('takes a fork pull request that carries the recorded commit', async () => {
+    const { source } = sourceFor({
+      '/pulls/7': () => json(pull({ head: forkHead })),
+      '/compare/': () => json({ status: 'ahead' }),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(run(source)).resolves.toMatchObject({ number: 7 });
+  });
+
+  it('lets a rate limit on the linked read fail the lookup', async () => {
+    const { source } = sourceFor({
+      '/pulls/7': () => new Response('', { status: 429 }),
+    });
+    await expect(run(source)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 });

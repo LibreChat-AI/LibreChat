@@ -28,6 +28,7 @@ interface DropdownProps {
   renderValue?: (option: Option) => React.ReactNode;
   ariaLabel?: string;
   'aria-labelledby'?: string;
+  'aria-describedby'?: string;
   portal?: boolean;
   /** `field` matches Input; `compact` supplies the small toolbar-control recipe. */
   variant?: 'default' | 'field' | 'compact';
@@ -75,6 +76,7 @@ const Dropdown: React.FC<DropdownProps> = ({
   renderValue,
   ariaLabel,
   'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
   portal = true,
   variant = 'default',
   shape = 'theme',
@@ -194,6 +196,7 @@ const Dropdown: React.FC<DropdownProps> = ({
         aria-labelledby={
           ariaLabelledBy == null || iconOnly ? ariaLabelledBy : `${ariaLabelledBy} ${valueId}`
         }
+        aria-describedby={ariaDescribedBy}
       >
         <div className={cn('flex min-w-0 items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
           {icon}
@@ -288,6 +291,7 @@ const Dropdown: React.FC<DropdownProps> = ({
               <Select.SelectItem
                 key={`option-${index}`}
                 value={String(option.value)}
+                disabled={option.disabled === true}
                 className="select-item"
                 data-theme={option.value}
               >

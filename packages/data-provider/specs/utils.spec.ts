@@ -135,6 +135,7 @@ describe('Environment Variable Extraction', () => {
       expect(isSensitiveEnvVar('CREDS_IV')).toBe(true);
       expect(isSensitiveEnvVar('MEILI_MASTER_KEY')).toBe(true);
       expect(isSensitiveEnvVar('MONGO_URI')).toBe(true);
+      expect(isSensitiveEnvVar('MONGODB_ROOT_PASSWORD')).toBe(true);
       expect(isSensitiveEnvVar('REDIS_URI')).toBe(true);
       expect(isSensitiveEnvVar('REDIS_PASSWORD')).toBe(true);
     });

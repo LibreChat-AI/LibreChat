@@ -8,6 +8,11 @@ describe('isAllowedRepository', () => {
     ['o/other', ['o/*'], true],
     ['x/r', ['o/*'], false],
     ['o/r', [], false],
+    ['g/sub/r', ['g/sub/r'], true],
+    ['G/Sub/R', ['g/sub/*'], true],
+    ['g/sub/r', ['g/*'], false],
+    ['g/r', ['g/sub/*'], false],
+    ['g/sub/r', ['g/sub'], false],
     ['o/r', undefined, false],
   ])('%s against %j is %s', (repo, allowed, expected) => {
     expect(isAllowedRepository(repo, allowed)).toBe(expected);
@@ -15,6 +20,7 @@ describe('isAllowedRepository', () => {
 
   it('matches any repository for the opt-in list, and only for it', () => {
     expect(isAllowedRepository('any/thing', ALL_REPOSITORIES)).toBe(true);
+    expect(isAllowedRepository('group/sub/thing', ALL_REPOSITORIES)).toBe(true);
     expect(isAllowedRepository('o/r', ['*/r'])).toBe(true);
     expect(isAllowedRepository('o/r', ['o/r2'])).toBe(false);
   });

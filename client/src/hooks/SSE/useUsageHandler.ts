@@ -7,7 +7,7 @@ import type {
   TTokenUsageEvent,
   TContextUsageEvent,
 } from 'librechat-data-provider';
-import type { ContextSnapshot } from '~/store/usage';
+import type { ContextSnapshot } from '~/components/Chat/Input/TokenUsage/store';
 import {
   overheadKey,
   markUsageFolded,
@@ -26,7 +26,7 @@ import {
   EMPTY_USAGE_TOTALS,
   contextSnapshotFamily,
   snapshotsByAnchorFamily,
-} from '~/store/usage';
+} from '~/components/Chat/Input/TokenUsage/store';
 import {
   sumBranch,
   mergeUsage,

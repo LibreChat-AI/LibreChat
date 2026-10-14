@@ -1,6 +1,7 @@
 import {
   BASE_PRINCIPAL_CONFIG_SECTIONS,
   BASE_ONLY_CONFIG_SECTIONS,
+  BASE_ONLY_CONFIG_PATHS,
   INTERFACE_PERMISSION_FIELDS,
   RUNTIME_CONFIG_INTERFACE_FIELDS,
   PERMISSION_SUB_KEYS,
@@ -852,7 +853,30 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
     }
   }
 
-  return preserveRuntimeStops(baseConfig, merged);
+  return preserveBaseOnlyPaths(baseConfig, preserveRuntimeStops(baseConfig, merged));
+}
+
+function getPath(target: unknown, segments: string[]): unknown {
+  let current = target;
+  for (const segment of segments) {
+    if (!isPlainObject(current)) return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+/**
+ * Puts back the base value of every `BASE_ONLY_CONFIG_PATHS` field, whatever an override set or a
+ * tombstone removed on the way, so every reader of the merged config sees the operator's value.
+ */
+function preserveBaseOnlyPaths<T extends AppConfig>(baseConfig: AppConfig, merged: T): T {
+  let result: unknown = merged;
+  for (const path of BASE_ONLY_CONFIG_PATHS) {
+    const segments = path.split('.');
+    const value = getPath(baseConfig, segments);
+    if (getPath(result, segments) !== value) result = setPath(result, segments, value);
+  }
+  return result as T;
 }
 
 /** Whether a runtime-config interface field reads as OFF in either of its two shapes:

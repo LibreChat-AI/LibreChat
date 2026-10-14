@@ -22,6 +22,7 @@ import type { ChatContract } from './contract';
 import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/MemoryCall';
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
+import { mergeAttachments } from '~/utils/attachments';
 import { isEmptyContentPart } from '~/utils/messages';
 import { resumeRequestsAtom } from './resume';
 import { mapAttachments } from '~/utils/map';
@@ -86,6 +87,7 @@ export type UseChatHelpers = {
 type ToolContext = {
   content: TMessage['content'];
   attachments: TMessage['attachments'];
+  live: TAttachment[] | undefined;
   byToolCall: Record<string, TAttachment[] | undefined>;
   /** Step ids each provider tool-call id already owns, for calls that have no step yet. */
   stepIdsById: Map<string, Set<string>>;
@@ -94,12 +96,18 @@ type ToolContext = {
 const toolContexts = new WeakMap<TMessage, ToolContext>();
 
 /**
- * Built once per message snapshot. The stream reuses a response object across frames and
- * replaces its `content` and `attachments` arrays, so both are checked, not only the object.
+ * Built once per message snapshot and live attachment list. The stream reuses a response object
+ * across frames and replaces its `content` and `attachments` arrays, so both are checked, not only
+ * the object. A tool's attachments reach the live list before the message cache holds them.
  */
-const getToolContext = (message: TMessage): ToolContext => {
+const getToolContext = (message: TMessage, live: TAttachment[] | undefined): ToolContext => {
   const cached = toolContexts.get(message);
-  if (cached && cached.content === message.content && cached.attachments === message.attachments) {
+  if (
+    cached &&
+    cached.content === message.content &&
+    cached.attachments === message.attachments &&
+    cached.live === live
+  ) {
     return cached;
   }
   const stepIdsById = new Map<string, Set<string>>();
@@ -118,7 +126,8 @@ const getToolContext = (message: TMessage): ToolContext => {
   const context: ToolContext = {
     content: message.content,
     attachments: message.attachments,
-    byToolCall: mapAttachments(message.attachments ?? []),
+    live,
+    byToolCall: mapAttachments(mergeAttachments(message.attachments, live)),
     stepIdsById,
   };
   toolContexts.set(message, context);
@@ -153,11 +162,10 @@ const getFailureProse = (toolCall: StoredToolCall, background: boolean) => {
  * A call with no step yet is scoped away from attachments its repeated provider id's other
  * steps own, as `summarizeSpan` does.
  */
-const resolveToolFailure: NonNullable<UIMappingOptions['resolveToolFailure']> = (
-  toolCall,
-  message,
-) => {
-  const context = message ? getToolContext(message) : undefined;
+const resolveToolFailure = (
+  toolCall: StoredToolCall,
+  context: ToolContext | undefined,
+): ReturnType<NonNullable<UIMappingOptions['resolveToolFailure']>> => {
   const { id, stepId } = toolCall as { id?: string; stepId?: string };
   const siblingStepIds = stepId == null && id ? context?.stepIdsById.get(id) : undefined;
   const meta = getToolMeta(
@@ -174,7 +182,11 @@ const resolveToolFailure: NonNullable<UIMappingOptions['resolveToolFailure']> = 
   return getFailureProse(toolCall, meta.background != null) ?? 'failed';
 };
 
-const mappingOptions: UIMappingOptions = { resolveToolFailure };
+/** Mapping options that resolve a message's tool outcomes against its live attachments too. */
+const getMappingOptions = (live: TAttachment[] | undefined): UIMappingOptions => ({
+  resolveToolFailure: (toolCall, message) =>
+    resolveToolFailure(toolCall, message ? getToolContext(message, live) : undefined),
+});
 
 /**
  * Every message field a view is built from, identity and metadata included: a stream frame or a
@@ -197,28 +209,33 @@ const viewSourceKeys = [
   'createdAt',
 ] as const;
 
-type CachedView = { view: UIMessage; source: Pick<TMessage, (typeof viewSourceKeys)[number]> };
+type CachedView = {
+  view: UIMessage;
+  source: Pick<TMessage, (typeof viewSourceKeys)[number]>;
+  live: TAttachment[] | undefined;
+};
 
 const views = new WeakMap<TMessage, CachedView>();
 
-const isSameSource = (cached: CachedView, message: TMessage) =>
-  viewSourceKeys.every((key) => cached.source[key] === message[key]);
+const isSameSource = (cached: CachedView, message: TMessage, live: TAttachment[] | undefined) =>
+  cached.live === live && viewSourceKeys.every((key) => cached.source[key] === message[key]);
 
 /**
- * Cached per message and per snapshot of the fields a view reads: a stream frame that replaces a
- * response's content remaps that response, while untouched messages keep their views.
+ * Cached per message, per snapshot of the fields a view reads and per live attachment list: a
+ * stream frame that replaces a response's content, or an attachment that arrives for it, remaps
+ * that response, while untouched messages keep their views.
  */
-const toView = (message: TMessage) => {
+const toView = (message: TMessage, live: TAttachment[] | undefined) => {
   const cached = views.get(message);
-  if (cached && isSameSource(cached, message)) {
+  if (cached && isSameSource(cached, message, live)) {
     return cached.view;
   }
-  const view = toUIMessage(message, mappingOptions);
+  const view = toUIMessage(message, getMappingOptions(live));
   const source = {} as CachedView['source'];
   for (const key of viewSourceKeys) {
     Object.assign(source, { [key]: message[key] });
   }
-  views.set(message, { view, source });
+  views.set(message, { view, source, live });
   return view;
 };
 
@@ -428,11 +445,13 @@ export function useChat(): UseChatHelpers {
     messagesKey,
     setMessages: setStoredMessages,
     latestMessageId,
+    useLiveAttachments,
     isSubmitting,
     ask,
     regenerate: regenerateTarget,
     stopGenerating,
   } = useChatContext();
+  const liveAttachments = useLiveAttachments();
 
   const { queryClient, queryHash, subscribe } = useMessagesSubscription(messagesKey);
   const snapshot = useRef<{ writes: number; stored?: TMessage[] }>();
@@ -458,13 +477,13 @@ export function useChat(): UseChatHelpers {
     const list: UIMessage[] = [];
     let latestMessage: TMessage | undefined;
     for (const message of cache.stored ?? []) {
-      list.push(toView(message));
+      list.push(toView(message, liveAttachments[message.messageId]));
       if (message.messageId === latestMessageId) {
         latestMessage = message;
       }
     }
     return { messages: list, latest: latestMessage };
-  }, [cache, latestMessageId]);
+  }, [cache, latestMessageId, liveAttachments]);
 
   const chatId = messagesKey || conversation?.conversationId || undefined;
   const status = getChatStatus(isSubmitting, latest);
@@ -480,7 +499,10 @@ export function useChat(): UseChatHelpers {
   const setMessages = useCallback(
     (update: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => {
       const current = getMessages() ?? [];
-      const next = typeof update === 'function' ? update(current.map(toView)) : update;
+      const next =
+        typeof update === 'function'
+          ? update(current.map((message) => toView(message, liveAttachments[message.messageId])))
+          : update;
       const byId = new Map(current.map((message) => [message.messageId, message]));
       const branch = getActiveBranch(byId, latestMessageId);
       const conversationId = chatId === Constants.NEW_CONVO ? null : (chatId ?? null);
@@ -502,7 +524,7 @@ export function useChat(): UseChatHelpers {
       });
       setStoredMessages(stored);
     },
-    [chatId, getMessages, latestMessageId, setStoredMessages],
+    [chatId, getMessages, latestMessageId, liveAttachments, setStoredMessages],
   );
 
   return {
