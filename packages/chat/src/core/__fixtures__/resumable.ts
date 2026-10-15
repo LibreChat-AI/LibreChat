@@ -85,6 +85,15 @@ export const createHost = (
       setConversation: jest.fn(),
       upsertConversation: jest.fn(),
       removeConversation: jest.fn(),
+      getConversation: jest.fn(() => undefined),
+      removeConversationQueries: jest.fn(),
+      queueTitleGeneration: jest.fn(),
+      addOptimisticConversation: jest.fn((_conversationId, submission) => submission),
+    },
+    queue: {
+      clearSupersededMarkers: jest.fn(),
+      isStopped: jest.fn(() => false),
+      rememberDetachedRun: jest.fn(),
     },
     pane: {
       setIsSubmitting: jest.fn(),
@@ -100,6 +109,9 @@ export const createHost = (
       updateConversation: jest.fn(),
       resolveDetachedEnd: jest.fn(() => ({ resolvable: false, end: null })),
       setAbortScroll: jest.fn(),
+      setConversation: jest.fn(),
+      startNewConversation: jest.fn(),
+      replaceNewConversationUrl: jest.fn(),
       renewActiveRun: jest.fn(),
       runEndTarget: jest.fn((params) => ({
         conversationId: params.conversationId,
