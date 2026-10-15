@@ -28,6 +28,7 @@ import {
 } from '~/hooks/Chat/queue';
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
 import useQueueDrain from '../useQueueDrain';
+import '~/Providers/SteerHostContext';
 
 const mockMarkFilesUsage = jest.fn();
 jest.mock('~/data-provider', () => ({

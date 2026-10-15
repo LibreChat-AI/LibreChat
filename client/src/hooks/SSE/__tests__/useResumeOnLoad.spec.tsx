@@ -33,6 +33,7 @@ import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { submissionStartFamily } from '~/store/generation';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();

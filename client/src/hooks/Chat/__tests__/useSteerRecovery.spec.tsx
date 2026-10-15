@@ -21,6 +21,7 @@ import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue'
 import { usePaneConversations } from '~/routes/ChatSettings';
 import useSteerRecovery from '../useSteerRecovery';
 import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const mockMutateAsync = jest.fn();
 const mockCancelSteer = jest.fn();

@@ -18,6 +18,7 @@ import { AuthContextProvider } from '~/hooks/AuthContext';
 import DragDropWrapper from '../Files/DragDropWrapper';
 import ChatForm from '../ChatForm';
 import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();

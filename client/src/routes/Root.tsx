@@ -36,6 +36,7 @@ import {
   normalizeCodeHighlightThrottleMs,
 } from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
 import KeyboardShortcutsDialog from '~/components/Nav/KeyboardShortcutsDialog';
+import { SteerHostProvider, appSteerHost } from '~/Providers/SteerHostContext';
 import KeyboardDeleteDialog from '~/components/Nav/KeyboardDeleteDialog';
 import { useUserTermsQuery, useGetStartupConfig } from '~/data-provider';
 import { MobileDrawerScrim } from '~/components/UnifiedSidebar/mobile';
@@ -274,7 +275,9 @@ function RootLayout() {
 export default function Root() {
   return (
     <ChatSettingsProvider>
-      <RootLayout />
+      <SteerHostProvider host={appSteerHost}>
+        <RootLayout />
+      </SteerHostProvider>
     </ChatSettingsProvider>
   );
 }

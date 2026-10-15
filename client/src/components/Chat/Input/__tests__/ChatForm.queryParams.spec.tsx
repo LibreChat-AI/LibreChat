@@ -24,6 +24,7 @@ import { AuthContextProvider } from '~/hooks/AuthContext';
 import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const initialConversation = {
   conversationId: 'new',
