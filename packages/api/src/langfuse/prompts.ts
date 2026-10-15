@@ -25,6 +25,7 @@ export type LangfusePromptListQuery = {
   name?: string;
   label?: string;
   tag?: string;
+  type?: 'text' | 'chat';
   page?: number;
   limit?: number;
   fromUpdatedAt?: string;
@@ -252,8 +253,10 @@ function appendDefined(
 
 /**
  * Lists prompt metadata from Langfuse. Query params are sent as-is, only those
- * defined; `filter` is never sent (deferred to the sync slice), and every
- * prompt type — including `chat` — is returned.
+ * defined; every prompt type — including `chat` — is returned unless `type`
+ * is given. `type` is not a Langfuse query param itself: it is serialized as
+ * the `filter` parameter, the shape the Langfuse list endpoint expects for a
+ * column filter. `filter` is omitted entirely when `type` is unset.
  */
 export async function listLangfusePrompts(
   conn: LangfusePromptConnection,
@@ -268,6 +271,12 @@ export async function listLangfusePrompts(
   appendDefined(params, 'limit', query.limit);
   appendDefined(params, 'fromUpdatedAt', query.fromUpdatedAt);
   appendDefined(params, 'toUpdatedAt', query.toUpdatedAt);
+  if (query.type != null) {
+    params.set(
+      'filter',
+      JSON.stringify([{ type: 'string', column: 'type', operator: '=', value: query.type }]),
+    );
+  }
 
   const search = params.size > 0 ? `?${params.toString()}` : '';
   const url = `${conn.baseUrl.replace(/\/+$/, '')}${PROMPTS_PATH}${search}`;

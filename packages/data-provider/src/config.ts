@@ -3977,10 +3977,17 @@ export const langfuseConfigSchema = z.object({
   /** Trace user identity and allowlisted user/request metadata. */
   trace: langfuseTraceConfigSchema.optional(),
   /** Tenant admin switch for Langfuse prompt sync. Effective only when the
-   *  deployment sets LANGFUSE_PROMPT_SYNC_AVAILABLE. */
+   *  deployment sets LANGFUSE_PROMPT_SYNC_AVAILABLE.
+   *  - enabled: the tenant admin switch itself.
+   *  - lockLeaseMs: the per-tenant sync lock lease, in milliseconds (default
+   *    300000, clamped to 60000-3600000).
+   *  - maxPages: the page cap for one sync request, in pages of up to 100
+   *    Langfuse prompts each (default 50, clamped to 1-1000). */
   promptSync: z
     .object({
       enabled: z.boolean().optional(),
+      lockLeaseMs: z.number().int().min(60000).max(3600000).optional(),
+      maxPages: z.number().int().min(1).max(1000).optional(),
     })
     .optional(),
 });

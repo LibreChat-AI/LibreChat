@@ -1479,9 +1479,18 @@ export type TLangfusePromptErrorCode =
   | 'invalid_response'
   | 'not_found'
   | 'unsupported_type'
-  | 'invalid_request';
+  | 'invalid_request'
+  | 'already_running'
+  | 'lock_lost'
+  | 'internal';
 
 export type TLangfusePromptErrorBody = {
   code: TLangfusePromptErrorCode;
   status?: number;
+};
+
+export type TLangfusePromptSyncResult = {
+  created: number;
+  unchanged: number;
+  skipped: number;
 };

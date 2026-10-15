@@ -1,5 +1,4 @@
 import { useId, useState } from 'react';
-import axios from 'axios';
 import {
   Button,
   Input,
@@ -18,16 +17,10 @@ import {
   TableRow,
   Textarea,
 } from '@librechat/client';
-import type {
-  TLangfusePromptErrorBody,
-  TLangfusePromptErrorCode,
-  TLangfusePromptGetParams,
-  TLangfusePromptListParams,
-} from 'librechat-data-provider';
+import type { TLangfusePromptGetParams, TLangfusePromptListParams } from 'librechat-data-provider';
 import type { FormEvent } from 'react';
-import type { TranslationKeys } from '~/hooks';
 import { useLangfusePromptQuery, useLangfusePromptsQuery } from '~/data-provider';
-import { getResponseErrorCode } from '~/utils';
+import { getPromptErrorMessage } from './promptErrors';
 import { useLocalize } from '~/hooks';
 
 type LangfusePromptsDialogProps = {
@@ -43,40 +36,6 @@ const MAX_LIMIT = 100;
 
 function isGetMode(value: string): value is GetMode {
   return value === 'production' || value === 'version';
-}
-
-/** Codes whose whole copy is one localized sentence; `upstream` is handled separately below
- *  because its sentence needs the Langfuse HTTP status when the server sent one. */
-const PROMPT_ERROR_MESSAGE_KEYS: Partial<Record<TLangfusePromptErrorCode, TranslationKeys>> = {
-  not_configured: 'com_ui_langfuse_prompt_error_not_configured',
-  unauthorized: 'com_ui_langfuse_prompt_error_unauthorized',
-  timeout: 'com_ui_langfuse_prompt_error_timeout',
-  invalid_response: 'com_ui_langfuse_prompt_error_invalid_response',
-  not_found: 'com_ui_langfuse_prompt_error_not_found',
-  unsupported_type: 'com_ui_langfuse_prompt_error_unsupported_type',
-  invalid_request: 'com_ui_langfuse_prompt_error_invalid_request',
-};
-
-function getUpstreamStatus(error: unknown): number | undefined {
-  if (!axios.isAxiosError<TLangfusePromptErrorBody>(error)) {
-    return undefined;
-  }
-  const status = error.response?.data?.status;
-  return typeof status === 'number' ? status : undefined;
-}
-
-/** Maps a failed list or get call to one short localized line, with a generic fallback for an
- *  unmapped or missing code (for example a bare 404 with no body, which means the feature is off). */
-function getPromptErrorMessage(error: unknown, localize: ReturnType<typeof useLocalize>): string {
-  const code = getResponseErrorCode<TLangfusePromptErrorCode>(error);
-  if (code === 'upstream') {
-    const status = getUpstreamStatus(error);
-    return status != null
-      ? localize('com_ui_langfuse_prompt_error_upstream_status', { 0: status })
-      : localize('com_ui_langfuse_prompt_error_upstream');
-  }
-  const messageKey = code != null ? PROMPT_ERROR_MESSAGE_KEYS[code] : undefined;
-  return localize(messageKey ?? 'com_ui_langfuse_prompt_error_fallback');
 }
 
 /** A whole, positive integer, the way page, limit and version numbers must read. Rejects

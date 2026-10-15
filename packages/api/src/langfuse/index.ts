@@ -1,6 +1,7 @@
 export * from './destinations';
 export * from './feedback';
 export * from './policy';
+export * from './promptCatalogSync';
 export * from './prompts';
 export * from './reader';
 export * from './trace';

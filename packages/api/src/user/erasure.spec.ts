@@ -466,6 +466,17 @@ describe('eraseUserData', () => {
     await finishSkillCleanup(skillId);
   });
 
+  it('calls deleteUserPrompts with the user id during erasure', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await seedUser(userId);
+    const { deps } = createDeps();
+    const deleteUserPrompts = jest.fn(async () => undefined);
+
+    await eraseUserData({ userId: userId.toString() }, { ...deps, deleteUserPrompts });
+
+    expect(deleteUserPrompts).toHaveBeenCalledWith(userId.toString());
+  });
+
   for (const modelName of ['Agent', 'PromptGroup']) {
     it(`keeps the account erasable when the ${modelName} lookup fails`, async () => {
       const userId = new mongoose.Types.ObjectId();

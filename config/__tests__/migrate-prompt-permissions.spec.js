@@ -276,4 +276,66 @@ describe('PromptGroup Migration Script', () => {
     });
     expect(promptEntries).toHaveLength(0);
   });
+
+  it('should skip a Langfuse-source promptGroup in dry run', async () => {
+    await PromptGroup.create({
+      name: 'Native Group',
+      author: testOwner._id,
+      authorName: testOwner.name,
+      productionId: new ObjectId(),
+    });
+
+    await PromptGroup.create({
+      name: 'Langfuse Group',
+      author: testOwner._id,
+      authorName: 'Langfuse Sync',
+      source: 'langfuse',
+      sourcePromptName: 'langfuse-prompt',
+      sourceProjectId: 'project-1',
+      sourceDestination: 'destination-1',
+    });
+
+    const result = await migrateToPromptGroupPermissions({ dryRun: true });
+
+    expect(result.summary.total).toBe(1);
+    expect(result.details.privateGroups).toHaveLength(1);
+    expect(result.details.privateGroups[0].name).toBe('Native Group');
+  });
+
+  it('should skip a Langfuse-source promptGroup during a live run and write no owner grant for it', async () => {
+    const nativeGroup = await PromptGroup.create({
+      name: 'Native Group',
+      author: testOwner._id,
+      authorName: testOwner.name,
+      productionId: new ObjectId(),
+    });
+
+    const langfuseGroup = await PromptGroup.create({
+      name: 'Langfuse Group',
+      author: testOwner._id,
+      authorName: 'Langfuse Sync',
+      source: 'langfuse',
+      sourcePromptName: 'langfuse-prompt',
+      sourceProjectId: 'project-1',
+      sourceDestination: 'destination-1',
+    });
+
+    const result = await migrateToPromptGroupPermissions({ dryRun: false });
+
+    expect(result.migrated).toBe(1);
+    expect(result.ownerGrants).toBe(1);
+
+    const nativeOwnerEntry = await AclEntry.findOne({
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: nativeGroup._id,
+      principalType: PrincipalType.USER,
+    });
+    expect(nativeOwnerEntry).toBeTruthy();
+
+    const langfuseOwnerEntry = await AclEntry.findOne({
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: langfuseGroup._id,
+    });
+    expect(langfuseOwnerEntry).toBeNull();
+  });
 });
