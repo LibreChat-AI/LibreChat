@@ -26,7 +26,7 @@
  * the system prompt every turn and uncache the whole history.
  *
  * The history goes through the same helpers `AgentClient.buildMessages` uses
- * (`createHistoryContextUpdates`), and the per-chat
+ * (`planTurnContext` and `createHistoryContextUpdates`), and the per-chat
  * system context through the same builders as agent initialization, so a
  * change to any of them that moves bytes inside a cached prefix fails here.
  */
@@ -34,7 +34,10 @@ import { tool } from '@langchain/core/tools';
 import { formatAgentMessages, formatMessage, Providers } from '@librechat/agents';
 import { replaceSpecialVars } from 'librechat-data-provider';
 import { buildWebSearchContext, buildWebSearchDynamicContext } from '~/tools/toolkits/web';
+import type { ContextEntry, TurnContextMessage } from '../turnContext';
 import { createHistoryContextUpdates, AGENT_TEMPORAL_INSTRUCTIONS_KEY } from '../contextUpdates';
+import { prependContextText } from '../client';
+import { planTurnContext } from '../turnContext';
 import { ContextPartKeys, contributeContext } from '../systemParts';
 import { createRun } from '../run';
 
@@ -75,25 +78,46 @@ const appConfigFor = (stableContext: boolean, includeTimestamps = false) => ({
   },
 });
 
+/**
+ * Plays the turns up to `turn`. With `stableContext`, through the turn context ledger, storing
+ * each turn's entries; without it, through the send-time notes only.
+ */
 function buildHistory(
   conversation: Conversation,
   turn: number,
   includeTimestamps: boolean,
   stableContext: boolean,
 ) {
-  const ordered: Array<Record<string, unknown>> = [];
+  const rows: Array<Record<string, unknown> & TurnContextMessage> = [];
+  let anchor: ContextEntry[] | undefined;
+  let updates: ReadonlyMap<number, string> = new Map();
   for (let i = 0; i < turn; i++) {
-    const isCurrent = i === turn - 1;
-    ordered.push({
+    rows.push({
       messageId: `u${i + 1}`,
       isCreatedByUser: true,
       sender: 'User',
       text: `Question ${i + 1}`,
-      /** Stored rows carry the turn start (see `createdAtOnInsert`); the current one is unsaved. */
-      ...(isCurrent ? {} : { createdAt: conversation.turnStarts[i] }),
+      createdAt: conversation.turnStarts[i],
     });
-    if (!isCurrent) {
-      ordered.push({
+    if (stableContext) {
+      const plan = planTurnContext({
+        messages: rows,
+        conversationAnchor: anchor,
+        currentIndex: rows.length - 1,
+        snapshot: {
+          agent: {},
+          turnStartedAt: conversation.turnStarts[i],
+          timezone: TIMEZONE,
+          dateContext: true,
+          messageTimestamps: includeTimestamps,
+        },
+      });
+      rows[rows.length - 1].contextUpdates = plan.currentEntries;
+      anchor ??= plan.anchor;
+      updates = plan.updates;
+    }
+    if (i < turn - 1) {
+      rows.push({
         messageId: `a${i + 1}`,
         isCreatedByUser: false,
         sender: 'Assistant',
@@ -102,19 +126,21 @@ function buildHistory(
       });
     }
   }
-  const historyContext = createHistoryContextUpdates({
-    req: {
-      conversationCreatedAt: conversation.startedAt,
-      turnStartedAt: conversation.turnStarts[turn - 1],
-      body: { timezone: TIMEZONE },
-      config: appConfigFor(stableContext, includeTimestamps),
-    },
-    messages: ordered,
-    agents: [{ dynamicToolContextMap: { web_search: 'stated' } }],
-  });
-  const formatted = ordered.map((message, index) => {
+  if (!stableContext) {
+    updates = createHistoryContextUpdates({
+      req: {
+        conversationCreatedAt: conversation.startedAt,
+        turnStartedAt: conversation.turnStarts[turn - 1],
+        body: { timezone: TIMEZONE },
+        config: appConfigFor(false, includeTimestamps),
+      },
+      messages: rows,
+      agents: [{ dynamicToolContextMap: { web_search: 'stated' } }],
+    }).updates;
+  }
+  const formatted = rows.map((message, index) => {
     const formattedMessage = formatMessage({ message: message as never });
-    historyContext.apply(formattedMessage as never, index);
+    prependContextText(formattedMessage as never, updates.get(index), '\n\n');
     return formattedMessage;
   });
   return formatAgentMessages(formatted as never, {}).messages;

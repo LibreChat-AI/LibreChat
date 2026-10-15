@@ -30,6 +30,8 @@ export interface ContextAgent {
   toolContextMap?: Record<string, unknown>;
   /** Tool runtime context, by tool name: `runtime:<name>` parts. */
   dynamicToolContextMap?: Record<string, unknown>;
+  /** The turn context delivers the runtime context, so the system prompt leaves it out. */
+  runtimeInLedger?: boolean;
 }
 
 export const ContextPartKeys = {
@@ -45,6 +47,8 @@ export const ContextPartKeys = {
   rag: 'rag',
   memory: 'memory',
   agentFiles: 'agent_files',
+  /** The segment's anchored context (turn context ledger), replacing the parts it owns. */
+  conversation: 'conversation',
   alwaysApplySkills: 'always_apply_skills',
   runtimePrefix: 'runtime:',
 } as const;
@@ -81,6 +85,7 @@ const CONTEXT_PARTS: PartSpec[] = [
   { key: ContextPartKeys.memory, kind: 'turn', stage: 'request' },
   /** Extracted text of the agent's own context files. */
   { key: ContextPartKeys.agentFiles, kind: 'static', stage: 'request' },
+  { key: ContextPartKeys.conversation, kind: 'conversation', stage: 'request' },
   { key: ContextPartKeys.alwaysApplySkills, kind: 'static', stage: 'subagent' },
   { key: ContextPartKeys.runtimePrefix, kind: 'conversation' },
 ];
@@ -126,7 +131,9 @@ export function listContextParts(agent: ContextAgent): ContextPart[] {
   const entries = [
     ...mapParts(ContextPartKeys.toolPrefix, agent.toolContextMap),
     ...Object.entries(agent.contextParts ?? {}),
-    ...mapParts(ContextPartKeys.runtimePrefix, agent.dynamicToolContextMap),
+    ...(agent.runtimeInLedger === true
+      ? []
+      : mapParts(ContextPartKeys.runtimePrefix, agent.dynamicToolContextMap)),
   ];
   return entries
     .map(([key, text]) => {
@@ -177,6 +184,21 @@ export function contributeContext(
     throw new Error(`Unknown system prompt part "${key}"`);
   }
   agent.contextParts = { ...tailParts(agent), [key]: text ?? '' };
+  agent.additional_instructions = assembleAdditionalInstructions(agent);
+}
+
+/**
+ * Replaces the parts the turn context owns with the segment's anchored block.
+ * The runtime context leaves the system prompt too: the block or the messages carry it.
+ */
+export function setConversationContext(
+  agent: ContextAgent,
+  ownedKeys: readonly string[],
+  block: string,
+): void {
+  const kept = Object.entries(tailParts(agent)).filter(([key]) => !ownedKeys.includes(key));
+  agent.contextParts = { ...Object.fromEntries(kept), [ContextPartKeys.conversation]: block };
+  agent.runtimeInLedger = true;
   agent.additional_instructions = assembleAdditionalInstructions(agent);
 }
 

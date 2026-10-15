@@ -457,6 +457,8 @@ type RunAgent = Omit<Agent, 'tools'> & {
   dynamicToolContextMap?: Record<string, unknown>;
   /** Text of each contributed system prompt part, by key (see `systemParts`). */
   contextParts?: Readonly<Record<string, string>>;
+  /** Set by `applyTurnContext`: the turn context delivers the runtime context. */
+  runtimeInLedger?: boolean;
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -2403,7 +2405,13 @@ export async function createRun({
     enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
   }
   for (const agent of codeFileAgents.values()) {
-    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+    /** The turn context already announced the paths planned at initialization in the message. */
+    prepareQueuedCodeFileContext(
+      agent,
+      codeFileAgents.values(),
+      user?.id,
+      agent.runtimeInLedger === true,
+    );
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
