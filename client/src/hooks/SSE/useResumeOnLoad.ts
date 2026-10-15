@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { resolveDetachedRunEnd } from '@librechat/chat';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
 import { useStore, useAtom, useSetAtom, useAtomValue } from 'jotai';
+import {
+  isDetachedRunManual,
+  pendingRunEndByConvoId,
+  detachedRunByConvoId,
+} from '@librechat/chat/react';
 import {
   Constants,
   QueryKeys,
@@ -33,12 +39,6 @@ import {
   extendActiveJobsGrace,
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
 } from '~/data-provider';
-import {
-  isDetachedRunManual,
-  resolveDetachedRunEnd,
-  pendingRunEndByConvoId,
-  detachedRunByConvoId,
-} from '~/hooks/Chat/queue';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { dedupeSteersById, getBranchSiblingIndexesForTarget } from '~/utils';

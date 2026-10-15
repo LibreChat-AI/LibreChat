@@ -11,7 +11,7 @@ import {
 } from '@librechat/chat/react';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { RevealedQueuedTurn } from '@librechat/chat/react';
-import type { QueuedMessage, RunEnd } from '~/hooks/Chat/queue';
+import type { QueuedMessage, RunEnd } from '@librechat/chat';
 import useQueuedTurnReveal, {
   buildRevealedMessage,
   hasRevealSuccessor,

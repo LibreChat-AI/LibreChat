@@ -6,6 +6,21 @@ import { useQueryClient } from '@tanstack/react-query';
 import { liveAppliedSteerIdsAtom } from '@librechat/chat/react';
 import { ABORT_SWEEP_STATUSES, selectLocalSteersForQueue } from '@librechat/chat';
 import {
+  resolveDetachedRunEnd,
+  isStoppedRun,
+  canRestoreRecovery,
+  blockRecovery,
+} from '@librechat/chat';
+import {
+  isDetachedRunManual,
+  stopRequestedByConvoId,
+  detachedRunByConvoId,
+  drainAfterAbortByIndex,
+  queuedMessagesByConvoId,
+  runEndByIndex,
+  recoveryDispositionsFamily,
+} from '@librechat/chat/react';
+import {
   Constants,
   QueryKeys,
   StepEvents,
@@ -91,7 +106,7 @@ import type {
   StartGenerationResult,
   GenerationProtocolVersion,
 } from '@librechat/chat';
-import type { QueuedMessageOrigin, DrainAfterAbort, RunEnd } from '~/hooks/Chat/queue';
+import type { QueuedMessageOrigin, DrainAfterAbort, RunEnd } from '@librechat/chat';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
@@ -116,16 +131,6 @@ import {
   insertQueuedOrigin,
 } from '~/utils';
 import {
-  resolveDetachedRunEnd,
-  isDetachedRunManual,
-  stopRequestedByConvoId,
-  detachedRunByConvoId,
-  isStoppedRun,
-  drainAfterAbortByIndex,
-  queuedMessagesByConvoId,
-  runEndByIndex,
-} from '~/hooks/Chat/queue';
-import {
   useGetUserBalance,
   fetchStreamStatus,
   useGetStartupConfig,
@@ -133,11 +138,6 @@ import {
   streamStatusQueryKey,
   fetchConversationMessages,
 } from '~/data-provider';
-import {
-  recoveryDispositionsFamily,
-  canRestoreRecovery,
-  blockRecovery,
-} from '~/components/Chat/Steering/recovery';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
 import { useChatTransport } from '~/Providers/ChatTransportContext';

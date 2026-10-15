@@ -9,7 +9,7 @@ import {
   resolveAcknowledgedSteer,
   pendingSteerCancelClientIdsFamily,
 } from '@librechat/chat/react';
-import type { PendingSteer } from '~/hooks/Chat/queue';
+import type { PendingSteer } from '@librechat/chat';
 import { useSteerMessageMutation, useCancelSteerMutation } from '~/data-provider';
 import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { carriedSteerContext, isLegacyDeliveryUncertain } from '~/utils';

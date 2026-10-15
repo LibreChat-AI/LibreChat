@@ -28,17 +28,7 @@ import {
   resetSteerFamilies,
 } from '@librechat/chat/react';
 import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
-import type { QueuedMessage } from '~/hooks/Chat/queue';
 import type { ExtendedFile } from '~/common';
-import {
-  pendingQueuedTurnEnqueueIdsByConvoId,
-  settledQueuedTurnReceiptsByConvoId,
-  queuedMessagesByConvoId,
-  pendingRunEndByConvoId,
-  drainAfterAbortByIndex,
-  runEndByIndex,
-  resetQueueFamilies,
-} from '~/hooks/Chat/queue';
 import {
   getReasoningStateKey,
   pendingQuotesByConvoId,
@@ -46,7 +36,6 @@ import {
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import ChatSettingsProvider from '~/routes/ChatSettings';
 import { duringRunActionAtom } from '~/store/duringRun';
@@ -59,6 +48,17 @@ import {
   hasLiveRunPause,
   hydrateFileDeliveryMetadata as mergeQueuedTurnFileMetadata,
 } from '@librechat/chat';
+import {
+  pendingQueuedTurnEnqueueIdsByConvoId,
+  settledQueuedTurnReceiptsByConvoId,
+  queuedMessagesByConvoId,
+  pendingRunEndByConvoId,
+  drainAfterAbortByIndex,
+  runEndByIndex,
+  resetQueueFamilies,
+  recoveryDispositionsFamily,
+} from '@librechat/chat/react';
+import type { QueuedMessage } from '@librechat/chat';
 
 const CONVO_ID = 'convo-steer-ui';
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

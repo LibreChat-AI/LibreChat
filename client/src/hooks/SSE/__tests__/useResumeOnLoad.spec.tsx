@@ -18,15 +18,6 @@ import {
 import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
-import type { QueuedMessage, PendingSteer, DetachedRun } from '~/hooks/Chat/queue';
-import {
-  settledQueuedTurnReceiptsByConvoId,
-  queuedMessagesByConvoId,
-  stopRequestedByConvoId,
-  pendingRunEndByConvoId,
-  detachedRunByConvoId,
-  resetQueueFamilies,
-} from '~/hooks/Chat/queue';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
@@ -34,6 +25,15 @@ import { submissionStartFamily } from '~/store/generation';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
 import '~/Providers/SteerHostContext';
+import {
+  settledQueuedTurnReceiptsByConvoId,
+  queuedMessagesByConvoId,
+  stopRequestedByConvoId,
+  pendingRunEndByConvoId,
+  detachedRunByConvoId,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
+import type { QueuedMessage, PendingSteer, DetachedRun } from '@librechat/chat';
 
 const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();
