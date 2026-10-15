@@ -12,12 +12,8 @@ import {
   acquireQueueSendLock,
   releaseQueueSendLock,
 } from '@librechat/chat';
-import type {
-  DrainAfterAbort,
-  RunEnd,
-  QueuedMessage,
-  SettledQueuedTurnReceipt,
-} from '~/hooks/Chat/queue';
+import useQueueDrain from '../useQueueDrain';
+import '~/Providers/SteerHostContext';
 import {
   settledQueuedTurnReceiptsByConvoId,
   queuedMessagesByConvoId,
@@ -25,10 +21,14 @@ import {
   drainAfterAbortByIndex,
   runEndByIndex,
   resetQueueFamilies,
-} from '~/hooks/Chat/queue';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
-import useQueueDrain from '../useQueueDrain';
-import '~/Providers/SteerHostContext';
+  recoveryDispositionsFamily,
+} from '@librechat/chat/react';
+import type {
+  DrainAfterAbort,
+  RunEnd,
+  QueuedMessage,
+  SettledQueuedTurnReceipt,
+} from '@librechat/chat';
 
 const mockMarkFilesUsage = jest.fn();
 jest.mock('~/data-provider', () => ({

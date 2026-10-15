@@ -8,10 +8,13 @@ import {
   pendingSteersByConvoId,
   resetSteerFamilies,
 } from '@librechat/chat/react';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import '~/Providers/SteerHostContext';
 import { useSteerConvert } from '@librechat/chat/react';
+import {
+  recoveryDispositionsFamily,
+  queuedMessagesByConvoId,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
 
 const mockFetchStreamStatus = jest.fn();
 let mockFileMap: Record<string, { llmDeliveryPath: 'text' }> = {};

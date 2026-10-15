@@ -11,8 +11,8 @@ import {
 } from '@librechat/chat/react';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { RevealedQueuedTurn } from '@librechat/chat/react';
+import type { QueuedMessage, RunEnd } from '@librechat/chat';
 import type { StreamStatusResponse } from '~/data-provider/SSE/queries';
-import type { QueuedMessage, RunEnd } from '~/hooks/Chat/queue';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { streamStatusQueryKey } from '~/data-provider/SSE/queries';
 

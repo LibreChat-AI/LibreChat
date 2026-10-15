@@ -22,8 +22,6 @@ import type { MutableSnapshot } from 'recoil';
 import type { StreamStatusResponse } from '~/data-provider';
 import type { ChatContract } from '~/hooks/Chat/contract';
 import type { Transport } from '~/hooks/Chat/contract';
-import type { PendingSteer } from '~/hooks/Chat/queue';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { ChatContext, useChatContext } from '~/Providers/ChatContext';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
@@ -35,7 +33,9 @@ import { useChat } from '~/hooks/Chat/facade';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 import '~/Providers/SteerHostContext';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '@librechat/chat/react';
 import { useSteerReclaim, useSteerEscalate, useSteering } from '@librechat/chat/react';
+import type { PendingSteer } from '@librechat/chat';
 
 jest.mock('~/hooks/AuthContext', () => {
   const { createContext } = jest.requireActual('react');
