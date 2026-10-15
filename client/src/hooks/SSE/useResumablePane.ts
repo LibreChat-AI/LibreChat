@@ -18,6 +18,7 @@ import {
 } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { clearComposerDrafts, resolveRunEndTarget } from '~/utils';
+import { activeRunFamily } from './atoms';
 import store from '~/store';
 
 /**
@@ -72,7 +73,7 @@ export default function useResumablePane({
   setGenerationEpoch: ResumablePane['setGenerationEpoch'];
 }): { pane: ResumablePane; queue: ResumableQueue } {
   const jotaiStore = useStore();
-  const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
+  const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
   const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
   const setSubmission = useSetAtom(submissionByIndex(runIndex));
   const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));

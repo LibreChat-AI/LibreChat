@@ -1,7 +1,7 @@
 import React from 'react';
-import { useStore, useAtomValue } from 'jotai';
-import { RecoilRoot, useRecoilCallback } from 'recoil';
+import { RecoilRoot } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
+import { useStore, useAtomValue, createStore, Provider as JotaiProvider } from 'jotai';
 import {
   Constants,
   StepTypes,
@@ -25,9 +25,9 @@ import {
   subagentProgressByToolCallId,
   subagentProgressKey,
 } from '~/components/Chat/Subagents/state';
-import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/store/ptc';
+import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store/sandbox';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { IsolatedAtomStore } from 'test/harness';
 
@@ -4569,20 +4569,22 @@ describe('useStepHandler', () => {
 
   describe('PTC inner tool-call trace', () => {
     const renderWithTraceReader = () => {
+      const traceStore = createStore();
       const hookResult = renderHook(
         () => {
           const stepHandler = useStepHandler(createHookParams());
-          const read = useRecoilCallback(
-            ({ snapshot }) =>
-              (messageId: string, toolCallId: string): PtcTrace =>
-                snapshot
-                  .getLoadable(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)))
-                  .valueOrThrow(),
-            [],
-          );
+          const read = (messageId: string, toolCallId: string): PtcTrace =>
+            traceStore.get(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)));
           return { ...stepHandler, read };
         },
-        { wrapper: RecoilRoot },
+        {
+          wrapper: ({ children }: { children: React.ReactNode }) =>
+            React.createElement(
+              RecoilRoot,
+              null,
+              React.createElement(JotaiProvider, { store: traceStore }, children),
+            ),
+        },
       );
       return {
         result: hookResult.result,

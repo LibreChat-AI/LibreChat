@@ -16,6 +16,7 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
 import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { clearLocalStorage } from '~/utils/localStorage';
+import { activeRunFamily } from '~/hooks/SSE/atoms';
 import store from '~/store';
 
 export default function useClearStates() {
@@ -72,7 +73,7 @@ export default function useClearStates() {
           reset(store.globalAudioURLFamily(key));
           reset(store.globalAudioFetchingFamily(key));
           reset(store.globalAudioPlayingFamily(key));
-          reset(store.activeRunFamily(key));
+          jotaiStore.set(activeRunFamily(key), null);
           reset(store.audioRunFamily(key));
           jotaiStore.set(siblingIdxFamily(siblingKey(key.toString())), 0);
         }

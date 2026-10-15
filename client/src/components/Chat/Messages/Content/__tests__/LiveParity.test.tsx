@@ -11,8 +11,8 @@ import type {
   TMessageContentParts,
   SearchResultData,
 } from 'librechat-data-provider';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store';
 import ContentParts from '../ContentParts';
 import { getLiveActivity } from '../live';
 import * as mcpHooks from '~/hooks/MCP';

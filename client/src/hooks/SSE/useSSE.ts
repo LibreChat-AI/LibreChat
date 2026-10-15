@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
-import { useSetRecoilState } from 'recoil';
 import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { abortScrollFamily, showStopButtonByIndex } from '@librechat/chat/react';
@@ -28,7 +27,7 @@ import { useAuthContext } from '~/hooks/AuthContext';
 import useEventHandlers from './useEventHandlers';
 import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
-import store from '~/store';
+import { activeRunFamily } from './atoms';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -48,7 +47,7 @@ export default function useSSE(
   runIndex = 0,
 ) {
   const jotaiStore = useStore();
-  const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
+  const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
 
   const { token, isAuthenticated } = useAuthContext();
   const transport = useChatTransport();

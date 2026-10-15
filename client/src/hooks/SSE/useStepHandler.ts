@@ -1,6 +1,5 @@
 import { useCallback, useRef } from 'react';
 import { useStore } from 'jotai';
-import { useRecoilCallback } from 'recoil';
 import {
   reduceStep,
   flushSummary,
@@ -27,12 +26,8 @@ import {
   subagentProgressByToolCallId,
   takeRegisteredSubagentProgressKeys,
 } from '~/components/Chat/Subagents/state';
-import {
-  sandboxStartingByToolCallId,
-  ptcTraceByToolCallId,
-  PTC_TRACE_MAX_ENTRIES,
-  ptcTraceKey,
-} from '~/store';
+import { ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES, ptcTraceKey } from './ptc';
+import { sandboxStartingByToolCallId } from './sandbox';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 
 type TUseStepHandler = {
@@ -147,6 +142,7 @@ export default function useStepHandler({
 
   /** PTC tool call ids with a live trace, so the atoms can be released. */
   const knownPtcAtomKeys = useRef(new Set<string>());
+  const ptcStore = useStore();
 
   /**
    * Folds one `on_ptc_tool_call` envelope into its program's trace: the
@@ -154,64 +150,59 @@ export default function useStepHandler({
    * place by `call_id`. Order follows the sandbox's dispatch order, which is
    * what the code reads like; a round trip can settle out of order.
    */
-  const applyPtcToolCall = useRecoilCallback(
-    ({ set }) =>
-      (event: PtcToolCallEvent, parentMessageId: string): void => {
-        const { tool_call_id: toolCallId, call_id: callId, name, status } = event;
-        /** No parent message means no occurrence to scope this to; a raw
-         *  `tool_call_id` would leak the rows into whichever card reused it. */
-        if (!toolCallId || !callId || !parentMessageId) {
-          return;
+  const applyPtcToolCall = useCallback(
+    (event: PtcToolCallEvent, parentMessageId: string): void => {
+      const { tool_call_id: toolCallId, call_id: callId, name, status } = event;
+      /** No parent message means no occurrence to scope this to; a raw
+       *  `tool_call_id` would leak the rows into whichever card reused it. */
+      if (!toolCallId || !callId || !parentMessageId) {
+        return;
+      }
+      const atomKey = ptcTraceKey(parentMessageId, toolCallId);
+      knownPtcAtomKeys.current.add(atomKey);
+      ptcStore.set(ptcTraceByToolCallId(atomKey), (previous) => {
+        const index = previous.entries.findIndex((entry) => entry.callId === callId);
+        const entry = {
+          callId,
+          name,
+          status,
+          ...(event.args ? { args: event.args } : {}),
+          ...(event.error ? { error: event.error } : {}),
+          ...(event.durationMs != null ? { durationMs: event.durationMs } : {}),
+        };
+
+        if (index !== -1) {
+          const next = [...previous.entries];
+          next[index] = { ...previous.entries[index], ...entry };
+          return { entries: next, dropped: previous.dropped };
         }
-        const atomKey = ptcTraceKey(parentMessageId, toolCallId);
-        knownPtcAtomKeys.current.add(atomKey);
-        set(ptcTraceByToolCallId(atomKey), (previous) => {
-          const index = previous.entries.findIndex((entry) => entry.callId === callId);
-          const entry = {
-            callId,
-            name,
-            status,
-            ...(event.args ? { args: event.args } : {}),
-            ...(event.error ? { error: event.error } : {}),
-            ...(event.durationMs != null ? { durationMs: event.durationMs } : {}),
-          };
 
-          if (index !== -1) {
-            const next = [...previous.entries];
-            next[index] = { ...previous.entries[index], ...entry };
-            return { entries: next, dropped: previous.dropped };
-          }
+        /** A settle whose row is gone, evicted by the cap, or pruned across
+         *  a resume gap, must not reappear at the tail out of order. */
+        if (status !== 'running') {
+          return previous;
+        }
 
-          /** A settle whose row is gone, evicted by the cap, or pruned across
-           *  a resume gap, must not reappear at the tail out of order. */
-          if (status !== 'running') {
-            return previous;
-          }
-
-          const appended = [...previous.entries, entry];
-          const overflow = appended.length - PTC_TRACE_MAX_ENTRIES;
-          if (overflow <= 0) {
-            return { entries: appended, dropped: previous.dropped };
-          }
-          return {
-            entries: appended.slice(overflow),
-            dropped: previous.dropped + overflow,
-          };
-        });
-      },
-    [],
+        const appended = [...previous.entries, entry];
+        const overflow = appended.length - PTC_TRACE_MAX_ENTRIES;
+        if (overflow <= 0) {
+          return { entries: appended, dropped: previous.dropped };
+        }
+        return {
+          entries: appended.slice(overflow),
+          dropped: previous.dropped + overflow,
+        };
+      });
+    },
+    [ptcStore],
   );
 
-  const resetPtcAtoms = useRecoilCallback(
-    ({ reset }) =>
-      (): void => {
-        for (const atomKey of knownPtcAtomKeys.current) {
-          reset(ptcTraceByToolCallId(atomKey));
-        }
-        knownPtcAtomKeys.current.clear();
-      },
-    [],
-  );
+  const resetPtcAtoms = useCallback((): void => {
+    for (const atomKey of knownPtcAtomKeys.current) {
+      ptcStore.set(ptcTraceByToolCallId(atomKey), EMPTY_PTC_TRACE);
+    }
+    knownPtcAtomKeys.current.clear();
+  }, [ptcStore]);
 
   /**
    * Settles rows still marked `running` after a stream gap as `interrupted`.
@@ -226,26 +217,20 @@ export default function useStepHandler({
    * gone is dropped rather than re-appended out of order, and the call would
    * vanish from the trace despite having run. Settled rows are untouched.
    */
-  const prunePtcTraces = useRecoilCallback(
-    ({ set }) =>
-      (): void => {
-        for (const atomKey of knownPtcAtomKeys.current) {
-          set(ptcTraceByToolCallId(atomKey), (previous) =>
-            previous.entries.some((entry) => entry.status === 'running')
-              ? {
-                  ...previous,
-                  entries: previous.entries.map((entry) =>
-                    entry.status === 'running'
-                      ? { ...entry, status: 'interrupted' as const }
-                      : entry,
-                  ),
-                }
-              : previous,
-          );
-        }
-      },
-    [],
-  );
+  const prunePtcTraces = useCallback((): void => {
+    for (const atomKey of knownPtcAtomKeys.current) {
+      ptcStore.set(ptcTraceByToolCallId(atomKey), (previous) =>
+        previous.entries.some((entry) => entry.status === 'running')
+          ? {
+              ...previous,
+              entries: previous.entries.map((entry) =>
+                entry.status === 'running' ? { ...entry, status: 'interrupted' as const } : entry,
+              ),
+            }
+          : previous,
+      );
+    }
+  }, [ptcStore]);
 
   /**
    * Per-token deltas fold into the stream state immediately (authoritative), but
