@@ -5,8 +5,8 @@
  * artifacts, skills catalog, temporal instructions, tool context maps from
  * `loadTools`), the request stage `AgentClient.buildMessages` applies through
  * `applyContextToAgent` (RAG, memory, agent files, MCP), and `createRun`. It
- * records the `instructions` and `additional_instructions` every graph agent
- * receives.
+ * records the `instructions`, `conversation_instructions` and
+ * `additional_instructions` every graph agent receives.
  *
  * Cases run with `promptCache.stableContext` off, where the previous
  * implementation is the oracle. The snapshot was written by this harness on the
@@ -296,6 +296,7 @@ async function prepareAgent(setup: AgentSetup, stableContext: boolean) {
 interface GraphInput {
   agentId?: string;
   instructions?: string;
+  conversation_instructions?: string;
   additional_instructions?: string;
   subagentConfigs?: Array<{ type?: string; agentInputs?: GraphInput }>;
 }
@@ -318,6 +319,9 @@ async function captureGraphInputs(agents: Array<Record<string, unknown>>, stable
       redact({
         agentId: input.agentId,
         instructions: input.instructions,
+        ...(input.conversation_instructions != null && {
+          conversation_instructions: input.conversation_instructions,
+        }),
         additional_instructions: input.additional_instructions,
         subagents: (input.subagentConfigs ?? [])
           .filter((config) => config.agentInputs != null)
