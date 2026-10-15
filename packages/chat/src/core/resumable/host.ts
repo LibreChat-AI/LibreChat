@@ -6,6 +6,7 @@ import type {
   TPendingSteer,
   TAttachment,
   ChatTransport,
+  ChatTransportRequest,
   ChatTitleFrame,
   ChatFinalFrame,
   EventSubmission,
@@ -127,6 +128,12 @@ export interface ResumableSteers {
   markLiveApplied: (steerId: string) => void;
   /** Patches the chips the server re-labelled (preempt capability); never removes one. */
   update: (event: TSteerUpdatedEvent) => void;
+  /** Whether the user has already dealt with the parked steer a recovery start replays. */
+  isRecoveryHeld: (conversationId: string, recoverySteerId: string) => boolean;
+  /** Refuses further recovery of a parked steer the server rejected. */
+  blockRecovery: (conversationId: string, recoverySteerId: string) => void;
+  /** Puts a queued turn whose start was refused back in its queue position. */
+  restoreQueued: (submission: TSubmission, expectedPredecessorCreatedAt?: number) => void;
   /** Re-seeds the chips from the server's still-queued steers. */
   seed: (
     conversationId: string,
@@ -247,6 +254,13 @@ export interface ResumableEvents {
   flushPendingDeltas: () => void;
   /** Discards the live usage estimate for a run that stopped streaming. */
   resetLive: (submission: TSubmission) => void;
+  /** Writes the error card for a start that failed, from the response body it failed with, or
+   *  for a recovery start the user already dealt with. */
+  showStartFailure: (
+    submission: TSubmission,
+    errorData?: unknown,
+    reason?: 'recovery_held',
+  ) => void;
   /** Writes the failed turn's error card from the text (or raw error value) the server sent. */
   showError: (text: string | boolean | { message?: string }, submission: TSubmission) => void;
 }
@@ -308,6 +322,8 @@ export interface ResumableHost extends SubscriptionHost {
   usage: ResumableUsage;
   /** The stream side of the app's transport, bound to the signed-in user. */
   stream: ChatTransport;
+  /** POSTs a turn to the resumable generation route; resolves to the start response. */
+  start: (request: ChatTransportRequest, options?: { signal?: AbortSignal }) => Promise<unknown>;
   /** Receives the dev-only controls that simulate a dropped or a clean close. */
   exposeDebugControls?: (controls: { killNetwork: () => void; closeClean: () => void }) => void;
 }

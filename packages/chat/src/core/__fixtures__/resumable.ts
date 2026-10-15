@@ -110,6 +110,9 @@ export const createHost = (
       resolve: jest.fn(() => []),
       markLiveApplied: jest.fn(),
       update: jest.fn(),
+      isRecoveryHeld: jest.fn(() => false),
+      blockRecovery: jest.fn(),
+      restoreQueued: jest.fn(),
       seed: jest.fn(),
       appliedIds: jest.fn(() => []),
       settleApplied: jest.fn(),
@@ -131,6 +134,7 @@ export const createHost = (
       flushPendingDeltas: jest.fn(),
       resetLive: jest.fn(),
       showError: jest.fn(),
+      showStartFailure: jest.fn(),
     },
     messages: {
       get: jest.fn(() => messages),
@@ -158,6 +162,7 @@ export const createHost = (
       seedLiveFromContent: jest.fn(),
     },
     stream: { send: jest.fn(), reconnectToStream: jest.fn(() => ({ closed: false })) },
+    start: jest.fn(),
   };
   return host;
 };
