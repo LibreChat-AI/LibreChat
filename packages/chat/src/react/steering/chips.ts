@@ -1,18 +1,22 @@
 import { useCallback, useMemo } from 'react';
 import { useStore } from 'jotai';
-import { isSteerRunReplaced, acknowledgeSteerChips } from '@librechat/chat';
+import type { MutableRefObject } from 'react';
+import type { createStore } from 'jotai';
+import type { PendingSteer } from '../../core';
 import {
   pendingSteerCancelClientIdsFamily,
   pendingSteersByConvoId,
   appliedSteerIdsByConvoId,
   acceptedSteerClientIdsByConvoId,
   activeGenerationCreatedAtByConvoId,
-} from '@librechat/chat/react';
-import type { PendingSteer } from '@librechat/chat';
-import type { MutableRefObject } from 'react';
-import type { createStore } from 'jotai';
-import { pendingQuotesByConvoId } from '~/components/Chat/Input/Composer/state';
-import { appendAppliedSteerIds, mergeRestagedQuotes } from '~/utils';
+} from '../steer/atoms';
+import {
+  isSteerRunReplaced,
+  acknowledgeSteerChips,
+  appendAppliedSteerIds,
+  mergeRestagedQuotes,
+} from '../../core';
+import { pendingQuotesByConvoId } from '../composer';
 
 /**
  * Resolves a steer's 202 ACK against the applied-id set and the run's live
@@ -67,6 +71,17 @@ export function resolveAcknowledgedSteer(
   return true;
 }
 
+export interface SteerChips {
+  upsertSteerChip: (convoId: string, steer: PendingSteer) => void;
+  replaceSteerChip: (convoId: string, localId: string, steer: PendingSteer | null) => void;
+  acknowledgeSteer: (convoId: string, localId: string, steer: PendingSteer) => boolean;
+  settleReceiptReplay: (convoId: string, localId: string, serverId: string) => void;
+  isSteerAcceptedOrSettled: (convoId: string, clientSteerId: string) => boolean;
+  hasPendingSteerCancel: (convoId: string, clientSteerId: string) => boolean;
+  clearPendingSteerCancel: (convoId: string, clientSteerId: string) => void;
+  reclaimRejectedChipQuotes: (convoId: string, steerIds: string[]) => void;
+}
+
 /** The pending-steer chips of every conversation this composer has steered:
  *  optimistic writes, ACK and replay settlement, and the cancel markers a POST
  *  callback must honour. */
@@ -78,7 +93,7 @@ export default function useSteerChips({
   visibleConversationRef: MutableRefObject<string>;
   /** The visible pane's live submission state, read when a POST callback lands. */
   isSubmittingRef: MutableRefObject<boolean>;
-}) {
+}): SteerChips {
   const jotaiStore = useStore();
   const upsertSteerChip = useCallback(
     (convoId: string, steer: PendingSteer) => {
@@ -244,5 +259,3 @@ export default function useSteerChips({
     ],
   );
 }
-
-export type SteerChips = ReturnType<typeof useSteerChips>;

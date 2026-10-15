@@ -1,17 +1,17 @@
 import { useCallback } from 'react';
-import { useSteerHost } from '@librechat/chat/react';
 import { useSetAtom, useStore, useAtomValue } from 'jotai';
+import type { PendingSteer } from '../../core';
 import {
   pendingSteerCancelClientIdsFamily,
   pendingSteersByConvoId,
   appliedSteerIdsByConvoId,
   activeGenerationCreatedAtByConvoId,
-} from '@librechat/chat/react';
-import type { PendingSteer } from '~/hooks/Chat/queue';
-import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
-import { appendAppliedSteerIds, carriedSteerContext } from '~/utils';
-import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
-import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+} from '../steer/atoms';
+import { appendAppliedSteerIds, carriedSteerContext } from '../../core';
+import { useComposerRestoreHost } from '../steer/restore';
+import { queuedMessagesByConvoId } from '../steer/queue';
+import useSteerConvert from './useSteerConvert';
+import { useSteerHost } from '../steer/host';
 
 export type SteerCancelOutcome = 'reclaimed' | 'applied' | 'failed';
 
@@ -22,7 +22,9 @@ export type SteerRehomeTarget = 'composer' | 'queue';
  * Asks the server to drop a steer before its injection boundary. Only a
  * confirmed reclaim proves the words remain safe to move elsewhere.
  */
-export function useSteerReclaim(conversationId: string) {
+export function useSteerReclaim(
+  conversationId: string,
+): (steer: PendingSteer) => Promise<SteerCancelOutcome> {
   const cancelSteer = useSteerHost().useCancelSteer();
   const activeGenerationCreatedAt = useAtomValue(
     activeGenerationCreatedAtByConvoId(conversationId),
@@ -83,7 +85,9 @@ export function useSteerReclaim(conversationId: string) {
   );
 }
 
-export function useSteerMoveToQueue(conversationId: string) {
+export function useSteerMoveToQueue(
+  conversationId: string,
+): (steer: PendingSteer) => Promise<SteerCancelOutcome> {
   const reclaim = useSteerReclaim(conversationId);
   const convertSteersToQueued = useSteerConvert();
   const { rewakeDrain } = useComposerRestoreHost();
@@ -129,7 +133,9 @@ export interface SteerRehomeOptions {
   rejectedByServer?: boolean;
 }
 
-export function useSteerRehome(conversationId: string) {
+export function useSteerRehome(
+  conversationId: string,
+): (steer: PendingSteer, options?: SteerRehomeOptions) => SteerRehomeTarget {
   const { restore, rewakeDrain } = useComposerRestoreHost();
   const convertSteersToQueued = useSteerConvert();
   const jotaiStore = useStore();
@@ -170,7 +176,9 @@ export function useSteerRehome(conversationId: string) {
   );
 }
 
-export default function useSteerCancel(conversationId: string) {
+export default function useSteerCancel(
+  conversationId: string,
+): (steer: PendingSteer) => Promise<SteerCancelOutcome> {
   const reclaim = useSteerReclaim(conversationId);
   const rehome = useSteerRehome(conversationId);
   const setPendingCancelIds = useSetAtom(pendingSteerCancelClientIdsFamily(conversationId));

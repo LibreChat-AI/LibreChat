@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'jotai';
+import type { TMessage } from 'librechat-data-provider';
+import type { QueueSendLock, QueuedMessage, QueuedMessageContext } from '../../core';
+import type { QueuedRecovery } from './recovery';
+import type { SubmitSteer } from './submit';
+import type { QueueRows } from './rows';
 import {
   hasQueuedIntent,
   recoveryDisposition,
   acquireQueueSendLock,
   releaseQueueSendLock,
-} from '@librechat/chat';
-import type { QueueSendLock, QueuedMessage, QueuedMessageContext } from '@librechat/chat';
-import type { TMessage } from 'librechat-data-provider';
-import type { QueuedRecovery } from './recovery';
-import type { SubmitSteer } from './submit';
-import type { QueueRows } from './rows';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
+} from '../../core';
+import { recoveryDispositionsFamily } from '../steer/recovery';
+
+export interface QueuedSend {
+  sendQueuedNow: (item: QueuedMessage, opts?: { preempt?: boolean }) => void;
+}
 
 /** Sends one queued row now: into the live run as a steer when it can take
  *  one, otherwise as a new turn once the pane's submission slot is free. */
@@ -41,7 +45,7 @@ export default function useQueuedSend({
   submitSteer: SubmitSteer;
   rows: Pick<QueueRows, 'takeQueued' | 'restoreQueued' | 'releaseQueuedOrigin'>;
   discardQueued: QueuedRecovery['discardQueued'];
-}) {
+}): QueuedSend {
   const jotaiStore = useStore();
   const { takeQueued, restoreQueued, releaseQueuedOrigin } = rows;
   /** `ask()` does not flip `isSubmitting` until the submission effect renders.

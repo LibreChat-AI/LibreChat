@@ -1,16 +1,46 @@
 import { useCallback, useMemo } from 'react';
 import { v4 } from 'uuid';
 import { useStore } from 'jotai';
-import { useSteerHost } from '@librechat/chat/react';
-import { getSteerErrorCode, toQueuedTurnFileRefs, QUEUE_USAGE_MAX_FILES } from '@librechat/chat';
-import { isDefiniteQueuedTurnRejection, isDefiniteQueuedTurnsUnsupported } from '@librechat/chat';
 import type { TMessage, CodeApprovalMode } from 'librechat-data-provider';
-import type { RevealedQueuedTurn } from '@librechat/chat/react';
-import type { QueuedMessage } from '@librechat/chat';
+import type { RevealedQueuedTurn } from '../steer/atoms';
 import type { QueuedTurnReceipts } from './receipts';
+import type { QueuedMessage } from '../../core';
 import type { QueueRows } from './rows';
-import { pendingQueuedTurnEnqueueIdsByConvoId, queuedMessagesByConvoId } from '~/hooks/Chat/queue';
-import { insertQueuedMessage } from '~/utils/queue';
+import {
+  getSteerErrorCode,
+  toQueuedTurnFileRefs,
+  QUEUE_USAGE_MAX_FILES,
+  isDefiniteQueuedTurnRejection,
+  isDefiniteQueuedTurnsUnsupported,
+  insertQueuedMessage,
+} from '../../core';
+import { pendingQueuedTurnEnqueueIdsByConvoId, queuedMessagesByConvoId } from '../steer/queue';
+import { useSteerHost } from '../steer/host';
+
+/** How a follow-up enters the queue. */
+export type EnqueueOptions = {
+  front?: boolean;
+  files?: TMessage['files'];
+  quotes?: string[];
+  manualSkills?: string[];
+  reasoningOverride?: TMessage['reasoningOverride'];
+  /** Set when the files were ALREADY queued/steered: their TTL was
+   *  held when they first entered the queue (or at the steer 202). */
+  skipUsageMark?: boolean;
+  id?: string;
+  createdAt?: number;
+  clientRequestId?: string;
+  expectedPredecessorCreatedAt?: number;
+  /** The queue lineage of a row being put back after its parked copy was
+   *  cancelled. The run it waited on may have ended meanwhile, which
+   *  clears the live pair, and the row must stay durable regardless. */
+  lineage?: { parentMessageId: string; predecessorCreatedAt: number };
+};
+
+export interface QueueEnqueue {
+  markQueuedFilesUsage: (files?: TMessage['files']) => void;
+  enqueue: (text: string, options?: EnqueueOptions) => void;
+}
 
 /** Adds follow-up messages to the conversation's queue, server-owned (a durable
  *  queued turn) when the run's lineage is known, otherwise local to this tab. */
@@ -36,7 +66,7 @@ export default function useQueueEnqueue({
   applyQueuedTurnReceipts: QueuedTurnReceipts['applyQueuedTurnReceipts'];
   finishQueuedTurnEnqueue: QueuedTurnReceipts['finishQueuedTurnEnqueue'];
   updateQueuedMessage: QueueRows['updateQueuedMessage'];
-}) {
+}): QueueEnqueue {
   const jotaiStore = useStore();
   const host = useSteerHost();
   const markFilesUsage = host.useMarkFilesUsage();
@@ -68,27 +98,7 @@ export default function useQueueEnqueue({
   );
 
   const enqueue = useCallback(
-    (
-      text: string,
-      options?: {
-        front?: boolean;
-        files?: TMessage['files'];
-        quotes?: string[];
-        manualSkills?: string[];
-        reasoningOverride?: TMessage['reasoningOverride'];
-        /** Set when the files were ALREADY queued/steered: their TTL was
-         *  held when they first entered the queue (or at the steer 202). */
-        skipUsageMark?: boolean;
-        id?: string;
-        createdAt?: number;
-        clientRequestId?: string;
-        expectedPredecessorCreatedAt?: number;
-        /** The queue lineage of a row being put back after its parked copy was
-         *  cancelled. The run it waited on may have ended meanwhile, which
-         *  clears the live pair, and the row must stay durable regardless. */
-        lineage?: { parentMessageId: string; predecessorCreatedAt: number };
-      },
-    ) => {
+    (text: string, options?: EnqueueOptions) => {
       const trimmed = text.trim();
       if (trimmed.length === 0) {
         return;
@@ -242,5 +252,3 @@ export default function useQueueEnqueue({
     [markQueuedFilesUsage, enqueue],
   );
 }
-
-export type QueueEnqueue = ReturnType<typeof useQueueEnqueue>;

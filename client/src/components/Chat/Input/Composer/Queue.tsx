@@ -30,9 +30,9 @@ import {
   TriangleAlert,
   MessageSquarePlus,
 } from 'lucide-react';
+import type { SteeringControls } from '@librechat/chat/react';
 import type { MenuItemProps } from '@librechat/client';
 import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
-import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/hooks/Chat/queue';
 import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';

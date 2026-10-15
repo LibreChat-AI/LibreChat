@@ -227,9 +227,9 @@ jest.mock('~/data-provider', () => ({
   postGenerationRequest: (...args: unknown[]) => mockPostGenerationRequest(...args),
 }));
 
-jest.mock('~/hooks/Chat/useSteerConvert', () => ({
-  __esModule: true,
-  default: () => mockConvertSteersToQueued,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerConvert: () => mockConvertSteersToQueued,
 }));
 
 /** The steer-chip/queue writers are swapped for stable named spies, so these tests

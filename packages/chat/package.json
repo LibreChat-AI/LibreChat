@@ -63,7 +63,8 @@
     "librechat-data-provider": "*",
     "lucide": "^0.528.0",
     "lucide-react": "^0.528.0",
-    "react": "^18.2.0 || ^19.1.0"
+    "react": "^18.2.0 || ^19.1.0",
+    "uuid": "^11.1.1"
   },
   "dependencies": {
     "sse.js": "^2.8.0"
@@ -88,6 +89,7 @@
     "react-dom": "^18.2.0",
     "rimraf": "^6.1.3",
     "tsdown": "0.22.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "uuid": "^11.1.1"
   }
 }

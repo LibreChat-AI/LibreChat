@@ -1,12 +1,17 @@
 import { useCallback, useMemo } from 'react';
 import { useStore } from 'jotai';
-import { useSteerHost } from '@librechat/chat/react';
-import { revealedQueuedTurnFamily } from '@librechat/chat/react';
-import { blockRecovery, canRestoreRecovery, recoveryDisposition } from '@librechat/chat';
-import type { QueuedMessage } from '@librechat/chat';
 import type { QueuedTurnReceipts } from './receipts';
+import type { QueuedMessage } from '../../core';
 import type { QueueRows } from './rows';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
+import { blockRecovery, canRestoreRecovery, recoveryDisposition } from '../../core';
+import { recoveryDispositionsFamily } from '../steer/recovery';
+import { revealedQueuedTurnFamily } from '../steer/atoms';
+import { useSteerHost } from '../steer/host';
+
+export interface QueuedRecovery {
+  discardQueued: (item: QueuedMessage) => Promise<boolean>;
+  dismissRecovery: (item: QueuedMessage) => void;
+}
 
 /** Lets go of a queued row's server copy (a durable queued turn or a parked
  *  steer receipt) before the row is edited, removed or sent another way. */
@@ -24,7 +29,7 @@ export default function useQueuedRecovery({
   applyQueuedTurnReceipts: QueuedTurnReceipts['applyQueuedTurnReceipts'];
   downgradeServerQueuedTurn: QueueRows['downgradeServerQueuedTurn'];
   removeQueued: QueueRows['removeQueued'];
-}) {
+}): QueuedRecovery {
   const host = useSteerHost();
   const localize = host.useLocalize();
   const jotaiStore = useStore();
@@ -173,5 +178,3 @@ export default function useQueuedRecovery({
     [discardQueued, dismissRecovery],
   );
 }
-
-export type QueuedRecovery = ReturnType<typeof useQueuedRecovery>;

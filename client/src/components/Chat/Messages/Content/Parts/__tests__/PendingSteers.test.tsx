@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
+import { hasLiveRunPause } from '@librechat/chat';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { pendingSteersByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -9,7 +10,6 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
 import type { PendingSteer } from '~/hooks/Chat/queue';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
 import { applyPendingAction } from '~/utils/approval';
 import PendingSteers from '../PendingSteers';
 import store from '~/store';
@@ -30,19 +30,15 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/useSteerEscalate', () => ({
-  __esModule: true,
-  default: () => mockEscalate,
-}));
-
 jest.mock('~/hooks/Chat/useSteerRecovery', () => ({
   __esModule: true,
   default: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
 }));
 
-jest.mock('~/hooks/Chat/useSteerCancel', () => ({
-  __esModule: true,
-  default: () => jest.fn(),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerEscalate: () => mockEscalate,
+  useSteerCancel: () => jest.fn(),
   useSteerMoveToQueue: () => mockMoveToQueue,
   useSteerRehome: () => mockRehome,
 }));

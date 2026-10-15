@@ -1,14 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue, useStore } from 'jotai';
-import { isSameRunEpoch, insertQueuedOrigin, canRestoreRecovery } from '@librechat/chat';
-import type { PendingSteer, QueuedMessage, QueuedMessageOrigin, RunEnd } from '@librechat/chat';
+import type { PendingSteer, QueuedMessage, QueuedMessageOrigin, RunEnd } from '../../core';
 import {
   runEndByIndex,
   drainAfterAbortByIndex,
   pendingRunEndByConvoId,
   queuedMessagesByConvoId,
-} from '~/hooks/Chat/queue';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
+} from '../steer/queue';
+import { isSameRunEpoch, insertQueuedOrigin, canRestoreRecovery } from '../../core';
+import { recoveryDispositionsFamily } from '../steer/recovery';
+
+export interface QueueRows {
+  updateQueuedMessage: (id: string, update: (item: QueuedMessage) => QueuedMessage | null) => void;
+  removeQueued: (id: string) => void;
+  holdQueued: (id: string) => void;
+  toggleQueuedHold: (id: string, held: boolean) => void;
+  downgradeServerQueuedTurn: (id: string) => boolean;
+  reorderQueued: (id: string, targetIndex: number) => void;
+  restoreQueuedOrder: (ids: readonly string[]) => void;
+  takeQueued: (id: string) => QueuedMessageOrigin | undefined;
+  releaseQueuedOrigin: (origin: QueuedMessageOrigin) => void;
+  registerQueuedOrigin: (origin: QueuedMessageOrigin) => void;
+  restoreQueued: (origin: QueuedMessageOrigin) => void;
+  rearmDrain: (convoId: string, end: RunEnd) => void;
+  rewakeDrain: (convoId: string) => void;
+  armDrainAfterAbort: () => void;
+}
 
 /**
  * The conversation's queue rows and the bookkeeping that keeps them restorable:
@@ -29,7 +46,7 @@ export default function useQueueRows({
   isSubmitting: boolean;
   pendingSteers: PendingSteer[];
   activeGenerationCreatedAt: number | null;
-}) {
+}): QueueRows {
   const jotaiStore = useStore();
   /** Queue rows can be sent concurrently. Keep their captured origins while
    *  absent so a later capture still sees the complete logical queue. Origins
@@ -367,5 +384,3 @@ export default function useQueueRows({
     ],
   );
 }
-
-export type QueueRows = ReturnType<typeof useQueueRows>;

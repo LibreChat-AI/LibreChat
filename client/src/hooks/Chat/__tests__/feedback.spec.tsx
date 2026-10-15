@@ -33,9 +33,9 @@ jest.mock('~/hooks/useNewConvo', () => ({
   default: () => ({ newConversation: jest.fn() }),
 }));
 
-jest.mock('~/hooks/Chat/useSteerConvert', () => ({
-  __esModule: true,
-  default: () => jest.fn(),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerConvert: () => jest.fn(),
 }));
 
 function renderChatHelpers() {
