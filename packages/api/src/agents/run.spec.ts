@@ -11,6 +11,7 @@ import {
   collectRunMCPToolAliases,
   createRun,
 } from './run';
+import { ContextPartKeys, contributeContext } from './systemParts';
 
 describe('getRunDiscoveredTools', () => {
   it('uses the run discovery snapshot instead of reconstructing it from messages', () => {
@@ -476,7 +477,17 @@ describe('collectRunMCPToolAliases', () => {
 describe('createRun instructions with prompt caching', () => {
   const STATIC = 'Static artifacts prompt.';
   const RUNTIME = 'Conversation started: 2026-03-09 23:00 +03:00 (Mon)';
-  const VOLATILE = 'Memory: prefers metric units.\n\nRetrieved context for this question.';
+  const MEMORY = 'Memory: prefers metric units.';
+  const RAG = 'Retrieved context for this question.';
+  const VOLATILE = `${RAG}\n\n${MEMORY}`;
+  /** An agent as `initializeAgent` and `AgentClient.buildMessages` leave it. */
+  const withParts = (rag = RAG) => {
+    const agent = {};
+    contributeContext(agent, ContextPartKeys.artifacts, STATIC);
+    contributeContext(agent, ContextPartKeys.rag, rag);
+    contributeContext(agent, ContextPartKeys.memory, MEMORY);
+    return agent;
+  };
   let runSpy: jest.SpyInstance;
 
   beforeEach(() => {
@@ -515,21 +526,10 @@ describe('createRun instructions with prompt caching', () => {
     return runSpy.mock.calls[0][0].graphConfig.agents[0];
   }
 
-  const split = (additional: string, stable: string, volatile: string) => ({
-    additional_instructions: additional,
-    stable_additional_instructions: stable,
-    volatile_instructions: volatile,
-    split_additional_instructions: additional,
-  });
-
   it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
     'merges the stable part into instructions for %s and leaves the memory and RAG part',
     async (provider) => {
-      const input = await agentInput(
-        provider,
-        true,
-        split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
-      );
+      const input = await agentInput(provider, true, withParts());
       expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
       expect(input.additional_instructions).toBe(VOLATILE);
     },
@@ -541,34 +541,24 @@ describe('createRun instructions with prompt caching', () => {
     expect(input.additional_instructions).toBeUndefined();
   });
 
-  it('splits by parts, whatever order they have in additional_instructions', async () => {
-    const input = await agentInput(
-      Providers.ANTHROPIC,
-      true,
-      split(`${VOLATILE}\n\n${STATIC}`, STATIC, VOLATILE),
-    );
+  it('moves only the per-turn parts when a memory or RAG part is empty', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, withParts(''));
     expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions).toBe(VOLATILE);
+    expect(input.additional_instructions).toBe(MEMORY);
   });
 
-  it('keeps additional_instructions unsplit when it changed after the split was recorded', async () => {
+  it('assembles the tail from the parts, not from a direct write to additional_instructions', async () => {
     const input = await agentInput(Providers.ANTHROPIC, true, {
-      ...split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
-      additional_instructions: `${STATIC}\n\n${VOLATILE}\n\nAdded later.`,
+      ...withParts(),
+      additional_instructions: 'Written directly.',
     });
-    expect(input.instructions).toBe('Base instructions.');
-    expect(input.additional_instructions).toBe(
-      `${STATIC}\n\n${VOLATILE}\n\nAdded later.\n${RUNTIME}`,
-    );
+    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions).toBe(VOLATILE);
+    expect(JSON.stringify(input)).not.toContain('Written directly.');
   });
 
   it('builds the request as before when stableContext is off', async () => {
-    const input = await agentInput(
-      Providers.ANTHROPIC,
-      true,
-      split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
-      false,
-    );
+    const input = await agentInput(Providers.ANTHROPIC, true, withParts(), false);
     expect(input.instructions).toBe('Base instructions.');
     expect(input.additional_instructions).toBe(`${RUNTIME}\n${STATIC}\n\n${VOLATILE}`);
   });
@@ -580,11 +570,7 @@ describe('createRun instructions with prompt caching', () => {
     [Providers.BEDROCK, true],
     [Providers.GOOGLE, true],
   ])('keeps the split for %s (promptCache %s)', async (provider, promptCache) => {
-    const input = await agentInput(
-      provider,
-      promptCache,
-      split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
-    );
+    const input = await agentInput(provider, promptCache, withParts());
     expect(input.instructions).toBe('Base instructions.');
     expect(input.additional_instructions).toBe(`${STATIC}\n\n${VOLATILE}\n${RUNTIME}`);
   });
@@ -613,7 +599,7 @@ describe('createRun instructions with prompt caching', () => {
 
   it('moves the one-turn queued file context after the per-turn part and keeps other runtime keys stable', async () => {
     const input = await agentInput(Providers.ANTHROPIC, true, {
-      ...split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
+      ...withParts(),
       ...queuedFiles(),
     });
     expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);

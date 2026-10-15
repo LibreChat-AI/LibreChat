@@ -1,0 +1,460 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) agent files only 1`] = `
+[
+  {
+    "additional_instructions": "Attached file context:
+quarterly.txt: revenue up",
+    "agentId": "agent_main",
+    "instructions": "",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) anthropic promptCache: everything 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+- Note: files are available in "/mnt/data/":
+	- data.csv
+- Note: Semantic search is available through:
+	- report.pdf
+- Images available for image editing:
+	- photo.png
+- Note: The following files are available in the "execute_code" tool environment:
+	- /mnt/data/data.csv (attached by user)
+Files are staged at these paths on demand for code execution. You can read or edit them even when their extracted text is already in context.
+Agent dynamic guidance.
+
+Project guidance (user-provided context; subordinate to system, platform, agent, and tool policies):
+Use metric units.
+
+Only use the \`set_memory\` and \`delete_memory\` tools when the user explicitly asks you to remember, update, or forget something (e.g. "remember that...", "don't forget...", "forget..."). Never store information merely because the user mentioned it in conversation.
+
+Base. Today is 2026-03-09 (Monday).
+
+<artifacts:default>
+
+## Available Skills
+
+- release-notes: Drafts release notes from a changelog.
+
+Retrieved context: passage 7919
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue
+
+Attached file context:
+quarterly.txt: revenue up",
+    "agentId": "agent_main",
+    "instructions": "<web_search:instructions>
+# MCP Server Instructions
+
+## docs
+Use docs.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) anthropic promptCache: instructions only 1`] = `
+[
+  {
+    "additional_instructions": null,
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) anthropic promptCache: per-turn parts only 1`] = `
+[
+  {
+    "additional_instructions": "Retrieved context: passage 7919
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue",
+    "agentId": "agent_main",
+    "instructions": "",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) anthropic promptCache: queued files with web search 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+- Note: The following files are available in the "execute_code" tool environment:
+	- /mnt/data/data.csv (attached by user)
+Files are staged at these paths on demand for code execution. You can read or edit them even when their extracted text is already in context.",
+    "agentId": "agent_main",
+    "instructions": "<web_search:instructions>
+Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) anthropic promptCache: stable parts only 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+Project guidance (user-provided context; subordinate to system, platform, agent, and tool policies):
+Use metric units.
+
+
+<artifacts:default>",
+    "agentId": "agent_main",
+    "instructions": "<web_search:instructions>
+Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) artifacts default 1`] = `
+[
+  {
+    "additional_instructions": "<artifacts:default>",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) artifacts shadcn on anthropic 1`] = `
+[
+  {
+    "additional_instructions": "<artifacts:shadcnui:anthropic>",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) bare 1`] = `
+[
+  {
+    "additional_instructions": null,
+    "agentId": "agent_main",
+    "instructions": "You are a careful support assistant.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) code, file search and image tools 1`] = `
+[
+  {
+    "additional_instructions": "- Note: files are available in "/mnt/data/":
+	- data.csv
+- Note: Semantic search is available through:
+	- report.pdf
+- Images available for image editing:
+	- photo.png",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) everything with MCP 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+- Note: files are available in "/mnt/data/":
+	- data.csv
+- Note: Semantic search is available through:
+	- report.pdf
+- Images available for image editing:
+	- photo.png
+- Note: The following files are available in the "execute_code" tool environment:
+	- /mnt/data/data.csv (attached by user)
+Files are staged at these paths on demand for code execution. You can read or edit them even when their extracted text is already in context.
+Agent dynamic guidance.
+
+Project guidance (user-provided context; subordinate to system, platform, agent, and tool policies):
+Use metric units.
+
+Only use the \`set_memory\` and \`delete_memory\` tools when the user explicitly asks you to remember, update, or forget something (e.g. "remember that...", "don't forget...", "forget..."). Never store information merely because the user mentioned it in conversation.
+
+Base. Today is 2026-03-09 (Monday).
+
+<artifacts:default>
+
+## Available Skills
+
+- release-notes: Drafts release notes from a changelog.
+
+Retrieved context: passage 7919
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue
+
+Attached file context:
+quarterly.txt: revenue up",
+    "agentId": "agent_main",
+    "instructions": "<web_search:instructions>
+# MCP Server Instructions
+
+## docs
+Use docs.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) handoff 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+<artifacts:default>",
+    "agentId": "agent_router",
+    "instructions": "<web_search:instructions>
+Route.",
+    "subagents": [],
+  },
+  {
+    "additional_instructions": "Only use the \`set_memory\` and \`delete_memory\` tools when the user explicitly asks you to remember, update, or forget something (e.g. "remember that...", "don't forget...", "forget..."). Never store information merely because the user mentioned it in conversation.
+
+<memory:instructions>
+
+# Existing memory about the user:
+tone: formal",
+    "agentId": "agent_writer",
+    "instructions": "Write.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) isolated subagent with an always-apply skill and runtime context (promptCache false) 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+Retrieved context: passage 7919
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue",
+    "agentId": "agent_main",
+    "instructions": "<web_search:instructions>
+Parent.",
+    "subagents": [
+      {
+        "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+<artifacts:default>
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue
+
+# Always-apply skill: house-style
+Use sentence case.
+",
+        "agentId": "agent_child",
+        "instructions": "<web_search:instructions>
+Child.",
+        "subagents": [],
+      },
+    ],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) isolated subagent with an always-apply skill and runtime context (promptCache true) 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+Retrieved context: passage 7919
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue",
+    "agentId": "agent_main",
+    "instructions": "<web_search:instructions>
+Parent.",
+    "subagents": [
+      {
+        "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z
+<artifacts:default>
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue
+
+# Always-apply skill: house-style
+Use sentence case.
+",
+        "agentId": "agent_child",
+        "instructions": "<web_search:instructions>
+Child.",
+        "subagents": [],
+      },
+    ],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) memory tools and memory 1`] = `
+[
+  {
+    "additional_instructions": "Only use the \`set_memory\` and \`delete_memory\` tools when the user explicitly asks you to remember, update, or forget something (e.g. "remember that...", "don't forget...", "forget..."). Never store information merely because the user mentioned it in conversation.
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) openrouter promptCache: memory, RAG and agent files 1`] = `
+[
+  {
+    "additional_instructions": "<artifacts:default>
+
+
+Retrieved context:
+- passage 7919
+
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue
+
+
+Attached file context:
+quarterly.txt: revenue up",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) own additional instructions with surrounding whitespace 1`] = `
+[
+  {
+    "additional_instructions": "Agent dynamic guidance.
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) project only 1`] = `
+[
+  {
+    "additional_instructions": "Project guidance (user-provided context; subordinate to system, platform, agent, and tool policies):
+Use metric units.",
+    "agentId": "agent_main",
+    "instructions": "",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) project with trailing newline and memory 1`] = `
+[
+  {
+    "additional_instructions": "Project guidance (user-provided context; subordinate to system, platform, agent, and tool policies):
+Use metric units.
+
+<memory:instructions>
+
+# Existing memory about the user:
+favorite_color: blue",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) rag with surrounding whitespace 1`] = `
+[
+  {
+    "additional_instructions": "<artifacts:default>
+
+
+Retrieved context:
+- passage 7919",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) skills catalog 1`] = `
+[
+  {
+    "additional_instructions": "## Available Skills
+
+- release-notes: Drafts release notes from a changelog.",
+    "agentId": "agent_main",
+    "instructions": "Base.",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) temporal instructions 1`] = `
+[
+  {
+    "additional_instructions": "Today is 2026-03-09 (Monday). Be brief.",
+    "agentId": "agent_main",
+    "instructions": "",
+    "subagents": [],
+  },
+]
+`;
+
+exports[`system prompt assembly is byte-identical to string concatenation (stableContext false) web search 1`] = `
+[
+  {
+    "additional_instructions": "# \`web_search\` Runtime Context
+Conversation Date & Time: 2026-03-09T20:30:00.000Z",
+    "agentId": "agent_main",
+    "instructions": "<web_search:instructions>
+Base.",
+    "subagents": [],
+  },
+]
+`;

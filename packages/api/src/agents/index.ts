@@ -59,6 +59,14 @@ export * from './usage';
 export * from './resources';
 export * from './responses';
 export * from './skills';
+export {
+  ContextPartKeys,
+  listContextParts,
+  contributeContext,
+  assembleSystemPrompt,
+  assembleAdditionalInstructions,
+} from './systemParts';
+export type { ContextKind, ContextPart, ContextAgent } from './systemParts';
 export * from './phases';
 export * from './stepBudget';
 export * from './startup';

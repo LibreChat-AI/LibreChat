@@ -21,7 +21,7 @@
  * `additional_instructions` into a message before the newest user message,
  * and that position shifts every turn. `createRun` merges the conversation-
  * stable part into `instructions` instead, so the history comparison is strict.
- * A per-turn part (the volatile parts of the run context: memory and RAG) stays in
+ * Per-turn parts (memory and RAG context, contributed as `turn` parts) stay in
  * `additional_instructions` and is moved on purpose; merging it would change
  * the system prompt every turn and uncache the whole history.
  *
@@ -35,6 +35,7 @@ import { formatAgentMessages, formatMessage, Providers } from '@librechat/agents
 import { replaceSpecialVars } from 'librechat-data-provider';
 import { buildWebSearchContext, buildWebSearchDynamicContext } from '~/tools/toolkits/web';
 import { createHistoryContextUpdates, AGENT_TEMPORAL_INSTRUCTIONS_KEY } from '../contextUpdates';
+import { ContextPartKeys, contributeContext } from '../systemParts';
 import { createRun } from '../run';
 
 jest.setTimeout(30000);
@@ -167,7 +168,7 @@ interface AgentVariant {
   memory?: boolean;
   /** Turn after which an upload leaves one-turn queued file context (gone on the next turn). */
   queuedAtTurn?: number;
-  /** Declares memory and RAG context as per-turn, as `AgentClient` does. */
+  /** Contributes memory and RAG context as per-turn parts, as `AgentClient` does. */
   declareVolatile?: boolean;
   /** Dates the runtime context by the turn start instead of the conversation start. */
   perTurnClock?: boolean;
@@ -214,22 +215,24 @@ async function captureTurn(
       ? conversation.turnStarts[turn - 1]
       : conversation.startedAt;
   const rag = variant.rag ? ragFor(turn) : undefined;
-  const volatile = [variant.memory ? memoryFor(turn) : undefined, rag].filter(Boolean).join('\n\n');
+  const memory = variant.memory ? memoryFor(turn) : undefined;
+  const volatile = [rag, memory].filter(Boolean).join('\n\n');
+  const tail: { additional_instructions?: string } = {};
+  if (!variant.declareVolatile) {
+    tail.additional_instructions = [STATIC_ADDITIONAL, volatile].filter(Boolean).join('\n\n');
+  } else {
+    contributeContext(tail, ContextPartKeys.artifacts, STATIC_ADDITIONAL);
+    contributeContext(tail, ContextPartKeys.rag, rag);
+    contributeContext(tail, ContextPartKeys.memory, memory);
+  }
   const agent = {
     id: 'agent_stable',
     name: 'Stable Agent',
     provider: providerCase.provider,
     endpoint: providerCase.endpoint ?? providerCase.provider,
     instructions: 'You are a careful support assistant.',
-    additional_instructions: [STATIC_ADDITIONAL, volatile].filter(Boolean).join('\n\n'),
+    ...tail,
     ...(variant.queuedAtTurn ? queuedFileState(variant.queuedAtTurn === turn) : {}),
-    ...(variant.declareVolatile && volatile
-      ? {
-          stable_additional_instructions: STATIC_ADDITIONAL,
-          volatile_instructions: volatile,
-          split_additional_instructions: [STATIC_ADDITIONAL, volatile].join('\n\n'),
-        }
-      : {}),
     toolContextMap: { web_search: buildWebSearchContext(stableContext) },
     dynamicToolContextMap: {
       web_search: buildWebSearchDynamicContext({
@@ -569,7 +572,7 @@ describe('per-turn context in additional_instructions', () => {
     '%s: regression guard',
     (_name, providerCase) => {
       it('a per-turn part merged into the stable instructions changes the system prompt every turn', async () => {
-        /** No `volatile_instructions`: memory and RAG context cannot be told apart and are merged. */
+        /** Without per-turn parts, memory and RAG context cannot be told apart and are merged. */
         const turns = await playConversation(providerCase, { rag: true, memory: true });
         expect(JSON.stringify(turns[1].system)).not.toBe(JSON.stringify(turns[0].system));
         expect(JSON.stringify(turns[2].system)).not.toBe(JSON.stringify(turns[1].system));

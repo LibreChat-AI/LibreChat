@@ -851,7 +851,9 @@ describe('createResponse controller', () => {
     expect(mockApplyContextToAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agent,
-        sharedRunContext: expect.stringContaining(memoryInstructions),
+        runContext: expect.objectContaining({
+          memory: expect.stringContaining(memoryInstructions),
+        }),
       }),
     );
     expect(require('~/models').getFormattedMemories).toHaveBeenCalledWith({
@@ -2499,7 +2501,7 @@ describe('createResponse controller', () => {
         expect.objectContaining({
           agent: expect.objectContaining({ id: 'agent-123' }),
           agentId: 'agent-123',
-          sharedRunContext: 'PDF context: ocr_file.pdf',
+          runContext: expect.objectContaining({ agentFiles: 'PDF context: ocr_file.pdf' }),
         }),
       );
     });
@@ -2542,7 +2544,7 @@ describe('createResponse controller', () => {
       expect(mockApplyContextToAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'agent-handoff',
-          sharedRunContext: 'Handoff context',
+          runContext: expect.objectContaining({ agentFiles: 'Handoff context' }),
         }),
       );
     });

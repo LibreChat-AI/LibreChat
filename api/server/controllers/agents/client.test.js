@@ -5716,7 +5716,10 @@ describe('AgentClient - titleConvo', () => {
 
       expect(client.augmentedPrompt).toBe('Retrieved context');
       expect(client.options.agent.additional_instructions).toContain('Retrieved context');
-      expect(client.options.agent.volatile_instructions).toBe('Retrieved context');
+      const { assembleAdditionalInstructions } = require('@librechat/api');
+      expect(
+        assembleAdditionalInstructions(client.options.agent, ({ kind }) => kind === 'turn'),
+      ).toBe('Retrieved context');
     });
 
     it('records the memory and RAG context as the volatile part, apart from the stable part', async () => {
@@ -5740,17 +5743,45 @@ describe('AgentClient - titleConvo', () => {
         {},
       );
 
-      const {
-        additional_instructions: additional,
-        volatile_instructions: volatile,
-        stable_additional_instructions: stable,
-        split_additional_instructions: source,
-      } = client.options.agent;
+      const { assembleAdditionalInstructions } = require('@librechat/api');
+      const additional = client.options.agent.additional_instructions;
+      const volatile = assembleAdditionalInstructions(
+        client.options.agent,
+        ({ kind }) => kind === 'turn',
+      );
+      const stable = assembleAdditionalInstructions(
+        client.options.agent,
+        ({ kind }) => kind !== 'turn',
+      );
       expect(volatile.startsWith('Retrieved context\n\n')).toBe(true);
       expect(volatile.endsWith('Memory note')).toBe(true);
       expect(stable).toBe('Static artifacts prompt');
-      expect(source).toBe(additional);
       expect(additional).toBe(`Static artifacts prompt\n\n${volatile}`);
+    });
+
+    it('assembles the system tail from initialization, memory and RAG parts byte for byte', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      mockAgent.additional_instructions = 'Agent guidance\n';
+      client.contextHandlers = { createContext: jest.fn(async () => '\nRetrieved context\n') };
+      client.useMemory = jest.fn().mockResolvedValue({ withoutKeys: 'tea: yes\n' });
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Load all context.',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        {},
+      );
+
+      expect(client.options.agent.additional_instructions).toBe(
+        `Agent guidance\n\n\nRetrieved context\n\n\n${memoryInstructions}\n\n# Existing memory about the user:\ntea: yes`,
+      );
     });
 
     it('starts independent context and current-file work at their earliest dependency barriers', async () => {

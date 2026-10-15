@@ -2952,7 +2952,6 @@ class AgentClient extends BaseClient {
      * user message above; only side-channel context belongs here.
      * Memory context is handled separately and applied per-agent based on config.
      */
-    const sharedRunContextParts = [];
     const [augmentedPrompt, [memories, configServers], agentScopedContext] = await Promise.all([
       this.contextHandlers?.createContext(),
       earlySharedContextPromise,
@@ -2966,7 +2965,6 @@ class AgentClient extends BaseClient {
     this.augmentedPrompt = augmentedPrompt;
     if (this.augmentedPrompt) {
       modelBoundFileContexts.add(this.augmentedPrompt);
-      sharedRunContextParts.push(this.augmentedPrompt);
     }
 
     /** Memory context (user preferences/memories). Keyed context (with memory
@@ -3020,7 +3018,6 @@ class AgentClient extends BaseClient {
       return canonicalMemoryCache.get(cacheKey);
     };
 
-    const sharedRunContext = sharedRunContextParts.join('\n\n');
     const memoryAgentEnabled = isMemoryAgentEnabled(this.options.req.config?.memory);
 
     const configuredContextAttachments = this.options.agentContextAttachmentsByAgentId;
@@ -3094,9 +3091,7 @@ class AgentClient extends BaseClient {
       assertLateBoundContent = false,
     ) => {
       normalizeInstructions(agent);
-      /** Volatile parts change between turns without a user action (memory is rewritten by the
-       *  memory agent, RAG follows the query); attachment and file context change only on uploads. */
-      const agentRunContextParts = [{ text: sharedRunContext, volatile: true }];
+      const runContext = { rag: this.augmentedPrompt };
       const agentMemoryContexts = [];
       const agentHasMemory = agentHasInlineMemoryTools(agent);
       if (agentId === this.options.agent.id || memoryAgentEnabled || agentHasMemory) {
@@ -3119,13 +3114,11 @@ class AgentClient extends BaseClient {
         const agentMemoryContext = formatMemoryContext(
           agentHasMemory ? partitionMemories?.withKeys : partitionMemories?.withoutKeys,
         );
-        if (agentMemoryContext) {
-          agentRunContextParts.push({ text: agentMemoryContext, volatile: true });
-        }
+        runContext.memory = agentMemoryContext;
       }
       if (scopedContext) {
         modelBoundFileContexts.add(scopedContext);
-        agentRunContextParts.push({ text: scopedContext });
+        runContext.agentFiles = scopedContext;
       }
 
       await applyContextToAgent({
@@ -3135,7 +3128,7 @@ class AgentClient extends BaseClient {
         mcpManager,
         configServers,
         user: this.options.req.user,
-        sharedRunContext: agentRunContextParts,
+        runContext,
         ephemeralAgent: agentId === this.options.agent.id ? ephemeralAgent : undefined,
       });
       if (assertLateBoundContent) {
@@ -5679,7 +5672,7 @@ class AgentClient extends BaseClient {
               mcpManager: resumeMcpManager,
               configServers: resumeConfigServers,
               user: this.options.req.user,
-              sharedRunContext: scopedContext ?? '',
+              runContext: { agentFiles: scopedContext },
               ephemeralAgent:
                 agent === this.options.agent ? this.options.req.body.ephemeralAgent : undefined,
             });
@@ -5782,7 +5775,7 @@ class AgentClient extends BaseClient {
                   mcpManager: resumeMcpManager,
                   configServers: resumeConfigServers,
                   user: this.options.req.user,
-                  sharedRunContext: scopedContext ?? '',
+                  runContext: { agentFiles: scopedContext },
                 });
                 assertModelBoundContent({
                   onTraversalFailure: reportLocatorTraversalFailure,
