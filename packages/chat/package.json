@@ -59,6 +59,7 @@
   },
   "peerDependencies": {
     "@librechat/client": "*",
+    "@tanstack/react-query": "^4.28.0",
     "librechat-data-provider": "*",
     "lucide": "^0.528.0",
     "lucide-react": "^0.528.0",
@@ -72,6 +73,7 @@
     "@babel/preset-react": "^7.22.15",
     "@babel/preset-typescript": "^7.21.0",
     "@librechat/client": "*",
+    "@tanstack/react-query": "^4.28.0",
     "@testing-library/jest-dom": "^5.16.5",
     "@testing-library/react": "^14.0.0",
     "@types/jest": "^29.5.2",

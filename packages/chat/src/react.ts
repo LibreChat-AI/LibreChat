@@ -13,3 +13,5 @@ export type {
   MessagePartsMarkdownProps,
   MessagePartsUserTextPreferences,
 } from './react/host';
+export { ReactQueryChatState } from './react/state';
+export type { ReactQueryChatStateOptions } from './react/state';

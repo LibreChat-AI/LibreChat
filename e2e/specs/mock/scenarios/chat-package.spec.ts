@@ -267,4 +267,74 @@ test.describe('the built @librechat/chat package', () => {
       expect(Object.values(exports)).toEqual(Array(7).fill('function'));
     }
   });
+
+  test('a host runs a turn through the built chat core @scenario:a-host-runs-a-turn-through-the-built-chat-core', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** The core `Chat` drives a turn over a substitute transport with every UI module blocked;
+     *  the `/react` entry then backs a second chat with the React Query message cache. */
+    const probe = `
+      const Module = require('node:module');
+      const blocked = new Set(${JSON.stringify(UI_MODULES)});
+      const resolveFilename = Module._resolveFilename;
+      Module._resolveFilename = function (request, ...rest) {
+        if (blocked.has(request)) throw new Error('the core reached ' + request);
+        return resolveFilename.call(this, request, ...rest);
+      };
+      const { Chat } = require('@librechat/chat');
+      const events = [
+        { type: 'created', data: { created: true } },
+        { type: 'final', data: { final: true, responseMessage: { messageId: 'r1', text: 'Hello' } } },
+      ];
+      const stream = {
+        close() {},
+        async *[Symbol.asyncIterator]() { yield* events; },
+      };
+      let messages = [];
+      const statuses = [];
+      const state = {
+        error: undefined,
+        connection: 'idle',
+        get status() { return statuses[statuses.length - 1] || 'ready'; },
+        set status(value) { statuses.push(value); },
+        get messages() { return messages; },
+        replaceMessages(next) { messages = next; },
+      };
+      const chat = new Chat({
+        id: 'convo-1',
+        state,
+        transport: {
+          sendMessages: async () => ({ status: 'stream', stream }),
+          reconnectToStream: async () => null,
+          abort: async () => ({ success: true }),
+        },
+        prepareRequest: () => ({
+          payload: { endpoint: 'agents' },
+          messages: [{ messageId: 'r1', text: '' }],
+        }),
+      });
+      chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] }).then(() => {
+        Module._resolveFilename = resolveFilename;
+        const { QueryClient } = require('@tanstack/react-query');
+        const { ReactQueryChatState } = require('@librechat/chat/react');
+        const queryClient = new QueryClient();
+        const cached = new ReactQueryChatState({ queryClient, key: 'convo-1' });
+        cached.replaceMessages(messages);
+        process.stdout.write(JSON.stringify({
+          statuses,
+          text: messages[0].text,
+          cached: queryClient.getQueryData(['messages', 'convo-1']).length,
+        }));
+      });
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      statuses: ['submitted', 'streaming', 'ready'],
+      text: 'Hello',
+      cached: 1,
+    });
+  });
 });
