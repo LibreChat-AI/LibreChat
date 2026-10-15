@@ -190,9 +190,14 @@ jest.mock('~/store', () => ({
   default: {},
 }));
 
-jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ token: 'test-token', isAuthenticated: true }),
-}));
+jest.mock('~/Providers/ChatSettingsContext', () => {
+  const actual = jest.requireActual('~/Providers/ChatSettingsContext');
+  const settings = {
+    ...actual.defaultChatSettings,
+    auth: { token: 'test-token', isAuthenticated: true },
+  };
+  return { ...actual, useChatSettings: () => settings };
+});
 
 const mockFetchStreamStatus = jest.fn();
 const mockGetConversationById = jest.fn();
