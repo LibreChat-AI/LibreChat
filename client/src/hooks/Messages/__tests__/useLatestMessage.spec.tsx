@@ -11,7 +11,11 @@ import {
   useLatestMessageMeta,
   useGetLatestMessage,
 } from '~/hooks/Messages/useLatestMessage';
-import { getBranchSiblingIndexesForTarget, getMessageBranchSiblingParentIds } from '~/utils';
+import {
+  getBranchSiblingIndexesForTarget,
+  getMessageBranchSiblingParentIds,
+  restoreBranchForTarget,
+} from '~/utils';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import store from '~/store';
 
@@ -458,6 +462,30 @@ describe('getBranchSiblingIndexesForTarget', () => {
         conversation.conversationId,
       ),
     ).toEqual([
+      {
+        parentMessageId: userMessage.messageId,
+        siblingIdx: 1,
+      },
+    ]);
+  });
+
+  it('applies those indexes through restoreBranchForTarget', () => {
+    const applied: { parentMessageId: string | null | undefined; siblingIdx: number }[] = [];
+    restoreBranchForTarget(
+      [
+        userMessage,
+        olderAssistantMessage,
+        olderFollowUpUserMessage,
+        olderFollowUpAssistantMessage,
+        assistantMessage,
+      ],
+      olderFollowUpAssistantMessage.messageId,
+      conversation.conversationId,
+      (parentMessageId, siblingIdx) => {
+        applied.push({ parentMessageId, siblingIdx });
+      },
+    );
+    expect(applied).toEqual([
       {
         parentMessageId: userMessage.messageId,
         siblingIdx: 1,

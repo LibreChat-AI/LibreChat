@@ -30,6 +30,7 @@ jest.mock('librechat-data-provider', () => ({
 jest.mock('~/hooks', () => ({
   useAddedResponse: () => ({}),
   useResumeOnLoad: jest.fn(),
+  useBranchOnLoad: jest.fn(),
   useAdaptiveSSE: jest.fn(),
   useQueueDrain: jest.fn(),
   useQueuedTurnReveal: jest.fn(),
