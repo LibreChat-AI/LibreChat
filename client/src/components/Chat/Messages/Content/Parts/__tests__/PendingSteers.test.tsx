@@ -30,17 +30,13 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/useSteerRecovery', () => ({
-  __esModule: true,
-  default: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
-}));
-
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useSteerEscalate: () => mockEscalate,
   useSteerCancel: () => jest.fn(),
   useSteerMoveToQueue: () => mockMoveToQueue,
   useSteerRehome: () => mockRehome,
+  useSteerRecovery: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
 }));
 
 jest.mock('~/Providers', () => ({

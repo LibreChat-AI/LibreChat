@@ -1,33 +1,42 @@
 import { useCallback } from 'react';
 import { useStore } from 'jotai';
-import { useComposerRestoreHost } from '@librechat/chat/react';
-import { getSteerErrorCode, isDefiniteSteerRejection } from '@librechat/chat';
+import type { PendingSteer } from '../../core';
 import {
-  useSteerRehome,
-  useSteerConvert,
-  isSubmittingFamily,
-  pendingSteersByConvoId,
-  resolveAcknowledgedSteer,
-  pendingSteerCancelClientIdsFamily,
-} from '@librechat/chat/react';
-import type { PendingSteer } from '@librechat/chat';
-import { useSteerMessageMutation, useCancelSteerMutation } from '~/data-provider';
-import { carriedSteerContext, isLegacyDeliveryUncertain } from '~/utils';
-import { useChatSettings } from '~/Providers/ChatSettingsContext';
+  getSteerErrorCode,
+  carriedSteerContext,
+  isDefiniteSteerRejection,
+  isLegacyDeliveryUncertain,
+} from '../../core';
+import { pendingSteersByConvoId, pendingSteerCancelClientIdsFamily } from '../steer/atoms';
+import { useComposerRestoreHost } from '../steer/restore';
+import { isSubmittingFamily } from '../submission';
+import { resolveAcknowledgedSteer } from './chips';
+import { useSteerRehome } from './useSteerCancel';
+import useSteerConvert from './useSteerConvert';
+import { useSteerHost } from '../steer/host';
 
 /**
  * Retry or re-route a pending steer from OUTSIDE the composer. The thread's
  * pending block needs these actions without dragging the whole
  * `SteeringControls` object through the message tree.
  */
-export default function useSteerRecovery(conversationId: string) {
-  const { mutateAsync: steerMessage } = useSteerMessageMutation();
-  const { mutateAsync: cancelSteer } = useCancelSteerMutation();
+/** The actions a failed or uncertain steer row offers. */
+export type SteerRecoveryActions = {
+  /** Resend the steer into the run it was written for. */
+  retry: (steerId: string) => void;
+  /** Move a failed steer into the queue: it sends when the reply finishes. */
+  sendAsNew: (steerId: string) => void;
+};
+
+export default function useSteerRecovery(conversationId: string): SteerRecoveryActions {
+  const host = useSteerHost();
+  const steerMessage = host.useSteerMessageAsync();
+  const cancelSteer = host.useCancelSteer();
   const convertSteersToQueued = useSteerConvert();
   const rehomeSteer = useSteerRehome(conversationId);
   const { rewakeDrain } = useComposerRestoreHost();
   const jotaiStore = useStore();
-  const { getPaneConversations } = useChatSettings();
+  const { getPaneConversations } = host.useSettings();
 
   /** Whether the run this steer belongs to has finished, read live at ack time.
    *  Unmounting is not the same signal: `PendingSteers` also unmounts when the

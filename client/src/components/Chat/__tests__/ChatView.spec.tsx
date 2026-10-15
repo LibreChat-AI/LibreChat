@@ -30,14 +30,18 @@ jest.mock('~/data-provider', () => ({
  * helper surface so the suite can inject matching vs stale IDs without standing
  * up SSE, message trees, or full ChatRoute synchronization.
  */
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useQueueDrain: jest.fn(),
+  useQueuedTurnReveal: jest.fn(),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => (key === 'com_ui_new_chat' ? 'New chat' : key),
   useChatHelpers: () => ({ conversation: mockConversation() }),
   useAddedResponse: () => ({}),
   useAdaptiveSSE: jest.fn(),
   useResumeOnLoad: jest.fn(),
-  useQueueDrain: jest.fn(),
-  useQueuedTurnReveal: jest.fn(),
   useScrollbarGutterSeed: jest.fn(),
 }));
 

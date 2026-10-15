@@ -9,12 +9,12 @@ import {
   useSteerMoveToQueue,
   useSteerRehome,
   useSteerEscalate,
+  useSteerRecovery,
 } from '@librechat/chat/react';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useSteerRecovery from '~/hooks/Chat/useSteerRecovery';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { cn, isLegacyDeliveryUncertain } from '~/utils';
 import { useLatestMessage } from '~/hooks/Messages';

@@ -1,19 +1,20 @@
 import { useRef, useEffect, useMemo, useCallback } from 'react';
 import { useAtomValue, useStore } from 'jotai';
-import { recoveryDisposition, canRestoreRecovery } from '@librechat/chat';
-import { revealedQueuedTurnFamily, useIsSubmitting } from '@librechat/chat/react';
 import { Constants, DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS } from 'librechat-data-provider';
-import { acquireQueueSendLock, releaseQueueSendLock, hasQueuedIntent } from '@librechat/chat';
+import type {
+  QueueSendLock,
+  QueuedTurnAsk,
+  QueuedMessage,
+  QueuedMessageOrigin,
+  RunEnd,
+} from '../../core';
 import {
-  settledQueuedTurnReceiptsByConvoId,
-  pendingQueuedTurnEnqueueIdsByConvoId,
-  pendingRunEndByConvoId,
-  queuedMessagesByConvoId,
-  drainAfterAbortByIndex,
-  runEndByIndex,
-  recoveryDispositionsFamily,
-} from '@librechat/chat/react';
-import {
+  mergeQueuedMessages,
+  recoveryDisposition,
+  canRestoreRecovery,
+  acquireQueueSendLock,
+  releaseQueueSendLock,
+  hasQueuedIntent,
   parkRunEnd,
   batchFileIds,
   pickDrainable,
@@ -24,12 +25,19 @@ import {
   selectQueuedTurnReveal,
   consumeAdmittedBoundary,
   QUEUE_USAGE_RENEW_INTERVAL_MS,
-} from '@librechat/chat';
-import type { QueueSendLock, QueuedMessage, QueuedMessageOrigin, RunEnd } from '@librechat/chat';
-import type { TAskFunction } from '~/common';
-import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { useMarkFilesUsageMutation } from '~/data-provider';
-import { mergeQueuedMessages } from '~/utils/queue';
+} from '../../core';
+import {
+  settledQueuedTurnReceiptsByConvoId,
+  pendingQueuedTurnEnqueueIdsByConvoId,
+  pendingRunEndByConvoId,
+  queuedMessagesByConvoId,
+  drainAfterAbortByIndex,
+  runEndByIndex,
+} from '../steer/queue';
+import { recoveryDispositionsFamily } from '../steer/recovery';
+import { revealedQueuedTurnFamily } from '../steer/atoms';
+import { useIsSubmitting } from '../submission';
+import { useSteerHost } from '../steer/host';
 
 /**
  * Auto-sends queued follow-up messages when a run finishes.
@@ -49,9 +57,9 @@ import { mergeQueuedMessages } from '~/utils/queue';
 export default function useQueueDrain(
   index: string | number,
   activeConversationId: string | undefined,
-  ask: TAskFunction,
+  ask: QueuedTurnAsk,
   revealQueuedTurn?: (item: QueuedMessage, end: RunEnd) => void,
-) {
+): void {
   const jotaiStore = useStore();
   const runEnd = useAtomValue(runEndByIndex(index));
   const parkedRunEnd = useAtomValue(
@@ -63,9 +71,10 @@ export default function useQueueDrain(
   const sendLockKey = String(index);
   const sendLockRef = useRef<QueueSendLock | null>(null);
   const revealLockRef = useRef(false);
-  const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
-  const { config } = useChatSettings();
-  const sendLockTimeoutMs = config.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
+  const host = useSteerHost();
+  const markFilesUsage = host.useMarkFilesUsage();
+  const { queuedSendLockTimeoutMs } = host.useSettings();
+  const sendLockTimeoutMs = queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const ownQueue = useAtomValue(
     queuedMessagesByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );

@@ -1,22 +1,12 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { useStore, useAtomValue } from 'jotai';
-import { QueryKeys } from 'librechat-data-provider';
-import { useQueryClient } from '@tanstack/react-query';
-import { isAdmissibleQueuedTurn } from '@librechat/chat';
-import {
-  revealedQueuedTurnFamily,
-  activeGenerationCreatedAtByConvoId,
-  useIsSubmitting,
-  isSubmittingFamily,
-} from '@librechat/chat/react';
 import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
-import type { RevealedQueuedTurn } from '@librechat/chat/react';
-import type { QueuedMessage, RunEnd } from '@librechat/chat';
-import type { StreamStatusResponse } from '~/data-provider/SSE/queries';
-import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
-import { streamStatusQueryKey } from '~/data-provider/SSE/queries';
-
-export { selectQueuedTurnReveal } from '@librechat/chat';
+import type { RevealedQueuedTurn } from '../steer/atoms';
+import type { QueuedMessage, RunEnd } from '../../core';
+import { revealedQueuedTurnFamily, activeGenerationCreatedAtByConvoId } from '../steer/atoms';
+import { useIsSubmitting, isSubmittingFamily } from '../submission';
+import { isAdmissibleQueuedTurn } from '../../core';
+import { useSteerHost } from '../steer/host';
 
 /** The thread has moved past the response the reveal follows: the admitted
  *  turn, or any other turn, now parents on it. */
@@ -65,19 +55,14 @@ export default function useQueuedTurnReveal(
   index: string | number = 0,
 ): (item: QueuedMessage, end: RunEnd) => void {
   const jotaiStore = useStore();
-  const queryClient = useQueryClient();
   const revealKey = conversationId ?? '';
+  const { read: readCache, subscribe } = useSteerHost().useQueuedTurnCache(revealKey);
   const reveal = useAtomValue(revealedQueuedTurnFamily(revealKey));
   const isSubmitting = useIsSubmitting(index);
   const activeEpoch = useAtomValue(activeGenerationCreatedAtByConvoId(revealKey));
   const readHandoff = useCallback(
     (intent: RevealedQueuedTurn) => {
-      const receipts = queryClient.getQueryData<TAgentQueuedTurnReceipt[]>(
-        agentQueuedTurnsQueryKey(revealKey),
-      );
-      const status = queryClient.getQueryData<StreamStatusResponse>(
-        streamStatusQueryKey(revealKey),
-      );
+      const { receipts, status } = readCache();
       const submitting = jotaiStore.get(isSubmittingFamily(index));
       let generationCreatedAt = intent.generationCreatedAt;
       let waiting = false;
@@ -110,20 +95,7 @@ export default function useQueuedTurnReveal(
                 status.createdAt > generationCreatedAt))),
       };
     },
-    [queryClient, jotaiStore, index, revealKey, activeEpoch],
-  );
-  const subscribe = useCallback(
-    (notify: () => void) =>
-      queryClient.getQueryCache().subscribe((event) => {
-        const key = event?.query.queryKey;
-        if (
-          key?.[1] === revealKey &&
-          (key[0] === QueryKeys.agentQueuedTurns || key[0] === 'streamStatus')
-        ) {
-          notify();
-        }
-      }),
-    [queryClient, revealKey],
+    [readCache, jotaiStore, index, activeEpoch],
   );
   /** Only ownership facts trigger a render, not every receipt poll. Remember
    * an admitted successor's effective boundary even after its receipt leaves

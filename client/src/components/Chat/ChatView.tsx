@@ -4,9 +4,9 @@ import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
-import { useIsSubmitting } from '@librechat/chat/react';
 import { Constants, buildTree } from 'librechat-data-provider';
 import { ComposerRestoreProvider } from '@librechat/chat/react';
+import { useIsSubmitting, useQueueDrain, useQueuedTurnReveal } from '@librechat/chat/react';
 import type { TChatProject } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import {
@@ -15,8 +15,6 @@ import {
   useResumeOnLoad,
   useAdaptiveSSE,
   useChatHelpers,
-  useQueueDrain,
-  useQueuedTurnReveal,
   useLocalize,
 } from '~/hooks';
 import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } from '~/Providers';
