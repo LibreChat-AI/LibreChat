@@ -8329,6 +8329,29 @@ describe('AgentClient - titleConvo', () => {
         );
       });
 
+      it('reads the stored provider items with the history and puts them on their tool calls', async () => {
+        expect(client.historySelect()).toContain('+providerItems');
+        const providerItems = { origin: 'digest', items: [{ id: 'rs_1', type: 'reasoning' }] };
+        const history = conversationHistory();
+        history[1] = {
+          ...history[1],
+          content: [
+            { type: ContentTypes.TEXT, text: 'First answer' },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 'call_1', name: 'lookup', args: '{}', output: 'ok', progress: 1 },
+            },
+          ],
+          providerItems: { call_1: providerItems },
+        };
+
+        const result = await client.buildMessages(history, 'msg-3', {});
+
+        const toolCall = result.prompt[1].content.find((part) => part.tool_call)?.tool_call;
+        expect(toolCall.providerItems).toEqual(providerItems);
+        expect(history[1].content[1].tool_call).not.toHaveProperty('providerItems');
+      });
+
       it('keeps the prompt live and reads no anchor without stableContext', async () => {
         mockReq.config.endpoints = { [EModelEndpoint.agents]: {} };
         const artifactsPrompt = toggleArtifacts();

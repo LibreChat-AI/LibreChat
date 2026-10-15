@@ -142,6 +142,8 @@ const {
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
   planSendContext,
+  isStableContextEnabled,
+  attachProviderItems,
   getMCPServerInstructions,
   prepareResumedTurnContext,
   readConversationAnchor,
@@ -2370,6 +2372,12 @@ class AgentClient extends BaseClient {
     return super.loadHistory(conversationId, parentMessageId);
   }
 
+  /** Adds the provider items of a response's tool rounds, which the SDK replays as sent. */
+  historySelect() {
+    const base = super.historySelect();
+    return isStableContextEnabled(this.options.req?.config) ? `${base} +providerItems` : base;
+  }
+
   async buildMessages(messages, parentMessageId, _buildOptions, opts) {
     if (this.eventActorContinuation === 'cold') {
       /** Compatibility was rejected after warm state preparation. Rebuild all
@@ -2379,13 +2387,15 @@ class AgentClient extends BaseClient {
       this.compactionSemanticIndexSnapshot = undefined;
     }
     /** Always pass mapMethod; getMessagesForConversation applies it only to messages with addedConvo flag */
-    const orderedMessages = this.constructor.getMessagesForConversation({
-      messages,
-      parentMessageId,
-      summary: this.shouldSummarize,
-      mapMethod: createMultiAgentMapper(this.options.agent, this.agentConfigs),
-      mapCondition: (message) => message.addedConvo === true,
-    });
+    const orderedMessages = this.constructor
+      .getMessagesForConversation({
+        messages,
+        parentMessageId,
+        summary: this.shouldSummarize,
+        mapMethod: createMultiAgentMapper(this.options.agent, this.agentConfigs),
+        mapCondition: (message) => message.addedConvo === true,
+      })
+      .map(attachProviderItems);
     /**
      * Answers the user gave to earlier `ask_user_question` calls. Read from the
      * rows before `messages` is narrowed to `orderedMessages`; when those rows

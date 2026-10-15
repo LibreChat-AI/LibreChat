@@ -76,6 +76,12 @@ export interface IMessage extends Document {
   contextUpdates?: IContextEntry[];
   /** Server-written anchor of the segment that starts after this message's summary. */
   contextAnchor?: IContextEntry[];
+  /**
+   * Provider output items of this response's tool rounds, by tool call id (OpenAI Responses
+   * ids, status and encrypted reasoning). Server-written by `saveMessage`, read only to
+   * replay a round as it was sent.
+   */
+  providerItems?: Record<string, unknown>;
   isCreatedByUser: boolean;
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted?: boolean;

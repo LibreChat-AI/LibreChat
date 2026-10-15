@@ -75,6 +75,8 @@ const messageSchema: Schema<IMessage> = new Schema(
      *  text, so both stay out of ordinary reads, shares and forks. */
     contextUpdates: { type: [contextEntrySchema], select: false, default: undefined },
     contextAnchor: { type: [contextEntrySchema], select: false, default: undefined },
+    /** Server-written by `saveMessage`; encrypted reasoning, so it stays out of every ordinary read. */
+    providerItems: { type: Schema.Types.Mixed, select: false },
     isCreatedByUser: {
       type: Boolean,
       required: true,

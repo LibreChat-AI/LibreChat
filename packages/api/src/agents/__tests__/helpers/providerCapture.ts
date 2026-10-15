@@ -12,7 +12,7 @@ import { createRun } from '../../run';
 
 export const CAPTURED = 'request captured before network';
 
-export type RequestFormat = 'openai' | 'anthropic' | 'google' | 'bedrock';
+export type RequestFormat = 'openai' | 'responses' | 'anthropic' | 'google' | 'bedrock';
 
 export interface ProviderCase {
   name: string;
@@ -150,6 +150,14 @@ export const PROVIDERS: ProviderCase[] = [
   },
 ];
 
+/** OpenAI Responses API: tool rounds carry provider output items (ids, status, reasoning). */
+export const OPENAI_RESPONSES: ProviderCase = {
+  name: 'openAI Responses',
+  provider: Providers.OPENAI,
+  format: 'responses',
+  modelParameters: { model: 'gpt-5', useResponsesApi: true, ...OPENAI_KEY },
+};
+
 function parseRequest(format: RequestFormat, body: Record<string, unknown>): Captured {
   if (format === 'google') {
     return {
@@ -160,6 +168,16 @@ function parseRequest(format: RequestFormat, body: Record<string, unknown>): Cap
   }
   if (format === 'anthropic') {
     return { system: body.system, tools: body.tools, messages: body.messages as unknown[] };
+  }
+  if (format === 'responses') {
+    const input = (body.input ?? []) as Array<{ role?: string }>;
+    const isSystem = (item: { role?: string }) =>
+      item.role === 'system' || item.role === 'developer';
+    return {
+      system: input.filter(isSystem),
+      tools: body.tools,
+      messages: input.filter((item) => !isSystem(item)),
+    };
   }
   const messages = (body.messages ?? []) as Array<{ role: string }>;
   return {

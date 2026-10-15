@@ -174,6 +174,96 @@ function chatCompletionsReply(reply: Reply, request: Captured, id: string): unkn
   ]);
 }
 
+/**
+ * A Responses API reply: an encrypted reasoning item, then the text message or the function
+ * calls, each with the ids and status the provider sends.
+ */
+function responsesReply(reply: Reply, request: Captured, id: string): unknown {
+  const output: Array<Record<string, unknown>> = [
+    {
+      id: `rs_${id}`,
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: `Reasoning ${id}.` }],
+      encrypted_content: `encrypted_${id}`,
+    },
+  ];
+  if ('text' in reply) {
+    output.push({
+      id,
+      type: 'message',
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', annotations: [], logprobs: [], text: reply.text }],
+    });
+  } else {
+    reply.calls.forEach((call, index) =>
+      output.push({
+        id: `fc_${id}_${index}`,
+        type: 'function_call',
+        status: 'completed',
+        call_id: call.id,
+        name: call.name,
+        arguments: JSON.stringify(call.args),
+      }),
+    );
+  }
+  const response = {
+    id: `resp_${id}`,
+    object: 'response',
+    created_at: Math.floor(Date.now() / 1000),
+    model: 'model',
+    usage: {
+      input_tokens: 1,
+      output_tokens: 1,
+      total_tokens: 2,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  };
+  if (request.stream !== true) {
+    return { ...response, status: 'completed', output };
+  }
+  const frames: Array<[string, Record<string, unknown>]> = [
+    ['response.created', { response: { ...response, status: 'in_progress', output: [] } }],
+  ];
+  output.forEach((item, output_index) => {
+    frames.push(['response.output_item.added', { output_index, item: inProgress(item) }]);
+    if (item.type === 'message') {
+      frames.push([
+        'response.output_text.delta',
+        {
+          item_id: item.id,
+          output_index,
+          content_index: 0,
+          delta: (reply as { text: string }).text,
+          logprobs: [],
+        },
+      ]);
+    } else if (item.type === 'function_call') {
+      frames.push([
+        'response.function_call_arguments.delta',
+        { item_id: item.id, output_index, delta: item.arguments },
+      ]);
+    }
+    frames.push(['response.output_item.done', { output_index, item }]);
+  });
+  frames.push(['response.completed', { response: { ...response, status: 'completed', output } }]);
+  return sse(
+    frames.map(([type, data], sequence_number) => [type, { type, sequence_number, ...data }]),
+  );
+}
+
+function inProgress(item: Record<string, unknown>): Record<string, unknown> {
+  switch (item.type) {
+    case 'message':
+      return { ...item, status: 'in_progress', content: [] };
+    case 'function_call':
+      return { ...item, status: 'in_progress', arguments: '' };
+    default:
+      return { id: item.id, type: item.type, summary: [] };
+  }
+}
+
 let replyCount = 0;
 
 /**
@@ -193,6 +283,8 @@ export function providerReply(
       return googleReply(reply, request);
     case 'bedrock':
       return bedrockReply(reply, request);
+    case 'responses':
+      return responsesReply(reply, request, id);
     default:
       return chatCompletionsReply(reply, request, id);
   }
