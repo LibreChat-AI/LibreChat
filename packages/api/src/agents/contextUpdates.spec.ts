@@ -5,6 +5,7 @@ import {
   hasConversationDateContext,
   buildUserMessageContextUpdates,
   getTurnUserMessageCreatedAt,
+  createHistoryContextUpdates,
 } from './contextUpdates';
 import type { ContextUpdateMessage } from './contextUpdates';
 
@@ -248,15 +249,77 @@ describe('hasConversationDateContext', () => {
   });
 });
 
+const STABLE_CONFIG = { endpoints: { agents: { promptCache: { stableContext: true } } } };
+const TIMESTAMPS_CONFIG = { endpoints: { agents: { promptMessageTimestamps: true } } };
+
 describe('getTurnUserMessageCreatedAt', () => {
-  it('dates the stored user message by the turn start', () => {
-    const turnStartedAt = Date.parse('2026-10-14T13:41:07.250Z');
-    expect(getTurnUserMessageCreatedAt({ turnStartedAt })).toEqual(new Date(turnStartedAt));
+  const turnStartedAt = Date.parse('2026-10-14T13:41:07.250Z');
+
+  it.each([
+    ['stableContext', STABLE_CONFIG],
+    ['promptMessageTimestamps', TIMESTAMPS_CONFIG],
+  ])('dates the stored user message by the turn start with %s', (_name, config) => {
+    expect(getTurnUserMessageCreatedAt({ turnStartedAt, config })).toEqual(new Date(turnStartedAt));
+  });
+
+  it('leaves the storage timestamp when neither feature that reads it is on', () => {
+    expect(getTurnUserMessageCreatedAt({ turnStartedAt })).toBeUndefined();
+    expect(getTurnUserMessageCreatedAt({ turnStartedAt, config: {} })).toBeUndefined();
   });
 
   it('leaves the storage timestamp when the turn start is unknown', () => {
     expect(getTurnUserMessageCreatedAt(undefined)).toBeUndefined();
-    expect(getTurnUserMessageCreatedAt({})).toBeUndefined();
-    expect(getTurnUserMessageCreatedAt({ turnStartedAt: Number.NaN })).toBeUndefined();
+    expect(getTurnUserMessageCreatedAt({ config: STABLE_CONFIG })).toBeUndefined();
+    expect(
+      getTurnUserMessageCreatedAt({ turnStartedAt: Number.NaN, config: STABLE_CONFIG }),
+    ).toBeUndefined();
+  });
+});
+
+describe('createHistoryContextUpdates', () => {
+  const AGENT_WITH_DATE = { dynamicToolContextMap: { web_search: 'stated' } };
+  const messages = [
+    user('u1', START),
+    assistant('a1', START),
+    user('u2', '2026-03-10T10:00:00.000Z'),
+  ];
+  const run = (config: object, agents: object[] = [AGENT_WITH_DATE]) => {
+    const history = createHistoryContextUpdates({
+      req: {
+        conversationCreatedAt: START,
+        turnStartedAt: '2026-03-10T10:00:00.000Z',
+        body: { timezone: 'Africa/Nairobi' },
+        config,
+      },
+      messages,
+      agents,
+    });
+    const formatted = messages.map(() => ({ content: 'text' }));
+    const applied = formatted.map((message, index) => history.apply(message as never, index));
+    return { history, formatted, applied };
+  };
+
+  it('prepends the date-change note to the prompt copy with stableContext', () => {
+    const { history, formatted, applied } = run(STABLE_CONFIG);
+    expect(history.hasUpdates).toBe(true);
+    expect(applied[2]).toContain('Current date changed to: 2026-03-10 (Tue)');
+    expect(formatted[2].content).toContain(applied[2] as string);
+    expect(formatted[0].content).toBe('text');
+  });
+
+  it('announces nothing without stableContext, so the history is as stored', () => {
+    const { history, formatted } = run({});
+    expect(history.hasUpdates).toBe(false);
+    expect(formatted.every((message) => message.content === 'text')).toBe(true);
+  });
+
+  it('announces nothing when no agent states the conversation date', () => {
+    expect(run(STABLE_CONFIG, [{}]).history.hasUpdates).toBe(false);
+  });
+
+  it('stamps send times only with promptMessageTimestamps', () => {
+    const { applied } = run(TIMESTAMPS_CONFIG);
+    expect(applied[0]).toContain('Message sent: 2026-03-09 23:00:00 +03:00 (Mon)');
+    expect(applied[2]).not.toContain('Current date changed');
   });
 });

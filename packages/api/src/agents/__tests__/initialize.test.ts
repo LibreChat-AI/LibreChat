@@ -2193,6 +2193,7 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.instructions =
       'Today is {{current_date}}. The chat began at {{current_datetime}} ({{iso_datetime}}).';
+    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
     req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
     req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
     req.body = { timezone: 'UTC' };
@@ -2220,6 +2221,7 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
   it('resolves temporal special vars in the request timezone, from the turn start without a conversation anchor', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.instructions = 'It is currently {{current_datetime}}.';
+    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
     req.turnStartedAt = new Date('2024-01-15T18:30:00.000Z').getTime();
     req.body = { timezone: 'America/New_York' };
 
@@ -2261,6 +2263,7 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     agent.additional_instructions = 'Stable agent context';
     agent.instructions = 'Today is {{current_date}}.';
     agent.artifacts = 'enabled' as never;
+    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
     req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
     req.body = { timezone: 'UTC' };
 
@@ -2285,6 +2288,34 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     expect(webContext).toEqual({
       web_search: 'Conversation Date & Time: 2026-08-31T06:20:00.000Z',
     });
+  });
+
+  it('keeps temporal instructions in additional_instructions, dated by the turn start, when stableContext is off', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.instructions =
+      'Today is {{current_date}}. The turn began at {{current_datetime}} ({{iso_datetime}}).';
+    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'UTC' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBe(
+      'Today is 2026-08-31 (Monday). The turn began at 2026-08-31 06:20:00 +00:00 (Monday) (2026-08-31T06:20:00.000Z).',
+    );
+    expect(result.dynamicToolContextMap?.agent_temporal_instructions).toBeUndefined();
   });
 
   it('keeps non-temporal special vars in stable instructions', async () => {

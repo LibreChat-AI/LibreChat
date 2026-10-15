@@ -8,16 +8,25 @@
  * Bedrock through an injected runtime client whose `send` records the command
  * input. No request reaches the network.
  *
+ * Runs with `endpoints.agents.promptCache.stableContext` on, except where a
+ * test says otherwise.
+ *
  * Covered: OpenAI, an OpenAI-compatible custom endpoint (vLLM), Anthropic with
  * and without prompt caching, OpenRouter with prompt caching, Bedrock with
- * prompt caching, and Google. With Anthropic-format prompt caching the SDK
- * carries the dynamic system tail as a user message ahead of the newest user
- * message, so that carrier is excluded from the history comparison; cache
- * markers move to the newest messages every turn and are not prompt content,
- * so they are stripped before comparing histories.
+ * prompt caching, and Google. Cache markers move to the newest messages every
+ * turn and are not prompt content, so they are stripped before comparing
+ * histories.
+ *
+ * With Anthropic and OpenRouter prompt caching the SDK moves a non-empty
+ * `additional_instructions` into a message before the newest user message,
+ * and that position shifts every turn. `createRun` merges the conversation-
+ * stable part into `instructions` instead, so the history comparison is strict.
+ * A per-turn part (the volatile parts of the run context: memory and RAG) stays in
+ * `additional_instructions` and is moved on purpose; merging it would change
+ * the system prompt every turn and uncache the whole history.
  *
  * The history goes through the same helpers `AgentClient.buildMessages` uses
- * (`buildUserMessageContextUpdates`, `prependContextText`), and the per-chat
+ * (`createHistoryContextUpdates`), and the per-chat
  * system context through the same builders as agent initialization, so a
  * change to any of them that moves bytes inside a cached prefix fails here.
  */
@@ -25,8 +34,7 @@ import { tool } from '@langchain/core/tools';
 import { formatAgentMessages, formatMessage, Providers } from '@librechat/agents';
 import { replaceSpecialVars } from 'librechat-data-provider';
 import { buildWebSearchContext, buildWebSearchDynamicContext } from '~/tools/toolkits/web';
-import { buildUserMessageContextUpdates, AGENT_TEMPORAL_INSTRUCTIONS_KEY } from '../contextUpdates';
-import { prependContextText } from '../client';
+import { createHistoryContextUpdates, AGENT_TEMPORAL_INSTRUCTIONS_KEY } from '../contextUpdates';
 import { createRun } from '../run';
 
 jest.setTimeout(30000);
@@ -60,7 +68,18 @@ const lookupTool = tool(async () => 'ok', {
   },
 });
 
-function buildHistory(conversation: Conversation, turn: number, includeTimestamps: boolean) {
+const appConfigFor = (stableContext: boolean, includeTimestamps = false) => ({
+  endpoints: {
+    agents: { promptCache: { stableContext }, promptMessageTimestamps: includeTimestamps },
+  },
+});
+
+function buildHistory(
+  conversation: Conversation,
+  turn: number,
+  includeTimestamps: boolean,
+  stableContext: boolean,
+) {
   const ordered: Array<Record<string, unknown>> = [];
   for (let i = 0; i < turn; i++) {
     const isCurrent = i === turn - 1;
@@ -82,17 +101,19 @@ function buildHistory(conversation: Conversation, turn: number, includeTimestamp
       });
     }
   }
-  const updates = buildUserMessageContextUpdates({
+  const historyContext = createHistoryContextUpdates({
+    req: {
+      conversationCreatedAt: conversation.startedAt,
+      turnStartedAt: conversation.turnStarts[turn - 1],
+      body: { timezone: TIMEZONE },
+      config: appConfigFor(stableContext, includeTimestamps),
+    },
     messages: ordered,
-    conversationStartedAt: conversation.startedAt,
-    currentTurnStartedAt: conversation.turnStarts[turn - 1],
-    timezone: TIMEZONE,
-    trackDateChanges: true,
-    includeTimestamps,
+    agents: [{ dynamicToolContextMap: { web_search: 'stated' } }],
   });
   const formatted = ordered.map((message, index) => {
     const formattedMessage = formatMessage({ message: message as never });
-    prependContextText(formattedMessage as never, updates.get(index), '\n\n');
+    historyContext.apply(formattedMessage as never, index);
     return formattedMessage;
   });
   return formatAgentMessages(formatted as never, {}).messages;
@@ -108,6 +129,51 @@ type ProviderCase = {
 type Captured = { system: unknown; tools: unknown; messages: unknown[] };
 
 const RUNTIME_CONTEXT_MARKER = 'Conversation started:';
+const STATIC_ADDITIONAL = 'Answer in the language of the user.';
+const QUEUED_CONTEXT = 'report.csv';
+
+/** Code-env state of a turn whose upload is queued; `createRun` derives the queued file context from it. */
+const queuedFileState = (queued: boolean) => ({
+  fileConsumers: { executeCode: true, fileSearch: false },
+  provisionState: {
+    codeEnvFiles: queued
+      ? [
+          {
+            file_id: 'report',
+            filename: QUEUED_CONTEXT,
+            filepath: '/uploads/report.csv',
+            type: 'text/csv',
+            user: 'user-1',
+            object: 'file',
+            bytes: 10,
+            embedded: false,
+            usage: 0,
+          },
+        ]
+      : [],
+    vectorDBFiles: [],
+    aliveFileIds: new Set(),
+    agentScopedFileIds: new Set(),
+  },
+});
+const memoryFor = (turn: number) =>
+  `Memory after turn ${turn}: prefers metric units, note ${turn * 104729}.`;
+const ragFor = (turn: number) => `Retrieved context for question ${turn}: passage ${turn * 7919}.`;
+
+interface AgentVariant {
+  /** Adds query-dependent RAG context to `additional_instructions`. */
+  rag?: boolean;
+  /** Adds memory context, which the memory agent rewrites between turns. */
+  memory?: boolean;
+  /** Turn after which an upload leaves one-turn queued file context (gone on the next turn). */
+  queuedAtTurn?: number;
+  /** Declares memory and RAG context as per-turn, as `AgentClient` does. */
+  declareVolatile?: boolean;
+  /** Dates the runtime context by the turn start instead of the conversation start. */
+  perTurnClock?: boolean;
+  /** `promptCache.stableContext`; on unless a test says otherwise. */
+  stableContext?: boolean;
+}
 
 function isCachePointBlock(value: unknown): boolean {
   return (
@@ -139,19 +205,39 @@ async function captureTurn(
   conversation: Conversation,
   turn: number,
   includeTimestamps = false,
+  variant: AgentVariant = {},
 ): Promise<Captured> {
   let captured: Captured | undefined;
-  const now = conversation.startedAt;
+  const stableContext = variant.stableContext ?? true;
+  const now =
+    variant.perTurnClock || !stableContext
+      ? conversation.turnStarts[turn - 1]
+      : conversation.startedAt;
+  const rag = variant.rag ? ragFor(turn) : undefined;
+  const volatile = [variant.memory ? memoryFor(turn) : undefined, rag].filter(Boolean).join('\n\n');
   const agent = {
     id: 'agent_stable',
     name: 'Stable Agent',
     provider: providerCase.provider,
     endpoint: providerCase.endpoint ?? providerCase.provider,
     instructions: 'You are a careful support assistant.',
-    additional_instructions: 'Answer in the language of the user.',
-    toolContextMap: { web_search: buildWebSearchContext() },
+    additional_instructions: [STATIC_ADDITIONAL, volatile].filter(Boolean).join('\n\n'),
+    ...(variant.queuedAtTurn ? queuedFileState(variant.queuedAtTurn === turn) : {}),
+    ...(variant.declareVolatile && volatile
+      ? {
+          stable_additional_instructions: STATIC_ADDITIONAL,
+          volatile_instructions: volatile,
+          split_additional_instructions: [STATIC_ADDITIONAL, volatile].join('\n\n'),
+        }
+      : {}),
+    toolContextMap: { web_search: buildWebSearchContext(stableContext) },
     dynamicToolContextMap: {
-      web_search: buildWebSearchDynamicContext(now, TIMEZONE),
+      web_search: buildWebSearchDynamicContext({
+        turnStartedAt: now,
+        conversationStartedAt: now,
+        timezone: TIMEZONE,
+        stableContext,
+      }),
       [AGENT_TEMPORAL_INSTRUCTIONS_KEY]: replaceSpecialVars({
         text: 'Today is {{current_date}}.',
         now,
@@ -202,9 +288,10 @@ async function captureTurn(
   }
 
   try {
-    const messages = buildHistory(conversation, turn, includeTimestamps);
+    const messages = buildHistory(conversation, turn, includeTimestamps, stableContext);
     const runId = `stability-${providerCase.name}-${turn}-${Math.random()}`;
     const run = await createRun({
+      appConfig: appConfigFor(stableContext) as never,
       agents: [agent] as never,
       messages,
       runId,
@@ -249,6 +336,17 @@ const PROVIDERS: ProviderCase[] = [
   {
     name: 'anthropic with promptCache',
     provider: Providers.ANTHROPIC,
+    modelParameters: {
+      model: 'claude-sonnet-4-5',
+      apiKey: 'test-key',
+      maxRetries: 0,
+      promptCache: true,
+    },
+  },
+  {
+    name: 'custom endpoint on the Anthropic protocol with promptCache',
+    provider: Providers.ANTHROPIC,
+    endpoint: 'gateway',
     modelParameters: {
       model: 'claude-sonnet-4-5',
       apiKey: 'test-key',
@@ -305,6 +403,10 @@ describe('prompt prefix stability', () => {
           expect(JSON.stringify(turn.system)).toBe(JSON.stringify(turns[0].system));
         }
         expect(JSON.stringify(turns[0].tools)).toContain('lookup_order');
+        for (const turn of turns) {
+          expect(JSON.stringify(turn.system)).toContain(STATIC_ADDITIONAL);
+          expect(JSON.stringify(turn.messages)).not.toContain(RUNTIME_CONTEXT_MARKER);
+        }
         expect(JSON.stringify(turns[0])).toContain(
           `${RUNTIME_CONTEXT_MARKER} 2026-03-09 23:00 +03:00 (Mon)`,
         );
@@ -312,9 +414,7 @@ describe('prompt prefix stability', () => {
 
       it('starts each turn with the previous turn history, newest user message included', () => {
         for (let i = 1; i < turns.length; i++) {
-          const previous = turns[i - 1].messages.filter(
-            (message) => !JSON.stringify(message).includes(RUNTIME_CONTEXT_MARKER),
-          );
+          const previous = turns[i - 1].messages;
           const next = turns[i].messages.slice(0, previous.length);
           expect(serialize(next)).toBe(serialize(previous));
         }
@@ -365,4 +465,160 @@ describe('prompt prefix stability', () => {
       'Current date changed to: 2026-03-10 (Tue)\\nMessage sent: 2026-03-10 00:30:00 +03:00 (Tue)',
     );
   });
+});
+
+const MOVES_TAIL = PROVIDERS.filter(
+  ({ name }) =>
+    name.includes('anthropic with') ||
+    name.includes('openrouter with') ||
+    name.includes('Anthropic protocol'),
+);
+
+async function playConversation(providerCase: ProviderCase, variant: AgentVariant) {
+  const turns: Captured[] = [];
+  for (let turn = 1; turn <= CONVERSATION_A.turnStarts.length; turn++) {
+    turns.push(await captureTurn(providerCase, CONVERSATION_A, turn, false, variant));
+  }
+  return turns;
+}
+
+/** Texts that change from turn to turn without a user action. */
+const perTurn = (index: number) => [memoryFor(index + 1), ragFor(index + 1)];
+
+const roleOf = (message: unknown) => (message as { role?: string }).role;
+
+describe('per-turn context in additional_instructions', () => {
+  describe.each(PROVIDERS.map((providerCase) => [providerCase.name, providerCase] as const))(
+    '%s',
+    (_name, providerCase) => {
+      const movesTail = MOVES_TAIL.includes(providerCase);
+      let turns: Captured[];
+
+      beforeAll(async () => {
+        turns = await playConversation(providerCase, {
+          rag: true,
+          memory: true,
+          declareVolatile: true,
+        });
+      });
+
+      it('sends every turn its own memory and RAG context and keeps tools identical', () => {
+        turns.forEach((turn, index) => {
+          expect(JSON.stringify(turn.tools)).toBe(JSON.stringify(turns[0].tools));
+          for (const text of perTurn(index)) {
+            expect(JSON.stringify([turn.system, turn.messages])).toContain(text);
+          }
+        });
+      });
+
+      if (!movesTail) {
+        it('keeps the memory and RAG context in the system prompt', () => {
+          turns.forEach((turn, index) => {
+            for (const text of perTurn(index)) {
+              expect(JSON.stringify(turn.system)).toContain(text);
+              expect(JSON.stringify(turn.messages)).not.toContain(text);
+            }
+          });
+        });
+        return;
+      }
+
+      const carrierIndexes = (turn: Captured, index: number) =>
+        turn.messages.flatMap((message, position) =>
+          perTurn(index).every((text) => JSON.stringify(message).includes(text)) ? [position] : [],
+        );
+
+      it('keeps the system prompt byte-identical, without the memory and RAG context', () => {
+        turns.forEach((turn, index) => {
+          expect(JSON.stringify(turn.system)).toBe(JSON.stringify(turns[0].system));
+          expect(JSON.stringify(turn.system)).toContain(RUNTIME_CONTEXT_MARKER);
+          for (const text of perTurn(index)) {
+            expect(JSON.stringify(turn.system)).not.toContain(text);
+          }
+        });
+      });
+
+      it('moves only the memory and RAG context, in one message next to the newest user message', () => {
+        turns.forEach((turn, index) => {
+          /** The SDK places the tail after the only message of a one-message OpenRouter request. */
+          const alone = index === 0 && providerCase.provider === Providers.OPENROUTER;
+          const expected = alone ? turn.messages.length - 1 : turn.messages.length - 2;
+          expect(carrierIndexes(turn, index)).toEqual([expected]);
+          expect(JSON.stringify(turn.messages)).not.toContain(STATIC_ADDITIONAL);
+          expect(roleOf(turn.messages[turn.messages.length - 1])).toBe('user');
+        });
+      });
+
+      it('reuses everything before the moved tail on the next turn', () => {
+        for (let i = 1; i < turns.length; i++) {
+          const previous = turns[i - 1].messages;
+          const reusable = previous.slice(0, carrierIndexes(turns[i - 1], i - 1)[0]);
+          if (i >= 2) {
+            expect(reusable.length).toBeGreaterThan(0);
+          }
+          expect(serialize(turns[i].messages.slice(0, reusable.length))).toBe(serialize(reusable));
+          for (const text of perTurn(i - 1)) {
+            expect(JSON.stringify(turns[i].messages)).not.toContain(text);
+          }
+        }
+      });
+    },
+  );
+
+  describe.each(MOVES_TAIL.map((providerCase) => [providerCase.name, providerCase] as const))(
+    '%s: regression guard',
+    (_name, providerCase) => {
+      it('a per-turn part merged into the stable instructions changes the system prompt every turn', async () => {
+        /** No `volatile_instructions`: memory and RAG context cannot be told apart and are merged. */
+        const turns = await playConversation(providerCase, { rag: true, memory: true });
+        expect(JSON.stringify(turns[1].system)).not.toBe(JSON.stringify(turns[0].system));
+        expect(JSON.stringify(turns[2].system)).not.toBe(JSON.stringify(turns[1].system));
+      });
+
+      it('a runtime context dated by the turn start changes the system prompt every turn', async () => {
+        const turns = await playConversation(providerCase, { perTurnClock: true });
+        expect(JSON.stringify(turns[1].system)).not.toBe(JSON.stringify(turns[0].system));
+        expect(JSON.stringify(turns[2].system)).not.toBe(JSON.stringify(turns[1].system));
+      });
+    },
+  );
+
+  describe.each(MOVES_TAIL.map((providerCase) => [providerCase.name, providerCase] as const))(
+    '%s: one-turn queued file context',
+    (_name, providerCase) => {
+      it('keeps system byte-identical when queued files appear on one turn and are gone on the next', async () => {
+        const turns = await playConversation(providerCase, { queuedAtTurn: 2 });
+        expect(JSON.stringify(turns[1].system)).toBe(JSON.stringify(turns[0].system));
+        expect(JSON.stringify(turns[2].system)).toBe(JSON.stringify(turns[0].system));
+        expect(JSON.stringify(turns[1].system)).not.toContain(QUEUED_CONTEXT);
+        expect(JSON.stringify(turns[1].messages)).toContain(QUEUED_CONTEXT);
+        expect(JSON.stringify(turns[0].messages)).not.toContain(QUEUED_CONTEXT);
+        expect(JSON.stringify(turns[2].messages)).not.toContain(QUEUED_CONTEXT);
+      });
+    },
+  );
+});
+
+describe('stableContext off', () => {
+  describe.each(PROVIDERS.map((providerCase) => [providerCase.name, providerCase] as const))(
+    '%s',
+    (_name, providerCase) => {
+      it('dates the runtime context by each turn and announces nothing in the history', async () => {
+        const turns = await playConversation(providerCase, { stableContext: false });
+        for (const turn of turns) {
+          const request = JSON.stringify([turn.system, turn.messages]);
+          expect(request).toContain('Conversation Date & Time:');
+          expect(request).not.toContain(RUNTIME_CONTEXT_MARKER);
+          expect(JSON.stringify(turn.messages)).not.toContain('<context_update>');
+        }
+        const stamps = turns.map(
+          (turn) =>
+            /Conversation Date & Time: ([^"\\]+)/.exec(
+              JSON.stringify([turn.system, turn.messages]),
+            )?.[1],
+        );
+        expect(new Set(stamps).size).toBe(turns.length);
+      });
+    },
+  );
 });

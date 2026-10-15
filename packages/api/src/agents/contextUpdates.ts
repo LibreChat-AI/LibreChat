@@ -1,4 +1,8 @@
 import { Tools, formatPromptTimestamp } from 'librechat-data-provider';
+import type { PromptCacheConfig } from './promptCache';
+import type { FormattedMessageWithContent } from './client';
+import { prependContextText } from './client';
+import { isStableContextEnabled } from './promptCache';
 import { isUsableSummaryPart } from './compaction';
 
 type Instant = string | number | Date;
@@ -138,15 +142,25 @@ export function buildUserMessageContextUpdates({
 
 /**
  * Insert-time `createdAt` for this turn's user message: the turn start that
- * dated it in the prompt, so later turns render the same timestamp.
+ * dated it in the prompt, so later turns render the same timestamp. Only with
+ * `promptCache.stableContext` or `promptMessageTimestamps`, the two features
+ * that read it back.
  */
 export function getTurnUserMessageCreatedAt(
-  req: { turnStartedAt?: number } | null | undefined,
+  req:
+    | { turnStartedAt?: number; config?: PromptCacheConfig & PromptTimestampConfig }
+    | null
+    | undefined,
 ): Date | undefined {
   const turnStartedAt = req?.turnStartedAt;
-  return turnStartedAt != null && Number.isFinite(turnStartedAt)
-    ? new Date(turnStartedAt)
-    : undefined;
+  if (
+    turnStartedAt == null ||
+    !Number.isFinite(turnStartedAt) ||
+    !(isStableContextEnabled(req?.config) || isPromptMessageTimestampsEnabled(req?.config))
+  ) {
+    return undefined;
+  }
+  return new Date(turnStartedAt);
 }
 
 /** `dynamicToolContextMap` key for instructions resolved from temporal special variables. */
@@ -167,4 +181,66 @@ export function hasConversationDateContext(
     }
   }
   return false;
+}
+
+interface PromptTimestampConfig {
+  endpoints?: { agents?: { promptMessageTimestamps?: boolean } };
+}
+
+function isPromptMessageTimestampsEnabled(config?: PromptTimestampConfig | null): boolean {
+  return config?.endpoints?.agents?.promptMessageTimestamps === true;
+}
+
+/** The request fields that date a conversation's messages in the prompt. */
+export interface HistoryContextRequest {
+  conversationCreatedAt?: Instant | null;
+  turnStartedAt?: Instant | null;
+  body?: { timezone?: string } | null;
+  config?: PromptCacheConfig & PromptTimestampConfig;
+}
+
+/** Context notes for the history of one request, applied message by message. */
+export interface HistoryContextUpdates {
+  /**
+   * Prepends the note for the history message at `index` to its prompt copy.
+   * Returns the note, or `undefined` when that message has none.
+   */
+  apply(formattedMessage: FormattedMessageWithContent, index: number): string | undefined;
+  /** Whether any message has a note, so the prompt differs from what is stored. */
+  readonly hasUpdates: boolean;
+}
+
+/**
+ * Computes the date-change and send-time notes of a request's history. Date
+ * changes are announced only with `promptCache.stableContext` and when an
+ * agent states the conversation date; send times only with
+ * `promptMessageTimestamps`.
+ */
+export function createHistoryContextUpdates({
+  req,
+  messages,
+  agents,
+}: {
+  req: HistoryContextRequest;
+  messages: readonly ContextUpdateMessage[];
+  agents: Iterable<{ dynamicToolContextMap?: Record<string, unknown> } | null | undefined>;
+}): HistoryContextUpdates {
+  const updates = buildUserMessageContextUpdates({
+    messages,
+    conversationStartedAt: req.conversationCreatedAt,
+    currentTurnStartedAt: req.turnStartedAt,
+    timezone: req.body?.timezone,
+    trackDateChanges: isStableContextEnabled(req.config) && hasConversationDateContext(agents),
+    includeTimestamps: isPromptMessageTimestampsEnabled(req.config),
+  });
+  return {
+    hasUpdates: updates.size > 0,
+    apply(formattedMessage, index) {
+      const update = updates.get(index);
+      if (update != null) {
+        prependContextText(formattedMessage, update, '\n\n');
+      }
+      return update;
+    },
+  };
 }

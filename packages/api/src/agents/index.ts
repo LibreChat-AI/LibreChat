@@ -11,6 +11,8 @@ export * from './compaction';
 export * from './contact';
 export * from './context';
 export * from './contextUpdates';
+export { isStableContextEnabled } from './promptCache';
+export type { PromptCacheConfig } from './promptCache';
 export * from './control';
 export * from './conversation';
 export * from './creates';

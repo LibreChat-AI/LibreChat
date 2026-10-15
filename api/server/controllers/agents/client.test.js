@@ -5716,6 +5716,41 @@ describe('AgentClient - titleConvo', () => {
 
       expect(client.augmentedPrompt).toBe('Retrieved context');
       expect(client.options.agent.additional_instructions).toContain('Retrieved context');
+      expect(client.options.agent.volatile_instructions).toBe('Retrieved context');
+    });
+
+    it('records the memory and RAG context as the volatile part, apart from the stable part', async () => {
+      client.contextHandlers = { createContext: jest.fn().mockResolvedValue('Retrieved context') };
+      client.useMemory = jest
+        .fn()
+        .mockResolvedValue({ withKeys: 'Memory note', withoutKeys: 'Memory note' });
+      client.options.agent.additional_instructions = 'Static artifacts prompt';
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Hello',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        {},
+      );
+
+      const {
+        additional_instructions: additional,
+        volatile_instructions: volatile,
+        stable_additional_instructions: stable,
+        split_additional_instructions: source,
+      } = client.options.agent;
+      expect(volatile.startsWith('Retrieved context\n\n')).toBe(true);
+      expect(volatile.endsWith('Memory note')).toBe(true);
+      expect(stable).toBe('Static artifacts prompt');
+      expect(source).toBe(additional);
+      expect(additional).toBe(`Static artifacts prompt\n\n${volatile}`);
     });
 
     it('starts independent context and current-file work at their earliest dependency barriers', async () => {
@@ -7827,6 +7862,9 @@ describe('AgentClient - titleConvo', () => {
 
       it('prepends a date change to the prompt copy only and counts it for the prompt', async () => {
         mockAgent.dynamicToolContextMap = { web_search: 'Conversation started: ...' };
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: { promptCache: { stableContext: true } },
+        };
 
         const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
 
@@ -7853,7 +7891,20 @@ describe('AgentClient - titleConvo', () => {
         expect(client.memoryPayload[0].content).toBe('First question');
       });
 
+      it('leaves messages untouched without stableContext, even when a prompt states the date', async () => {
+        mockAgent.dynamicToolContextMap = { web_search: 'Conversation Date & Time: ...' };
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[2].content).toBe('Next question');
+        expect(client.memoryPayload).toBeNull();
+      });
+
       it('leaves messages untouched when no prompt states the conversation date', async () => {
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: { promptCache: { stableContext: true } },
+        };
+
         const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
 
         expect(result.prompt[2].content).toBe('Next question');

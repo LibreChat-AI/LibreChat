@@ -136,6 +136,7 @@ import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
+import { isStableContextEnabled } from './promptCache';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -2611,17 +2612,25 @@ export async function initializeAgent(
     }
   }
 
+  const stableContext = isStableContextEnabled(appConfig);
   let temporalInstructions: string | undefined;
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
       user: user ? (user as unknown as TUser) : null,
-      now: runtime.conversationCreatedAt ?? runtime.turnStartedAt,
+      /** Anchored to the conversation start so the text is the same on every turn. */
+      now: stableContext
+        ? (runtime.conversationCreatedAt ?? runtime.turnStartedAt)
+        : runtime.turnStartedAt,
       timezone: runtime.requestBody.timezone,
     });
     if (hasTemporalSpecialVars(agent.instructions)) {
       agent.instructions = undefined;
-      temporalInstructions = resolvedInstructions;
+      if (stableContext) {
+        temporalInstructions = resolvedInstructions;
+      } else {
+        appendAdditionalInstructions(agent, resolvedInstructions);
+      }
     } else {
       agent.instructions = resolvedInstructions;
     }

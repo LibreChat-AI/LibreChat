@@ -1,4 +1,4 @@
-import { Providers } from '@librechat/agents';
+import { Run, Providers } from '@librechat/agents';
 import { ReasoningResponseKey } from 'librechat-data-provider';
 import { ToolMessage, AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
 import {
@@ -9,7 +9,7 @@ import {
   shouldReplayReasoningContent,
   anyAgentReplaysReasoningContent,
   collectRunMCPToolAliases,
-  buildAdditionalInstructions,
+  createRun,
 } from './run';
 
 describe('getRunDiscoveredTools', () => {
@@ -473,27 +473,161 @@ describe('collectRunMCPToolAliases', () => {
   });
 });
 
-describe('buildAdditionalInstructions', () => {
-  it('places dynamic tool context after static additional instructions', () => {
-    const result = buildAdditionalInstructions(
-      'Artifacts prompt',
-      'Conversation Date & Time: 2025-01-01T00:00:00.000Z',
+describe('createRun instructions with prompt caching', () => {
+  const STATIC = 'Static artifacts prompt.';
+  const RUNTIME = 'Conversation started: 2026-03-09 23:00 +03:00 (Mon)';
+  const VOLATILE = 'Memory: prefers metric units.\n\nRetrieved context for this question.';
+  let runSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    runSpy = jest.spyOn(Run, 'create').mockResolvedValue({} as never);
+  });
+
+  afterEach(() => {
+    runSpy.mockRestore();
+  });
+
+  async function agentInput(
+    provider: string,
+    promptCache: boolean,
+    agent: object,
+    stableContext = true,
+  ) {
+    await createRun({
+      appConfig: { endpoints: { agents: { promptCache: { stableContext } } } } as never,
+      agents: [
+        {
+          id: 'agent_1',
+          provider,
+          endpoint: provider,
+          instructions: 'Base instructions.',
+          dynamicToolContextMap: { web_search: RUNTIME },
+          model_parameters: { model: 'test-model', apiKey: 'test-key', promptCache },
+          ...agent,
+        },
+      ] as never,
+      messages: [],
+      runId: 'run-1',
+      signal: new AbortController().signal,
+      streaming: false,
+      streamUsage: false,
+    });
+    return runSpy.mock.calls[0][0].graphConfig.agents[0];
+  }
+
+  const split = (additional: string, stable: string, volatile: string) => ({
+    additional_instructions: additional,
+    stable_additional_instructions: stable,
+    volatile_instructions: volatile,
+    split_additional_instructions: additional,
+  });
+
+  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
+    'merges the stable part into instructions for %s and leaves the memory and RAG part',
+    async (provider) => {
+      const input = await agentInput(
+        provider,
+        true,
+        split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
+      );
+      expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+      expect(input.additional_instructions).toBe(VOLATILE);
+    },
+  );
+
+  it('merges everything when no part is per-turn', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, { additional_instructions: STATIC });
+    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions).toBeUndefined();
+  });
+
+  it('splits by parts, whatever order they have in additional_instructions', async () => {
+    const input = await agentInput(
+      Providers.ANTHROPIC,
+      true,
+      split(`${VOLATILE}\n\n${STATIC}`, STATIC, VOLATILE),
     );
-
-    expect(result).toBe('Artifacts prompt\nConversation Date & Time: 2025-01-01T00:00:00.000Z');
+    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions).toBe(VOLATILE);
   });
 
-  it('keeps the static prefix identical when only the dynamic context changes', () => {
-    const first = buildAdditionalInstructions('Artifacts prompt', 'Time: 1');
-    const second = buildAdditionalInstructions('Artifacts prompt', 'Time: 2');
-
-    expect(first.startsWith('Artifacts prompt\n')).toBe(true);
-    expect(second.startsWith('Artifacts prompt\n')).toBe(true);
+  it('keeps additional_instructions unsplit when it changed after the split was recorded', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, {
+      ...split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
+      additional_instructions: `${STATIC}\n\n${VOLATILE}\n\nAdded later.`,
+    });
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.additional_instructions).toBe(
+      `${STATIC}\n\n${VOLATILE}\n\nAdded later.\n${RUNTIME}`,
+    );
   });
 
-  it('handles missing additional instructions and empty dynamic context', () => {
-    expect(buildAdditionalInstructions(undefined, 'Time: 1')).toBe('Time: 1');
-    expect(buildAdditionalInstructions('Artifacts prompt', '')).toBe('Artifacts prompt');
-    expect(buildAdditionalInstructions(undefined, '')).toBe('');
+  it('builds the request as before when stableContext is off', async () => {
+    const input = await agentInput(
+      Providers.ANTHROPIC,
+      true,
+      split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
+      false,
+    );
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.additional_instructions).toBe(`${RUNTIME}\n${STATIC}\n\n${VOLATILE}`);
+  });
+
+  it.each([
+    [Providers.ANTHROPIC, false],
+    [Providers.OPENROUTER, false],
+    [Providers.OPENAI, true],
+    [Providers.BEDROCK, true],
+    [Providers.GOOGLE, true],
+  ])('keeps the split for %s (promptCache %s)', async (provider, promptCache) => {
+    const input = await agentInput(
+      provider,
+      promptCache,
+      split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
+    );
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.additional_instructions).toBe(`${STATIC}\n\n${VOLATILE}\n${RUNTIME}`);
+  });
+
+  const queuedFiles = () => ({
+    fileConsumers: { executeCode: true, fileSearch: false },
+    provisionState: {
+      codeEnvFiles: [
+        {
+          file_id: 'report',
+          filename: 'report.csv',
+          filepath: '/uploads/report.csv',
+          type: 'text/csv',
+          user: 'user-1',
+          object: 'file',
+          bytes: 10,
+          embedded: false,
+          usage: 0,
+        },
+      ],
+      vectorDBFiles: [],
+      aliveFileIds: new Set(),
+      agentScopedFileIds: new Set(),
+    },
+  });
+
+  it('moves the one-turn queued file context after the per-turn part and keeps other runtime keys stable', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, {
+      ...split(`${STATIC}\n\n${VOLATILE}`, STATIC, VOLATILE),
+      ...queuedFiles(),
+    });
+    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions.startsWith(`${VOLATILE}\n\n`)).toBe(true);
+    expect(input.additional_instructions).toContain('report.csv');
+  });
+
+  it('keeps the queued file context in place when nothing is merged', async () => {
+    const input = await agentInput(Providers.OPENAI, false, {
+      additional_instructions: STATIC,
+      ...queuedFiles(),
+    });
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.additional_instructions.startsWith(`${STATIC}\n${RUNTIME}\n`)).toBe(true);
+    expect(input.additional_instructions).toContain('report.csv');
   });
 });

@@ -2106,11 +2106,33 @@ describe('stable/dynamic system instructions', () => {
     });
 
     expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
+    expect(agents[0].additional_instructions).toBe('Conversation Date & Time: anchor\nMemory tail');
+  });
+
+  it('puts dynamic tool context after the additional instructions with stableContext', async () => {
+    const agents = await callAndCapture({
+      appConfig: {
+        endpoints: { agents: { promptCache: { stableContext: true } } },
+      } as unknown as AppConfig,
+      agents: [
+        makeAgent({
+          instructions: 'Base instructions',
+          additional_instructions: 'Memory tail',
+          toolContextMap: { web_search: 'Static tool instructions' },
+          dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+        }),
+      ],
+    });
+
+    expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
     expect(agents[0].additional_instructions).toBe('Memory tail\nConversation Date & Time: anchor');
   });
 
-  it('preserves the full artifact prefix when timestamps change between turns', async () => {
+  it('preserves the full artifact prefix when timestamps change between turns with stableContext', async () => {
     const agents = await callAndCapture({
+      appConfig: {
+        endpoints: { agents: { promptCache: { stableContext: true } } },
+      } as unknown as AppConfig,
       agents: ['2026-08-31T06:20:00.000Z', '2026-08-31T06:21:00.000Z'].map((time, index) =>
         makeAgent({
           id: `agent_${index}`,
@@ -3234,7 +3256,6 @@ describe('subagentConfigs', () => {
     const member = makeAgent({
       id: 'agent_skilled_member',
       additional_instructions: 'Keep the response concise.',
-      dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
       alwaysApplySkillPrimes: [
         { name: 'member-workflow', body: 'Follow the member-specific workflow.' },
       ],
@@ -3261,8 +3282,7 @@ describe('subagentConfigs', () => {
     const [memberInput] = config.agents as Array<Record<string, unknown>>;
     expect(memberInput.additional_instructions).toBe(
       'Keep the response concise.\n\n' +
-        '# Always-apply skill: member-workflow\nFollow the member-specific workflow.\n' +
-        'Conversation Date & Time: anchor',
+        '# Always-apply skill: member-workflow\nFollow the member-specific workflow.',
     );
   });
 

@@ -126,7 +126,9 @@ import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
-import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { prepareQueuedCodeFileContext, QUEUED_CODE_FILES_CONTEXT_KEY } from '~/files/code/queued';
+import { planInstructions, joinInstructionMap } from '~/agents/instructionPlan';
+import { isStableContextEnabled } from '~/agents/promptCache';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -240,18 +242,6 @@ export function getRunMCPToolAliases(run: object | null | undefined): readonly M
 export interface RunDiscoverySnapshot {
   getDiscoveredTools?: () => string[];
   getRunMessages?: () => BaseMessage[] | undefined;
-}
-
-/**
- * Joins additional instructions with per-request tool context. The dynamic part
- * (e.g. the current date/time) goes last so that provider-side prefix caches
- * can reuse the static part, such as the artifacts prompt, across requests.
- */
-export function buildAdditionalInstructions(
-  additionalInstructions: string | null | undefined,
-  dynamicToolInstructions: string,
-): string {
-  return [additionalInstructions ?? '', dynamicToolInstructions].join('\n').trim();
 }
 
 /** Reads canonical run discovery state, with best-effort history parsing for older releases. */
@@ -460,6 +450,10 @@ type RunAgent = Omit<Agent, 'tools'> & {
   imageDetail?: ImageDetail;
   toolContextMap?: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
+  /** How `applyContextToAgent` split `additional_instructions` into stable and volatile parts. */
+  stable_additional_instructions?: string;
+  volatile_instructions?: string;
+  split_additional_instructions?: string;
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -1887,19 +1881,16 @@ function buildIsolatedAgentInputs(
   child: RunAgent,
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
+  const childInputs = toInput(child, { isSubagent: true });
   const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  const skillInstructions = alwaysApplySkillPrimes
-    ?.map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-    .join('\n\n');
-  const childWithSkill = skillInstructions
-    ? {
-        ...child,
-        additional_instructions: [child.additional_instructions, skillInstructions]
-          .filter((value): value is string => typeof value === 'string' && value.length > 0)
-          .join('\n\n'),
-      }
-    : child;
-  const childInputs = toInput(childWithSkill, { isSubagent: true });
+  if (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0) {
+    const skillInstructions = alwaysApplySkillPrimes
+      .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+      .join('\n\n');
+    childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0)
+      .join('\n\n');
+  }
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
@@ -2502,21 +2493,22 @@ export async function createRun({
       modelCallbacks,
     );
 
-    const joinInstructionMap = (map?: Record<string, unknown>) =>
-      Object.values(map ?? {})
-        .filter((value): value is string => typeof value === 'string' && value !== '')
-        .join('\n')
-        .trim();
-
-    const toolInstructions = joinInstructionMap(agent.toolContextMap);
-    const dynamicToolInstructions = joinInstructionMap(agent.dynamicToolContextMap);
-
-    const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
-
-    const additionalInstructions = buildAdditionalInstructions(
-      agent.additional_instructions,
-      dynamicToolInstructions,
-    );
+    const instructionPlan = planInstructions({
+      stableContext: isStableContextEnabled(appConfig),
+      isSubagent,
+      provider,
+      clientOptions: llmConfig,
+      toolInstructions: joinInstructionMap(agent.toolContextMap),
+      instructions: agent.instructions,
+      additionalInstructions: agent.additional_instructions,
+      dynamicContextMap: agent.dynamicToolContextMap,
+      oneTurnContextKey: QUEUED_CODE_FILES_CONTEXT_KEY,
+      split: {
+        stable: agent.stable_additional_instructions,
+        volatile: agent.volatile_instructions,
+        source: agent.split_additional_instructions,
+      },
+    });
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2647,8 +2639,8 @@ export async function createRun({
       agentId: agent.id,
       tools,
       clientOptions: llmConfig,
-      instructions: systemContent,
-      additional_instructions: additionalInstructions || undefined,
+      instructions: instructionPlan.instructions,
+      additional_instructions: instructionPlan.additionalInstructions,
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,

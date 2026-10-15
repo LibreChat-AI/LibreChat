@@ -3307,7 +3307,7 @@ describe('ResumableAgentController resume metadata', () => {
         conversationId: 'conversation-123',
         endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
       },
-      config: {},
+      config: { endpoints: { agents: { promptCache: { stableContext: true } } } },
     };
 
     await AgentController(
@@ -3379,7 +3379,7 @@ describe('ResumableAgentController resume metadata', () => {
         conversationId: 'conversation-123',
         endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
       },
-      config: {},
+      config: { endpoints: { agents: { promptCache: { stableContext: true } } } },
     };
 
     await AgentController(
