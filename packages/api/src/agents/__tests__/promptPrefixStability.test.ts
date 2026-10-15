@@ -19,8 +19,11 @@
  *
  * With Anthropic and OpenRouter prompt caching the SDK moves a non-empty
  * `additional_instructions` into a message before the newest user message,
- * and that position shifts every turn. `createRun` merges the conversation-
- * stable part into `instructions` instead, so the history comparison is strict.
+ * and that position shifts every turn. `createRun` passes the conversation-
+ * stable part as `conversation_instructions` instead, a system block right
+ * after the instructions that never moves, so the history comparison is
+ * strict. The SDK drops that block's own breakpoint once a moved part adds one
+ * after it, so system prompts are compared without cache markers too.
  * Per-turn parts (memory and RAG context, contributed as `turn` parts) stay in
  * `additional_instructions` and is moved on purpose; merging it would change
  * the system prompt every turn and uncache the whole history.
@@ -559,7 +562,7 @@ describe('per-turn context in additional_instructions', () => {
 
       it('keeps the system prompt byte-identical, without the memory and RAG context', () => {
         turns.forEach((turn, index) => {
-          expect(JSON.stringify(turn.system)).toBe(JSON.stringify(turns[0].system));
+          expect(serialize(turn.system)).toBe(serialize(turns[0].system));
           expect(JSON.stringify(turn.system)).toContain(RUNTIME_CONTEXT_MARKER);
           for (const text of perTurn(index)) {
             expect(JSON.stringify(turn.system)).not.toContain(text);
@@ -617,8 +620,8 @@ describe('per-turn context in additional_instructions', () => {
     (_name, providerCase) => {
       it('keeps system byte-identical when queued files appear on one turn and are gone on the next', async () => {
         const turns = await playConversation(providerCase, { queuedAtTurn: 2 });
-        expect(JSON.stringify(turns[1].system)).toBe(JSON.stringify(turns[0].system));
-        expect(JSON.stringify(turns[2].system)).toBe(JSON.stringify(turns[0].system));
+        expect(serialize(turns[1].system)).toBe(serialize(turns[0].system));
+        expect(serialize(turns[2].system)).toBe(serialize(turns[0].system));
         expect(JSON.stringify(turns[1].system)).not.toContain(QUEUED_CONTEXT);
         expect(JSON.stringify(turns[1].messages)).toContain(QUEUED_CONTEXT);
         expect(JSON.stringify(turns[0].messages)).not.toContain(QUEUED_CONTEXT);

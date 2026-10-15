@@ -526,24 +526,26 @@ describe('createRun instructions with prompt caching', () => {
     return runSpy.mock.calls[0][0].graphConfig.agents[0];
   }
 
-  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
-    'merges the stable part into instructions for %s and leaves the memory and RAG part',
+  it.each([Providers.ANTHROPIC, Providers.OPENROUTER, Providers.BEDROCK])(
+    'passes the stable part as the conversation block for %s and leaves the memory and RAG part',
     async (provider) => {
       const input = await agentInput(provider, true, withParts());
-      expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+      expect(input.instructions).toBe('Base instructions.');
+      expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
       expect(input.additional_instructions).toBe(VOLATILE);
     },
   );
 
-  it('merges everything when no part is per-turn', async () => {
+  it('passes everything as the conversation block when no part is per-turn', async () => {
     const input = await agentInput(Providers.ANTHROPIC, true, { additional_instructions: STATIC });
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
     expect(input.additional_instructions).toBeUndefined();
   });
 
-  it('moves only the per-turn parts when a memory or RAG part is empty', async () => {
+  it('keeps only the per-turn parts dynamic when a memory or RAG part is empty', async () => {
     const input = await agentInput(Providers.ANTHROPIC, true, withParts(''));
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
     expect(input.additional_instructions).toBe(MEMORY);
   });
 
@@ -552,7 +554,7 @@ describe('createRun instructions with prompt caching', () => {
       ...withParts(),
       additional_instructions: 'Written directly.',
     });
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
     expect(input.additional_instructions).toBe(VOLATILE);
     expect(JSON.stringify(input)).not.toContain('Written directly.');
   });
@@ -560,18 +562,20 @@ describe('createRun instructions with prompt caching', () => {
   it('builds the request as before when stableContext is off', async () => {
     const input = await agentInput(Providers.ANTHROPIC, true, withParts(), false);
     expect(input.instructions).toBe('Base instructions.');
+    expect(input.conversation_instructions).toBeUndefined();
     expect(input.additional_instructions).toBe(`${RUNTIME}\n${STATIC}\n\n${VOLATILE}`);
   });
 
   it.each([
     [Providers.ANTHROPIC, false],
     [Providers.OPENROUTER, false],
+    [Providers.BEDROCK, false],
     [Providers.OPENAI, true],
-    [Providers.BEDROCK, true],
     [Providers.GOOGLE, true],
   ])('keeps the split for %s (promptCache %s)', async (provider, promptCache) => {
     const input = await agentInput(provider, promptCache, withParts());
     expect(input.instructions).toBe('Base instructions.');
+    expect(input.conversation_instructions).toBeUndefined();
     expect(input.additional_instructions).toBe(`${STATIC}\n\n${VOLATILE}\n${RUNTIME}`);
   });
 
@@ -602,7 +606,7 @@ describe('createRun instructions with prompt caching', () => {
       ...withParts(),
       ...queuedFiles(),
     });
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
     expect(input.additional_instructions.startsWith(`${VOLATILE}\n\n`)).toBe(true);
     expect(input.additional_instructions).toContain('report.csv');
   });

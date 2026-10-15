@@ -805,16 +805,17 @@ describe('applyTurnContext', () => {
     expect(agent.additional_instructions).toBe('Own guidance.\n\nAgent files.\n\nAnchored block.');
     expect(assembleSystemPrompt(agent)).toEqual({
       instructions: 'Search instructions.\nBase.',
+      conversation_instructions: '',
       additional_instructions: 'Own guidance.\n\nAgent files.\n\nAnchored block.',
     });
   });
 
-  it('leaves nothing for the SDK to move when the provider moves the dynamic part', () => {
+  it('passes the anchored block as the conversation block, leaving nothing for the SDK to move', () => {
     const agent = initialized();
     applyTurnContext(agent, { block: 'Anchored block.' });
-    expect(assembleSystemPrompt(agent, { stableContext: true, moveTurnPartsOnly: true })).toEqual({
-      instructions:
-        'Search instructions.\nBase.\n\nOwn guidance.\n\nAgent files.\n\nAnchored block.',
+    expect(assembleSystemPrompt(agent, { stableContext: true, conversationBlock: true })).toEqual({
+      instructions: 'Search instructions.\nBase.',
+      conversation_instructions: 'Own guidance.\n\nAgent files.\n\nAnchored block.',
       additional_instructions: '',
     });
   });

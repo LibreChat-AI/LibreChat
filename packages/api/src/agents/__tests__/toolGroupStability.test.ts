@@ -98,7 +98,7 @@ import {
   createSendSnapshot,
   collectToolGroups,
 } from '../turnContext';
-import { PROVIDERS, captureRun, serialize } from './helpers/providerCapture';
+import { PROVIDERS, OPENAI_RESPONSES, captureRun, serialize } from './helpers/providerCapture';
 import { providerReply } from './helpers/providerReplies';
 import { loadToolDefinitions } from '~/tools/definitions';
 import { createToolExecuteHandler } from '../handlers';
@@ -492,6 +492,7 @@ async function playTurn(
       [GraphEvents.ON_RUN_STEP_DELTA]: aggregate,
       [GraphEvents.ON_RUN_STEP_COMPLETED]: aggregate,
       [GraphEvents.ON_MESSAGE_DELTA]: aggregate,
+      [GraphEvents.ON_PROVIDER_OUTPUT_ITEMS]: aggregate,
     },
     respond: (position, request) => {
       const reply = state.replies?.[position];
@@ -574,14 +575,11 @@ function toolNames(request: Captured): string[] {
   );
 }
 
+/** Every provider, and the Responses API, which replays tool rounds with their stored items. */
+const ALL_CASES = [...PROVIDERS, OPENAI_RESPONSES];
+
 const json = (value: unknown) => JSON.stringify(value);
 const lastMessage = (request: Captured) => json(request.messages[request.messages.length - 1]);
-
-/**
- * Known gap until the agents SDK keeps the compaction summary in place: with prompt caching on
- * Anthropic and OpenRouter it moves the summary next to the newest user message every turn.
- */
-const SDK_MOVES_SUMMARY = new Set(['anthropic with promptCache', 'openrouter with promptCache']);
 
 /**
  * Known gap of every failed tool call, dispatched or not: the next turn restores the result
@@ -590,7 +588,7 @@ const SDK_MOVES_SUMMARY = new Set(['anthropic with promptCache', 'openrouter wit
 const ERROR_STATUS_NOT_RESTORED = new Set(['bedrock', 'bedrock with promptCache', 'google']);
 
 describe('tool groups across providers', () => {
-  describe.each(PROVIDERS.map((providerCase) => [providerCase.name, providerCase] as const))(
+  describe.each(ALL_CASES.map((providerCase) => [providerCase.name, providerCase] as const))(
     '%s',
     (_name, providerCase) => {
       let result: Awaited<ReturnType<typeof playConversation>>;
@@ -695,9 +693,7 @@ describe('tool groups across providers', () => {
         expect(after).toEqual([...before.slice(0, -1), ACTION, TOOL_DISPATCHER_NAME]);
         expect(json(turns[SECOND_SEGMENT][0].system)).toContain(INSTRUCTIONS.alpha);
         const messages = turns[SECOND_SEGMENT][0].messages;
-        if (!SDK_MOVES_SUMMARY.has(providerCase.name)) {
-          expect(json([turns[SECOND_SEGMENT][0].system, messages])).toContain(SUMMARY);
-        }
+        expect(json([turns[SECOND_SEGMENT][0].system, messages])).toContain(SUMMARY);
         expect(json(messages)).not.toContain('context_update');
       });
     },
@@ -805,7 +801,7 @@ describe('tool groups across providers', () => {
     });
   });
 
-  describe.each(PROVIDERS.map((providerCase) => [providerCase.name, providerCase] as const))(
+  describe.each(ALL_CASES.map((providerCase) => [providerCase.name, providerCase] as const))(
     'built-in capabilities: %s',
     (_name, providerCase) => {
       let result: Awaited<ReturnType<typeof playConversation>>;

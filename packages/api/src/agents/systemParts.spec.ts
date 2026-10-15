@@ -5,7 +5,7 @@ import {
   contributeContext,
   assembleSystemPrompt,
   assembleAdditionalInstructions,
-  sdkMovesDynamicInstructions,
+  sdkCachesConversationBlock,
 } from './systemParts';
 import type { ContextAgent } from './systemParts';
 
@@ -138,6 +138,7 @@ describe('assembleSystemPrompt', () => {
       ),
     ).toEqual({
       instructions: 'Search instructions\nBase',
+      conversation_instructions: '',
       additional_instructions: 'Artifacts\nStarted at\nFiles',
     });
   });
@@ -152,6 +153,7 @@ describe('assembleSystemPrompt', () => {
       }),
     ).toEqual({
       instructions: 'Search instructions\nBase',
+      conversation_instructions: '',
       additional_instructions: 'Started at\nFiles\nArtifacts',
     });
   });
@@ -160,8 +162,9 @@ describe('assembleSystemPrompt', () => {
     const agent: ContextAgent = { instructions: 'Base' };
     contributeContext(agent, ContextPartKeys.artifacts, 'Artifacts');
     contributeContext(agent, ContextPartKeys.rag, 'Retrieved');
-    expect(assembleSystemPrompt(agent, { moveTurnPartsOnly: true })).toEqual({
+    expect(assembleSystemPrompt(agent, { conversationBlock: true })).toEqual({
       instructions: 'Base',
+      conversation_instructions: '',
       additional_instructions: 'Artifacts\n\nRetrieved',
     });
   });
@@ -172,14 +175,19 @@ describe('assembleSystemPrompt', () => {
         { dynamicToolContextMap: { web_search: 'Started at' } },
         { stableContext },
       ),
-    ).toEqual({ instructions: '', additional_instructions: 'Started at' });
+    ).toEqual({
+      instructions: '',
+      conversation_instructions: '',
+      additional_instructions: 'Started at',
+    });
     expect(assembleSystemPrompt({ additional_instructions: 'Artifacts' })).toEqual({
       instructions: '',
+      conversation_instructions: '',
       additional_instructions: 'Artifacts',
     });
   });
 
-  it('moves only per-turn parts when asked, keeping the rest with the instructions', () => {
+  it('keeps only per-turn parts dynamic when asked, the rest as the conversation block', () => {
     const agent: ContextAgent = {
       instructions: 'Base',
       dynamicToolContextMap: { web_search: 'Started at', queued_code_files: 'Queued' },
@@ -188,8 +196,9 @@ describe('assembleSystemPrompt', () => {
     contributeContext(agent, ContextPartKeys.agentFiles, 'Files');
     contributeContext(agent, ContextPartKeys.memory, 'Memory');
     contributeContext(agent, ContextPartKeys.rag, 'Retrieved\n');
-    expect(assembleSystemPrompt(agent, { stableContext, moveTurnPartsOnly: true })).toEqual({
-      instructions: 'Base\n\nArtifacts\n\nFiles\nStarted at',
+    expect(assembleSystemPrompt(agent, { stableContext, conversationBlock: true })).toEqual({
+      instructions: 'Base',
+      conversation_instructions: 'Artifacts\n\nFiles\nStarted at',
       additional_instructions: 'Retrieved\n\n\nMemory\n\nQueued',
     });
     expect(assembleSystemPrompt(agent, { stableContext }).additional_instructions).toBe(
@@ -203,8 +212,9 @@ describe('assembleSystemPrompt', () => {
       dynamicToolContextMap: { web_search: 'Started at', new_tool: 'Changes every turn' },
     };
     contributeContext(agent, ContextPartKeys.artifacts, 'Artifacts');
-    expect(assembleSystemPrompt(agent, { stableContext, moveTurnPartsOnly: true })).toEqual({
-      instructions: 'Base\n\nArtifacts\nStarted at',
+    expect(assembleSystemPrompt(agent, { stableContext, conversationBlock: true })).toEqual({
+      instructions: 'Base',
+      conversation_instructions: 'Artifacts\nStarted at',
       additional_instructions: 'Changes every turn',
     });
   });
@@ -213,9 +223,9 @@ describe('assembleSystemPrompt', () => {
     expect(
       assembleSystemPrompt(
         { additional_instructions: ' Own\n' },
-        { stableContext, moveTurnPartsOnly: true },
+        { stableContext, conversationBlock: true },
       ),
-    ).toEqual({ instructions: 'Own', additional_instructions: '' });
+    ).toEqual({ instructions: '', conversation_instructions: 'Own', additional_instructions: '' });
   });
 
   it('takes the tail from the parts when additional_instructions is written directly', () => {
@@ -229,32 +239,28 @@ describe('assembleSystemPrompt', () => {
   });
 });
 
-describe('sdkMovesDynamicInstructions', () => {
-  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
-    'is true for %s with promptCache enabled',
-    (provider) => {
-      expect(sdkMovesDynamicInstructions(provider, { promptCache: true })).toBe(true);
-    },
-  );
+describe('sdkCachesConversationBlock', () => {
+  const CACHING = [Providers.ANTHROPIC, Providers.OPENROUTER, Providers.BEDROCK];
 
-  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
-    'is false for %s without promptCache',
-    (provider) => {
-      expect(sdkMovesDynamicInstructions(provider, {})).toBe(false);
-      expect(sdkMovesDynamicInstructions(provider, { promptCache: false })).toBe(false);
-      expect(sdkMovesDynamicInstructions(provider, { promptCache: 'true' })).toBe(false);
-      expect(sdkMovesDynamicInstructions(provider, undefined)).toBe(false);
-    },
-  );
+  it.each(CACHING)('is true for %s with promptCache enabled', (provider) => {
+    expect(sdkCachesConversationBlock(provider, { promptCache: true })).toBe(true);
+  });
 
-  it.each([Providers.OPENAI, Providers.BEDROCK, Providers.GOOGLE, Providers.AZURE, 'custom'])(
+  it.each(CACHING)('is false for %s without promptCache', (provider) => {
+    expect(sdkCachesConversationBlock(provider, {})).toBe(false);
+    expect(sdkCachesConversationBlock(provider, { promptCache: false })).toBe(false);
+    expect(sdkCachesConversationBlock(provider, { promptCache: 'true' })).toBe(false);
+    expect(sdkCachesConversationBlock(provider, undefined)).toBe(false);
+  });
+
+  it.each([Providers.OPENAI, Providers.GOOGLE, Providers.AZURE, 'custom'])(
     'is false for %s even with promptCache',
     (provider) => {
-      expect(sdkMovesDynamicInstructions(provider, { promptCache: true })).toBe(false);
+      expect(sdkCachesConversationBlock(provider, { promptCache: true })).toBe(false);
     },
   );
 
   it('is false without a provider', () => {
-    expect(sdkMovesDynamicInstructions(undefined, { promptCache: true })).toBe(false);
+    expect(sdkCachesConversationBlock(undefined, { promptCache: true })).toBe(false);
   });
 });

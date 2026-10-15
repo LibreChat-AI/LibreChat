@@ -131,7 +131,7 @@ import {
   ContextPartKeys,
   assembleSystemPrompt,
   contributeContext,
-  sdkMovesDynamicInstructions,
+  sdkCachesConversationBlock,
 } from './systemParts';
 import { isStableContextEnabled } from '~/agents/promptCache';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
@@ -2507,17 +2507,19 @@ export async function createRun({
     );
 
     /**
-     * With `stableContext` the SDK would move a non-empty dynamic part into a message before the
-     * last user message, and that position shifts every turn, which breaks the prefix. Only the
-     * per-turn parts (memory, RAG, this turn's queued files) stay there; the rest joins the
-     * stable instructions. Subagent runs are isolated and keep the split. A compaction summary is
-     * still moved by the SDK.
+     * With `stableContext` and a provider that caches the conversation block, only the per-turn
+     * parts (memory, RAG, this turn's queued files) stay dynamic; the rest of the conversation's
+     * context is a cached block right after the instructions, followed by a compaction summary.
+     * Subagent runs are isolated and keep the split.
      */
-    const { instructions: systemContent, additional_instructions: additionalInstructions } =
-      assembleSystemPrompt(agent, {
-        stableContext: isStableContextEnabled(appConfig),
-        moveTurnPartsOnly: !isSubagent && sdkMovesDynamicInstructions(provider, llmConfig),
-      });
+    const {
+      instructions: systemContent,
+      conversation_instructions: conversationInstructions,
+      additional_instructions: additionalInstructions,
+    } = assembleSystemPrompt(agent, {
+      stableContext: isStableContextEnabled(appConfig),
+      conversationBlock: !isSubagent && sdkCachesConversationBlock(provider, llmConfig),
+    });
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2668,6 +2670,7 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
+      conversation_instructions: conversationInstructions || undefined,
       additional_instructions: additionalInstructions || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
