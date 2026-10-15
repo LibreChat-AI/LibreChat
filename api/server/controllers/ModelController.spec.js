@@ -1,18 +1,21 @@
 const mockLoadDefaultModels = jest.fn();
 const mockLoadConfigModels = jest.fn();
+const mockGetAppConfig = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
+  getTenantId: () => undefined,
   logger: {
     error: jest.fn(),
   },
 }));
 
 jest.mock('~/server/services/Config', () => ({
+  getAppConfig: (...args) => mockGetAppConfig(...args),
   loadDefaultModels: (...args) => mockLoadDefaultModels(...args),
   loadConfigModels: (...args) => mockLoadConfigModels(...args),
 }));
 
-const { loadModels } = require('./ModelController');
+const { loadModels, getModelsConfig } = require('./ModelController');
 
 function deferred() {
   let resolve;
@@ -25,6 +28,7 @@ function deferred() {
 describe('loadModels', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetAppConfig.mockResolvedValue({ endpoints: {} });
   });
 
   it('loads default and configured models concurrently while preserving custom precedence', async () => {
@@ -52,6 +56,42 @@ describe('loadModels', () => {
       openAI: ['configured-model'],
       anthropic: ['default-anthropic'],
       custom: ['custom-model'],
+    });
+  });
+
+  it('preserves model catalogs when no user endpoint access rule matches', async () => {
+    const req = { user: { id: 'user-1', username: 'restricted-user' } };
+    mockLoadDefaultModels.mockResolvedValue({ openAI: ['gpt-4o'], anthropic: ['claude'] });
+    mockLoadConfigModels.mockResolvedValue({
+      'Allowed Provider': ['allowed-model'],
+      'Restricted Provider': ['restricted-model'],
+    });
+    mockGetAppConfig.mockResolvedValue({ endpoints: {} });
+
+    await expect(getModelsConfig(req)).resolves.toEqual({
+      openAI: ['gpt-4o'],
+      anthropic: ['claude'],
+      'Allowed Provider': ['allowed-model'],
+      'Restricted Provider': ['restricted-model'],
+    });
+    expect(mockGetAppConfig).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }));
+  });
+
+  it('filters models only when an explicit user allowlist matches', async () => {
+    const req = { user: { id: 'user-1', username: 'restricted-user' } };
+    mockLoadDefaultModels.mockResolvedValue({ openAI: ['gpt-4o'] });
+    mockLoadConfigModels.mockResolvedValue({
+      'Allowed Provider': ['allowed-model'],
+      'Restricted Provider': ['restricted-model'],
+    });
+    mockGetAppConfig.mockResolvedValue({
+      endpoints: {
+        userAccess: [{ username: 'restricted-user', allowedEndpoints: ['Allowed Provider'] }],
+      },
+    });
+
+    await expect(getModelsConfig(req)).resolves.toEqual({
+      'Allowed Provider': ['allowed-model'],
     });
   });
 });

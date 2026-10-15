@@ -130,6 +130,8 @@ export interface AppConfig {
   /** Available tools */
   availableTools?: Record<string, FunctionTool>;
   endpoints?: {
+    /** Per-username provider endpoint allowlists from the deployment YAML. */
+    userAccess?: NonNullable<TCustomConfig['endpoints']>['userAccess'];
     /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
     allowedAddresses?: string[];
     /** OpenAI endpoint configuration */

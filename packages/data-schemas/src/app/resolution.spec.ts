@@ -197,6 +197,41 @@ describe('mergeConfigOverrides', () => {
     expect(added.endpoints.agents.pullRequests.host).toBeUndefined();
   });
 
+  it('keeps endpoint access policy at deployment scope despite principal overrides or tombstones', () => {
+    const access = [{ username: 'restricted-user', allowedEndpoints: ['Allowed Provider'] }];
+    const base = { endpoints: { userAccess: access } } as unknown as AppConfig;
+    const result = mergeConfigOverrides(base, [
+      fakeConfig(
+        {
+          endpoints: {
+            userAccess: [
+              { username: 'restricted-user', allowedEndpoints: ['Restricted Provider'] },
+            ],
+          },
+        },
+        10,
+        ['endpoints.userAccess'],
+      ),
+    ]);
+
+    expect(result.endpoints?.userAccess).toBe(access);
+
+    const unset = { endpoints: {} } as unknown as AppConfig;
+    const cannotAddPolicy = mergeConfigOverrides(unset, [
+      fakeConfig(
+        {
+          endpoints: {
+            userAccess: [
+              { username: 'restricted-user', allowedEndpoints: ['Restricted Provider'] },
+            ],
+          },
+        },
+        10,
+      ),
+    ]);
+    expect(cannotAddPolicy.endpoints?.userAccess).toBeUndefined();
+  });
+
   it('applies tenant-wide Langfuse settings only from the base principal', () => {
     const configs = [
       fakeConfig(

@@ -54,7 +54,7 @@ function createMockDeps(overrides: Partial<EndpointsConfigDeps> = {}): Endpoints
 type TestRequestOverrides = {
   body?: Partial<ServerRequest['body']>;
   config?: AppConfig;
-  user?: { id?: string; role?: string; tenantId?: string };
+  user?: { id?: string; username?: string; role?: string; tenantId?: string };
 };
 
 function fakeReq(overrides: TestRequestOverrides = {}): ServerRequest {
@@ -77,6 +77,42 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.openAI]).toBeDefined();
       expect(result?.myCustom).toBeDefined();
+    });
+
+    it('filters endpoint catalogs for a matching username only', async () => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.openAI]: { userProvide: false, order: 0 },
+          [EModelEndpoint.agents]: { userProvide: false, order: 1 },
+        }),
+        loadCustomEndpointsConfig: jest.fn().mockReturnValue({
+          'Allowed Provider': { userProvide: false, type: EModelEndpoint.custom },
+          'Restricted Provider': { userProvide: false, type: EModelEndpoint.custom },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              userAccess: [{ username: 'restricted-user', allowedEndpoints: ['Allowed Provider'] }],
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+      const restricted = await getEndpointsConfig(
+        fakeReq({ user: { username: 'Restricted-User' } }),
+      );
+      const unrestricted = await getEndpointsConfig(
+        fakeReq({ user: { username: 'unlisted-user' } }),
+      );
+
+      expect(Object.keys(restricted ?? {})).toEqual(['Allowed Provider']);
+      expect(Object.keys(unrestricted ?? {})).toEqual([
+        EModelEndpoint.openAI,
+        EModelEndpoint.agents,
+        'Allowed Provider',
+        'Restricted Provider',
+      ]);
     });
 
     it('adds azureOpenAI when configured', async () => {

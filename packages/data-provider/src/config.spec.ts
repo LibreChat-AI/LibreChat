@@ -152,6 +152,45 @@ describe('tenant-scoped custom endpoints', () => {
   });
 });
 
+describe('per-user endpoint access', () => {
+  it('accepts an exact username allowlist', () => {
+    const config = configSchema.parse({
+      version: '1.0',
+      endpoints: {
+        userAccess: [{ username: 'restricted-user', allowedEndpoints: ['Allowed Provider'] }],
+      },
+    });
+
+    expect(config.endpoints?.userAccess).toEqual([
+      { username: 'restricted-user', allowedEndpoints: ['Allowed Provider'] },
+    ]);
+  });
+
+  it.each([
+    [{ username: '', allowedEndpoints: ['Allowed Provider'] }],
+    [{ username: 'restricted-user', allowedEndpoints: [''] }],
+    [{ username: 'restricted-user', allowedEndpoints: ['Allowed Provider'], wildcard: true }],
+  ])('rejects malformed endpoint access rules: %p', (rule) => {
+    expect(
+      configSchema.safeParse({ version: '1.0', endpoints: { userAccess: [rule] } }).success,
+    ).toBe(false);
+  });
+
+  it('rejects duplicate usernames regardless of case', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          userAccess: [
+            { username: 'Restricted-User', allowedEndpoints: ['Allowed Provider'] },
+            { username: 'restricted-user', allowedEndpoints: ['Restricted Provider'] },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('agent model response timeouts', () => {
   it('ships finite defaults and accepts explicit overrides including disabled timeouts', () => {
     expect(agentsEndpointSchema.parse({})).toMatchObject({
