@@ -8,6 +8,7 @@ import { RecoilRoot, useRecoilState } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
@@ -18,10 +19,9 @@ import { getDraft, getPendingDraftId, setDraft } from '~/utils';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import * as FileContainer from '../Files/FileContainer';
+import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
-import { pendingQuotesByConvoId } from '@librechat/chat/react';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
@@ -182,15 +182,17 @@ function renderComposer({
           set(store.speechSettingsInitialized, speechSettingsInitialized);
         }}
       >
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <main>
-                <Harness />
-              </main>
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <main>
+                  <Harness />
+                </main>
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );

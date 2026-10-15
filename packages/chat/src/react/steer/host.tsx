@@ -106,13 +106,6 @@ export interface SteerHost {
   useSettings(): SteerSettings;
 }
 
-let defaultSteerHost: SteerHost | null = null;
-
-/** Registers the host used outside any `SteerHostProvider`, once at the app's entry. */
-export function setDefaultSteerHost(host: SteerHost): void {
-  defaultSteerHost = host;
-}
-
 const SteerHostContext = createContext<SteerHost | null>(null);
 
 export function SteerHostProvider({
@@ -126,9 +119,9 @@ export function SteerHostProvider({
 }
 
 export function useSteerHost(): SteerHost {
-  const host = useContext(SteerHostContext) ?? defaultSteerHost;
+  const host = useContext(SteerHostContext);
   if (host == null) {
-    throw new Error('The steer hooks need a SteerHostProvider or a default steer host.');
+    throw new Error('The steer hooks need a SteerHostProvider above them.');
   }
   return host;
 }

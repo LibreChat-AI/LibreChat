@@ -1,6 +1,5 @@
 import { useCallback } from 'react';
 import { useToastContext } from '@librechat/client';
-import { setDefaultSteerHost } from '@librechat/chat/react';
 import type {
   SteerHost,
   SteerSettings,
@@ -85,7 +84,5 @@ export const appSteerHost: SteerHost = {
   useClearFilesToDelete,
   useSettings,
 };
-
-setDefaultSteerHost(appSteerHost);
 
 export { SteerHostProvider, useSteerHost } from '@librechat/chat/react';

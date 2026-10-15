@@ -16,9 +16,9 @@ import type { ChatFormValues } from '~/common';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import DragDropWrapper from '../Files/DragDropWrapper';
+import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
@@ -137,13 +137,15 @@ function renderComposer({ legacyUploadUX = false }: { legacyUploadUX?: boolean }
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <Harness />
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <Harness />
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );

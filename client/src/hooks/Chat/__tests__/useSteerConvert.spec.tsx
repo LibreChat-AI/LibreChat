@@ -1,20 +1,20 @@
 import React from 'react';
+import { useSteerConvert } from '@librechat/chat/react';
 import { act, renderHook } from '@testing-library/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
 import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai';
+import {
+  recoveryDispositionsFamily,
+  queuedMessagesByConvoId,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
 import {
   activeGenerationProtocolVersionByConvoId,
   appliedSteerIdsByConvoId,
   pendingSteersByConvoId,
   resetSteerFamilies,
 } from '@librechat/chat/react';
-import '~/Providers/SteerHostContext';
-import { useSteerConvert } from '@librechat/chat/react';
-import {
-  recoveryDispositionsFamily,
-  queuedMessagesByConvoId,
-  resetQueueFamilies,
-} from '@librechat/chat/react';
+import { SteerHostTestProvider } from 'test/steerHost';
 
 const mockFetchStreamStatus = jest.fn();
 let mockFileMap: Record<string, { llmDeliveryPath: 'text' }> = {};
@@ -39,7 +39,7 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
         initialize?.(snapshot);
       }}
     >
-      {children}
+      <SteerHostTestProvider>{children}</SteerHostTestProvider>
     </RecoilRoot>
   );
   return renderHook(

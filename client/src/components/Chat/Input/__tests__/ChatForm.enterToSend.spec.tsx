@@ -15,9 +15,9 @@ import type { TFile, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
 
 const conversation = {
   conversationId: 'new',
@@ -96,13 +96,15 @@ function renderComposer({ enterToSend }: { enterToSend: boolean }) {
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <Harness enterToSend={enterToSend} />
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <Harness enterToSend={enterToSend} />
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );

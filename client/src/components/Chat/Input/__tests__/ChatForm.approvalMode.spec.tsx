@@ -14,9 +14,9 @@ import type { TFile, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
 
 jest.mock('~/hooks/Agents/useCodeApprovalMode', () => ({
   __esModule: true,
@@ -94,13 +94,15 @@ function renderComposer({ submitting }: { submitting: boolean }) {
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot initializeState={() => getDefaultStore().set(isSubmittingFamily(0), submitting)}>
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <Harness />
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <Harness />
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );

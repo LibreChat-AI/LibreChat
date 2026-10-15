@@ -12,8 +12,6 @@ import {
   acquireQueueSendLock,
   releaseQueueSendLock,
 } from '@librechat/chat';
-import useQueueDrain from '../useQueueDrain';
-import '~/Providers/SteerHostContext';
 import {
   settledQueuedTurnReceiptsByConvoId,
   queuedMessagesByConvoId,
@@ -29,6 +27,8 @@ import type {
   QueuedMessage,
   SettledQueuedTurnReceipt,
 } from '@librechat/chat';
+import { SteerHostTestProvider } from 'test/steerHost';
+import useQueueDrain from '../useQueueDrain';
 
 const mockMarkFilesUsage = jest.fn();
 jest.mock('~/data-provider', () => ({
@@ -85,8 +85,10 @@ function setup(
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot initializeState={initialize}>
-        <Harness />
-        {children}
+        <SteerHostTestProvider>
+          <Harness />
+          {children}
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>
   );
@@ -1008,7 +1010,7 @@ describe('useQueueDrain', () => {
             });
           }}
         >
-          {children}
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
         </RecoilRoot>
       </QueryClientProvider>
     );
@@ -1190,8 +1192,10 @@ describe('useQueueDrain', () => {
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <QueryClientProvider client={queryClient}>
           <RecoilRoot initializeState={initialize}>
-            <Harness />
-            {children}
+            <SteerHostTestProvider>
+              <Harness />
+              {children}
+            </SteerHostTestProvider>
           </RecoilRoot>
         </QueryClientProvider>
       );

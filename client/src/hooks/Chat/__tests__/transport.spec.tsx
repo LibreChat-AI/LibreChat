@@ -4,6 +4,8 @@ import { useAtomValue, getDefaultStore } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '@librechat/chat/react';
+import { useSteerReclaim, useSteerEscalate, useSteering } from '@librechat/chat/react';
 import { Tools, QueryKeys, ContentTypes, EModelEndpoint, request } from 'librechat-data-provider';
 import {
   activeGenerationCreatedAtByConvoId,
@@ -18,6 +20,7 @@ import type {
   ChatTransportOptions,
   ChatTransportRequest,
 } from 'librechat-data-provider';
+import type { PendingSteer } from '@librechat/chat';
 import type { MutableSnapshot } from 'recoil';
 import type { StreamStatusResponse } from '~/data-provider';
 import type { ChatContract } from '~/hooks/Chat/contract';
@@ -29,13 +32,10 @@ import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
 import { resumeRequestsAtom } from '~/hooks/Chat/resume';
+import { SteerHostTestProvider } from 'test/steerHost';
 import { useChat } from '~/hooks/Chat/facade';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '@librechat/chat/react';
-import { useSteerReclaim, useSteerEscalate, useSteering } from '@librechat/chat/react';
-import type { PendingSteer } from '@librechat/chat';
 
 jest.mock('~/hooks/AuthContext', () => {
   const { createContext } = jest.requireActual('react');
@@ -105,9 +105,11 @@ function createWrapper(
               seed?.(state);
             }}
           >
-            <ChatTransportContext.Provider value={transport}>
-              {children}
-            </ChatTransportContext.Provider>
+            <SteerHostTestProvider>
+              <ChatTransportContext.Provider value={transport}>
+                {children}
+              </ChatTransportContext.Provider>
+            </SteerHostTestProvider>
           </RecoilRoot>
         </QueryClientProvider>
       </MemoryRouter>

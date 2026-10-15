@@ -21,10 +21,10 @@ import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { showStopButtonByIndex } from '~/store/generation';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
 
 const initialConversation = {
   conversationId: 'new',
@@ -190,14 +190,16 @@ function mountComposer(
             }
           }}
         >
-          <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
-            <NavigationBridge />
-            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-              <ChatTransportContext.Provider value={transport}>
-                <DndProvider backend={HTML5Backend}>{children}</DndProvider>
-              </ChatTransportContext.Provider>
-            </AuthContextProvider>
-          </MemoryRouter>
+          <SteerHostTestProvider>
+            <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
+              <NavigationBridge />
+              <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+                <ChatTransportContext.Provider value={transport}>
+                  <DndProvider backend={HTML5Backend}>{children}</DndProvider>
+                </ChatTransportContext.Provider>
+              </AuthContextProvider>
+            </MemoryRouter>
+          </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>
     </QueryClientProvider>
