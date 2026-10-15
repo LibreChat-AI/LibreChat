@@ -1,5 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import type { TMCPAppToolApprovalTarget } from 'librechat-data-provider';
 import { MCPAppApproval, useMCPAppApproval } from '../approval';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
@@ -14,11 +15,13 @@ const action = {
 function Harness({
   onReady,
   onClose,
+  allowlistedTools,
 }: {
   onReady: (approval: ReturnType<typeof useMCPAppApproval>) => void;
   onClose?: () => void;
+  allowlistedTools?: TMCPAppToolApprovalTarget[];
 }) {
-  const approval = useMCPAppApproval();
+  const approval = useMCPAppApproval(allowlistedTools);
   onReady(approval);
   return (
     <MCPAppApproval
@@ -36,6 +39,108 @@ function Harness({
     />
   );
 }
+
+test('auto-approves an exactly allowlisted App tool without showing the dialog', async () => {
+  let approval!: ReturnType<typeof useMCPAppApproval>;
+  const view = render(
+    <Harness
+      onReady={(value) => (approval = value)}
+      allowlistedTools={[{ server: 'fixture', tool: 'remove' }]}
+    />,
+  );
+  let result!: Promise<boolean>;
+  act(() => {
+    result = approval.request(action, new AbortController().signal);
+  });
+
+  await expect(result).resolves.toBe(true);
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  view.unmount();
+});
+
+test.each([[{ server: 'other', tool: 'remove' }], [{ server: 'fixture', tool: 'other' }]])(
+  'still prompts when the allowlist does not exactly match %p',
+  async (allowlistEntry) => {
+    let approval!: ReturnType<typeof useMCPAppApproval>;
+    const view = render(
+      <Harness onReady={(value) => (approval = value)} allowlistedTools={[allowlistEntry]} />,
+    );
+    let result!: Promise<boolean>;
+    act(() => {
+      result = approval.request(action, new AbortController().signal);
+    });
+
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    act(() => approval.cancel());
+    await expect(result).resolves.toBe(false);
+    view.unmount();
+  },
+);
+
+test('matches raw MCP server and tool names containing colons and spaces', async () => {
+  let approval!: ReturnType<typeof useMCPAppApproval>;
+  const view = render(
+    <Harness
+      onReady={(value) => (approval = value)}
+      allowlistedTools={[{ server: 'Connector: Company', tool: 'remove item' }]}
+    />,
+  );
+  let result!: Promise<boolean>;
+  act(() => {
+    result = approval.request(
+      { ...action, serverName: 'Connector: Company', toolName: 'remove item' },
+      new AbortController().signal,
+    );
+  });
+
+  await expect(result).resolves.toBe(true);
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  view.unmount();
+});
+
+test('does not auto-approve App-authored messages for an allowlisted tool', async () => {
+  let approval!: ReturnType<typeof useMCPAppApproval>;
+  const view = render(
+    <Harness
+      onReady={(value) => (approval = value)}
+      allowlistedTools={[{ server: 'fixture', tool: 'remove' }]}
+    />,
+  );
+  let result!: Promise<boolean>;
+  act(() => {
+    result = approval.request(
+      { kind: 'message', serverName: 'fixture', text: 'continue' },
+      new AbortController().signal,
+    );
+  });
+
+  expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+  act(() => approval.cancel());
+  await expect(result).resolves.toBe(false);
+  view.unmount();
+});
+
+test('keeps an allowlisted tool suspended after an App action is cancelled', async () => {
+  let approval!: ReturnType<typeof useMCPAppApproval>;
+  const view = render(
+    <Harness
+      onReady={(value) => (approval = value)}
+      allowlistedTools={[{ server: 'fixture', tool: 'remove' }]}
+    />,
+  );
+  let pendingMessage!: Promise<boolean>;
+  act(() => {
+    pendingMessage = approval.request(
+      { kind: 'message', serverName: 'fixture', text: 'continue' },
+      new AbortController().signal,
+    );
+  });
+  act(() => approval.cancel());
+  await expect(pendingMessage).resolves.toBe(false);
+  await expect(approval.request(action, new AbortController().signal)).resolves.toBe(false);
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  view.unmount();
+});
 
 test('requires a host click before approving the exact tool request', async () => {
   let approval!: ReturnType<typeof useMCPAppApproval>;

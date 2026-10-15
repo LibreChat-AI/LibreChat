@@ -9,6 +9,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@librechat/client';
+import type { TMCPAppToolApprovalTarget } from 'librechat-data-provider';
 import type { ComponentProps } from 'react';
 import { useLocalize } from '~/hooks';
 
@@ -22,33 +23,50 @@ type Pending = {
 };
 
 /** An App can request an action but only a host-controlled button can grant it. */
-export function useMCPAppApproval() {
+export function useMCPAppApproval(allowlistedTools?: readonly TMCPAppToolApprovalTarget[]) {
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
   const suspendedRef = useRef(false);
-  const request = useCallback((action: MCPAppAction, signal: AbortSignal): Promise<boolean> => {
-    if (signal.aborted || pendingRef.current || suspendedRef.current) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
-      const settle = (allowed: boolean, notify = true) => {
-        if (pendingRef.current !== entry) return;
-        pendingRef.current = null;
-        signal.removeEventListener('abort', abort);
-        if (notify) setPending(null);
-        resolve(allowed && !signal.aborted);
-      };
-      // An App can abort its own SDK request while the host dialog is visible. Treat that
-      // just like a denial, rather than letting it reopen the dialog in a tight loop.
-      const abort = () => {
-        if (pendingRef.current === entry) suspendedRef.current = true;
-        settle(false);
-      };
-      const entry: Pending = { action, settle };
-      pendingRef.current = entry;
-      signal.addEventListener('abort', abort, { once: true });
-      if (signal.aborted) abort();
-      else setPending(entry);
-    });
-  }, []);
+  const request = useCallback(
+    (action: MCPAppAction, signal: AbortSignal): Promise<boolean> => {
+      if (signal.aborted || pendingRef.current || suspendedRef.current)
+        return Promise.resolve(false);
+      if (
+        action.kind === 'tool' &&
+        Array.isArray(allowlistedTools) &&
+        allowlistedTools.some(
+          (target) =>
+            typeof target?.server === 'string' &&
+            typeof target.tool === 'string' &&
+            target.server === action.serverName &&
+            target.tool === action.toolName,
+        )
+      ) {
+        return Promise.resolve(true);
+      }
+      return new Promise<boolean>((resolve) => {
+        const settle = (allowed: boolean, notify = true) => {
+          if (pendingRef.current !== entry) return;
+          pendingRef.current = null;
+          signal.removeEventListener('abort', abort);
+          if (notify) setPending(null);
+          resolve(allowed && !signal.aborted);
+        };
+        // An App can abort its own SDK request while the host dialog is visible. Treat that
+        // just like a denial, rather than letting it reopen the dialog in a tight loop.
+        const abort = () => {
+          if (pendingRef.current === entry) suspendedRef.current = true;
+          settle(false);
+        };
+        const entry: Pending = { action, settle };
+        pendingRef.current = entry;
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+        else setPending(entry);
+      });
+    },
+    [allowlistedTools],
+  );
   // Escape, backdrop and Cancel all pause further App-requested actions for this View.
   // Only closing and reopening its View restores the ability to ask.
   const cancel = useCallback(() => {

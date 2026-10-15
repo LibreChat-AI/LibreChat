@@ -40,6 +40,7 @@ type MockResponse = EventEmitter & {
   json: jest.Mock;
   send: jest.Mock;
   setHeader: jest.Mock;
+  removeHeader: jest.Mock;
   end: jest.Mock;
 };
 
@@ -63,6 +64,7 @@ const makeResponse = (): MockResponse => {
     json: jest.fn(),
     send: jest.fn(),
     setHeader: jest.fn(),
+    removeHeader: jest.fn(),
     end: jest.fn(),
   });
   response.status.mockReturnValue(response);
@@ -720,6 +722,42 @@ describe('createMCPAppsController', () => {
     expect(dependencies.readSandboxFile).toHaveBeenCalledTimes(1);
     expect(dependencies.readSandboxFile).toHaveBeenCalledWith('/tmp/mcp-sandbox.html', 'utf8');
     expect(dependencies.getSandboxCspLimits).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes inherited frameguard when an allowed cross-origin ancestor is configured', async () => {
+    const manager = makeManager();
+    const { dependencies } = makeDependencies(manager);
+    const controller = createMCPAppsController(dependencies);
+    const response = makeResponse();
+
+    await controller.serveMCPSandbox(
+      asHandlerRequest(makeRequest()),
+      asHandlerResponse(response),
+      jest.fn(),
+    );
+
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Content-Security-Policy',
+      expect.arrayContaining(['frame-ancestors https://host.example.com']),
+    );
+    expect(response.removeHeader).toHaveBeenCalledWith('X-Frame-Options');
+  });
+
+  it('keeps X-Frame-Options when cross-origin ancestors are not allowed', async () => {
+    const manager = makeManager();
+    const { dependencies } = makeDependencies(manager);
+    dependencies.sandboxFrameAncestors = '';
+    const controller = createMCPAppsController(dependencies);
+    const response = makeResponse();
+
+    await controller.serveMCPSandbox(
+      asHandlerRequest(makeRequest()),
+      asHandlerResponse(response),
+      jest.fn(),
+    );
+
+    expect(response.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
+    expect(response.removeHeader).not.toHaveBeenCalled();
   });
 
   it('fails closed when trusted sandbox limits cannot be resolved', async () => {

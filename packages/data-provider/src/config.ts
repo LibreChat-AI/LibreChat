@@ -3201,9 +3201,36 @@ export function resolveMCPAppOperationLimits(
   return { ...DEFAULT_MCP_APP_OPERATION_LIMITS, ...limits };
 }
 
+export const mcpAppToolApprovalTargetSchema = z
+  .object({
+    server: z.string().min(1).max(512),
+    tool: z.string().min(1).max(512),
+  })
+  .strict();
+
+export const mcpAppToolApprovalPolicySchema = z
+  .object({
+    allow: z.array(mcpAppToolApprovalTargetSchema).max(256).optional(),
+  })
+  .strict();
+
+export function resolveMCPAppToolApprovalPolicy(
+  value: unknown,
+): TMCPAppToolApprovalPolicy | undefined {
+  if (value === undefined) return undefined;
+  const parsed = mcpAppToolApprovalPolicySchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+export type TMCPAppToolApprovalTarget = z.infer<typeof mcpAppToolApprovalTargetSchema>;
+export type TMCPAppToolApprovalPolicy = {
+  allow?: TMCPAppToolApprovalTarget[];
+};
+
 export type TMCPAppsPolicy = {
   enabled: boolean;
   legacyHtmlEnabled: boolean;
+  appToolApproval?: TMCPAppToolApprovalPolicy;
   cspLimits?: MCPAppCspLimits;
   /** Server-enforced UTF-8 JSON byte cap for one persisted MCP App artifact. */
   maxPersistedAppBytes?: number;
@@ -3248,6 +3275,7 @@ export function resolveMCPAppsPolicy(
   maxActiveViews = DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
   maxActionPreviewChars = DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
   operationLimits?: Partial<TMCPAppOperationLimits>,
+  appToolApproval?: TMCPAppToolApprovalPolicy,
 ): TMCPAppsPolicy {
   return {
     enabled: value === true,
@@ -3260,6 +3288,7 @@ export function resolveMCPAppsPolicy(
     ...(operationLimits != null
       ? { operationLimits: resolveMCPAppOperationLimits(operationLimits) }
       : {}),
+    ...(appToolApproval != null ? { appToolApproval } : {}),
     ...(sandboxUrl !== undefined ? { sandboxUrl } : {}),
   };
 }
@@ -4183,6 +4212,7 @@ export const configSchema = z.object({
         })
         .default({}),
       apps: z.boolean().optional(),
+      appToolApproval: mcpAppToolApprovalPolicySchema.optional(),
     })
     .optional(),
   interface: interfaceSchema,
