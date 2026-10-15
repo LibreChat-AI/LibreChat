@@ -3,6 +3,7 @@ import type { PromptCacheConfig } from './promptCache';
 import type { FormattedMessageWithContent } from './client';
 import { prependContextText } from './client';
 import { isStableContextEnabled } from './promptCache';
+import type { ContextEntry } from './turnContext/registry';
 import { isUsableSummaryPart } from './compaction';
 
 type Instant = string | number | Date;
@@ -30,15 +31,22 @@ function getRetainedFromMessageId(part: unknown): string | undefined {
   return typeof id === 'string' && id.trim() !== '' ? id.trim() : undefined;
 }
 
+/** Where the latest usable summary splits a branch. */
+export interface SummarySegment {
+  /** Index of the message carrying the summary; -1 when there is none. */
+  carrier: number;
+  /** First message the model still sees. */
+  visibleFrom: number;
+}
+
 /**
- * Index of the first message the model still sees once the latest usable
- * summary replaces the history it covers; 0 when there is no summary. Mirrors
- * the agents SDK formatter: a summary that names `coverage.retainedFromMessageId`
- * (an earlier or the same message) keeps history from that message, any other
- * summary keeps history from the message that carries it.
+ * Locates the latest usable summary of a branch. Mirrors the agents SDK
+ * formatter: a summary that names `coverage.retainedFromMessageId` (an earlier
+ * or the same message) keeps history from that message, any other summary
+ * keeps history from the message that carries it.
  */
-export function findSummaryBoundaryIndex(messages: readonly ContextUpdateMessage[]): number {
-  let boundary = 0;
+export function findSummarySegment(messages: readonly ContextUpdateMessage[]): SummarySegment {
+  const segment: SummarySegment = { carrier: -1, visibleFrom: 0 };
   const indexByMessageId = new Map<string, number>();
   for (let i = 0; i < messages.length; i++) {
     const { messageId, content } = messages[i];
@@ -55,10 +63,16 @@ export function findSummaryBoundaryIndex(messages: readonly ContextUpdateMessage
       const retainedFromMessageId = getRetainedFromMessageId(part);
       const retainedIndex =
         retainedFromMessageId != null ? indexByMessageId.get(retainedFromMessageId) : undefined;
-      boundary = retainedIndex ?? i;
+      segment.carrier = i;
+      segment.visibleFrom = retainedIndex ?? i;
     }
   }
-  return boundary;
+  return segment;
+}
+
+/** Index of the first message the model still sees once the latest usable summary applies. */
+export function findSummaryBoundaryIndex(messages: readonly ContextUpdateMessage[]): number {
+  return findSummarySegment(messages).visibleFrom;
 }
 
 function isValidInstant(value: Instant | null | undefined): value is Instant {
@@ -163,6 +177,23 @@ export function getTurnUserMessageCreatedAt(
   return new Date(turnStartedAt);
 }
 
+/** The context changes a turn's user message announced, set on the request by `buildMessages`. */
+export interface TurnContextUpdates {
+  messageId: string;
+  entries: ContextEntry[];
+}
+
+/** Entries to store with `messageId` when it is the user message this turn announced them on. */
+export function getTurnContextUpdates(
+  req: { turnContextUpdates?: TurnContextUpdates } | null | undefined,
+  messageId: string | null | undefined,
+): ContextEntry[] | undefined {
+  const updates = req?.turnContextUpdates;
+  return updates != null && messageId != null && updates.messageId === messageId
+    ? updates.entries
+    : undefined;
+}
+
 /** `dynamicToolContextMap` key for instructions resolved from temporal special variables. */
 export const AGENT_TEMPORAL_INSTRUCTIONS_KEY = 'agent_temporal_instructions';
 
@@ -206,6 +237,8 @@ export interface HistoryContextUpdates {
    * Returns the note, or `undefined` when that message has none.
    */
   apply(formattedMessage: FormattedMessageWithContent, index: number): string | undefined;
+  /** The note of each message that has one, by message index. */
+  readonly updates: ReadonlyMap<number, string>;
   /** Whether any message has a note, so the prompt differs from what is stored. */
   readonly hasUpdates: boolean;
 }
@@ -234,6 +267,7 @@ export function createHistoryContextUpdates({
     includeTimestamps: isPromptMessageTimestampsEnabled(req.config),
   });
   return {
+    updates,
     hasUpdates: updates.size > 0,
     apply(formattedMessage, index) {
       const update = updates.get(index);

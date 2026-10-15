@@ -14,6 +14,7 @@ import {
   MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH,
 } from '~/types/convo';
 import { agentFadingContextDefinition } from './fading';
+import { contextEntrySchema } from './message';
 import { conversationPreset } from './defaults';
 import { IConversation } from '~/types';
 
@@ -70,6 +71,9 @@ const convoSchema: Schema<IConversation> = new Schema(
      *  carries the value read when its tool was created and applies only while it still matches,
      *  so moving away and back cannot revive an older report. Server-written only. */
     codeAttachmentEpoch: { type: Number, default: undefined, select: false },
+    /** Context the first segment's system prompt is rendered from. Server-written only, through
+     *  `setConvoContextAnchor`; may hold memory text, so it stays out of ordinary reads. */
+    contextAnchor: { type: [contextEntrySchema], select: false, default: undefined },
     agent_id: {
       type: String,
     },

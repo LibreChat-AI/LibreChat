@@ -3,7 +3,8 @@ import {
   formatContextUpdate,
   findSummaryBoundaryIndex,
   hasConversationDateContext,
-  buildUserMessageContextUpdates,
+  findSummarySegment,
+  getTurnContextUpdates,
   getTurnUserMessageCreatedAt,
   createHistoryContextUpdates,
 } from './contextUpdates';
@@ -81,156 +82,31 @@ describe('findSummaryBoundaryIndex', () => {
   });
 });
 
-describe('buildUserMessageContextUpdates', () => {
-  const base = {
-    conversationStartedAt: START,
-    timezone: 'Africa/Nairobi',
-    trackDateChanges: true,
-    includeTimestamps: false,
-  };
-
-  it('adds nothing while the local date matches the conversation start', () => {
-    const updates = buildUserMessageContextUpdates({
-      ...base,
-      messages: [user('u1', START), assistant('a1', START), user('u2')],
-      currentTurnStartedAt: '2026-03-09T20:59:00.000Z',
-    });
-    expect(updates.size).toBe(0);
-  });
-
-  it('announces a date change once, on the first message after local midnight', () => {
+describe('findSummarySegment', () => {
+  it('reports the message carrying the latest usable summary and the first visible one', () => {
     const messages = [
       user('u1', START),
-      assistant('a1', '2026-03-09T20:00:10.000Z'),
-      /** 00:30 in Nairobi (UTC+3) — the next local day. */
-      user('u2', '2026-03-09T21:30:00.000Z'),
-      assistant('a2', '2026-03-09T21:30:10.000Z'),
+      assistant('a1', START, [summaryPart()]),
+      user('u2', START),
+      assistant('a2', START, [summaryPart({ retainedFromMessageId: 'u2' })]),
       user('u3'),
     ];
-    const updates = buildUserMessageContextUpdates({
-      ...base,
-      messages,
-      currentTurnStartedAt: '2026-03-09T22:00:00.000Z',
+    expect(findSummarySegment(messages)).toEqual({ carrier: 3, visibleFrom: 2 });
+    expect(findSummarySegment([user('u1'), assistant('a1', START)])).toEqual({
+      carrier: -1,
+      visibleFrom: 0,
     });
-    expect([...updates.entries()]).toEqual([
-      [2, '<context_update>\nCurrent date changed to: 2026-03-10 (Tue)\n</context_update>'],
-    ]);
   });
+});
 
-  it('dates the newest unsaved message by the current turn start', () => {
-    const updates = buildUserMessageContextUpdates({
-      ...base,
-      messages: [user('u1', START), assistant('a1', START), user('u2')],
-      currentTurnStartedAt: '2026-03-11T08:00:00.000Z',
-    });
-    expect(updates.get(2)).toBe(
-      '<context_update>\nCurrent date changed to: 2026-03-11 (Wed)\n</context_update>',
-    );
-  });
-
-  it('evaluates the local date in the user timezone', () => {
-    const messages = [user('u1', START), assistant('a1', START), user('u2')];
-    const currentTurnStartedAt = '2026-03-09T23:00:00.000Z';
-    expect(buildUserMessageContextUpdates({ ...base, messages, currentTurnStartedAt }).size).toBe(
-      1,
-    );
-    expect(
-      buildUserMessageContextUpdates({
-        ...base,
-        timezone: 'America/New_York',
-        messages,
-        currentTurnStartedAt,
-      }).size,
-    ).toBe(0);
-  });
-
-  it('skips messages a summary replaced and compares against the conversation start', () => {
-    const messages = [
-      user('u1', START),
-      assistant('a1', START),
-      user('u2', '2026-03-12T09:00:00.000Z'),
-      assistant('a2', '2026-03-12T09:00:10.000Z', [summaryPart()]),
-      user('u3', '2026-03-12T10:00:00.000Z'),
-      assistant('a3', '2026-03-12T10:00:10.000Z'),
-      user('u4'),
-    ];
-    const updates = buildUserMessageContextUpdates({
-      ...base,
-      messages,
-      currentTurnStartedAt: '2026-03-12T11:00:00.000Z',
-    });
-    expect([...updates.keys()]).toEqual([4]);
-    expect(updates.get(4)).toContain('Current date changed to: 2026-03-12 (Thu)');
-  });
-
-  it('stamps every visible user message with its send time when timestamps are enabled', () => {
-    const messages = [
-      user('u1', START),
-      assistant('a1', START),
-      user('u2', '2026-03-09T21:30:05.000Z'),
-      assistant('a2', START),
-      user('u3'),
-    ];
-    const updates = buildUserMessageContextUpdates({
-      ...base,
-      includeTimestamps: true,
-      messages,
-      currentTurnStartedAt: '2026-03-09T21:45:07.000Z',
-    });
-    expect([...updates.entries()]).toEqual([
-      [0, '<context_update>\nMessage sent: 2026-03-09 23:00:00 +03:00 (Mon)\n</context_update>'],
-      [
-        2,
-        '<context_update>\nCurrent date changed to: 2026-03-10 (Tue)\nMessage sent: 2026-03-10 00:30:05 +03:00 (Tue)\n</context_update>',
-      ],
-      [4, '<context_update>\nMessage sent: 2026-03-10 00:45:07 +03:00 (Tue)\n</context_update>'],
-    ]);
-  });
-
-  it('only stamps send times when the date is not tracked', () => {
-    const updates = buildUserMessageContextUpdates({
-      ...base,
-      trackDateChanges: false,
-      includeTimestamps: true,
-      messages: [user('u1', '2026-03-15T09:00:00.000Z')],
-    });
-    expect(updates.get(0)).toBe(
-      '<context_update>\nMessage sent: 2026-03-15 12:00:00 +03:00 (Sun)\n</context_update>',
-    );
-  });
-
-  it('returns nothing when both features are off', () => {
-    const updates = buildUserMessageContextUpdates({
-      ...base,
-      trackDateChanges: false,
-      messages: [user('u1', '2026-04-01T00:00:00.000Z')],
-    });
-    expect(updates.size).toBe(0);
-  });
-
-  it('renders history identically on a later turn', () => {
-    const turn2 = [user('u1', START), assistant('a1', START), user('u2')];
-    const first = buildUserMessageContextUpdates({
-      ...base,
-      includeTimestamps: true,
-      messages: turn2,
-      currentTurnStartedAt: '2026-03-10T08:00:00.000Z',
-    });
-    const turn3 = [
-      user('u1', START),
-      assistant('a1', START),
-      user('u2', '2026-03-10T08:00:00.000Z'),
-      assistant('a2', '2026-03-10T08:00:30.000Z'),
-      user('u3'),
-    ];
-    const second = buildUserMessageContextUpdates({
-      ...base,
-      includeTimestamps: true,
-      messages: turn3,
-      currentTurnStartedAt: '2026-03-10T09:00:00.000Z',
-    });
-    expect(second.get(0)).toBe(first.get(0));
-    expect(second.get(2)).toBe(first.get(2));
+describe('getTurnContextUpdates', () => {
+  const entries = [{ key: 'artifacts', value: 'default' }];
+  it('returns the entries only for the user message they were planned for', () => {
+    const req = { turnContextUpdates: { messageId: 'u2', entries } };
+    expect(getTurnContextUpdates(req, 'u2')).toBe(entries);
+    expect(getTurnContextUpdates(req, 'u1')).toBeUndefined();
+    expect(getTurnContextUpdates({}, 'u2')).toBeUndefined();
+    expect(getTurnContextUpdates(undefined, undefined)).toBeUndefined();
   });
 });
 
