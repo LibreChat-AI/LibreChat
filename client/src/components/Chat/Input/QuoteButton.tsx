@@ -2,7 +2,7 @@ import { memo, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import { useSetAtom } from 'jotai';
 import { createPortal } from 'react-dom';
 import { TextQuote } from 'lucide-react';
-import { pendingQuotesByConvoId } from '~/components/Chat/Input/Composer/state';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 import { cn, MAX_QUOTE_COUNT } from '~/utils';
 import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';

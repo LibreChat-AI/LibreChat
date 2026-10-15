@@ -9,6 +9,12 @@ import {
   messageCarriesFiles,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import {
+  pendingQuotesByConvoId,
+  getReasoningStateKey,
+  pendingManualSkillsByConvoId,
+  pendingReasoningOverrideFamily,
+} from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { AttachmentRecovery } from './attachments';
 import type { TranslationKeys } from '~/hooks';
@@ -18,12 +24,6 @@ import {
   useOptionalMessagesOperations,
   useOptionalMessagesConversation,
 } from '~/Providers/MessagesViewContext';
-import {
-  pendingQuotesByConvoId,
-  getReasoningStateKey,
-  pendingManualSkillsByConvoId,
-  pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
 import { findAttachmentRecovery, isAttachmentError, mayBeAttachmentError } from './attachments';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useMessageContext } from '~/Providers/MessageContext';

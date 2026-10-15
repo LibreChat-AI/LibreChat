@@ -8,14 +8,11 @@ import {
   pendingSteersByConvoId,
   resetSteerFamilies,
 } from '@librechat/chat/react';
-import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
-import {
-  ComposerRestoreProvider,
-  useComposerRestoreHost,
-} from '~/Providers/ComposerRestoreContext';
 import '~/Providers/SteerHostContext';
 import { useSteerCancel, useSteerMoveToQueue } from '@librechat/chat/react';
 import { queuedMessagesByConvoId, resetQueueFamilies } from '@librechat/chat/react';
+import { ComposerRestoreProvider, useComposerRestoreHost } from '@librechat/chat/react';
+import type { RestoreToComposer } from '@librechat/chat/react';
 import type { PendingSteer } from '@librechat/chat';
 
 const mockCancelAsync = jest.fn();

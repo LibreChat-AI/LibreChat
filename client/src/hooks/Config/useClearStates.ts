@@ -6,7 +6,7 @@ import {
   getReasoningStateKey,
   clearPendingComposerContext,
   clearPendingReasoningOverrides,
-} from '~/components/Chat/Input/Composer/state';
+} from '@librechat/chat/react';
 import {
   abortScrollFamily,
   showStopButtonByIndex,

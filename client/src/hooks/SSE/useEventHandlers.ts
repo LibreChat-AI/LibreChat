@@ -5,6 +5,11 @@ import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
+  getReasoningStateKey,
+  pendingQuotesByConvoId,
+  pendingReasoningOverrideFamily,
+} from '@librechat/chat/react';
+import {
   QueryKeys,
   Constants,
   ContentTypes,
@@ -60,11 +65,6 @@ import {
   markTitleGenerationProcessed,
   useReconcileConversationCodeEnvironmentMutation,
 } from '~/data-provider';
-import {
-  getReasoningStateKey,
-  pendingQuotesByConvoId,
-  pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';

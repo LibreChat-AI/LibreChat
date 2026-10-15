@@ -7,7 +7,7 @@ import {
   pendingQuotesByConvoId,
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
+} from '@librechat/chat/react';
 import {
   abortScrollFamily,
   showStopButtonByIndex,

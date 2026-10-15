@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { useStore } from 'jotai';
+import { useComposerRestoreHost } from '@librechat/chat/react';
 import { getSteerErrorCode, isDefiniteSteerRejection } from '@librechat/chat';
 import {
   useSteerRehome,
@@ -11,7 +12,6 @@ import {
 } from '@librechat/chat/react';
 import type { PendingSteer } from '@librechat/chat';
 import { useSteerMessageMutation, useCancelSteerMutation } from '~/data-provider';
-import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { carriedSteerContext, isLegacyDeliveryUncertain } from '~/utils';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 

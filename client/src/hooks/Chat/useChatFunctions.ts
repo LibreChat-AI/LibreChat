@@ -11,6 +11,12 @@ import {
   EModelEndpoint,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import {
+  getReasoningStateKey,
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
+  pendingReasoningOverrideFamily,
+} from '@librechat/chat/react';
 import type {
   TMessage,
   TSubmission,
@@ -19,12 +25,6 @@ import type {
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TAskFunction, ExtendedFile } from '~/common';
-import {
-  getReasoningStateKey,
-  pendingQuotesByConvoId,
-  pendingManualSkillsByConvoId,
-  pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
 import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,

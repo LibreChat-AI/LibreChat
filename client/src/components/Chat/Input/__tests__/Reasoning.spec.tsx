@@ -2,6 +2,7 @@ import { RecoilRoot } from 'recoil';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { Constants, ReasoningEffort } from 'librechat-data-provider';
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import type {
   SettingDefinition,
   TConversation,
@@ -10,7 +11,6 @@ import type {
   TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../Composer/state';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 import store from '~/store';
 

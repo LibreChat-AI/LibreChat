@@ -14,7 +14,6 @@ import { render, screen, within, waitFor, fireEvent } from '@testing-library/rea
 import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import { pendingQuotesByConvoId } from '~/components/Chat/Input/Composer/state';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
@@ -22,6 +21,7 @@ import * as FileContainer from '../Files/FileContainer';
 import ChatForm from '../ChatForm';
 import store from '~/store';
 import '~/Providers/SteerHostContext';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();

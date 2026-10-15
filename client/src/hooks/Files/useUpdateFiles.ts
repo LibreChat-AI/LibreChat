@@ -1,5 +1,5 @@
+import { isComposerFileTaken, releaseComposerFile } from '@librechat/chat';
 import type { ExtendedFile, FileSetter } from '~/common';
-import { isComposerFileTaken, releaseComposerFile } from '~/utils/composerFiles';
 import useSetFilesToDelete from './useSetFilesToDelete';
 
 export default function useUpdateFiles(setFiles: FileSetter) {

@@ -1,10 +1,7 @@
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
-import {
-  pendingQuotesByConvoId,
-  pendingManualSkillsByConvoId,
-} from '~/components/Chat/Input/Composer/state';
+import { pendingQuotesByConvoId, pendingManualSkillsByConvoId } from '@librechat/chat/react';
 import useComposerItems from '../useComposerItems';
 
 /**

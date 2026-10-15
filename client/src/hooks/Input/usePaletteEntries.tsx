@@ -2,6 +2,7 @@ import React, { useMemo, useEffect, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
 import { useSetRecoilState } from 'recoil';
 import { MCPIcon } from '@librechat/client';
+import { pendingManualSkillsByConvoId } from '@librechat/chat/react';
 import {
   Brain,
   Globe,
@@ -34,7 +35,6 @@ import {
   useAgentCapabilities,
   useSkillActiveState,
 } from '~/hooks';
-import { pendingManualSkillsByConvoId } from '~/components/Chat/Input/Composer/state';
 import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtils';
 import { filterSkillsForPopover } from '~/components/Chat/Input/SkillsCommand';
 import { useAgentsMapContext, useBadgeRowContext } from '~/Providers';

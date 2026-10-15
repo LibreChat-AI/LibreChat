@@ -4,6 +4,7 @@ import { useAtom, useStore } from 'jotai';
 import * as Popover from '@radix-ui/react-popover';
 import { Button, Input, Slider } from '@librechat/client';
 import { BrainCircuit, ChevronDown, X } from 'lucide-react';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
   Constants,
   ReasoningParameterFormat,
@@ -22,7 +23,6 @@ import type {
   TReasoningOverride,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from './Composer/state';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
 import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { formatTokens, resolveAgentTarget } from '~/utils';

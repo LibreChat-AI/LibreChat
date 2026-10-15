@@ -4,6 +4,7 @@ import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import { useSteering } from '@librechat/chat/react';
+import { useComposerRestoreHost } from '@librechat/chat/react';
 import {
   composerSurfaceClasses,
   composerSurfaceShadow,
@@ -48,7 +49,6 @@ import {
   useChatFormContext,
   useAddedChatContext,
   useAssistantsMapContext,
-  useComposerRestoreHost,
   BadgeRowProvider,
 } from '~/Providers';
 import {

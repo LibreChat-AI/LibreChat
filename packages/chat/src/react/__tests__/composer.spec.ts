@@ -1,6 +1,6 @@
 import { createStore } from 'jotai';
 import { Constants, ReasoningEffort } from 'librechat-data-provider';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../state';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../composer';
 
 describe('composer reasoning state', () => {
   it('isolates unsaved split panes that share the new-conversation sentinel', () => {

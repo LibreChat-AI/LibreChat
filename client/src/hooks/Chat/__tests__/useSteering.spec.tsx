@@ -29,12 +29,6 @@ import {
 } from '@librechat/chat/react';
 import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
-import {
-  getReasoningStateKey,
-  pendingQuotesByConvoId,
-  pendingManualSkillsByConvoId,
-  pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import ChatSettingsProvider from '~/routes/ChatSettings';
@@ -48,6 +42,12 @@ import {
   hasLiveRunPause,
   hydrateFileDeliveryMetadata as mergeQueuedTurnFileMetadata,
 } from '@librechat/chat';
+import {
+  getReasoningStateKey,
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
+  pendingReasoningOverrideFamily,
+} from '@librechat/chat/react';
 import {
   pendingQueuedTurnEnqueueIdsByConvoId,
   settledQueuedTurnReceiptsByConvoId,
