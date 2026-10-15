@@ -4871,12 +4871,15 @@ describe('useStepHandler', () => {
         );
       });
       expect(getEntries('call_ptc')).toHaveLength(1);
+      const removeSpy = jest.spyOn(ptcTraceByToolCallId, 'remove');
 
       act(() => {
         (result.current as unknown as { resetPtcAtoms: () => void }).resetPtcAtoms();
       });
 
       expect(getEntries('call_ptc')).toEqual([]);
+      expect(removeSpy).toHaveBeenCalledWith(ptcTraceKey('response-msg-1', 'call_ptc'));
+      removeSpy.mockRestore();
     });
   });
 });
