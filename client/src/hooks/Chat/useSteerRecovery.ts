@@ -1,22 +1,19 @@
 import { useCallback } from 'react';
 import { useStore } from 'jotai';
+import { getSteerErrorCode, isDefiniteSteerRejection } from '@librechat/chat';
 import {
+  useSteerRehome,
+  useSteerConvert,
   isSubmittingFamily,
   pendingSteersByConvoId,
+  resolveAcknowledgedSteer,
   pendingSteerCancelClientIdsFamily,
 } from '@librechat/chat/react';
 import type { PendingSteer } from '~/hooks/Chat/queue';
-import {
-  getSteerErrorCode,
-  isDefiniteSteerRejection,
-  resolveAcknowledgedSteer,
-} from '~/hooks/Chat/useSteering';
 import { useSteerMessageMutation, useCancelSteerMutation } from '~/data-provider';
 import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { carriedSteerContext, isLegacyDeliveryUncertain } from '~/utils';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { useSteerRehome } from '~/hooks/Chat/useSteerCancel';
-import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 
 /**
  * Retry or re-route a pending steer from OUTSIDE the composer. The thread's

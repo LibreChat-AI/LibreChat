@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { SteeringControls } from '~/hooks/Chat/useSteering';
+import type { SteeringControls } from '@librechat/chat/react';
 import type { ShortcutOverride } from '~/store/misc';
 import DuringRunSendButton from '../DuringRunSendButton';
 import store from '~/store';

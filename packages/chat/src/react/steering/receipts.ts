@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { useSteerHost } from '@librechat/chat/react';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS } from 'librechat-data-provider';
-import { reconcileServerQueuedTurns, mergeSettledQueuedTurnEvidence } from '@librechat/chat';
 import type { TAgentQueuedTurnReceipt as AgentQueuedTurnReceipt } from 'librechat-data-provider';
-import type { QueuedTurnReceiptSource } from '@librechat/chat';
+import type { QueuedTurnReceiptSource } from '../../core';
 import {
   queuedMessagesByConvoId,
   settledQueuedTurnReceiptsByConvoId,
   pendingQueuedTurnEnqueueIdsByConvoId,
-} from '~/hooks/Chat/queue';
+} from '../steer/queue';
+import { reconcileServerQueuedTurns, mergeSettledQueuedTurnEvidence } from '../../core';
+import { useSteerHost } from '../steer/host';
 
 export interface QueuedTurnReceipts {
   /** Folds server receipts into the settled evidence and, unless `direct`, the visible queue. */

@@ -3,6 +3,7 @@ import { useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
+import { useSteering } from '@librechat/chat/react';
 import {
   composerSurfaceClasses,
   composerSurfaceShadow,
@@ -17,9 +18,9 @@ import {
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
+import type { QueuedMessageContext } from '@librechat/chat';
 import type { SetterOrUpdater } from 'recoil';
 import type { ExtendedFile, FileSetter, ConvoGenerator, TAskFunction } from '~/common';
-import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import {
   cn,
   getModelSpec,
@@ -70,7 +71,6 @@ import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
 import { useGetStartupConfig } from '~/data-provider';
 import CodeWorkspaceMenu from './CodeWorkspaceMenu';
-import useSteering from '~/hooks/Chat/useSteering';
 import CodeApprovalMenu from './CodeApprovalMenu';
 import TextareaHeader from './TextareaHeader';
 import PromptsCommand from './PromptsCommand';

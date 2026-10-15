@@ -1,14 +1,14 @@
 import { useCallback } from 'react';
-import { useSteerHost } from '@librechat/chat/react';
 import { useSetAtom, useAtomValue, useStore } from 'jotai';
-import { supportsGenerationProtocolV2 } from '@librechat/chat';
 import { DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS } from 'librechat-data-provider';
 import {
   escalatingSteerFamily,
   pendingSteersByConvoId,
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
-} from '@librechat/chat/react';
+} from '../steer/atoms';
+import { supportsGenerationProtocolV2 } from '../../core';
+import { useSteerHost } from '../steer/host';
 
 type ArmFailure = {
   name?: string;
@@ -44,7 +44,9 @@ export interface EscalateTarget {
  * steers escalate through identical race rules rather than two approximations.
  * `onArmed` lets a caller move focus off a control the success state removes.
  */
-export default function useSteerEscalate(conversationId: string) {
+export default function useSteerEscalate(
+  conversationId: string,
+): (target: EscalateTarget, onArmed?: () => void) => void {
   const host = useSteerHost();
   const localize = host.useLocalize();
   const notify = host.useNotify();

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useStore } from 'jotai';
+import { useSteerConvert } from '@librechat/chat/react';
 import {
   pendingSteersByConvoId,
   appliedSteerIdsByConvoId,
@@ -27,7 +28,6 @@ import {
 } from '~/utils';
 import { pendingQuotesByConvoId } from '~/components/Chat/Input/Composer/state';
 import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
-import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useFileMapContext } from '~/Providers';
 
 /**

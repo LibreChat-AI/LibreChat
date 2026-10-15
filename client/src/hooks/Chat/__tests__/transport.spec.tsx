@@ -27,17 +27,15 @@ import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue'
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { ChatContext, useChatContext } from '~/Providers/ChatContext';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
-import { useSteerReclaim } from '~/hooks/Chat/useSteerCancel';
-import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
 import { resumeRequestsAtom } from '~/hooks/Chat/resume';
-import useSteering from '~/hooks/Chat/useSteering';
 import { useChat } from '~/hooks/Chat/facade';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 import '~/Providers/SteerHostContext';
+import { useSteerReclaim, useSteerEscalate, useSteering } from '@librechat/chat/react';
 
 jest.mock('~/hooks/AuthContext', () => {
   const { createContext } = jest.requireActual('react');

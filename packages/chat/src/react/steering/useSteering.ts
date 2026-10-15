@@ -1,55 +1,46 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
-import { useSteerHost } from '@librechat/chat/react';
-import { hasLiveRunPause, selectLiveMessageState } from '@librechat/chat';
 import {
   Constants,
   isAgentsEndpoint,
   isAssistantsEndpoint,
   DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
 } from 'librechat-data-provider';
+import type { TMessage, TConversation, CodeEnvironmentMode } from 'librechat-data-provider';
+import type {
+  SubmitSteerOptions,
+  QueuedMessageContext,
+  QueuedMessageOrigin,
+  PendingSteer,
+  DuringRunAction,
+} from '../../core';
+import type { ComposerFile, ComposerFileSetter } from './types';
+import type { DuringRunActions } from './actions';
+import type { QueuedRecovery } from './recovery';
+import type { QueueEnqueue } from './enqueue';
+import type { SubmitSteer } from './submit';
+import type { QueuedSend } from './send';
+import type { QueueRows } from './rows';
 import {
   revealedQueuedTurnFamily,
   pendingSteersByConvoId,
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
-} from '@librechat/chat/react';
-import type { TMessage, TConversation, CodeEnvironmentMode } from 'librechat-data-provider';
-import type { SubmitSteerOptions, QueuedMessageContext } from '@librechat/chat';
-import type { QueuedMessageOrigin } from '~/hooks/Chat/queue';
-import type { ExtendedFile, FileSetter } from '~/common';
-import type { PendingSteer } from '~/hooks/Chat/queue';
-import type { DuringRunAction } from './contract';
-import {
-  getReasoningStateKey,
-  pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
-import useQueuedTurnReceipts from './steering/receipts';
-import useDuringRunActions from './steering/actions';
-import useQueuedRecovery from './steering/recovery';
-import useComposerTake from './steering/composer';
-import useQueueEnqueue from './steering/enqueue';
-import useSubmitSteer from './steering/submit';
-import { carriedSteerContext } from '~/utils';
-import useSteerChips from './steering/chips';
-import useQueuedSend from './steering/send';
-import useQueueRows from './steering/rows';
+} from '../steer/atoms';
+import { hasLiveRunPause, selectLiveMessageState, carriedSteerContext } from '../../core';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../composer';
+import useQueuedTurnReceipts from './receipts';
+import { useSteerHost } from '../steer/host';
+import useDuringRunActions from './actions';
+import useQueuedRecovery from './recovery';
+import useComposerTake from './composer';
+import useQueueEnqueue from './enqueue';
+import useSubmitSteer from './submit';
+import useSteerChips from './chips';
+import useQueuedSend from './send';
+import useQueueRows from './rows';
 
-export type { DuringRunAction };
-
-export type { QueuedMessageContext } from '@librechat/chat';
-export { resolveAcknowledgedSteer } from './steering/chips';
-
-export {
-  getSteerErrorCode,
-  hasLiveRunPause,
-  hasLiveToolApproval,
-  isDefiniteSteerRejection,
-} from '@librechat/chat';
-export { hydrateFileDeliveryMetadata as mergeQueuedTurnFileMetadata } from '@librechat/chat';
-export type { SteerErrorCode } from '@librechat/chat';
-
-export interface UseSteeringParams {
+export interface UseSteeringParams<File extends ComposerFile = ComposerFile> {
   /** Consume the actual storage key selected by the composer’s autosave owner. */
   consumeDraft: () => void;
   index: number;
@@ -63,8 +54,8 @@ export interface UseSteeringParams {
   /** Host-owned preparation hold; existing queued-message and Stop actions remain independent. */
   composerDisabled?: boolean;
   /** Composer attachments: consumed into queued items (steering is text-only). */
-  files?: Map<string, ExtendedFile>;
-  setFiles?: FileSetter;
+  files?: Map<string, File>;
+  setFiles?: ComposerFileSetter<File>;
   /** Uploads still in flight: during-run submits are held like the send button. */
   filesLoading?: boolean;
   /** Submits text (and optional attachments/quotes/skills) as a normal new
@@ -82,6 +73,53 @@ export interface UseSteeringParams {
   stopGenerating: () => void;
 }
 
+/** What the composer, the queue rail and the pending steers drive a run's steering through. */
+export interface SteeringControls {
+  enabled: boolean;
+  queueKey: string;
+  canSteer: boolean;
+  canControlGeneration: boolean;
+  duringRunActive: boolean;
+  canSendQueuedNow: boolean;
+  effectiveAction: DuringRunAction;
+  defaultAction: DuringRunAction;
+  pendingReasoningOverride: TMessage['reasoningOverride'];
+  pausedOnApproval: boolean;
+  setDefaultAction: (action: DuringRunAction) => void;
+  submitDuringRun: DuringRunActions['submitDuringRun'];
+  steerFromComposer: DuringRunActions['steerFromComposer'];
+  queueFromComposer: DuringRunActions['queueFromComposer'];
+  submitSteer: SubmitSteer;
+  retrySteer: (
+    steerId: string,
+    text: string,
+    steerFiles?: TMessage['files'],
+    context?: QueuedMessageContext,
+    opts?: SubmitSteerOptions,
+  ) => void;
+  removeSteer: (steerId: string) => void;
+  convertSteerToQueue: (
+    steerId: string,
+    text: string,
+    steerFiles?: TMessage['files'],
+    context?: QueuedMessageContext,
+    queuedOrigin?: QueuedMessageOrigin,
+  ) => void;
+  queueReclaimedSteer: (steer: PendingSteer) => void;
+  enqueue: QueueEnqueue['enqueue'];
+  removeQueued: QueueRows['removeQueued'];
+  holdQueued: QueueRows['holdQueued'];
+  toggleQueuedHold: QueueRows['toggleQueuedHold'];
+  discardQueued: QueuedRecovery['discardQueued'];
+  dismissRecovery: QueuedRecovery['dismissRecovery'];
+  rewakeDrain: QueueRows['rewakeDrain'];
+  reorderQueued: QueueRows['reorderQueued'];
+  restoreQueuedOrder: QueueRows['restoreQueuedOrder'];
+  sendQueuedNow: QueuedSend['sendQueuedNow'];
+  interruptAndSend: DuringRunActions['interruptAndSend'];
+  interruptSteer: DuringRunActions['interruptSteer'];
+}
+
 /**
  * The composer's during-run brain: decides what Enter does while a run is
  * generating (steer vs queue, per the user preference and run state), owns the
@@ -89,7 +127,7 @@ export interface UseSteeringParams {
  * steer (POST + optimistic chip), queue (client-side), and interrupt & send
  * (abort, then auto-send via the one-shot drain override).
  */
-export default function useSteering({
+export default function useSteering<File extends ComposerFile = ComposerFile>({
   consumeDraft: takeComposerDraft,
   index,
   conversationId,
@@ -104,7 +142,7 @@ export default function useSteering({
   filesLoading = false,
   sendNow,
   stopGenerating,
-}: UseSteeringParams) {
+}: UseSteeringParams<File>): SteeringControls {
   const composerDisabledRef = useRef(composerDisabled);
   composerDisabledRef.current = composerDisabled;
   const host = useSteerHost();
@@ -433,5 +471,3 @@ export default function useSteering({
     ],
   );
 }
-
-export type SteeringControls = ReturnType<typeof useSteering>;

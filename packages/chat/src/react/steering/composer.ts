@@ -1,15 +1,15 @@
 import { useCallback, useMemo } from 'react';
 import { useStore } from 'jotai';
-import { useSteerHost } from '@librechat/chat/react';
-import type { QueuedMessageContext } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
-import type { ExtendedFile, FileSetter } from '~/common';
+import type { ComposerFile, ComposerFileSetter } from './types';
+import type { QueuedMessageContext } from '../../core';
 import {
   pendingQuotesByConvoId,
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
-import { markComposerFilesTaken } from '~/utils/composerFiles';
+} from '../composer';
+import { markComposerFilesTaken } from '../../core';
+import { useSteerHost } from '../steer/host';
 
 export interface ComposerTake {
   takeComposerFiles: () => TMessage['files'];
@@ -19,7 +19,7 @@ export interface ComposerTake {
 
 /** Drains what the composer has staged so it travels with one during-run
  *  submission instead of the next one. */
-export default function useComposerTake({
+export default function useComposerTake<File extends ComposerFile>({
   conversationId,
   reasoningStateKey,
   files,
@@ -27,8 +27,8 @@ export default function useComposerTake({
 }: {
   conversationId: string;
   reasoningStateKey: string;
-  files?: Map<string, ExtendedFile>;
-  setFiles?: FileSetter;
+  files?: Map<string, File>;
+  setFiles?: ComposerFileSetter<File>;
 }): ComposerTake {
   const reasoningStore = useStore();
   const clearFilesToDelete = useSteerHost().useClearFilesToDelete();
