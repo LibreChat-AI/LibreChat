@@ -434,6 +434,68 @@ describe('Message Operations', () => {
   });
 
   describe('saveMessage', () => {
+    describe('provider items', () => {
+      const providerItems = {
+        origin: 'digest',
+        items: [{ id: 'rs_1', encrypted_content: 'opaque' }],
+      };
+      const toolCall = { id: 'call_1', name: 'lookup', args: '{}' };
+      const response = (items = true) => ({
+        ...mockMessageData,
+        isCreatedByUser: false,
+        content: [
+          { type: 'text', text: 'Looking it up.' },
+          { type: 'tool_call', tool_call: items ? { ...toolCall, providerItems } : toolCall },
+        ],
+      });
+      const readStored = async () =>
+        Message.findOne({ messageId: 'msg123' }).select('+providerItems').lean();
+
+      it('moves the items of a response out of its content, into a field ordinary reads skip', async () => {
+        await saveMessage(mockCtx, response() as never);
+
+        const stored = await readStored();
+        expect(stored?.providerItems).toEqual({ call_1: providerItems });
+        expect(JSON.stringify(stored?.content)).not.toContain('providerItems');
+        expect((stored?.content as unknown[])[1]).toMatchObject({ tool_call: toolCall });
+        for (const read of [
+          await Message.findOne({ messageId: 'msg123' }).lean(),
+          (await getMessages({ messageId: 'msg123' }))[0],
+          (await getMessages({ messageId: 'msg123' }, CLIENT_MESSAGE_SELECT))[0],
+        ]) {
+          expect(read).not.toHaveProperty('providerItems');
+          expect(JSON.stringify(read)).not.toContain('opaque');
+        }
+        const [history] = await getMessages({ messageId: 'msg123' }, '+providerItems');
+        expect(history.providerItems).toEqual({ call_1: providerItems });
+      });
+
+      it('keeps the stored items when a later save carries none', async () => {
+        await saveMessage(mockCtx, response() as never);
+        await saveMessage(mockCtx, response(false) as never);
+        expect((await readStored())?.providerItems).toEqual({ call_1: providerItems });
+      });
+
+      it('drops the items of a user message instead of keeping them in its content', async () => {
+        await saveMessage(mockCtx, { ...response(), isCreatedByUser: true } as never);
+        const stored = await readStored();
+        expect(stored).not.toHaveProperty('providerItems');
+        expect(JSON.stringify(stored?.content)).not.toContain('providerItems');
+      });
+
+      it('ignores items submitted as a message field', async () => {
+        const forged = { providerItems: { call_1: providerItems } };
+        await saveMessage(mockCtx, { ...mockMessageData, ...forged } as never);
+        await updateMessage('user123', { messageId: 'msg123', ...forged });
+        await bulkSaveMessages([{ ...mockMessageData, messageId: 'bulk-1', ...forged }]);
+        for (const messageId of ['msg123', 'bulk-1']) {
+          const stored = await Message.findOne({ messageId }).select('+providerItems').lean();
+          expect(stored).toBeTruthy();
+          expect(stored).not.toHaveProperty('providerItems');
+        }
+      });
+    });
+
     describe('context updates and anchors', () => {
       const updates = [
         { key: 'artifacts', value: 'default' },

@@ -1278,6 +1278,13 @@ class BaseClient {
     return responseMessage;
   }
 
+  /** The server-only fields a history read adds to the stored messages. */
+  historySelect() {
+    return isStableContextEnabled(this.options?.req?.config)
+      ? '+privateTextTokens +contextUpdates +contextAnchor'
+      : '+privateTextTokens';
+  }
+
   async loadHistory(conversationId, parentMessageId = null) {
     logger.debug('[BaseClient] Loading history:', { conversationId, parentMessageId });
 
@@ -1287,12 +1294,7 @@ class BaseClient {
     }
 
     const messages =
-      (await db.getMessages(
-        { conversationId, user: this.user },
-        isStableContextEnabled(this.options?.req?.config)
-          ? '+privateTextTokens +contextUpdates +contextAnchor'
-          : '+privateTextTokens',
-      )) ?? [];
+      (await db.getMessages({ conversationId, user: this.user }, this.historySelect())) ?? [];
     /** A client that reads beyond the walk below (which stops at a checkpoint
      *  summary) receives every row here; the rest keep nothing. */
     this.onHistoryLoaded?.(messages);
