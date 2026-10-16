@@ -18,7 +18,9 @@ import type {
 } from '@librechat/data-schemas';
 import type { SummaryContentPart, TMessageContentParts } from 'librechat-data-provider';
 import type { IAgentEventActorSummary } from '@librechat/data-schemas';
+import type { ErrorTurnAnnouncement, ErrorTurnStampStore } from '~/conversations/announce';
 import { createAgentEventActorSummary } from './compatibility';
+import { announceErrorTurn } from '~/conversations/announce';
 
 /** Text of a summary content part, in any persisted shape — `content` blocks
  *  today, a string `content` or a bare `text` on rows written before them.
@@ -402,10 +404,10 @@ export async function resolveDisconnectSnapshotMode(
   if (!sameEpoch || !hasDurableReconcileFrame(jobRecord?.finalEvent)) {
     return 'live';
   }
-  if (await responseRowSettled()) {
-    return 'skip';
-  }
-  return (await anchorExists()) ? 'terminal' : 'skip';
+  /** Both reads are scoped to the turn's user and independent, so they run
+   *  together; a settled row still wins over a persisted anchor. */
+  const [settled, anchored] = await Promise.all([responseRowSettled(), anchorExists()]);
+  return !settled && anchored ? 'terminal' : 'skip';
 }
 
 /**
@@ -506,6 +508,23 @@ export async function planDisconnectSnapshot(
       ? resolveReconciledSnapshotEnvelope(jobRecord?.status)
       : { unfinished: true, error: false }),
   };
+}
+
+/**
+ * Stamps a promoted disconnect snapshot on its conversation once it is
+ * written: it is the turn's terminal row, so another device must learn the
+ * turn ended exactly as it would from any persisted terminal turn. A live
+ * snapshot is a fallback, not a reply, and stays unannounced. Never throws.
+ */
+export async function announceDisconnectSnapshot(
+  deps: ErrorTurnStampStore,
+  plan: DisconnectSnapshotPlan,
+  announcement: ErrorTurnAnnouncement,
+): Promise<void> {
+  if (!plan.write || plan.unfinished) {
+    return;
+  }
+  await announceErrorTurn(deps, announcement);
 }
 
 /** How the abort route persists a stopped turn's prerequisite rows. */

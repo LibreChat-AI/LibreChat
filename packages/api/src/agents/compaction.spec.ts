@@ -23,6 +23,7 @@ import {
   resolveReconciledSnapshotEnvelope,
   planAbortedTurnPersistence,
   planDisconnectSnapshot,
+  announceDisconnectSnapshot,
   resolveAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
@@ -1747,5 +1748,37 @@ describe('planDisconnectSnapshot', () => {
     });
 
     await expect(result).resolves.toMatchObject({ write: true, unfinished: false });
+  });
+});
+
+describe('announceDisconnectSnapshot', () => {
+  const announcement = {
+    userId: 'user-1',
+    conversationId: 'convo-1',
+    messageId: 'response',
+    context: 'test',
+  };
+
+  it('stamps a promoted terminal snapshot on its conversation', async () => {
+    const stampConvoLastResponse = jest.fn(async () => null);
+    await announceDisconnectSnapshot(
+      { stampConvoLastResponse },
+      { write: true, content: [], unfinished: false, error: true },
+      announcement,
+    );
+
+    expect(stampConvoLastResponse).toHaveBeenCalledWith('user-1', 'convo-1', 'response');
+  });
+
+  it('leaves a live or unwritten snapshot unannounced', async () => {
+    const stampConvoLastResponse = jest.fn(async () => null);
+    await announceDisconnectSnapshot(
+      { stampConvoLastResponse },
+      { write: true, content: [], unfinished: true, error: false },
+      announcement,
+    );
+    await announceDisconnectSnapshot({ stampConvoLastResponse }, { write: false }, announcement);
+
+    expect(stampConvoLastResponse).not.toHaveBeenCalled();
   });
 });

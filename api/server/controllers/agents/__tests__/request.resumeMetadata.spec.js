@@ -275,6 +275,8 @@ jest.mock('@librechat/api', () => ({
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   planDisconnectSnapshot: (...args) =>
     jest.requireActual('@librechat/api').planDisconnectSnapshot(...args),
+  announceDisconnectSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').announceDisconnectSnapshot(...args),
   settleExistingRowsBeforeErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),

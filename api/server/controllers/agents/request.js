@@ -63,6 +63,7 @@ const {
   getUserFacingGenerationError,
   stampPreliminaryPrivateTextMessage,
   announceReply,
+  announceDisconnectSnapshot,
   announceErrorTurn,
   settleExistingRowsBeforeErrorTurn,
   planDisconnectSnapshot,
@@ -1977,14 +1978,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           partialMessage.agent_id = req.body.agent_id;
         }
 
+        const isTemporary =
+          req?._agentEventBindingRetention?.isTemporary ??
+          req?.resolvedConversation?.isTemporary ??
+          req?.body?.isTemporary;
         const savePartialMessage = () =>
           saveMessage(
             {
               userId,
-              isTemporary:
-                req?._agentEventBindingRetention?.isTemporary ??
-                req?.resolvedConversation?.isTemporary ??
-                req?.body?.isTemporary,
+              isTemporary,
               expiredAt:
                 req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
               interfaceConfig: req?.config?.interfaceConfig,
@@ -2001,6 +2003,18 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         if (!savedPartialMessage) {
           throw new Error('Partial response could not be persisted after disconnect');
         }
+
+        const announcePromotion = () =>
+          announceDisconnectSnapshot({ stampConvoLastResponse }, snapshot, {
+            userId,
+            conversationId: responseConversationId,
+            messageId: responseMessageId,
+            isTemporary,
+            context: 'ResumableAgentController - promoted disconnect snapshot',
+          });
+        await (tenantId
+          ? tenantStorage.run({ tenantId, userId }, announcePromotion)
+          : announcePromotion());
 
         logger.debug(
           `[ResumableAgentController] Saved partial response for ${streamId}, content parts: ${snapshot.content.length}`,

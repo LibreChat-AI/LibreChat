@@ -17,6 +17,7 @@ const mockTenantStorageRun = jest.fn(async (context, callback) => {
 const mockSaveMessage = jest.fn();
 const mockGetConvo = jest.fn();
 const mockGetMessages = jest.fn();
+const mockStampConvoLastResponse = jest.fn();
 const mockIsAgentTriggerPrincipalActive = jest.fn();
 const mockFilterPersistableAbortContent = jest.fn((content) => content);
 const mockCheckAndIncrementPendingRequest = jest.fn();
@@ -60,6 +61,8 @@ jest.mock('@librechat/api', () => ({
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   planDisconnectSnapshot: (...args) =>
     jest.requireActual('@librechat/api').planDisconnectSnapshot(...args),
+  announceDisconnectSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').announceDisconnectSnapshot(...args),
   settleExistingRowsBeforeErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
@@ -139,6 +142,7 @@ jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
   getMessages: (...args) => mockGetMessages(...args),
   getConvo: (...args) => mockGetConvo(...args),
+  stampConvoLastResponse: (...args) => mockStampConvoLastResponse(...args),
   isAgentTriggerPrincipalActive: (...args) => mockIsAgentTriggerPrincipalActive(...args),
 }));
 
@@ -259,6 +263,7 @@ describe('ResumableAgentController tenant context', () => {
 
   it('carries the context meta the run published onto the partial response saved on disconnect', async () => {
     await firePartialDisconnect({ id: 'user-123', tenantId: 'tenant-a' });
+    expect(mockStampConvoLastResponse).not.toHaveBeenCalled();
 
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.any(Object),
@@ -410,6 +415,11 @@ describe('ResumableAgentController tenant context', () => {
       { type: 'think', think: 'Picking what to summarize' },
       expect.objectContaining({ type: 'error', initiatedBy: 'user' }),
     ]);
+    expect(mockStampConvoLastResponse).toHaveBeenCalledWith(
+      'user-123',
+      'conversation-123',
+      'response-message',
+    );
   });
   /** A reconciliation frame does not prove the row is missing: an error turn
    *  saved before it is a settled row the promotion must not overwrite. */
