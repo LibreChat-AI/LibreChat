@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import { Constants } from 'librechat-data-provider';
 import { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
+import type { LCTool } from '@librechat/agents';
 import type { Logger } from 'winston';
 import type { MCPManager } from '~/mcp/MCPManager';
 import type { AgentWithTools } from './context';
 import {
   extractMCPServers,
+  resolveInstructionMCPServers,
   getMCPInstructionsForServers,
   buildAgentInstructions,
   buildAgentAdditionalInstructions,
@@ -120,6 +122,82 @@ describe('Agent Context Utilities', () => {
       const result = extractMCPServers(agent);
 
       expect(result).toEqual([]);
+    });
+  });
+
+  describe('resolveInstructionMCPServers', () => {
+    it('should follow loaded tools when the request list names extra servers', () => {
+      const tool = new DynamicStructuredTool({
+        name: `inspect${Constants.mcp_delimiter}server-a`,
+        description: 'Loaded tool',
+        schema: testSchema,
+        func: async () => 'result',
+      });
+
+      const result = resolveInstructionMCPServers(
+        { id: 'test-agent', tools: [tool] },
+        { mcp: ['server-a', 'server-b'] },
+      );
+
+      expect(result).toEqual(['server-a']);
+    });
+
+    it('should keep loaded servers omitted from the request MCP list', () => {
+      const tool = new DynamicStructuredTool({
+        name: `inspect${Constants.mcp_delimiter}server-a`,
+        description: 'Loaded tool',
+        schema: testSchema,
+        func: async () => 'result',
+      });
+
+      const result = resolveInstructionMCPServers(
+        { id: 'test-agent', tools: [tool] },
+        { mcp: ['server-b'] },
+      );
+
+      expect(result).toEqual(['server-a']);
+    });
+
+    it('should retain a server when only some of its tools loaded', () => {
+      const loaded = new DynamicStructuredTool({
+        name: `inspect${Constants.mcp_delimiter}server-a`,
+        description: 'Loaded tool',
+        schema: testSchema,
+        func: async () => 'result',
+      });
+
+      const result = resolveInstructionMCPServers(
+        { id: 'test-agent', tools: [loaded] },
+        { mcp: ['server-a'] },
+      );
+
+      expect(result).toEqual(['server-a']);
+    });
+
+    it('should follow loaded tool definitions rather than the request list', () => {
+      const result = resolveInstructionMCPServers(
+        {
+          id: 'test-agent',
+          tools: [],
+          toolDefinitions: [{ name: `inspect${Constants.mcp_delimiter}server-a` } as LCTool],
+        },
+        { mcp: ['server-a', 'server-b'] },
+      );
+
+      expect(result).toEqual(['server-a']);
+    });
+
+    it('should fall back to the request list only when no MCP tools have loaded', () => {
+      const result = resolveInstructionMCPServers(
+        { id: 'test-agent', tools: [] },
+        { mcp: ['ephemeral-server'] },
+      );
+
+      expect(result).toEqual(['ephemeral-server']);
+    });
+
+    it('should return an empty array when neither loaded tools nor a request list exist', () => {
+      expect(resolveInstructionMCPServers({ id: 'test-agent', tools: [] })).toEqual([]);
     });
   });
 
@@ -343,7 +421,70 @@ describe('Agent Context Utilities', () => {
       expect(mockLogger.debug).toHaveBeenCalledWith('[AgentContext] Applied context to agent');
     });
 
-    it('should use ephemeral agent MCP servers when provided', async () => {
+    it('should not inject instructions for request-listed servers with zero loaded tools', async () => {
+      const agent: AgentWithTools = {
+        id: 'test-agent',
+        instructions: 'Base instructions',
+        tools: [
+          new DynamicStructuredTool({
+            name: `inspect${Constants.mcp_delimiter}server-a`,
+            description: 'Loaded tool',
+            schema: testSchema,
+            func: async () => 'result',
+          }),
+        ],
+      };
+
+      mockMCPManager.formatInstructionsForContext.mockResolvedValue('server-a MCP');
+
+      await applyContextToAgent({
+        agent,
+        sharedRunContext: 'Context',
+        mcpManager: mockMCPManager,
+        ephemeralAgent: { mcp: ['server-a', 'server-b'] },
+        logger: mockLogger,
+      });
+
+      expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
+        ['server-a'],
+        undefined,
+      );
+      expect(agent.instructions).toBe('Base instructions\n\nserver-a MCP');
+      expect(agent.additional_instructions).toBe('Context');
+    });
+
+    it('should keep instructions for loaded servers omitted from the request MCP list', async () => {
+      const agent: AgentWithTools = {
+        id: 'test-agent',
+        instructions: 'Base instructions',
+        tools: [
+          new DynamicStructuredTool({
+            name: `inspect${Constants.mcp_delimiter}server-a`,
+            description: 'Loaded tool',
+            schema: testSchema,
+            func: async () => 'result',
+          }),
+        ],
+      };
+
+      mockMCPManager.formatInstructionsForContext.mockResolvedValue('server-a MCP');
+
+      await applyContextToAgent({
+        agent,
+        sharedRunContext: 'Context',
+        mcpManager: mockMCPManager,
+        ephemeralAgent: { mcp: ['server-b'] },
+        logger: mockLogger,
+      });
+
+      expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
+        ['server-a'],
+        undefined,
+      );
+      expect(agent.instructions).toBe('Base instructions\n\nserver-a MCP');
+    });
+
+    it('should fall back to the request MCP list only when no tools have loaded', async () => {
       const agent: AgentWithTools = {
         id: 'test-agent',
         instructions: 'Base instructions',

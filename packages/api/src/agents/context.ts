@@ -55,6 +55,32 @@ export function extractMCPServers(agent: AgentWithTools): string[] {
 }
 
 /**
+ * Resolves which MCP servers should receive injected instruction blocks.
+ *
+ * Loaded tool instances and definitions are the source of truth, so
+ * instructions track servers that actually contributed tools. Selecting only
+ * some tools from a server still retains that server. A server with zero
+ * loaded tools is not injected merely because it appears on the request-level
+ * `ephemeralAgent.mcp` list.
+ *
+ * When `extractMCPServers` is empty, the request list is used as a fallback
+ * for callers that apply context before tool instances or definitions are
+ * attached. Once any MCP tools exist, the loaded set always wins — including
+ * the reverse mismatch where a loaded server is omitted from the request list.
+ */
+export function resolveInstructionMCPServers(
+  agent: AgentWithTools,
+  ephemeralAgent?: TEphemeralAgent,
+): string[] {
+  const loadedServers = extractMCPServers(agent);
+  if (loadedServers.length > 0) {
+    return loadedServers;
+  }
+
+  return ephemeralAgent?.mcp ?? [];
+}
+
+/**
  * Fetches MCP instructions for the given server names.
  * @param {string[]} mcpServers - Array of MCP server names
  * @param {MCPManager} mcpManager - MCP manager instance
@@ -134,7 +160,7 @@ export function buildAgentAdditionalInstructions({
  * @param {Agent} params.agent - The agent to update
  * @param {string} params.sharedRunContext - Run-level shared context
  * @param {MCPManager} params.mcpManager - MCP manager instance
- * @param {Object} [params.ephemeralAgent] - Ephemeral agent config (for MCP override)
+ * @param {Object} [params.ephemeralAgent] - Ephemeral agent config; MCP list is a fallback when no tools have loaded yet
  * @param {string} [params.agentId] - Agent ID for logging
  * @param {Logger} [params.logger] - Optional logger instance
  * @returns {Promise<void>}
@@ -160,7 +186,7 @@ export async function applyContextToAgent({
   const additionalInstructions = agent.additional_instructions || '';
 
   try {
-    const mcpServers = ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent);
+    const mcpServers = resolveInstructionMCPServers(agent, ephemeralAgent);
     const mcpInstructions = await getMCPInstructionsForServers(
       mcpServers,
       mcpManager,
