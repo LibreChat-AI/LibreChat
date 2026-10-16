@@ -181,6 +181,7 @@ describe('ResumableAgentController tenant context', () => {
     fading: { v: 1, budgetTokens: 50_000, masked: true },
   };
 
+  let lastAllSubscribersLeftHandler;
   const firePartialDisconnect = async (
     user,
     jobRecord = { createdAt: 1000, contextMeta: partialContextMeta },
@@ -208,6 +209,7 @@ describe('ResumableAgentController tenant context', () => {
         on: jest.fn((event, handler) => {
           if (event === 'allSubscribersLeft') {
             allSubscribersLeftHandler = handler;
+            lastAllSubscribersLeftHandler = handler;
           }
         }),
       },
@@ -432,6 +434,36 @@ describe('ResumableAgentController tenant context', () => {
 
     expect(mockSaveMessage).not.toHaveBeenCalled();
   });
+  it('promotes a compaction snapshot on a later disconnect after a live save', async () => {
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'user-message' ? [{ _id: 'existing-anchor' }] : [],
+    );
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000, status: 'running' },
+      { body: { compact: true } },
+    );
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(mockSaveMessage.mock.calls[0][1]).toMatchObject({ unfinished: true });
+
+    mockGenerationJobManager.getJobStore.mockReturnValue({
+      getJob: jest.fn().mockResolvedValue({
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      }),
+    });
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'user-message'
+        ? [{ _id: 'existing-anchor' }]
+        : [{ _id: 'live-row', unfinished: true }],
+    );
+    await lastAllSubscribersLeftHandler([{ type: 'text', text: 'Partial response' }]);
+
+    expect(mockSaveMessage).toHaveBeenCalledTimes(2);
+    expect(mockSaveMessage.mock.calls[1][1]).toMatchObject({ unfinished: false, error: true });
+  });
+
   it('logs a failed row read while planning the snapshot instead of rejecting the listener', async () => {
     const readError = new Error('read failed');
     mockGetMessages.mockImplementation(async (filter) => {

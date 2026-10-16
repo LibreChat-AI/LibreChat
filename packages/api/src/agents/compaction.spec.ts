@@ -1672,6 +1672,39 @@ describe('planDisconnectSnapshot', () => {
     await expect(result).resolves.toEqual({ write: false });
   });
 
+  it('writes a live snapshot once but still promotes after it', async () => {
+    const live = planDisconnectSnapshot(true, {
+      content: [text],
+      jobRecord: { createdAt: 1000, status: 'running' },
+      jobCreatedAt: 1000,
+      userId: 'user-1',
+      conversationId: 'convo-1',
+      anchorMessageId: 'anchor',
+      responseMessageId: 'response',
+      liveSaved: true,
+      getMessages: jest.fn(async () => []),
+    });
+    await expect(live).resolves.toEqual({ write: false });
+
+    const getMessages = jest.fn(async (filter: { messageId: string }) =>
+      filter.messageId === 'anchor'
+        ? [{ messageId: 'anchor' }]
+        : [{ messageId: filter.messageId, unfinished: true }],
+    );
+    const promoted = planDisconnectSnapshot(true, {
+      content: [text],
+      jobRecord: reconciled,
+      jobCreatedAt: 1000,
+      userId: 'user-1',
+      conversationId: 'convo-1',
+      anchorMessageId: 'anchor',
+      responseMessageId: 'response',
+      liveSaved: true,
+      getMessages,
+    });
+    await expect(promoted).resolves.toMatchObject({ write: true, unfinished: false });
+  });
+
   it('withholds the promotion when the failed-turn path already saved its error row', async () => {
     const { result, getMessages } = plan(true, reconciled, [text], {
       anchor: [{ messageId: 'anchor' }],

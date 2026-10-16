@@ -446,6 +446,7 @@ export async function planDisconnectSnapshot(
     conversationId,
     anchorMessageId,
     responseMessageId,
+    liveSaved = false,
     getMessages,
   }: {
     /** The streamed content, already filtered to persistable parts. */
@@ -456,6 +457,9 @@ export async function planDisconnectSnapshot(
     conversationId: string;
     anchorMessageId: string;
     responseMessageId: string;
+    /** This process already wrote a live snapshot of the turn: only a terminal
+     *  promotion writes again. */
+    liveSaved?: boolean;
     getMessages: (
       filter: { user: string; messageId: string; conversationId: string },
       projection?: string,
@@ -475,7 +479,7 @@ export async function planDisconnectSnapshot(
       return rows.some(([row]) => row != null && row.unfinished !== true);
     },
   });
-  if (mode === 'skip' || (mode === 'live' && content.length === 0)) {
+  if (mode === 'skip' || (mode === 'live' && (liveSaved || content.length === 0))) {
     return { write: false };
   }
   const marked = markAbortedCompactionContent(content, isCompaction, {
