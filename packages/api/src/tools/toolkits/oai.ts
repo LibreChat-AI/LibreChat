@@ -75,7 +75,7 @@ const imageGenOaiJsonSchema: ExtendedJsonSchema = {
   properties: {
     prompt: {
       type: 'string',
-      maxLength: 32000,
+      maxLength: 4000,
       description: getImageGenPromptDescription(),
     },
     background: {
@@ -115,7 +115,7 @@ Guidelines:
     },
     prompt: {
       type: 'string',
-      maxLength: 32000,
+      maxLength: 4000,
       description: getImageEditPromptDescription(),
     },
     quality: {
