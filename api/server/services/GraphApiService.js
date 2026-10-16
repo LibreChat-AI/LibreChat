@@ -2,6 +2,7 @@ const client = require('openid-client');
 const {
   isEnabled,
   getTokenCacheTtlMs,
+  getOpenIdProxyDispatcher,
   DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -42,10 +43,14 @@ const createGraphClient = async (accessToken, sub) => {
     const openidConfig = getOpenIdConfig();
     const exchangedToken = await exchangeTokenForGraphAccess(openidConfig, accessToken, sub);
 
+    // Reason: route Graph API requests through the configured proxy, reusing the
+    // NO_PROXY-aware OpenID dispatcher; omitted entirely when no proxy is set.
+    const dispatcher = getOpenIdProxyDispatcher();
     const graphClient = Client.init({
       authProvider: (done) => {
         done(null, exchangedToken);
       },
+      ...(dispatcher && { fetchOptions: { dispatcher } }),
     });
 
     return graphClient;

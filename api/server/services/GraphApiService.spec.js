@@ -23,11 +23,16 @@ jest.mock('~/server/services/Config', () => ({}));
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(),
 }));
+jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
+  getOpenIdProxyDispatcher: jest.fn(),
+}));
 
 const mongoose = require('mongoose');
 const client = require('openid-client');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { Client } = require('@microsoft/microsoft-graph-client');
+const { getOpenIdProxyDispatcher } = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies/openidStrategy');
 const getLogStores = require('~/cache/getLogStores');
 const GraphApiService = require('./GraphApiService');
@@ -165,6 +170,29 @@ describe('GraphApiService', () => {
       await expect(GraphApiService.createGraphClient('invalid-token', 'test-user')).rejects.toThrow(
         'Token exchange failed',
       );
+    });
+
+    it('should pass the proxy dispatcher to the Graph client when a proxy is configured', async () => {
+      const mockDispatcher = { proxy: 'dispatcher' };
+      getOpenIdProxyDispatcher.mockReturnValue(mockDispatcher);
+
+      await GraphApiService.createGraphClient('test-access-token', 'test-user-id');
+
+      expect(Client.init).toHaveBeenCalledWith({
+        authProvider: expect.any(Function),
+        fetchOptions: { dispatcher: mockDispatcher },
+      });
+      expect(getOpenIdProxyDispatcher).toHaveBeenCalled();
+    });
+
+    it('should omit fetchOptions when no proxy is configured', async () => {
+      getOpenIdProxyDispatcher.mockReturnValue(undefined);
+
+      await GraphApiService.createGraphClient('test-access-token', 'test-user-id');
+
+      expect(Client.init).toHaveBeenCalledWith({
+        authProvider: expect.any(Function),
+      });
     });
   });
 
