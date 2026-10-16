@@ -12,6 +12,7 @@ import {
 import type { ColumnDef } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
 import ImagePreview from '~/components/Chat/Input/Files/ImagePreview';
+import DownloadFile from '~/components/Chat/Input/Files/DownloadFile';
 import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { SortFilterHeader } from './SortFilterHeader';
@@ -127,6 +128,17 @@ export const columns: ColumnDef<TFile>[] = [
         </div>
       );
     },
+  },
+  {
+    id: 'download',
+    size: 56,
+    header: () => {
+      const localize = useLocalize();
+      return <span className="sr-only">{localize('com_ui_download')}</span>;
+    },
+    cell: ({ row }) => <DownloadFile file={row.original} />,
+    enableSorting: false,
+    enableHiding: false,
   },
   {
     accessorKey: 'updatedAt',
