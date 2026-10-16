@@ -133,7 +133,10 @@ function proseWords(markdown, withAttributes = true) {
   walk(parse(markdown), (node) => {
     if (node.type === 'html') rawCode = Math.max(rawCode + rawCodeDelta(node.value), 0);
     if (node.type === 'text' && rawCode === 0) parts.push(node.value);
-    else if (withAttributes && (node.type === 'image' || node.type === 'link')) {
+    else if (
+      withAttributes &&
+      (node.type === 'image' || node.type === 'imageReference' || node.type === 'link')
+    ) {
       if (node.alt) parts.push(node.alt);
       if (node.title) parts.push(node.title);
     } else if (node.type === 'html') {

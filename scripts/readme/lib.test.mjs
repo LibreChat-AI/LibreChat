@@ -241,3 +241,12 @@ test('validate accepts a translated shortcut reference written in full form', ()
     validate(source, 'Сначала прочитайте руководство [Установка].', 'ru', context).length > 0,
   );
 });
+
+test('needsTranslation and validate read the alt text of a reference-style image', () => {
+  const context = '[badge]: https://x.y/badge.svg';
+  const source = '![Build status][badge]';
+  assert.equal(needsTranslation(`${source}\n\n${context}`), true);
+  assert.deepEqual(validate(source, '![Статус сборки][badge]', 'ru', context), []);
+  assert.ok(validate(source, '![Build status][badge]', 'ru', context).length > 0);
+  assert.ok(validate(source, '![Статус сборки][значок]', 'ru', context).length > 0);
+});
