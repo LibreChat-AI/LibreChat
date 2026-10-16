@@ -8,6 +8,7 @@ import {
 const rules = [
   { username: 'restricted-user', allowedEndpoints: ['Allowed Provider'] },
   { username: 'empty-user', allowedEndpoints: [] },
+  { userId: 'user-123', allowedEndpoints: ['Allowed Provider'] },
 ];
 
 describe('user endpoint access policy', () => {
@@ -29,6 +30,19 @@ describe('user endpoint access policy', () => {
     expect(
       isEndpointAllowedForUser({ username: 'restricted-user' }, 'Restricted Provider', rules),
     ).toBe(false);
+  });
+
+  it('matches a stable user ID from either the request user or Mongo record', () => {
+    expect(getUserEndpointAllowlist({ id: 'user-123' }, rules)).toEqual(
+      new Set(['Allowed Provider']),
+    );
+    expect(isEndpointAllowedForUser({ _id: 'user-123' }, 'Restricted Provider', rules)).toBe(false);
+    expect(
+      isEndpointAllowedForUser({ _id: { toString: () => 'user-123' } }, 'Allowed Provider', rules),
+    ).toBe(true);
+    expect(isEndpointAllowedForUser({ id: 'another-user' }, 'Restricted Provider', rules)).toBe(
+      true,
+    );
   });
 
   it('keeps custom endpoint identities distinct when their case differs', () => {

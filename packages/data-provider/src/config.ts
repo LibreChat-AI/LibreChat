@@ -3725,23 +3725,45 @@ const userEndpointAccessSchema = z
   .array(
     z
       .object({
-        username: z.string().trim().min(1).max(128),
+        userId: z.string().trim().min(1).max(128).optional(),
+        username: z.string().trim().min(1).max(128).optional(),
         allowedEndpoints: z.array(z.string().trim().min(1).max(128)),
       })
-      .strict(),
+      .strict()
+      .superRefine((rule, ctx) => {
+        if ((rule.userId == null) === (rule.username == null)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['userId'],
+            message: 'Specify exactly one of userId or username.',
+          });
+        }
+      }),
   )
   .superRefine((rules, ctx) => {
+    const userIds = new Set<string>();
     const usernames = new Set<string>();
     for (const [index, rule] of rules.entries()) {
-      const username = rule.username.toLowerCase();
-      if (usernames.has(username)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, 'username'],
-          message: 'Each username may only have one endpoint access rule.',
-        });
+      if (rule.userId != null) {
+        if (userIds.has(rule.userId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index, 'userId'],
+            message: 'Each user ID may only have one endpoint access rule.',
+          });
+        }
+        userIds.add(rule.userId);
+      } else if (rule.username != null) {
+        const username = rule.username.toLowerCase();
+        if (usernames.has(username)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index, 'username'],
+            message: 'Each username may only have one endpoint access rule.',
+          });
+        }
+        usernames.add(username);
       }
-      usernames.add(username);
     }
   });
 

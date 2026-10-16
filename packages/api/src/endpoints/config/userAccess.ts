@@ -1,11 +1,15 @@
 import { normalizeEndpointName } from 'librechat-data-provider';
 
+/** User IDs are stable across profile changes; username is retained for existing deployments. */
 export interface UserEndpointAccessRule {
+  userId?: string;
   username?: string;
   allowedEndpoints?: string[];
 }
 
 export interface UserEndpointAccessUser {
+  id?: string | null;
+  _id?: string | { toString?: () => string } | null;
   username?: string | null;
 }
 
@@ -22,16 +26,22 @@ export function getUserEndpointAllowlist(
   user: UserEndpointAccessUser | null | undefined,
   rules: readonly UserEndpointAccessRule[] | null | undefined,
 ): Set<string> | undefined {
+  const mongoId = user?._id;
+  const userId =
+    user?.id?.trim() || (typeof mongoId === 'string' ? mongoId.trim() : mongoId?.toString?.());
   const username = user?.username?.trim().toLowerCase();
-  if (!username || !rules?.length) {
+  if (!rules?.length) {
     return undefined;
   }
 
-  const rule = rules.find(
-    (candidate) =>
-      typeof candidate.username === 'string' &&
-      candidate.username.trim().toLowerCase() === username,
-  );
+  const rule = rules.find((candidate) => {
+    if (typeof candidate.userId === 'string') {
+      return candidate.userId === userId;
+    }
+    return (
+      typeof candidate.username === 'string' && candidate.username.trim().toLowerCase() === username
+    );
+  });
   if (!rule) {
     return undefined;
   }
