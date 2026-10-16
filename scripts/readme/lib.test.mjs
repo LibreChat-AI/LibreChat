@@ -271,3 +271,11 @@ test('a reference identifier resolved by the document definitions is not prose',
   );
   assert.ok(validate(source, source, 'ru', context).length > 0);
 });
+
+test('validate resolves footnote references against the document footnotes', () => {
+  const context = definitions('Read this[^note] first.\n\n[^note]: An explanation.');
+  assert.equal(context, '[^note]: An explanation.');
+  const source = 'Read this[^note] before you start.';
+  assert.deepEqual(validate(source, 'Прочитайте это[^note] перед началом.', 'ru', context), []);
+  assert.ok(validate(source, 'Прочитайте это[^другое] перед началом.', 'ru', context).length > 0);
+});

@@ -80,18 +80,18 @@ export function splitChunks(markdown) {
 }
 
 /**
- * Every link reference definition in a document. A chunk is validated with these appended, so a
- * reference-style link resolves the same way it does in the whole README.
+ * Every link reference and footnote definition in a document. A chunk is validated with these
+ * appended, so a reference-style link or footnote resolves the same way it does in the whole README.
  */
 export function definitions(markdown) {
   const text = markdown.replace(/\r\n/g, '\n');
   const found = [];
   walk(parse(text), (node) => {
-    if (node.type === 'definition') {
+    if (node.type === 'definition' || node.type === 'footnoteDefinition') {
       found.push(text.slice(node.position.start.offset, node.position.end.offset));
     }
   });
-  return found.join('\n');
+  return found.join('\n\n');
 }
 
 const SWITCHER_ITEM = '(?:<strong>[^<]+</strong>|<a href="README(?:\\.\\w+)?\\.md">[^<]+</a>)';
