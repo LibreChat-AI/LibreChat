@@ -145,10 +145,10 @@ jest.mock('~/models', () => ({
 const AgentController = require('../request');
 
 describe('ResumableAgentController tenant context', () => {
-  /** The anchor is persisted and no response row exists yet. */
+  /** The anchor is persisted and no response or error row exists yet. */
   const anchorOnly = () =>
     mockGetMessages.mockImplementation(async (filter) =>
-      filter.messageId === 'response-message' ? [] : [{ _id: 'existing-anchor' }],
+      filter.messageId === 'user-message' ? [{ _id: 'existing-anchor' }] : [],
     );
 
   beforeEach(() => {
@@ -416,6 +416,29 @@ describe('ResumableAgentController tenant context', () => {
       filter.messageId === 'response-message'
         ? [{ _id: 'error-row', unfinished: false }]
         : [{ _id: 'existing-anchor' }],
+    );
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+      },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+  it('withholds a reconciled snapshot when the error turn saved its anchor-derived row', async () => {
+    mockGetMessages.mockImplementation(
+      async (filter) =>
+        ({
+          'user-message': [{ _id: 'existing-anchor' }],
+          'user-message_': [{ _id: 'error-row', unfinished: false }],
+        })[filter.messageId] ?? [],
     );
     await firePartialDisconnect(
       { id: 'user-123' },

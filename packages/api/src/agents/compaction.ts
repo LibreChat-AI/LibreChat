@@ -408,6 +408,17 @@ export async function resolveDisconnectSnapshotMode(
   return (await anchorExists()) ? 'terminal' : 'skip';
 }
 
+/**
+ * Every id a compaction's finished row can carry: the response id the stream
+ * preallocated, and the anchor-derived id the failed-turn path writes its
+ * error row under (`getPreliminaryResponseMessageId` in the agents request
+ * controller). A settled row under either already ends the turn.
+ */
+function terminalRowIds(anchorMessageId: string, responseMessageId: string): string[] {
+  const errorRowId = `${anchorMessageId.replace(/_+$/, '')}_`;
+  return errorRowId === responseMessageId ? [responseMessageId] : [responseMessageId, errorRowId];
+}
+
 /** What the last-subscriber disconnect writes for this turn, if anything. */
 export type DisconnectSnapshotPlan =
   | { write: false }
@@ -456,11 +467,12 @@ export async function planDisconnectSnapshot(
       (await getMessages({ user: userId, messageId: anchorMessageId, conversationId }, '_id'))
         .length > 0,
     responseRowSettled: async () => {
-      const [row] = await getMessages(
-        { user: userId, messageId: responseMessageId, conversationId },
-        '_id unfinished',
+      const rows = await Promise.all(
+        terminalRowIds(anchorMessageId, responseMessageId).map((messageId) =>
+          getMessages({ user: userId, messageId, conversationId }, '_id unfinished'),
+        ),
       );
-      return row != null && row.unfinished !== true;
+      return rows.some(([row]) => row != null && row.unfinished !== true);
     },
   });
   if (mode === 'skip' || (mode === 'live' && content.length === 0)) {

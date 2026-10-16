@@ -1671,4 +1671,26 @@ describe('planDisconnectSnapshot', () => {
 
     await expect(result).resolves.toEqual({ write: false });
   });
+
+  it('withholds the promotion when the failed-turn path already saved its error row', async () => {
+    const { result, getMessages } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      anchor_: [{ messageId: 'anchor_', unfinished: false }],
+    });
+
+    await expect(result).resolves.toEqual({ write: false });
+    expect(getMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'anchor_' }),
+      '_id unfinished',
+    );
+  });
+
+  it('still promotes when the derived error row is only an unfinished snapshot', async () => {
+    const { result } = plan(true, reconciled, [text], {
+      anchor: [{ messageId: 'anchor' }],
+      anchor_: [{ messageId: 'anchor_', unfinished: true }],
+    });
+
+    await expect(result).resolves.toMatchObject({ write: true, unfinished: false });
+  });
 });
