@@ -62,3 +62,11 @@ export {
   showStopButtonByIndex,
   abortScrollFamily,
 } from './react/generation';
+export { SteerHostProvider, setDefaultSteerHost, useSteerHost } from './react/steer/host';
+export type {
+  SteerHost,
+  SteerSettings,
+  SteerMessageKey,
+  SteerNotification,
+  SteerRequestCallbacks,
+} from './react/steer/host';

@@ -37,6 +37,7 @@ import useSteering from '~/hooks/Chat/useSteering';
 import { useChat } from '~/hooks/Chat/facade';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 jest.mock('~/hooks/AuthContext', () => {
   const { createContext } = jest.requireActual('react');

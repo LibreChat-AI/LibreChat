@@ -1,14 +1,12 @@
 import { useCallback, useMemo } from 'react';
 import { useStore } from 'jotai';
-import { useToastContext } from '@librechat/client';
+import { useSteerHost } from '@librechat/chat/react';
 import { revealedQueuedTurnFamily } from '@librechat/chat/react';
 import { blockRecovery, canRestoreRecovery, recoveryDisposition } from '@librechat/chat';
 import type { QueuedMessage } from '@librechat/chat';
 import type { QueuedTurnReceipts } from './receipts';
 import type { QueueRows } from './rows';
-import { useCancelSteerMutation, useCancelAgentQueuedTurnMutation } from '~/data-provider';
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
-import useLocalize from '~/hooks/useLocalize';
 
 /** Lets go of a queued row's server copy (a durable queued turn or a parked
  *  steer receipt) before the row is edited, removed or sent another way. */
@@ -27,11 +25,12 @@ export default function useQueuedRecovery({
   downgradeServerQueuedTurn: QueueRows['downgradeServerQueuedTurn'];
   removeQueued: QueueRows['removeQueued'];
 }) {
-  const localize = useLocalize();
+  const host = useSteerHost();
+  const localize = host.useLocalize();
   const jotaiStore = useStore();
-  const { showToast } = useToastContext();
-  const { mutateAsync: cancelSteer } = useCancelSteerMutation();
-  const { mutateAsync: cancelAgentQueuedTurn } = useCancelAgentQueuedTurnMutation();
+  const notify = host.useNotify();
+  const cancelSteer = host.useCancelSteer();
+  const cancelAgentQueuedTurn = host.useCancelQueuedTurn();
   /** Settle a queued row's terminal recovery source before an Edit/Remove.
    * Ordinary rows have no server copy. A v2 leftover first uses its durable
    * receipt to atomically discard the parked copy, then becomes an ordinary
@@ -45,7 +44,7 @@ export default function useQueuedRecovery({
           return downgradeServerQueuedTurn(item.id);
         }
         if (item.server.id == null || !hasRealConvoId) {
-          showToast({
+          notify({
             message: localize('com_ui_steer_cancel_failed'),
             status: 'error',
           });
@@ -57,7 +56,7 @@ export default function useQueuedRecovery({
             queuedTurnId: item.server.id,
           });
           if (receipt.status !== 'cancelled') {
-            showToast({
+            notify({
               message: localize('com_ui_steer_cancel_failed'),
               status: 'error',
             });
@@ -72,7 +71,7 @@ export default function useQueuedRecovery({
           }
           return downgradeServerQueuedTurn(item.id);
         } catch {
-          showToast({
+          notify({
             message: localize('com_ui_steer_cancel_failed'),
             status: 'error',
           });
@@ -86,7 +85,7 @@ export default function useQueuedRecovery({
         jotaiStore.set(recoveryDispositionsFamily(queueKey), (previous) =>
           blockRecovery(previous, item.recoverySteerId!),
         );
-        showToast({
+        notify({
           message: localize('com_ui_steer_cancel_failed'),
           status: 'error',
         });
@@ -112,7 +111,7 @@ export default function useQueuedRecovery({
           clientSteerId: item.recoveryClientSteerId,
         });
         if (removed !== true) {
-          showToast({
+          notify({
             message: localize('com_ui_steer_cancel_failed'),
             status: 'error',
           });
@@ -123,7 +122,7 @@ export default function useQueuedRecovery({
         // A newer composer draft must not turn cancelled words into an auto-send.
         return true;
       } catch {
-        showToast({
+        notify({
           message: localize('com_ui_steer_cancel_failed'),
           status: 'error',
         });
@@ -142,7 +141,7 @@ export default function useQueuedRecovery({
       downgradeServerQueuedTurn,
       hasRealConvoId,
       localize,
-      showToast,
+      notify,
       jotaiStore,
       queueKey,
     ],

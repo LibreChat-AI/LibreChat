@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { useSteerHost } from '@librechat/chat/react';
 import { useSetAtom, useStore, useAtomValue } from 'jotai';
 import {
   pendingSteerCancelClientIdsFamily,
@@ -11,7 +12,6 @@ import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { appendAppliedSteerIds, carriedSteerContext } from '~/utils';
 import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
-import { useCancelSteerMutation } from '~/data-provider';
 
 export type SteerCancelOutcome = 'reclaimed' | 'applied' | 'failed';
 
@@ -23,7 +23,7 @@ export type SteerRehomeTarget = 'composer' | 'queue';
  * confirmed reclaim proves the words remain safe to move elsewhere.
  */
 export function useSteerReclaim(conversationId: string) {
-  const cancelMutation = useCancelSteerMutation();
+  const cancelSteer = useSteerHost().useCancelSteer();
   const activeGenerationCreatedAt = useAtomValue(
     activeGenerationCreatedAtByConvoId(conversationId),
   );
@@ -64,7 +64,7 @@ export function useSteerReclaim(conversationId: string) {
         if (generationCreatedAt == null) {
           return 'failed';
         }
-        const { removed } = await cancelMutation.mutateAsync({
+        const { removed } = await cancelSteer({
           conversationId,
           steerId: steer.steerId,
           ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
@@ -79,7 +79,7 @@ export function useSteerReclaim(conversationId: string) {
         return 'failed';
       }
     },
-    [conversationId, cancelMutation, settleReclaimed, activeGenerationCreatedAt],
+    [conversationId, cancelSteer, settleReclaimed, activeGenerationCreatedAt],
   );
 }
 

@@ -1,17 +1,15 @@
 import { useCallback, useEffect, useMemo } from 'react';
+import { useSteerHost } from '@librechat/chat/react';
 import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS } from 'librechat-data-provider';
 import { reconcileServerQueuedTurns, mergeSettledQueuedTurnEvidence } from '@librechat/chat';
+import type { TAgentQueuedTurnReceipt as AgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueuedTurnReceiptSource } from '@librechat/chat';
-import type { AgentQueuedTurnReceipt } from '~/data-provider';
 import {
   queuedMessagesByConvoId,
   settledQueuedTurnReceiptsByConvoId,
   pendingQueuedTurnEnqueueIdsByConvoId,
 } from '~/hooks/Chat/queue';
-import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { useAgentQueuedTurns } from '~/data-provider';
-import { useFileMapContext } from '~/Providers';
 
 export interface QueuedTurnReceipts {
   /** Folds server receipts into the settled evidence and, unless `direct`, the visible queue. */
@@ -39,8 +37,9 @@ export default function useQueuedTurnReceipts({
   serverQueueEnabled: boolean;
 }): QueuedTurnReceipts {
   const jotaiStore = useStore();
-  const fileMap = useFileMapContext();
-  const { config } = useChatSettings();
+  const host = useSteerHost();
+  const fileMap = host.useFileMap();
+  const { queuedTurnReconciliationTimeoutMs } = host.useSettings();
   const queuedMessages = useAtomValue(queuedMessagesByConvoId(queueKey));
   const setQueuedMessages = useSetAtom(queuedMessagesByConvoId(queueKey));
   /** Bound transport-outcome reconciliation while still guaranteeing several
@@ -48,7 +47,7 @@ export default function useQueuedTurnReceipts({
    * reconciliation path; a slow proxy or a delayed read replica needs the
    * operator to widen this rather than wait for one. */
   const reconciliationWindowMs =
-    config.queuedTurnReconciliationTimeoutMs ?? DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
+    queuedTurnReconciliationTimeoutMs ?? DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
   const knownClientRequestIds = useMemo(
     () =>
       Array.from(
@@ -92,7 +91,7 @@ export default function useQueuedTurnReceipts({
       ),
     [queuedMessages],
   );
-  const { data: serverQueuedTurns } = useAgentQueuedTurns(
+  const serverQueuedTurns = host.useQueuedTurns(
     conversationId,
     serverQueueEnabled,
     knownClientRequestIds,

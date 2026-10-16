@@ -33,6 +33,7 @@ import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();

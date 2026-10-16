@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import { useStore } from 'jotai';
+import { useSteerHost } from '@librechat/chat/react';
 import type { QueuedMessageContext } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
 import type { ExtendedFile, FileSetter } from '~/common';
@@ -9,7 +10,6 @@ import {
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
 import { markComposerFilesTaken } from '~/utils/composerFiles';
-import { useSetFilesToDelete } from '~/hooks/Files';
 
 export interface ComposerTake {
   takeComposerFiles: () => TMessage['files'];
@@ -31,7 +31,7 @@ export default function useComposerTake({
   setFiles?: FileSetter;
 }): ComposerTake {
   const reasoningStore = useStore();
-  const setFilesToDelete = useSetFilesToDelete();
+  const clearFilesToDelete = useSteerHost().useClearFilesToDelete();
 
   /** Consumes completed composer attachments into message file refs (clearing
    *  the composer) so they pair with THIS queued message instead of gluing
@@ -74,9 +74,9 @@ export default function useComposerTake({
       }
       return remaining;
     });
-    setFilesToDelete({});
+    clearFilesToDelete();
     return taken;
-  }, [files, setFiles, setFilesToDelete]);
+  }, [files, setFiles, clearFilesToDelete]);
 
   /** Consumes staged quote chips + manual skill picks (mirroring `ask()`'s
    *  fresh-submit drain of the same atoms) so they pair with THIS queued

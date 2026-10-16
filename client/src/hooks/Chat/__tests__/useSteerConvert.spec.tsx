@@ -11,6 +11,7 @@ import {
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
 import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import useSteerConvert from '../useSteerConvert';
+import '~/Providers/SteerHostContext';
 
 const mockFetchStreamStatus = jest.fn();
 let mockFileMap: Record<string, { llmDeliveryPath: 'text' }> = {};

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
+import { useSteerHost } from '@librechat/chat/react';
 import { hasLiveRunPause, selectLiveMessageState } from '@librechat/chat';
 import {
   Constants,
@@ -23,11 +24,8 @@ import {
   getReasoningStateKey,
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
-import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import useCodeApprovalMode from '../Agents/useCodeApprovalMode';
 import useQueuedTurnReceipts from './steering/receipts';
 import useDuringRunActions from './steering/actions';
-import { useLatestMessage } from '~/hooks/Messages';
 import useQueuedRecovery from './steering/recovery';
 import useComposerTake from './steering/composer';
 import useQueueEnqueue from './steering/enqueue';
@@ -109,13 +107,14 @@ export default function useSteering({
 }: UseSteeringParams) {
   const composerDisabledRef = useRef(composerDisabled);
   composerDisabledRef.current = composerDisabled;
+  const host = useSteerHost();
   const {
-    config,
+    queuedSendLockTimeoutMs,
     duringRunDefaultAction: defaultAction,
     setDuringRunDefaultAction: setDefaultAction,
-  } = useChatSettings();
+  } = host.useSettings();
 
-  const { selected: codeApprovalMode } = useCodeApprovalMode(
+  const codeApprovalMode = host.useCodeApprovalMode(
     conversation,
     addedConversation,
     codeEnvironmentMode,
@@ -129,7 +128,7 @@ export default function useSteering({
   const enabled = steerable && index === 0;
   const queueKey = hasRealConvoId ? conversationId : Constants.NEW_CONVO;
   const reasoningStateKey = getReasoningStateKey(conversationId, index);
-  const sendLockTimeoutMs = config.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
+  const sendLockTimeoutMs = queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const pendingReasoningOverride = useAtomValue(pendingReasoningOverrideFamily(reasoningStateKey));
   const { applyQueuedTurnReceipts, finishQueuedTurnEnqueue } = useQueuedTurnReceipts({
     conversationId,
@@ -175,7 +174,7 @@ export default function useSteering({
   /** Capture a durable branch anchor into a server queued turn. Optimistic
    * assistant placeholders are siblings of their eventual persisted response,
    * so they anchor through their stable user parent. */
-  const latestMessage = useLatestMessage(index, hasRealConvoId ? conversationId : null);
+  const latestMessage = host.useLatestMessage(index, hasRealConvoId ? conversationId : null);
   const liveMessageState = useMemo(() => selectLiveMessageState(latestMessage), [latestMessage]);
   /** Both approval cards and `ask_user_question` suspend the current
    * generation while keeping its submission slot occupied. Answer mode hides

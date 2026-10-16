@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
-import { useToastContext } from '@librechat/client';
+import { useSteerHost } from '@librechat/chat/react';
 import {
   steerAttemptChip,
   routeSteerFailure,
@@ -21,10 +21,8 @@ import type { MutableRefObject } from 'react';
 import type { QueueEnqueue } from './enqueue';
 import type { SteerChips } from './chips';
 import type { QueueRows } from './rows';
-import { useCancelSteerMutation, useSteerMessageMutation } from '~/data-provider';
 import { useSteerRehome } from '~/hooks/Chat/useSteerCancel';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
-import useLocalize from '~/hooks/useLocalize';
 
 export type SubmitSteer = (
   text: string,
@@ -61,16 +59,17 @@ export default function useSubmitSteer({
   rows: Pick<QueueRows, 'restoreQueued' | 'rewakeDrain' | 'registerQueuedOrigin'>;
   enqueue: QueueEnqueue['enqueue'];
 }): SubmitSteer {
-  const localize = useLocalize();
-  const { showToast } = useToastContext();
+  const host = useSteerHost();
+  const localize = host.useLocalize();
+  const notify = host.useNotify();
   const convertSteersToQueued = useSteerConvert();
   /* The single boundary a steer's words return through, wherever the cancel
      that reclaimed them was decided. */
   const rehomeSteer = useSteerRehome(conversationId);
   /** `mutate` is a stable callback; the mutation result objects are fresh
    * every render and would defeat the memoized return value of the caller. */
-  const { mutate: steerMessage } = useSteerMessageMutation();
-  const { mutateAsync: cancelSteer } = useCancelSteerMutation();
+  const steerMessage = host.useSteerMessage();
+  const cancelSteer = host.useCancelSteer();
   const dispatchRef = useRef(createSteerDispatch());
   const {
     upsertSteerChip,
@@ -272,7 +271,7 @@ export default function useSubmitSteer({
                     response.preempt !== true &&
                     visibleConversationRef.current === conversationId
                   ) {
-                    showToast({
+                    notify({
                       message: localize('com_ui_steer_preempt_unsupported'),
                       status: 'warning',
                     });
@@ -313,7 +312,7 @@ export default function useSubmitSteer({
                          comes back through the ordinary acknowledgement, so it
                          settles like any other accepted steer. */
                       acceptResponse();
-                      showToast({
+                      notify({
                         message: localize('com_ui_steer_already_applied'),
                         status: 'info',
                       });
@@ -323,7 +322,7 @@ export default function useSubmitSteer({
                       /* Unknown outcome, but the POST was accepted: treat the
                          steer as live rather than claiming it is gone. */
                       acceptResponse();
-                      showToast({
+                      notify({
                         message: localize('com_ui_steer_cancel_failed'),
                         status: 'warning',
                       });
@@ -373,7 +372,7 @@ export default function useSubmitSteer({
                     return;
                   }
                   restoreRejectedSteer();
-                  showToast({
+                  notify({
                     message: localize('com_ui_steer_paused_queued'),
                     status: 'info',
                   });
@@ -386,7 +385,7 @@ export default function useSubmitSteer({
                    * drain regardless of this tab's local submission state. */
                   replaceSteerChip(conversationId, localId, null);
                   restoreRejectedSteer();
-                  showToast({
+                  notify({
                     message: localize('com_ui_steer_paused_queued'),
                     status: 'info',
                   });
@@ -434,7 +433,7 @@ export default function useSubmitSteer({
       hasPendingSteerCancel,
       clearPendingSteerCancel,
       cancelSteer,
-      showToast,
+      notify,
       localize,
       activeGenerationCreatedAt,
       activeGenerationProtocolVersion,

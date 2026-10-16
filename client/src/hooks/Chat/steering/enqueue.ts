@@ -1,18 +1,14 @@
 import { useCallback, useMemo } from 'react';
 import { v4 } from 'uuid';
 import { useStore } from 'jotai';
+import { useSteerHost } from '@librechat/chat/react';
 import { getSteerErrorCode, toQueuedTurnFileRefs, QUEUE_USAGE_MAX_FILES } from '@librechat/chat';
+import { isDefiniteQueuedTurnRejection, isDefiniteQueuedTurnsUnsupported } from '@librechat/chat';
 import type { TMessage, CodeApprovalMode } from 'librechat-data-provider';
 import type { RevealedQueuedTurn } from '@librechat/chat/react';
 import type { QueuedMessage } from '@librechat/chat';
 import type { QueuedTurnReceipts } from './receipts';
 import type { QueueRows } from './rows';
-import {
-  useMarkFilesUsageMutation,
-  isDefiniteQueuedTurnRejection,
-  isDefiniteQueuedTurnsUnsupported,
-  useEnqueueAgentQueuedTurnMutation,
-} from '~/data-provider';
 import { pendingQueuedTurnEnqueueIdsByConvoId, queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import { insertQueuedMessage } from '~/utils/queue';
 
@@ -42,8 +38,9 @@ export default function useQueueEnqueue({
   updateQueuedMessage: QueueRows['updateQueuedMessage'];
 }) {
   const jotaiStore = useStore();
-  const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
-  const { mutate: enqueueAgentQueuedTurn } = useEnqueueAgentQueuedTurnMutation();
+  const host = useSteerHost();
+  const markFilesUsage = host.useMarkFilesUsage();
+  const enqueueAgentQueuedTurn = host.useEnqueueQueuedTurn();
   /** Fire-and-forget TTL hold for uploads entering the client queue: a
    *  queued message can outlive the upload window (long run, approval pause)
    *  and send-time marking only happens at drain. The server extends the

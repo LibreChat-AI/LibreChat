@@ -1,14 +1,16 @@
 import { useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
 import { useStore } from 'jotai';
+import { useSteerHost } from '@librechat/chat/react';
+import { getGenerationProtocolVersion } from '@librechat/chat';
 import {
   pendingSteersByConvoId,
   appliedSteerIdsByConvoId,
   activeGenerationProtocolVersionByConvoId,
 } from '@librechat/chat/react';
+import type { GenerationProtocolVersion } from '@librechat/chat';
 import type { TPendingSteer } from 'librechat-data-provider';
 import type { QueuedMessage, QueuedMessageOrigin } from '~/hooks/Chat/queue';
-import type { GenerationProtocolVersion } from '~/data-provider';
 import type { SteerCarriedContext } from '~/utils';
 import {
   appendAppliedSteerIds,
@@ -20,9 +22,7 @@ import {
   recoveryDispositionsFamily,
   canRestoreRecovery,
 } from '~/components/Chat/Steering/recovery';
-import { fetchStreamStatus, getGenerationProtocolVersion } from '~/data-provider';
 import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
-import { useFileMapContext } from '~/Providers';
 
 /** A server-reported steer, or a local one that carries its own client-only
  *  context (quotes / skill picks) because its chip may already be gone. */
@@ -69,7 +69,9 @@ interface SteerConvertOptions {
  */
 export default function useSteerConvert() {
   const jotaiStore = useStore();
-  const fileMap = useFileMapContext();
+  const host = useSteerHost();
+  const fileMap = host.useFileMap();
+  const fetchStreamStatus = host.useFetchStreamStatus();
   const fileMapRef = useRef(fileMap);
   fileMapRef.current = fileMap;
   const convert = useCallback(
@@ -267,6 +269,6 @@ export default function useSteerConvert() {
         })
         .catch(() => undefined);
     },
-    [convert],
+    [convert, fetchStreamStatus],
   );
 }
