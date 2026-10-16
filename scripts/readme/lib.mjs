@@ -164,15 +164,21 @@ const normalizeTag = (tag) =>
         )
         .replace(/("[^"]*")|\s+/g, (match, quoted) => quoted ?? ' ');
 
+/** Tags of a raw HTML node with prose masked; text inside its `<code>`/`<pre>` stays verbatim. */
 function htmlTokens(raw) {
   const tokens = [];
   let last = 0;
+  let code = 0;
+  const text = (value) => {
+    if (value.trim()) tokens.push(code > 0 ? `rawcode:${value}` : 'T');
+  };
   for (const match of raw.matchAll(HTML_PIECE)) {
-    if (raw.slice(last, match.index).trim()) tokens.push('T');
+    text(raw.slice(last, match.index));
     tokens.push(normalizeTag(match[0]));
+    code = Math.max(code + rawCodeDelta(match[0]), 0);
     last = match.index + match[0].length;
   }
-  if (raw.slice(last).trim()) tokens.push('T');
+  text(raw.slice(last));
   return tokens;
 }
 
@@ -206,7 +212,6 @@ function skeleton(markdown) {
       node.checked,
       node.start,
       node.identifier,
-      node.referenceType,
       node.title ? 'titled' : undefined,
       node.align?.map((align) => align ?? 'none').join(','),
     ].filter((value) => value !== undefined && value !== null);
@@ -286,6 +291,7 @@ export function buildMessages(language, chunk) {
     'Translate human-readable prose, headings, link text, and alt, title and aria-label values.',
     `Keep these terms in English: ${GLOSSARY.join(', ')}, plus product and brand names.`,
     'Keep the same number of lines and list items as the input, and keep links in the same order.',
+    'Write a reference link such as [Label] or [Label][] as [translated label][Label] so it still resolves.',
     'Leave a space between bold or italic markers and neighbouring words so the Markdown still renders.',
   ].join('\n');
   return [

@@ -217,3 +217,27 @@ test('reusable keeps a valid cached translation and drops a stale or malformed o
   assert.equal(reusable({ text: good }, source, 'ru'), undefined);
   assert.equal(reusable(undefined, source, 'ru'), undefined);
 });
+
+test('validate keeps code inside a raw HTML block verbatim', () => {
+  const block = '<div>Install the app here: <code>npm install</code></div>';
+  assert.ok(
+    validate(block, '<div>Установите приложение здесь: <code>npm uninstall</code></div>', 'ru')
+      .length > 0,
+  );
+  assert.deepEqual(
+    validate(block, '<div>Установите приложение здесь: <code>npm install</code></div>', 'ru'),
+    [],
+  );
+});
+
+test('validate accepts a translated shortcut reference written in full form', () => {
+  const context = '[Installation]: https://x.y';
+  const source = 'Read the [Installation] guide first.';
+  assert.deepEqual(
+    validate(source, 'Сначала прочитайте руководство [Установка][Installation].', 'ru', context),
+    [],
+  );
+  assert.ok(
+    validate(source, 'Сначала прочитайте руководство [Установка].', 'ru', context).length > 0,
+  );
+});
