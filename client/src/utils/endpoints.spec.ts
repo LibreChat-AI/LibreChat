@@ -3,10 +3,24 @@ import type { TEndpointsConfig, TConfig, TModelSpec } from 'librechat-data-provi
 import {
   getAvailableEndpoints,
   getEndpointsFilter,
+  getModelLabel,
   getSpecAgentAvatarURL,
   mapEndpoints,
   normalizeModelSpecs,
 } from './endpoints';
+
+describe('getModelLabel', () => {
+  it('trims labels and treats whitespace-only labels as absent', () => {
+    const labels = { labelled: ' Friendly Model ', blank: '   ' };
+
+    expect(getModelLabel(labels, 'labelled')).toBe('Friendly Model');
+    expect(getModelLabel(labels, 'blank')).toBeUndefined();
+  });
+
+  it('does not read inherited object properties as labels', () => {
+    expect(getModelLabel({ labelled: 'Friendly Model' }, 'constructor')).toBeUndefined();
+  });
+});
 
 const mockEndpointsConfig: TEndpointsConfig = {
   [EModelEndpoint.openAI]: { type: undefined, iconURL: 'openAI_icon.png', order: 0 },

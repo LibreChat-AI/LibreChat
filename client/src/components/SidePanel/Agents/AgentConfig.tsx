@@ -1,4 +1,5 @@
 import { Input, Label } from '@librechat/client';
+import { getEndpointField } from 'librechat-data-provider';
 import { Controller, useWatch, useFormContext } from 'react-hook-form';
 import type { InstructionsPromptStatus } from './Instructions';
 import type { AgentForm } from '~/common';
@@ -9,7 +10,7 @@ import { useAgentFileEntries } from './Tools/hooks';
 import { useAgentPanelContext } from '~/Providers';
 import { useProviderIcon } from '~/hooks/Endpoint';
 import ToolsSection from './Tools/ToolsSection';
-import { validateEmail, cn } from '~/utils';
+import { validateEmail, getModelLabel, cn } from '~/utils';
 import Instructions from './Instructions';
 import FileContext from './FileContext';
 import AgentAvatar from './AgentAvatar';
@@ -41,6 +42,8 @@ export default function AgentConfig({
   const { contextFiles } = useAgentFileEntries();
 
   const providerValue = typeof provider === 'string' ? provider : provider?.value;
+  const modelLabels = getEndpointField(endpointsConfig, providerValue as string, 'modelLabels');
+  const modelDisplayName = model ? (getModelLabel(modelLabels, model) ?? model) : undefined;
   const { provider: providerId, imageURL } = useProviderIcon({
     endpoint: providerValue as string,
     endpointsConfig,
@@ -117,7 +120,7 @@ export default function AgentConfig({
             id="provider"
             type="button"
             onClick={() => setActivePanel(Panel.model)}
-            title={model || undefined}
+            title={modelDisplayName}
             className={cn(
               'border-border-control bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
               model != null && model ? 'px-1' : 'px-3',
@@ -135,7 +138,7 @@ export default function AgentConfig({
                 </div>
               )}
               <span className="truncate">
-                {model != null && model ? model : localize('com_ui_select_model')}
+                {modelDisplayName || localize('com_ui_select_model')}
               </span>
             </div>
           </button>

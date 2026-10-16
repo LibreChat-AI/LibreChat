@@ -5,6 +5,7 @@ import type { SetterOrUpdater } from 'recoil';
 import { useGetEndpointsQuery } from '~/data-provider';
 import { EndpointIcon } from '~/components/Endpoints';
 import { useAgentsMapContext } from '~/Providers';
+import { getModelLabel } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 export default function AddedConvo({
@@ -18,7 +19,7 @@ export default function AddedConvo({
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const localize = useLocalize();
   const title = useMemo(() => {
-    // Priority: agent name > modelDisplayLabel > modelLabel > model
+    // Priority: agent name > modelDisplayLabel > modelLabel > declared label > model
     if (isAgentsEndpoint(addedConvo?.endpoint)) {
       const agent = addedConvo?.agent_id ? agentsMap?.[addedConvo.agent_id] : undefined;
       /** Never fall into the model-label chain for agents — it would reveal the
@@ -27,8 +28,10 @@ export default function AddedConvo({
     }
 
     const endpointConfig = endpointsConfig?.[addedConvo?.endpoint ?? ''];
+    const modelDisplayName =
+      getModelLabel(endpointConfig?.modelLabels, addedConvo?.model) ?? addedConvo?.model;
     const displayLabel =
-      endpointConfig?.modelDisplayLabel || addedConvo?.modelLabel || addedConvo?.model || 'AI';
+      endpointConfig?.modelDisplayLabel || addedConvo?.modelLabel || modelDisplayName || 'AI';
 
     return `+ ${displayLabel}`;
   }, [addedConvo, agentsMap, endpointsConfig, localize]);

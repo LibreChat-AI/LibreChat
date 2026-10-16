@@ -85,6 +85,23 @@ describe('EndpointModelItem', () => {
     expect(menuItem).not.toHaveAttribute('aria-selected');
   });
 
+  it('renders the declared label while still selecting by model id', () => {
+    mockSelectedValues = { endpoint: 'Claude', model: 'claude-opus-4-8', modelSpec: '' };
+    const labelled: Endpoint = {
+      value: 'Claude',
+      label: 'Claude',
+      hasModels: true,
+      models: [{ name: 'claude-opus-4-8' }],
+      modelLabels: { 'claude-opus-4-8': 'Opus 4.8' },
+      icon: null,
+    };
+    renderItem({ modelId: 'claude-opus-4-8', endpoint: labelled });
+
+    expect(screen.getByRole('menuitem')).toHaveTextContent('Opus 4.8');
+    expect(screen.getByRole('menuitem')).not.toHaveTextContent('claude-opus-4-8');
+    expect(screen.getByRole('menuitem')).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('does NOT render checkmark when endpoint matches but model differs', () => {
     mockSelectedValues = { endpoint: 'anthropic', model: 'claude-sonnet-4-5', modelSpec: '' };
     renderItem();

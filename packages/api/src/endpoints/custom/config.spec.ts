@@ -272,6 +272,20 @@ describe('loadCustomEndpointsConfig – user credential prompts', () => {
   });
 });
 
+describe('loadCustomEndpointsConfig – model labels', () => {
+  it('passes a declared label map to the client', () => {
+    const config = loadCustomEndpointsConfig([
+      {
+        ...baseEndpoint,
+        name: 'Claude',
+        modelLabels: { 'claude-sonnet-4-5': 'Sonnet 4.5' },
+      },
+    ] as unknown as TCustomEndpoints);
+
+    expect(config?.['Claude']?.modelLabels).toEqual({ 'claude-sonnet-4-5': 'Sonnet 4.5' });
+  });
+});
+
 describe('usesOpenRouterCatalog', () => {
   const OR = 'https://openrouter.ai/api/v1';
   const uses = (endpoint: Record<string, unknown>, baseURL: string = OR) =>

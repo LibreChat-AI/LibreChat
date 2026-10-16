@@ -44,7 +44,9 @@ function getOptionText(option: string | Option | OptionWithIcon): string {
     return option;
   }
   if ('label' in option) {
-    return option.label ?? '';
+    const label = option.label ?? '';
+    const value = option.value == null ? '' : String(option.value);
+    return label === value ? label : `${label} ${value}`;
   }
   if ('value' in option) {
     return (option.value ?? '') + '';

@@ -1,15 +1,15 @@
 import React, { Fragment, useCallback, useMemo } from 'react';
 import { CheckCircle2 } from 'lucide-react';
 import { VisuallyHidden } from '@ariakit/react';
-import { isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
+import { isAgentsEndpoint } from 'librechat-data-provider';
 import type { TModelSpec } from 'librechat-data-provider';
 import type { Endpoint, LocalizeFunction } from '~/common';
 import { EndpointModelItem, VIRTUALIZE_THRESHOLD } from './EndpointModelItem';
 import MarketplaceItem, { marketplaceSearchMatches } from './Marketplace';
 import { useModelSelectorContext } from '../ModelSelectorContext';
 import { CustomMenuItem as MenuItem } from '../CustomMenu';
+import { modelSearchNames, shouldRenderEndpointOption } from '../utils';
 import VirtualizedModelList from './VirtualizedModelList';
-import { shouldRenderEndpointOption } from '../utils';
 import { cn, getSpecAgentAvatarURL } from '~/utils';
 import SpecDescription from './SpecDescription';
 import { useFavorites } from '~/hooks';
@@ -60,23 +60,11 @@ function prepareSearchResults(
     const models = endpoint.models ?? [];
     const filteredModels = endpointMatches
       ? models
-      : models.filter((model) => {
-          let modelName = model.name;
-          if (
-            isAgentsEndpoint(endpoint.value) &&
-            endpoint.agentNames &&
-            endpoint.agentNames[model.name]
-          ) {
-            modelName = endpoint.agentNames[model.name];
-          } else if (
-            isAssistantsEndpoint(endpoint.value) &&
-            endpoint.assistantNames &&
-            endpoint.assistantNames[model.name]
-          ) {
-            modelName = endpoint.assistantNames[model.name];
-          }
-          return modelName.toLowerCase().includes(lowerQuery);
-        });
+      : models.filter((model) =>
+          modelSearchNames(endpoint, model.name).some((name) =>
+            name.toLowerCase().includes(lowerQuery),
+          ),
+        );
 
     if (!filteredModels.length && !showMarketplace) {
       return [];

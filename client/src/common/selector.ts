@@ -9,6 +9,8 @@ export interface Endpoint {
   icon: React.ReactNode;
   agentNames?: Record<string, string>;
   assistantNames?: Record<string, string>;
+  /** Display-only labels for this endpoint's models, keyed by model id. */
+  modelLabels?: Record<string, string>;
   modelIcons?: Record<string, string | undefined>;
   showMarketplace?: boolean;
   searchAliases?: string[];

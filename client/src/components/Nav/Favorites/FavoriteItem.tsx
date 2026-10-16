@@ -1,12 +1,12 @@
 import React from 'react';
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, getEndpointField } from 'librechat-data-provider';
 import type { Agent, TModelSpec, TEndpointsConfig } from 'librechat-data-provider';
 import type { FavoriteModel } from '~/store/favorites';
 import SpecIcon from '~/components/Chat/Menus/Endpoints/components/SpecIcon';
 import UnpinButton from '~/components/Conversations/UnpinButton';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
+import { getModelLabel, renderAgentAvatar } from '~/utils';
 import { useFavorites, useLocalize } from '~/hooks';
-import { renderAgentAvatar } from '~/utils';
 
 type Kwargs = {
   model?: string;
@@ -17,6 +17,7 @@ type Kwargs = {
 
 type FavoriteItemBaseProps = {
   onRemoveFocus?: () => void;
+  endpointsConfig?: TEndpointsConfig;
   /** Shortcuts an owning list handles for this row, declared here because this
    *  is the element that takes focus. */
   keyShortcuts?: string;
@@ -39,7 +40,6 @@ type SpecFavoriteProps = FavoriteItemBaseProps & {
   type: 'spec';
   item: TModelSpec;
   onSelectSpec?: (spec: TModelSpec) => void;
-  endpointsConfig?: TEndpointsConfig;
   /** Avatar of the agent the spec targets, used when the spec defines no icon of its own. */
   agentAvatarURL?: string;
 };
@@ -126,7 +126,8 @@ export default function FavoriteItem(props: FavoriteItemProps) {
     name = props.item.label;
     typeLabel = localize('com_ui_model_spec');
   } else {
-    name = props.item.model;
+    const modelLabels = getEndpointField(props.endpointsConfig, props.item.endpoint, 'modelLabels');
+    name = getModelLabel(modelLabels, props.item.model) ?? props.item.model;
     typeLabel = localize('com_ui_model');
   }
   const ariaLabel = `${name} (${typeLabel})`;
