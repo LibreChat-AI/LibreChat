@@ -285,6 +285,67 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
   });
 
   describe('createAgentHandler', () => {
+    test('rejects billing_mode configuration without MANAGE_AGENTS', async () => {
+      mockReq.body = {
+        name: 'Agent Billing Restricted',
+        provider: 'openai',
+        model: 'gpt-4',
+        billing_mode: 'agent',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Only users with MANAGE_AGENTS can configure agent billing mode.',
+        status: 'error',
+      });
+      expect(await Agent.countDocuments()).toBe(0);
+    });
+
+    test('allows billing_mode configuration with MANAGE_AGENTS', async () => {
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: mockReq.user.role,
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+
+      mockReq.body = {
+        name: 'Agent Billing Enabled',
+        provider: 'openai',
+        model: 'gpt-4',
+        billing_mode: 'agent',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+
+      const createdAgent = mockRes.json.mock.calls[0][0];
+      expect(createdAgent.billing_mode).toBe('agent');
+
+      await db.revokeCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: mockReq.user.role,
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+    });
+
+    test('preserves user billing mode as the default when omitted', async () => {
+      mockReq.body = {
+        name: 'Default User Billing',
+        provider: 'openai',
+        model: 'gpt-4',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+
+      const createdAgent = mockRes.json.mock.calls[0][0];
+      expect(createdAgent.billing_mode).toBe('user');
+    });
+
     test('removes programmatic tool options when Code Interpreter capability is disabled', async () => {
       mockReq.body = {
         name: 'Invalid Programmatic Agent',
@@ -1525,6 +1586,56 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
   });
 
   describe('updateAgentHandler', () => {
+    test('rejects billing_mode changes without MANAGE_AGENTS', async () => {
+      const agent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name: 'Existing Billing Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+      });
+
+      mockReq.params.id = agent.id;
+      mockReq.body = { billing_mode: 'agent' };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+
+      const unchanged = await Agent.findOne({ id: agent.id }).lean();
+      expect(unchanged.billing_mode).toBe('user');
+    });
+
+    test('allows billing_mode changes with MANAGE_AGENTS', async () => {
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: mockReq.user.role,
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+
+      const agent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name: 'Existing Billing Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+      });
+
+      mockReq.params.id = agent.id;
+      mockReq.body = { billing_mode: 'agent' };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      const updated = await Agent.findOne({ id: agent.id }).lean();
+      expect(updated.billing_mode).toBe('agent');
+
+      await db.revokeCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: mockReq.user.role,
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+    });
+
     let existingAgentId;
     let existingAgentAuthorId;
 

@@ -80,6 +80,8 @@ export interface TxMetadata {
   context: string;
   messageId?: string;
   conversationId: string;
+  agentId?: string;
+  rootAgentId?: string;
   balance?: Partial<TCustomConfig['balance']> | null;
   transactions?: Partial<TTransactionsConfig>;
   endpointTokenConfig?: EndpointTokenConfig;

@@ -766,6 +766,29 @@ export async function recordFallbackTokenUsage(
   }
 }
 
+/**
+ * Applies the root agent's billing mode to the balance configuration.
+ *
+ * Agent-billed runs still create transaction records and remain fully
+ * attributable for reporting. Only the user's balance mutation is disabled.
+ *
+ * The default is deliberately unchanged: missing/unknown billing_mode means
+ * user billing.
+ */
+export function applyAgentBillingMode(
+  balance: Partial<TCustomConfig['balance']> | null | undefined,
+  billingMode?: string,
+): Partial<TCustomConfig['balance']> | null | undefined {
+  if (billingMode !== 'agent' || balance == null) {
+    return balance;
+  }
+
+  return {
+    ...balance,
+    enabled: false,
+  };
+}
+
 export interface RecordUsageParams {
   user: string;
   conversationId: string;
@@ -773,6 +796,8 @@ export interface RecordUsageParams {
   model?: string;
   context?: string;
   messageId?: string;
+  /** Root agent controlling billing for the complete run. */
+  rootAgentId?: string;
   balance?: Partial<TCustomConfig['balance']> | null;
   transactions?: Partial<TTransactionsConfig>;
   endpointTokenConfig?: EndpointTokenConfig;
@@ -797,6 +822,8 @@ export interface DetachedSubagentUsageRecorderParams {
   conversationId: string;
   model?: string;
   messageId?: string;
+  /** Root agent whose billing mode controls detached child usage. */
+  rootAgentId?: string;
   balance?: Partial<TCustomConfig['balance']> | null;
   transactions?: Partial<TTransactionsConfig>;
   endpointTokenConfig?: EndpointTokenConfig;
@@ -819,6 +846,7 @@ export async function recordCollectedUsage(
     model,
     balance,
     messageId,
+    rootAgentId,
     transactions,
     conversationId,
     collectedUsage,
@@ -883,6 +911,8 @@ export async function recordCollectedUsage(
         messageId,
         transactions,
         conversationId,
+        /** Root agent whose billing mode controls this complete run. */
+        rootAgentId,
         /** Price with the producing agent's endpoint config when a resolver is
          *  provided (multi-endpoint graphs); it owns the fallback to the primary
          *  config, so `undefined` here means built-in pricing, not the batch one. */
@@ -1007,6 +1037,7 @@ export function createDetachedSubagentUsageRecorder(
         model: billing.model,
         context: 'subagent',
         messageId: billing.messageId,
+        rootAgentId: billing.rootAgentId,
         balance: billing.balance,
         transactions: billing.transactions,
         endpointTokenConfig: billing.endpointTokenConfig,

@@ -15,4 +15,10 @@ const resolveAgentFireAccess = createResolveAgentFireAccess({
   checkPermission,
 });
 
-module.exports = { resolveAgentFireAccess };
+const getAgentBillingMode = async (agentId) => {
+  const agent = await mongoose.models.Agent.findOne({ id: agentId }).select('billing_mode').lean();
+
+  return agent?.billing_mode;
+};
+
+module.exports = { resolveAgentFireAccess, getAgentBillingMode };

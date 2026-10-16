@@ -19,6 +19,7 @@ import {
   computeSummaryUsedTokens,
   priorRunOutputTokens,
   resolveRetainedToolTokens,
+  applyAgentBillingMode,
 } from './usage';
 import { runWithDetachedSubagentUsage } from './subagentTaskContext';
 import Tokenizer from '~/utils/tokenizer';
@@ -2773,5 +2774,66 @@ describe('hasRecordedPrimaryUsage', () => {
     expect(hasRecordedPrimaryUsage([{ input_tokens: 0, output_tokens: 0 }])).toBe(false);
     expect(hasRecordedPrimaryUsage([])).toBe(false);
     expect(hasRecordedPrimaryUsage(undefined)).toBe(false);
+  });
+});
+
+describe('applyAgentBillingMode', () => {
+  it('disables user balance deduction for agent-billed runs', () => {
+    const balance = {
+      enabled: true,
+      startBalance: 100,
+      autoRefill: false,
+    };
+
+    const result = applyAgentBillingMode(balance, 'agent');
+
+    expect(result).toEqual({
+      ...balance,
+      enabled: false,
+    });
+
+    // The helper must not mutate the caller's config.
+    expect(balance.enabled).toBe(true);
+  });
+
+  it('preserves balance configuration for user-billed runs', () => {
+    const balance = {
+      enabled: true,
+      startBalance: 100,
+    };
+
+    expect(applyAgentBillingMode(balance, 'user')).toEqual(balance);
+  });
+
+  it('preserves legacy behavior when billing_mode is absent', () => {
+    const balance = {
+      enabled: true,
+      startBalance: 100,
+    };
+
+    expect(applyAgentBillingMode(balance, undefined)).toEqual(balance);
+  });
+
+  it('preserves disabled balance configuration', () => {
+    const balance = {
+      enabled: false,
+      startBalance: 100,
+    };
+
+    expect(applyAgentBillingMode(balance, 'agent')).toEqual(balance);
+  });
+
+  it('preserves the transaction configuration independently', () => {
+    const balance = {
+      enabled: true,
+    };
+    const transactions = {
+      enabled: true,
+    };
+
+    const result = applyAgentBillingMode(balance, 'agent');
+
+    expect(result?.enabled).toBe(false);
+    expect(transactions.enabled).toBe(true);
   });
 });

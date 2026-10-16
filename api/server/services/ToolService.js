@@ -2168,6 +2168,7 @@ async function loadToolsForExecution({
   actionsEnabled,
   accessibleMcpServerNames,
   runFileCodeExecutionContext,
+  rootAgentBillingMode,
 }) {
   const appConfig = req.config;
   const allLoadedTools = [];
@@ -2504,6 +2505,7 @@ async function loadToolsForExecution({
         requestScopedConnections: mcpRequestScopedConnections,
         upstreamTokenProvider,
         upstreamTokenProviderResolver,
+        rootAgentBillingMode,
         [Tools.web_search]: webSearchCallbacks,
       },
       webSearch: appConfig?.webSearch,

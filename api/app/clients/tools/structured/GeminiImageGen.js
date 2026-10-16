@@ -11,6 +11,7 @@ const {
   getBalanceConfig,
   getEnvProxyDispatcher,
   getTransactionsConfig,
+  applyAgentBillingMode,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { spendTokens, getFiles } = require('~/models');
@@ -251,15 +252,24 @@ function checkForSafetyBlock(response) {
  * @param {string} params.conversationId - The conversation ID
  * @param {string} params.model - The model name
  * @param {string} [params.messageId] - The response message ID for transaction correlation
+ * @param {string} [params.rootAgentBillingMode] - Billing mode of the root agent
  */
-async function recordTokenUsage({ usageMetadata, req, userId, conversationId, model, messageId }) {
+async function recordTokenUsage({
+  usageMetadata,
+  req,
+  userId,
+  conversationId,
+  model,
+  messageId,
+  rootAgentBillingMode,
+}) {
   if (!usageMetadata) {
     logger.debug('[GeminiImageGen] No usage metadata available for balance tracking');
     return;
   }
 
   const appConfig = req?.config;
-  const balance = getBalanceConfig(appConfig);
+  const balance = applyAgentBillingMode(getBalanceConfig(appConfig), rootAgentBillingMode);
   const transactions = getTransactionsConfig(appConfig);
 
   // Skip if neither balance nor transactions are enabled
@@ -316,7 +326,15 @@ function createGeminiImageTool(fields = {}) {
     throw new Error('This tool is only available for agents.');
   }
 
-  const { req, imageFiles = [], userId, fileStrategy, GEMINI_API_KEY, GOOGLE_KEY } = fields;
+  const {
+    req,
+    imageFiles = [],
+    userId,
+    fileStrategy,
+    GEMINI_API_KEY,
+    GOOGLE_KEY,
+    rootAgentBillingMode,
+  } = fields;
 
   const imageOutputType = fields.imageOutputType || EImageOutputType.PNG;
 
@@ -456,6 +474,7 @@ function createGeminiImageTool(fields = {}) {
         messageId,
         conversationId,
         model: geminiModel,
+        rootAgentBillingMode,
       }).catch((error) => {
         logger.error('[GeminiImageGen] Failed to record token usage:', error);
       });
