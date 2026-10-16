@@ -257,6 +257,12 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  getTurnUserMessageCreatedAt: (...args) =>
+    jest.requireActual('@librechat/api').getTurnUserMessageCreatedAt(...args),
+  getTurnContextUpdates: (...args) =>
+    jest.requireActual('@librechat/api').getTurnContextUpdates(...args),
+  isStableContextEnabled: (...args) =>
+    jest.requireActual('@librechat/api').isStableContextEnabled(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
   stampPreliminaryPrivateTextMessage: (_req, message) => message,
@@ -3301,7 +3307,7 @@ describe('ResumableAgentController resume metadata', () => {
         conversationId: 'conversation-123',
         endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
       },
-      config: {},
+      config: { endpoints: { agents: { promptCache: { stableContext: true } } } },
     };
 
     await AgentController(
@@ -3316,7 +3322,10 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user-123' }),
       userMessage,
-      expect.objectContaining({ context: expect.stringContaining('resumable user message') }),
+      expect.objectContaining({
+        context: expect.stringContaining('resumable user message'),
+        createdAtOnInsert: new Date(req.turnStartedAt),
+      }),
     );
     expect(mockGenerationJobManager.steering.consumeRecovered).not.toHaveBeenCalled();
     expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
@@ -3370,7 +3379,7 @@ describe('ResumableAgentController resume metadata', () => {
         conversationId: 'conversation-123',
         endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
       },
-      config: {},
+      config: { endpoints: { agents: { promptCache: { stableContext: true } } } },
     };
 
     await AgentController(
@@ -3386,7 +3395,10 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user-123' }),
       userMessage,
-      expect.objectContaining({ context: expect.stringContaining('before HITL pause') }),
+      expect.objectContaining({
+        context: expect.stringContaining('before HITL pause'),
+        createdAtOnInsert: new Date(req.turnStartedAt),
+      }),
     );
     expect(mockGenerationJobManager.steering.consumeRecovered).not.toHaveBeenCalled();
     expect(failArgs).toEqual([
@@ -5140,6 +5152,53 @@ describe('ResumableAgentController resume metadata', () => {
       );
     },
   );
+
+  it.each([
+    [
+      'with the stable context lever on',
+      { endpoints: { agents: { promptCache: { stableContext: true } } } },
+      '+contextAnchor',
+    ],
+    ['with the stable context lever off', {}, undefined],
+  ])('reads the stored conversation %s', async (_label, config, expectedSelect) => {
+    mockGenerationJobManager.claimGeneration.mockResolvedValue(wonGenerationClaim());
+    const storedConversation = {
+      conversationId: 'conversation-123',
+      user: 'user-123',
+      createdAt: '2026-06-07T00:00:00.000Z',
+      contextAnchor: { createdAt: '2026-06-07T00:00:00.000Z' },
+    };
+    mockGetConvo.mockResolvedValue(storedConversation);
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Follow-up.',
+        messageId: 'user-msg',
+        clientRequestId: 'req-abc',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config,
+    };
+    const res = {
+      headersSent: true,
+      json: jest.fn(),
+      status: jest.fn(() => res),
+      set: jest.fn(),
+    };
+
+    await AgentController(
+      req,
+      res,
+      jest.fn(),
+      jest.fn().mockRejectedValue(new Error('stop before tool loading')),
+      null,
+    );
+
+    expect(mockGetConvo).toHaveBeenCalledWith('user-123', 'conversation-123', expectedSelect);
+    expect(req.resolvedConversation).toBe(storedConversation);
+    expect(req.conversationCreatedAt).toBe('2026-06-07T00:00:00.000Z');
+  });
 
   it('retains terminal metadata for the first event in an empty bound actor thread', async () => {
     const expiredAt = new Date(Date.now() + 60_000);

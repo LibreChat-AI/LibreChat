@@ -5,6 +5,7 @@ import type { LCTool } from '@librechat/agents';
 import type { Logger } from 'winston';
 import type { ParsedServerConfig } from '~/mcp/types';
 import type { MCPManager } from '~/mcp/MCPManager';
+import { ContextPartKeys, contributeContext } from './systemParts';
 
 /**
  * Agent type with optional tools array that can contain DynamicStructuredTool or string.
@@ -110,20 +111,14 @@ export function buildAgentInstructions({
   return combined || undefined;
 }
 
-/**
- * Builds dynamic system-tail instructions for an agent.
- * Order: existing additional instructions -> shared run context.
- */
-export function buildAgentAdditionalInstructions({
-  additionalInstructions,
-  sharedRunContext,
-}: {
-  additionalInstructions?: string;
-  sharedRunContext?: string;
-}): string | undefined {
-  const parts = [additionalInstructions, sharedRunContext].filter(Boolean);
-  const combined = parts.join('\n\n').trim();
-  return combined || undefined;
+/** Request-scoped context for the system tail, from `AgentClient.buildMessages`. */
+export interface RunContext {
+  /** Context retrieved for the current message (RAG). */
+  rag?: string;
+  /** Formatted memory the agent may see. */
+  memory?: string;
+  /** Extracted text of the agent's own context files. */
+  agentFiles?: string;
 }
 
 /**
@@ -132,7 +127,7 @@ export function buildAgentAdditionalInstructions({
  *
  * @param {Object} params
  * @param {Agent} params.agent - The agent to update
- * @param {string} params.sharedRunContext - Run-level shared context
+ * @param {RunContext} [params.runContext] - Request-scoped context for the system tail
  * @param {MCPManager} params.mcpManager - MCP manager instance
  * @param {Object} [params.ephemeralAgent] - Ephemeral agent config (for MCP override)
  * @param {string} [params.agentId] - Agent ID for logging
@@ -141,26 +136,33 @@ export function buildAgentAdditionalInstructions({
  */
 export async function applyContextToAgent({
   agent,
-  sharedRunContext,
+  runContext = {},
   mcpManager,
   ephemeralAgent,
   agentId,
   logger,
   configServers,
+  mcpServers: fixedMcpServers,
 }: {
   agent: AgentWithTools;
-  sharedRunContext: string;
+  runContext?: RunContext;
   mcpManager: MCPManager;
   ephemeralAgent?: TEphemeralAgent;
   agentId?: string;
   logger?: Logger;
   configServers?: Record<string, ParsedServerConfig>;
+  /** Servers whose instructions to add; `[]` when the turn context renders them from its anchor. */
+  mcpServers?: string[];
 }): Promise<void> {
   const baseInstructions = agent.instructions || '';
-  const additionalInstructions = agent.additional_instructions || '';
+  contributeContext(agent, ContextPartKeys.rag, runContext.rag);
+  contributeContext(agent, ContextPartKeys.memory, runContext.memory);
+  contributeContext(agent, ContextPartKeys.agentFiles, runContext.agentFiles);
 
   try {
-    const mcpServers = ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent);
+    const mcpServers =
+      fixedMcpServers ??
+      (ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent));
     const mcpInstructions = await getMCPInstructionsForServers(
       mcpServers,
       mcpManager,
@@ -172,10 +174,6 @@ export async function applyContextToAgent({
       baseInstructions,
       mcpInstructions,
     });
-    agent.additional_instructions = buildAgentAdditionalInstructions({
-      additionalInstructions,
-      sharedRunContext,
-    });
 
     if (agentId && logger) {
       logger.debug('[AgentContext] Applied context to agent');
@@ -184,10 +182,6 @@ export async function applyContextToAgent({
     agent.instructions = buildAgentInstructions({
       baseInstructions,
       mcpInstructions: '',
-    });
-    agent.additional_instructions = buildAgentAdditionalInstructions({
-      additionalInstructions,
-      sharedRunContext,
     });
 
     if (logger) {

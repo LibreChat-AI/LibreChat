@@ -761,6 +761,15 @@ endpoints:
   #     create_file: 131072
   #   # (optional) Disable the builder interface for agents
   #   disableBuilder: false
+  #   # (optional) Prefix each user message sent to the model with the time it was sent
+  #   # (user's timezone, to the second). Defaults to false: only date changes are noted.
+  #   promptMessageTimestamps: false
+  #   # (optional) Keep the cacheable prompt prefix stable across the turns of a conversation
+  #   # (provider-side prompt caching). Prompt time is anchored to the conversation start,
+  #   # date changes are announced in the history, and per-turn context stays out of the
+  #   # stable instructions. Defaults to false: the prompt is built as before.
+  #   promptCache:
+  #     stableContext: false
   #   # (optional) When conversation titles are generated:
   #   #   immediate (default): generate as soon as the request is made, in parallel
   #   #     with the response, from the user's first message (title appears within ~1-2s).

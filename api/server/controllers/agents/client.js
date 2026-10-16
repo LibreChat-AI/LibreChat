@@ -140,6 +140,12 @@ const {
   prependQuotes,
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
+  planSendContext,
+  getMCPServerInstructions,
+  prepareResumedTurnContext,
+  readConversationAnchor,
+  applyTurnContextToRuntime,
+  getConversationAgents,
   injectSkillPrimes,
   buildAgentEventActorSkillMessages,
   collectFreshSkillPrimeNames,
@@ -2465,6 +2471,16 @@ class AgentClient extends BaseClient {
       resolveConfigServers(this.options.req),
     ]);
     void earlySharedContextPromise.catch(() => {});
+    /** A warm event actor continues from its checkpoint, not from the rendered history. */
+    const contextAnchorPromise =
+      this.eventActorContinuation === 'warm'
+        ? undefined
+        : readConversationAnchor({
+            req: this.options.req,
+            conversationId: this.conversationId,
+            db,
+          });
+    void contextAnchorPromise?.catch(() => {});
     assertModelBoundContent({
       onTraversalFailure: reportLocatorTraversalFailure,
       filters: this.options.req.config?.filters,
@@ -2709,6 +2725,7 @@ class AgentClient extends BaseClient {
        * canonical recount reads an unstripped surface instead.
        */
       const droppedPromptSummary = dropUnusableSummaryParts(formattedMessage);
+      const promptDiffersFromStored = Boolean(message.fileContext) || droppedPromptSummary;
 
       const dbTokenCount = Number(orderedMessages[i].tokenCount);
       const hasDbTokenCount = Number.isFinite(dbTokenCount) && dbTokenCount > 0;
@@ -2731,17 +2748,16 @@ class AgentClient extends BaseClient {
          *  with a dropped summary), the canonical count must be taken from the
          *  message as stored. */
         let countSurface = formattedMessage;
-        if (message.fileContext || droppedPromptSummary) {
+        if (promptDiffersFromStored) {
           memoryFormattedMessages[i] = buildMemoryFormattedMessage(message);
           countSurface = memoryFormattedMessages[i];
         }
         canonicalTokenCount = countFormattedMessageTokens(countSurface, encoding);
       }
 
-      const promptMessageTokenCount =
-        message.fileContext || droppedPromptSummary
-          ? countFormattedMessageTokens(formattedMessage, encoding)
-          : canonicalTokenCount;
+      const promptMessageTokenCount = promptDiffersFromStored
+        ? countFormattedMessageTokens(formattedMessage, encoding)
+        : canonicalTokenCount;
 
       /* If message has files, calculate image token cost */
       if (this.message_file_map && this.message_file_map[message.messageId]) {
@@ -2902,7 +2918,51 @@ class AgentClient extends BaseClient {
     }
     /** After the steer stamp, which adds replayed steers' documents of its own. */
     dedupeDocumentNames(payload);
-    if (hasFileContext) {
+    messages = orderedMessages;
+    promptTokens = promptTokenTotal;
+
+    /**
+     * Build shared run context - applies to ALL agents in the run.
+     * Request attachment file context is already bound inline to the latest
+     * user message above; only side-channel context belongs here.
+     * Memory context is handled separately and applied per-agent based on config.
+     */
+    const [augmentedPrompt, [memories, configServers], agentScopedContext] = await Promise.all([
+      this.contextHandlers?.createContext(),
+      earlySharedContextPromise,
+      agentScopedContextPromise,
+    ]);
+
+    this.retainedAnswers = await retainedAnswersPromise;
+    promptTokens += this.retainedAnswers.tokenCount;
+
+    /** Context changes since the segment's anchor, prepended to the prompt copy only and
+     *  counted for the prompt. Planned here, once memory has loaded. */
+    const {
+      prepared: preparedTurnContext,
+      addedTokens,
+      applied,
+    } = await planSendContext({
+      req: this.options.req,
+      agent: this.options.agent,
+      allAgents,
+      orderedMessages,
+      opts,
+      memories,
+      rag: augmentedPrompt,
+      conversationId: this.conversationId,
+      anchorPromise: contextAnchorPromise,
+      configServers,
+      getServerInstructions: getMCPServerInstructions,
+      formattedMessages,
+      indexTokenCountMap,
+      countTokens: (message) => countFormattedMessageTokens(message, encoding),
+    });
+    const turnContext = preparedTurnContext?.plan ?? null;
+    this.pendingContextAnchor = preparedTurnContext?.pending;
+    promptTokens += addedTokens;
+    const hasPromptOnlyContext = hasFileContext || applied;
+    if (hasPromptOnlyContext) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
           memoryFormattedMessages[i] ?? buildMemoryFormattedMessage(orderedMessages[i]),
@@ -2928,31 +2988,12 @@ class AgentClient extends BaseClient {
         });
       }
     }
-    this.memoryPayload = hasFileContext ? memoryPayload : null;
-    messages = orderedMessages;
-    promptTokens = promptTokenTotal;
-
-    /**
-     * Build shared run context - applies to ALL agents in the run.
-     * Request attachment file context is already bound inline to the latest
-     * user message above; only side-channel context belongs here.
-     * Memory context is handled separately and applied per-agent based on config.
-     */
-    const sharedRunContextParts = [];
-    const [augmentedPrompt, [memories, configServers], agentScopedContext] = await Promise.all([
-      this.contextHandlers?.createContext(),
-      earlySharedContextPromise,
-      agentScopedContextPromise,
-    ]);
-
-    this.retainedAnswers = await retainedAnswersPromise;
-    promptTokens += this.retainedAnswers.tokenCount;
+    this.memoryPayload = hasPromptOnlyContext ? memoryPayload : null;
 
     /** Augmented prompt from RAG/context handlers */
     this.augmentedPrompt = augmentedPrompt;
     if (this.augmentedPrompt) {
       modelBoundFileContexts.add(this.augmentedPrompt);
-      sharedRunContextParts.push(this.augmentedPrompt);
     }
 
     /** Memory context (user preferences/memories). Keyed context (with memory
@@ -3006,7 +3047,6 @@ class AgentClient extends BaseClient {
       return canonicalMemoryCache.get(cacheKey);
     };
 
-    const sharedRunContext = sharedRunContextParts.join('\n\n');
     const memoryAgentEnabled = isMemoryAgentEnabled(this.options.req.config?.memory);
 
     const configuredContextAttachments = this.options.agentContextAttachmentsByAgentId;
@@ -3073,6 +3113,13 @@ class AgentClient extends BaseClient {
      */
     const ephemeralAgent = this.options.req.body.ephemeralAgent;
     const mcpManager = getMCPManager();
+    /** With a turn context the sent message carries the retrieved context for every agent that
+     *  reads the conversation; isolated subagents still take it in their system prompt. */
+    const conversationAgents = getConversationAgents(
+      turnContext,
+      this.options.agent,
+      this.agentConfigs?.values(),
+    );
 
     const prepareRuntimeAgent = async (
       { agent, agentId },
@@ -3080,7 +3127,9 @@ class AgentClient extends BaseClient {
       assertLateBoundContent = false,
     ) => {
       normalizeInstructions(agent);
-      const agentRunContextParts = [sharedRunContext];
+      const runContext = {
+        rag: conversationAgents.has(agent) ? undefined : this.augmentedPrompt,
+      };
       const agentMemoryContexts = [];
       const agentHasMemory = agentHasInlineMemoryTools(agent);
       if (agentId === this.options.agent.id || memoryAgentEnabled || agentHasMemory) {
@@ -3103,13 +3152,11 @@ class AgentClient extends BaseClient {
         const agentMemoryContext = formatMemoryContext(
           agentHasMemory ? partitionMemories?.withKeys : partitionMemories?.withoutKeys,
         );
-        if (agentMemoryContext) {
-          agentRunContextParts.push(agentMemoryContext);
-        }
+        runContext.memory = agentMemoryContext;
       }
       if (scopedContext) {
         modelBoundFileContexts.add(scopedContext);
-        agentRunContextParts.push(scopedContext);
+        runContext.agentFiles = scopedContext;
       }
 
       await applyContextToAgent({
@@ -3118,8 +3165,10 @@ class AgentClient extends BaseClient {
         logger,
         mcpManager,
         configServers,
-        sharedRunContext: agentRunContextParts.filter(Boolean).join('\n\n'),
+        runContext,
         ephemeralAgent: agentId === this.options.agent.id ? ephemeralAgent : undefined,
+        /** The anchor's MCP instructions are added by `applyTurnContext`. */
+        ...(agent === this.options.agent && turnContext?.tools != null && { mcpServers: [] }),
       });
       if (assertLateBoundContent) {
         assertModelBoundContent({
@@ -3149,6 +3198,12 @@ class AgentClient extends BaseClient {
         prepareRuntimeAgentOnce(agent, agentScopedContext.get(agentId)),
       ),
     );
+    if (turnContext != null) {
+      applyTurnContextToRuntime(this.options.agent, turnContext, {
+        memories: modelBoundMemoryContexts,
+        files: modelBoundFileContexts,
+      });
+    }
     this.modelBoundMemoryContexts = [...modelBoundMemoryContexts];
     this.modelBoundFileContexts = [...modelBoundFileContexts];
     assertModelBoundContent({
@@ -5603,7 +5658,19 @@ class AgentClient extends BaseClient {
           ]),
       );
       const resumeMcpManager = getMCPManager();
-      const [resumeScopedContext, resumeConfigServers] = await Promise.all([
+      const resumeConfigServersPromise = resolveConfigServers(this.options.req);
+      const resumedTurnContextPromise = prepareResumedTurnContext({
+        req: this.options.req,
+        agent: this.options.agent,
+        conversationId: this.conversationId,
+        pausedMessageId: this.parentMessageId,
+        db,
+        getBranch: AgentClient.getMessagesForConversation,
+        loadMemories: () => AgentClient.prototype.getSharedMemoryContext.call(this),
+        configServers: resumeConfigServersPromise,
+        getServerInstructions: getMCPServerInstructions,
+      });
+      const [resumeScopedContext, resumeConfigServers, resumedTurnContext] = await Promise.all([
         buildAgentScopedContext({
           agentIds: agents.map((agent) => agent?.id).filter(Boolean),
           attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
@@ -5616,7 +5683,8 @@ class AgentClient extends BaseClient {
           endpointsByAgentId: resumeEndpointsByAgentId,
           tokenCountFn: (text) => countTokens(text),
         }),
-        resolveConfigServers(this.options.req),
+        resumeConfigServersPromise,
+        resumedTurnContextPromise,
       ]);
       const resumeScopedAttachmentMap = buildAgentScopedAttachmentMap({
         agentIds: agents.map((agent) => agent?.id).filter(Boolean),
@@ -5658,9 +5726,11 @@ class AgentClient extends BaseClient {
               logger,
               mcpManager: resumeMcpManager,
               configServers: resumeConfigServers,
-              sharedRunContext: scopedContext ?? '',
+              runContext: { agentFiles: scopedContext },
               ephemeralAgent:
                 agent === this.options.agent ? this.options.req.body.ephemeralAgent : undefined,
+              ...(agent === this.options.agent &&
+                resumedTurnContext?.plan.tools != null && { mcpServers: [] }),
             });
             assertModelBoundContent({
               onTraversalFailure: reportLocatorTraversalFailure,
@@ -5671,6 +5741,18 @@ class AgentClient extends BaseClient {
             });
           }),
       );
+      /** The resumed run continues the paused turn: same anchor, not the live state. */
+      if (resumedTurnContext != null) {
+        applyTurnContextToRuntime(this.options.agent, resumedTurnContext.plan);
+        this.pendingContextAnchor = resumedTurnContext.pending;
+        assertModelBoundContent({
+          onTraversalFailure: reportLocatorTraversalFailure,
+          filters: this.options.req.config?.filters,
+          legacyPii: this.options.req.config?.messageFilter?.pii,
+          agents: [this.options.agent],
+          memories: resumedTurnContext.plan.memoryTexts,
+        });
+      }
       const wrappedResumeLazyDescriptors = new WeakSet();
       const validatedResumeAgents = new WeakSet(agents.filter((agent) => agent != null));
       const wrapResumeLazyAttachmentValidation = (configs) => {
@@ -5760,7 +5842,7 @@ class AgentClient extends BaseClient {
                   logger,
                   mcpManager: resumeMcpManager,
                   configServers: resumeConfigServers,
-                  sharedRunContext: scopedContext ?? '',
+                  runContext: { agentFiles: scopedContext },
                 });
                 assertModelBoundContent({
                   onTraversalFailure: reportLocatorTraversalFailure,

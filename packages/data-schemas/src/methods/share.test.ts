@@ -78,6 +78,8 @@ describe('Share Methods', () => {
         user: { type: String, required: true },
         text: String,
         privateTextTokens: { type: [String], select: false, default: undefined },
+        contextUpdates: { type: [mongoose.Schema.Types.Mixed], select: false, default: undefined },
+        contextAnchor: { type: [mongoose.Schema.Types.Mixed], select: false, default: undefined },
         isCreatedByUser: Boolean,
         isUserSubmitted: Boolean,
         userSubmittedPaths: {
@@ -546,6 +548,27 @@ describe('Share Methods', () => {
       const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
       return { userId, conversationId, shareId };
     };
+
+    test('publishes no turn context: neither change records nor segment anchors', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await Conversation.create({ conversationId, user: userId, title: 'Shared' });
+      await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'Question',
+        isCreatedByUser: true,
+        parentMessageId: Constants.NO_PARENT,
+        contextUpdates: [{ key: 'memory', value: 'Private memory.' }],
+        contextAnchor: [{ key: 'memory', value: 'Private memory.' }],
+      });
+      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result?.messages).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain('Private memory.');
+    });
 
     /* The header renders the stored `sender`, so a link publishing a label must not swap
        it for the model the label stands in for. */

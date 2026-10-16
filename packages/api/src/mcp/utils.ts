@@ -15,6 +15,37 @@ import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { ALLOWED_BODY_FIELDS, isPluginSourced } from '~/utils/env';
 import { isEnabled } from '~/utils/common';
 
+/**
+ * Code-unit ascending order, independent of locale. Provider prompt caches key on the
+ * `tools` array and system prompt, so MCP servers and tools are materialized in this
+ * order to keep the prefix stable across selection order and catalog key order.
+ */
+export function sortNames(names: Iterable<string>): string[] {
+  return [...names].sort((a, b) => {
+    if (a === b) {
+      return 0;
+    }
+    return a < b ? -1 : 1;
+  });
+}
+
+/** The system prompt section of MCP server instructions, in the given server order. */
+export function formatMCPServerInstructions(instructions: Record<string, string>): string {
+  const sections = Object.entries(instructions).map(
+    ([serverName, text]) => `## ${serverName} MCP Server Instructions\n\n${text}`,
+  );
+  if (sections.length === 0) {
+    return '';
+  }
+  return `# MCP Server Instructions
+
+The following MCP servers are available with their specific instructions:
+
+${sections.join('\n\n')}
+
+Please follow these instructions when using tools from the respective MCP servers.`;
+}
+
 export const mcpToolPattern: RegExp = new RegExp(`^.+${Constants.mcp_delimiter}.+$`);
 
 function isMCPServerConfig(config: unknown): config is ParsedServerConfig {

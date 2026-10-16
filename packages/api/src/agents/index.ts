@@ -10,6 +10,10 @@ export * from './compatibility';
 export * from './compaction';
 export * from './contact';
 export * from './context';
+export * from './contextUpdates';
+export { isStableContextEnabled } from './promptCache';
+export type { PromptCacheConfig } from './promptCache';
+export * from './turnContext';
 export * from './control';
 export * from './conversation';
 export * from './creates';
@@ -55,6 +59,14 @@ export * from './usage';
 export * from './resources';
 export * from './responses';
 export * from './skills';
+export {
+  ContextPartKeys,
+  listContextParts,
+  contributeContext,
+  assembleSystemPrompt,
+  assembleAdditionalInstructions,
+} from './systemParts';
+export type { ContextKind, ContextPart, ContextAgent } from './systemParts';
 export * from './phases';
 export * from './stepBudget';
 export * from './startup';
