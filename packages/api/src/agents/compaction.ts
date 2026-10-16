@@ -448,6 +448,7 @@ export async function planDisconnectSnapshot(
     responseMessageId,
     liveSaved = false,
     getMessages,
+    onReadError,
   }: {
     /** The streamed content, already filtered to persistable parts. */
     content: TMessageContentParts[];
@@ -464,21 +465,31 @@ export async function planDisconnectSnapshot(
       filter: { user: string; messageId: string; conversationId: string },
       projection?: string,
     ) => Promise<ReadableMessageRow[]>;
+    /** Receives a row read that failed while planning. */
+    onReadError?: (error: unknown) => void;
   },
 ): Promise<DisconnectSnapshotPlan> {
-  const mode = await resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt, {
-    anchorExists: async () =>
-      (await getMessages({ user: userId, messageId: anchorMessageId, conversationId }, '_id'))
-        .length > 0,
-    responseRowSettled: async () => {
-      const rows = await Promise.all(
-        terminalRowIds(anchorMessageId, responseMessageId).map((messageId) =>
-          getMessages({ user: userId, messageId, conversationId }, '_id unfinished'),
-        ),
-      );
-      return rows.some(([row]) => row != null && row.unfinished !== true);
-    },
-  });
+  /** A failed row read proves nothing either way: it is reported, nothing is
+   *  written, and the next disconnect plans again. */
+  let mode: DisconnectSnapshotMode;
+  try {
+    mode = await resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt, {
+      anchorExists: async () =>
+        (await getMessages({ user: userId, messageId: anchorMessageId, conversationId }, '_id'))
+          .length > 0,
+      responseRowSettled: async () => {
+        const rows = await Promise.all(
+          terminalRowIds(anchorMessageId, responseMessageId).map((messageId) =>
+            getMessages({ user: userId, messageId, conversationId }, '_id unfinished'),
+          ),
+        );
+        return rows.some(([row]) => row != null && row.unfinished !== true);
+      },
+    });
+  } catch (error) {
+    onReadError?.(error);
+    return { write: false };
+  }
   if (mode === 'skip' || (mode === 'live' && (liveSaved || content.length === 0))) {
     return { write: false };
   }

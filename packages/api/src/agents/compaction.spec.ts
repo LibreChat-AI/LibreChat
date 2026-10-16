@@ -1672,6 +1672,28 @@ describe('planDisconnectSnapshot', () => {
     await expect(result).resolves.toEqual({ write: false });
   });
 
+  it('reports a failed row read and writes nothing', async () => {
+    const readError = new Error('read failed');
+    const onReadError = jest.fn();
+
+    await expect(
+      planDisconnectSnapshot(true, {
+        content: [text],
+        jobRecord: reconciled,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId: 'anchor',
+        responseMessageId: 'response',
+        getMessages: jest.fn(async () => {
+          throw readError;
+        }),
+        onReadError,
+      }),
+    ).resolves.toEqual({ write: false });
+    expect(onReadError).toHaveBeenCalledWith(readError);
+  });
+
   it('writes a live snapshot once but still promotes after it', async () => {
     const live = planDisconnectSnapshot(true, {
       content: [text],
