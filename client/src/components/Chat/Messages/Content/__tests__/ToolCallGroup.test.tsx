@@ -1681,6 +1681,27 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByTestId('question-icon').parentElement).not.toHaveClass('animate-pulse');
   });
 
+  it('reads a question asked through the dispatcher by the tool it ran', () => {
+    const dispatched = makePart('q1', '', 'call_tool', {
+      name: 'ask_user_question',
+      arguments: '{}',
+    });
+    const props = {
+      ...baseProps,
+      isSubmitting: true,
+      parts: [{ part: dispatched, idx: 0 }],
+      lastContentIdx: 0,
+    };
+    const { unmount } = renderGroup(props);
+    /** Unanswered: the dispatcher call must not pass for a settled non-question. */
+    expect(screen.getByRole('button', { name: 'Asking 1 question' })).toBeInTheDocument();
+    unmount();
+
+    mockSubmittedAskAnswers.set('q1', 'Option A');
+    renderGroup(props);
+    expect(screen.getByRole('button', { name: 'Asked 1 question' })).toBeInTheDocument();
+  });
+
   it('keeps the active label while one question of a batch is unanswered', () => {
     mockSubmittedAskAnswers.set('q1', 'Option A');
     renderGroup({

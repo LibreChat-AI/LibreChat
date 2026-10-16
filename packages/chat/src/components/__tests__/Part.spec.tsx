@@ -107,6 +107,31 @@ describe('Part', () => {
     },
   );
 
+  it('routes a dispatcher call to the card of the tool it ran', () => {
+    render(
+      <>
+        <Part
+          {...baseProps}
+          part={toolPart({
+            id: 'call-2',
+            name: 'call_tool',
+            args: '{"name":"web_search","arguments":"{}"}',
+            dispatched: { name: 'web_search', args: '{"query":"news"}' },
+          })}
+          renderers={createRenderers()}
+        />
+        <Part
+          {...baseProps}
+          part={toolPart({ id: 'call-3', name: 'call_tool', args: '{"name":"web_se' })}
+          renderers={createRenderers()}
+        />
+      </>,
+    );
+    expect(screen.getByText('search:web_search:call-2')).toBeTruthy();
+    /** Still streaming: the generic card names the dispatcher. */
+    expect(screen.getByText('generic:call_tool:call-3')).toBeTruthy();
+  });
+
   it('lets a matcher route a call before its name, and wraps every agent tool card', () => {
     const renderers = createRenderers({
       matchTool: (toolCall) => (toolCall.name?.startsWith('lc_') ? named('matched') : undefined),
