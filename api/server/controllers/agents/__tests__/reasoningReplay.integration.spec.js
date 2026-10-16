@@ -3,7 +3,12 @@ const { v4: uuidv4 } = require('uuid');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { ChatGenerationChunk } = require('@langchain/core/outputs');
 const { AIMessageChunk, HumanMessage } = require('@langchain/core/messages');
-const { createModels, createMethods, CLIENT_MESSAGE_SELECT } = require('@librechat/data-schemas');
+const {
+  createModels,
+  createMethods,
+  CLIENT_MESSAGE_SELECT,
+  MAX_THINK_REPLAY_CHARS,
+} = require('@librechat/data-schemas');
 const { attachProviderItems } = require('@librechat/api');
 const {
   Run,
@@ -222,7 +227,12 @@ describe('reasoning replay across the MongoDB boundary', () => {
   function toPayload(rows) {
     return rows.map((message) => {
       const { content, messageId, text, isCreatedByUser } = attachProviderItems(message);
-      return { role: isCreatedByUser ? 'user' : 'assistant', messageId, text, content };
+      return {
+        role: isCreatedByUser ? 'user' : 'assistant',
+        messageId,
+        text,
+        content: content ?? text,
+      };
     });
   }
 
@@ -333,28 +343,124 @@ describe('reasoning replay across the MongoDB boundary', () => {
     await methods.updateMessage(USER_ID, { messageId, content: row.content });
   });
 
-  test('selects only compatible replay from a mixed-provider conversation reloaded from MongoDB', async () => {
+  test('replays only the run of compatible turns that ends the mixed-provider conversation', async () => {
     const mixedMessages = await methods.getMessages(
       { user: USER_ID, conversationId: mixedConversationId },
       '+providerItems',
     );
     expect(mixedMessages).toHaveLength(Object.keys(fixtures).length);
     const payload = toPayload(mixedMessages).map((message) => ({ ...message, role: 'assistant' }));
-    const tokenMap = {};
-    for (const index of payload.keys()) {
-      tokenMap[index] = TOKEN_COUNT;
-    }
 
+    /** Turns are anthropic, then bedrock: a turn of the other provider is a hole in the chain. */
     for (const [activeName, activeFixture] of Object.entries(fixtures)) {
-      const result = formatAgentMessages(payload, tokenMap, undefined, undefined, {
+      const result = formatAgentMessages(payload, undefined, undefined, undefined, {
         replayProviderReasoning: {
           provider: activeFixture.provider,
           model: activeFixture.model,
         },
       });
       for (const [name, fixture] of Object.entries(fixtures)) {
-        expect(containsSecret(result.messages, fixture.secret)).toBe(name === activeName);
+        const endsTheConversation = name === activeName && name === 'bedrock';
+        expect(containsSecret(result.messages, fixture.secret)).toBe(endsTheConversation);
       }
     }
+  });
+
+  describe('a hole in the chain', () => {
+    const MODEL = 'claude-sonnet-5';
+    const target = { provider: Providers.ANTHROPIC, model: MODEL };
+
+    const turnContent = (signature, data) => [
+      {
+        type: 'think',
+        think: `plan ${signature.slice(-1)}`,
+        provider_replay: {
+          anthropic: {
+            model: MODEL,
+            blocks: [
+              { type: 'thinking', thinking: '', signature },
+              ...(data != null ? [{ type: 'redacted_thinking', data }] : []),
+            ],
+          },
+        },
+      },
+      { type: 'text', text: 'answer' },
+    ];
+
+    async function saveTurns({ oversizedTurn, editedTurn }) {
+      const conversationId = uuidv4();
+      let parentMessageId = uuidv4();
+      const ids = [];
+      for (let turn = 1; turn <= 4; turn++) {
+        const userId = uuidv4();
+        await methods.saveMessage(
+          { userId: USER_ID },
+          {
+            messageId: userId,
+            conversationId,
+            parentMessageId,
+            isCreatedByUser: true,
+            sender: 'User',
+            text: `question ${turn}`,
+            createdAt: new Date(Date.now() + turn * 2000),
+          },
+        );
+        const messageId = uuidv4();
+        ids.push(messageId);
+        await methods.saveMessage(
+          { userId: USER_ID },
+          {
+            messageId,
+            conversationId,
+            parentMessageId: userId,
+            isCreatedByUser: false,
+            sender: 'Agent',
+            endpoint: 'agents',
+            model: 'mock-agent',
+            text: '',
+            content: turnContent(
+              `HOLE_SIG_${turn}`,
+              turn === oversizedTurn ? 'x'.repeat(MAX_THINK_REPLAY_CHARS) : undefined,
+            ),
+            createdAt: new Date(Date.now() + turn * 2000 + 1000),
+          },
+        );
+        parentMessageId = messageId;
+      }
+      if (editedTurn != null) {
+        const [row] = await methods.getMessages(
+          { user: USER_ID, messageId: ids[editedTurn - 1] },
+          '+providerItems',
+        );
+        await methods.updateMessage(USER_ID, {
+          messageId: ids[editedTurn - 1],
+          content: row.content.map((part) =>
+            part.type === 'think' ? { ...part, think: `${part.think} (edited)` } : part,
+          ),
+        });
+      }
+      return toPayload(
+        await methods.getMessages({ user: USER_ID, conversationId }, '+providerItems'),
+      );
+    }
+
+    const sent = (payload) => {
+      const result = formatAgentMessages(payload, undefined, undefined, undefined, {
+        replayProviderReasoning: target,
+      });
+      return [1, 2, 3, 4].map((turn) => containsSecret(result.messages, `HOLE_SIG_${turn}`));
+    };
+
+    test('replays every turn when none is missing', async () => {
+      expect(sent(await saveTurns({}))).toEqual([true, true, true, true]);
+    });
+
+    test('drops the turns before one whose reasoning is over the size cap, not the ones after it', async () => {
+      expect(sent(await saveTurns({ oversizedTurn: 2 }))).toEqual([false, false, true, true]);
+    });
+
+    test('drops the turns before one whose reasoning text was edited, not the ones after it', async () => {
+      expect(sent(await saveTurns({ editedTurn: 2 }))).toEqual([false, false, true, true]);
+    });
   });
 });

@@ -3,6 +3,7 @@ import type { TurnContextDb, TurnContextRequest } from './prepare';
 import {
   prepareTurnContext,
   applyHistoryUpdates,
+  dropReasoningReplayOutsideSegment,
   planSendContext,
   readConversationAnchor,
   prepareResumedTurnContext,
@@ -138,6 +139,224 @@ describe('prepareTurnContext resets', () => {
     const second = await turn(agentOf('anthropic', true, 'model-a'), first?.plan.anchor ?? null);
     expect(second?.plan.reset).toBeUndefined();
     expect(second?.promptCacheReset).toBeUndefined();
+  });
+});
+
+describe('the segment signed reasoning belongs to', () => {
+  const agentOf = (model: string) => ({
+    provider: 'anthropic',
+    model_parameters: { model, promptCache: true },
+    dynamicToolContextMap: {},
+  });
+  const replay = {
+    anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+  };
+  const messages = (count: number, extra: Record<number, Record<string, unknown>> = {}) =>
+    Array.from({ length: count }, (_, i) => ({
+      messageId: `m${i}`,
+      isCreatedByUser: i % 2 === 0,
+      ...extra[i],
+    }));
+  const plan = async (
+    agent: ReturnType<typeof agentOf>,
+    orderedMessages: ReturnType<typeof messages>,
+    anchor: readonly ContextEntry[] | null,
+  ) =>
+    (
+      await prepareTurnContext({
+        req: request(),
+        agent,
+        allAgents: [{ agent }],
+        orderedMessages,
+        conversationId: 'c1',
+        anchorPromise: Promise.resolve(anchor),
+      })
+    )?.plan;
+  const withReplay = () =>
+    messages(5).map((message) => ({
+      ...message,
+      content: [{ type: 'think', think: 'plan', provider_replay: replay }],
+    }));
+  const replayed = (formatted: Array<{ content?: unknown }>) =>
+    formatted.map((message) => JSON.stringify(message.content).includes('SIG_1'));
+
+  it('is the whole branch while it has no compaction and no reset', async () => {
+    const first = await plan(agentOf('model-a'), messages(1), null);
+    expect(first?.segmentStart).toBe(0);
+    const second = await plan(agentOf('model-a'), messages(5), first?.anchor ?? null);
+    expect(second?.segmentStart).toBe(0);
+  });
+
+  it('starts after the message that carries a summary', async () => {
+    const summary = {
+      content: [
+        {
+          type: 'summary',
+          content: [{ type: 'text', text: 'Earlier discussion.' }],
+          boundary: { messageId: 'm0', contentIndex: 0 },
+        },
+      ],
+    };
+    const first = await plan(agentOf('model-a'), messages(1), null);
+    const next = await plan(agentOf('model-a'), messages(5, { 2: summary }), first?.anchor ?? null);
+    expect(next?.segmentStart).toBe(3);
+  });
+
+  describe('the message that carries the summary', () => {
+    const summary = {
+      type: 'summary',
+      content: [{ type: 'text', text: 'Earlier discussion.' }],
+      boundary: { messageId: 'm0', contentIndex: 0 },
+    };
+    const think = { type: 'think', think: 'plan', provider_replay: replay };
+    const call = { type: 'tool_call', tool_call: { id: 'call_1', name: 'lookup' } };
+    const text = { type: 'text', text: 'answer' };
+    /** Shapes a compaction leaves: at the start of the turn, or in the middle of it. */
+    const opening = [summary, think, call, think, text];
+    const middle = [think, call, summary, think, text];
+    const replayedParts = (content: unknown) =>
+      (content as Array<Record<string, unknown>>).map((part) => 'provider_replay' in part);
+
+    it.each([
+      ['opens the turn', opening, 0],
+      ['sits in the middle of the turn', middle, 2],
+    ])('reports where the summary %s', async (_name, content, index) => {
+      const first = await plan(agentOf('model-a'), messages(1), null);
+      const next = await plan(
+        agentOf('model-a'),
+        messages(5, { 2: { content } }),
+        first?.anchor ?? null,
+      );
+      expect(next?.segmentStart).toBe(3);
+      expect(next?.summaryPartIndex).toBe(index);
+    });
+
+    it('reports no summary part when the new anchor differs from the one the carrier ran under', async () => {
+      const first = await plan(agentOf('model-a'), messages(1), null);
+      /** The previous segment had a runtime context the live agent no longer has. */
+      const before = [
+        ...(first?.anchor ?? []),
+        { key: 'runtime:web_search', value: 'Search rules.' },
+      ];
+      const next = await plan(agentOf('model-a'), messages(5, { 2: { content: opening } }), before);
+      expect(next?.reset).toBeUndefined();
+      expect(next?.segmentStart).toBe(3);
+      expect(next?.summaryPartIndex).toBe(-1);
+    });
+
+    it('reports no summary part when a reset opens the segment', async () => {
+      const first = await plan(agentOf('model-a'), messages(1), null);
+      const next = await plan(
+        agentOf('model-b'),
+        messages(5, { 2: { content: opening, contextAnchor: first?.anchor } }),
+        first?.anchor ?? null,
+      );
+      expect(next?.reset).toEqual(['model']);
+      expect(next?.summaryPartIndex).toBe(-1);
+    });
+
+    it('keeps all its reasoning when the summary opens the turn', () => {
+      const formatted = [{ content: [think] }, { content: [think] }, { content: opening }];
+      dropReasoningReplayOutsideSegment({
+        config: ON,
+        provider: 'anthropic',
+        formattedMessages: formatted,
+        segmentStart: 3,
+        summaryPartIndex: 0,
+      });
+      expect(replayedParts(formatted[0].content)).toEqual([false]);
+      expect(replayedParts(formatted[1].content)).toEqual([false]);
+      expect(replayedParts(formatted[2].content)).toEqual([false, true, false, true, false]);
+    });
+
+    it('keeps only the reasoning after a summary in the middle of the turn', () => {
+      const formatted = [{ content: [think] }, { content: middle }, { content: [think] }];
+      dropReasoningReplayOutsideSegment({
+        config: ON,
+        provider: 'anthropic',
+        formattedMessages: formatted,
+        segmentStart: 2,
+        summaryPartIndex: 2,
+      });
+      expect(replayedParts(formatted[0].content)).toEqual([false]);
+      expect(replayedParts(formatted[1].content)).toEqual([false, false, false, true, false]);
+      expect(replayedParts(formatted[2].content)).toEqual([true]);
+    });
+
+    it('drops the whole carrier when the segment opened on a reset', () => {
+      const formatted = [{ content: opening }, { content: [think] }];
+      dropReasoningReplayOutsideSegment({
+        config: ON,
+        provider: 'anthropic',
+        formattedMessages: formatted,
+        segmentStart: 1,
+        summaryPartIndex: -1,
+      });
+      expect(replayedParts(formatted[0].content)).toEqual([false, false, false, false, false]);
+      expect(replayedParts(formatted[1].content)).toEqual([true]);
+    });
+  });
+
+  it('starts at the message of a model change', async () => {
+    const first = await plan(agentOf('model-a'), messages(1), null);
+    const next = await plan(agentOf('model-b'), messages(5), first?.anchor ?? null);
+    expect(next?.reset).toEqual(['model']);
+    /** The user message that sends the change opens the segment; its answer is the first of it. */
+    expect(next?.segmentStart).toBe(5);
+  });
+
+  it('keeps the reasoning of the current segment only', async () => {
+    const first = await plan(agentOf('model-a'), messages(1), null);
+    const next = await plan(agentOf('model-b'), messages(5), first?.anchor ?? null);
+    const formatted = [...withReplay(), ...withReplay().slice(0, 1)];
+    dropReasoningReplayOutsideSegment({
+      config: ON,
+      provider: 'anthropic',
+      formattedMessages: formatted,
+      segmentStart: next?.segmentStart,
+    });
+    expect(replayed(formatted)).toEqual([false, false, false, false, false, true]);
+    expect(formatted[5].content).toEqual(withReplay()[0].content);
+  });
+
+  it('keeps the reasoning after a compaction in the middle, and drops what came before it', async () => {
+    const formatted = withReplay();
+    dropReasoningReplayOutsideSegment({
+      config: ON,
+      provider: 'bedrock',
+      formattedMessages: formatted,
+      segmentStart: 3,
+    });
+    expect(replayed(formatted)).toEqual([false, false, false, true, true]);
+  });
+
+  it('keeps none when the segment is unknown', () => {
+    const formatted = withReplay();
+    dropReasoningReplayOutsideSegment({
+      config: ON,
+      provider: 'anthropic',
+      formattedMessages: formatted,
+    });
+    expect(replayed(formatted)).toEqual([false, false, false, false, false]);
+  });
+
+  it('leaves everything alone without stableContext or for other providers', () => {
+    const off = withReplay();
+    dropReasoningReplayOutsideSegment({
+      config: {},
+      provider: 'anthropic',
+      formattedMessages: off,
+      segmentStart: 3,
+    });
+    const other = withReplay();
+    dropReasoningReplayOutsideSegment({
+      config: ON,
+      provider: 'openAI',
+      formattedMessages: other,
+      segmentStart: 3,
+    });
+    expect(replayed(off)).toEqual(replayed(withReplay()));
+    expect(replayed(other)).toEqual(replayed(withReplay()));
   });
 });
 

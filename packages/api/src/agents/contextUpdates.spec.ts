@@ -91,11 +91,22 @@ describe('findSummarySegment', () => {
       assistant('a2', START, [summaryPart({ retainedFromMessageId: 'u2' })]),
       user('u3'),
     ];
-    expect(findSummarySegment(messages)).toEqual({ carrier: 3, visibleFrom: 2 });
+    expect(findSummarySegment(messages)).toEqual({
+      carrier: 3,
+      visibleFrom: 2,
+      summaryPartIndex: 0,
+    });
     expect(findSummarySegment([user('u1'), assistant('a1', START)])).toEqual({
       carrier: -1,
       visibleFrom: 0,
+      summaryPartIndex: -1,
     });
+  });
+
+  it('reports the position of the summary part inside the carrier', () => {
+    const text = { type: 'text', text: 'answer' };
+    const messages = [user('u1', START), assistant('a1', START, [text, summaryPart(), text])];
+    expect(findSummarySegment(messages)).toMatchObject({ carrier: 1, summaryPartIndex: 1 });
   });
 });
 

@@ -10,11 +10,7 @@ type ContentPart = {
 /** Key of the signed reasoning of the `think` part at a content index. */
 export const THINK_REPLAY_KEY_PREFIX = 'think:';
 
-/**
- * Most characters of signed reasoning kept for one message. A message over it keeps none, so
- * a long run cannot grow a document towards the MongoDB limit and the outcome is the same on
- * every later turn.
- */
+/** Keeps a message document far below the MongoDB size limit; over it no reasoning is kept, so every later turn sees the same hole. */
 export const MAX_THINK_REPLAY_CHARS = 2_000_000;
 
 /** Fingerprint of a reasoning text; a replay is only used while its part still has this text. */
@@ -34,11 +30,12 @@ export type ThinkReplayItem = { hash: string; replay: unknown };
  * - `think.provider_replay` (signed Anthropic / Bedrock reasoning blocks), keyed by
  *   `think:<content index>` together with a hash of the part's text, so a reasoning part that
  *   was edited afterwards is not replayed.
- * @returns the content without them, and the items; undefined when the content has none
+ * @returns the content without them, and the items when any are kept; undefined when the content
+ *          has none
  */
 export function splitProviderItems(
   content: unknown,
-): { content: unknown[]; providerItems: Record<string, unknown> } | undefined {
+): { content: unknown[]; providerItems?: Record<string, unknown> } | undefined {
   if (!Array.isArray(content)) {
     return undefined;
   }
@@ -74,5 +71,7 @@ export function splitProviderItems(
   if (thinkChars <= MAX_THINK_REPLAY_CHARS) {
     Object.assign(providerItems, thinkItems);
   }
-  return { content: stripped, providerItems };
+  return Object.keys(providerItems).length > 0
+    ? { content: stripped, providerItems }
+    : { content: stripped };
 }

@@ -37,6 +37,8 @@ export interface SummarySegment {
   carrier: number;
   /** First message the model still sees. */
   visibleFrom: number;
+  /** Index of that summary in the carrier's `content`; -1 when there is none. */
+  summaryPartIndex: number;
 }
 
 /**
@@ -46,7 +48,7 @@ export interface SummarySegment {
  * keeps history from the message that carries it.
  */
 export function findSummarySegment(messages: readonly ContextUpdateMessage[]): SummarySegment {
-  const segment: SummarySegment = { carrier: -1, visibleFrom: 0 };
+  const segment: SummarySegment = { carrier: -1, visibleFrom: 0, summaryPartIndex: -1 };
   const indexByMessageId = new Map<string, number>();
   for (let i = 0; i < messages.length; i++) {
     const { messageId, content } = messages[i];
@@ -56,16 +58,17 @@ export function findSummarySegment(messages: readonly ContextUpdateMessage[]): S
     if (!Array.isArray(content)) {
       continue;
     }
-    for (const part of content) {
+    content.forEach((part, partIndex) => {
       if (!isUsableSummaryPart(part)) {
-        continue;
+        return;
       }
       const retainedFromMessageId = getRetainedFromMessageId(part);
       const retainedIndex =
         retainedFromMessageId != null ? indexByMessageId.get(retainedFromMessageId) : undefined;
       segment.carrier = i;
       segment.visibleFrom = retainedIndex ?? i;
-    }
+      segment.summaryPartIndex = partIndex;
+    });
   }
   return segment;
 }

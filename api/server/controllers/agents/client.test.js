@@ -8184,6 +8184,218 @@ describe('AgentClient - titleConvo', () => {
         expect(client.buildResponseMetadata()).toBeUndefined();
       });
 
+      describe('signed reasoning of earlier segments', () => {
+        const replay = {
+          anthropic: {
+            model: 'claude-sonnet-4-5',
+            blocks: [{ type: 'thinking', signature: 'SIG_1' }],
+          },
+        };
+        const answer = (messageId, parentMessageId, extra = []) => ({
+          messageId,
+          parentMessageId,
+          sender: 'Assistant',
+          text: 'Answer',
+          isCreatedByUser: false,
+          tokenCount: 5,
+          content: [
+            ...extra,
+            { type: ContentTypes.THINK, think: `plan ${messageId}` },
+            { type: ContentTypes.TEXT, text: 'Answer' },
+          ],
+        });
+        const question = (messageId, parentMessageId, extra = {}) => ({
+          messageId,
+          parentMessageId,
+          sender: 'User',
+          text: 'Question',
+          isCreatedByUser: true,
+          tokenCount: 5,
+          ...extra,
+        });
+        const withReplay = (message) => {
+          const { thinkReplayHash } = require('@librechat/data-schemas');
+          const index = message.content.findIndex((part) => part.type === ContentTypes.THINK);
+          return {
+            ...message,
+            providerItems: {
+              [`think:${index}`]: { hash: thinkReplayHash(message.content[index].think), replay },
+            },
+          };
+        };
+        const replayedIn = (result) =>
+          result.prompt.map((message) => JSON.stringify(message.content).includes('SIG_1'));
+        /** The anchor a segment opened by this agent would have, as a compaction leaves it. */
+        const openAnchor = async () => {
+          models().getConvoContextAnchor.mockResolvedValue(null);
+          await client.buildMessages([question('q0', null)], 'q0', {});
+          return client.pendingContextAnchor.anchor;
+        };
+
+        beforeEach(() => {
+          mockAgent.provider = 'anthropic';
+          mockAgent.model_parameters = { model: 'claude-sonnet-4-5', promptCache: true };
+          models().getConvoContextAnchor.mockResolvedValue([
+            ...ANCHOR,
+            {
+              key: 'segment:model',
+              value: JSON.stringify([
+                mockAgent.provider,
+                mockAgent.endpoint ?? null,
+                'claude-sonnet-4-5',
+              ]),
+            },
+          ]);
+        });
+
+        it('sends the reasoning of every turn while the segment has not changed', async () => {
+          const result = await client.buildMessages(
+            [
+              question('q1', null),
+              withReplay(answer('a1', 'q1')),
+              question('q2', 'a1'),
+              withReplay(answer('a2', 'q2')),
+              question('q3', 'a2'),
+            ],
+            'q3',
+            {},
+          );
+          expect(replayedIn(result)).toEqual([false, true, false, true, false]);
+        });
+
+        it('does not send what was signed before a compaction, but what came after it', async () => {
+          const summary = {
+            type: ContentTypes.SUMMARY,
+            content: [{ type: ContentTypes.TEXT, text: 'Earlier discussion.' }],
+            boundary: { messageId: 'a2', contentIndex: 0 },
+            tokenCount: 5,
+          };
+          models().getConvoContextAnchor.mockResolvedValue(await openAnchor());
+          const result = await client.buildMessages(
+            [
+              question('q1', null),
+              withReplay(answer('a1', 'q1')),
+              question('q2', 'a1'),
+              withReplay(answer('a2', 'q2', [summary])),
+              question('q3', 'a2'),
+              withReplay(answer('a3', 'q3')),
+              question('q4', 'a3'),
+            ],
+            'q4',
+            {},
+          );
+          /** a2 carries the summary and said its reasoning after it, so it stays with a3. */
+          expect(replayedIn(result)).toEqual([false, false, false, true, false, true, false]);
+        });
+
+        it('sends nothing the carrier said when the new anchor differs from the one it ran under', async () => {
+          const summary = {
+            type: ContentTypes.SUMMARY,
+            content: [{ type: ContentTypes.TEXT, text: 'Earlier discussion.' }],
+            boundary: { messageId: 'a2', contentIndex: 0 },
+            tokenCount: 5,
+          };
+          /** The segment before had a tool context the agent no longer has. */
+          models().getConvoContextAnchor.mockResolvedValue([
+            ...(await openAnchor()),
+            { key: 'runtime:gone_tool', value: 'Runtime context of a removed tool.' },
+          ]);
+          const result = await client.buildMessages(
+            [
+              question('q1', null),
+              withReplay(answer('a1', 'q1')),
+              question('q2', 'a1'),
+              withReplay(answer('a2', 'q2', [summary])),
+              question('q3', 'a2'),
+              withReplay(answer('a3', 'q3')),
+              question('q4', 'a3'),
+            ],
+            'q4',
+            {},
+          );
+          expect(replayedIn(result)).toEqual([false, false, false, false, false, true, false]);
+        });
+
+        it('splits the message that carries the summary at the summary part', async () => {
+          models().getConvoContextAnchor.mockResolvedValue(await openAnchor());
+          const { thinkReplayHash } = require('@librechat/data-schemas');
+          const signed = (signature) => ({
+            anthropic: { model: 'claude-sonnet-4-5', blocks: [{ type: 'thinking', signature }] },
+          });
+          const summary = {
+            type: ContentTypes.SUMMARY,
+            content: [{ type: ContentTypes.TEXT, text: 'Earlier discussion.' }],
+            boundary: { messageId: 'a2', contentIndex: 0 },
+            tokenCount: 5,
+          };
+          const carrier = {
+            ...answer('a2', 'q2'),
+            content: [
+              { type: ContentTypes.THINK, think: 'before' },
+              summary,
+              { type: ContentTypes.THINK, think: 'after' },
+              { type: ContentTypes.TEXT, text: 'Answer' },
+            ],
+            providerItems: {
+              'think:0': { hash: thinkReplayHash('before'), replay: signed('SIG_BEFORE') },
+              'think:2': { hash: thinkReplayHash('after'), replay: signed('SIG_AFTER') },
+            },
+          };
+          const result = await client.buildMessages(
+            [
+              question('q1', null),
+              withReplay(answer('a1', 'q1')),
+              question('q2', 'a1'),
+              carrier,
+              question('q3', 'a2'),
+            ],
+            'q3',
+            {},
+          );
+          const sent = JSON.stringify(result.prompt);
+          expect(sent).not.toContain('SIG_BEFORE');
+          expect(sent).not.toContain('SIG_1');
+          expect(sent).toContain('SIG_AFTER');
+        });
+
+        it('does not send what was signed before a model change, but what came after it', async () => {
+          const result = await client.buildMessages(
+            [
+              question('q1', null),
+              withReplay(answer('a1', 'q1')),
+              question('q2', 'a1', {
+                contextAnchor: [
+                  ...ANCHOR,
+                  {
+                    key: 'segment:model',
+                    value: JSON.stringify([
+                      mockAgent.provider,
+                      mockAgent.endpoint ?? null,
+                      'claude-sonnet-4-5',
+                    ]),
+                  },
+                ],
+              }),
+              withReplay(answer('a2', 'q2')),
+              question('q3', 'a2'),
+            ],
+            'q3',
+            {},
+          );
+          expect(replayedIn(result)).toEqual([false, false, false, true, false]);
+        });
+
+        it('sends none when the segment cannot be read', async () => {
+          models().getConvoContextAnchor.mockRejectedValue(new Error('read failed'));
+          const result = await client.buildMessages(
+            [question('q1', null), withReplay(answer('a1', 'q1')), question('q2', 'a1')],
+            'q2',
+            {},
+          );
+          expect(replayedIn(result)).toEqual([false, false, false]);
+        });
+      });
+
       it('reports the reset on the reply when the provider has a prompt cache', async () => {
         mockAgent.provider = 'anthropic';
         mockAgent.model_parameters = { model: 'claude-sonnet-4-5', promptCache: true };

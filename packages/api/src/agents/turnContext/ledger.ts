@@ -20,6 +20,20 @@ export interface TurnPlan {
   anchorTarget?: { messageId: string | null };
   /** Why this turn re-anchored a segment without a compaction (a declared reset). */
   reset?: string[];
+  /**
+   * The first message produced in the segment this turn is part of: what the model said
+   * before it was said under another prefix (before a summary, or before a reset), so
+   * anything bound to that prefix, such as signed reasoning, does not carry over.
+   */
+  segmentStart: number;
+  /**
+   * Index of the summary part in the carrier message that precedes `segmentStart`; -1 when the
+   * segment opened on a reset, or when its anchor differs from the one the carrier ran under.
+   * What that message said after the summary part was said with the summary in the prompt and
+   * under the same system prompt and tools, so its signed reasoning there is part of the
+   * segment.
+   */
+  summaryPartIndex: number;
   /** The `<context_update>` block of each user message that has one, by message index. */
   updates: Map<number, string>;
   /** Entries to store on the user message sent this turn; undefined when none is sent. */
@@ -83,6 +97,8 @@ interface Segment {
   eventsFrom: number;
   /** The first message the model sees. */
   visibleFrom: number;
+  /** Index of the summary part in the carrier; -1 when the carrier is a reset. */
+  summaryPartIndex: number;
 }
 
 /**
@@ -90,13 +106,13 @@ interface Segment {
  * declared reset opens one on the user message that stores its anchor.
  */
 function findSegment(messages: readonly TurnContextMessage[]): Segment {
-  const { carrier, visibleFrom } = findSummarySegment(messages);
+  const { carrier, visibleFrom, summaryPartIndex } = findSummarySegment(messages);
   for (let i = messages.length - 1; i > carrier; i--) {
     if (messages[i].isCreatedByUser === true && messages[i].contextAnchor != null) {
-      return { carrier: i, eventsFrom: i, visibleFrom };
+      return { carrier: i, eventsFrom: i, visibleFrom, summaryPartIndex: -1 };
     }
   }
-  return { carrier, eventsFrom: carrier + 1, visibleFrom };
+  return { carrier, eventsFrom: carrier + 1, visibleFrom, summaryPartIndex };
 }
 
 /** The anchor the segment before `carrier` started from, which orders a new one. */
@@ -107,6 +123,13 @@ function previousAnchor(
 ): readonly ContextEntry[] | null | undefined {
   const earlier = findSegment(messages.slice(0, carrier)).carrier;
   return earlier >= 0 ? messages[earlier].contextAnchor : conversationAnchor;
+}
+
+function sameEntries(a: readonly ContextEntry[], b: readonly ContextEntry[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((entry, i) => entry.key === b[i].key && entry.value === b[i].value)
+  );
 }
 
 /**
@@ -210,7 +233,7 @@ export function planTurnContext({
 }): TurnPlan {
   const segment = findSegment(messages);
   const { visibleFrom } = segment;
-  let { carrier, eventsFrom } = segment;
+  let { carrier, eventsFrom, summaryPartIndex } = segment;
   const stored = carrier >= 0 ? messages[carrier].contextAnchor : conversationAnchor;
   const storedAnchor = stored != null ? readEntries(stored) : undefined;
   const sendSnapshot: SendSnapshot = {
@@ -235,6 +258,7 @@ export function planTurnContext({
     reset = resets;
     carrier = currentIndex as number;
     eventsFrom = carrier;
+    summaryPartIndex = -1;
   } else if (storedAnchor != null) {
     anchor = storedAnchor;
   } else if (carrier < 0) {
@@ -245,6 +269,19 @@ export function planTurnContext({
     anchor = reanchor(previous, live);
     const messageId = messages[carrier].messageId;
     anchorTarget = typeof messageId === 'string' && messageId !== '' ? { messageId } : undefined;
+  }
+
+  /**
+   * The turn that compacted ran under the anchor of the segment before it; the anchor of the new
+   * segment is derived afterwards, from the live state. What the carrier said after its summary
+   * part is bound to the old system prompt and tools, so it is only part of the segment when
+   * the new anchor renders the same.
+   */
+  if (
+    summaryPartIndex >= 0 &&
+    !sameEntries(readEntries(previousAnchor(messages, carrier, conversationAnchor)), anchor)
+  ) {
+    summaryPartIndex = -1;
   }
 
   const known = new Map<string, string>();
@@ -324,6 +361,8 @@ export function planTurnContext({
     anchor,
     anchorTarget,
     ...(reset != null && { reset }),
+    segmentStart: carrier + 1,
+    summaryPartIndex,
     updates,
     currentEntries,
     withheld,

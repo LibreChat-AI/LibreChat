@@ -873,6 +873,7 @@ describe('signed reasoning of think parts', () => {
     expect(delta.delta.content[0]).toHaveProperty('provider_replay');
     const plain = { id: 'step_1', delta: { content: [{ type: 'think', think: 'x' }] } };
     expect(omitReasoningReplayFromDelta(plain)).toBe(plain);
+    expect(omitReasoningReplayFromDelta(delta, false)).toBe(delta);
     expect(omitReasoningReplayFromDelta(undefined)).toBeUndefined();
   });
 

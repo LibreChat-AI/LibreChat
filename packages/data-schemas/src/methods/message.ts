@@ -1243,7 +1243,7 @@ export function createMessageMethods(
       const split = splitProviderItems(update.content);
       if (split != null) {
         update.content = split.content;
-        if (params.isCreatedByUser !== true && Object.keys(split.providerItems).length > 0) {
+        if (params.isCreatedByUser !== true && split.providerItems != null) {
           update.providerItems = split.providerItems;
         }
       }
