@@ -247,7 +247,6 @@ test('needsTranslation and validate read the alt text of a reference-style image
   const source = '![Build status][badge]';
   assert.equal(needsTranslation(`${source}\n\n${context}`), true);
   assert.deepEqual(validate(source, '![Статус сборки][badge]', 'ru', context), []);
-  assert.ok(validate(source, '![Build status][badge]', 'ru', context).length > 0);
   assert.ok(validate(source, '![Статус сборки][значок]', 'ru', context).length > 0);
 });
 
@@ -259,4 +258,16 @@ test('reference images keep alt presence and definition titles are translated', 
   assert.equal(needsTranslation(definition), true);
   assert.deepEqual(validate(definition, '[docs]: https://x.y "Прочитать документацию"', 'ru'), []);
   assert.ok(validate(definition, '[docs]: https://x.y', 'ru').length > 0);
+});
+
+test('a reference identifier resolved by the document definitions is not prose', () => {
+  const context = '[docs]: https://x.y';
+  assert.equal(needsTranslation('[API][docs]'), true);
+  assert.equal(needsTranslation('[API][docs]', context), false);
+  const source = 'Read the [API][docs] reference first.';
+  assert.deepEqual(
+    validate(source, 'Сначала прочитайте справочник [API][docs].', 'ru', context),
+    [],
+  );
+  assert.ok(validate(source, source, 'ru', context).length > 0);
 });

@@ -112,7 +112,7 @@ for (const code of langs) {
   const next = {};
   const pending = [];
   for (const chunk of chunks) {
-    if (isSwitcher(chunk) || !needsTranslation(chunk)) continue;
+    if (isSwitcher(chunk) || !needsTranslation(chunk, context)) continue;
     const key = hash(chunk);
     const cached = reusable(previous[key], chunk, code, context);
     if (cached !== undefined) next[key] = cached;
@@ -127,7 +127,7 @@ for (const code of langs) {
   const body = units
     .map(({ text, joiner }, index) => {
       const part = isSwitcher(text) ? renderSwitcher(code, available) : text;
-      const out = !isSwitcher(text) && needsTranslation(text) ? next[hash(text)] : part;
+      const out = !isSwitcher(text) && needsTranslation(text, context) ? next[hash(text)] : part;
       return index === 0 ? out : joiner + out;
     })
     .join('');
@@ -136,7 +136,7 @@ for (const code of langs) {
   outputs[file] = `${notice}\n\n${body}\n`;
   cache[code] = Object.fromEntries(
     chunks
-      .filter((chunk) => !isSwitcher(chunk) && needsTranslation(chunk))
+      .filter((chunk) => !isSwitcher(chunk) && needsTranslation(chunk, context))
       .map((chunk) => [hash(chunk), next[hash(chunk)]]),
   );
 }

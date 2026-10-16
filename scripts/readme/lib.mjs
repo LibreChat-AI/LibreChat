@@ -129,11 +129,15 @@ function walk(node, visit) {
 /** Nodes whose alt text or title a reader sees. */
 const LABELED_NODES = new Set(['image', 'imageReference', 'link', 'definition']);
 
-/** Words a reader sees: text, image alt, and alt, title and aria-label values, minus glossary terms. */
-function proseWords(markdown, withAttributes = true) {
+/**
+ * Words a reader sees: text, image alt, and alt, title and aria-label values, minus glossary terms.
+ * `context` resolves reference links without contributing words of its own.
+ */
+function proseWords(markdown, context = '', withAttributes = true) {
   const parts = [];
   let rawCode = 0;
-  walk(parse(markdown), (node) => {
+  walk(parse(context ? `${markdown}\n\n${context}` : markdown), (node) => {
+    if (node.position && node.position.start.offset >= markdown.length) return;
     if (node.type === 'html') rawCode = Math.max(rawCode + rawCodeDelta(node.value), 0);
     if (node.type === 'text' && rawCode === 0) parts.push(node.value);
     else if (withAttributes && LABELED_NODES.has(node.type)) {
@@ -155,7 +159,8 @@ function proseWords(markdown, withAttributes = true) {
 }
 
 /** True when a chunk holds prose worth sending to the model. */
-export const needsTranslation = (markdown) => proseWords(markdown).length > 0;
+export const needsTranslation = (markdown, context = '') =>
+  proseWords(markdown, context).length > 0;
 
 const normalizeTag = (tag) =>
   tag.startsWith('<!--')
@@ -251,14 +256,19 @@ export function validate(source, translated, code, context = '') {
     problems.push(`structure differs near ${near}`);
   }
   const script = LANGUAGES[code]?.script;
-  const words = proseWords(source);
+  const words = proseWords(source, context);
   const sameWords = (a, b) => a.length === b.length && a.every((word, index) => word === b[index]);
-  if (script && proseWords(source, false).length > 0 && sameWords(words, proseWords(translated))) {
+  if (
+    script &&
+    proseWords(source, context, false).length > 0 &&
+    sameWords(words, proseWords(translated, context))
+  ) {
     problems.push('output is unchanged');
   }
   if (
     script &&
-    (proseWords(source, false).length > 0 || words.length >= MIN_WORDS_FOR_CONTENT_CHECK) &&
+    (proseWords(source, context, false).length > 0 ||
+      words.length >= MIN_WORDS_FOR_CONTENT_CHECK) &&
     !script.test(translated)
   ) {
     problems.push(
@@ -268,7 +278,7 @@ export function validate(source, translated, code, context = '') {
   if (script && words.length >= MIN_WORDS_FOR_CONTENT_CHECK) {
     if (translated.length < source.length * MIN_LENGTH_RATIO) problems.push('output is truncated');
     const plain = commonWords(words);
-    const kept = new Set(proseWords(translated).map((word) => word.toLowerCase()));
+    const kept = new Set(proseWords(translated, context).map((word) => word.toLowerCase()));
     const share = plain.filter((word) => kept.has(word)).length / (plain.length || 1);
     if (plain.length >= MIN_WORDS_FOR_CONTENT_CHECK && share > MAX_UNTRANSLATED_SHARE) {
       problems.push('output is mostly untranslated');
