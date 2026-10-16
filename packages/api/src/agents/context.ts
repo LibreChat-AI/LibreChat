@@ -15,7 +15,29 @@ export type AgentWithTools = Pick<Agent, 'id'> &
     tools?: Array<DynamicStructuredTool | string>;
     /** Serializable tool definitions for event-driven mode */
     toolDefinitions?: LCTool[];
+    /**
+     * Set by `applyContextToAgent` when the run context is given as parts:
+     * `additional_instructions` without the volatile parts, the volatile parts, and the
+     * `additional_instructions` they were split from. A later edit to
+     * `additional_instructions` makes the split stale, which `createRun` detects by comparing.
+     */
+    stable_additional_instructions?: string;
+    volatile_instructions?: string;
+    split_additional_instructions?: string;
   };
+
+/** One piece of run context; volatile pieces must stay out of the cacheable prefix. */
+export interface RunContextPart {
+  text?: string | null;
+  volatile?: boolean;
+}
+
+function joinRunContext(parts: readonly RunContextPart[], volatile: boolean | undefined): string {
+  return parts
+    .filter((part) => part.text && (volatile === undefined || Boolean(part.volatile) === volatile))
+    .map((part) => part.text)
+    .join('\n\n');
+}
 
 /**
  * Extracts unique MCP server names from an agent's tools or tool definitions.
@@ -149,7 +171,7 @@ export async function applyContextToAgent({
   configServers,
 }: {
   agent: AgentWithTools;
-  sharedRunContext: string;
+  sharedRunContext: string | readonly RunContextPart[];
   mcpManager: MCPManager;
   ephemeralAgent?: TEphemeralAgent;
   agentId?: string;
@@ -158,6 +180,21 @@ export async function applyContextToAgent({
 }): Promise<void> {
   const baseInstructions = agent.instructions || '';
   const additionalInstructions = agent.additional_instructions || '';
+  const runContext =
+    typeof sharedRunContext === 'string'
+      ? sharedRunContext
+      : joinRunContext(sharedRunContext, undefined);
+  const recordSplit = (): void => {
+    if (typeof sharedRunContext === 'string') {
+      return;
+    }
+    agent.stable_additional_instructions = buildAgentAdditionalInstructions({
+      additionalInstructions,
+      sharedRunContext: joinRunContext(sharedRunContext, false),
+    });
+    agent.volatile_instructions = joinRunContext(sharedRunContext, true).trim() || undefined;
+    agent.split_additional_instructions = agent.additional_instructions ?? undefined;
+  };
 
   try {
     const mcpServers = ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent);
@@ -174,8 +211,9 @@ export async function applyContextToAgent({
     });
     agent.additional_instructions = buildAgentAdditionalInstructions({
       additionalInstructions,
-      sharedRunContext,
+      sharedRunContext: runContext,
     });
+    recordSplit();
 
     if (agentId && logger) {
       logger.debug('[AgentContext] Applied context to agent');
@@ -187,8 +225,9 @@ export async function applyContextToAgent({
     });
     agent.additional_instructions = buildAgentAdditionalInstructions({
       additionalInstructions,
-      sharedRunContext,
+      sharedRunContext: runContext,
     });
+    recordSplit();
 
     if (logger) {
       logger.error('[AgentContext] Failed to apply context; using base instructions only');

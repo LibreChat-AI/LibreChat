@@ -125,7 +125,9 @@ import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
-import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { prepareQueuedCodeFileContext, QUEUED_CODE_FILES_CONTEXT_KEY } from '~/files/code/queued';
+import { planInstructions, joinInstructionMap } from '~/agents/instructionPlan';
+import { isStableContextEnabled } from '~/agents/promptCache';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -447,6 +449,10 @@ type RunAgent = Omit<Agent, 'tools'> & {
   imageDetail?: ImageDetail;
   toolContextMap?: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
+  /** How `applyContextToAgent` split `additional_instructions` into stable and volatile parts. */
+  stable_additional_instructions?: string;
+  volatile_instructions?: string;
+  split_additional_instructions?: string;
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -2483,20 +2489,22 @@ export async function createRun({
       modelCallbacks,
     );
 
-    const joinInstructionMap = (map?: Record<string, unknown>) =>
-      Object.values(map ?? {})
-        .filter((value): value is string => typeof value === 'string' && value !== '')
-        .join('\n')
-        .trim();
-
-    const toolInstructions = joinInstructionMap(agent.toolContextMap);
-    const dynamicToolInstructions = joinInstructionMap(agent.dynamicToolContextMap);
-
-    const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
-
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
-      .join('\n')
-      .trim();
+    const instructionPlan = planInstructions({
+      stableContext: isStableContextEnabled(appConfig),
+      isSubagent,
+      provider,
+      clientOptions: llmConfig,
+      toolInstructions: joinInstructionMap(agent.toolContextMap),
+      instructions: agent.instructions,
+      additionalInstructions: agent.additional_instructions,
+      dynamicContextMap: agent.dynamicToolContextMap,
+      oneTurnContextKey: QUEUED_CODE_FILES_CONTEXT_KEY,
+      split: {
+        stable: agent.stable_additional_instructions,
+        volatile: agent.volatile_instructions,
+        source: agent.split_additional_instructions,
+      },
+    });
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2627,8 +2635,8 @@ export async function createRun({
       agentId: agent.id,
       tools,
       clientOptions: llmConfig,
-      instructions: systemContent,
-      additional_instructions: additionalInstructions || undefined,
+      instructions: instructionPlan.instructions,
+      additional_instructions: instructionPlan.additionalInstructions,
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,

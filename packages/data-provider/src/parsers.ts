@@ -510,6 +510,33 @@ export function replaceSpecialVars({
   return result;
 }
 
+export type PromptTimestampPrecision = 'date' | 'minute' | 'second';
+
+const PROMPT_TIMESTAMP_FORMATS: Record<PromptTimestampPrecision, string> = {
+  date: 'YYYY-MM-DD',
+  minute: 'YYYY-MM-DD HH:mm Z',
+  second: 'YYYY-MM-DD HH:mm:ss Z',
+};
+
+/**
+ * Formats an instant for model-facing prompt context, e.g.
+ * `2024-01-15 13:30 -05:00 (Mon)`. Uses the user's IANA timezone, or UTC when
+ * it is missing or invalid, so the output depends only on its inputs and never
+ * on the server's local zone.
+ */
+export function formatPromptTimestamp({
+  now,
+  timezone,
+  precision = 'minute',
+}: {
+  now: string | number | Date;
+  timezone?: string;
+  precision?: PromptTimestampPrecision;
+}): string {
+  const value = applyTimezone(dayjs(now).utc(), timezone);
+  return `${value.format(PROMPT_TIMESTAMP_FORMATS[precision])} (${value.format('ddd')})`;
+}
+
 /**
  * Parsed ephemeral agent ID result
  */
