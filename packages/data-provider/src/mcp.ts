@@ -248,6 +248,14 @@ const BaseOptionsSchema = z.object({
    */
   serverInstructions: z.union([z.boolean(), z.string()]).optional(),
   /**
+   * When true, every tool from this MCP server defaults to deferred loading:
+   * the model receives the `tool_search` tool plus a name-only listing instead
+   * of each tool's full schema. Sets the default for each tool's `defer_loading`;
+   * a per-agent `tool_options[toolId].defer_loading` (true OR false) overrides it.
+   * Requires the `deferred_tools` agent capability to be enabled.
+   */
+  deferLoading: z.boolean().optional(),
+  /**
    * Whether this server requires OAuth authentication
    * If not specified, will be auto-detected during construction
    */

@@ -739,6 +739,9 @@ export function redactServerSecrets(
     inspectionFailed: config.inspectionFailed,
     customUserVars: config.customUserVars,
     serverInstructions: config.serverInstructions,
+    /** Operator-set context-saving default; the agent panel renders it as the
+     *  inherited state of each tool's defer checkbox. */
+    deferLoading: config.deferLoading,
     /** Safe derived metadata: it exposes no placeholder-bearing value, but lets
      *  clients attach tools that can only be discovered during a chat turn. */
     requestScoped: requiresEphemeralUserConnection(config) || undefined,

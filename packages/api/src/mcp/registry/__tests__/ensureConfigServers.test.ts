@@ -209,6 +209,22 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
     expect(inspectSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('should lazy-init YAML server when admin overrides only the deferLoading field', async () => {
+    await registry.addServer('yaml_remote', sseConfig, 'CACHE');
+    inspectSpy.mockClear();
+
+    const overrideConfig: t.MCPOptions = {
+      ...sseConfig,
+      deferLoading: true,
+    } as t.MCPOptions;
+    const result = await registry.ensureConfigServers({
+      yaml_remote: overrideConfig,
+    });
+
+    expect(result).toHaveProperty('yaml_remote');
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('should not re-init YAML server when only the difference is an inspector-derived field absent from rawConfig', async () => {
     const yamlWithInferred: t.MCPOptions = {
       ...sseConfig,
