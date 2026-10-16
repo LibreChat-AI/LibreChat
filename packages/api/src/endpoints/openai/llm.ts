@@ -634,6 +634,7 @@ export function getOpenAILLMConfig({
     promptCacheTtl,
     frequency_penalty,
     presence_penalty,
+    top_p,
     ...modelOptions
   } = cleanedModelOptions as Partial<
     t.OpenAIParameters & { promptCache?: boolean; promptCacheTtl?: '5m' | '1h' }
@@ -652,6 +653,9 @@ export function getOpenAILLMConfig({
   }
   if (presence_penalty != null) {
     llmConfig.presencePenalty = presence_penalty;
+  }
+  if (top_p != null && llmConfig.topP == null) {
+    llmConfig.topP = top_p;
   }
 
   const modelKwargs: Record<string, unknown> = {};
