@@ -5,10 +5,12 @@ import {
   LANGUAGES,
   buildMessages,
   cleanOutput,
+  definitions,
   hash,
   isSwitcher,
   needsTranslation,
   renderSwitcher,
+  reusable,
   splitChunks,
   validate,
 } from './lib.mjs';
@@ -63,12 +65,12 @@ async function complete(code, chunk) {
   return cleanOutput(content);
 }
 
-async function translate(code, chunk) {
+async function translate(code, chunk, context) {
   let reason = '';
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     try {
       const output = await complete(code, chunk);
-      const problems = validate(chunk, output, code);
+      const problems = validate(chunk, output, code, context);
       if (problems.length === 0) return output;
       reason = problems.join('; ');
     } catch (error) {
@@ -94,6 +96,7 @@ const readIfExists = async (file) => readFile(file, 'utf8').catch(() => null);
 const source = await readFile(SOURCE, 'utf8');
 const units = splitChunks(source);
 const chunks = units.map((unit) => unit.text);
+const context = definitions(source);
 const stored = JSON.parse((await readIfExists(CACHE)) ?? '{}');
 const cache = { version: 1 };
 const outputs = {};
@@ -111,14 +114,15 @@ for (const code of langs) {
   for (const chunk of chunks) {
     if (isSwitcher(chunk) || !needsTranslation(chunk)) continue;
     const key = hash(chunk);
-    if (previous[key] !== undefined) next[key] = previous[key];
+    const cached = reusable(previous[key], chunk, code, context);
+    if (cached !== undefined) next[key] = cached;
     else if (!pending.some((item) => item.key === key)) pending.push({ key, chunk });
   }
   console.log(
     `${code}: ${pending.length} chunk(s) to translate, ${Object.keys(next).length} cached`,
   );
   await pool(pending, async ({ key, chunk }) => {
-    next[key] = await translate(code, chunk);
+    next[key] = await translate(code, chunk, context);
   });
   const body = units
     .map(({ text, joiner }, index) => {

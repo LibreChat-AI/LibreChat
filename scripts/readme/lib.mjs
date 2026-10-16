@@ -79,6 +79,21 @@ export function splitChunks(markdown) {
   return chunks;
 }
 
+/**
+ * Every link reference definition in a document. A chunk is validated with these appended, so a
+ * reference-style link resolves the same way it does in the whole README.
+ */
+export function definitions(markdown) {
+  const text = markdown.replace(/\r\n/g, '\n');
+  const found = [];
+  walk(parse(text), (node) => {
+    if (node.type === 'definition') {
+      found.push(text.slice(node.position.start.offset, node.position.end.offset));
+    }
+  });
+  return found.join('\n');
+}
+
 const SWITCHER_ITEM = '(?:<strong>[^<]+</strong>|<a href="README(?:\\.\\w+)?\\.md">[^<]+</a>)';
 const SWITCHER = new RegExp(`^<p align="center">\\s*(?:${SWITCHER_ITEM}\\s*·?\\s*)+</p>$`);
 
@@ -211,12 +226,14 @@ const commonWords = (words) => words.filter((word) => /^[a-z]{4,}$/.test(word));
 /**
  * Returns a list of problems with a translation: any difference in structure, links, code or
  * attributes from its source, and output that is empty, short, or not in the target language.
+ * `context` holds the document's reference definitions (see `definitions`).
  */
-export function validate(source, translated, code) {
+export function validate(source, translated, code, context = '') {
   const problems = [];
   if (translated.trim() === '') return ['output is empty'];
-  const a = skeleton(source);
-  const b = skeleton(translated);
+  const withContext = (markdown) => (context ? `${markdown}\n\n${context}` : markdown);
+  const a = skeleton(withContext(source));
+  const b = skeleton(withContext(translated));
   const at = a.findIndex((token, index) => token !== b[index]);
   if (at !== -1 || a.length !== b.length) {
     const near = (a[Math.max(at, 0)] ?? b[Math.max(at, 0)] ?? '').slice(0, 60);
@@ -248,6 +265,12 @@ export function validate(source, translated, code) {
   }
   return problems;
 }
+
+/** A cached translation that still passes the current `validate`, else undefined to retranslate. */
+export const reusable = (cached, source, code, context = '') =>
+  typeof cached === 'string' && validate(source, cached, code, context).length === 0
+    ? cached
+    : undefined;
 
 /** Drops a code fence the model sometimes wraps around its answer. */
 export function cleanOutput(text) {

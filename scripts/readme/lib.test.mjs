@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   cleanOutput,
+  definitions,
   isSwitcher,
   needsTranslation,
   renderSwitcher,
+  reusable,
   splitChunks,
   validate,
 } from './lib.mjs';
@@ -192,4 +194,26 @@ test('validate compares HTML comment contents exactly', () => {
   const source = '<!-- omit from toc -->\n\n## Heading text here';
   assert.ok(validate(source, '<!-- пропустить -->\n\n## Заголовок здесь', 'ru').length > 0);
   assert.deepEqual(validate(source, '<!-- omit from toc -->\n\n## Заголовок здесь', 'ru'), []);
+});
+
+test('validate resolves reference links against the document definitions', () => {
+  const source = 'Read the [setup guide][setup] before you start.';
+  const context = definitions(`${source}\n\n[setup]: https://x.y`);
+  assert.equal(context, '[setup]: https://x.y');
+  const renamed = 'Прочитайте [руководство][документация] перед началом.';
+  assert.ok(validate(source, renamed, 'ru').length === 0, 'without context the reference is text');
+  assert.ok(validate(source, renamed, 'ru', context).length > 0);
+  assert.deepEqual(
+    validate(source, 'Прочитайте [руководство][setup] перед началом.', 'ru', context),
+    [],
+  );
+});
+
+test('reusable keeps a valid cached translation and drops a stale or malformed one', () => {
+  const source = 'Read the setup guide before you start.';
+  const good = 'Прочитайте руководство по установке перед началом.';
+  assert.equal(reusable(good, source, 'ru'), good);
+  assert.equal(reusable(source, source, 'ru'), undefined);
+  assert.equal(reusable({ text: good }, source, 'ru'), undefined);
+  assert.equal(reusable(undefined, source, 'ru'), undefined);
 });
