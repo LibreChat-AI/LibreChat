@@ -17,7 +17,7 @@ export {
 } from './audit';
 export { resolveConfigSecret, redactConfigSecretMaps } from './secrets';
 export type { AdminConfigDeps } from './config';
-export type { AdminLangfuseDeps } from './langfuse';
+export type { AdminLangfuseDeps, LangfuseAdminConfig } from './langfuse';
 export type { AdminGrantsDeps, GrantPrincipalType } from './grants';
 export type { AdminGroupsDeps } from './groups';
 export type {

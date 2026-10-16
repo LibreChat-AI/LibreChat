@@ -1,15 +1,11 @@
 const express = require('express');
-const {
-  ioredisClient,
-  createDistributedLock,
-  createAdminLangfuseHandlers,
-} = require('@librechat/api');
+const { createAdminLangfuseHandlers } = require('@librechat/api');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const {
   hasConfigCapability,
   requireCapability,
 } = require('~/server/middleware/roles/capabilities');
-const { grantPermission } = require('~/server/services/PermissionService');
+const { syncLangfusePromptCatalog } = require('~/server/services/LangfusePromptSync');
 const { invalidateConfigCaches } = require('~/server/services/Config');
 const configMiddleware = require('~/server/middleware/config/app');
 const { requireJwtAuth } = require('~/server/middleware');
@@ -19,13 +15,6 @@ const router = express.Router();
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
 const requireManagePrompts = requireCapability(SystemCapabilities.MANAGE_PROMPTS);
-
-// Shared across every sync request this process handles, the same way the
-// cache clients it wraps are shared; a Redis client makes the lock coordinate
-// across every LibreChat node, and `ioredisClient` is null when Redis is not
-// configured, so the factory falls back to the in-process lock already
-// relied on for other single-node deployments.
-const lock = createDistributedLock({ redisClient: ioredisClient });
 
 async function requireLangfuseManage(req, res, next) {
   try {
@@ -53,11 +42,7 @@ const handlers = createAdminLangfuseHandlers({
   patchConfigFields: db.patchConfigFields,
   toggleConfigActive: db.toggleConfigActive,
   getMessages: db.getMessages,
-  findLangfusePromptGroup: db.findLangfusePromptGroup,
-  createLangfusePromptGroup: db.createLangfusePromptGroup,
-  deletePromptGroup: db.deletePromptGroup,
-  lock,
-  grantPermission,
+  syncPromptCatalog: syncLangfusePromptCatalog,
   invalidateConfigCaches,
   recordAuditEntry: db.recordAuditEntry,
 });

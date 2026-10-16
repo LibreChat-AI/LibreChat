@@ -29,21 +29,21 @@ const mockHandlers = {
     res.status(200).json({ handler: 'prompt', name: req.params.name }),
   ),
 };
-const mockGrantPermission = jest.fn();
-const mockLock = { acquire: jest.fn(), extend: jest.fn(), release: jest.fn() };
-const mockCreateDistributedLock = jest.fn(() => mockLock);
+const mockSyncPromptCatalog = jest.fn();
+const mockLogger = { warn: jest.fn(), error: jest.fn() };
 
 jest.mock('@librechat/data-schemas', () => ({
+  logger: mockLogger,
   SystemCapabilities: { ACCESS_ADMIN: 'access:admin', MANAGE_PROMPTS: 'manage:prompts' },
 }));
 
-const mockLibrechatApi = {
+jest.mock('@librechat/api', () => ({
   createAdminLangfuseHandlers: jest.fn(() => mockHandlers),
-  createDistributedLock: mockCreateDistributedLock,
-  ioredisClient: null,
-};
+}));
 
-jest.mock('@librechat/api', () => mockLibrechatApi);
+jest.mock('~/server/services/LangfusePromptSync', () => ({
+  syncLangfusePromptCatalog: mockSyncPromptCatalog,
+}));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
   requireCapability: mockRequireCapability,
@@ -56,10 +56,6 @@ jest.mock('~/server/middleware', () => ({
 
 jest.mock('~/server/services/Config', () => ({
   invalidateConfigCaches: jest.fn(),
-}));
-
-jest.mock('~/server/services/PermissionService', () => ({
-  grantPermission: mockGrantPermission,
 }));
 
 const mockConfigMiddleware = jest.fn((req, _res, next) => {
@@ -78,9 +74,6 @@ jest.mock('~/models', () => ({
   patchConfigFields: jest.fn(),
   toggleConfigActive: jest.fn(),
   getMessages: jest.fn(),
-  findLangfusePromptGroup: jest.fn(),
-  createLangfusePromptGroup: jest.fn(),
-  deletePromptGroup: jest.fn(),
 }));
 
 describe('admin Langfuse routes', () => {
@@ -93,16 +86,14 @@ describe('admin Langfuse routes', () => {
     return app;
   }
 
-  // The router module builds its lock and handler dependencies once, at
-  // `require` time, not per request. `createApp()` only reloads the module
-  // the first time it runs in this file (later `beforeEach` clears already
-  // took effect by the time any other test observes it), so this captures
-  // that one load's dependency wiring before anything can clear it.
-  let lockDepsAtLoad;
+  // The router module builds its handler dependencies once, at `require`
+  // time, not per request. `createApp()` only reloads the module the first
+  // time it runs in this file (later `beforeEach` clears already took effect
+  // by the time any other test observes it), so this captures that one
+  // load's dependency wiring before anything can clear it.
   let handlerDepsAtLoad;
   beforeAll(() => {
     createApp();
-    lockDepsAtLoad = mockCreateDistributedLock.mock.calls[0]?.[0];
     const { createAdminLangfuseHandlers } = require('@librechat/api');
     handlerDepsAtLoad = createAdminLangfuseHandlers.mock.calls[0]?.[0];
   });
@@ -237,31 +228,13 @@ describe('admin Langfuse routes', () => {
     expect(mockConfigMiddleware).not.toHaveBeenCalled();
   });
 
-  it('builds the lock with no Redis client when none is configured, and passes it with the other prompt-sync dependencies to the handler factory', () => {
-    const db = require('~/models');
-
-    expect(lockDepsAtLoad).toEqual({ redisClient: null });
-    expect(handlerDepsAtLoad).toMatchObject({
-      findLangfusePromptGroup: db.findLangfusePromptGroup,
-      createLangfusePromptGroup: db.createLangfusePromptGroup,
-      deletePromptGroup: db.deletePromptGroup,
-      lock: mockLock,
-      grantPermission: mockGrantPermission,
-    });
-  });
-
-  it('passes the shared Redis client to the lock factory when one is configured', () => {
-    const sentinel = {};
-    mockLibrechatApi.ioredisClient = sentinel;
-
-    try {
-      jest.isolateModules(() => {
-        require('./langfuse');
-      });
-      expect(mockCreateDistributedLock).toHaveBeenCalledWith({ redisClient: sentinel });
-    } finally {
-      mockLibrechatApi.ioredisClient = null;
-    }
+  it('passes the composed Langfuse prompt-sync runner to the handler factory, not its dependencies', () => {
+    expect(handlerDepsAtLoad).toMatchObject({ syncPromptCatalog: mockSyncPromptCatalog });
+    expect(handlerDepsAtLoad).not.toHaveProperty('lock');
+    expect(handlerDepsAtLoad).not.toHaveProperty('grantPermission');
+    expect(handlerDepsAtLoad).not.toHaveProperty('findLangfusePromptGroup');
+    expect(handlerDepsAtLoad).not.toHaveProperty('createLangfusePromptGroup');
+    expect(handlerDepsAtLoad).not.toHaveProperty('deletePromptGroup');
   });
 
   it('requires manage:prompts access, in addition to Langfuse manage access, for POST /prompts/sync', async () => {

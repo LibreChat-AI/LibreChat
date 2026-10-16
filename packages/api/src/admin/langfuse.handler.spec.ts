@@ -3,7 +3,6 @@ process.env.CREDS_KEY =
 
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
-import type { DistributedLock } from '~/cache/lock';
 
 // Loaded via dynamic import in beforeAll so the crypto module initializes
 // after CREDS_KEY is set above (encryptV3 reads the key at module load).
@@ -174,19 +173,6 @@ function baseConfigDoc(langfuse: Record<string, unknown>) {
   };
 }
 
-/** A lock that always acquires on the first call and records its release, so
- *  most handler tests never think about locking. Tests that exercise the
- *  lock's own outcomes (`already_running`, release-on-every-path) override
- *  `acquire`/`extend` through `createHandlers`'s `lock` override. */
-function createFakeLock(overrides: Partial<DistributedLock> = {}): DistributedLock {
-  return {
-    acquire: jest.fn().mockResolvedValue('token-1'),
-    extend: jest.fn().mockResolvedValue(true),
-    release: jest.fn().mockResolvedValue(undefined),
-    ...overrides,
-  };
-}
-
 function createHandlers(overrides = {}) {
   const deps = {
     findConfigByPrincipal: jest.fn().mockResolvedValue(null),
@@ -202,11 +188,9 @@ function createHandlers(overrides = {}) {
       }),
     ),
     getMessages: jest.fn().mockResolvedValue([]),
-    findLangfusePromptGroup: jest.fn().mockResolvedValue(null),
-    createLangfusePromptGroup: jest.fn().mockResolvedValue({ _id: 'group-1' }),
-    deletePromptGroup: jest.fn().mockResolvedValue({ message: 'Prompt group deleted' }),
-    lock: createFakeLock(),
-    grantPermission: jest.fn().mockResolvedValue(undefined),
+    syncPromptCatalog: jest
+      .fn()
+      .mockResolvedValue({ ok: true, value: { created: 0, unchanged: 0, skipped: 0 } }),
     invalidateConfigCaches: jest.fn().mockResolvedValue(undefined),
     recordConnectionUpdate: jest.fn(),
     ...overrides,
@@ -2202,6 +2186,18 @@ describe('createAdminLangfuseHandlers', () => {
       return mockReq({ config: { langfuse: tenantSyncConnection() }, ...overrides });
     }
 
+    /** The runner invocation the handler made; the handler calls it once per
+     *  request that passes every gate. */
+    function runnerRequest(deps: { syncPromptCatalog: jest.Mock }) {
+      expect(deps.syncPromptCatalog).toHaveBeenCalledTimes(1);
+      return deps.syncPromptCatalog.mock.calls[0][0] as {
+        source: { destination: string; projectId: string; tenantId?: string };
+        listPrompts: (query: { type: 'text'; limit: number; page: number }) => Promise<unknown>;
+        lockLeaseMs: number;
+        maxPages: number;
+      };
+    }
+
     it('returns 404 when prompt sync is not available at all', async () => {
       const { handlers, deps } = createHandlers();
       const res = mockRes();
@@ -2210,7 +2206,7 @@ describe('createAdminLangfuseHandlers', () => {
 
       expect(res.statusCode).toBe(404);
       expect(global.fetch).not.toHaveBeenCalled();
-      expect(deps.lock.acquire).not.toHaveBeenCalled();
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
     });
 
     it('returns 404 when available but the tenant switch is off', async () => {
@@ -2225,7 +2221,7 @@ describe('createAdminLangfuseHandlers', () => {
       await handlers.syncPrompts(syncReq(), res);
 
       expect(res.statusCode).toBe(404);
-      expect(deps.lock.acquire).not.toHaveBeenCalled();
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
     });
 
     it('returns 409 not_configured when no connection resolves', async () => {
@@ -2244,7 +2240,7 @@ describe('createAdminLangfuseHandlers', () => {
 
       expect(res.statusCode).toBe(409);
       expect(res.body).toEqual({ code: 'not_configured' });
-      expect(deps.lock.acquire).not.toHaveBeenCalled();
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
     });
 
     it('returns 409 not_configured when the connection resolves but the source identity has no project id', async () => {
@@ -2259,13 +2255,86 @@ describe('createAdminLangfuseHandlers', () => {
       expect(res.statusCode).toBe(409);
       expect(res.body).toEqual({ code: 'not_configured' });
       expect(global.fetch).not.toHaveBeenCalled();
-      expect(deps.lock.acquire).not.toHaveBeenCalled();
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
     });
 
-    it('returns 409 already_running when the lock is already held, without listing a single prompt', async () => {
+    it('runs the sync with the source identity, the default lease and page cap, and returns its counts', async () => {
       process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
       const { handlers, deps } = createSyncHandlers({
-        lock: createFakeLock({ acquire: jest.fn().mockResolvedValue(null) }),
+        syncPromptCatalog: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: { created: 2, unchanged: 1, skipped: 0 } }),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ created: 2, unchanged: 1, skipped: 0 });
+      expect(deps.syncPromptCatalog).toHaveBeenCalledWith({
+        source: { destination: 'eu', projectId: 'project-1', tenantId: 't1' },
+        listPrompts: expect.any(Function),
+        lockLeaseMs: 300_000,
+        maxPages: 50,
+      });
+    });
+
+    it('forwards the configured lock lease and page cap from req.config', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createSyncHandlers();
+      const res = mockRes();
+
+      await handlers.syncPrompts(
+        syncReq({
+          config: {
+            langfuse: {
+              ...tenantSyncConnection(),
+              promptSync: { enabled: true, lockLeaseMs: 120_000, maxPages: 3 },
+            },
+          },
+        }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(runnerRequest(deps)).toMatchObject({ lockLeaseMs: 120_000, maxPages: 3 });
+    });
+
+    it('hands the runner a page lister bound to the resolved connection, with the text filter', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createSyncHandlers();
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+      expect(global.fetch).not.toHaveBeenCalled();
+
+      global.fetch = jest.fn().mockResolvedValue(
+        fetchJsonResponse(
+          syncListBody([syncPromptItem('a')], {
+            page: 2,
+            limit: 100,
+            totalItems: 2,
+            totalPages: 2,
+          }),
+        ),
+      ) as unknown as typeof fetch;
+      const page = await runnerRequest(deps).listPrompts({ type: 'text', limit: 100, page: 2 });
+
+      expect(page).toMatchObject({ items: [expect.objectContaining({ name: 'a' })] });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const [url] = (global.fetch as unknown as jest.Mock).mock.calls[0] as [string];
+      expect(url).toContain('limit=100');
+      expect(url).toContain('page=2');
+      expect(decodeURIComponent(url)).toContain('"column":"type"');
+      expect(decodeURIComponent(url)).toContain('"value":"text"');
+    });
+
+    it('returns 409 already_running when the runner reports the lock is already held', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers } = createSyncHandlers({
+        syncPromptCatalog: jest
+          .fn()
+          .mockResolvedValue({ ok: false, error: { code: 'already_running' } }),
       });
       const res = mockRes();
 
@@ -2273,205 +2342,12 @@ describe('createAdminLangfuseHandlers', () => {
 
       expect(res.statusCode).toBe(409);
       expect(res.body).toEqual({ code: 'already_running' });
-      expect(global.fetch).not.toHaveBeenCalled();
-      expect(deps.lock.release).not.toHaveBeenCalled();
     });
 
-    it('fetches every page with the text filter and limit=100, following meta.totalPages, and reports counts', async () => {
+    it('returns 503 lock_lost when the runner loses the lock mid-run', async () => {
       process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(
-          fetchJsonResponse(
-            syncListBody([syncPromptItem('a')], {
-              page: 1,
-              limit: 100,
-              totalItems: 3,
-              totalPages: 3,
-            }),
-          ),
-        )
-        .mockResolvedValueOnce(
-          fetchJsonResponse(
-            syncListBody([syncPromptItem('b')], {
-              page: 2,
-              limit: 100,
-              totalItems: 3,
-              totalPages: 3,
-            }),
-          ),
-        )
-        .mockResolvedValueOnce(
-          fetchJsonResponse(
-            syncListBody([syncPromptItem('c')], {
-              page: 3,
-              limit: 100,
-              totalItems: 3,
-              totalPages: 3,
-            }),
-          ),
-        ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers();
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ created: 3, unchanged: 0, skipped: 0 });
-      expect(global.fetch).toHaveBeenCalledTimes(3);
-      const calls = (global.fetch as unknown as jest.Mock).mock.calls as Array<[string]>;
-      calls.forEach(([url], index) => {
-        expect(url).toContain('limit=100');
-        expect(url).toContain(`page=${index + 1}`);
-        expect(decodeURIComponent(url)).toContain('"column":"type"');
-        expect(decodeURIComponent(url)).toContain('"value":"text"');
-      });
-      expect(deps.createLangfusePromptGroup).toHaveBeenCalledTimes(3);
-      expect(deps.grantPermission).toHaveBeenCalledTimes(3);
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('grants the public viewer only for newly created groups, not for ones already in the catalog', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('new-prompt'), syncPromptItem('existing-prompt')], {
-            page: 1,
-            limit: 100,
-            totalItems: 2,
-            totalPages: 1,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const findLangfusePromptGroup = jest
-        .fn()
-        .mockImplementation(({ sourcePromptName }: { sourcePromptName: string }) =>
-          Promise.resolve(sourcePromptName === 'existing-prompt' ? { _id: 'existing-id' } : null),
-        );
-      const createLangfusePromptGroup = jest
-        .fn()
-        .mockImplementation((input: { sourcePromptName: string }) =>
-          Promise.resolve({ _id: `group-${input.sourcePromptName}` }),
-        );
-      const { handlers, deps } = createSyncHandlers({
-        findLangfusePromptGroup,
-        createLangfusePromptGroup,
-      });
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ created: 1, unchanged: 1, skipped: 0 });
-      expect(deps.createLangfusePromptGroup).toHaveBeenCalledTimes(1);
-      expect(deps.grantPermission).toHaveBeenCalledTimes(1);
-      expect(deps.grantPermission).toHaveBeenCalledWith({
-        principalType: 'public',
-        principalId: null,
-        resourceType: 'promptGroup',
-        resourceId: 'group-new-prompt',
-        accessRoleId: 'promptGroup_viewer',
-        grantedBy: '000000000000000000000000',
-      });
-    });
-
-    it('maps a duplicate-key error from the group creation to unchanged without granting access', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('greeting')], {
-            page: 1,
-            limit: 100,
-            totalItems: 1,
-            totalPages: 1,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const duplicateError = Object.assign(new Error('duplicate key'), { code: 11000 });
-      const { handlers, deps } = createSyncHandlers({
-        createLangfusePromptGroup: jest.fn().mockRejectedValue(duplicateError),
-      });
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ created: 0, unchanged: 1, skipped: 0 });
-      expect(deps.grantPermission).not.toHaveBeenCalled();
-    });
-
-    it('a second run finds every prompt already in the catalog and reports it unchanged', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('greeting')], {
-            page: 1,
-            limit: 100,
-            totalItems: 1,
-            totalPages: 1,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers({
-        findLangfusePromptGroup: jest.fn().mockResolvedValue({ _id: 'existing-id' }),
-      });
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ created: 0, unchanged: 1, skipped: 0 });
-      expect(deps.createLangfusePromptGroup).not.toHaveBeenCalled();
-      expect(deps.grantPermission).not.toHaveBeenCalled();
-    });
-
-    it('maps an upstream 500 from Langfuse to 502 upstream and still releases the lock', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          fetchJsonResponse({ message: 'MARKER_SECRET_LEAK_TOKEN' }, 500),
-        ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers();
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(502);
-      expect(res.body).toEqual({ code: 'upstream', status: 500 });
-      expect(JSON.stringify(res.body)).not.toContain('MARKER_SECRET_LEAK_TOKEN');
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('maps a Langfuse timeout to 504 and still releases the lock', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      const timeoutError = new Error('The operation was aborted due to timeout');
-      timeoutError.name = 'TimeoutError';
-      global.fetch = jest.fn().mockRejectedValue(timeoutError) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers();
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(504);
-      expect(res.body).toEqual({ code: 'timeout' });
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns 503 lock_lost when the lock is lost mid-run and still releases it', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('a')], {
-            page: 1,
-            limit: 100,
-            totalItems: 2,
-            totalPages: 2,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers({
-        lock: createFakeLock({ extend: jest.fn().mockResolvedValue(false) }),
+      const { handlers } = createSyncHandlers({
+        syncPromptCatalog: jest.fn().mockResolvedValue({ ok: false, error: { code: 'lock_lost' } }),
       });
       const res = mockRes();
 
@@ -2479,13 +2355,63 @@ describe('createAdminLangfuseHandlers', () => {
 
       expect(res.statusCode).toBe(503);
       expect(res.body).toEqual({ code: 'lock_lost' });
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
     });
 
-    it('returns 500 internal when lock.acquire rejects', async () => {
+    /** Runs the bound page lister once so a Langfuse failure reaches the
+     *  handler through the same `LangfusePromptRequestError` path the real
+     *  runner surfaces it on. */
+    function runnerThatListsOnce() {
+      return jest
+        .fn()
+        .mockImplementation(
+          async ({
+            listPrompts,
+          }: {
+            listPrompts: (query: { type: 'text'; limit: number; page: number }) => Promise<unknown>;
+          }) => {
+            await listPrompts({ type: 'text', limit: 100, page: 1 });
+            return { ok: true, value: { created: 0, unchanged: 0, skipped: 0 } };
+          },
+        );
+    }
+
+    it('maps an upstream 500 from Langfuse to 502 upstream without leaking the body', async () => {
       process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      const { handlers, deps } = createSyncHandlers({
-        lock: createFakeLock({ acquire: jest.fn().mockRejectedValue(new Error('acquire failed')) }),
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          fetchJsonResponse({ message: 'MARKER_SECRET_LEAK_TOKEN' }, 500),
+        ) as unknown as typeof fetch;
+      const { handlers } = createSyncHandlers({ syncPromptCatalog: runnerThatListsOnce() });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(502);
+      expect(res.body).toEqual({ code: 'upstream', status: 500 });
+      expect(JSON.stringify(res.body)).not.toContain('MARKER_SECRET_LEAK_TOKEN');
+    });
+
+    it('maps a Langfuse timeout to 504 timeout', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const timeoutError = new Error('The operation was aborted due to timeout');
+      timeoutError.name = 'TimeoutError';
+      global.fetch = jest.fn().mockRejectedValue(timeoutError) as unknown as typeof fetch;
+      const { handlers } = createSyncHandlers({ syncPromptCatalog: runnerThatListsOnce() });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(504);
+      expect(res.body).toEqual({ code: 'timeout' });
+    });
+
+    it('maps an unexpected runner error to 500 internal without leaking its message', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers } = createSyncHandlers({
+        syncPromptCatalog: jest
+          .fn()
+          .mockRejectedValue(new Error('db down MARKER_SECRET_LEAK_TOKEN')),
       });
       const res = mockRes();
 
@@ -2493,107 +2419,10 @@ describe('createAdminLangfuseHandlers', () => {
 
       expect(res.statusCode).toBe(500);
       expect(res.body).toEqual({ code: 'internal' });
-      expect(deps.lock.release).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.body)).not.toContain('MARKER_SECRET_LEAK_TOKEN');
     });
 
-    it('returns 500 internal when lock.extend rejects, and still releases the lock', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('a')], {
-            page: 1,
-            limit: 100,
-            totalItems: 2,
-            totalPages: 2,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers({
-        lock: createFakeLock({ extend: jest.fn().mockRejectedValue(new Error('extend failed')) }),
-      });
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(500);
-      expect(res.body).toEqual({ code: 'internal' });
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns 500 internal when findLangfusePromptGroup rejects, and still releases the lock', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('a')], {
-            page: 1,
-            limit: 100,
-            totalItems: 1,
-            totalPages: 1,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers({
-        findLangfusePromptGroup: jest.fn().mockRejectedValue(new Error('db down')),
-      });
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(500);
-      expect(res.body).toEqual({ code: 'internal' });
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns 500 internal when createLangfusePromptGroup rejects with an unexpected error, and still releases the lock', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('a')], {
-            page: 1,
-            limit: 100,
-            totalItems: 1,
-            totalPages: 1,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers({
-        createLangfusePromptGroup: jest.fn().mockRejectedValue(new Error('boom')),
-      });
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(500);
-      expect(res.body).toEqual({ code: 'internal' });
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns 500 internal when grantPermission rejects, after rolling back the created group', async () => {
-      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('a')], {
-            page: 1,
-            limit: 100,
-            totalItems: 1,
-            totalPages: 1,
-          }),
-        ),
-      ) as unknown as typeof fetch;
-      const { handlers, deps } = createSyncHandlers({
-        grantPermission: jest.fn().mockRejectedValue(new Error('grant failed')),
-      });
-      const res = mockRes();
-
-      await handlers.syncPrompts(syncReq(), res);
-
-      expect(res.statusCode).toBe(500);
-      expect(res.body).toEqual({ code: 'internal' });
-      expect(deps.deletePromptGroup).toHaveBeenCalledWith({ _id: 'group-1' });
-      expect(deps.lock.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('syncs in env mode and records the "env" source destination on a created group', async () => {
+    it('syncs in env mode with the "env" source destination and no tenant', async () => {
       delete process.env.TENANT_ISOLATION_STRICT;
       delete process.env.LANGFUSE_FANOUT_ENABLED;
       delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
@@ -2601,16 +2430,6 @@ describe('createAdminLangfuseHandlers', () => {
       process.env.LANGFUSE_PUBLIC_KEY = 'env-public';
       process.env.LANGFUSE_SECRET_KEY = 'env-secret';
       process.env.LANGFUSE_PROJECT_ID = 'env-project-1';
-      global.fetch = jest.fn().mockResolvedValue(
-        fetchJsonResponse(
-          syncListBody([syncPromptItem('greeting')], {
-            page: 1,
-            limit: 100,
-            totalItems: 1,
-            totalPages: 1,
-          }),
-        ),
-      ) as unknown as typeof fetch;
       const { handlers, deps } = createHandlers({
         findConfigByPrincipal: jest
           .fn()
@@ -2627,14 +2446,11 @@ describe('createAdminLangfuseHandlers', () => {
       );
 
       expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ created: 1, unchanged: 0, skipped: 0 });
-      expect(deps.createLangfusePromptGroup).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sourceDestination: 'env',
-          sourceProjectId: 'env-project-1',
-          sourcePromptName: 'greeting',
-        }),
-      );
+      expect(runnerRequest(deps).source).toEqual({
+        destination: 'env',
+        projectId: 'env-project-1',
+        tenantId: undefined,
+      });
       delete process.env.LANGFUSE_PROJECT_ID;
     });
   });

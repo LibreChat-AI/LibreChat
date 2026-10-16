@@ -1,11 +1,6 @@
 import { z } from 'zod';
+import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
 import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
-import {
-  PrincipalType,
-  PrincipalModel,
-  ResourceType,
-  AccessRoleIds,
-} from 'librechat-data-provider';
 import type {
   TCustomConfig,
   TLangfuseConnectionStatus,
@@ -20,13 +15,12 @@ import type {
   TLangfusePromptSyncResult,
   TLangfusePromptErrorBody,
 } from 'librechat-data-provider';
-import type { IConfig, MessageMethods, PromptMethods } from '@librechat/data-schemas';
-import type { Types, ClientSession } from 'mongoose';
+import type { MessageMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { LangfusePromptConnection, LangfuseTextPromptSelector } from '~/langfuse/prompts';
 import type { LangfuseTenantDestination } from '~/langfuse/tenantDestinations';
-import type { PromptCatalogSyncDeps } from '~/langfuse/promptCatalogSync';
-import type { DistributedLock } from '~/cache/lock';
+import type { LangfusePromptSyncRunner } from '~/langfuse/promptSyncRunner';
+import type { StoredBaseConfig } from '~/langfuse/promptSync';
 import type { ServerRequest } from '~/types/http';
 import type { RecordAuditEntry } from './audit';
 import {
@@ -53,26 +47,10 @@ import {
 } from '~/langfuse/prompts';
 import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
-import { syncLangfusePromptCatalog } from '~/langfuse/promptCatalogSync';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
 import { resolveLangfuseSession } from '~/langfuse/session';
 import { createAdminAuditEmitter } from './audit';
 import { mergeHeaders } from '~/utils/headers';
-import { CONSTANTS } from '~/mcp/enum';
-
-/** The AI-2272 partial unique index is defense in depth: this maps the
- *  resulting duplicate-key race to the runner's `unchanged` outcome. Lives
- *  here, not in the runner, so `promptCatalogSync.ts` stays storage-agnostic. */
-function isDuplicateKeyError(error: unknown): boolean {
-  return (error as { code?: number } | undefined)?.code === 11000;
-}
-
-/** Storage-agnostic predicate for a document validation failure on
- *  createLangfusePromptGroup, mapped to the runner's skipped outcome.
- *  Lives here, not in the runner, for the same reason as isDuplicateKeyError. */
-function isValidationError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'ValidationError';
-}
 
 const DEFAULT_PRIORITY = 10;
 const ENCRYPTED_PREFIX = 'v3:';
@@ -98,40 +76,33 @@ export interface LangfuseConnectionEvent {
   verification_result: 'skipped' | 'success' | 'failed';
 }
 
+/** Stored base-config fields the Langfuse admin handlers read. The data-schemas `IConfig` document satisfies it. */
+export interface LangfuseAdminConfig extends StoredBaseConfig {
+  priority?: number;
+  isActive?: boolean;
+  updatedAt?: Date;
+}
+
 export interface AdminLangfuseDeps {
   findConfigByPrincipal: (
     principalType: PrincipalType,
-    principalId: string | Types.ObjectId,
+    principalId: string,
     options?: { includeInactive?: boolean },
-    session?: ClientSession,
-  ) => Promise<IConfig | null>;
+  ) => Promise<LangfuseAdminConfig | null>;
   patchConfigFields: (
     principalType: PrincipalType,
-    principalId: string | Types.ObjectId,
+    principalId: string,
     principalModel: PrincipalModel,
     fields: Record<string, unknown>,
     priority: number,
-    session?: ClientSession,
-  ) => Promise<IConfig | null>;
+  ) => Promise<LangfuseAdminConfig | null>;
   toggleConfigActive: (
     principalType: PrincipalType,
-    principalId: string | Types.ObjectId,
+    principalId: string,
     isActive: boolean,
-    session?: ClientSession,
-  ) => Promise<IConfig | null>;
+  ) => Promise<LangfuseAdminConfig | null>;
   getMessages: MessageMethods['getMessages'];
-  findLangfusePromptGroup: PromptMethods['findLangfusePromptGroup'];
-  createLangfusePromptGroup: PromptMethods['createLangfusePromptGroup'];
-  deletePromptGroup: PromptMethods['deletePromptGroup'];
-  lock: DistributedLock;
-  grantPermission: (params: {
-    principalType: PrincipalType;
-    principalId: string | null;
-    resourceType: ResourceType;
-    resourceId: string;
-    accessRoleId: string;
-    grantedBy: string;
-  }) => Promise<unknown>;
+  syncPromptCatalog: LangfusePromptSyncRunner;
   invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
   recordConnectionUpdate?: (event: LangfuseConnectionEvent) => void;
   /** Optional audit emission for connection updates; fail-open unless `auditFailClosed`. */
@@ -143,7 +114,7 @@ function getTenantId(req: ServerRequest): string | undefined {
   return (req.user as { tenantId?: string } | undefined)?.tenantId;
 }
 
-function buildStatus(config: IConfig | null): TLangfuseConnectionStatus {
+function buildStatus(config: LangfuseAdminConfig | null): TLangfuseConnectionStatus {
   const stored = readStoredLangfuse(config);
   const configured = Boolean(stored?.publicKey && stored?.secretKey);
   const promptSyncAvailable = isLangfusePromptSyncAvailable();
@@ -396,11 +367,7 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     patchConfigFields,
     toggleConfigActive,
     getMessages,
-    findLangfusePromptGroup,
-    createLangfusePromptGroup,
-    deletePromptGroup,
-    lock,
-    grantPermission,
+    syncPromptCatalog,
     invalidateConfigCaches,
     recordConnectionUpdate = (event) =>
       logger.info({ message: '[adminLangfuse] Connection updated', ...event }),
@@ -413,7 +380,9 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     logPrefix: '[adminLangfuse]',
   });
 
-  function findBaseConfig(options?: { includeInactive?: boolean }): Promise<IConfig | null> {
+  function findBaseConfig(options?: {
+    includeInactive?: boolean;
+  }): Promise<LangfuseAdminConfig | null> {
     return options
       ? findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID, options)
       : findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID);
@@ -895,39 +864,16 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
         return res.status(409).json({ code: 'not_configured' } satisfies TLangfusePromptErrorBody);
       }
 
-      const syncDeps: PromptCatalogSyncDeps = {
-        listPrompts: (query) => listLangfusePrompts(connection, query, { timeoutMs }),
-        findPromptGroup: findLangfusePromptGroup,
-        createPromptGroup: createLangfusePromptGroup,
-        isDuplicateKeyError,
-        isValidationError,
-        grantPublicViewer: async (groupId) => {
-          await grantPermission({
-            principalType: PrincipalType.PUBLIC,
-            principalId: null,
-            resourceType: ResourceType.PROMPTGROUP,
-            resourceId: groupId,
-            accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
-            grantedBy: CONSTANTS.SYSTEM_USER_ID,
-          });
-        },
-        deletePromptGroup: async (groupId) => {
-          await deletePromptGroup({ _id: groupId });
-        },
-        lock,
-        lockLeaseMs: getLangfusePromptSyncLockLeaseMs(req.config),
-        maxPages: getLangfusePromptSyncMaxPages(req.config),
-        logger,
-      };
-
-      const result = await syncLangfusePromptCatalog(
-        {
+      const result = await syncPromptCatalog({
+        source: {
           destination: identity.destination,
           projectId: identity.projectId,
           tenantId: getTenantId(req),
         },
-        syncDeps,
-      );
+        listPrompts: (query) => listLangfusePrompts(connection, query, { timeoutMs }),
+        lockLeaseMs: getLangfusePromptSyncLockLeaseMs(req.config),
+        maxPages: getLangfusePromptSyncMaxPages(req.config),
+      });
 
       if (!result.ok) {
         const status = result.error.code === 'already_running' ? 409 : 503;
