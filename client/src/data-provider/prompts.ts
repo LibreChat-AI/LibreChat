@@ -86,6 +86,7 @@ export const useUpdatePromptGroup = (
     },
     onSuccess: (response, variables, context) => {
       updateGroupInAll(queryClient, { _id: variables.id, ...response });
+      queryClient.invalidateQueries([QueryKeys.categories]);
       if (onSuccess) {
         onSuccess(response, variables, context);
       }
@@ -126,6 +127,7 @@ export const useCreatePrompt = (
         );
 
         addGroupToAll(queryClient, group);
+        queryClient.invalidateQueries([QueryKeys.categories]);
         /** The sidebar reads row permissions from the batch map, which lacks the new group */
         queryClient.invalidateQueries([
           QueryKeys.effectivePermissions,
@@ -198,6 +200,7 @@ export const useDeletePrompt = (
         );
 
         removeGroupFromAll(queryClient, promptGroupId);
+        queryClient.invalidateQueries([QueryKeys.categories]);
       } else {
         queryClient.setQueryData<t.TPrompt[]>(
           [QueryKeys.prompts, variables.groupId],
@@ -257,6 +260,7 @@ export const useDeletePromptGroup = (
       );
 
       removeGroupFromAll(queryClient, variables.id);
+      queryClient.invalidateQueries([QueryKeys.categories]);
       if (onSuccess) {
         onSuccess(response, variables, context);
       }

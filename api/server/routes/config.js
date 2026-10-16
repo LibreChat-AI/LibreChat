@@ -22,6 +22,7 @@ const {
   resolveCodeEnvironmentMoveCapabilities,
   resolveCodeWorkspaceInheritanceCapability,
   resolveCodeEnvironmentTransitionVersion,
+  getPromptCategoriesStartupConfig,
   loadConversationListLimits,
   resolvePullRequestCapabilities,
 } = require('@librechat/api');
@@ -316,6 +317,7 @@ router.get('/', async function (req, res) {
         appConfig,
         endpoint: EModelEndpoint.agents,
       }),
+      promptCategories: getPromptCategoriesStartupConfig(appConfig),
       turnstile: appConfig?.turnstileConfig,
       modelSpecs: sanitizeModelSpecs(excludeHiddenModelSpecs(appConfig?.modelSpecs)),
       balance: balanceConfig,

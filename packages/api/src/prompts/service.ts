@@ -24,6 +24,11 @@ import {
   projectStoredPromptGroups,
 } from './protection';
 import {
+  safeValidatePromptPayload,
+  safeValidatePromptGroupUpdate,
+  safeValidatePromptGroupCategory,
+} from './schemas';
+import {
   markPublicPromptGroups,
   buildPromptGroupFilter,
   filterAccessibleIdsBySharedLogic,
@@ -33,7 +38,6 @@ import {
   createNativePromptAdapter,
   selectionUnavailableReason,
 } from './native';
-import { safeValidatePromptGroupUpdate, safeValidatePromptPayload } from './schemas';
 import { withPromptStage } from './errors';
 
 type WithPromptFilters<T> = T & { readonly filters?: FiltersConfig };
@@ -179,15 +183,23 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!input.prompt || !input.group || !input.group.name) {
         return invalidInput('Prompt and group name are required');
       }
+      let group = input.group;
+      if (group.category !== undefined) {
+        const category = safeValidatePromptGroupCategory(group.category);
+        if (!category.success) {
+          return invalidInput('Invalid request body', category.error.errors);
+        }
+        group = { ...group, category: category.data };
+      }
       const validation = safeValidatePromptPayload(input.prompt);
       if (!validation.success) {
         return invalidInput(validation.error.issues[0]?.message ?? 'Invalid prompt');
       }
-      const rejection = inspect({ prompt: validation.data, group: input.group }, filters);
+      const rejection = inspect({ prompt: validation.data, group }, filters);
       if (rejection != null) {
         return rejection;
       }
-      const value = await source.createPromptGroup({ ...input, prompt: validation.data });
+      const value = await source.createPromptGroup({ ...input, group, prompt: validation.data });
       const groupId = value.prompt?.groupId;
       if (value.prompt?._id && groupId) {
         try {
