@@ -937,7 +937,6 @@ describe('deleteRoleByName', () => {
   });
 
   it('invalidates cached auth user documents for reassigned users', async () => {
-    process.env.AUTH_USER_CACHE_MODE = 'on';
     await createRoleByName({ name: 'editor' });
     const [alice, bob] = await User.create([
       { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
@@ -1090,7 +1089,6 @@ describe('updateUsersByRole', () => {
   });
 
   it('invalidates cached auth user documents for migrated users', async () => {
-    process.env.AUTH_USER_CACHE_MODE = 'on';
     const [alice, bob] = await User.create([
       { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
       { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
@@ -1121,7 +1119,6 @@ describe('updateUsersByRole', () => {
 
 describe('updateUsersRoleByIds', () => {
   it('invalidates cached auth user documents for explicitly reassigned users', async () => {
-    process.env.AUTH_USER_CACHE_MODE = 'on';
     const [alice, bob] = await User.create([
       { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
       { name: 'Bob', email: 'bob@test.com', role: 'viewer', username: 'bob' },

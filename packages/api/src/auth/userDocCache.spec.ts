@@ -65,13 +65,11 @@ describe('auth user document cache helpers', () => {
     restoreEnv();
   });
 
-  it('only enables user request burst caching when Redis backs the auth user namespace', () => {
-    process.env.AUTH_USER_CACHE_MODE = 'on';
+  it('defaults user request burst caching on when Redis backs the auth user namespace', () => {
+    delete process.env.AUTH_USER_CACHE_MODE;
     cacheConfig.USE_REDIS = false;
     expect(getAuthUserDocCacheMode()).toBe('off');
-    expect(logger.warn).toHaveBeenCalledWith(
-      '[authUserDocCache] User request burst caching requires Redis; disabling auth user cache',
-    );
+    expect(logger.warn).not.toHaveBeenCalled();
 
     cacheConfig.USE_REDIS = true;
     cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES = [CacheKeys.AUTH_USER_DOC];
@@ -80,11 +78,18 @@ describe('auth user document cache helpers', () => {
     cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES = [CacheKeys.APP_CONFIG];
     expect(getAuthUserDocCacheMode()).toBe('on');
 
-    process.env.AUTH_USER_CACHE_MODE = 'shadow';
+    process.env.AUTH_USER_CACHE_MODE = 'off';
     expect(getAuthUserDocCacheMode()).toBe('off');
 
     process.env.AUTH_USER_CACHE_MODE = 'invalid';
     expect(getAuthUserDocCacheMode()).toBe('off');
+
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    cacheConfig.USE_REDIS = false;
+    expect(getAuthUserDocCacheMode()).toBe('off');
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[authUserDocCache] User request burst caching requires Redis; disabling auth user cache',
+    );
   });
 
   it('builds stable keys from strategy, subject, issuer, tenant, user, and scope', () => {
