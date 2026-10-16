@@ -33,6 +33,7 @@ import {
   requiresOAuthMachinery,
   requiresUserScopedConnection,
   resolveServerInstructions,
+  formatMCPServerInstructions,
 } from './utils';
 import {
   getMCPConnectionPoolKey,
@@ -911,28 +912,7 @@ export class MCPManager extends UserConnectionManager {
     serverNames?: string[],
     configServers?: Record<string, t.ParsedServerConfig>,
   ): Promise<string> {
-    const instructionsToInclude = await this.getInstructions(serverNames, configServers);
-
-    if (Object.keys(instructionsToInclude).length === 0) {
-      return '';
-    }
-
-    // Format instructions for context injection
-    const formattedInstructions = Object.entries(instructionsToInclude)
-      .map(([serverName, instructions]) => {
-        return `## ${serverName} MCP Server Instructions
-
-${instructions}`;
-      })
-      .join('\n\n');
-
-    return `# MCP Server Instructions
-
-The following MCP servers are available with their specific instructions:
-
-${formattedInstructions}
-
-Please follow these instructions when using tools from the respective MCP servers.`;
+    return formatMCPServerInstructions(await this.getInstructions(serverNames, configServers));
   }
 
   private async recoverOAuthConnection(

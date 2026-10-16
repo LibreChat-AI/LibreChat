@@ -9,6 +9,7 @@ const {
   sanitizeMessageForTransmit,
   buildAbortedResponseMetadata,
   announceReply,
+  stripProviderItems,
 } = require('@librechat/api');
 const { truncateText, smartTruncateText } = require('~/app/clients/prompts');
 const clearPendingReq = require('~/cache/clearPendingReq');
@@ -130,7 +131,8 @@ async function abortMessage(req, res) {
           isCreatedByUser: true,
         })
       : null,
-    responseMessage,
+    /** The live content still carries provider items; they are server state. */
+    responseMessage: { ...responseMessage, content: stripProviderItems(responseMessage.content) },
   };
 
   logger.debug(`[abortMessage] ID: ${userId} | Aborted request: ${conversationId}`);

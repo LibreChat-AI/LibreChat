@@ -24,6 +24,7 @@ import {
   validateMCPServerConfig,
 } from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { orderNames } from '~/agents/promptCache';
 import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
@@ -105,8 +106,9 @@ export async function loadEphemeralAgent(
    *  instruction path reads `req.body.ephemeralAgent.mcp` directly and prefers
    *  it over the agent's tools, so it would otherwise both inject a hidden
    *  server's `serverInstructions` and omit a spec-pinned server's. */
+  const sortedMcpServers = orderNames(req.config, mcpServers);
   if (ephemeralAgent != null && Array.isArray(ephemeralAgent.mcp)) {
-    ephemeralAgent.mcp = [...mcpServers];
+    ephemeralAgent.mcp = sortedMcpServers;
   }
   const tools: string[] = [];
   if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
@@ -129,8 +131,8 @@ export async function loadEphemeralAgent(
   }
 
   const addedServers = new Set<string>();
-  if (mcpServers.size > 0) {
-    for (const mcpServer of mcpServers) {
+  if (sortedMcpServers.length > 0) {
+    for (const mcpServer of sortedMcpServers) {
       if (addedServers.has(mcpServer)) {
         continue;
       }
@@ -149,7 +151,7 @@ export async function loadEphemeralAgent(
         addedServers.add(mcpServer);
         continue;
       }
-      tools.push(...Object.keys(serverTools));
+      tools.push(...orderNames(req.config, Object.keys(serverTools)));
       addedServers.add(mcpServer);
     }
   }

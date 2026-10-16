@@ -2106,6 +2106,50 @@ describe('stable/dynamic system instructions', () => {
     expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
     expect(agents[0].additional_instructions).toBe('Conversation Date & Time: anchor\nMemory tail');
   });
+
+  it('puts dynamic tool context after the additional instructions with stableContext', async () => {
+    const agents = await callAndCapture({
+      appConfig: {
+        endpoints: { agents: { promptCache: { stableContext: true } } },
+      } as unknown as AppConfig,
+      agents: [
+        makeAgent({
+          instructions: 'Base instructions',
+          additional_instructions: 'Memory tail',
+          toolContextMap: { web_search: 'Static tool instructions' },
+          dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+        }),
+      ],
+    });
+
+    expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
+    expect(agents[0].additional_instructions).toBe('Memory tail\nConversation Date & Time: anchor');
+  });
+
+  it('preserves the full artifact prefix when timestamps change between turns with stableContext', async () => {
+    const agents = await callAndCapture({
+      appConfig: {
+        endpoints: { agents: { promptCache: { stableContext: true } } },
+      } as unknown as AppConfig,
+      agents: ['2026-08-31T06:20:00.000Z', '2026-08-31T06:21:00.000Z'].map((time, index) =>
+        makeAgent({
+          id: `agent_${index}`,
+          instructions: 'Stable agent instructions',
+          additional_instructions: 'Artifact guidance',
+          toolContextMap: { web_search: 'Static web instructions' },
+          dynamicToolContextMap: { web_search: `Conversation Date & Time: ${time}` },
+        }),
+      ),
+    });
+
+    expect(agents[0].instructions).toBe(agents[1].instructions);
+    expect(agents[0].additional_instructions).toBe(
+      'Artifact guidance\nConversation Date & Time: 2026-08-31T06:20:00.000Z',
+    );
+    expect(agents[1].additional_instructions).toBe(
+      'Artifact guidance\nConversation Date & Time: 2026-08-31T06:21:00.000Z',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3551,6 +3595,36 @@ async function callAndCaptureRunConfig({
   return createMock.mock.calls[0][0] as Record<string, unknown>;
 }
 
+describe('signed reasoning capture', () => {
+  const stable = {
+    endpoints: { agents: { promptCache: { stableContext: true } } },
+  } as unknown as AppConfig;
+  const primaryInput = (runConfig: Record<string, unknown>): Record<string, unknown> =>
+    (runConfig.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0];
+
+  it.each(['anthropic', 'bedrock'])(
+    'asks the SDK to capture it for %s with stableContext',
+    async (provider) => {
+      const runConfig = await callAndCaptureRunConfig({
+        overrides: { provider, endpoint: provider, model_parameters: { model: 'model-1' } },
+        appConfig: stable,
+      });
+      expect(primaryInput(runConfig).providerReasoningReplay).toBe(true);
+    },
+  );
+
+  it.each([
+    ['the lever is off', 'anthropic', undefined],
+    ['the provider does not sign reasoning', 'openAI', stable],
+  ])('does not when %s', async (_name, provider, appConfig) => {
+    const runConfig = await callAndCaptureRunConfig({
+      overrides: { provider, endpoint: provider, model_parameters: { model: 'model-1' } },
+      appConfig,
+    });
+    expect(primaryInput(runConfig)).not.toHaveProperty('providerReasoningReplay');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Suite: Langfuse run config
 // ---------------------------------------------------------------------------
@@ -4932,6 +5006,25 @@ describe('ask_user_question run wiring', () => {
     ]);
     expect((agent.toolRegistry as Map<string, unknown>).has(ASK)).toBe(false);
     expect((agent.toolRegistry as Map<string, unknown>).has('other_tool')).toBe(true);
+  });
+
+  it('keeps a switched-off planned tool bound in the graph and disabled in the registry', async () => {
+    const disabled = { reason: 'switched off' };
+    const config = await runAndGetConfig(
+      makeAgent({ toolDefinitions: [{ name: ASK, disabled }], toolRegistry: new Map() }),
+      { hitlCapable: true },
+    );
+    const agent = firstAgent(config);
+    expect((agent.graphTools as Array<{ name: string }>).map((t) => t.name)).toEqual([ASK]);
+    expect((agent.toolRegistry as Map<string, unknown>).get(ASK)).toEqual({ name: ASK, disabled });
+  });
+
+  it('binds no graph tool for a deferred planned tool, which the dispatcher cannot reach', async () => {
+    const config = await runAndGetConfig(
+      makeAgent({ toolDefinitions: [{ name: ASK, defer_loading: true }] }),
+      { hitlCapable: true },
+    );
+    expect(firstAgent(config).graphTools).toBeUndefined();
   });
 
   it('does not mutate the caller-owned toolRegistry when stripping (clone-before-mutate)', async () => {

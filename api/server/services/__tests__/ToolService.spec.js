@@ -2842,6 +2842,50 @@ describe('ToolService - Action Capability Gating', () => {
     });
   });
 
+  describe('loadToolsForExecution — tool search with the dispatcher', () => {
+    const search = async (toolDispatch) => {
+      const capabilities = [AgentCapabilities.tools];
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      const toolRegistry = new Map([
+        [
+          'lookup_mcp_gamma',
+          {
+            name: 'lookup_mcp_gamma',
+            description: 'Looks up an order.',
+            parameters: { type: 'object', properties: { order: { type: 'string' } } },
+            defer_loading: true,
+          },
+        ],
+      ]);
+      const { loadedTools } = await loadToolsForExecution({
+        req: createMockReq(capabilities),
+        res: {},
+        agent: { id: 'agent_123', tools: [] },
+        toolNames: ['tool_search'],
+        toolRegistry,
+        actionsEnabled: false,
+        toolDispatch,
+      });
+      const toolSearch = loadedTools.find((loaded) => loaded.name === 'tool_search');
+      return JSON.parse(await toolSearch.invoke({ query: 'order' }));
+    };
+
+    it('returns the schemas of found tools and points to the dispatcher', async () => {
+      const result = await search(true);
+      expect(result.tools[0]).toMatchObject({
+        name: 'lookup_mcp_gamma',
+        parameters: { properties: { order: { type: 'string' } } },
+      });
+      expect(result.call_with).toContain('call_tool');
+    });
+
+    it('keeps the plain search output without the dispatcher', async () => {
+      const result = await search(false);
+      expect(result.tools[0].name).toBe('lookup_mcp_gamma');
+      expect(result.call_with).toBeUndefined();
+    });
+  });
+
   describe('loadToolsForExecution — action tool gating', () => {
     it('should preserve the remote-agent permission boundary for deferred tool loading', async () => {
       const capabilities = [AgentCapabilities.tools, AgentCapabilities.file_search];

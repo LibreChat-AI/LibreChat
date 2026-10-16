@@ -126,6 +126,13 @@ import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import {
+  ContextPartKeys,
+  assembleSystemPrompt,
+  contributeContext,
+  sdkCachesConversationBlock,
+} from './systemParts';
+import { isStableContextEnabled, replaysSignedReasoning } from '~/agents/promptCache';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -447,6 +454,13 @@ type RunAgent = Omit<Agent, 'tools'> & {
   imageDetail?: ImageDetail;
   toolContextMap?: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
+  /** Text of each contributed system prompt part, by key (see `systemParts`). */
+  contextParts?: Readonly<Record<string, string>>;
+  /** Set by `applyTurnContext`: the turn context delivers the runtime context. */
+  runtimeInLedger?: boolean;
+  /** Set by the turn context's tool plan: binds the SDK's dispatcher tool. */
+  toolDispatch?: boolean;
+  liveTools?: { toolDefinitions?: LCTool[]; toolRegistry?: LCToolRegistry };
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -1874,16 +1888,15 @@ function buildIsolatedAgentInputs(
   child: RunAgent,
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
-  const childInputs = toInput(child, { isSubagent: true });
   const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  if (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0) {
-    const skillInstructions = alwaysApplySkillPrimes
-      .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-      .join('\n\n');
-    childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .join('\n\n');
+  const skillInstructions = alwaysApplySkillPrimes
+    ?.map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+    .join('\n\n');
+  const childWithSkill = skillInstructions ? { ...child } : child;
+  if (skillInstructions) {
+    contributeContext(childWithSkill, ContextPartKeys.alwaysApplySkills, skillInstructions);
   }
+  const childInputs = toInput(childWithSkill, { isSubagent: true });
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
@@ -2391,7 +2404,13 @@ export async function createRun({
     enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
   }
   for (const agent of codeFileAgents.values()) {
-    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+    /** The turn context already announced the paths planned at initialization in the message. */
+    prepareQueuedCodeFileContext(
+      agent,
+      codeFileAgents.values(),
+      user?.id,
+      agent.runtimeInLedger === true,
+    );
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
@@ -2483,20 +2502,20 @@ export async function createRun({
       modelCallbacks,
     );
 
-    const joinInstructionMap = (map?: Record<string, unknown>) =>
-      Object.values(map ?? {})
-        .filter((value): value is string => typeof value === 'string' && value !== '')
-        .join('\n')
-        .trim();
-
-    const toolInstructions = joinInstructionMap(agent.toolContextMap);
-    const dynamicToolInstructions = joinInstructionMap(agent.dynamicToolContextMap);
-
-    const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
-
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
-      .join('\n')
-      .trim();
+    /**
+     * With `stableContext` and a provider that caches the conversation block, only the per-turn
+     * parts (memory, RAG, this turn's queued files) stay dynamic; the rest of the conversation's
+     * context is a cached block right after the instructions, followed by a compaction summary.
+     * Subagent runs are isolated and keep the split.
+     */
+    const {
+      instructions: systemContent,
+      conversation_instructions: conversationInstructions,
+      additional_instructions: additionalInstructions,
+    } = assembleSystemPrompt(agent, {
+      stableContext: isStableContextEnabled(appConfig),
+      conversationBlock: !isSubagent && sdkCachesConversationBlock(provider, llmConfig),
+    });
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2523,9 +2542,18 @@ export async function createRun({
      * has to gate the whole block (clearing fields post-return can't
      * undo registry writes).
      */
-    let toolDefinitions = agent.toolDefinitions ?? [];
-    let toolRegistry = agent.toolRegistry;
-    if (!isSubagent && discoveredTools.size > 0 && agent.toolRegistry) {
+    /** Isolated children see none of the turn context's announcements: they bind the tools as loaded. */
+    const loaded = isSubagent ? agent.liveTools : undefined;
+    let toolDefinitions = (loaded ? loaded.toolDefinitions : agent.toolDefinitions) ?? [];
+    let toolRegistry = loaded ? loaded.toolRegistry : agent.toolRegistry;
+    /** With the dispatcher, found tools stay deferred and are called through it. */
+    const toolDispatch = !isSubagent && agent.toolDispatch === true;
+    const dispatchable = new Set(
+      toolDispatch
+        ? toolDefinitions.filter((def) => def.defer_loading === true).map((def) => def.name)
+        : [],
+    );
+    if (!toolDispatch && !isSubagent && discoveredTools.size > 0 && agent.toolRegistry) {
       overrideDeferLoadingForDiscoveredTools(agent.toolRegistry, discoveredTools);
 
       /** Add discovered tools' definitions so the LLM can see their schemas */
@@ -2539,7 +2567,7 @@ export async function createRun({
           toolDefinitions = [...toolDefinitions, toolDef];
         }
       }
-    } else if (isSubagent && agent.toolRegistry) {
+    } else if (isSubagent && toolRegistry) {
       /**
        * Subagent children: hand the child a deep-enough clone of the
        * registry so later parent-graph builds (e.g. when the same
@@ -2550,8 +2578,9 @@ export async function createRun({
        * through to the tool object itself, so a shallow Map copy
        * alone wouldn't isolate the flag.
        */
+      const parentRegistry = toolRegistry;
       toolRegistry = new Map();
-      for (const [name, tool] of agent.toolRegistry.entries()) {
+      for (const [name, tool] of parentRegistry.entries()) {
         toolRegistry.set(name, { ...tool });
       }
       /** Child's own `toolDefinitions` list gets the same shallow-
@@ -2579,6 +2608,8 @@ export async function createRun({
     let tools = agent.tools;
     let graphTools: GenericTool[] | undefined;
     if (agentRequestsAskUserQuestion(agent)) {
+      /** The turn context's plan: a tool it switched off stays bound and refuses calls. */
+      const planned = toolDefinitions.find((def) => def.name === ASK_USER_QUESTION_TOOL_NAME);
       tools = tools?.filter(
         (tool) => (tool as { name?: string } | undefined)?.name !== ASK_USER_QUESTION_TOOL_NAME,
       );
@@ -2587,10 +2618,17 @@ export async function createRun({
         toolRegistry = new Map(toolRegistry);
         toolRegistry.delete(ASK_USER_QUESTION_TOOL_NAME);
       }
-      if (hitlCapable && !isSubagent && !askToolAdminDisabled) {
+      if (hitlCapable && !isSubagent && !askToolAdminDisabled && planned?.defer_loading !== true) {
         graphTools = [
           createAskUserQuestionTool(toolInputValidationErrors) as unknown as GenericTool,
         ];
+        if (planned?.disabled != null) {
+          toolRegistry = new Map(toolRegistry ?? []);
+          toolRegistry.set(ASK_USER_QUESTION_TOOL_NAME, {
+            name: ASK_USER_QUESTION_TOOL_NAME,
+            disabled: planned.disabled,
+          });
+        }
       }
     }
 
@@ -2628,7 +2666,13 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
+      conversation_instructions: conversationInstructions || undefined,
       additional_instructions: additionalInstructions || undefined,
+      /** Signed reasoning is captured only for stored conversations, never for isolated subagents. */
+      ...(!isSubagent &&
+        replaysSignedReasoning(appConfig, provider) && {
+          providerReasoningReplay: true,
+        }),
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,
@@ -2643,6 +2687,12 @@ export async function createRun({
       maxToolResultChars: agent.maxToolResultChars,
       initialSessions: buildAgentInitialToolSessions(agent, initialSessions),
       codeSessionKey: agent.codeSessionKey,
+      ...(toolDispatch && {
+        /** Only tools the turn context declared as deferred are reachable through the dispatcher. */
+        toolDispatch: {
+          canDispatch: (name: string) => dispatchable.has(name),
+        },
+      }),
     };
     if (runFilesActive && runFiles != null && (isSubagent || agent.subagents?.enabled === true)) {
       graphTools = [...(graphTools ?? []), ...createRunFileTools(runFiles, agent.id, signal)];

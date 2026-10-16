@@ -1593,6 +1593,20 @@ export const agentsEndpointSchema = baseEndpointSchema
         .default(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS),
       recursionLimit: z.number().optional(),
       disableBuilder: z.boolean().optional().default(false),
+      /** Prefixes every user message in the prompt with the time it was sent, to the second. */
+      promptMessageTimestamps: z.boolean().optional().default(false),
+      /** Prompt-cache levers for the agents endpoint. */
+      promptCache: z
+        .object({
+          /**
+           * Keeps the cacheable prompt prefix stable across the turns of a conversation: prompt
+           * time is anchored to the conversation start, date changes are announced in the
+           * history, and per-turn context stays out of the stable instructions. Off reproduces
+           * the previous behavior exactly.
+           */
+          stableContext: z.boolean().optional().default(false),
+        })
+        .optional(),
       /** Optional workspace guidance acquisition budget, separate from command execution. */
       repositoryInstructions: z
         .object({
@@ -2069,6 +2083,7 @@ export const agentsEndpointSchema = baseEndpointSchema
   )
   .default({
     disableBuilder: false,
+    promptMessageTimestamps: false,
     capabilities: defaultAgentCapabilities,
     maxCitations: 30,
     maxCitationsPerFile: 7,

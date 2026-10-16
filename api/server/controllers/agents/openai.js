@@ -1116,9 +1116,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             logger,
             mcpManager,
             configServers,
-            sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
-              .filter(Boolean)
-              .join('\n\n'),
+            runContext: { memory: memoryContext, agentFiles: agentScopedContext.get(runAgent.id) },
           });
         }),
       );

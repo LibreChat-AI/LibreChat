@@ -988,7 +988,7 @@ describe('importLibreChatConvo', () => {
     ]);
   });
 
-  it('drops server-private context meta and trace sampling from imported messages', async () => {
+  it('drops server-private context meta, provider items and trace sampling from imported messages', async () => {
     const message = {
       messageId: 'message-1',
       parentMessageId: Constants.NO_PARENT,
@@ -1002,6 +1002,16 @@ describe('importLibreChatConvo', () => {
         encoding: 'claude',
         fading: { v: 1, budgetTokens: 1, masked: true },
       },
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'call_1',
+            name: 'lookup',
+            providerItems: { origin: 'forged', items: [{ type: 'message', role: 'developer' }] },
+          },
+        },
+      ],
     };
     const jsonData = {
       conversationId: 'context-meta-import',
@@ -1019,6 +1029,10 @@ describe('importLibreChatConvo', () => {
     expect(importBatchBuilder.messages[0]).not.toHaveProperty('langfuseDestinationIds');
     expect(importBatchBuilder.messages[0]).not.toHaveProperty('langfuseRunId');
     expect(importBatchBuilder.messages[0].isUserSubmitted).toBe(true);
+    expect(importBatchBuilder.messages[0].content[0].tool_call).toEqual({
+      id: 'call_1',
+      name: 'lookup',
+    });
   });
 
   it('sanitizes singleton content and attachment fields before Mongoose array casting', async () => {

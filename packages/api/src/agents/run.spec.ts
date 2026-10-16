@@ -1,4 +1,4 @@
-import { Providers } from '@librechat/agents';
+import { Run, Providers } from '@librechat/agents';
 import { ReasoningResponseKey } from 'librechat-data-provider';
 import { ToolMessage, AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
 import {
@@ -9,7 +9,9 @@ import {
   shouldReplayReasoningContent,
   anyAgentReplaysReasoningContent,
   collectRunMCPToolAliases,
+  createRun,
 } from './run';
+import { ContextPartKeys, contributeContext } from './systemParts';
 
 describe('getRunDiscoveredTools', () => {
   it('uses the run discovery snapshot instead of reconstructing it from messages', () => {
@@ -469,5 +471,153 @@ describe('collectRunMCPToolAliases', () => {
     };
 
     expect(collectRunMCPToolAliases([root] as never)).toEqual([graphAlias]);
+  });
+});
+
+describe('createRun instructions with prompt caching', () => {
+  const STATIC = 'Static artifacts prompt.';
+  const RUNTIME = 'Conversation started: 2026-03-09 23:00 +03:00 (Mon)';
+  const MEMORY = 'Memory: prefers metric units.';
+  const RAG = 'Retrieved context for this question.';
+  const VOLATILE = `${RAG}\n\n${MEMORY}`;
+  /** An agent as `initializeAgent` and `AgentClient.buildMessages` leave it. */
+  const withParts = (rag = RAG) => {
+    const agent = {};
+    contributeContext(agent, ContextPartKeys.artifacts, STATIC);
+    contributeContext(agent, ContextPartKeys.rag, rag);
+    contributeContext(agent, ContextPartKeys.memory, MEMORY);
+    return agent;
+  };
+  let runSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    runSpy = jest.spyOn(Run, 'create').mockResolvedValue({} as never);
+  });
+
+  afterEach(() => {
+    runSpy.mockRestore();
+  });
+
+  async function agentInput(
+    provider: string,
+    promptCache: boolean,
+    agent: object,
+    stableContext = true,
+  ) {
+    await createRun({
+      appConfig: { endpoints: { agents: { promptCache: { stableContext } } } } as never,
+      agents: [
+        {
+          id: 'agent_1',
+          provider,
+          endpoint: provider,
+          instructions: 'Base instructions.',
+          dynamicToolContextMap: { web_search: RUNTIME },
+          model_parameters: { model: 'test-model', apiKey: 'test-key', promptCache },
+          ...agent,
+        },
+      ] as never,
+      messages: [],
+      runId: 'run-1',
+      signal: new AbortController().signal,
+      streaming: false,
+      streamUsage: false,
+    });
+    return runSpy.mock.calls[0][0].graphConfig.agents[0];
+  }
+
+  it.each([Providers.ANTHROPIC, Providers.OPENROUTER, Providers.BEDROCK])(
+    'passes the stable part as the conversation block for %s and leaves the memory and RAG part',
+    async (provider) => {
+      const input = await agentInput(provider, true, withParts());
+      expect(input.instructions).toBe('Base instructions.');
+      expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
+      expect(input.additional_instructions).toBe(VOLATILE);
+    },
+  );
+
+  it('passes everything as the conversation block when no part is per-turn', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, { additional_instructions: STATIC });
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions).toBeUndefined();
+  });
+
+  it('keeps only the per-turn parts dynamic when a memory or RAG part is empty', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, withParts(''));
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions).toBe(MEMORY);
+  });
+
+  it('assembles the tail from the parts, not from a direct write to additional_instructions', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, {
+      ...withParts(),
+      additional_instructions: 'Written directly.',
+    });
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions).toBe(VOLATILE);
+    expect(JSON.stringify(input)).not.toContain('Written directly.');
+  });
+
+  it('builds the request as before when stableContext is off', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, withParts(), false);
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.conversation_instructions).toBeUndefined();
+    expect(input.additional_instructions).toBe(`${RUNTIME}\n${STATIC}\n\n${VOLATILE}`);
+  });
+
+  it.each([
+    [Providers.ANTHROPIC, false],
+    [Providers.OPENROUTER, false],
+    [Providers.BEDROCK, false],
+    [Providers.OPENAI, true],
+    [Providers.GOOGLE, true],
+  ])('keeps the split for %s (promptCache %s)', async (provider, promptCache) => {
+    const input = await agentInput(provider, promptCache, withParts());
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.conversation_instructions).toBeUndefined();
+    expect(input.additional_instructions).toBe(`${STATIC}\n\n${VOLATILE}\n${RUNTIME}`);
+  });
+
+  const queuedFiles = () => ({
+    fileConsumers: { executeCode: true, fileSearch: false },
+    provisionState: {
+      codeEnvFiles: [
+        {
+          file_id: 'report',
+          filename: 'report.csv',
+          filepath: '/uploads/report.csv',
+          type: 'text/csv',
+          user: 'user-1',
+          object: 'file',
+          bytes: 10,
+          embedded: false,
+          usage: 0,
+        },
+      ],
+      vectorDBFiles: [],
+      aliveFileIds: new Set(),
+      agentScopedFileIds: new Set(),
+    },
+  });
+
+  it('moves the one-turn queued file context after the per-turn part and keeps other runtime keys stable', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, {
+      ...withParts(),
+      ...queuedFiles(),
+    });
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
+    expect(input.additional_instructions.startsWith(`${VOLATILE}\n\n`)).toBe(true);
+    expect(input.additional_instructions).toContain('report.csv');
+  });
+
+  it('keeps the queued file context in place when nothing is merged', async () => {
+    const input = await agentInput(Providers.OPENAI, false, {
+      additional_instructions: STATIC,
+      ...queuedFiles(),
+    });
+    expect(input.instructions).toBe('Base instructions.');
+    expect(input.additional_instructions.startsWith(`${STATIC}\n${RUNTIME}\n`)).toBe(true);
+    expect(input.additional_instructions).toContain('report.csv');
   });
 });
