@@ -11,21 +11,24 @@ import {
 } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import {
+  useFilePreview,
+  useFilePreviewBlob,
+  useFileDownload,
+  useSharedFileDownload,
+  useCodeOutputDownload,
+  useCodeOutputPreviewBlob,
+} from '~/data-provider';
+import {
   getFileExtension,
   getPreviewKind,
   isExtractedTextPreviewLoading,
   shouldUseExtractedTextPreview,
   shouldUseSharedFileDownload,
 } from './preview';
-import {
-  useFilePreview,
-  useFilePreviewBlob,
-  useFileDownload,
-  useSharedFileDownload,
-} from '~/data-provider';
 import { getDownloadFilename, logger, sortPagesByRelevance, triggerDownload } from '~/utils';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useFileMapContext, useShareContext } from '~/Providers';
+import { isCodeOutputAttachment } from './Parts/LogLink';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -99,6 +102,7 @@ export default function FilePreviewDialog({
   onOpenChange,
   fileName,
   fileId,
+  filePath,
   relevance,
   pages,
   pageRelevance,
@@ -131,11 +135,21 @@ export default function FilePreviewDialog({
   // Downloads own URLs; previews share bytes and create only their display URL.
   const { refetch: downloadOwned } = useFileDownload(user?.id ?? '', fileId, { direct: false });
   const { refetch: downloadShared } = useSharedFileDownload(shareId, fileId);
-  const { refetch: previewFile } = useFilePreviewBlob(user?.id, fileId, shareId);
+  const { refetch: previewOwned } = useFilePreviewBlob(user?.id, fileId, shareId);
+  // Code-interpreter outputs aren't always persisted `TFile` records — the
+  // backend's download-fallback path (oversized output, no storage
+  // strategy) carries only a session-scoped `filePath`, no `source`/
+  // `file_id`. Route both download and preview through that URL instead of
+  // the owner/share file-ACL lookups above whenever that's the case.
+  const isCodeOutput = isCodeOutputAttachment(filePath, fileId, fileSource);
+  const { refetch: downloadCodeOutput } = useCodeOutputDownload(filePath);
+  const { refetch: previewCodeOutput } = useCodeOutputPreviewBlob(filePath);
   // A shared viewer must stay inside the share-scoped authorization boundary;
   // citation and retrieval previews do not carry a rewritten filepath signal.
   const useShared = shouldUseSharedFileDownload(shareId, fileId);
-  const downloadFile = useShared ? downloadShared : downloadOwned;
+  const downloadOwnerOrShared = useShared ? downloadShared : downloadOwned;
+  const downloadFile = isCodeOutput ? downloadCodeOutput : downloadOwnerOrShared;
+  const previewFile = isCodeOutput ? previewCodeOutput : previewOwned;
 
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileBlobUrl, setFileBlobUrl] = useState<string | null>(null);
@@ -168,7 +182,7 @@ export default function FilePreviewDialog({
     setFileBlobUrl(null);
     setPreviewError(false);
     setLoading(false);
-    if (!open || !fileId || !previewKind) {
+    if (!open || (!fileId && !isCodeOutput) || !previewKind) {
       return;
     }
 
@@ -208,10 +222,10 @@ export default function FilePreviewDialog({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [open, fileId, previewKind, previewFile, shareId, user?.id]);
+  }, [open, fileId, previewKind, previewFile, shareId, user?.id, isCodeOutput, filePath]);
 
   const handleDownload = useCallback(async () => {
-    if (!fileId) {
+    if (!fileId && !isCodeOutput) {
       return;
     }
     try {
@@ -223,7 +237,7 @@ export default function FilePreviewDialog({
     } catch (err) {
       logger.error('[FilePreviewDialog] Download failed:', err);
     }
-  }, [downloadFile, downloadFilename, fileId]);
+  }, [downloadFile, downloadFilename, fileId, isCodeOutput]);
 
   useEffect(() => {
     if (!open) {
@@ -272,7 +286,7 @@ export default function FilePreviewDialog({
             <OGDialogDescription className="min-w-0 truncate">
               {metaParts.join(' · ')}
             </OGDialogDescription>
-            {fileId && (
+            {(fileId || isCodeOutput) && (
               <button
                 type="button"
                 onClick={handleDownload}
