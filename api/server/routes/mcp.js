@@ -24,6 +24,7 @@ const {
   generateCheckAccess,
   validateOAuthSession,
   OAUTH_SESSION_COOKIE,
+  parseElicitationFlowId,
   mcpConfig: mcpSettings,
   getServerCustomUserVars,
   hasCustomUserVars,
@@ -66,6 +67,7 @@ const {
   resolveAllMcpConfigs,
   resolveConfigServers,
   getMCPSetupData,
+  resolveElicitationFlow,
 } = require('~/server/services/MCP');
 const {
   requireJwtAuth,
@@ -105,6 +107,24 @@ const canAccessOAuthFlow = (flowId, userId) => {
     return false;
   }
   return parsed.userId === userId || parsed.userId === 'system';
+};
+
+/**
+ * Elicitation flow IDs embed the requesting userId directly (unlike OAuth flow
+ * IDs, which are one-per-server; elicitation flows are one-per-tool-invocation
+ * — see `generateElicitationFlowId` in `@librechat/api`). This enforces the
+ * same per-user ownership OAuth flow routes do, so one user can't complete or
+ * observe another user's pending elicitation via a guessed/observed flowId.
+ */
+const canAccessElicitationFlow = (flowId, userId) => {
+  const parsed = parseElicitationFlowId(flowId);
+  if (!parsed) {
+    return false;
+  }
+  if (parsed.tenantId && parsed.tenantId !== getTenantId()) {
+    return false;
+  }
+  return parsed.userId === userId;
 };
 
 const checkMCPUsePermissions = generateCheckAccess({
@@ -1317,6 +1337,90 @@ router.delete(
   }),
   (req, res) => deleteMCPServerController(req, res, maybeUninstallOAuthMCP),
 );
+
+/**
+ * Submit a response to an MCP URL-mode elicitation request. Completes a pending
+ * elicitation flow so `MCPManager.callTool` can resume:
+ * - `action: 'complete'` — URL-mode card (either a `mode: 'url'`
+ *   `elicitation/create` request, or a -32042 URL-exception retry): "I've
+ *   authorized — continue", which resumes/retries the tool call.
+ * - `action: 'cancel' | 'decline'` — abandon the pending call.
+ *
+ * URL mode carries no form `content`, so there is no submitted-field validation
+ * here; the action enum and per-user flow ownership are the only checks.
+ */
+router.post('/elicitation/:flowId', requireJwtAuth, async (req, res) => {
+  try {
+    const { flowId } = req.params;
+    const { action, content } = req.body ?? {};
+    const user = req.user;
+
+    if (!user?.id) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    if (!action || !['accept', 'decline', 'cancel', 'complete'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action' });
+    }
+
+    if (!canAccessElicitationFlow(flowId, user.id)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const flowsCache = getLogStores(CacheKeys.FLOWS);
+    const flowManager = getFlowStateManager(flowsCache);
+
+    let flowState = await flowManager.getFlowState(flowId, 'mcp_elicit');
+    if (!flowState) {
+      // Race recovery: the card can reach the user a beat before the tool call's
+      // handler persists the PENDING flow state; retry once (mirrors the
+      // race-recovery in FlowStateManager.monitorFlow) before giving up.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      flowState = await flowManager.getFlowState(flowId, 'mcp_elicit');
+    }
+    if (!flowState) {
+      return res.status(404).json({ error: 'Flow not found' });
+    }
+
+    // Atomic PENDING->COMPLETED: exactly one concurrent submit wins even if both
+    // requests read PENDING first.
+    const won = await flowManager.completeFlowIfPending(flowId, 'mcp_elicit', {
+      action,
+      content,
+    });
+    if (!won) {
+      // Lost the race, already resolved, or gone entirely — tell the two apart so
+      // a genuinely missing flow still reports 404 instead of 409.
+      const settledState = await flowManager.getFlowState(flowId, 'mcp_elicit');
+      if (!settledState) {
+        return res.status(404).json({ error: 'Flow not found' });
+      }
+      /** Return the action that actually won, not the one this request tried:
+       *  the loser's card must render the real outcome (a decline in another tab
+       *  is not an accept here). */
+      return res.status(409).json({
+        error: 'Elicitation already resolved',
+        action: settledState.result?.action,
+        content: settledState.result?.content,
+      });
+    }
+
+    /** Notify the originating stream so a resumed/replayed session renders the
+     *  resolved card instead of a stale pending one. */
+    await resolveElicitationFlow({
+      flowId,
+      action,
+      content,
+      fallbackStreamId: flowState.metadata?.streamId ?? null,
+      fallbackStepId: flowState.metadata?.stepId,
+    });
+
+    return res.json({ ok: true });
+  } catch (error) {
+    logger.error('[MCP Elicitation] Failed to complete elicitation flow', error);
+    return res.status(500).json({ error: 'Failed to complete elicitation flow' });
+  }
+});
 
 // --- MCP Apps Support ---
 

@@ -169,12 +169,34 @@ export const PENDING_STALE_MS: number = math(
 const SECONDS_THRESHOLD = 1e10;
 
 /**
+ * A Keyv store that may optionally expose distributed lock helpers (see
+ * `flowsCache` in `packages/api/src/cache/flows.ts`). Structurally typed here
+ * rather than imported to avoid coupling the flow manager to the cache
+ * package's Redis-detection internals.
+ */
+type LockableKeyv = Keyv & {
+  acquireLock?: (key: string) => Promise<string | null>;
+  releaseLock?: (key: string, token: string) => Promise<void>;
+};
+
+/**
  * Normalizes an expiration timestamp to milliseconds.
  * Timestamps below 10 billion are assumed to be in seconds (valid until ~2286).
  */
 export function normalizeExpiresAt(timestamp: number): number {
   return timestamp < SECONDS_THRESHOLD ? timestamp * 1000 : timestamp;
 }
+
+/** How many times {@link FlowStateManager.completeFlowIfPending} retries the
+ *  distributed lock before conceding. Covers the window where the holder has
+ *  acquired the lock but not yet written the terminal state. */
+const COMPLETE_LOCK_RETRY_MS = 50;
+/** Must span the store's lock TTL (5s in `cache/flows.ts`): if the holder dies
+ *  after acquiring the lock, nothing settles the flow until that TTL expires,
+ *  and conceding earlier returns a 409 with no winning action while the flow is
+ *  still PENDING. Retrying to the TTL lets a later attempt take the lock over. */
+const COMPLETE_LOCK_TIMEOUT_MS = 6000;
+const COMPLETE_LOCK_ATTEMPTS = Math.ceil(COMPLETE_LOCK_TIMEOUT_MS / COMPLETE_LOCK_RETRY_MS);
 
 export class FlowStateManager<T = unknown> {
   private static readonly inMemoryLeases = new Map<string, InMemoryLeaseState>();
@@ -192,6 +214,15 @@ export class FlowStateManager<T = unknown> {
   private monitorTimeout: number;
   private retainedFailureTypes: Set<string>;
   private intervals: Set<NodeJS.Timeout>;
+  /**
+   * Per-flowKey in-process mutex used by `completeFlowIfPending` as a fallback
+   * when the store has no distributed `acquireLock`/`releaseLock` (in-memory
+   * Keyv, or a Redis store without lock helpers attached). Guards against two
+   * callers within the SAME process racing the PENDING->COMPLETED read-modify-
+   * write; it does nothing to protect against a second process, which is why
+   * the distributed lock is preferred whenever the store provides one.
+   */
+  private localLocks: Map<string, Promise<unknown>>;
   private redisScriptExecutor?: FlowManagerOptions['redisScriptExecutor'];
 
   constructor(store: Keyv, options?: FlowManagerOptions) {
@@ -216,9 +247,29 @@ export class FlowStateManager<T = unknown> {
     this.redisScriptExecutor = redisScriptExecutor;
     this.keyv = store;
     this.intervals = new Set();
+    this.localLocks = new Map();
 
     if (!ci) {
       this.setupCleanupHandlers();
+    }
+  }
+
+  /**
+   * Serializes callers keyed by `key` within this process: each call waits for
+   * the previous call (for the same key) to settle before running `fn`, so
+   * concurrent callers never interleave their read-modify-write.
+   */
+  private async withLocalLock<R>(key: string, fn: () => Promise<R>): Promise<R> {
+    const prior = this.localLocks.get(key) ?? Promise.resolve();
+    const run = prior.then(fn, fn);
+    const tracked = run.catch(() => undefined);
+    this.localLocks.set(key, tracked);
+    try {
+      return await run;
+    } finally {
+      if (this.localLocks.get(key) === tracked) {
+        this.localLocks.delete(key);
+      }
     }
   }
 
@@ -888,6 +939,78 @@ export class FlowStateManager<T = unknown> {
     });
 
     return true;
+  }
+
+  /**
+   * Atomically transitions a flow from PENDING to COMPLETED, for callers that
+   * need to know whether THEY won a completion race (unlike `completeFlow`,
+   * which is last-write-wins and returns true for any caller as long as the
+   * flow ends up COMPLETED — the right behavior for OAuth/token flows, but not
+   * for e.g. two concurrent submissions of the same URL-mode elicitation).
+   *
+   * Acquires the store's distributed lock when available (`acquireLock`/
+   * `releaseLock` on the underlying Keyv, see `flowsCache`), falling back to
+   * an in-process mutex otherwise.
+   *
+   * @returns true ONLY for the caller that performed the PENDING->COMPLETED
+   * transition; false if the flow is missing, already COMPLETED/FAILED, or
+   * the caller lost the race to another concurrent caller.
+   */
+  async completeFlowIfPending(flowId: string, type: string, result: T): Promise<boolean> {
+    const flowKey = this.getFlowKey(flowId, type);
+
+    const transition = async (): Promise<boolean> => {
+      const flowState = (await this.keyv.get(flowKey)) as FlowState<T> | undefined;
+      if (!flowState || flowState.status !== 'PENDING') {
+        return false;
+      }
+
+      const updatedState: FlowState<T> = {
+        ...flowState,
+        status: 'COMPLETED',
+        result,
+        completedAt: Date.now(),
+      };
+
+      await this.keyv.set(flowKey, updatedState, this.ttl);
+
+      logger.debug('[FlowStateManager] Flow completed successfully (atomic)', {
+        flowId,
+        type,
+      });
+
+      return true;
+    };
+
+    const lockableStore = this.keyv as LockableKeyv;
+    if (lockableStore.acquireLock && lockableStore.releaseLock) {
+      const lockKey = `lock:${flowKey}`;
+      for (let attempt = 0; attempt < COMPLETE_LOCK_ATTEMPTS; attempt++) {
+        const token = await lockableStore.acquireLock(lockKey);
+        if (token) {
+          try {
+            return await transition();
+          } finally {
+            await lockableStore.releaseLock(lockKey, token);
+          }
+        }
+        /** Losing the lock is not the same as losing the race: the holder may
+         *  still be between its read and its write. Returning false here would
+         *  have the caller re-read a PENDING state and report a conflict with no
+         *  winning action, so the loser's UI shows its own attempted action.
+         *  Retry briefly; if the holder settled the flow we observe the terminal
+         *  state and report the loss truthfully, and if it died the lock TTL
+         *  lets a later attempt take over. */
+        const observed = (await this.keyv.get(flowKey)) as FlowState<T> | undefined;
+        if (!observed || observed.status !== 'PENDING') {
+          return false;
+        }
+        await new Promise((resolve) => setTimeout(resolve, COMPLETE_LOCK_RETRY_MS));
+      }
+      return false;
+    }
+
+    return this.withLocalLock(flowKey, transition);
   }
 
   /**

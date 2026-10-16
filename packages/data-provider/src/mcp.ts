@@ -248,6 +248,14 @@ const BaseOptionsSchema = z.object({
    */
   serverInstructions: z.union([z.boolean(), z.string()]).optional(),
   /**
+   * Controls whether this server's MCP elicitation requests surface an
+   * interactive card in chat (URL-authorization prompts).
+   * - undefined/true (default): elicitation requests are handled and rendered
+   * - false: elicitation handling is not wired for this server, so requests are
+   *   left to the transport's default (unsupported) behavior
+   */
+  elicitation: z.boolean().optional(),
+  /**
    * Whether this server requires OAuth authentication
    * If not specified, will be auto-detected during construction
    */
@@ -499,6 +507,7 @@ const omitServerManagedFields = <T extends z.ZodObject<z.ZodRawShape>>(schema: T
     oauthPersistenceWaitTimeout: true,
     chatMenu: true,
     serverInstructions: true,
+    elicitation: true,
     requiresOAuth: true,
     customUserVars: true,
     oauth_headers: true,

@@ -38,6 +38,7 @@ export const handledExportContentTypes = [
   ContentTypes.STEER,
   ContentTypes.ACTIVITY_LABEL,
   ContentTypes.ERROR,
+  ContentTypes.ELICITATION,
 ] satisfies readonly ContentTypes[];
 
 const getTextValue = (value: TextValue): string => {
@@ -191,6 +192,13 @@ export function formatMessageContent({
   if (content.type === ContentTypes.SUMMARY) {
     const summary = getSummaryText(content);
     return [localize(exportLabelKeys.summary), summary ?? stringify(content)];
+  }
+
+  // Elicitation cards are transient, UI-only authorization prompts (kept out of
+  // model context); exclude them from conversation exports rather than dumping
+  // the raw payload/URL.
+  if (content.type === ContentTypes.ELICITATION) {
+    return [];
   }
 
   if (content.type === ContentTypes.STEER) {

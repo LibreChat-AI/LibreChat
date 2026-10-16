@@ -223,6 +223,22 @@ export function updateContent(
     );
   }
 
+  /**
+   * Elicitation cards are a standalone, pause-scoped UI part, not an indexed
+   * content slot: a tool-call+elicitation+final-text sequence can collide on the
+   * same index once the run resumes. Displace the card to the tail (same pattern
+   * as the OAuth prompt and ask-user-question card above) instead of letting the
+   * type-mismatch guard below drop the incoming part.
+   */
+  if (
+    contentType !== ContentTypes.ELICITATION &&
+    updatedContent[index]?.type === ContentTypes.ELICITATION
+  ) {
+    const displaced = updatedContent[index];
+    updatedContent[index] = undefined;
+    updatedContent.push(displaced);
+  }
+
   if (!updatedContent[index] && contentType !== ContentTypes.TOOL_CALL) {
     updatedContent[index] = { type: contentPart.type as AllContentTypes };
   }

@@ -2632,6 +2632,48 @@ describe('User parameter passing tests', () => {
       }
     });
 
+    it.each([
+      ['a resumable stream', 'elicit-stream', true],
+      ['no stream (headless ingress)', null, false],
+    ])(
+      'wires elicitationStart only with an interactive surface: %s',
+      async (_n, streamId, wired) => {
+        const mockUser = { id: 'elicit-user', role: 'USER' };
+        const { getRoleByName } = require('~/models');
+        getRoleByName.mockResolvedValue({
+          permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } },
+        });
+        mockGetFlowStateManager.mockReturnValue({});
+        const callTool = jest.fn().mockResolvedValue(['ok', null]);
+        mockGetMCPManager.mockReturnValue({ callTool });
+        const toolKey = `test-tool${D}elicit-server`;
+        const mcpTool = await createMCPTool({
+          res: { write: jest.fn(), flush: jest.fn() },
+          user: mockUser,
+          toolKey,
+          provider: 'openai',
+          userMCPAuthMap: {},
+          availableTools: {
+            [toolKey]: {
+              function: { description: 'd', parameters: { type: 'object', properties: {} } },
+            },
+          },
+          streamId,
+          jobCreatedAt: 1,
+        });
+        await mcpTool.invoke(
+          {},
+          {
+            configurable: { user: mockUser },
+            metadata: { provider: 'openai', thread_id: 't', run_id: 'r' },
+            toolCall: { id: 'c', stepId: 's', name: 'test-tool', type: 'tool_call' },
+          },
+        );
+        const call = callTool.mock.calls[0][0];
+        expect(typeof call.elicitationStart).toBe(wired ? 'function' : 'undefined');
+      },
+    );
+
     it('should reuse request-scoped MCP permission checks across tool executions', async () => {
       const mockUser = { id: 'mcp-allowed-user', role: 'USER' };
       const mockReq = { user: mockUser };

@@ -201,7 +201,8 @@ type ContentDataPart =
   | { type: 'data-summary'; data: DataOf<ContentTypes.SUMMARY> }
   | { type: 'data-activity-label'; data: DataOf<ContentTypes.ACTIVITY_LABEL> }
   | { type: 'data-steer'; data: DataOf<ContentTypes.STEER> }
-  | { type: 'data-error'; data: DataOf<ContentTypes.ERROR> };
+  | { type: 'data-error'; data: DataOf<ContentTypes.ERROR> }
+  | { type: 'data-elicitation'; data: DataOf<ContentTypes.ELICITATION> };
 
 /** A pending `ask_user_question` pause, carried whole. */
 export type UIAskUserQuestionPart = {
@@ -273,6 +274,7 @@ const dataPartTypes = {
   [ContentTypes.ACTIVITY_LABEL]: 'data-activity-label',
   [ContentTypes.STEER]: 'data-steer',
   [ContentTypes.ERROR]: 'data-error',
+  [ContentTypes.ELICITATION]: 'data-elicitation',
 } as const satisfies Partial<Record<ContentTypes, DataPartType>>;
 
 const contentTypesByDataPart: Record<DataPartType, keyof typeof dataPartTypes> = {
@@ -281,6 +283,7 @@ const contentTypesByDataPart: Record<DataPartType, keyof typeof dataPartTypes> =
   'data-activity-label': ContentTypes.ACTIVITY_LABEL,
   'data-steer': ContentTypes.STEER,
   'data-error': ContentTypes.ERROR,
+  'data-elicitation': ContentTypes.ELICITATION,
 };
 
 const stepStart: UIStepStartPart = { type: 'step-start' };
@@ -637,6 +640,7 @@ export function toUIPart(
     case ContentTypes.ACTIVITY_LABEL:
     case ContentTypes.STEER:
     case ContentTypes.ERROR:
+    case ContentTypes.ELICITATION:
       return toDataPart(part);
     case ASK_USER_QUESTION: {
       const { type: _type, ...data } = part;

@@ -1,5 +1,5 @@
-import { Constants, StepTypes, StepEvents } from 'librechat-data-provider';
-import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
+import { Constants, StepTypes, StepEvents, ContentTypes } from 'librechat-data-provider';
+import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { StepEvent, StepEffect, StepContext, StreamState } from './stream/state';
 import {
   getEditPrefix,
@@ -290,6 +290,69 @@ export function reduceStep(state: StreamState, event: StepEvent, ctx: StepContex
       ].find((id) => id && id !== Constants.NEW_CONVO && id !== Constants.PENDING_CONVO);
       if (conversationId) effects.push({ type: 'subagent-index', conversationId });
     }
+    return effects;
+  }
+
+  if (event.event === StepEvents.ON_ELICITATION) {
+    const { id: stepId, runId, elicitation } = event.data;
+    const responseMessageId = resolveResponseId(submission, state.steps.get(stepId)?.runId ?? runId);
+    if (!responseMessageId) {
+      console.warn('No message id found in elicitation event');
+      return effects;
+    }
+    const response = state.messages.get(responseMessageId);
+    if (!response) {
+      console.warn('[on_elicitation] No response message found for', responseMessageId);
+      return effects;
+    }
+    /** A standalone card, not a delta onto an indexed slot: appended as its own part, deduped
+     *  by flowId so a re-emitted event replaces in place. */
+    const contentPart: Agents.ElicitationContent = { type: ContentTypes.ELICITATION, elicitation };
+    const existingContent = (response.content ?? []) as TMessageContentParts[];
+    const updatedResponse = {
+      ...response,
+      content: [
+        ...existingContent.filter(
+          (part) =>
+            part?.type !== ContentTypes.ELICITATION ||
+            part.elicitation?.flowId !== elicitation.flowId,
+        ),
+        contentPart,
+      ],
+    };
+    state.messages.set(responseMessageId, updatedResponse);
+    merge(updatedResponse, responseMessageId);
+    return effects;
+  }
+
+  if (event.event === StepEvents.ON_ELICITATION_RESOLVED) {
+    const { id: stepId, runId, flowId, action, content: resolvedContent } = event.data;
+    const responseMessageId = resolveResponseId(submission, state.steps.get(stepId)?.runId ?? runId);
+    if (!responseMessageId) {
+      console.warn('No message id found in elicitation resolved event');
+      return effects;
+    }
+    const response = state.messages.get(responseMessageId);
+    if (!response) {
+      console.warn('[on_elicitation_resolved] No response message found for', responseMessageId);
+      return effects;
+    }
+    /** Writes the resolution onto the card matching `flowId` so it survives replay. */
+    let didResolve = false;
+    const content = ((response.content ?? []) as TMessageContentParts[]).map((part) => {
+      if (part?.type !== ContentTypes.ELICITATION || part.elicitation?.flowId !== flowId) {
+        return part;
+      }
+      didResolve = true;
+      return { ...part, elicitation: { ...part.elicitation, action, content: resolvedContent } };
+    });
+    if (!didResolve) {
+      console.warn('[on_elicitation_resolved] No matching elicitation content part for', flowId);
+      return effects;
+    }
+    const updatedResponse = { ...response, content };
+    state.messages.set(responseMessageId, updatedResponse);
+    merge(updatedResponse, responseMessageId);
     return effects;
   }
 
