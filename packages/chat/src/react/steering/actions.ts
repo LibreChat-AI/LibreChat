@@ -1,10 +1,18 @@
 import { useCallback, useMemo } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
-import type { DuringRunAction } from '../contract';
+import type { DuringRunAction } from '../../core';
 import type { ComposerTake } from './composer';
 import type { QueueEnqueue } from './enqueue';
 import type { SubmitSteer } from './submit';
+
+export interface DuringRunActions {
+  steerFromComposer: (text: string, preempt?: boolean) => boolean;
+  queueFromComposer: (text: string) => boolean;
+  interruptAndSend: (text: string) => boolean;
+  interruptSteer: (text: string) => boolean;
+  submitDuringRun: (text: string) => boolean;
+}
 
 /** What the composer's own controls do during a run: steer, queue, interrupt
  *  and send, or interrupt the step and steer, each taking the composer's staged
@@ -41,7 +49,7 @@ export default function useDuringRunActions({
   submitSteer: SubmitSteer;
   armDrainAfterAbort: () => void;
   stopGenerating: () => void;
-}) {
+}): DuringRunActions {
   const { takeComposerFiles, takeComposerContext, takeComposerQuotes } = composer;
   /** Composer-originated steer: consumes the composer's attachments and quote
    *  chips so they ride the steer as one unit (the server re-fetches + encodes

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useStore } from 'jotai';
+import type { QueuedMessageContext } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
-import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import type { ExtendedFile, FileSetter } from '~/common';
 import type { useChatFormContext } from '~/Providers';
 import {

@@ -7,7 +7,7 @@ import { ReasoningEffort } from 'librechat-data-provider';
 import { hasQueuedIntent, releaseQueuedIntent } from '@librechat/chat';
 import { revealedQueuedTurnFamily, resetSteerFamilies } from '@librechat/chat/react';
 import { act, render, screen, within, waitFor, fireEvent } from '@testing-library/react';
-import type { SteeringControls } from '~/hooks/Chat/useSteering';
+import type { SteeringControls } from '@librechat/chat/react';
 import type { QueuedMessage } from '~/hooks/Chat/queue';
 import {
   QueuedTurnPortalProvider,

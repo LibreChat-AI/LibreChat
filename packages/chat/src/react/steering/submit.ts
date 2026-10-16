@@ -1,13 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
-import { useSteerHost } from '@librechat/chat/react';
-import {
-  steerAttemptChip,
-  routeSteerFailure,
-  carriedSteerContext,
-  createSteerDispatch,
-  supportsGenerationProtocolV2,
-} from '@librechat/chat';
+import type { TMessage } from 'librechat-data-provider';
+import type { MutableRefObject } from 'react';
 import type {
   SteerAttempt,
   PendingSteer,
@@ -15,14 +9,20 @@ import type {
   QueuedMessageOrigin,
   QueuedMessageContext,
   GenerationProtocolVersion,
-} from '@librechat/chat';
-import type { TMessage } from 'librechat-data-provider';
-import type { MutableRefObject } from 'react';
+} from '../../core';
 import type { QueueEnqueue } from './enqueue';
 import type { SteerChips } from './chips';
 import type { QueueRows } from './rows';
-import { useSteerRehome } from '~/hooks/Chat/useSteerCancel';
-import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import {
+  steerAttemptChip,
+  routeSteerFailure,
+  carriedSteerContext,
+  createSteerDispatch,
+  supportsGenerationProtocolV2,
+} from '../../core';
+import { useSteerRehome } from './useSteerCancel';
+import useSteerConvert from './useSteerConvert';
+import { useSteerHost } from '../steer/host';
 
 export type SubmitSteer = (
   text: string,

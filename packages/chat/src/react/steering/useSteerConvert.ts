@@ -1,35 +1,36 @@
 import { useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
 import { useStore } from 'jotai';
-import { useSteerHost } from '@librechat/chat/react';
-import { getGenerationProtocolVersion } from '@librechat/chat';
-import {
-  pendingSteersByConvoId,
-  appliedSteerIdsByConvoId,
-  activeGenerationProtocolVersionByConvoId,
-} from '@librechat/chat/react';
-import type { GenerationProtocolVersion } from '@librechat/chat';
 import type { TPendingSteer } from 'librechat-data-provider';
-import type { QueuedMessage, QueuedMessageOrigin } from '~/hooks/Chat/queue';
-import type { SteerCarriedContext } from '~/utils';
+import type {
+  GenerationProtocolVersion,
+  QueuedMessage,
+  QueuedMessageOrigin,
+  SteerCarriedContext,
+} from '../../core';
 import {
+  getGenerationProtocolVersion,
   appendAppliedSteerIds,
   carriedSteerContext,
   insertQueuedOrigin,
   hydrateFileDeliveryMetadata,
-} from '~/utils';
-import {
-  recoveryDispositionsFamily,
   canRestoreRecovery,
-} from '~/components/Chat/Steering/recovery';
-import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
+} from '../../core';
+import {
+  pendingSteersByConvoId,
+  appliedSteerIdsByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+} from '../steer/atoms';
+import { recoveryDispositionsFamily } from '../steer/recovery';
+import { queuedMessagesByConvoId } from '../steer/queue';
+import { useSteerHost } from '../steer/host';
 
 /** A server-reported steer, or a local one that carries its own client-only
  *  context (quotes / skill picks) because its chip may already be gone. */
-type ConvertibleSteer = TPendingSteer &
+export type ConvertibleSteer = TPendingSteer &
   SteerCarriedContext & { queuedOrigin?: QueuedMessageOrigin };
 
-interface SteerConvertOptions {
+export interface SteerConvertOptions {
   /** Live-delivered terminal steers also have a parked server copy (the
    *  terminal drain parks before knowing the final reached a subscriber);
    *  set on final/abort/error surfaces to reconcile that durable copy. */
@@ -67,7 +68,11 @@ interface SteerConvertOptions {
  * the only recovery source. Exact recovery or explicit dismissal commits the
  * server-side removal.
  */
-export default function useSteerConvert() {
+export default function useSteerConvert(): (
+  conversationId: string,
+  steers: ConvertibleSteer[],
+  options?: SteerConvertOptions,
+) => void {
   const jotaiStore = useStore();
   const host = useSteerHost();
   const fileMap = host.useFileMap();
