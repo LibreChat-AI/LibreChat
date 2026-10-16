@@ -181,6 +181,12 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'claude-3-7-sonnet': { prompt: 3, completion: 15 },
     'claude-3.7-sonnet': { prompt: 3, completion: 15 },
     'claude-haiku-4-5': { prompt: 1, completion: 5 },
+    /* Unlike the other Claude 1M models, Haiku 5.5 is published with two
+       prompt-size tiers. These are its rates up to a 100K prompt; the higher
+       ones above that live in `premiumTokenValues`, easily reached inside its
+       1M window. */
+    'claude-haiku-5-5': { prompt: 0.1, completion: 0.5 },
+    'claude-haiku-5.5': { prompt: 0.1, completion: 0.5 },
     'claude-opus-4': { prompt: 15, completion: 75 },
     'claude-opus-4-5': { prompt: 5, completion: 25 },
     'claude-opus-4-6': { prompt: 5, completion: 25 },
@@ -275,6 +281,9 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'mistral-large-2411': { prompt: 2.0, completion: 6.0 },
     'mistral-large-2512': { prompt: 0.5, completion: 1.5 },
     'mistral-large-3': { prompt: 0.5, completion: 1.5 },
+    // Mistral Large 4 sale pricing; no end date is published. Revert to
+    // { prompt: 1.36, completion: 4.18 } once it ends.
+    'mistral-large-4': { prompt: 0.68, completion: 2.09 },
     'mixtral-8x22b': { prompt: 0.65, completion: 0.65 },
     kimi: { prompt: 0.6, completion: 2.5 },
     moonshot: { prompt: 2.0, completion: 5.0 },
@@ -368,6 +377,8 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'claude-3-5-haiku': { write: 1, read: 0.08 },
   'claude-3-haiku': { write: 0.3, read: 0.03 },
   'claude-haiku-4-5': { write: 1.25, read: 0.1 },
+  'claude-haiku-5-5': { write: 0.125, read: 0.01 },
+  'claude-haiku-5.5': { write: 0.125, read: 0.01 },
   'claude-sonnet-4': { write: 3.75, read: 0.3 },
   'claude-sonnet-4-5': { write: 3.75, read: 0.3 },
   'claude-sonnet-4-6': { write: 3.75, read: 0.3 },
@@ -456,6 +467,8 @@ export const premiumTokenValues: Record<
   string,
   { threshold: number; prompt: number; completion: number }
 > = {
+  'claude-haiku-5-5': { threshold: 100000, prompt: 0.5, completion: 2.5 },
+  'claude-haiku-5.5': { threshold: 100000, prompt: 0.5, completion: 2.5 },
   'gemini-3.1': { threshold: 200000, prompt: 4, completion: 18 },
   'gpt-5.4': { threshold: 272000, prompt: 5, completion: 22.5 },
   'gpt-5.4-pro': { threshold: 272000, prompt: 60, completion: 270 },
