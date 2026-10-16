@@ -2781,6 +2781,40 @@ describe('web.ts', () => {
       expect(mockIsSSRFTarget).toHaveBeenCalledWith('localhost', undefined, '8080');
     });
 
+    it('should block user-provided cohereApiUrl targeting localhost', async () => {
+      mockIsSSRFTarget.mockImplementation((hostname: string) => hostname === 'localhost');
+
+      const webSearchConfig: TCustomConfig['webSearch'] = {
+        serperApiKey: '${SERPER_API_KEY}',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+        cohereApiKey: '${COHERE_API_KEY}',
+        cohereApiUrl: '${COHERE_API_URL}',
+        safeSearch: SafeSearchTypes.MODERATE,
+        rerankerType: 'cohere' as RerankerTypes,
+      };
+
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'COHERE_API_URL') {
+            result[field] = 'http://localhost:8080/v2/rerank';
+          } else {
+            result[field] = 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig,
+        loadAuthValues: mockLoadAuthValues,
+      });
+
+      expect(result.authResult.cohereApiUrl).toBeUndefined();
+      expect(mockIsSSRFTarget).toHaveBeenCalledWith('localhost', undefined, '8080');
+    });
+
     it('should block user-provided firecrawlApiUrl resolving to private IP', async () => {
       mockResolveHostnameSSRF.mockImplementation((hostname: string) =>
         Promise.resolve(hostname === 'evil.internal-service.com'),
@@ -3173,6 +3207,38 @@ describe('web.ts', () => {
 
       expect(result.authResult.firecrawlApiUrl).toBe('https://api.firecrawl.dev');
       expect(result.authResult.jinaApiUrl).toBe('https://api.jina.ai/v1/rerank');
+      expect(result.authenticated).toBe(true);
+    });
+
+    it('should allow a self-hosted cohereApiUrl (e.g. a LiteLLM proxy)', async () => {
+      const webSearchConfig: TCustomConfig['webSearch'] = {
+        serperApiKey: '${SERPER_API_KEY}',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+        cohereApiKey: '${COHERE_API_KEY}',
+        cohereApiUrl: '${COHERE_API_URL}',
+        safeSearch: SafeSearchTypes.MODERATE,
+        rerankerType: 'cohere' as RerankerTypes,
+      };
+
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'COHERE_API_URL') {
+            result[field] = 'https://litellm.internal/v2/rerank';
+          } else {
+            result[field] = 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig,
+        loadAuthValues: mockLoadAuthValues,
+      });
+
+      expect(result.authResult.cohereApiUrl).toBe('https://litellm.internal/v2/rerank');
       expect(result.authenticated).toBe(true);
     });
 
