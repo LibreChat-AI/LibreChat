@@ -3,8 +3,14 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
+import type { TFileConfig } from 'librechat-data-provider';
 import type { CodeArtifactCategory } from './classify';
-import { bufferToOfficeHtml, officeHtmlBucket } from '~/files/documents/html';
+import {
+  bufferToOfficeHtml,
+  officeHtmlBucket,
+  pptxToHtml,
+  wordDocToHtml,
+} from '~/files/documents/html';
 import { createConcurrencyLimiter, withTimeout } from '~/utils/promise';
 import { parseDocument } from '~/files/documents/crud';
 import { isBinaryBuffer } from '~/skills/binary';
@@ -43,6 +49,48 @@ export function resolveMaxTextExtractBytes(value: string | undefined): number {
 export const MAX_TEXT_EXTRACT_BYTES: number = resolveMaxTextExtractBytes(
   process.env.FILE_PREVIEW_MAX_EXTRACT_BYTES,
 );
+/** Largest office file whose bytes still ride inside the stored preview HTML. */
+const INLINE_OFFICE_BYTES = 350 * 1024;
+
+export type OfficePreviewSetting = TFileConfig['officePreview'];
+
+const isShellEligible = (
+  name: string,
+  mimeType: string,
+  officePreview?: OfficePreviewSetting,
+): boolean => {
+  const bucket = officeHtmlBucket(name, mimeType);
+  return officePreview?.enabled === true && (bucket === 'docx' || bucket === 'presentation');
+};
+
+/**
+ * Largest buffer a preview is attempted for. Decks and documents may go up to the
+ * configured `officePreview.fileSizeLimit` when the storage-backed path is on;
+ * every other file keeps the extraction ceiling.
+ */
+export function officePreviewByteLimit(
+  name: string,
+  mimeType: string,
+  officePreview?: OfficePreviewSetting,
+): number {
+  if (!isShellEligible(name, mimeType, officePreview)) {
+    return MAX_TEXT_EXTRACT_BYTES;
+  }
+  return Math.max(MAX_TEXT_EXTRACT_BYTES, officePreview?.fileSizeLimit ?? 0);
+}
+
+/** Why a preview came back empty: over the size limit, or the parser gave up. */
+export function officePreviewFailure(
+  byteLength: number,
+  name: string,
+  mimeType: string,
+  officePreview?: OfficePreviewSetting,
+): 'too-large' | 'parser-error' {
+  return byteLength > officePreviewByteLimit(name, mimeType, officePreview)
+    ? 'too-large'
+    : 'parser-error';
+}
+
 const DOCUMENT_PARSE_TIMEOUT_MS = 8_000;
 const OFFICE_HTML_TIMEOUT_MS = 12_000;
 const TRUNCATION_MARKER = '\n\n…[truncated]';
@@ -254,11 +302,20 @@ const renderOfficeHtml = async (
   buffer: Buffer,
   name: string,
   mimeType: string,
+  fileShell = false,
 ): Promise<string | null> => {
+  const render = (): Promise<string | null> => {
+    if (!fileShell) {
+      return bufferToOfficeHtml(buffer, name, mimeType);
+    }
+    return officeHtmlBucket(name, mimeType) === 'docx'
+      ? wordDocToHtml(buffer, { fileShell })
+      : pptxToHtml(buffer, { fileShell });
+  };
   try {
     const html = await officeHtmlLimit(() =>
       withTimeout(
-        bufferToOfficeHtml(buffer, name, mimeType),
+        render(),
         OFFICE_HTML_TIMEOUT_MS,
         `bufferToOfficeHtml exceeded ${OFFICE_HTML_TIMEOUT_MS}ms`,
       ),
@@ -299,8 +356,9 @@ export async function extractCodeArtifactText(
   name: string,
   mimeType: string,
   category: CodeArtifactCategory,
+  officePreview?: OfficePreviewSetting,
 ): Promise<string | null> {
-  if (buffer.length > MAX_TEXT_EXTRACT_BYTES) {
+  if (buffer.length > officePreviewByteLimit(name, mimeType, officePreview)) {
     return null;
   }
   try {
@@ -325,8 +383,9 @@ export async function extractCodeArtifactText(
      * text gate keep the artifact off the panel and fall back to the
      * regular download UI, matching what PPTX already does. */
     if (hasOfficeHtmlPath(name, mimeType)) {
-      const html = await renderOfficeHtml(buffer, name, mimeType);
-      return html;
+      const fileShell =
+        buffer.length > INLINE_OFFICE_BYTES && isShellEligible(name, mimeType, officePreview);
+      return await renderOfficeHtml(buffer, name, mimeType, fileShell);
     }
     if (category === 'other') {
       return null;

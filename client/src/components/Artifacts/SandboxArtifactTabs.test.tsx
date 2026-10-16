@@ -1,6 +1,7 @@
 import React from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
-import { render } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import { OFFICE_DOC_DATA_SLOT, OFFICE_FILE_SHELL_MARKER } from 'librechat-data-provider';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
 import type { Artifact } from '~/common';
 import SandboxArtifactTabs from './SandboxArtifactTabs';
@@ -12,11 +13,15 @@ interface PreviewProps {
 }
 
 const mockPreview = jest.fn((_props: PreviewProps) => null);
+const mockEditor = jest.fn((_props: { artifact: Artifact }) => null);
+const mockRefetch = jest.fn();
+let mockUseRealShell = false;
 let mockCurrentCode: string | undefined;
+let mockShell: { content: string | undefined; isLoading: boolean } | undefined;
 let mockCodeArtifactId: string | undefined;
 
 jest.mock('./ArtifactCodeEditor', () => ({
-  ArtifactCodeEditor: () => null,
+  ArtifactCodeEditor: (props: { artifact: Artifact }) => mockEditor(props),
 }));
 
 jest.mock('./ArtifactPreview', () => ({
@@ -28,6 +33,19 @@ jest.mock('~/Providers/EditorContext', () => ({
     mockCodeArtifactId === artifactId ? mockCurrentCode : undefined,
 }));
 
+jest.mock('~/hooks/Artifacts/useOfficeFileShell', () => ({
+  __esModule: true,
+  default: (artifact: Artifact) =>
+    mockShell ??
+    (mockUseRealShell
+      ? jest.requireActual('~/hooks/Artifacts/useOfficeFileShell').default(artifact)
+      : { content: artifact.content, isLoading: false }),
+}));
+
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => key,
+}));
+
 jest.mock('~/Providers', () => ({
   useShareContext: () => ({ shareId: undefined }),
 }));
@@ -35,6 +53,7 @@ jest.mock('~/Providers', () => ({
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: {} }),
   useGetSharedStartupConfig: () => ({ data: {} }),
+  useFilePreviewBlob: () => ({ refetch: mockRefetch }),
 }));
 
 const previewRef = {
@@ -132,5 +151,81 @@ describe('SandboxArtifactTabs SVG preview', () => {
     const call = mockPreview.mock.calls.at(-1)?.[0];
     expect(call?.files['index.html']).toBe('<p>original</p>');
     expect(call?.currentCode).toBe('<p>edited</p>');
+  });
+});
+
+describe('SandboxArtifactTabs office file shell', () => {
+  const shellArtifact: Artifact = {
+    id: 'deck-1',
+    type: 'text/html',
+    title: 'Deck',
+    content: '<p>shell</p>',
+    lastUpdateTime: 1,
+    download: { file_id: 'file-1', user: 'user-1' },
+  };
+
+  beforeEach(() => {
+    mockCurrentCode = undefined;
+    mockPreview.mockClear();
+  });
+
+  afterEach(() => {
+    mockShell = undefined;
+  });
+
+  it('shows the preparing state instead of the preview while the shell is filled', () => {
+    mockShell = { content: '<p>shell</p>', isLoading: true };
+    renderTabs(shellArtifact);
+    expect(screen.getByText('com_ui_preview_preparing')).toBeInTheDocument();
+    expect(mockPreview).not.toHaveBeenCalled();
+  });
+
+  it('previews the filled document once loading ends', () => {
+    mockShell = { content: '<p>filled</p>', isLoading: false };
+    renderTabs(shellArtifact);
+    expect(screen.queryByText('com_ui_preview_preparing')).not.toBeInTheDocument();
+    expect(lastFiles()['index.html']).toBe('<p>filled</p>');
+  });
+});
+
+describe('SandboxArtifactTabs with a stored office shell', () => {
+  const shell = `<html><head>${OFFICE_FILE_SHELL_MARKER}</head><body>${OFFICE_DOC_DATA_SLOT}</body></html>`;
+  const deck: Artifact = {
+    id: 'deck-2',
+    type: 'text/html',
+    title: 'Deck',
+    content: shell,
+    lastUpdateTime: 1,
+    download: { file_id: 'file-2', user: 'user-1' },
+  };
+
+  beforeEach(() => {
+    mockUseRealShell = true;
+    mockCurrentCode = undefined;
+    mockPreview.mockClear();
+    mockEditor.mockClear();
+    mockRefetch.mockReset();
+  });
+
+  afterEach(() => {
+    mockUseRealShell = false;
+  });
+
+  it('fills only the preview and leaves the editor on the stored shell', async () => {
+    mockRefetch.mockResolvedValue({ data: new Blob(['ABC']) });
+    const { rerender } = renderTabs(deck);
+    expect(screen.getByText('com_ui_preview_preparing')).toBeInTheDocument();
+    expect(mockPreview).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalled());
+    expect(lastFiles()['index.html']).toContain('QUJD');
+    expect(lastFiles()['index.html']).not.toContain(OFFICE_DOC_DATA_SLOT);
+
+    rerender(
+      <Tabs.Root value="code">
+        <SandboxArtifactTabs artifact={deck} previewRef={previewRef} />
+      </Tabs.Root>,
+    );
+    expect(mockEditor.mock.calls.at(-1)?.[0].artifact.content).toBe(shell);
   });
 });
