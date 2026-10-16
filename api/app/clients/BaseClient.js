@@ -33,6 +33,10 @@ const {
   needsRetentionConversation,
   getConversationWriteContext,
   savePrivateTextMessage,
+  getTurnUserMessageCreatedAt,
+  getTurnContextUpdates,
+  isStableContextEnabled,
+  storePendingContextAnchor,
   stampPrivateTextMessage,
   deferPrivateTextStart,
   requirePrivateTextPersistence,
@@ -1280,7 +1284,12 @@ class BaseClient {
     }
 
     const messages =
-      (await db.getMessages({ conversationId, user: this.user }, '+privateTextTokens')) ?? [];
+      (await db.getMessages(
+        { conversationId, user: this.user },
+        isStableContextEnabled(this.options?.req?.config)
+          ? '+privateTextTokens +contextUpdates +contextAnchor'
+          : '+privateTextTokens',
+      )) ?? [];
     /** A client that reads beyond the walk below (which stops at a checkpoint
      *  summary) receives every row here; the rest keep nothing. */
     this.onHistoryLoaded?.(messages);
@@ -1369,6 +1378,10 @@ class BaseClient {
       req.resolvedConversation = await db.getConvo(req.user.id, message.conversationId);
     }
     const reqCtx = getConversationWriteContext(req);
+    const createdAtOnInsert =
+      message.isCreatedByUser === true ? getTurnUserMessageCreatedAt(req) : undefined;
+    const contextUpdates =
+      message.isCreatedByUser === true ? getTurnContextUpdates(req, message.messageId) : undefined;
     const savedMessage = await savePrivateTextMessage(
       db.saveMessage,
       req,
@@ -1380,7 +1393,11 @@ class BaseClient {
         user,
         ...(hasAddedConvo && { addedConvo: true }),
       },
-      { context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveMessage' },
+      {
+        context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveMessage',
+        ...(createdAtOnInsert && { createdAtOnInsert }),
+        ...(contextUpdates && { contextUpdates }),
+      },
     );
 
     /** Only a reply that is actually in the message history may light an indicator: a write
@@ -1434,8 +1451,25 @@ class BaseClient {
     if (initialized) {
       this.fetchedConvo = true;
     }
+    await this.savePendingContextAnchor(user);
 
     return { message: savedMessage, conversation };
+  }
+
+  /**
+   * Stores the context anchor this turn opened a segment with, once the conversation (or the
+   * summary message) it belongs to exists. Kept pending, and retried on the next save, while not.
+   * @param {string | null} user
+   */
+  async savePendingContextAnchor(user) {
+    const stored = await storePendingContextAnchor({
+      pending: this.pendingContextAnchor,
+      userId: this.options?.req?.user?.id ?? user,
+      db,
+    });
+    if (stored) {
+      this.pendingContextAnchor = undefined;
+    }
   }
 
   /**

@@ -44,6 +44,7 @@ let updateMessage: ReturnType<typeof createMessageMethods>['updateMessage'];
 let updateToolCallResult: ReturnType<typeof createMessageMethods>['updateToolCallResult'];
 let deleteMessages: ReturnType<typeof createMessageMethods>['deleteMessages'];
 let bulkSaveMessages: ReturnType<typeof createMessageMethods>['bulkSaveMessages'];
+let setMessageContextAnchor: ReturnType<typeof createMessageMethods>['setMessageContextAnchor'];
 let claimSubagentTaskResult: ReturnType<typeof createMessageMethods>['claimSubagentTaskResult'];
 let recordSubagentTaskControlReceipt: ReturnType<
   typeof createMessageMethods
@@ -92,6 +93,7 @@ beforeAll(async () => {
   updateToolCallResult = methods.updateToolCallResult;
   deleteMessages = methods.deleteMessages;
   bulkSaveMessages = methods.bulkSaveMessages;
+  setMessageContextAnchor = methods.setMessageContextAnchor;
   claimSubagentTaskResult = methods.claimSubagentTaskResult;
   recordSubagentTaskControlReceipt = methods.recordSubagentTaskControlReceipt;
   getSubagentTaskControlReceipt = methods.getSubagentTaskControlReceipt;
@@ -432,6 +434,166 @@ describe('Message Operations', () => {
   });
 
   describe('saveMessage', () => {
+    describe('context updates and anchors', () => {
+      const updates = [
+        { key: 'artifacts', value: 'default' },
+        { key: 'project', value: null },
+      ];
+      const anchor = [{ key: 'memory', value: 'Likes tea.' }];
+      const readStored = async (messageId = 'msg123') =>
+        Message.findOne({ messageId }).select('+contextUpdates +contextAnchor').lean();
+
+      it('stores the entries passed as metadata on a user message, out of ordinary reads', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true },
+          { contextUpdates: updates },
+        );
+        expect((await readStored())?.contextUpdates).toEqual(updates);
+        expect(await Message.findOne({ messageId: 'msg123' }).lean()).not.toHaveProperty(
+          'contextUpdates',
+        );
+        const [plain] = await getMessages({ messageId: 'msg123' });
+        expect(plain).not.toHaveProperty('contextUpdates');
+        const [client] = await getMessages({ messageId: 'msg123' }, CLIENT_MESSAGE_SELECT);
+        expect(client).not.toHaveProperty('contextUpdates');
+        const [history] = await getMessages(
+          { messageId: 'msg123' },
+          '+contextUpdates +contextAnchor',
+        );
+        expect(history.contextUpdates).toEqual(updates);
+      });
+
+      it('ignores entries and anchors submitted as message fields', async () => {
+        const forged = { contextUpdates: updates, contextAnchor: anchor };
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          isCreatedByUser: true,
+          ...forged,
+        } as never);
+        await updateMessage('user123', { messageId: 'msg123', ...forged });
+        await bulkSaveMessages([{ ...mockMessageData, messageId: 'bulk-1', ...forged }]);
+        for (const messageId of ['msg123', 'bulk-1']) {
+          const stored = await readStored(messageId);
+          expect(stored).toBeTruthy();
+          expect(stored).not.toHaveProperty('contextUpdates');
+          expect(stored).not.toHaveProperty('contextAnchor');
+        }
+      });
+
+      it('never stores entries on a model response', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: false },
+          { contextUpdates: updates },
+        );
+        expect(await readStored()).not.toHaveProperty('contextUpdates');
+      });
+
+      it('replaces the entries when a regeneration re-saves the message', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true },
+          { contextUpdates: updates },
+        );
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true },
+          { contextUpdates: [] },
+        );
+        expect((await readStored())?.contextUpdates).toEqual([]);
+      });
+
+      it('keeps the entries when a later save carries none', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true },
+          { contextUpdates: updates },
+        );
+        await saveMessage(mockCtx, { ...mockMessageData, isCreatedByUser: true, text: 'Edited' });
+        expect((await readStored())?.contextUpdates).toEqual(updates);
+      });
+
+      it("stores a segment anchor once, on the owner's message only", async () => {
+        await saveMessage(mockCtx, { ...mockMessageData, isCreatedByUser: false });
+        await expect(
+          setMessageContextAnchor({ user: 'someone-else', messageId: 'msg123', anchor }),
+        ).resolves.toBe(false);
+        await expect(
+          setMessageContextAnchor({ user: 'user123', messageId: 'missing', anchor }),
+        ).resolves.toBe(false);
+        await expect(
+          setMessageContextAnchor({ user: 'user123', messageId: 'msg123', anchor }),
+        ).resolves.toBe(true);
+        await expect(
+          setMessageContextAnchor({
+            user: 'user123',
+            messageId: 'msg123',
+            anchor: [{ key: 'memory', value: 'Likes coffee.' }],
+          }),
+        ).resolves.toBe(true);
+        expect((await readStored())?.contextAnchor).toEqual(anchor);
+        const [plain] = await getMessages({ messageId: 'msg123' });
+        expect(plain).not.toHaveProperty('contextAnchor');
+      });
+    });
+
+    describe('createdAtOnInsert', () => {
+      const turnStartedAt = new Date('2026-01-02T03:04:05.678Z');
+
+      it('stores the supplied creation time on insert and keeps it on later saves', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true, createdAt: new Date('2020-01-01') },
+          { createdAtOnInsert: turnStartedAt },
+        );
+        const inserted = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(inserted?.createdAt).toEqual(turnStartedAt);
+        expect(inserted?.updatedAt?.getTime()).toBeGreaterThan(turnStartedAt.getTime());
+
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true, text: 'edited' },
+          { createdAtOnInsert: new Date('2027-01-01T00:00:00.000Z') },
+        );
+        const resaved = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(resaved?.text).toBe('edited');
+        expect(resaved?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('applies on the provenance-merging writer', async () => {
+        await saveMessage(
+          mockCtx,
+          {
+            ...mockMessageData,
+            isCreatedByUser: true,
+            content: [{ type: 'text', text: 'Hello' }] as IMessage['content'],
+            userSubmittedPaths: ['/content/0/text'],
+          },
+          { createdAtOnInsert: turnStartedAt },
+        );
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('applies on the insert-only writer', async () => {
+        await saveMessage(
+          mockCtx,
+          { ...mockMessageData, isCreatedByUser: true },
+          { insertOnly: true, createdAtOnInsert: turnStartedAt },
+        );
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt).toEqual(turnStartedAt);
+      });
+
+      it('leaves the automatic stamp in place without the option', async () => {
+        const before = Date.now();
+        await saveMessage(mockCtx, { ...mockMessageData, createdAt: new Date('2020-01-01') });
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(stored?.createdAt?.getTime()).toBeGreaterThanOrEqual(before);
+      });
+    });
+
     it('bounds aggregate App BSON without changing canonical output, even on a later full save', async () => {
       const content = [{ type: 'text', text: 'canonical message' }];
       const attachments = Array.from({ length: 17 }, (_, i) =>

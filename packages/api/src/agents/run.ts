@@ -126,6 +126,13 @@ import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import {
+  ContextPartKeys,
+  assembleSystemPrompt,
+  contributeContext,
+  sdkMovesDynamicInstructions,
+} from './systemParts';
+import { isStableContextEnabled } from '~/agents/promptCache';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -447,6 +454,10 @@ type RunAgent = Omit<Agent, 'tools'> & {
   imageDetail?: ImageDetail;
   toolContextMap?: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
+  /** Text of each contributed system prompt part, by key (see `systemParts`). */
+  contextParts?: Readonly<Record<string, string>>;
+  /** Set by `applyTurnContext`: the turn context delivers the runtime context. */
+  runtimeInLedger?: boolean;
   toolRegistry?: LCToolRegistry;
   /** Serializable tool definitions for event-driven execution */
   toolDefinitions?: LCTool[];
@@ -1874,16 +1885,15 @@ function buildIsolatedAgentInputs(
   child: RunAgent,
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
-  const childInputs = toInput(child, { isSubagent: true });
   const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  if (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0) {
-    const skillInstructions = alwaysApplySkillPrimes
-      .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-      .join('\n\n');
-    childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .join('\n\n');
+  const skillInstructions = alwaysApplySkillPrimes
+    ?.map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+    .join('\n\n');
+  const childWithSkill = skillInstructions ? { ...child } : child;
+  if (skillInstructions) {
+    contributeContext(childWithSkill, ContextPartKeys.alwaysApplySkills, skillInstructions);
   }
+  const childInputs = toInput(childWithSkill, { isSubagent: true });
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
@@ -2391,7 +2401,13 @@ export async function createRun({
     enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
   }
   for (const agent of codeFileAgents.values()) {
-    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+    /** The turn context already announced the paths planned at initialization in the message. */
+    prepareQueuedCodeFileContext(
+      agent,
+      codeFileAgents.values(),
+      user?.id,
+      agent.runtimeInLedger === true,
+    );
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
@@ -2483,20 +2499,18 @@ export async function createRun({
       modelCallbacks,
     );
 
-    const joinInstructionMap = (map?: Record<string, unknown>) =>
-      Object.values(map ?? {})
-        .filter((value): value is string => typeof value === 'string' && value !== '')
-        .join('\n')
-        .trim();
-
-    const toolInstructions = joinInstructionMap(agent.toolContextMap);
-    const dynamicToolInstructions = joinInstructionMap(agent.dynamicToolContextMap);
-
-    const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
-
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
-      .join('\n')
-      .trim();
+    /**
+     * With `stableContext` the SDK would move a non-empty dynamic part into a message before the
+     * last user message, and that position shifts every turn, which breaks the prefix. Only the
+     * per-turn parts (memory, RAG, this turn's queued files) stay there; the rest joins the
+     * stable instructions. Subagent runs are isolated and keep the split. A compaction summary is
+     * still moved by the SDK.
+     */
+    const { instructions: systemContent, additional_instructions: additionalInstructions } =
+      assembleSystemPrompt(agent, {
+        stableContext: isStableContextEnabled(appConfig),
+        moveTurnPartsOnly: !isSubagent && sdkMovesDynamicInstructions(provider, llmConfig),
+      });
 
     /** Resolves issues with new OpenAI usage field */
     if (

@@ -55,6 +55,7 @@ const {
   getScheduleMCPExecution,
   getMCPRequestContext,
   createSubagentCodeRouting,
+  isStableContextEnabled,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -250,7 +251,12 @@ const initializeClientWithProvider = async ({
   const requestConversationPromise = resolveRunConversation({
     request: req,
     conversationId,
-    loadConversation: (conversationId) => db.getConvo(req.user.id, conversationId),
+    loadConversation: (conversationId) =>
+      db.getConvo(
+        req.user.id,
+        conversationId,
+        isStableContextEnabled(req.config) ? '+contextAnchor' : undefined,
+      ),
   });
   const startupTelemetry = getAgentStartupTelemetry(req);
 
