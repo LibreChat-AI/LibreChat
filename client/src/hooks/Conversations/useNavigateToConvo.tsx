@@ -23,6 +23,7 @@ import {
   requestChatFocus,
   isNotFoundError,
   updateConvoInAllQueries,
+  reconcileModelSpecConversation,
   logger,
 } from '~/utils';
 import { useApplyModelSpecEffects } from '~/hooks/Agents';
@@ -100,12 +101,12 @@ const useNavigateToConvo = (index = 0) => {
 
   const setConversation = useCallback(
     (conversation: TConversation) => {
-      setConvo(conversation);
+      const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
+      setConvo(reconcileModelSpecConversation(conversation, startupConfig));
       if (!conversation.spec) {
         return;
       }
 
-      const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
       applyModelSpecEffects({
         startupConfig,
         specName: conversation?.spec,
