@@ -16,6 +16,7 @@ import {
   SUBAGENT_TRANSCRIPT_PAGE_LIMIT,
   SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT,
 } from './message';
+import { thinkReplayHash } from '~/utils/providerItems';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { MAX_MCP_APP_MESSAGE_BSON_BYTES } from './appSnapshots';
 import { createModels } from '../models';
@@ -468,6 +469,46 @@ describe('Message Operations', () => {
         }
         const [history] = await getMessages({ messageId: 'msg123' }, '+providerItems');
         expect(history.providerItems).toEqual({ call_1: providerItems });
+      });
+
+      it('stores the signed reasoning of think parts beside the tool call items, out of every ordinary read', async () => {
+        const replay = {
+          anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+        };
+        await saveMessage(mockCtx, {
+          ...response(),
+          content: [
+            { type: 'think', think: 'plan', provider_replay: replay },
+            { type: 'tool_call', tool_call: { ...toolCall, providerItems } },
+          ],
+        } as never);
+
+        const stored = await readStored();
+        expect(stored?.providerItems).toEqual({
+          call_1: providerItems,
+          'think:0': { hash: thinkReplayHash('plan'), replay },
+        });
+        expect(JSON.stringify(stored?.content)).not.toContain('SIG_1');
+        const [read] = await getMessages({ messageId: 'msg123' }, CLIENT_MESSAGE_SELECT);
+        expect(JSON.stringify(read)).not.toContain('SIG_1');
+      });
+
+      it('does not keep the signed reasoning of a user message or of a forged field', async () => {
+        const replay = {
+          anthropic: { model: 'm', blocks: [{ type: 'thinking', signature: 'S' }] },
+        };
+        const content = [{ type: 'think', think: 'x', provider_replay: replay }];
+        await saveMessage(mockCtx, { ...mockMessageData, isCreatedByUser: true, content } as never);
+        let stored = await readStored();
+        expect(stored).not.toHaveProperty('providerItems');
+        expect(JSON.stringify(stored?.content)).not.toContain('"S"');
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          messageId: 'msg123',
+          providerItems: { 'think:0': { hash: thinkReplayHash('x'), replay } },
+        } as never);
+        stored = await readStored();
+        expect(stored).not.toHaveProperty('providerItems');
       });
 
       it('keeps the stored items when a later save carries none', async () => {

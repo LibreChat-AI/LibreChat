@@ -11,7 +11,11 @@ export * from './compaction';
 export * from './contact';
 export * from './context';
 export * from './contextUpdates';
-export { isStableContextEnabled } from './promptCache';
+export {
+  isStableContextEnabled,
+  replaysSignedReasoning,
+  getReasoningReplayTarget,
+} from './promptCache';
 export type { PromptCacheConfig } from './promptCache';
 export * from './turnContext';
 export * from './control';

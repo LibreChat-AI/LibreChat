@@ -618,6 +618,26 @@ describe('message route conversation ownership filters', () => {
     expect(JSON.stringify(saved.body)).not.toContain('opaque');
   });
 
+  it('does not accept signed reasoning from a client', async () => {
+    const conversationId = '11111111-1111-4111-8111-111111111111';
+    const replay = {
+      anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+    };
+    saveMessage.mockImplementation(async (_ctx, message) => message);
+    saveConvo.mockResolvedValue({ conversationId });
+
+    const saved = await request(app)
+      .post(`/api/messages/${conversationId}`)
+      .send({
+        messageId: 'message-1',
+        text: '',
+        content: [{ type: 'think', think: 'plan', provider_replay: replay }],
+      });
+    expect(saved.status).toBe(201);
+    expect(saveMessage.mock.calls[0][1].content).toEqual([{ type: 'think', think: 'plan' }]);
+    expect(JSON.stringify(saved.body)).not.toContain('SIG_1');
+  });
+
   it('should filter conversation message reads by authenticated user', async () => {
     getMessages.mockResolvedValue([{ messageId: 'message-1', conversationId: 'convo-1' }]);
 

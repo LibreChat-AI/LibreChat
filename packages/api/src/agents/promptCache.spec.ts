@@ -1,4 +1,10 @@
-import { isStableContextEnabled, orderNames, hasProviderPromptCache } from './promptCache';
+import {
+  isStableContextEnabled,
+  orderNames,
+  hasProviderPromptCache,
+  replaysSignedReasoning,
+  getReasoningReplayTarget,
+} from './promptCache';
 
 const ON = { endpoints: { agents: { promptCache: { stableContext: true } } } };
 
@@ -41,6 +47,52 @@ describe('orderNames', () => {
     const names = new Set(['b', 'A', 'a']);
     expect(orderNames(ON, names)).toEqual(['A', 'a', 'b']);
     expect(orderNames({}, names)).toEqual(['b', 'A', 'a']);
+  });
+});
+
+describe('signed reasoning replay', () => {
+  it.each(['anthropic', 'bedrock'])('applies to %s with stableContext only', (provider) => {
+    expect(replaysSignedReasoning(ON, provider)).toBe(true);
+    expect(replaysSignedReasoning({}, provider)).toBe(false);
+    expect(replaysSignedReasoning(undefined, provider)).toBe(false);
+  });
+
+  it.each(['openAI', 'azureOpenAI', 'google', 'openrouter', undefined, null])(
+    'does not apply to %s',
+    (provider) => {
+      expect(replaysSignedReasoning(ON, provider)).toBe(false);
+    },
+  );
+
+  it('names the model the run serves, through the modelName alias too', () => {
+    expect(
+      getReasoningReplayTarget(ON, {
+        provider: 'anthropic',
+        model: 'agent-model',
+        model_parameters: { model: 'claude-test' },
+      }),
+    ).toEqual({ provider: 'anthropic', model: 'claude-test' });
+    expect(
+      getReasoningReplayTarget(ON, {
+        provider: 'bedrock',
+        model: 'agent-model',
+        model_parameters: { modelName: 'alias-model' },
+      }),
+    ).toEqual({ provider: 'bedrock', model: 'alias-model' });
+    expect(getReasoningReplayTarget(ON, { provider: 'anthropic', model: 'agent-model' })).toEqual({
+      provider: 'anthropic',
+      model: 'agent-model',
+    });
+  });
+
+  it('names nothing without a model, with the lever off, or for another provider', () => {
+    expect(getReasoningReplayTarget(ON, { provider: 'anthropic' })).toBeUndefined();
+    expect(
+      getReasoningReplayTarget({}, { provider: 'anthropic', model_parameters: { model: 'm' } }),
+    ).toBeUndefined();
+    expect(
+      getReasoningReplayTarget(ON, { provider: 'openAI', model_parameters: { model: 'm' } }),
+    ).toBeUndefined();
   });
 });
 

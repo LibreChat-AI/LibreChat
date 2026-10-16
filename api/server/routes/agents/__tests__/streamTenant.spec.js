@@ -695,6 +695,29 @@ describe('SSE stream tenant isolation', () => {
       expect(res.body.resumeState.aggregatedContent).toEqual(expected);
     });
 
+    it('leaves the signed reasoning of a live run out of the status it reports', async () => {
+      mockUserId = 'user-123';
+      mockTenantId = 'tenant-a';
+      mockGenerationJobManager.getJob.mockResolvedValue({
+        metadata: { userId: 'user-123', tenantId: 'tenant-a' },
+        status: 'running',
+        createdAt: 1000,
+      });
+      const replay = {
+        anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+      };
+      mockGenerationJobManager.getResumeState.mockResolvedValue({
+        runSteps: [],
+        aggregatedContent: [{ type: 'think', think: 'plan', provider_replay: replay }],
+      });
+
+      const res = await request(app).get('/agents/chat/status/conv-123');
+
+      expect(res.status).toBe(200);
+      expect(res.body.aggregatedContent).toEqual([{ type: 'think', think: 'plan' }]);
+      expect(JSON.stringify(res.body)).not.toContain('SIG_1');
+    });
+
     it.each([true, false])(
       'reports the run temporary state %s recorded at admission',
       async (isTemporary) => {
