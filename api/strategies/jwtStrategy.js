@@ -4,6 +4,8 @@ const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const {
   AGENT_TRIGGER_SCOPE,
   isTokenRetired,
+  createJwtExtractor,
+  resolveJwtAuthHeader,
   continueAfterBearerRetirement,
 } = require('@librechat/api');
 const { getUserById, updateUser } = require('~/models');
@@ -25,10 +27,16 @@ function isAgentTriggerAdmissionRequest(req) {
 }
 
 // JWT strategy
-const jwtLogin = () =>
+/**
+ * @param {AppConfig} [appConfig] - Base app config, read once for the session JWT header.
+ */
+const jwtLogin = (appConfig) =>
   new JwtStrategy(
     {
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: createJwtExtractor(
+        resolveJwtAuthHeader(appConfig?.sessionToken),
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ),
       secretOrKey: process.env.JWT_SECRET,
       passReqToCallback: true,
     },

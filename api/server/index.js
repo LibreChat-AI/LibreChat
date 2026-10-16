@@ -403,7 +403,7 @@ const startServer = async () => {
 
   /* OAUTH */
   app.use(passport.initialize());
-  passport.use(jwtLogin());
+  passport.use(jwtLogin(appConfig));
   passport.use(passportLogin());
 
   /* LDAP Auth */

@@ -91,6 +91,8 @@ export interface AppConfig {
   emailChange?: TCustomConfig['emailChange'];
   /** Passkey enrollment configuration */
   passkeys?: TCustomConfig['passkeys'];
+  /** Session JWT transport, read once when the server starts */
+  sessionToken?: TCustomConfig['sessionToken'];
   /** Actions configurations */
   actions?: TCustomConfig['actions'];
   /** Admin-filtered tools */
