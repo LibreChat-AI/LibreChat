@@ -250,3 +250,13 @@ test('needsTranslation and validate read the alt text of a reference-style image
   assert.ok(validate(source, '![Build status][badge]', 'ru', context).length > 0);
   assert.ok(validate(source, '![Статус сборки][значок]', 'ru', context).length > 0);
 });
+
+test('reference images keep alt presence and definition titles are translated', () => {
+  const context = '[badge]: https://x.y/badge.svg';
+  const source = 'See the ![Build status][badge] here.';
+  assert.ok(validate(source, 'Смотрите ![][badge] здесь.', 'ru', context).length > 0);
+  const definition = '[docs]: https://x.y "Read the documentation"';
+  assert.equal(needsTranslation(definition), true);
+  assert.deepEqual(validate(definition, '[docs]: https://x.y "Прочитать документацию"', 'ru'), []);
+  assert.ok(validate(definition, '[docs]: https://x.y', 'ru').length > 0);
+});

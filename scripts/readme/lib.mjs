@@ -126,6 +126,9 @@ function walk(node, visit) {
   for (const child of node.children ?? []) walk(child, visit);
 }
 
+/** Nodes whose alt text or title a reader sees. */
+const LABELED_NODES = new Set(['image', 'imageReference', 'link', 'definition']);
+
 /** Words a reader sees: text, image alt, and alt, title and aria-label values, minus glossary terms. */
 function proseWords(markdown, withAttributes = true) {
   const parts = [];
@@ -133,10 +136,7 @@ function proseWords(markdown, withAttributes = true) {
   walk(parse(markdown), (node) => {
     if (node.type === 'html') rawCode = Math.max(rawCode + rawCodeDelta(node.value), 0);
     if (node.type === 'text' && rawCode === 0) parts.push(node.value);
-    else if (
-      withAttributes &&
-      (node.type === 'image' || node.type === 'imageReference' || node.type === 'link')
-    ) {
+    else if (withAttributes && LABELED_NODES.has(node.type)) {
       if (node.alt) parts.push(node.alt);
       if (node.title) parts.push(node.title);
     } else if (node.type === 'html') {
@@ -207,6 +207,9 @@ function skeleton(markdown) {
     }
     if (node.type === 'image') {
       return push(`image:${node.url}:${node.title ? 'titled' : ''}:${node.alt ? 'alt' : ''}`);
+    }
+    if (node.type === 'imageReference') {
+      return push(`imageReference:${node.identifier}:${node.alt ? 'alt' : ''}`);
     }
     const detail = [
       node.depth,
