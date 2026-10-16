@@ -1,4 +1,5 @@
-import { atomFamily } from 'recoil';
+import { atom } from 'jotai';
+import { atomFamily } from 'jotai/utils';
 import type { PtcTrace } from '~/common';
 
 /**
@@ -30,7 +31,4 @@ export const EMPTY_PTC_TRACE: PtcTrace = { entries: [], dropped: 0 };
  * nothing persists them on the message. Cleared on conversation switch rather
  * than at run boundaries, so a finished program's trace stays readable.
  */
-export const ptcTraceByToolCallId = atomFamily<PtcTrace, string>({
-  key: 'ptcTraceByToolCallId',
-  default: EMPTY_PTC_TRACE,
-});
+export const ptcTraceByToolCallId = atomFamily((_key: string) => atom<PtcTrace>(EMPTY_PTC_TRACE));

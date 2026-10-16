@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import { Constants, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TConversation } from 'librechat-data-provider';
+import { activeRunFamily } from '~/hooks/SSE/atoms';
 import BrowserAudio from '../BrowserAudio';
 import store from '~/store';
 
@@ -68,7 +69,7 @@ const renderBrowserAudio = ({
           initializeState={({ set }) => {
             set(store.voice, voiceName);
             set(store.conversationByIndex(0), { conversationId } as TConversation);
-            set(store.activeRunFamily(0), activeRunId);
+            getDefaultStore().set(activeRunFamily(0), activeRunId);
             set(store.audioRunFamily(0), audioRunId);
             getDefaultStore().set(isSubmittingFamily(0), isSubmitting);
           }}

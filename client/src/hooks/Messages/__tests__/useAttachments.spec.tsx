@@ -11,18 +11,19 @@
  */
 
 import { useEffect } from 'react';
+import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { renderHook } from '@testing-library/react';
-import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { Provider as JotaiProvider, useSetAtom } from 'jotai';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import store from '~/store';
 
 type AttachmentFixture = TFile & TAttachmentMetadata;
 
 jest.mock('~/hooks/useLocalize', () => () => (key: string) => key);
 
 import useAttachments from '../useAttachments';
+import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 
 const messageId = 'msg-1';
 
@@ -67,7 +68,7 @@ function setup({
   liveMap?: Record<string, TAttachment[]>;
 }) {
   const Seed = () => {
-    const setMap = useSetRecoilState(store.messageAttachmentsMap);
+    const setMap = useSetAtom(messageAttachmentsMapAtom);
     useEffect(() => {
       if (liveMap) {
         setMap(liveMap);
@@ -79,8 +80,10 @@ function setup({
   return renderHook(() => useAttachments({ messageId, attachments }), {
     wrapper: ({ children }: { children: ReactNode }) => (
       <RecoilRoot>
-        <Seed />
-        {children}
+        <JotaiProvider>
+          <Seed />
+          {children}
+        </JotaiProvider>
       </RecoilRoot>
     ),
   });
