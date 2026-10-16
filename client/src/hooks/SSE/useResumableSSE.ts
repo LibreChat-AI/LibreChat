@@ -19,11 +19,11 @@ import {
   findActivityLabelMessageIndex,
   findReasoningLabelMessageIndex,
 } from '~/utils';
-import { useGetUserBalance, fetchStreamStatus, useGetStartupConfig } from '~/data-provider';
+import { useGetUserBalance, fetchStreamStatus } from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useResumableEvents from './useResumableEvents';
 import useResumableSteers from './useResumableSteers';
-import { useAuthContext } from '~/hooks/AuthContext';
 import useResumableCache from './useResumableCache';
 import useResumablePane from './useResumablePane';
 import useSteerState from './steer';
@@ -67,16 +67,14 @@ export default function useResumableSSE(
 ) {
   const [run] = useState(() => new ResumableRun());
   const [streamId, setStreamId] = useState<string | null>(null);
-  const { token, isAuthenticated } = useAuthContext();
+  const { auth, config } = useChatSettings();
+  const { token, isAuthenticated = false } = auth;
   const transport = useChatTransport();
   const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } =
     chatHelpers;
 
-  const { data: startupConfig } = useGetStartupConfig();
-  const balanceQuery = useGetUserBalance({
-    enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
-  });
-  const balanceEnabled = startupConfig?.balance?.enabled ?? false;
+  const { balanceEnabled = false } = config;
+  const balanceQuery = useGetUserBalance({ enabled: isAuthenticated && balanceEnabled });
   const refreshBalance = useCallback(() => {
     balanceEnabled && balanceQuery.refetch();
   }, [balanceEnabled, balanceQuery]);

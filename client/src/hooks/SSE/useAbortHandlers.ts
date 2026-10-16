@@ -13,14 +13,14 @@ import {
 } from '~/utils';
 import { createErrorMessage, resolveErrorTurn, resolveSettledErrorReadState } from './turns';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
-import { useAuthContext } from '~/hooks/AuthContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 
 /** Writes a failed or stopped turn: the error card, a cancelled run, and an abort that settles from what streamed. */
 export default function useAbortHandlers(
   ctx: EventHandlerContext,
   finalHandler: (data: TFinalResData, submission: EventSubmission) => void,
 ) {
-  const { token } = useAuthContext();
+  const { token } = useChatSettings().auth;
   const transport = useChatTransport();
   const {
     setCompleted,
