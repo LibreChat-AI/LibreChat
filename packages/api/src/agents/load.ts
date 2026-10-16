@@ -68,20 +68,32 @@ export interface LoadAgentParams {
   model_parameters?: AgentModelParameters & { model?: string };
 }
 
+export interface LoadEphemeralAgentParams extends Omit<LoadAgentParams, 'agent_id'> {
+  /** Badge selections and fallback prompt prefix; defaults to `req.body`. An
+   *  added conversation passes its own. */
+  body?: NonNullable<LoadAgentParams['req']['body']>;
+  /** Parallel position encoded into the agent id (added conversation: 1). */
+  index?: number;
+  /** Already-resolved tools to reuse instead of resolving the badge selections. */
+  tools?: string[];
+}
+
 /**
- * Load an ephemeral agent based on the request parameters.
+ * Resolves the tools an ephemeral agent's badge selections and model spec enable,
+ * including the MCP servers the picker may offer plus any the spec pins.
  */
-export async function loadEphemeralAgent(
-  { req, spec, endpoint, model_parameters: _m }: Omit<LoadAgentParams, 'agent_id'>,
+async function resolveEphemeralTools(
+  {
+    req,
+    ephemeralAgent,
+    modelSpec,
+  }: {
+    req: LoadAgentParams['req'];
+    ephemeralAgent: TEphemeralAgent | undefined;
+    modelSpec: TModelSpec | null;
+  },
   deps: LoadAgentDeps,
-): Promise<Agent | null> {
-  const { model, ...model_parameters } = _m ?? ({} as unknown as AgentModelParameters);
-  const modelSpecs = req.config?.modelSpecs as { list?: TModelSpec[] } | undefined;
-  let modelSpec: TModelSpec | null = null;
-  if (spec != null && spec !== '') {
-    modelSpec = modelSpecs?.list?.find((s) => s.name === spec) ?? null;
-  }
-  const ephemeralAgent: TEphemeralAgent | undefined = req.body?.ephemeralAgent;
+): Promise<string[]> {
   const userId = req.user?.id ?? '';
   const capabilityProfile = resolveMCPClientCapabilityProfile(
     resolveMCPAppsPolicy(req.config?.mcpSettings?.apps),
@@ -154,7 +166,37 @@ export async function loadEphemeralAgent(
     }
   }
 
-  const requestPromptPrefix = req.body?.promptPrefix;
+  return tools;
+}
+
+/**
+ * Load an ephemeral agent based on the request parameters.
+ */
+export async function loadEphemeralAgent(
+  {
+    req,
+    spec,
+    endpoint,
+    model_parameters: _m,
+    body = req.body,
+    index,
+    tools: resolvedTools,
+  }: LoadEphemeralAgentParams,
+  deps: LoadAgentDeps,
+): Promise<Agent | null> {
+  const { model, ...model_parameters } = _m ?? ({} as unknown as AgentModelParameters);
+  const modelSpecs = req.config?.modelSpecs as { list?: TModelSpec[] } | undefined;
+  let modelSpec: TModelSpec | null = null;
+  if (spec != null && spec !== '') {
+    modelSpec = modelSpecs?.list?.find((s) => s.name === spec) ?? null;
+  }
+  const ephemeralAgent: TEphemeralAgent | undefined = body?.ephemeralAgent;
+  const tools =
+    resolvedTools != null
+      ? [...resolvedTools]
+      : await resolveEphemeralTools({ req, ephemeralAgent, modelSpec }, deps);
+
+  const requestPromptPrefix = body?.promptPrefix;
   const { promptPrefix: modelPromptPrefix, ...safeModelParameters } =
     model_parameters as ModelParametersWithPromptPrefix;
   const instructions =
@@ -184,6 +226,7 @@ export async function loadEphemeralAgent(
     endpoint,
     model: model as string,
     sender,
+    index,
   });
 
   const result: Partial<Agent> = {

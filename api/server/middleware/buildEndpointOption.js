@@ -68,6 +68,8 @@ async function buildEndpointOption(req, res, next) {
   } catch (error) {
     logger.error('Error fetching endpoints config in buildEndpointOption', error);
   }
+  /** Reused by `loadAddedAgent` to parse a multi-convo added conversation. */
+  req.endpointsConfig = endpointsConfig;
 
   const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
 

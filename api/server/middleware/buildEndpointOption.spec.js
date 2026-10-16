@@ -697,6 +697,25 @@ describe('buildEndpointOption - defaultParamsEndpoint parsing', () => {
     expect(parsedResult.max_tokens).toBe(4096);
   });
 
+  it('keeps the loaded endpoints config on the request for the added conversation', async () => {
+    const endpointsConfig = {
+      AnthropicClaude: {
+        type: EModelEndpoint.custom,
+        customParams: { defaultParamsEndpoint: EModelEndpoint.anthropic },
+      },
+    };
+    mockGetEndpointsConfig.mockResolvedValue(endpointsConfig);
+    const req = createReq(
+      { endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
+      { modelSpecs: null },
+    );
+
+    await buildEndpointOption(req, createRes(), jest.fn());
+
+    expect(mockGetEndpointsConfig).toHaveBeenCalledTimes(1);
+    expect(req.endpointsConfig).toBe(endpointsConfig);
+  });
+
   it('does not log submitted content when compact conversation parsing fails', async () => {
     const secret = 'PRIVATE-SUBMITTED-CONTENT';
     const parseError = new Error('Invalid compact conversation');
