@@ -432,6 +432,35 @@ describe('ResumableAgentController tenant context', () => {
 
     expect(mockSaveMessage).not.toHaveBeenCalled();
   });
+  it('logs a failed row read while planning the snapshot instead of rejecting the listener', async () => {
+    const readError = new Error('read failed');
+    mockGetMessages.mockImplementation(async (filter) => {
+      if (filter.messageId === 'user-message') {
+        return [{ _id: 'existing-anchor' }];
+      }
+      throw readError;
+    });
+    await expect(
+      firePartialDisconnect(
+        { id: 'user-123' },
+        {
+          createdAt: 1000,
+          status: 'error',
+          finalEvent: JSON.stringify({ final: true, reconcile: true }),
+        },
+        {
+          body: { compact: true },
+          aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+        },
+      ),
+    ).resolves.not.toThrow();
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      '[ResumableAgentController] Error planning partial response:',
+      readError,
+    );
+  });
   it('withholds a reconciled snapshot when the error turn saved its anchor-derived row', async () => {
     mockGetMessages.mockImplementation(
       async (filter) =>

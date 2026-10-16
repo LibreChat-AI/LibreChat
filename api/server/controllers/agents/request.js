@@ -1935,9 +1935,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           responseMessageId,
           getMessages,
         });
-      const snapshot = tenantId
-        ? await tenantStorage.run({ tenantId, userId }, planSnapshot)
-        : await planSnapshot();
+      let snapshot;
+      try {
+        snapshot = tenantId
+          ? await tenantStorage.run({ tenantId, userId }, planSnapshot)
+          : await planSnapshot();
+      } catch (error) {
+        logger.error('[ResumableAgentController] Error planning partial response:', error);
+        return;
+      }
       if (!snapshot.write) {
         logger.debug('[ResumableAgentController] No partial response to save on disconnect');
         return;
