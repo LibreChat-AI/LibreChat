@@ -22,6 +22,7 @@ import {
   DEFAULT_MCP_APP_OPERATION_LIMITS,
   MAX_MCP_APP_PERSISTED_BYTES,
   resolveMCPAppRateLimits,
+  resolveMCPAppToolApprovalPolicy,
   resolveMCPAppsPolicy,
   endpointSchema,
   isTwoFactorPolicyProvider,
@@ -2402,6 +2403,40 @@ describe('bedrockModels defaults', () => {
 });
 
 describe('MCP Apps configuration', () => {
+  it('accepts exact structured App tool approval targets without enabling them by default', () => {
+    const target = { server: 'Connector: Company', tool: 'remove item' };
+    expect(configSchema.parse({ version: '1.2.1' }).mcpSettings).toBeUndefined();
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        mcpSettings: { appToolApproval: { allow: [target] } },
+      }).mcpSettings?.appToolApproval?.allow,
+    ).toEqual([target]);
+    expect(resolveMCPAppToolApprovalPolicy({ allow: [target] })).toEqual({ allow: [target] });
+  });
+
+  it.each([
+    { server: '', tool: 'read' },
+    { server: 'server', tool: '' },
+    { server: 'server', tool: 'read', app: 'ui://app' },
+    'mcp:server:read',
+    null,
+  ])('rejects malformed App tool approval targets %p', (target) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        mcpSettings: { appToolApproval: { allow: [target] } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each(['mcp:server:tool', { allow: 'mcp:server:tool' }, { allow: [null] }])(
+    'fails closed when resolving malformed startup approval policy %p',
+    (policy) => {
+      expect(resolveMCPAppToolApprovalPolicy(policy)).toBeUndefined();
+    },
+  );
+
   it.each([
     [
       undefined,
@@ -2548,6 +2583,26 @@ describe('MCP Apps configuration', () => {
       maxActionPreviewChars: 32768,
       sandboxUrl: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
     });
+  });
+
+  it('publishes the configured App tool approval allowlist', () => {
+    const appToolApproval = {
+      allow: [{ server: 'example-server', tool: 'sample_tool' }],
+    };
+    expect(
+      resolveMCPAppsPolicy(
+        true,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        appToolApproval,
+      ).appToolApproval,
+    ).toEqual(appToolApproval);
+    expect(resolveMCPAppsPolicy(true).appToolApproval).toBeUndefined();
   });
 
   it('defaults App request limits without requiring the parent rateLimits section', () => {

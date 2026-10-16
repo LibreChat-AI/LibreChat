@@ -357,6 +357,9 @@ export function createMCPAppsController(dependencies: MCPAppsControllerDependenc
       for (const [name, value] of Object.entries(headers)) {
         response.setHeader(name, value);
       }
+      if (!Object.prototype.hasOwnProperty.call(headers, 'X-Frame-Options')) {
+        response.removeHeader('X-Frame-Options');
+      }
       response.send(body);
     } catch (error) {
       dependencies.logger.error('[serveMCPSandbox] Error:', error);

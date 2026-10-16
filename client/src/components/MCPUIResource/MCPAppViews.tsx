@@ -49,7 +49,8 @@ function ActiveMCPAppView({
   ordinal: number;
 }) {
   const localize = useLocalize();
-  const approval = useMCPAppApproval();
+  const { policy } = useMCPAppsHost();
+  const approval = useMCPAppApproval(policy.appToolApproval?.allow);
   const frame = useMCPAppFrame(app, {
     defaultHeight: DEFAULT_APP_VIEW_HEIGHT,
     toolArgs: app.toolArgs,
