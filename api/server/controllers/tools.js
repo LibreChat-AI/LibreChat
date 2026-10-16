@@ -104,8 +104,7 @@ const verifyToolAuth = async (req, res) => {
 /**
  * @param {ServerRequest} req - The request object, containing information about the HTTP request.
  * @param {ServerResponse} res - The response object, used to send back the desired HTTP response.
- * @param {NextFunction} next - The next middleware function to call.
- * @returns {Promise<void>} A promise that resolves when the function has completed.
+  * @returns {Promise<void>} A promise that resolves when the function has completed.
  */
 const callTool = async (req, res) => {
   try {
