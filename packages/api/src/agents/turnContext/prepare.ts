@@ -9,9 +9,14 @@ import type { MCPLookupUser, ParsedServerConfig } from '~/mcp/types';
 import type { LiveToolGroups } from './tools';
 import type { TurnPlan } from './ledger';
 import { createHistoryContextUpdates } from '../contextUpdates';
+import { stripReasoningReplay } from '~/utils/message';
 import { getMCPServerInstructions } from '~/mcp/instructions';
 import { createSendSnapshot } from './registry';
-import { hasProviderPromptCache, isStableContextEnabled } from '../promptCache';
+import {
+  hasProviderPromptCache,
+  isStableContextEnabled,
+  replaysSignedReasoning,
+} from '../promptCache';
 import { prependContextText } from '../client';
 import { collectToolGroups } from './tools';
 import { planTurnContext } from './ledger';
@@ -309,6 +314,44 @@ export function applyHistoryUpdates({
     applied = true;
   }
   return { addedTokens, applied };
+}
+
+/**
+ * Takes the signed reasoning off the messages that are not part of the segment this turn
+ * continues. A signed block is bound to the conversation before it, which a summary or a
+ * declared reset changed; sent after it, the block is stale (and Bedrock rejects it).
+ * The message that carries the summary is split at the summary part: what it said after it
+ * was said with the summary in the prompt, so only the reasoning before that part goes.
+ * With no plan the segment is unknown, so nothing is kept.
+ */
+export function dropReasoningReplayOutsideSegment({
+  config,
+  provider,
+  formattedMessages,
+  segmentStart,
+  summaryPartIndex = -1,
+}: {
+  config: PromptCacheConfig | null | undefined;
+  provider?: string | null;
+  formattedMessages: FormattedMessageWithContent[];
+  segmentStart?: number;
+  summaryPartIndex?: number;
+}): void {
+  if (!replaysSignedReasoning(config, provider)) {
+    return;
+  }
+  const end = segmentStart ?? formattedMessages.length;
+  const carrier = summaryPartIndex >= 0 ? end - 1 : -1;
+  for (let i = 0; i < Math.min(end, formattedMessages.length); i++) {
+    const message = formattedMessages[i];
+    const content = stripReasoningReplay(
+      message?.content,
+      i === carrier ? summaryPartIndex : Infinity,
+    );
+    if (content !== message?.content) {
+      formattedMessages[i] = { ...message, content };
+    }
+  }
 }
 
 /**

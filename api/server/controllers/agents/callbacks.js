@@ -672,9 +672,7 @@ function getDefaultHandlers({
        */
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
-        /** Signed reasoning blocks (`provider_replay`) stay on the server: aggregated for
-         *  storage above, never forwarded. */
-        const forwarded = storeProviderItems ? omitReasoningReplayFromDelta(data) : data;
+        const forwarded = omitReasoningReplayFromDelta(data, storeProviderItems);
         if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
           await emitForJob({ event, data: forwarded });
         } else if (!metadata?.hide_sequential_outputs) {

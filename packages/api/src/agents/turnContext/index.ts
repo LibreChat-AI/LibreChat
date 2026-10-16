@@ -31,6 +31,7 @@ export type {
 export {
   prepareTurnContext,
   applyHistoryUpdates,
+  dropReasoningReplayOutsideSegment,
   planSendContext,
   readConversationAnchor,
   prepareResumedTurnContext,

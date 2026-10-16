@@ -34,7 +34,7 @@ describe('splitProviderItems', () => {
 
   it('drops items of a tool call without an id instead of keeping them in the content', () => {
     const split = splitProviderItems([{ type: 'tool_call', tool_call: { providerItems: items } }]);
-    expect(split).toEqual({ content: [{ type: 'tool_call', tool_call: {} }], providerItems: {} });
+    expect(split).toEqual({ content: [{ type: 'tool_call', tool_call: {} }] });
   });
 });
 
@@ -64,6 +64,18 @@ describe('splitProviderItems with signed reasoning', () => {
     expect(content[0]).toHaveProperty('provider_replay');
   });
 
+  it('keeps the marker of a part whose blocks the run withdrew, so a restore can tell it from a lost one', () => {
+    const withdrawn = { invalidated: true };
+    const split = splitProviderItems([
+      { type: 'think', think: 'first', provider_replay: replay },
+      { type: 'think', think: 'second', provider_replay: withdrawn },
+    ]);
+    expect(split?.providerItems?.['think:1']).toEqual({
+      hash: thinkReplayHash('second'),
+      replay: withdrawn,
+    });
+  });
+
   it('keeps no replay of a message over the size cap, deterministically', () => {
     const big = {
       anthropic: {
@@ -75,7 +87,7 @@ describe('splitProviderItems with signed reasoning', () => {
       { type: 'think', think: '', provider_replay: replay },
       { type: 'think', think: '', provider_replay: big },
     ]);
-    expect(split?.providerItems).toEqual({});
+    expect(split?.providerItems).toBeUndefined();
     expect(JSON.stringify(split?.content)).not.toContain('SIG');
   });
 
