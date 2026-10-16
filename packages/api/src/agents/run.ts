@@ -133,7 +133,7 @@ import {
   contributeContext,
   sdkCachesConversationBlock,
 } from './systemParts';
-import { isStableContextEnabled } from '~/agents/promptCache';
+import { isStableContextEnabled, replaysSignedReasoning } from '~/agents/promptCache';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -2672,6 +2672,11 @@ export async function createRun({
       instructions: systemContent,
       conversation_instructions: conversationInstructions || undefined,
       additional_instructions: additionalInstructions || undefined,
+      /** Signed reasoning is captured only for stored conversations, never for isolated subagents. */
+      ...(!isSubagent &&
+        replaysSignedReasoning(appConfig, provider) && {
+          providerReasoningReplay: true,
+        }),
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,

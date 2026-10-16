@@ -39,6 +39,7 @@ const {
   collectToolCallIds,
   createToolTimingAdapter,
   stampCommandExecutor,
+  omitReasoningReplayFromDelta,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -671,10 +672,13 @@ function getDefaultHandlers({
        */
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
+        /** Signed reasoning blocks (`provider_replay`) stay on the server: aggregated for
+         *  storage above, never forwarded. */
+        const forwarded = storeProviderItems ? omitReasoningReplayFromDelta(data) : data;
         if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
-          await emitForJob({ event, data });
+          await emitForJob({ event, data: forwarded });
         } else if (!metadata?.hide_sequential_outputs) {
-          await emitForJob({ event, data });
+          await emitForJob({ event, data: forwarded });
         }
       },
     },

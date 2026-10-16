@@ -12,7 +12,9 @@ import {
   attachProviderItems,
   stripProviderItems,
   omitProviderItemsFromEvent,
+  omitReasoningReplayFromDelta,
 } from './message';
+import { thinkReplayHash } from '@librechat/data-schemas';
 import { sendEvent } from './events';
 
 /** Cast to string for type compatibility with ThreadMessage */
@@ -836,5 +838,71 @@ describe('provider output items', () => {
     expect(attachProviderItems(plain)).toBe(plain);
     const text = { content: 'x', providerItems: { call_1: providerItems } };
     expect(attachProviderItems(text)).toBe(text);
+  });
+});
+
+describe('signed reasoning of think parts', () => {
+  const replay = {
+    anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+  };
+  const live = () => [
+    { type: 'think', think: 'plan', provider_replay: replay },
+    { type: 'text', text: 'answer' },
+  ];
+
+  it('strips it from content without touching the input', () => {
+    const input = live();
+    const stripped = stripProviderItems(input);
+    expect(stripped[0]).toEqual({ type: 'think', think: 'plan' });
+    expect(stripped[1]).toBe(input[1]);
+    expect(input[0]).toHaveProperty('provider_replay');
+  });
+
+  it('leaves it out of a final event and a sync event', () => {
+    const final = omitProviderItemsFromEvent({ final: true, responseMessage: { content: live() } });
+    expect(JSON.stringify(final)).not.toContain('SIG_1');
+    const sync = omitProviderItemsFromEvent({ resumeState: { aggregatedContent: live() } });
+    expect(JSON.stringify(sync)).not.toContain('SIG_1');
+  });
+
+  it('leaves it out of a reasoning delta for the client, and returns a plain delta as it is', () => {
+    const delta = { id: 'step_1', delta: { content: live().slice(0, 1) } };
+    const forwarded = omitReasoningReplayFromDelta(delta);
+    expect(JSON.stringify(forwarded)).not.toContain('SIG_1');
+    expect(forwarded.delta.content[0]).toEqual({ type: 'think', think: 'plan' });
+    expect(delta.delta.content[0]).toHaveProperty('provider_replay');
+    const plain = { id: 'step_1', delta: { content: [{ type: 'think', think: 'x' }] } };
+    expect(omitReasoningReplayFromDelta(plain)).toBe(plain);
+    expect(omitReasoningReplayFromDelta(undefined)).toBeUndefined();
+  });
+
+  it('puts the stored replay back on its part while the text is the one it was stored with', () => {
+    const row = {
+      content: [
+        { type: 'think', think: 'plan' },
+        { type: 'text', text: 'answer' },
+      ],
+      providerItems: { 'think:0': { hash: thinkReplayHash('plan'), replay } },
+    };
+    const attached = attachProviderItems(row);
+    expect(attached.content[0]).toEqual({ type: 'think', think: 'plan', provider_replay: replay });
+    expect(row.content[0]).toEqual({ type: 'think', think: 'plan' });
+  });
+
+  it('does not put it back on a part whose text was edited, or that moved', () => {
+    const items = { 'think:0': { hash: thinkReplayHash('plan'), replay } };
+    const edited = attachProviderItems({
+      content: [{ type: 'think', think: 'plan, edited' }],
+      providerItems: items,
+    });
+    expect(edited.content[0]).toEqual({ type: 'think', think: 'plan, edited' });
+    const moved = attachProviderItems({
+      content: [
+        { type: 'text', text: 'new first part' },
+        { type: 'think', think: 'plan' },
+      ],
+      providerItems: items,
+    });
+    expect(JSON.stringify(moved.content)).not.toContain('SIG_1');
   });
 });

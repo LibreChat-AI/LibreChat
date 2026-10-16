@@ -3597,6 +3597,36 @@ async function callAndCaptureRunConfig({
   return createMock.mock.calls[0][0] as Record<string, unknown>;
 }
 
+describe('signed reasoning capture', () => {
+  const stable = {
+    endpoints: { agents: { promptCache: { stableContext: true } } },
+  } as unknown as AppConfig;
+  const primaryInput = (runConfig: Record<string, unknown>): Record<string, unknown> =>
+    (runConfig.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0];
+
+  it.each(['anthropic', 'bedrock'])(
+    'asks the SDK to capture it for %s with stableContext',
+    async (provider) => {
+      const runConfig = await callAndCaptureRunConfig({
+        overrides: { provider, endpoint: provider, model_parameters: { model: 'model-1' } },
+        appConfig: stable,
+      });
+      expect(primaryInput(runConfig).providerReasoningReplay).toBe(true);
+    },
+  );
+
+  it.each([
+    ['the lever is off', 'anthropic', undefined],
+    ['the provider does not sign reasoning', 'openAI', stable],
+  ])('does not when %s', async (_name, provider, appConfig) => {
+    const runConfig = await callAndCaptureRunConfig({
+      overrides: { provider, endpoint: provider, model_parameters: { model: 'model-1' } },
+      appConfig,
+    });
+    expect(primaryInput(runConfig)).not.toHaveProperty('providerReasoningReplay');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Suite: Langfuse run config
 // ---------------------------------------------------------------------------

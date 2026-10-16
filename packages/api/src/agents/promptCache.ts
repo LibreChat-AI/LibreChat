@@ -64,3 +64,43 @@ export function hasProviderPromptCache(agent: {
     agent.model_parameters?.promptCache === true
   );
 }
+
+/** Providers whose signed reasoning blocks are stored and sent back with `stableContext`. */
+const REASONING_REPLAY_PROVIDERS = new Set<string>(['anthropic', 'bedrock']);
+
+/** Whether a provider's signed reasoning is stored and replayed (needs `stableContext`). */
+export function replaysSignedReasoning(
+  config: PromptCacheConfig | null | undefined,
+  provider?: string | null,
+): boolean {
+  return (
+    provider != null && REASONING_REPLAY_PROVIDERS.has(provider) && isStableContextEnabled(config)
+  );
+}
+
+/**
+ * Identity of the model a history is restored for, as `formatAgentMessages` compares it with the
+ * model that signed each stored reasoning block. Undefined when the agent's reasoning is not
+ * replayed. `modelName` is the alias some client options use for `model`.
+ */
+export function getReasoningReplayTarget(
+  config: PromptCacheConfig | null | undefined,
+  agent: {
+    provider?: string | null;
+    model?: string | null;
+    model_parameters?: { model?: unknown; modelName?: unknown } | null;
+  },
+): { provider: string; model: string } | undefined {
+  if (!replaysSignedReasoning(config, agent.provider)) {
+    return undefined;
+  }
+  const candidates = [
+    agent.model_parameters?.model,
+    agent.model_parameters?.modelName,
+    agent.model,
+  ];
+  const model = candidates.find(
+    (value): value is string => typeof value === 'string' && value !== '',
+  );
+  return model == null || agent.provider == null ? undefined : { provider: agent.provider, model };
+}

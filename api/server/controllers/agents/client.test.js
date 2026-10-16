@@ -3008,6 +3008,84 @@ describe('AgentClient - startup telemetry', () => {
     expect(processStream).toHaveBeenCalledTimes(1);
   });
 
+  describe('signed reasoning replay option', () => {
+    const formatWith = async ({ stableContext, provider, model_parameters }) => {
+      jest.clearAllMocks();
+      mockIsHITLEnabled.mockReturnValue(false);
+      mockFormatAgentMessages.mockReturnValueOnce({
+        messages: [],
+        indexTokenCountMap: {},
+        summary: undefined,
+        boundaryTokenAdjustment: undefined,
+      });
+      mockCreateRun.mockResolvedValueOnce({
+        Graph: null,
+        processStream: jest.fn().mockResolvedValue(),
+        getCalibrationRatio: jest.fn(() => 0),
+        getInterrupt: jest.fn(() => undefined),
+      });
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: stableContext
+                ? { promptCache: { stableContext: true } }
+                : {},
+            },
+          },
+          _resumableStreamId: 'reasoning-replay-conversation',
+        },
+        res: {},
+        agent: { id: 'agent-primary', endpoint: provider, provider, model_parameters },
+        agentConfigs: new Map(),
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = 'reasoning-replay-conversation';
+      client.responseMessageId = 'reasoning-replay-response';
+      client.parentMessageId = 'reasoning-replay-parent';
+      client.recordCollectedUsage = jest.fn().mockResolvedValue();
+      await client.chatCompletion({ payload: [] });
+      return mockFormatAgentMessages.mock.calls[0][4];
+    };
+
+    it('names the serving model for Anthropic and Bedrock only with stableContext', async () => {
+      expect(
+        await formatWith({
+          stableContext: true,
+          provider: 'anthropic',
+          model_parameters: { model: 'claude-test' },
+        }),
+      ).toMatchObject({ replayProviderReasoning: { provider: 'anthropic', model: 'claude-test' } });
+      expect(
+        await formatWith({
+          stableContext: true,
+          provider: 'bedrock',
+          model_parameters: { modelName: 'bedrock-model' },
+        }),
+      ).toMatchObject({
+        replayProviderReasoning: { provider: 'bedrock', model: 'bedrock-model' },
+      });
+    });
+
+    it.each([
+      ['the lever is off', false, 'anthropic'],
+      ['the provider does not sign reasoning', true, 'openAI'],
+    ])('passes no replay option when %s', async (_name, stableContext, provider) => {
+      const options = await formatWith({
+        stableContext,
+        provider,
+        model_parameters: { model: 'some-model' },
+      });
+      expect(options).not.toHaveProperty('replayProviderReasoning');
+    });
+  });
+
   it('preserves provider messages while deriving the full semantic index', () => {
     const { formatAgentMessages } = jest.requireActual('@librechat/agents');
     const { stripActivityLabelParts } = jest.requireActual('@librechat/api');
@@ -8350,6 +8428,33 @@ describe('AgentClient - titleConvo', () => {
         const toolCall = result.prompt[1].content.find((part) => part.tool_call)?.tool_call;
         expect(toolCall.providerItems).toEqual(providerItems);
         expect(history[1].content[1].tool_call).not.toHaveProperty('providerItems');
+      });
+
+      it('puts the stored signed reasoning back on a think part that still has its text', async () => {
+        const { thinkReplayHash } = require('@librechat/data-schemas');
+        const replay = {
+          anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+        };
+        const history = conversationHistory();
+        history[1] = {
+          ...history[1],
+          content: [
+            { type: ContentTypes.THINK, think: 'plan' },
+            { type: ContentTypes.THINK, think: 'edited since' },
+            { type: ContentTypes.TEXT, text: 'First answer' },
+          ],
+          providerItems: {
+            'think:0': { hash: thinkReplayHash('plan'), replay },
+            'think:1': { hash: thinkReplayHash('as saved'), replay },
+          },
+        };
+
+        const result = await client.buildMessages(history, 'msg-3', {});
+
+        const [first, second] = result.prompt[1].content;
+        expect(first.provider_replay).toEqual(replay);
+        expect(second).not.toHaveProperty('provider_replay');
+        expect(history[1].content[0]).not.toHaveProperty('provider_replay');
       });
 
       it('keeps the prompt live and reads no anchor without stableContext', async () => {
