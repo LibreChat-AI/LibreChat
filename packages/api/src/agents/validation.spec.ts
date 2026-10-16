@@ -1,4 +1,5 @@
 import {
+  ErrorTypes,
   EModelEndpoint,
   MAX_SUBAGENTS,
   setMaxSubagents,
@@ -599,6 +600,69 @@ describe('validateAgentModel', () => {
 
     expect(result.isValid).toBe(false);
     expect(result.error?.message).toContain('illegal_model_request');
+    expect(logViolation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('validateAgentModel — an endpoint with nothing to serve', () => {
+  const res = {} as never;
+  const agent = { id: 'agent-1', model: 'claude-opus-5', provider: 'Claude' } as never;
+
+  const req = (filter: boolean) =>
+    ({
+      config: {
+        endpoints: {
+          [EModelEndpoint.custom]: [
+            { name: 'Claude', models: { default: ['claude-opus-5'], fetch: true, filter } },
+          ],
+        },
+      },
+    }) as never;
+
+  it('logs a violation when the endpoint serves models, but not the one asked for', async () => {
+    const logViolation = jest.fn().mockResolvedValue(undefined);
+
+    const result = await validateAgentModel({
+      req: req(true),
+      res,
+      agent,
+      modelsConfig: { Claude: ['claude-sonnet-5'] },
+      logViolation,
+    });
+
+    expect(logViolation).toHaveBeenCalledTimes(1);
+    expect(result.isValid).toBe(false);
+  });
+
+  /* A filtered list goes empty when the gateway stops offering the declared
+     models; banning the agent's owner for that is what this guard prevents. */
+  it('does not log a violation when a filter-managed endpoint has nothing to serve', async () => {
+    const logViolation = jest.fn().mockResolvedValue(undefined);
+
+    const result = await validateAgentModel({
+      req: req(true),
+      res,
+      agent,
+      modelsConfig: { Claude: [] },
+      logViolation,
+    });
+
+    expect(logViolation).not.toHaveBeenCalled();
+    expect(result.isValid).toBe(false);
+    expect(result.error?.message).toContain(ErrorTypes.ENDPOINT_MODELS_NOT_LOADED);
+  });
+
+  it('still logs a violation for an empty endpoint that does not filter', async () => {
+    const logViolation = jest.fn().mockResolvedValue(undefined);
+
+    await validateAgentModel({
+      req: req(false),
+      res,
+      agent,
+      modelsConfig: { Claude: [] },
+      logViolation,
+    });
+
     expect(logViolation).toHaveBeenCalledTimes(1);
   });
 });

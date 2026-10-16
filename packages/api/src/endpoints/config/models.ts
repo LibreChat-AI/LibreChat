@@ -296,6 +296,8 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
         logger.warn(`[loadConfigModels] Model fetch failed for "${currentKey}":`, settled.reason);
       }
       const modelData = settled.status === 'fulfilled' ? settled.value : [];
+      /** Built once per fetch result, shared by every endpoint over that gateway. */
+      let fetchedSet: Set<string> | null = null;
       const associatedNames = uniqueKeyToEndpointsMap[currentKey];
 
       for (const name of associatedNames) {
@@ -303,7 +305,34 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
         const defaults = (endpoint.models?.default ?? []).map((m) =>
           typeof m === 'string' ? m : m.name,
         );
-        modelsConfig[name] = !modelData?.length ? defaults : modelData;
+
+        if (!modelData?.length) {
+          modelsConfig[name] = defaults;
+          continue;
+        }
+
+        /** Serve declared ∩ fetched, in declared order — the list is authored
+         *  for display. Declaring a model the gateway lacks is inert, but a
+         *  typo and a retired model look identical from the picker, hence the
+         *  debug log. */
+        if (endpoint.models?.filter) {
+          fetchedSet ??= new Set(modelData);
+          const fetched = fetchedSet;
+          const served: string[] = [];
+          const absent: string[] = [];
+          for (const model of defaults) {
+            (fetched.has(model) ? served : absent).push(model);
+          }
+          if (absent.length > 0) {
+            logger.debug(
+              `[loadConfigModels] "${name}": declared but not offered by the gateway: ${absent.join(', ')}`,
+            );
+          }
+          modelsConfig[name] = served;
+          continue;
+        }
+
+        modelsConfig[name] = modelData;
       }
 
       /** A shared fetch caches token config under one endpoint's tokenKey;
