@@ -17,11 +17,11 @@ import {
   useComposerRestoreHost,
 } from '~/Providers/ComposerRestoreContext';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { usePaneConversations } from '~/routes/ChatSettings';
 import useSteerRecovery from '../useSteerRecovery';
 import store from '~/store';
 import '~/Providers/SteerHostContext';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '@librechat/chat/react';
 
 const mockMutateAsync = jest.fn();
 const mockCancelSteer = jest.fn();
