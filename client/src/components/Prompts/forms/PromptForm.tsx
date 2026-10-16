@@ -5,7 +5,7 @@ import { useParams } from 'react-router-dom';
 import { Menu, Rocket, Info, X } from 'lucide-react';
 import { useForm, FormProvider } from 'react-hook-form';
 import { Button, Skeleton, useToastContext } from '@librechat/client';
-import { Permissions, PermissionTypes } from 'librechat-data-provider';
+import { Permissions, PermissionTypes, replaceSpecialVars } from 'librechat-data-provider';
 import type { TCreatePrompt, TPrompt, TPromptGroup } from 'librechat-data-provider';
 import {
   useGetPrompts,
@@ -14,8 +14,17 @@ import {
   useUpdatePromptGroup,
   useMakePromptProduction,
 } from '~/data-provider';
-import { useHasAccess, useLocalize, useFocusTrap, usePromptGroupPermissions } from '~/hooks';
+import {
+  useHasAccess,
+  useLocalize,
+  useFocusTrap,
+  useAuthContext,
+  usePromptContent,
+  usePromptGroupPermissions,
+} from '~/hooks';
 import { cn, findPromptGroup, getPromptMutationErrorKey } from '~/utils';
+import LangfusePromptMeta from '../display/LangfusePromptMeta';
+import PromptResolvedBody from '../display/PromptResolvedBody';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import CategorySelector from '../fields/CategorySelector';
@@ -198,6 +207,11 @@ interface ExternalPromptGroupViewProps {
 const ExternalPromptGroupView = React.memo(
   ({ group, isSmallScreen }: ExternalPromptGroupViewProps) => {
     const localize = useLocalize();
+    const { user } = useAuthContext();
+    const { text, resolved, isLoading, error, refetch } = usePromptContent(group);
+    const hasError = Boolean(error);
+
+    const mainText = useMemo(() => replaceSpecialVars({ text, user }), [text, user]);
 
     return (
       <div className="flex h-full w-full flex-col">
@@ -206,9 +220,9 @@ const ExternalPromptGroupView = React.memo(
             <OpenSidebar />
           </div>
         )}
-        <div className="flex-1 overflow-hidden px-4">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4">
           <h1 className="sr-only">{localize('com_ui_prompt_details', { name: group.name })}</h1>
-          <div className="mt-2 mb-3 flex items-center justify-between gap-2">
+          <div className="mt-2 mb-3 flex shrink-0 items-center justify-between gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <PromptName name={group.name} disabled onSave={() => {}} />
             </div>
@@ -218,7 +232,7 @@ const ExternalPromptGroupView = React.memo(
             </div>
           </div>
 
-          <div className="mb-2 flex h-full flex-col gap-3">
+          <div className="mb-2 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
             <div
               role="note"
               className="border-status-warning-border bg-status-warning-subtle text-status-warning flex items-start gap-2 rounded-md border p-3 text-sm"
@@ -232,6 +246,19 @@ const ExternalPromptGroupView = React.memo(
             </div>
             <Description initialValue={group.oneliner ?? ''} disabled />
             <Command initialValue={group.command ?? ''} disabled />
+
+            <div className="min-h-0 flex-1">
+              <PromptResolvedBody
+                mainText={mainText}
+                isLoading={isLoading}
+                error={error}
+                onRetry={refetch}
+              />
+            </div>
+
+            {!isLoading && !hasError && <PromptVariables promptText={mainText} />}
+
+            {resolved?.source === 'langfuse' && <LangfusePromptMeta resolved={resolved} />}
           </div>
         </div>
       </div>

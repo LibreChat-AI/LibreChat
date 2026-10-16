@@ -787,6 +787,7 @@ describe('createPromptService', () => {
         type: 'text',
         version: 3,
         labels: ['production'],
+        sourceUrl: 'https://cloud.langfuse.test/project/project-1/prompts/langfuse-prompt',
         ...overrides,
       };
     }

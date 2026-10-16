@@ -1,5 +1,6 @@
 export * from './destinations';
 export * from './feedback';
+export * from './links';
 export * from './policy';
 export * from './promptCatalogSync';
 export * from './promptSyncRunner';

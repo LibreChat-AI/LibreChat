@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
-import { useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { useSetAtom, getDefaultStore } from 'jotai';
 import { submissionByIndex } from '@librechat/chat/react';
 import { useQueryClient, isCancelledError } from '@tanstack/react-query';
 import {
@@ -26,6 +26,7 @@ import {
   updateConvoInAllQueries,
   logger,
 } from '~/utils';
+import { navigationGenerationAtom } from '~/store/navigation';
 import { useApplyModelSpecEffects } from '~/hooks/Agents';
 import { startupConfigKey } from '~/data-provider';
 import store from '~/store';
@@ -66,11 +67,21 @@ const currentRoute = () => window.location.pathname + window.location.search;
  * subsumes the other — the generation says "a newer intent replaced this one",
  * the route says "the user left by some means this hook never saw".
  *
- * Module-scoped for the same reason the route is read from the browser: every
- * sidebar row mounts its own `useNavigateToConvo`, so a ref would be private
- * to the row that was clicked and blind to the click that superseded it.
+ * Lives in `navigationGenerationAtom` (`~/store/navigation`), not a hook-local
+ * ref, for the same reason the route is read from the browser: every sidebar
+ * row mounts its own `useNavigateToConvo`, so a ref would be private to the
+ * row that was clicked and blind to the click that superseded it. The same
+ * atom lets a component outside this hook — a prompt card or the slash
+ * command, cancelling its own pending Langfuse resolve — treat a navigation
+ * that has only just started as supersession too, before the target
+ * conversation commits and its own identity changes.
  */
-let navigationGeneration = 0;
+const bumpNavigationGeneration = () => {
+  const defaultStore = getDefaultStore();
+  const generation = defaultStore.get(navigationGenerationAtom) + 1;
+  defaultStore.set(navigationGenerationAtom, generation);
+  return generation;
+};
 
 /**
  * Records that the user has asked for a different conversation, so a first
@@ -88,7 +99,7 @@ let navigationGeneration = 0;
  * is not.
  */
 export const supersedeNavigation = () => {
-  navigationGeneration++;
+  bumpNavigationGeneration();
 };
 
 const useNavigateToConvo = (index = 0) => {
@@ -226,7 +237,8 @@ const useNavigateToConvo = (index = 0) => {
         queryClient.removeQueries([QueryKeys.messages, conversationId]);
       }
     }
-    if (generation !== navigationGeneration || currentRoute() !== routeAtStart) {
+    const isSuperseded = generation !== getDefaultStore().get(navigationGenerationAtom);
+    if (isSuperseded || currentRoute() !== routeAtStart) {
       logger.log('conversation', 'Discarding superseded navigation', conversationId);
       return;
     }
@@ -249,7 +261,7 @@ const useNavigateToConvo = (index = 0) => {
     hasSetConversation.current = true;
     /** Claim this click's place in the order before any await, so a request
      * still in flight for an earlier one cannot land on top of it. */
-    const generation = ++navigationGeneration;
+    const generation = bumpNavigationGeneration();
     setSubmission(null);
 
     let convo = { ...conversation };

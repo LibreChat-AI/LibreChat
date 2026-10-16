@@ -3,6 +3,7 @@ import type { LangfuseTextPromptSelector } from '../langfuse/prompts';
 import type { PromptSourceAdapter } from './types';
 import { getLangfusePromptSyncTimeoutMs } from '../langfuse/policy';
 import { getLangfuseTextPrompt } from '../langfuse/prompts';
+import { getLangfusePromptUrl } from '../langfuse/links';
 
 export interface CreateLangfusePromptAdapterDependencies {
   /** Checks the deployment gate, tenant match and prompt-sync switch; builds the
@@ -71,6 +72,11 @@ export function createLangfusePromptAdapter({
           type: 'text',
           version: result.value.version,
           labels: result.value.labels,
+          sourceUrl: getLangfusePromptUrl(
+            resolution.connection.baseUrl,
+            group.sourceProjectId ?? '',
+            group.sourcePromptName,
+          ),
         },
       };
     },

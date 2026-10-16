@@ -1535,7 +1535,7 @@ describe('GET /api/prompts/groups/:groupId/resolve', () => {
       });
     }
 
-    it('resolves the production label', async () => {
+    it('resolves the production label, with no sourceUrl for a non-admin', async () => {
       mockLangfuseFetch(async () =>
         textPromptResponse({
           name: 'greeting',
@@ -1558,9 +1558,82 @@ describe('GET /api/prompts/groups/:groupId/resolve', () => {
         version: 1,
         labels: ['production'],
       });
+      expect(response.body.sourceUrl).toBeUndefined();
       const [url] = fetchSpy.mock.calls[0];
       expect(url).toContain('label=production');
       expect(url).not.toContain('version=');
+    });
+
+    it('resolves the production label with sourceUrl for an admin', async () => {
+      setTestUser(app, testUsers.admin);
+      mockLangfuseFetch(async () =>
+        textPromptResponse({
+          name: 'greeting',
+          version: 1,
+          type: 'text',
+          labels: ['production'],
+          prompt: 'Hello {{name}}',
+        }),
+      );
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .expect(200);
+
+      expect(response.body).toEqual({
+        source: 'langfuse',
+        groupId: group._id.toString(),
+        prompt: 'Hello {{name}}',
+        type: 'text',
+        version: 1,
+        labels: ['production'],
+        sourceUrl: 'https://langfuse.resolve.test/project/resolve-project/prompts/greeting',
+      });
+    });
+
+    it('allows a public viewer with no explicit grant to resolve the group, with no sourceUrl', async () => {
+      await grantPermission({
+        principalType: PrincipalType.PUBLIC,
+        principalId: null,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId: group._id,
+        accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+        grantedBy: testUsers.owner._id,
+      });
+      setTestUser(app, testUsers.noAccess);
+      mockLangfuseFetch(async () =>
+        textPromptResponse({
+          name: 'greeting',
+          version: 1,
+          type: 'text',
+          labels: ['production'],
+          prompt: 'Hello {{name}}',
+        }),
+      );
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .expect(200);
+
+      expect(response.body).toEqual({
+        source: 'langfuse',
+        groupId: group._id.toString(),
+        prompt: 'Hello {{name}}',
+        type: 'text',
+        version: 1,
+        labels: ['production'],
+      });
+      expect(response.body.sourceUrl).toBeUndefined();
+    });
+
+    it('returns 403 for a user with no grant at all on the group', async () => {
+      setTestUser(app, testUsers.noAccess);
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .expect(403);
+
+      expect(response.body.error).toBe('Forbidden');
     });
 
     it('resolves an exact version and sends it with no label', async () => {
@@ -1587,6 +1660,7 @@ describe('GET /api/prompts/groups/:groupId/resolve', () => {
         version: 3,
         labels: [],
       });
+      expect(response.body.sourceUrl).toBeUndefined();
       const [url] = fetchSpy.mock.calls[0];
       expect(url).toContain('version=3');
       expect(url).not.toContain('label=');

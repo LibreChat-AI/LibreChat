@@ -68,6 +68,7 @@ function makeGroup(overrides: Partial<PromptGroupRecord> = {}): PromptGroupRecor
     authorName: 'Author',
     source: 'langfuse',
     sourcePromptName: 'greeting',
+    sourceProjectId: 'project-1',
     tenantId: 'tenant-1',
     ...overrides,
   };
@@ -121,6 +122,40 @@ describe('createLangfusePromptAdapter', () => {
         type: 'text',
         version: 4,
         labels: ['production'],
+        sourceUrl: 'https://cloud.langfuse.test/project/project-1/prompts/greeting',
+      },
+    });
+  });
+
+  it('builds sourceUrl from the connection base URL, the project id and the encoded prompt name', async () => {
+    const scopedConnection: LangfusePromptConnection = {
+      baseUrl: 'https://host.test/lf/',
+      authorization: 'Basic cGs6c2s=',
+    };
+    const resolveSource = jest.fn().mockResolvedValue({
+      ok: true,
+      connection: scopedConnection,
+    } satisfies LangfuseSourceResolution);
+    const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        name: 'support/greeting one',
+        version: 1,
+        type: 'text',
+        labels: ['production'],
+        prompt: 'Hi',
+      }),
+    );
+
+    const result = await adapter.resolvePrompt({
+      group: makeGroup({ sourcePromptName: 'support/greeting one', sourceProjectId: 'proj 1' }),
+      selection: { type: 'production' },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        sourceUrl: 'https://host.test/lf/project/proj%201/prompts/support%2Fgreeting%20one',
       },
     });
   });
@@ -148,6 +183,7 @@ describe('createLangfusePromptAdapter', () => {
         type: 'text',
         version: 3,
         labels: [],
+        sourceUrl: 'https://cloud.langfuse.test/project/project-1/prompts/greeting',
       },
     });
   });

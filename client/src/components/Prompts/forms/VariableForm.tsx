@@ -65,17 +65,20 @@ const parseFieldConfig = (variable: string): FieldConfig => {
 export default function VariableForm({
   group,
   onClose,
+  promptText,
 }: {
   group: TPromptGroup;
   onClose: () => void;
+  /** Resolved prompt text; falls back to the production prompt when absent. */
+  promptText?: string;
 }) {
   const localize = useLocalize();
   const { user } = useAuthContext();
 
   const mainText = useMemo(() => {
-    const initialText = group.productionPrompt?.prompt ?? '';
+    const initialText = promptText ?? group.productionPrompt?.prompt ?? '';
     return replaceSpecialVars({ text: initialText, user });
-  }, [group.productionPrompt?.prompt, user]);
+  }, [promptText, group.productionPrompt?.prompt, user]);
 
   const { allVariables, uniqueVariables, variableIndexMap } = useMemo(
     () => extractVariableInfo(mainText),
