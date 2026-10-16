@@ -3,6 +3,7 @@ import {
   ContentTypes,
   isOpaqueReasoning,
   readableReasoning,
+  resolveDisplayToolCall,
   stripToolCallErrorPrefix,
 } from 'librechat-data-provider';
 import type {
@@ -69,7 +70,10 @@ export const getStandardToolCall = (part: TMessageContentParts): LiveToolCall | 
     return undefined;
   }
   const toolCall = part[ContentTypes.TOOL_CALL];
-  return toolCall != null && 'args' in toolCall ? (toolCall as LiveToolCall) : undefined;
+  /** A dispatcher call is named and counted as the tool it ran. */
+  return toolCall != null && 'args' in toolCall
+    ? resolveDisplayToolCall(toolCall as LiveToolCall)
+    : undefined;
 };
 
 /**

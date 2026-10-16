@@ -6,7 +6,11 @@ import {
   getThreadData,
   isPreliminaryMessageId,
   isUnpersistedPreliminaryParent,
+  attachProviderItems,
+  stripProviderItems,
+  omitProviderItemsFromEvent,
 } from './message';
+import { sendEvent } from './events';
 
 /** Cast to string for type compatibility with ThreadMessage */
 const NO_PARENT = Constants.NO_PARENT as string;
@@ -629,5 +633,91 @@ describe('getThreadData', () => {
       // Should complete in reasonable time (< 100ms for 1000 messages)
       expect(endTime - startTime).toBeLessThan(100);
     });
+  });
+});
+
+describe('provider output items', () => {
+  const providerItems = { origin: 'digest', items: [{ id: 'rs_1', encrypted_content: 'opaque' }] };
+  const content = () => [
+    { type: 'text', text: 'Looking it up.' },
+    { type: 'tool_call', tool_call: { id: 'call_1', name: 'lookup', args: '{}', providerItems } },
+  ];
+  const toolCall = { id: 'call_1', name: 'lookup', args: '{}' };
+
+  it('leaves them out of a final event and a sync event', () => {
+    const final = omitProviderItemsFromEvent({
+      final: true,
+      responseMessage: { messageId: 'm', content: content() },
+    });
+    expect(final.responseMessage.content[1]).toEqual({ type: 'tool_call', tool_call: toolCall });
+    expect(final.responseMessage.messageId).toBe('m');
+    const sync = omitProviderItemsFromEvent({
+      sync: true,
+      resumeState: { runSteps: [], aggregatedContent: content() },
+    });
+    expect(sync.resumeState.aggregatedContent[1]).toEqual({
+      type: 'tool_call',
+      tool_call: toolCall,
+    });
+    expect(sync.resumeState.runSteps).toEqual([]);
+  });
+
+  it('touches nothing else, however deep a key named like them sits', () => {
+    const event = { data: { output: { providerItems: 'a tool result field' } } };
+    expect(omitProviderItemsFromEvent(event)).toBe(event);
+    const plain = { final: true, responseMessage: { content: [{ type: 'text', text: 'x' }] } };
+    expect(omitProviderItemsFromEvent(plain)).toBe(plain);
+    expect(omitProviderItemsFromEvent(undefined)).toBeUndefined();
+    expect(omitProviderItemsFromEvent('text')).toBe('text');
+  });
+
+  it('leaves them out of a sent event', () => {
+    const write = jest.fn();
+    sendEvent(
+      { write } as never,
+      { final: true, responseMessage: { content: content() } } as never,
+    );
+    expect(write.mock.calls[0][0]).toContain('call_1');
+    expect(write.mock.calls[0][0]).not.toContain('opaque');
+  });
+
+  it('strips them from content without touching the input', () => {
+    const input = content();
+    const stripped = stripProviderItems(input);
+    expect(stripped[1]).toEqual({ type: 'tool_call', tool_call: toolCall });
+    expect(stripped[0]).toBe(input[0]);
+    expect(input[1].tool_call?.providerItems).toBe(providerItems);
+  });
+
+  it('returns content without them, or no content, unchanged', () => {
+    const clean = [{ type: 'tool_call', tool_call: { id: 'call_1' } }, null];
+    expect(stripProviderItems(clean)).toBe(clean);
+    expect(stripProviderItems(undefined)).toBeUndefined();
+    expect(stripProviderItems('text')).toBe('text');
+  });
+
+  it('puts the stored items back on their tool calls for formatting, without changing the row', () => {
+    const row = {
+      content: [
+        { type: 'text', text: 'hi' },
+        { type: 'tool_call', tool_call: toolCall },
+        { type: 'tool_call', tool_call: { id: 'call_2', name: 'other' } },
+      ],
+      providerItems: { call_1: providerItems, call_9: { origin: 'x', items: [] } },
+    };
+    const attached = attachProviderItems(row);
+    expect(attached.content[1]).toEqual({
+      type: 'tool_call',
+      tool_call: { ...toolCall, providerItems },
+    });
+    expect(attached.content[2]).toBe(row.content[2]);
+    expect(row.content[1].tool_call).toEqual(toolCall);
+  });
+
+  it('returns a row without stored items, or without list content, as it is', () => {
+    const plain = { content: [{ type: 'text', text: 'x' }] };
+    expect(attachProviderItems(plain)).toBe(plain);
+    const text = { content: 'x', providerItems: { call_1: providerItems } };
+    expect(attachProviderItems(text)).toBe(text);
   });
 });

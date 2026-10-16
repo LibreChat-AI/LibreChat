@@ -1795,3 +1795,48 @@ describe('isStreamWritable', () => {
     expect(isStreamWritable({ headersSent: true, writableEnded: false }, null)).toBe(true);
   });
 });
+
+describe('provider output items', () => {
+  it('stores the items on the tool call parts without emitting them', async () => {
+    const { GenerationJobManager, sendEvent } = require('@librechat/api');
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent,
+      contentParts,
+      stepMap,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+      storeProviderItems: true,
+    });
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
+      id: 'step-1',
+      index: 0,
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-1', name: 'lookup', args: '{}' }],
+      },
+    });
+    jest.clearAllMocks();
+
+    const providerItems = {
+      origin: 'origin-digest',
+      items: [
+        { id: 'rs_1', type: 'reasoning', summary: [], encrypted_content: 'opaque' },
+        { id: 'fc_1', type: 'function_call', status: 'completed', call_id: 'call-1' },
+      ],
+    };
+    await handlers[GraphEvents.ON_PROVIDER_OUTPUT_ITEMS].handle(
+      GraphEvents.ON_PROVIDER_OUTPUT_ITEMS,
+      { tool_calls: [{ id: 'call-1', providerItems }] },
+    );
+
+    expect(contentParts[0].tool_call.providerItems).toEqual(providerItems);
+    expect(GenerationJobManager.emitChunk).not.toHaveBeenCalled();
+    expect(sendEvent).not.toHaveBeenCalled();
+  });
+});

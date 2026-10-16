@@ -7,6 +7,12 @@ import type {
 import type { Document } from 'mongoose';
 import type { IAgentEventActorContextMeta } from './convo';
 
+/** A context source state on a prompt; `value` null means the source is switched off. */
+export interface IContextEntry {
+  key: string;
+  value: string | null;
+}
+
 export type SubagentTaskControlAction =
   | 'steer'
   | 'queue'
@@ -64,6 +70,16 @@ export interface IMessage extends Document {
   privateText?: string;
   privacyRevision?: string;
   privateTextTokens?: string[];
+  /** Server-written context changes announced with this user message. */
+  contextUpdates?: IContextEntry[];
+  /** Server-written anchor of the segment that starts after this message's summary. */
+  contextAnchor?: IContextEntry[];
+  /**
+   * Provider output items of this response's tool rounds, by tool call id (OpenAI Responses
+   * ids, status and encrypted reasoning). Server-written by `saveMessage`, read only to
+   * replay a round as it was sent.
+   */
+  providerItems?: Record<string, unknown>;
   isCreatedByUser: boolean;
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted?: boolean;

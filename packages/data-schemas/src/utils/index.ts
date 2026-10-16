@@ -9,5 +9,6 @@ export * from './yaml';
 export * from './stripUIResourceMarkers';
 export * from './fading';
 export * from './eviction';
+export { splitProviderItems } from './providerItems';
 export { buildIndexWithRetry, createIndexesWithRetry, isIndexBuildInProgress } from './retry';
 export type { IndexBuildOptions } from './retry';

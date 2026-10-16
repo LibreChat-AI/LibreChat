@@ -166,6 +166,38 @@ describe('SSE stream tenant isolation', () => {
       );
     });
 
+    it('writes stream events and the final event without tool call provider items', async () => {
+      const toolCall = { id: 'call_1', name: 'lookup', args: '{}' };
+      const content = [
+        {
+          type: 'tool_call',
+          tool_call: { ...toolCall, providerItems: { origin: 'digest', items: [] } },
+        },
+      ];
+      mockGenerationJobManager.subscribe.mockImplementation((_streamId, writeEvent, onDone) => {
+        process.nextTick(() => {
+          writeEvent({ sync: true, resumeState: { aggregatedContent: content } });
+          onDone({ final: true, responseMessage: { content } });
+        });
+        return { unsubscribe: jest.fn() };
+      });
+      mockGenerationJobManager.getJob.mockResolvedValue({
+        metadata: { userId: 'user-123' },
+        status: 'running',
+        createdAt: 1000,
+      });
+
+      const res = await request(app).get('/agents/chat/stream/stream-123?generationCreatedAt=1000');
+
+      expect(res.status).toBe(200);
+      const [sync, final] = res.text
+        .split('\n\n')
+        .filter((frame) => frame.includes('data: '))
+        .map((frame) => JSON.parse(frame.split('data: ')[1]));
+      expect(sync.resumeState.aggregatedContent[0].tool_call).toEqual(toolCall);
+      expect(final.responseMessage.content[0].tool_call).toEqual(toolCall);
+    });
+
     it('pins an unfenced legacy subscription to the generation that passed authorization', async () => {
       mockSubscribeSuccess();
       mockGenerationJobManager.getJob.mockResolvedValue({
@@ -638,6 +670,29 @@ describe('SSE stream tenant isolation', () => {
       const res = await request(app).get('/agents/chat/status/conv-123');
       expect(res.status).toBe(200);
       expect(res.body.active).toBe(true);
+    });
+
+    it('leaves the provider items of live tool calls out of the status', async () => {
+      mockUserId = 'user-123';
+      mockTenantId = 'tenant-a';
+      mockGenerationJobManager.getJob.mockResolvedValue({
+        metadata: { userId: 'user-123', tenantId: 'tenant-a' },
+        status: 'running',
+        createdAt: 1000,
+      });
+      const toolCall = { id: 'call_1', name: 'lookup', args: '{}' };
+      const providerItems = { origin: 'digest', items: [{ id: 'rs_1', encrypted_content: 'x' }] };
+      mockGenerationJobManager.getResumeState.mockResolvedValue({
+        runSteps: [],
+        aggregatedContent: [{ type: 'tool_call', tool_call: { ...toolCall, providerItems } }],
+      });
+
+      const res = await request(app).get('/agents/chat/status/conv-123');
+
+      expect(res.status).toBe(200);
+      const expected = [{ type: 'tool_call', tool_call: toolCall }];
+      expect(res.body.aggregatedContent).toEqual(expected);
+      expect(res.body.resumeState.aggregatedContent).toEqual(expected);
     });
 
     it.each([true, false])(

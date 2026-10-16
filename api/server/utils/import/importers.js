@@ -12,6 +12,7 @@ const {
   orderMessageLineage,
   createChatGptLineage,
   linkChatGptCitations,
+  stripProviderItems,
 } = require('@librechat/api');
 const { getEndpointsConfig } = require('~/server/services/Config');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
@@ -65,7 +66,7 @@ function sanitizeImportedMessage(message) {
   const text = castPersistedImportedText(message.text);
   const content = normalizeImportedArray(message.content);
   const attachments = normalizeImportedArray(message.attachments);
-  /** Server-private run state and trace sampling records never come from an import. */
+  /** Server-private run state, provider items and trace sampling records never come from an import. */
   const importable = withoutTraceRefs({ ...message });
   delete importable.contextMeta;
   delete importable.privateText;
@@ -78,7 +79,7 @@ function sanitizeImportedMessage(message) {
     ...(sanitizeTextMarkers &&
       typeof text === 'string' && { text: stripMessageUIResourceMarkers(text, false) }),
     ...(content && {
-      content: sanitizeUIResourceContent(content, sanitizeContentMarkers),
+      content: sanitizeUIResourceContent(stripProviderItems(content), sanitizeContentMarkers),
     }),
     ...(attachments && {
       attachments: attachments.filter((attachment) => attachment?.type !== Tools.ui_resources),

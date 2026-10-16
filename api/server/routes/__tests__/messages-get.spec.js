@@ -62,6 +62,8 @@ jest.mock('@librechat/api', () => {
     stripPrivateMessageFields: jest.requireActual(
       '../../../../packages/api/src/protection/private/view',
     ).stripPrivateMessageFields,
+    stripProviderItems: jest.requireActual('../../../../packages/api/src/utils/message')
+      .stripProviderItems,
     createContentFilter: jest.fn(() => (req, res, next) => next()),
     inspectContent,
     extractChatContent,
@@ -581,6 +583,38 @@ describe('message route conversation ownership filters', () => {
         appendMessageIds: [savedMessage._id],
       },
     );
+  });
+
+  it('does not accept tool call provider items from a client', async () => {
+    const conversationId = '11111111-1111-4111-8111-111111111111';
+    const toolCall = (providerItems) => ({
+      type: 'tool_call',
+      agentId: 'agent-1',
+      tool_call: {
+        id: 'call_1',
+        name: 'lookup',
+        args: '{}',
+        ...(providerItems && { providerItems }),
+      },
+    });
+    const providerItems = {
+      origin: 'digest',
+      items: [{ id: 'rs_1', encrypted_content: 'opaque' }],
+    };
+    saveMessage.mockImplementation(async (_ctx, message) => message);
+    saveConvo.mockResolvedValue({ conversationId });
+
+    const saved = await request(app)
+      .post(`/api/messages/${conversationId}`)
+      .send({
+        messageId: 'message-1',
+        text: '',
+        content: [toolCall(providerItems)],
+        providerItems: { call_1: providerItems },
+      });
+    expect(saved.status).toBe(201);
+    expect(saveMessage.mock.calls[0][1].content).toEqual([toolCall()]);
+    expect(JSON.stringify(saved.body)).not.toContain('opaque');
   });
 
   it('should filter conversation message reads by authenticated user', async () => {
