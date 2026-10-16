@@ -780,3 +780,102 @@ describe('buildEndpointOption - defaultParamsEndpoint parsing', () => {
     );
   });
 });
+
+describe('buildEndpointOption - agents generation params', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('keeps UI generation params on the agents endpoint and omits model', async () => {
+    mockGetEndpointsConfig.mockResolvedValue({});
+
+    const req = createReq(
+      {
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent_123',
+        spec: 'claude-sonnet-5',
+        model: 'claude-sonnet-5',
+        maxContextTokens: 1000000,
+        temperature: 0.3,
+        topP: 0.9,
+        thinking: true,
+        thinkingDisplay: 'summarized',
+        effort: 'high',
+      },
+      { modelSpecs: null },
+    );
+    req.baseUrl = '/api/agents/chat';
+
+    await buildEndpointOption(req, createRes(), jest.fn());
+
+    const parsedResult = parseCompactConvo.mock.results[0].value;
+    expect(parsedResult.maxContextTokens).toBe(1000000);
+    expect(parsedResult.temperature).toBe(0.3);
+    expect(parsedResult.topP).toBe(0.9);
+    expect(parsedResult.thinking).toBe(true);
+    expect(parsedResult.thinkingDisplay).toBe('summarized');
+    expect(parsedResult.effort).toBe('high');
+    expect(parsedResult.model).toBeUndefined();
+
+    expect(mockAgentBuildOptions).toHaveBeenCalledWith(
+      req,
+      EModelEndpoint.agents,
+      expect.objectContaining({
+        agent_id: 'agent_123',
+        maxContextTokens: 1000000,
+        temperature: 0.3,
+        topP: 0.9,
+        thinking: true,
+      }),
+      undefined,
+    );
+    expect(mockAgentBuildOptions.mock.calls[0][2].model).toBeUndefined();
+  });
+
+  it('keeps enforced modelSpec preset generation params on the agents endpoint', async () => {
+    mockGetEndpointsConfig.mockResolvedValue({});
+
+    const modelSpec = {
+      name: 'claude-sonnet-5',
+      preset: {
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent_abc',
+        model: 'claude-sonnet-5',
+        maxContextTokens: 1000000,
+        temperature: 0.2,
+        topP: 0.9,
+        thinking: true,
+        thinkingDisplay: 'summarized',
+        effort: 'high',
+      },
+    };
+
+    const req = createReq(
+      {
+        endpoint: EModelEndpoint.agents,
+        spec: 'claude-sonnet-5',
+        agent_id: 'agent_abc',
+        model: 'client-model',
+        temperature: 0.8,
+      },
+      {
+        modelSpecs: {
+          enforce: true,
+          list: [modelSpec],
+        },
+      },
+    );
+    req.baseUrl = '/api/agents/chat';
+
+    await buildEndpointOption(req, createRes(), jest.fn());
+
+    const enforcedResult = parseCompactConvo.mock.results[1].value;
+    expect(enforcedResult.maxContextTokens).toBe(1000000);
+    expect(enforcedResult.temperature).toBe(0.2);
+    expect(enforcedResult.topP).toBe(0.9);
+    expect(enforcedResult.thinking).toBe(true);
+    expect(enforcedResult.thinkingDisplay).toBe('summarized');
+    expect(enforcedResult.effort).toBe('high');
+    expect(enforcedResult.model).toBeUndefined();
+  });
+});

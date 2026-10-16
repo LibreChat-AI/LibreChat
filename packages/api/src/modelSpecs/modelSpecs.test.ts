@@ -1,4 +1,4 @@
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, ThinkingDisplay, AnthropicEffort } from 'librechat-data-provider';
 import type { TModelSpec } from 'librechat-data-provider';
 import {
   applyModelSpecPreset,
@@ -265,5 +265,79 @@ describe('modelSpecs helpers', () => {
         name: 'Ada',
       } as never).promptPrefix,
     ).toBe('Help Ada.');
+  });
+
+  it('should keep agent preset generation params after compact re-parse and still omit model', () => {
+    const modelSpec: TModelSpec = {
+      name: 'claude-sonnet-5',
+      label: 'Claude Sonnet 5',
+      preset: {
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent_abc',
+        model: 'claude-sonnet-5',
+        maxContextTokens: 1000000,
+        temperature: 0.2,
+        topP: 0.9,
+        thinking: true,
+        thinkingDisplay: ThinkingDisplay.summarized,
+        effort: AnthropicEffort.high,
+      },
+    };
+
+    const { parsedBody } = applyModelSpecPreset({
+      modelSpec,
+      parsedBody: {
+        endpoint: EModelEndpoint.agents,
+        spec: 'claude-sonnet-5',
+        agent_id: 'agent_abc',
+        temperature: 0.8,
+      },
+      endpoint: EModelEndpoint.agents,
+      includePresetDefaults: true,
+    });
+
+    expect(parsedBody.spec).toBe('claude-sonnet-5');
+    expect(parsedBody.agent_id).toBe('agent_abc');
+    expect(parsedBody.maxContextTokens).toBe(1000000);
+    expect(parsedBody.temperature).toBe(0.2);
+    expect(parsedBody.topP).toBe(0.9);
+    expect(parsedBody.thinking).toBe(true);
+    expect(parsedBody.thinkingDisplay).toBe(ThinkingDisplay.summarized);
+    expect(parsedBody.effort).toBe(AnthropicEffort.high);
+    expect(parsedBody.model).toBeUndefined();
+  });
+
+  it('should keep client UI generation params on a non-enforced agent spec', () => {
+    const modelSpec: TModelSpec = {
+      name: 'claude-sonnet-5',
+      label: 'Claude Sonnet 5',
+      preset: {
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent_abc',
+        model: 'claude-sonnet-5',
+        maxContextTokens: 1000000,
+        temperature: 0.2,
+      },
+    };
+
+    const { parsedBody } = applyModelSpecPreset({
+      modelSpec,
+      parsedBody: {
+        endpoint: EModelEndpoint.agents,
+        spec: 'claude-sonnet-5',
+        agent_id: 'agent_abc',
+        maxContextTokens: 750000,
+        temperature: 0.8,
+        topP: 0.5,
+        thinking: true,
+      },
+      endpoint: EModelEndpoint.agents,
+    });
+
+    expect(parsedBody.maxContextTokens).toBe(750000);
+    expect(parsedBody.temperature).toBe(0.8);
+    expect(parsedBody.topP).toBe(0.5);
+    expect(parsedBody.thinking).toBe(true);
+    expect(parsedBody.model).toBeUndefined();
   });
 });
