@@ -138,7 +138,7 @@ describe('message parts host', () => {
         <ToolArtifactCard attachment={attachment} artifact={artifact} />
       </MessagePartsHostProvider>,
     );
-    expect(panel.register).not.toHaveBeenCalled();
+    expect(panel.register).toHaveBeenCalledWith(artifact);
     expect(panel.open).toHaveBeenCalledWith('artifact-1');
   });
 
