@@ -17,6 +17,7 @@ const {
   createChunk,
   applyContextToAgent,
   buildRunToolSet,
+  stampMcpServerIdentitiesOnMessages,
   buildInitialToolSessions,
   buildAgentScopedContext,
   buildInlineMemoryContext,
@@ -930,13 +931,21 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const summarizationConfig = appConfig?.summarization;
 
       const openaiMessages = convertMessages(request.messages);
+      const identityRoots = [primaryConfig, ...handoffAgentConfigs.values()];
+      /** Stamp MCP identities onto request history before the allowlist runs so
+       * OpenAI-compatible turns match the chat path (no ambiguous names without
+       * identity). This path does not register on_run_step (accepted-tool
+       * projection owns client calls); history stamping covers persistence. */
+      stampMcpServerIdentitiesOnMessages({
+        messages: openaiMessages,
+        roots: identityRoots,
+      });
 
       const toolSet = buildRunToolSet(
         primaryConfig,
         handoffAgentConfigs.values(),
         undefined,
         openaiMessages,
-        true,
       );
       const formatted = formatAgentMessages(stripActivityLabelParts(openaiMessages), {}, toolSet);
       const formattedMessages = formatted.messages;
