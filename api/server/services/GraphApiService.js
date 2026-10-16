@@ -1,7 +1,9 @@
 const client = require('openid-client');
+const undici = require('undici');
 const {
   isEnabled,
   getTokenCacheTtlMs,
+  getOpenIdProxyDispatcher,
   DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -56,6 +58,38 @@ const createGraphClient = async (accessToken, sub) => {
 };
 
 /**
+ * Proxy-aware fetch for openid-client token requests.
+ * Mirrors the dispatcher injection in `api/strategies/openidStrategy.js` so the
+ * Graph on-behalf-of exchange honors `PROXY`/`NO_PROXY` even when the shared
+ * OpenID configuration was built without the proxy-aware fetch.
+ * @param {string|URL} url
+ * @param {object} options
+ */
+async function graphTokenFetch(url, options) {
+  const dispatcher = getOpenIdProxyDispatcher();
+  if (dispatcher) {
+    return undici.fetch(url, { ...options, dispatcher });
+  }
+  return undici.fetch(url, options);
+}
+
+/**
+ * Ensure token-exchange requests route through the configured proxy.
+ * openid-client binds its transport to the Configuration at discovery time and
+ * `genericGrantRequest` offers no per-call fetch override (its fourth argument
+ * only carries DPoP options), so install the proxy-aware fetch on
+ * configurations that lack one. Existing custom fetches are never replaced.
+ * @param {object} config - OpenID configuration
+ * @returns {object} The same configuration
+ */
+function ensureProxyFetch(config) {
+  if (config && !config[client.customFetch]) {
+    config[client.customFetch] = graphTokenFetch;
+  }
+  return config;
+}
+
+/**
  * Exchange OpenID token for Graph API access using on-behalf-of flow
  * Similar to exchangeAccessTokenIfNeeded in openidStrategy.js but for Graph scopes
  * @param {Configuration} config - OpenID configuration
@@ -80,7 +114,7 @@ const exchangeTokenForGraphAccess = async (config, accessToken, sub) => {
       .join(' ');
 
     const grantResponse = await client.genericGrantRequest(
-      config,
+      ensureProxyFetch(config),
       'urn:ietf:params:oauth:grant-type:jwt-bearer',
       {
         scope: scopeString,
