@@ -1905,9 +1905,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     job.emitter.on('allSubscribersLeft', async (aggregatedContent) => {
       /** Empty content is rejected only after the snapshot mode is known: a
        *  reconciled compaction synthesizes its terminal outcome from nothing,
-       *  while a live run has nothing persistable. A compaction plans again
-       *  after a live save, since only its terminal promotion writes twice. */
-      if (!aggregatedContent || (partialResponseSaved && !isCompaction)) {
+       *  while a live run has nothing persistable. Whether an earlier live
+       *  save still allows a write is part of that plan. */
+      if (!aggregatedContent) {
         return;
       }
 
