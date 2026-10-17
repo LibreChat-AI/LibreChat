@@ -2,6 +2,7 @@ import {
   DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS,
   DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS,
 } from 'librechat-data-provider';
+import type { ToolOutputReferencesConfig } from '@librechat/agents';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
 import { CREATE_FILE_TOOL_NAME } from '~/agents/tools';
 
@@ -119,5 +120,23 @@ export function resolveStreamLimits(
       ...agentsEConfig?.maxToolCallArgBytesByTool,
     },
     ...(maxDeltaEventsPerTurn != null && { maxDeltaEventsPerTurn }),
+  };
+}
+
+/**
+ * Maps `endpoints.agents.toolOutputReferences` to the SDK's
+ * `RunConfig.toolOutputReferences`. Only called for runs that enable the
+ * reference registry; unset limits keep the SDK defaults (400,000 characters
+ * per output, twice that per run).
+ */
+export function resolveToolOutputReferences(
+  agentsEConfig: Partial<TAgentsEndpoint> | undefined,
+): ToolOutputReferencesConfig {
+  const maxOutputSize = agentsEConfig?.toolOutputReferences?.maxOutputSize;
+  const maxTotalSize = agentsEConfig?.toolOutputReferences?.maxTotalSize;
+  return {
+    enabled: true,
+    ...(maxOutputSize != null && { maxOutputSize }),
+    ...(maxTotalSize != null && { maxTotalSize }),
   };
 }

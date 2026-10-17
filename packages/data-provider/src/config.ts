@@ -1644,6 +1644,20 @@ export const agentsEndpointSchema = baseEndpointSchema
         .min(0)
         .optional()
         .default(DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS),
+      /** Bounds the run-scoped store of raw tool outputs that `bash_tool` substitutes for
+       * `{{tool<idx>turn<turn>}}`, active on runs with code execution. Each output is cut to
+       * `maxOutputSize` characters (its start is kept) before storage, and the oldest outputs
+       * are evicted once a run's total passes `maxTotalSize`. Unset fields keep the agents
+       * SDK defaults: 400,000 per output and twice the per-output size per run, with the run
+       * total capped at 5,000,000 by the SDK. Raise them when tools return results larger
+       * than 400,000 characters that `bash_tool` must digest whole; a substituted output
+       * lands inside the shell command, so very large values can exceed shell limits. */
+      toolOutputReferences: z
+        .object({
+          maxOutputSize: z.number().int().positive().optional(),
+          maxTotalSize: z.number().int().positive().optional(),
+        })
+        .optional(),
       maxCitations: z.number().min(1).max(50).optional().default(30),
       maxCitationsPerFile: z.number().min(1).max(10).optional().default(7),
       minRelevanceScore: z.number().min(0.0).max(1.0).optional().default(0.45),

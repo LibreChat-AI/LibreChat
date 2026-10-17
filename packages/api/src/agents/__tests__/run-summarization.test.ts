@@ -10,7 +10,7 @@ import {
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
 import type { CompactionSemanticIndex, SubagentTaskConfig, AgentInputs } from '@librechat/agents';
-import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
+import type { SummarizationConfig, TAgentsEndpoint, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { OpenAI } from 'openai';
@@ -4168,6 +4168,39 @@ describe('toolOutputReferences gating', () => {
       overrides: { codeEnvAvailable: true },
     });
     expect(callArgs.toolOutputReferences).toEqual({ enabled: true });
+  });
+
+  const withReferenceLimits = (
+    toolOutputReferences: TAgentsEndpoint['toolOutputReferences'],
+  ): AppConfig => {
+    const appConfig = makeAppConfig([]);
+    return {
+      ...appConfig,
+      endpoints: {
+        ...appConfig.endpoints,
+        [EModelEndpoint.agents]: { toolOutputReferences } as TAgentsEndpoint,
+      },
+    };
+  };
+
+  it('passes configured registry limits from endpoints.agents.toolOutputReferences', async () => {
+    const callArgs = await callAndCaptureRunConfig({
+      overrides: { codeEnvAvailable: true },
+      appConfig: withReferenceLimits({ maxOutputSize: 1_000_000, maxTotalSize: 2_000_000 }),
+    });
+    expect(callArgs.toolOutputReferences).toEqual({
+      enabled: true,
+      maxOutputSize: 1_000_000,
+      maxTotalSize: 2_000_000,
+    });
+  });
+
+  it('does not enable the registry from configured limits alone', async () => {
+    const callArgs = await callAndCaptureRunConfig({
+      overrides: { codeEnvAvailable: false },
+      appConfig: withReferenceLimits({ maxOutputSize: 1_000_000 }),
+    });
+    expect(callArgs).not.toHaveProperty('toolOutputReferences');
   });
 
   it('omits toolOutputReferences when codeEnvAvailable is false', async () => {

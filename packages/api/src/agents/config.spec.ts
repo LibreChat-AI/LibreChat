@@ -2,6 +2,7 @@ import type { TAgentsEndpoint } from 'librechat-data-provider';
 import {
   resolveStreamLimits,
   resolveRecursionLimit,
+  resolveToolOutputReferences,
   resolveSubagentMaxTurns,
   resolveModelTransportTimeouts,
 } from './config';
@@ -187,5 +188,39 @@ describe('resolveStreamLimits', () => {
     expect(resolveStreamLimits({ maxToolCallArgBytesByTool: { create_file: 0 } })).toEqual({
       maxToolCallArgBytesByTool: { create_file: 0 },
     });
+  });
+});
+
+describe('resolveToolOutputReferences', () => {
+  it('enables the registry without limits when none are configured, so SDK defaults apply', () => {
+    expect(resolveToolOutputReferences(undefined)).toEqual({ enabled: true });
+    expect(resolveToolOutputReferences({} as TAgentsEndpoint)).toEqual({ enabled: true });
+    expect(resolveToolOutputReferences({ toolOutputReferences: {} } as TAgentsEndpoint)).toEqual({
+      enabled: true,
+    });
+  });
+
+  it('passes both configured limits to the SDK', () => {
+    const config = {
+      toolOutputReferences: { maxOutputSize: 1_000_000, maxTotalSize: 2_000_000 },
+    } as TAgentsEndpoint;
+    expect(resolveToolOutputReferences(config)).toEqual({
+      enabled: true,
+      maxOutputSize: 1_000_000,
+      maxTotalSize: 2_000_000,
+    });
+  });
+
+  it('passes each limit independently, omitting the unset one', () => {
+    expect(
+      resolveToolOutputReferences({
+        toolOutputReferences: { maxOutputSize: 600_000 },
+      } as TAgentsEndpoint),
+    ).toEqual({ enabled: true, maxOutputSize: 600_000 });
+    expect(
+      resolveToolOutputReferences({
+        toolOutputReferences: { maxTotalSize: 3_000_000 },
+      } as TAgentsEndpoint),
+    ).toEqual({ enabled: true, maxTotalSize: 3_000_000 });
   });
 });

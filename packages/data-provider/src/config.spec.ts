@@ -216,6 +216,35 @@ describe('agent model response timeouts', () => {
   });
 });
 
+describe('tool output reference limits', () => {
+  it('leaves the limits unset by default so the agents SDK defaults apply', () => {
+    expect(agentsEndpointSchema.parse({}).toolOutputReferences).toBeUndefined();
+  });
+
+  it('accepts explicit per-output and per-run limits, together or alone', () => {
+    expect(
+      agentsEndpointSchema.parse({
+        toolOutputReferences: { maxOutputSize: 1_000_000, maxTotalSize: 2_000_000 },
+      }).toolOutputReferences,
+    ).toEqual({ maxOutputSize: 1_000_000, maxTotalSize: 2_000_000 });
+    expect(
+      agentsEndpointSchema.parse({ toolOutputReferences: { maxOutputSize: 600_000 } })
+        .toolOutputReferences,
+    ).toEqual({ maxOutputSize: 600_000 });
+  });
+
+  it('rejects zero, negative, and fractional limits', () => {
+    for (const value of [0, -1, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ toolOutputReferences: { maxOutputSize: value } }).success,
+      ).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ toolOutputReferences: { maxTotalSize: value } }).success,
+      ).toBe(false);
+    }
+  });
+});
+
 describe('repository instruction configuration', () => {
   it('defaults optional reads to two seconds and bounds operator overrides', () => {
     expect(agentsEndpointSchema.parse({}).repositoryInstructions).toBeUndefined();

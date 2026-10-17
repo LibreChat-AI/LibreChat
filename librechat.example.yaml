@@ -764,6 +764,14 @@ endpoints:
   #   # cut off; entries here merge over (and can replace) that default.
   #   maxToolCallArgBytesByTool:
   #     create_file: 131072
+  #   # (optional) Limits for the stored raw tool outputs that bash_tool can substitute via
+  #   # {{tool<idx>turn<turn>}} (runs with code execution). Each output is cut to maxOutputSize
+  #   # characters, keeping its start; the oldest are evicted once a run's total passes
+  #   # maxTotalSize. Defaults: 400000 per output, twice that per run (the SDK caps the total at
+  #   # 5000000). Very large values make substituted shell commands correspondingly large.
+  #   toolOutputReferences:
+  #     maxOutputSize: 400000
+  #     maxTotalSize: 800000
   #   # (optional) Disable the builder interface for agents
   #   disableBuilder: false
   #   # (optional) When conversation titles are generated:
