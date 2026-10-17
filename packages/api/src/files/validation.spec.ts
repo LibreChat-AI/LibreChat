@@ -2,6 +2,19 @@ import { Providers } from '@librechat/agents';
 import { mbToBytes } from 'librechat-data-provider';
 import { validatePdf, validateBedrockDocument, validateVideo, validateAudio } from './validation';
 
+const mockGetDocument = jest.fn();
+/** pdfjs ships as ESM only, which Jest cannot load here; the page count itself is pdfjs's job. */
+jest.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({ getDocument: mockGetDocument }), {
+  virtual: true,
+});
+
+beforeEach(() => {
+  mockGetDocument.mockReset().mockReturnValue({
+    promise: Promise.resolve({ numPages: 1 }),
+    destroy: jest.fn().mockResolvedValue(undefined),
+  });
+});
+
 describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
   /** Helper to create a PDF buffer with valid header */
   const createMockPdfBuffer = (sizeInMB: number): Buffer => {
@@ -142,6 +155,109 @@ describe('PDF Validation with fileConfig.endpoints.*.fileSizeLimit', () => {
 
       expect(result.isValid).toBe(false);
       expect(result.error).toContain('too small');
+    });
+  });
+
+  describe('validatePdf - Anthropic page limit', () => {
+    const provider = Providers.ANTHROPIC;
+    /** Page counts are cached by content, so every test gets its own bytes. */
+    let pdfId = 0;
+    let pdfBuffer: Buffer;
+    beforeEach(() => {
+      pdfBuffer = Buffer.from(`%PDF-1.7\n% test ${++pdfId}\n`, 'latin1');
+    });
+
+    const parsesWithPages = (numPages: number) =>
+      mockGetDocument.mockReturnValue({
+        promise: Promise.resolve({ numPages }),
+        destroy: jest.fn().mockResolvedValue(undefined),
+      });
+
+    it('should use the parsed page count, not raw /Type /Page matches', async () => {
+      // An incremental update leaves superseded page objects in the file.
+      const resaved = Buffer.from(`%PDF-1.7\n${'<< /Type /Page >>\n'.repeat(106)}`, 'latin1');
+      parsesWithPages(86);
+
+      const result = await validatePdf(resaved, resaved.length, provider);
+
+      expect(result.isValid).toBe(true);
+      expect(mockGetDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ isEvalSupported: false }),
+      );
+    });
+
+    it('should reject more than 100 pages on a 200k-context model', async () => {
+      parsesWithPages(101);
+      const result = await validatePdf(
+        pdfBuffer,
+        pdfBuffer.length,
+        provider,
+        undefined,
+        'claude-haiku-4-5',
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.error).toBe("PDF has 101 pages, exceeding Anthropic's 100-page limit");
+    });
+
+    it('should apply the 100-page limit when the model is unknown', async () => {
+      parsesWithPages(101);
+      const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider);
+
+      expect(result.isValid).toBe(false);
+      expect(result.error).toContain('100-page limit');
+    });
+
+    it('should accept up to 600 pages on a 1M-context model', async () => {
+      parsesWithPages(600);
+      const result = await validatePdf(
+        pdfBuffer,
+        pdfBuffer.length,
+        provider,
+        undefined,
+        'claude-opus-5-5',
+      );
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it('should reject more than 600 pages on a 1M-context model', async () => {
+      parsesWithPages(601);
+      const result = await validatePdf(
+        pdfBuffer,
+        pdfBuffer.length,
+        provider,
+        undefined,
+        'claude-opus-5-5',
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.error).toBe("PDF has 601 pages, exceeding Anthropic's 600-page limit");
+    });
+
+    it('should parse each PDF only once across repeated validations', async () => {
+      parsesWithPages(101);
+
+      const first = await validatePdf(pdfBuffer, pdfBuffer.length, provider);
+      const second = await validatePdf(pdfBuffer, pdfBuffer.length, provider);
+
+      expect(first).toEqual(second);
+      expect(second.isValid).toBe(false);
+      expect(mockGetDocument).toHaveBeenCalledTimes(1);
+    });
+
+    it('should leave the page limit to the provider when the PDF cannot be parsed', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mockGetDocument.mockReturnValue({
+        promise: Promise.reject(new Error('Invalid PDF structure.')),
+        destroy: jest.fn().mockResolvedValue(undefined),
+      });
+
+      const result = await validatePdf(pdfBuffer, pdfBuffer.length, provider);
+
+      expect(result.isValid).toBe(true);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
     });
   });
 
