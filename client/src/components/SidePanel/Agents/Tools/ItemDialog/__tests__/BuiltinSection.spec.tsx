@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/extend-expect';
-import { MemoryScope } from 'librechat-data-provider';
 import { useForm, FormProvider, useWatch } from 'react-hook-form';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryScope, ArtifactModes } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { AgentForm } from '~/common';
 import BuiltinSection from '../sections/BuiltinSection';
@@ -107,5 +107,39 @@ describe('BuiltinSection Run Code settings', () => {
     expect(screen.getByTestId('stateful-code-environment')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_agent_git_name')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_agent_git_email')).toBeInTheDocument();
+  });
+});
+
+describe('BuiltinSection artifacts mode docs link', () => {
+  const docsLink = () => screen.queryByRole('link', { name: 'com_ui_artifacts_mode_custom_docs' });
+
+  test('links Custom mode to the custom instructions docs in a new tab', () => {
+    renderSection('artifacts', { artifacts: ArtifactModes.CUSTOM });
+
+    const link = docsLink();
+    expect(link).toHaveAttribute(
+      'href',
+      'https://www.librechat.ai/docs/features/artifacts#custom-instructions',
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).toHaveTextContent('com_ui_learn_more');
+    expect(screen.getByText(/com_ui_artifacts_mode_custom_info/)).toContainElement(link);
+  });
+
+  test.each([ArtifactModes.DEFAULT, ArtifactModes.SHADCNUI])(
+    'shows no docs link for the %s mode',
+    (mode) => {
+      renderSection('artifacts', { artifacts: mode });
+      expect(docsLink()).toBeNull();
+    },
+  );
+
+  test('shows the link after switching to Custom', () => {
+    renderSection('artifacts', { artifacts: ArtifactModes.DEFAULT });
+    expect(docsLink()).toBeNull();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'com_ui_artifacts_mode_custom' }));
+    expect(docsLink()).toBeInTheDocument();
   });
 });
