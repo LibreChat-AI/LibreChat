@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
+  escapeRegExp,
   messagesView,
   modelSelectorTrigger,
   NEW_CHAT_PATH,
@@ -16,7 +17,8 @@ async function selectGeminiModel(page: Page, model: string) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   await modelSelectorTrigger(page).click();
   await page.getByRole('option', { name: 'Mock Gemini' }).click();
-  const option = page.getByRole('option', { name: model, exact: true });
+  /** On mobile the option's accessible name also carries its pin button. */
+  const option = page.getByRole('option', { name: new RegExp(`^${escapeRegExp(model)}( Pin)?$`) });
   await expect(option).toBeVisible({ timeout: 10000 });
   await option.click();
 }
