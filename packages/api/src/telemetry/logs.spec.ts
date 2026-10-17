@@ -53,4 +53,16 @@ describe('logs transport lifecycle', () => {
     expect(countOtelTransports()).toBe(0);
     expect(logger.transports).not.toContain(transport);
   });
+
+  it('drops the formatted timestamp string; the log record carries its own time', () => {
+    attachLogsTransport(getTelemetryConfig({ OTEL_LOGS_ENABLED: 'true' }));
+    const info = getLogsTransport()?.format?.transform({
+      level: 'warn',
+      message: 'hello',
+      [Symbol.for('level')]: 'warn',
+    });
+
+    expect(info).toMatchObject({ level: 'warn', message: 'hello' });
+    expect(info).not.toHaveProperty('timestamp');
+  });
 });

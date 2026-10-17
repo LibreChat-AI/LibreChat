@@ -5,6 +5,7 @@ import type { MongoServerError, ValidationError, CustomError } from '~/types';
 import { MCPAuthenticationRefreshError, MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { buildTenantIsolationErrorLogContext } from './auth';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
+import { reportError } from '~/errorReporting';
 
 const handleDuplicateKeyError = (err: MongoServerError, res: Response) => {
   logger.warn('Duplicate key error: ' + (err.errmsg || err.message));
@@ -128,9 +129,11 @@ export const ErrorController = (
     } else {
       logger.error('ErrorController => error', err);
     }
+    reportError(err, { source: 'express', path: req.originalUrl });
     return res.status(500).send('An unknown error occurred.');
   } catch (processingError) {
     logger.error('ErrorController => processing error', processingError);
+    reportError(processingError, { source: 'express', path: req.originalUrl });
     return res.status(500).send('Processing error in ErrorController.');
   }
 };
