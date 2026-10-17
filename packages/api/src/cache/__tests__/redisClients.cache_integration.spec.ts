@@ -106,6 +106,29 @@ describe('redisClients Integration Tests', () => {
         await testRedisOperations(ioredisClient!, 'ioredis-cluster');
       });
     });
+
+    describe('address family', () => {
+      test('should accept either address family on a single instance', async () => {
+        process.env.USE_REDIS_CLUSTER = 'false';
+        process.env.REDIS_URI = 'redis://127.0.0.1:6379';
+
+        const clients = await import('../redisClients');
+        ioredisClient = clients.ioredisClient;
+
+        expect(ioredisClient!.options).toMatchObject({ family: 0 });
+      });
+
+      test('should accept either address family on cluster nodes', async () => {
+        process.env.USE_REDIS_CLUSTER = 'true';
+        process.env.REDIS_URI =
+          'redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003';
+
+        const clients = await import('../redisClients');
+        ioredisClient = clients.ioredisClient;
+
+        expect(ioredisClient!.options).toMatchObject({ redisOptions: { family: 0 } });
+      });
+    });
   });
 
   describe('keyvRedisClient Tests', () => {
