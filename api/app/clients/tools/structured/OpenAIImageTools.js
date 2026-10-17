@@ -11,6 +11,8 @@ const {
   extractBaseURL,
   getProxyDispatcher,
   applyAxiosProxyConfig,
+  appendImageEditOptions,
+  resolveImageOutputFormat,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getFiles } = require('~/models');
@@ -136,16 +138,11 @@ function createOpenAIImageTools(fields = {}) {
 
       /** @type {OpenAI} */
       const openai = new OpenAI(clientConfig);
-      let output_format = imageOutputType;
-      if (
-        background === 'transparent' &&
-        output_format !== EImageOutputType.PNG &&
-        output_format !== EImageOutputType.WEBP
-      ) {
+      const output_format = resolveImageOutputFormat(background, imageOutputType);
+      if (output_format !== imageOutputType) {
         logger.warn(
           '[ImageGenOAI] Transparent background requires PNG or WebP format, defaulting to PNG',
         );
-        output_format = EImageOutputType.PNG;
       }
 
       let resp;
@@ -231,7 +228,10 @@ Error Message: ${error.message}`);
    * Image Editing Tool
    */
   const imageEditTool = tool(
-    async ({ prompt, image_ids, quality = 'auto', size = 'auto' }, runnableConfig) => {
+    async (
+      { prompt, image_ids, background = 'auto', quality = 'auto', size = 'auto' },
+      runnableConfig,
+    ) => {
       if (!prompt) {
         throw new Error('Missing required field: prompt');
       }
@@ -250,8 +250,12 @@ Error Message: ${error.message}`);
       // TODO: `mask` support
       // TODO: more than 1 image support
       // formData.append('n', n.toString());
-      formData.append('quality', quality);
-      formData.append('size', size);
+      const output_format = appendImageEditOptions(formData, {
+        background,
+        configuredOutputFormat: imageOutputType,
+        quality,
+        size,
+      });
 
       /** @type {Record<FileSources, undefined | NodeStreamDownloader<File>>} */
       const streamMethods = {};
@@ -380,7 +384,7 @@ Error Message: ${error.message}`);
           {
             type: ContentTypes.IMAGE_URL,
             image_url: {
-              url: `data:image/${imageOutputType};base64,${base64Image}`,
+              url: `data:image/${output_format};base64,${base64Image}`,
             },
           },
         ];

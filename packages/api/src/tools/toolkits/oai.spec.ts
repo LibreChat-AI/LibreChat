@@ -1,4 +1,11 @@
-import { oaiToolkit, IMAGE_SIZE_PATTERN } from './oai';
+import FormData from 'form-data';
+
+import {
+  appendImageEditOptions,
+  IMAGE_SIZE_PATTERN,
+  oaiToolkit,
+  resolveImageOutputFormat,
+} from './oai';
 
 const sizeSchemas = [
   ['image_gen_oai', oaiToolkit.image_gen_oai.schema.properties?.size],
@@ -33,4 +40,63 @@ describe('OpenAI image toolkit size schema', () => {
       expect(pattern.test(value)).toBe(false);
     },
   );
+});
+
+describe('OpenAI image toolkit background schema', () => {
+  const backgroundSchemas = [
+    ['image_gen_oai', oaiToolkit.image_gen_oai.schema.properties?.background],
+    ['image_edit_oai', oaiToolkit.image_edit_oai.schema.properties?.background],
+  ] as const;
+
+  it.each(backgroundSchemas)('%s exposes the supported background modes', (_name, background) => {
+    expect(background?.enum).toEqual(['transparent', 'opaque', 'auto']);
+  });
+});
+
+describe('resolveImageOutputFormat', () => {
+  it.each(['png', 'webp'])('preserves %s for transparent backgrounds', (outputFormat) => {
+    expect(resolveImageOutputFormat('transparent', outputFormat)).toBe(outputFormat);
+  });
+
+  it('defaults transparent backgrounds to PNG for incompatible output formats', () => {
+    expect(resolveImageOutputFormat('transparent', 'jpeg')).toBe('png');
+  });
+
+  it.each(['auto', 'opaque'])(
+    'preserves the configured output format for %s backgrounds',
+    (background) => {
+      expect(resolveImageOutputFormat(background, 'jpeg')).toBe('jpeg');
+    },
+  );
+});
+
+describe('appendImageEditOptions', () => {
+  it('sends a transparent background with a compatible output format', () => {
+    const formData = new FormData();
+
+    const outputFormat = appendImageEditOptions(formData, {
+      background: 'transparent',
+      configuredOutputFormat: 'jpeg',
+    });
+
+    const body = formData.getBuffer().toString('utf8');
+    expect(outputFormat).toBe('png');
+    expect(body).toMatch(/name="background"[\s\S]*?transparent/);
+    expect(body).toMatch(/name="output_format"[\s\S]*?png/);
+    expect(body).toMatch(/name="quality"[\s\S]*?auto/);
+    expect(body).toMatch(/name="size"[\s\S]*?auto/);
+  });
+
+  it('omits the default background and preserves the configured output format', () => {
+    const formData = new FormData();
+
+    const outputFormat = appendImageEditOptions(formData, {
+      configuredOutputFormat: 'webp',
+    });
+
+    const body = formData.getBuffer().toString('utf8');
+    expect(outputFormat).toBe('webp');
+    expect(body).not.toContain('name="background"');
+    expect(body).toMatch(/name="output_format"[\s\S]*?webp/);
+  });
 });
