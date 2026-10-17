@@ -7,8 +7,14 @@ import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
 import AskOptions from '~/components/Chat/ask/options';
 import { splitOtherOption } from '~/utils/approval';
 import { AutoHeight } from '~/components/ui';
+import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+
+/** Batches whose arrival already placed focus. A batch remounts when it moves
+ *  between the composer popover and the chat card; only its first arrival may
+ *  take focus, or every move would pull the user back onto its options. */
+const arrivalFocused = new Set<string>();
 
 /**
  * One bounded batch of `ask_user_question` items, presented a single question at
@@ -21,10 +27,14 @@ export default function AskUserQuestions({
   questions,
   className,
   headerAction,
+  focusOnArrival = false,
 }: {
   actionId: string;
   questions: Agents.AskUserQuestionBatchItem[];
   className?: string;
+  /** This surface is the live pause's visible one, so the batch arriving may
+   *  take focus. A Share view or a hidden footprint copy leaves it alone. */
+  focusOnArrival?: boolean;
   /** The surface's own control (move to chat, move back), set in the
    *  question's header row so it shares the form's inset. */
   headerAction?: ReactNode;
@@ -36,8 +46,9 @@ export default function AskUserQuestions({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stepRef = useRef<HTMLFieldSetElement>(null);
-  /** Set only when a choice click is about to unmount the button that owns
-   *  focus, which would otherwise drop focus to <body> mid-batch. */
+  const answerRef = useRef<HTMLInputElement>(null);
+  /** Set only when a choice click or an Enter is about to swap the step out
+   *  from under focus, which would otherwise drop focus to <body> mid-batch. */
   const refocusRef = useRef(false);
 
   const total = questions.length;
@@ -69,6 +80,33 @@ export default function AskUserQuestions({
     [activeIndex, goToStep, selectOption, total],
   );
 
+  /**
+   * Focus the step's control that is ready to answer: its picked option, else
+   * the answer field. Each is labelled within the step, so a screen reader
+   * still announces the new question. The step itself is the fallback when
+   * every control is locked.
+   *
+   * An unpicked option is only a target on arrival (`firstOption`). After a
+   * step change the key that caused it may still be down: a held or
+   * double-tapped Enter on a focused option is its click, which would pick it,
+   * advance again, and on the last step confirm the pick and submit the batch.
+   */
+  const focusStep = useCallback(
+    ({ firstOption = false, ...options }: FocusOptions & { firstOption?: boolean } = {}) => {
+      const step = stepRef.current;
+      if (step == null) {
+        return;
+      }
+      const target =
+        step.querySelector<HTMLElement>('button[data-selected]:not(:disabled)') ??
+        (firstOption ? step.querySelector<HTMLElement>('button:not(:disabled)') : null) ??
+        (answerRef.current?.disabled === false ? answerRef.current : null) ??
+        step;
+      target.focus(options);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (scrollRef.current != null) {
       scrollRef.current.scrollTop = 0;
@@ -77,8 +115,36 @@ export default function AskUserQuestions({
       return;
     }
     refocusRef.current = false;
-    stepRef.current?.focus();
-  }, [activeIndex]);
+    focusStep();
+  }, [activeIndex, focusStep]);
+
+  /**
+   * An arriving batch puts the user on the first question's controls, but
+   * only when focus is idle — nowhere, or the empty composer that just sent
+   * the turn — so a draft or any other control the user is in keeps focus.
+   * It happens once per batch: moving it between the popover and the chat
+   * remounts it, and that is not a new arrival.
+   */
+  useEffect(() => {
+    if (!focusOnArrival || form.locked || arrivalFocused.has(actionId)) {
+      return;
+    }
+    const active = document.activeElement;
+    const idle =
+      active == null ||
+      active === document.body ||
+      (active instanceof HTMLTextAreaElement &&
+        active.id === mainTextareaId &&
+        active.value.trim().length === 0);
+    if (!idle) {
+      return;
+    }
+    focusStep({ firstOption: true, preventScroll: true });
+    if (stepRef.current?.contains(document.activeElement) === true) {
+      arrivalFocused.add(actionId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- arrival only
+  }, []);
 
   if (form.status === 'submitted') {
     return null;
@@ -107,6 +173,18 @@ export default function AskUserQuestions({
     selected.includes(option.value) ? [optionIndex] : [],
   );
   const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
+
+  /** Confirm the current answer: the next step, or the batch on the last one. */
+  const confirmStep = () => {
+    if (!isLastStep) {
+      if (!navLocked) {
+        refocusRef.current = true;
+        goToStep(activeIndex + 1);
+      }
+      return;
+    }
+    form.submit();
+  };
 
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
@@ -188,6 +266,25 @@ export default function AskUserQuestions({
             tabIndex={-1}
             aria-labelledby={promptId}
             className="flex flex-col gap-2 pt-3 outline-hidden"
+            onKeyDown={(event) => {
+              /* Picking and confirming stay separate (WCAG 3.2.2): Enter on an
+                 option is its click, so a pick never submits by itself. Enter
+                 on the single-select option that is ALREADY the answer confirms
+                 it — the next step, or the batch — like Enter in the field. */
+              const target = event.target;
+              if (
+                event.key !== 'Enter' ||
+                event.shiftKey ||
+                event.altKey ||
+                question.multiSelect === true ||
+                !(target instanceof HTMLButtonElement) ||
+                target.getAttribute('aria-pressed') !== 'true'
+              ) {
+                return;
+              }
+              event.preventDefault();
+              confirmStep();
+            }}
           >
             {choices.length > 0 && (
               <AskOptions
@@ -204,31 +301,28 @@ export default function AskUserQuestions({
               />
             )}
             <Input
+              ref={answerRef}
               value={text}
               disabled={form.locked}
               onChange={(event) => form.setText(question, event.target.value)}
               onKeyDown={(event) => {
                 /* The composer popover sits inside the chat form, where Enter in a
                    single-line field would submit the composer draft instead.
-                   Enter confirms this answer: the next step, or the batch. An Enter that
-                   confirms an IME composition is left alone, with the same Safari
-                   fallback as the composer. */
+                   Enter (or Ctrl/Cmd+Enter) confirms this answer: the next step,
+                   or the batch. Shift+Enter never submits, as in the composer. An
+                   Enter that confirms an IME composition is left alone, with the
+                   same Safari fallback as the composer. */
                 if (
                   event.key !== 'Enter' ||
+                  event.shiftKey ||
+                  event.altKey ||
                   event.nativeEvent.isComposing ||
                   event.nativeEvent.keyCode === 229
                 ) {
                   return;
                 }
                 event.preventDefault();
-                if (!isLastStep) {
-                  if (!navLocked) {
-                    refocusRef.current = true;
-                    goToStep(activeIndex + 1);
-                  }
-                  return;
-                }
-                form.submit();
+                confirmStep();
               }}
               placeholder={otherLabel ?? localize('com_ui_your_answer')}
               aria-label={`${question.question} ${localize('com_ui_your_answer')}`}

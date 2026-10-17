@@ -1,15 +1,20 @@
 import { useContext, useMemo, useState } from 'react';
+import { useRecoilValue } from 'recoil';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import type { KeyboardEvent } from 'react';
 import type { Agents } from 'librechat-data-provider';
 import { useApprovalContext, useAskSubmitStatus, useResumeSubmit } from './ApprovalContext';
 import { splitOtherOption, ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
+import useComposerBindings from '~/hooks/Input/useComposerBindings';
+import { cn, forceResize, insertTextAtCursor } from '~/utils';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskOptions from '~/components/Chat/ask/options';
+import { resolveComposerKeyDown } from '~/utils/shortcuts';
 import { ChatContext } from '~/Providers/ChatContext';
 import AskUserQuestions from './AskUserQuestions';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import store from '~/store';
 
 /**
  * Renders an `ask_user_question` pause: the prompt, optional description, any
@@ -81,6 +86,7 @@ function AskUserQuestionsCard({
       <AskUserQuestions
         actionId={actionId}
         questions={questions}
+        focusOnArrival={live}
         headerAction={
           onExpand != null && (
             <TooltipAnchor
@@ -122,6 +128,8 @@ function AskUserQuestionSingle({
   const { submitAskAnswer } = useResumeSubmit();
   const [answer, setAnswer] = useState(() => getAskAnswerDraft(actionId));
   const [localChecked, setLocalChecked] = useState<number[]>([]);
+  const enterToSend = useRecoilValue(store.enterToSend);
+  const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
   /**
    * The composer popover is the primary answer surface — while it's VISIBLE
    * for this pause, rendering the card too duplicates the question. The card
@@ -217,6 +225,38 @@ function AskUserQuestionSingle({
   };
 
   /**
+   * The answer box follows the composer's Enter table, so the user's
+   * Enter-to-send preference and any rebound submit chord apply here too. The
+   * run is paused on this question rather than generating, so it resolves as
+   * idle: Ctrl/Cmd+Enter must submit the answer, not reach the during-run
+   * steer/queue actions.
+   */
+  const handleAnswerKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const action = resolveComposerKeyDown(e.nativeEvent, {
+      isComposing: e.nativeEvent.isComposing || e.key === 'Process' || e.keyCode === 229,
+      isSubmitting: false,
+      allowSubmitWhileGenerating: false,
+      hasDuringRunModifier: false,
+      shortcutsEnabled,
+      enterToSend,
+      submitOverride,
+      yieldedChords,
+    });
+    if (action === 'none') {
+      return;
+    }
+    e.preventDefault();
+    if (action === 'newline') {
+      insertTextAtCursor(e.currentTarget, '\n');
+      forceResize(e.currentTarget);
+      return;
+    }
+    if (action === 'submit' && canSubmit && !locked) {
+      submitCombined();
+    }
+  };
+
+  /**
    * The live card shares its view-transition-name with the popover panel, so
    * collapse/expand morphs one surface into the other. The placeholder copy
    * is `visibility: hidden` (out of the tab order and the a11y tree) and
@@ -284,6 +324,7 @@ function AskUserQuestionSingle({
           setAnswerValue(e.target.value);
           setAskAnswerDraft(actionId, e.target.value);
         }}
+        onKeyDown={handleAnswerKeyDown}
         minRows={2}
         maxRows={12}
         placeholder={otherLabel ?? localize('com_ui_your_answer')}
