@@ -746,6 +746,30 @@ describe('Skill CRUD methods', () => {
     await expect(methods.createSkill(makeSkillInput())).rejects.toBeDefined();
   });
 
+  it('accepts a hex string author and stores it as an ObjectId', async () => {
+    const hexAuthor = new mongoose.Types.ObjectId().toHexString();
+    const { skill } = await methods.createSkill(
+      makeSkillInput({ name: 'hex-author-skill', author: hexAuthor }),
+    );
+    expect(skill.author).toBeInstanceOf(mongoose.Types.ObjectId);
+    expect(skill.author.toHexString()).toBe(hexAuthor);
+  });
+
+  it('enforces name uniqueness per author across ObjectId and string forms', async () => {
+    const hexAuthor = new mongoose.Types.ObjectId().toHexString();
+    await methods.createSkill(
+      makeSkillInput({ name: 'mixed-author-form-skill', author: hexAuthor }),
+    );
+    await expect(
+      methods.createSkill(
+        makeSkillInput({
+          name: 'mixed-author-form-skill',
+          author: new mongoose.Types.ObjectId(hexAuthor),
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it('throws with validation issues on bad input', async () => {
     await expect(methods.createSkill(makeSkillInput({ name: 'BAD NAME' }))).rejects.toMatchObject({
       code: 'SKILL_VALIDATION_FAILED',

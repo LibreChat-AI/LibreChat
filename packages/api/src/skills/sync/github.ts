@@ -861,7 +861,7 @@ function makeCreateInput(
     ...(update as Omit<UpdateSkillInput, 'source'>),
     name: update.name ?? fallbackName,
     description: update.description ?? fallbackName,
-    author: new Types.ObjectId(makeSourceAuthorId(PROVIDER, source.id, source.tenantId)),
+    author: makeSourceAuthorId(PROVIDER, source.id, source.tenantId),
     authorName: SYSTEM_AUTHOR_NAME,
     source: PROVIDER,
     tenantId: source.tenantId,

@@ -1,5 +1,5 @@
-import { Types } from 'mongoose';
 import { createHash } from 'node:crypto';
+import { isValidObjectIdString } from '@librechat/data-schemas';
 import { makeSourceAuthorId } from './author';
 
 describe('makeSourceAuthorId', () => {
@@ -44,9 +44,9 @@ describe('makeSourceAuthorId', () => {
     expect(makeSourceAuthorId('github', 'librechat-skills', 'tenant-1')).toBe(expected);
   });
 
-  it('produces a value usable as a mongoose ObjectId', () => {
+  it('produces a valid 24-hex ObjectId string', () => {
     const id = makeSourceAuthorId('github', 'librechat-skills', 'tenant-1');
-    expect(new Types.ObjectId(id).toHexString()).toBe(id);
+    expect(isValidObjectIdString(id)).toBe(true);
   });
 
   it('throws when provider contains ":"', () => {
