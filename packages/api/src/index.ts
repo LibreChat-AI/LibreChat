@@ -5,6 +5,7 @@ export * from './acl/middleware';
 export * from './acl/principals';
 export * from './acl/search';
 export * from './credentials';
+export * from './errorReporting';
 /* Artifacts */
 export * from './artifacts';
 /* Admin */
