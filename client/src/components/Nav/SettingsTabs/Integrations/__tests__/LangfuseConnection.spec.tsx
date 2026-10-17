@@ -6,15 +6,23 @@ const mockGet = jest.fn();
 const mockUpdate = jest.fn();
 const mockTest = jest.fn();
 const mockUpdatePromptSync = jest.fn();
+const mockSyncPrompts = jest.fn();
 const mockRefetch = jest.fn();
+const mockShowToast = jest.fn();
 // Mutable so a test can simulate an in-flight mutation; `jest.mock` factories may only
 // reference identifiers whose name starts with `mock`.
 let mockUpdateIsLoading = false;
 let mockPromptSyncIsLoading = false;
+let mockSyncIsLoading = false;
+let mockTestIsLoading = false;
 const destinationLabels = {
   eu: 'eu - https://cloud.langfuse.com',
   us: 'us - https://us.cloud.langfuse.com',
 };
+
+function axiosError(outerStatus: number, data: { code: string; status?: number }) {
+  return { isAxiosError: true, response: { status: outerStatus, data } };
+}
 
 async function selectDestination(destination: keyof typeof destinationLabels) {
   await userEvent.click(screen.getByTestId('langfuse-destination'));
@@ -27,20 +35,25 @@ jest.mock('~/data-provider', () => ({
     mutate: mockUpdate,
     isLoading: mockUpdateIsLoading,
   }),
-  useTestLangfuseConnectionMutation: () => ({ mutate: mockTest, isLoading: false }),
+  useTestLangfuseConnectionMutation: () => ({ mutate: mockTest, isLoading: mockTestIsLoading }),
   useUpdateLangfusePromptSyncMutation: () => ({
     mutate: mockUpdatePromptSync,
     isLoading: mockPromptSyncIsLoading,
   }),
+  useSyncLangfusePromptsMutation: () => ({
+    mutate: mockSyncPrompts,
+    isLoading: mockSyncIsLoading,
+  }),
 }));
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => (key: string, vars?: Record<string, unknown>) =>
+    vars ? `${key} ${JSON.stringify(vars)}` : key,
 }));
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
-  useToastContext: () => ({ showToast: jest.fn() }),
+  useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
 // Covered on its own in LangfusePromptsDialog.spec.tsx; stubbed here so these tests do not
@@ -62,10 +75,14 @@ beforeEach(() => {
   mockUpdate.mockReset();
   mockTest.mockReset();
   mockUpdatePromptSync.mockReset();
+  mockSyncPrompts.mockReset();
   mockRefetch.mockReset();
+  mockShowToast.mockReset();
   mockPromptsDialog.mockClear();
   mockUpdateIsLoading = false;
   mockPromptSyncIsLoading = false;
+  mockSyncIsLoading = false;
+  mockTestIsLoading = false;
   mockTest.mockImplementation((_payload, options) => {
     options?.onSuccess?.({ success: true });
   });
@@ -873,5 +890,196 @@ describe('LangfuseConnection', () => {
     render(<LangfuseConnection />);
 
     expect(screen.getByRole('button', { name: 'com_ui_langfuse_enable' })).toBeDisabled();
+  });
+
+  function withPromptSyncEnabled() {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: true },
+      },
+    });
+  }
+
+  it('hides the Sync prompts button when prompt sync is disabled', () => {
+    mockGet.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: mockRefetch,
+      data: {
+        configured: false,
+        enabled: false,
+        destinations: [],
+        promptSync: { available: true, enabled: false },
+      },
+    });
+
+    render(<LangfuseConnection />);
+
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the Sync prompts button when prompt sync is enabled', () => {
+    withPromptSyncEnabled();
+
+    render(<LangfuseConnection />);
+
+    expect(
+      screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }),
+    ).toBeInTheDocument();
+  });
+
+  it('calls the sync mutation when the Sync prompts button is clicked', async () => {
+    withPromptSyncEnabled();
+
+    render(<LangfuseConnection />);
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }));
+
+    expect(mockSyncPrompts).toHaveBeenCalledWith(undefined, expect.any(Object));
+  });
+
+  it('shows a success toast with the three counts after a sync completes', async () => {
+    mockSyncPrompts.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({ created: 1, unchanged: 2, skipped: 3 });
+    });
+    withPromptSyncEnabled();
+
+    render(<LangfuseConnection />);
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }));
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_langfuse_prompt_sync_result {"0":1,"1":2,"2":3}',
+      status: 'success',
+    });
+  });
+
+  it('shows a mapped error toast for an already-running sync', async () => {
+    mockSyncPrompts.mockImplementation((_payload, options) => {
+      options?.onError?.(axiosError(409, { code: 'already_running' }));
+    });
+    withPromptSyncEnabled();
+
+    render(<LangfuseConnection />);
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }));
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_langfuse_prompt_error_already_running',
+      status: 'error',
+    });
+  });
+
+  it('falls back to a generic error toast for an unmapped sync error code', async () => {
+    mockSyncPrompts.mockImplementation((_payload, options) => {
+      options?.onError?.(axiosError(500, { code: 'something_unexpected' }));
+    });
+    withPromptSyncEnabled();
+
+    render(<LangfuseConnection />);
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }));
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_langfuse_prompt_error_fallback',
+      status: 'error',
+    });
+  });
+
+  it('disables the Sync prompts button and the switch while a sync is in flight, announcing the loading state', () => {
+    withPromptSyncEnabled();
+    mockSyncIsLoading = true;
+
+    render(<LangfuseConnection />);
+
+    // The accessible name tracks the visible label (no static aria-label pins it to the
+    // idle text), so assistive tech hears the loading state too.
+    expect(
+      screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_running' }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('switch')).toBeDisabled();
+  });
+
+  it('disables the Save button and the destination and key inputs while a sync is in flight', async () => {
+    const { rerender } = render(<LangfuseConnection />);
+    await selectDestination('us');
+    fireEvent.change(screen.getByLabelText('com_ui_langfuse_public_key'), {
+      target: { value: 'pk-lf-1' },
+    });
+    fireEvent.change(screen.getByLabelText(/com_ui_langfuse_secret_key/), {
+      target: { value: 'sk-lf-secret' },
+    });
+    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeEnabled();
+
+    mockSyncIsLoading = true;
+    rerender(<LangfuseConnection />);
+
+    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeDisabled();
+    expect(screen.getByTestId('langfuse-destination')).toBeDisabled();
+    expect(screen.getByLabelText('com_ui_langfuse_public_key')).toBeDisabled();
+    expect(screen.getByLabelText(/com_ui_langfuse_secret_key/)).toBeDisabled();
+  });
+
+  it('disables the Sync prompts and Preview prompts buttons while the connection test is running', () => {
+    withPromptSyncEnabled();
+    mockTestIsLoading = true;
+
+    render(<LangfuseConnection />);
+
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' })).toBeDisabled();
+  });
+
+  it('disables the Sync prompts and Preview prompts buttons while a connection save is in flight', () => {
+    withPromptSyncEnabled();
+    mockUpdateIsLoading = true;
+
+    render(<LangfuseConnection />);
+
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' })).toBeDisabled();
+  });
+
+  it('disables the Sync prompts and Preview prompts buttons while a prompt-sync setting save is in flight', () => {
+    withPromptSyncEnabled();
+    mockPromptSyncIsLoading = true;
+
+    render(<LangfuseConnection />);
+
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' })).toBeDisabled();
+  });
+
+  it('disables the Preview prompts button while a sync is running', () => {
+    withPromptSyncEnabled();
+    mockSyncIsLoading = true;
+
+    render(<LangfuseConnection />);
+
+    expect(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_open' })).toBeDisabled();
+  });
+
+  it('shows the forbidden copy in the toast when the sync mutation rejects with a 403', async () => {
+    mockSyncPrompts.mockImplementation((_payload, options) => {
+      options?.onError?.(axiosError(403, { code: 'unauthorized' }));
+    });
+    withPromptSyncEnabled();
+
+    render(<LangfuseConnection />);
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_langfuse_prompt_sync_run' }));
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_langfuse_prompt_error_forbidden',
+      status: 'error',
+    });
   });
 });

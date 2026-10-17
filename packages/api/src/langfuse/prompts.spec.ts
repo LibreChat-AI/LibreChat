@@ -146,6 +146,25 @@ describe('listLangfusePrompts', () => {
     expect(url).toBe('https://cloud.langfuse.test/api/public/v2/prompts');
   });
 
+  it('sends a text filter as URL-encoded JSON that decodes to the exact array', async () => {
+    const conn = makeConnection();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: [], meta: { page: 1, limit: 100, totalItems: 0, totalPages: 0 } }),
+    );
+
+    await listLangfusePrompts(conn, { type: 'text', limit: 100, page: 1 }, { timeoutMs: 5000 });
+
+    const [url] = fetchMock.mock.calls[0];
+    const parsedUrl = new URL(url as string);
+    expect(parsedUrl.searchParams.get('limit')).toBe('100');
+    expect(parsedUrl.searchParams.get('page')).toBe('1');
+    const filter = parsedUrl.searchParams.get('filter');
+    expect(filter).not.toBeNull();
+    expect(JSON.parse(filter as string)).toEqual([
+      { type: 'string', column: 'type', operator: '=', value: 'text' },
+    ]);
+  });
+
   it('sends tag, fromUpdatedAt and toUpdatedAt as given', async () => {
     const conn = makeConnection();
     fetchMock.mockResolvedValue(

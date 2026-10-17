@@ -109,6 +109,25 @@ function promptListBody() {
   };
 }
 
+function syncPromptItem(name: string, overrides: Record<string, unknown> = {}) {
+  return {
+    name,
+    type: 'text',
+    versions: [1],
+    labels: ['production'],
+    tags: [],
+    lastUpdatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function syncListBody(
+  items: Array<Record<string, unknown>>,
+  meta: { page: number; limit: number; totalItems: number; totalPages: number },
+) {
+  return { data: items, meta };
+}
+
 function mockReq(overrides = {}) {
   return {
     user: { id: 'u1', role: 'ADMIN', tenantId: 't1' },
@@ -169,6 +188,9 @@ function createHandlers(overrides = {}) {
       }),
     ),
     getMessages: jest.fn().mockResolvedValue([]),
+    syncPromptCatalog: jest
+      .fn()
+      .mockResolvedValue({ ok: true, value: { created: 0, unchanged: 0, skipped: 0 } }),
     invalidateConfigCaches: jest.fn().mockResolvedValue(undefined),
     recordConnectionUpdate: jest.fn(),
     ...overrides,
@@ -1657,7 +1679,7 @@ describe('createAdminLangfuseHandlers', () => {
       await handlers.listPrompts(mockReq({ config: { langfuse: withPromptSync(true) } }), res);
 
       expect(res.statusCode).toBe(500);
-      expect(res.body).toEqual({ code: 'upstream' });
+      expect(res.body).toEqual({ code: 'internal' });
       expect(JSON.stringify(res.body)).not.toContain('MARKER_SECRET_LEAK_TOKEN');
     });
 
@@ -2145,6 +2167,291 @@ describe('createAdminLangfuseHandlers', () => {
       expect(
         Buffer.from(init.headers.Authorization.replace('Basic ', ''), 'base64').toString(),
       ).toBe('env-public:env-secret');
+    });
+  });
+
+  describe('syncPrompts', () => {
+    function tenantSyncConnection(overrides: Record<string, unknown> = {}) {
+      return withPromptSync(true, { projectId: 'project-1', ...overrides });
+    }
+
+    function createSyncHandlers(overrides: Record<string, unknown> = {}) {
+      return createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(baseConfigDoc(tenantSyncConnection())),
+        ...overrides,
+      });
+    }
+
+    function syncReq(overrides: Record<string, unknown> = {}) {
+      return mockReq({ config: { langfuse: tenantSyncConnection() }, ...overrides });
+    }
+
+    /** The runner invocation the handler made; the handler calls it once per
+     *  request that passes every gate. */
+    function runnerRequest(deps: { syncPromptCatalog: jest.Mock }) {
+      expect(deps.syncPromptCatalog).toHaveBeenCalledTimes(1);
+      return deps.syncPromptCatalog.mock.calls[0][0] as {
+        source: { destination: string; projectId: string; tenantId?: string };
+        listPrompts: (query: { type: 'text'; limit: number; page: number }) => Promise<unknown>;
+        lockLeaseMs: number;
+        maxPages: number;
+      };
+    }
+
+    it('returns 404 when prompt sync is not available at all', async () => {
+      const { handlers, deps } = createHandlers();
+      const res = mockRes();
+
+      await handlers.syncPrompts(mockReq(), res);
+
+      expect(res.statusCode).toBe(404);
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when available but the tenant switch is off', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest
+          .fn()
+          .mockResolvedValue(baseConfigDoc({ promptSync: { enabled: false } })),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(404);
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 not_configured when no connection resolves', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest
+          .fn()
+          .mockResolvedValue(baseConfigDoc({ promptSync: { enabled: true } })),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(
+        mockReq({ config: { langfuse: { promptSync: { enabled: true } } } }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toEqual({ code: 'not_configured' });
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 not_configured when the connection resolves but the source identity has no project id', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(baseConfigDoc(withPromptSync(true))),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(mockReq({ config: { langfuse: withPromptSync(true) } }), res);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toEqual({ code: 'not_configured' });
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(deps.syncPromptCatalog).not.toHaveBeenCalled();
+    });
+
+    it('runs the sync with the source identity, the default lease and page cap, and returns its counts', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createSyncHandlers({
+        syncPromptCatalog: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: { created: 2, unchanged: 1, skipped: 0 } }),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ created: 2, unchanged: 1, skipped: 0 });
+      expect(deps.syncPromptCatalog).toHaveBeenCalledWith({
+        source: { destination: 'eu', projectId: 'project-1', tenantId: 't1' },
+        listPrompts: expect.any(Function),
+        lockLeaseMs: 300_000,
+        maxPages: 50,
+      });
+    });
+
+    it('forwards the configured lock lease and page cap from req.config', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createSyncHandlers();
+      const res = mockRes();
+
+      await handlers.syncPrompts(
+        syncReq({
+          config: {
+            langfuse: {
+              ...tenantSyncConnection(),
+              promptSync: { enabled: true, lockLeaseMs: 120_000, maxPages: 3 },
+            },
+          },
+        }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(runnerRequest(deps)).toMatchObject({ lockLeaseMs: 120_000, maxPages: 3 });
+    });
+
+    it('hands the runner a page lister bound to the resolved connection, with the text filter', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers, deps } = createSyncHandlers();
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+      expect(global.fetch).not.toHaveBeenCalled();
+
+      global.fetch = jest.fn().mockResolvedValue(
+        fetchJsonResponse(
+          syncListBody([syncPromptItem('a')], {
+            page: 2,
+            limit: 100,
+            totalItems: 2,
+            totalPages: 2,
+          }),
+        ),
+      ) as unknown as typeof fetch;
+      const page = await runnerRequest(deps).listPrompts({ type: 'text', limit: 100, page: 2 });
+
+      expect(page).toMatchObject({ items: [expect.objectContaining({ name: 'a' })] });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const [url] = (global.fetch as unknown as jest.Mock).mock.calls[0] as [string];
+      expect(url).toContain('limit=100');
+      expect(url).toContain('page=2');
+      expect(decodeURIComponent(url)).toContain('"column":"type"');
+      expect(decodeURIComponent(url)).toContain('"value":"text"');
+    });
+
+    it('returns 409 already_running when the runner reports the lock is already held', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers } = createSyncHandlers({
+        syncPromptCatalog: jest
+          .fn()
+          .mockResolvedValue({ ok: false, error: { code: 'already_running' } }),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toEqual({ code: 'already_running' });
+    });
+
+    it('returns 503 lock_lost when the runner loses the lock mid-run', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers } = createSyncHandlers({
+        syncPromptCatalog: jest.fn().mockResolvedValue({ ok: false, error: { code: 'lock_lost' } }),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(503);
+      expect(res.body).toEqual({ code: 'lock_lost' });
+    });
+
+    /** Runs the bound page lister once so a Langfuse failure reaches the
+     *  handler through the same `LangfusePromptRequestError` path the real
+     *  runner surfaces it on. */
+    function runnerThatListsOnce() {
+      return jest
+        .fn()
+        .mockImplementation(
+          async ({
+            listPrompts,
+          }: {
+            listPrompts: (query: { type: 'text'; limit: number; page: number }) => Promise<unknown>;
+          }) => {
+            await listPrompts({ type: 'text', limit: 100, page: 1 });
+            return { ok: true, value: { created: 0, unchanged: 0, skipped: 0 } };
+          },
+        );
+    }
+
+    it('maps an upstream 500 from Langfuse to 502 upstream without leaking the body', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          fetchJsonResponse({ message: 'MARKER_SECRET_LEAK_TOKEN' }, 500),
+        ) as unknown as typeof fetch;
+      const { handlers } = createSyncHandlers({ syncPromptCatalog: runnerThatListsOnce() });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(502);
+      expect(res.body).toEqual({ code: 'upstream', status: 500 });
+      expect(JSON.stringify(res.body)).not.toContain('MARKER_SECRET_LEAK_TOKEN');
+    });
+
+    it('maps a Langfuse timeout to 504 timeout', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const timeoutError = new Error('The operation was aborted due to timeout');
+      timeoutError.name = 'TimeoutError';
+      global.fetch = jest.fn().mockRejectedValue(timeoutError) as unknown as typeof fetch;
+      const { handlers } = createSyncHandlers({ syncPromptCatalog: runnerThatListsOnce() });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(504);
+      expect(res.body).toEqual({ code: 'timeout' });
+    });
+
+    it('maps an unexpected runner error to 500 internal without leaking its message', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      const { handlers } = createSyncHandlers({
+        syncPromptCatalog: jest
+          .fn()
+          .mockRejectedValue(new Error('db down MARKER_SECRET_LEAK_TOKEN')),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(syncReq(), res);
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toEqual({ code: 'internal' });
+      expect(JSON.stringify(res.body)).not.toContain('MARKER_SECRET_LEAK_TOKEN');
+    });
+
+    it('syncs in env mode with the "env" source destination and no tenant', async () => {
+      delete process.env.TENANT_ISOLATION_STRICT;
+      delete process.env.LANGFUSE_FANOUT_ENABLED;
+      delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      process.env.LANGFUSE_PUBLIC_KEY = 'env-public';
+      process.env.LANGFUSE_SECRET_KEY = 'env-secret';
+      process.env.LANGFUSE_PROJECT_ID = 'env-project-1';
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest
+          .fn()
+          .mockResolvedValue(baseConfigDoc({ promptSync: { enabled: true } })),
+      });
+      const res = mockRes();
+
+      await handlers.syncPrompts(
+        mockReq({
+          user: { id: 'u1', role: 'ADMIN' },
+          config: { langfuse: { promptSync: { enabled: true } } },
+        }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(runnerRequest(deps).source).toEqual({
+        destination: 'env',
+        projectId: 'env-project-1',
+        tenantId: undefined,
+      });
+      delete process.env.LANGFUSE_PROJECT_ID;
     });
   });
 });

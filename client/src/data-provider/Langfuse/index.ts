@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { dataService, QueryKeys, MutationKeys } from 'librechat-data-provider';
+import { dataService, QueryKeys, MutationKeys, ResourceType } from 'librechat-data-provider';
 import type {
   TLangfuseConnectionStatus,
   TUpdateLangfuseConnectionRequest,
@@ -11,6 +11,7 @@ import type {
   TLangfusePromptListResponse,
   TLangfusePromptGetParams,
   TLangfusePromptGetResponse,
+  TLangfusePromptSyncResult,
 } from 'librechat-data-provider';
 import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
 
@@ -123,3 +124,28 @@ export const useLangfusePromptQuery = (
     },
     { enabled: params != null, retry: false, refetchOnWindowFocus: false },
   );
+
+/**
+ * Runs the real Langfuse prompt sync. On success, the catalog's own prompt-group and
+ * permissions queries are stale: a synced group is a new PromptGroup with a PUBLIC viewer
+ * grant, so both the list views and the sidebar's effective-permissions map must refetch.
+ */
+export const useSyncLangfusePromptsMutation = (): UseMutationResult<
+  TLangfusePromptSyncResult,
+  unknown,
+  void
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(() => dataService.syncLangfusePrompts(), {
+    mutationKey: [MutationKeys.syncLangfusePrompts],
+    onSuccess: () => {
+      queryClient.invalidateQueries([QueryKeys.promptGroups]);
+      queryClient.invalidateQueries([QueryKeys.allPromptGroups]);
+      queryClient.invalidateQueries([
+        QueryKeys.effectivePermissions,
+        'all',
+        ResourceType.PROMPTGROUP,
+      ]);
+    },
+  });
+};

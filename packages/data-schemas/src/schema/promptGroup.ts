@@ -105,5 +105,10 @@ promptGroupSchema.index(
     partialFilterExpression: { sourcePromptName: { $exists: true } },
   },
 );
+// Serves the same lookup when no tenant context is active (env-mode sync, tenantId unset).
+promptGroupSchema.index(
+  { sourceDestination: 1, sourceProjectId: 1, sourcePromptName: 1 },
+  { partialFilterExpression: { sourcePromptName: { $exists: true } } },
+);
 
 export default promptGroupSchema;

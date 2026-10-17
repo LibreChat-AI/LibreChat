@@ -26,6 +26,7 @@ const mockMethods = {
   deleteAgentTriggerDeliveriesByUser: jest.fn(),
   cancelAgentTriggerUserPurge: jest.fn(),
   cancelAgentTriggerUserDeletion: jest.fn(),
+  deleteUserPrompts: jest.fn(),
 };
 const mockGetCleanupBlockingJobIdsForUser = jest.fn();
 const mockAbortJob = jest.fn();
@@ -129,6 +130,7 @@ describe('Delete user CLI', () => {
     mockMethods.deleteAgentTriggerDeliveriesByUser.mockReset().mockResolvedValue(undefined);
     mockMethods.cancelAgentTriggerUserPurge.mockReset().mockResolvedValue(true);
     mockMethods.cancelAgentTriggerUserDeletion.mockReset().mockResolvedValue(true);
+    mockMethods.deleteUserPrompts.mockReset().mockResolvedValue(undefined);
     mockGetCleanupBlockingJobIdsForUser.mockReset().mockResolvedValue([]);
     mockAbortJob.mockReset().mockResolvedValue({ success: true });
     mockDestroy.mockReset().mockResolvedValue(undefined);
@@ -387,6 +389,13 @@ describe('Delete user CLI', () => {
     const deletionFence = mockMethods.beginAgentTriggerUserDeletion.mock.calls[0][1];
     expect(mockMethods.restoreUserSchedulesFromDeletion).toHaveBeenCalled();
     expect(mockMethods.cancelAgentTriggerUserDeletion).toHaveBeenCalledWith(USER_ID, deletionFence);
+  });
+
+  it('passes deleteUserPrompts through to the shared cascade, which keeps a synced group with a synthetic author untouched', async () => {
+    expect(await runCli()).toBe(0);
+
+    const [, deps] = mockEraseUserData.mock.calls[0];
+    expect(deps.deleteUserPrompts).toBe(mockMethods.deleteUserPrompts);
   });
 
   it('deletes nothing and releases both fences when provider drain fails', async () => {

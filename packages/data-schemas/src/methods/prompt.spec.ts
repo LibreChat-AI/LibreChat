@@ -1034,3 +1034,250 @@ describe('PromptGroup list projections', () => {
     expect(fromAccess?.sourceDestination).toBe('eu');
   });
 });
+
+describe('createLangfusePromptGroup and findLangfusePromptGroup', () => {
+  beforeAll(async () => {
+    await PromptGroup.syncIndexes();
+  });
+
+  afterEach(async () => {
+    // Unscoped delete: the tenant-isolation plugin applies no filter outside a
+    // tenant context, so this clears the fixtures regardless of their tenantId.
+    await PromptGroup.deleteMany({ source: 'langfuse', sourceProjectId: /^sync-test-/ });
+  });
+
+  const identity = (suffix: string) => ({
+    sourceDestination: 'eu',
+    sourceProjectId: `sync-test-${suffix}`,
+    sourcePromptName: 'welcome-prompt',
+  });
+
+  it('finds nothing before create, then the created id after create', async () => {
+    const id = identity('find-then-create');
+
+    await expect(methods.findLangfusePromptGroup(id)).resolves.toBeNull();
+
+    const created = await methods.createLangfusePromptGroup({
+      ...id,
+      name: 'Welcome Prompt',
+      author: String(testUsers.owner._id),
+      authorName: 'Langfuse Sync',
+    });
+
+    await expect(methods.findLangfusePromptGroup(id)).resolves.toEqual({ _id: created._id });
+  });
+
+  it('creates a doc with source "langfuse", the given author/authorName, and no productionId', async () => {
+    const id = identity('doc-fields');
+    const author = String(testUsers.owner._id);
+
+    const created = await methods.createLangfusePromptGroup({
+      ...id,
+      name: 'Doc Fields Prompt',
+      author,
+      authorName: 'Langfuse Sync',
+    });
+
+    const doc = (await PromptGroup.findById(created._id).lean()) as unknown as LeanPromptGroup & {
+      source?: string;
+      productionId?: unknown;
+    };
+    expect(doc.source).toBe('langfuse');
+    expect(String(doc.author)).toBe(author);
+    expect(doc.authorName).toBe('Langfuse Sync');
+    expect(doc.productionId).toBeUndefined();
+  });
+
+  it('stamps the active tenant on create, and isolates lookups and creates by tenant', async () => {
+    const id = identity('tenant-isolation');
+    const author = String(testUsers.owner._id);
+
+    const createdInA = await tenantStorage.run({ tenantId: 'a' }, () =>
+      methods.createLangfusePromptGroup({
+        ...id,
+        name: 'Tenant A Prompt',
+        author,
+        authorName: 'Langfuse Sync',
+      }),
+    );
+
+    const docInA = (await PromptGroup.findById(
+      createdInA._id,
+    ).lean()) as unknown as LeanPromptGroup & { tenantId?: string };
+    expect(docInA.tenantId).toBe('a');
+
+    await tenantStorage.run({ tenantId: 'b' }, async () => {
+      await expect(methods.findLangfusePromptGroup(id)).resolves.toBeNull();
+
+      const createdInB = await methods.createLangfusePromptGroup({
+        ...id,
+        name: 'Tenant B Prompt',
+        author,
+        authorName: 'Langfuse Sync',
+      });
+
+      expect(createdInB._id).not.toBe(createdInA._id);
+    });
+  });
+
+  it('throws a duplicate-key error (code 11000) on a repeat create at the same identity', async () => {
+    const id = identity('duplicate');
+
+    await methods.createLangfusePromptGroup({
+      ...id,
+      name: 'Duplicate Prompt',
+      author: String(testUsers.owner._id),
+      authorName: 'Langfuse Sync',
+    });
+
+    await expect(
+      methods.createLangfusePromptGroup({
+        ...id,
+        name: 'Duplicate Prompt Again',
+        author: String(testUsers.owner._id),
+        authorName: 'Langfuse Sync',
+      }),
+    ).rejects.toMatchObject({ code: 11000 });
+  });
+
+  it('returns the source fields from getAllPromptGroups and getListPromptGroupsByAccess', async () => {
+    const id = identity('listing');
+    const created = await methods.createLangfusePromptGroup({
+      ...id,
+      name: 'Listing Sync Prompt',
+      author: String(testUsers.owner._id),
+      authorName: 'Langfuse Sync',
+    });
+
+    const allGroups = (await methods.getAllPromptGroups({
+      name: 'Listing Sync Prompt',
+    })) as Array<Record<string, unknown>>;
+    const fromGetAll = allGroups.find((g) => String(g._id) === created._id);
+    expect(fromGetAll).toMatchObject({ source: 'langfuse', ...id });
+
+    const byAccess = await methods.getListPromptGroupsByAccess({ accessibleIds: [created._id] });
+    const fromAccess = byAccess.data.find((g) => String(g._id) === created._id);
+    expect(fromAccess).toMatchObject({ source: 'langfuse', ...id });
+  });
+
+  it('serves a lookup with no tenant context via an index scan, not a collection scan', async () => {
+    const id = identity('ixscan');
+    await methods.createLangfusePromptGroup({
+      ...id,
+      name: 'IXSCAN Prompt',
+      author: String(testUsers.owner._id),
+      authorName: 'Langfuse Sync',
+    });
+
+    const explain = (await PromptGroup.collection
+      .find(id)
+      .explain('queryPlanner')) as unknown as Record<string, unknown>;
+
+    const hasIndexScan = (stage: unknown): boolean => {
+      if (stage == null || typeof stage !== 'object') {
+        return false;
+      }
+      const node = stage as Record<string, unknown>;
+      if (node.stage === 'IXSCAN') {
+        return true;
+      }
+      const children = [
+        node.inputStage,
+        node.queryPlan,
+        ...(Array.isArray(node.inputStages) ? node.inputStages : []),
+      ];
+      return children.some(hasIndexScan);
+    };
+
+    const queryPlanner = explain.queryPlanner as Record<string, unknown>;
+    const winningPlan = queryPlanner.winningPlan as Record<string, unknown>;
+    expect(hasIndexScan(winningPlan)).toBe(true);
+  });
+});
+
+describe('deleteUserPrompts and synced groups', () => {
+  afterEach(async () => {
+    await AclEntry.deleteMany({});
+    await PromptGroup.deleteMany({});
+    await Prompt.deleteMany({});
+  });
+
+  it('deletes a native group the admin solely owns, but leaves a Langfuse-synced group and its ACL intact', async () => {
+    const admin = (
+      await User.create({
+        name: 'Sync Admin',
+        email: 'sync-admin@example.com',
+        role: SystemRoles.ADMIN,
+      })
+    ).toObject() as unknown as LeanUser;
+
+    const nativeGroup = (
+      await PromptGroup.create({
+        name: 'Admin Native Group',
+        author: admin._id,
+        authorName: admin.name,
+        productionId: new ObjectId(),
+      })
+    ).toObject() as unknown as LeanPromptGroup;
+
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: admin._id,
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: nativeGroup._id,
+      accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
+      grantedBy: admin._id,
+    });
+
+    // Synthetic author distinct from the admin, as `makeSourceAuthorId` produces.
+    const syntheticAuthor = new ObjectId();
+    const langfuseGroup = await methods.createLangfusePromptGroup({
+      name: 'Synced Prompt',
+      author: String(syntheticAuthor),
+      authorName: 'Langfuse Sync',
+      sourceDestination: 'eu',
+      sourceProjectId: 'sync-test-delete-user',
+      sourcePromptName: 'synced-prompt',
+    });
+
+    await aclMethods.grantPermission(
+      PrincipalType.PUBLIC,
+      null,
+      ResourceType.PROMPTGROUP,
+      langfuseGroup._id,
+      PermissionBits.VIEW,
+      syntheticAuthor,
+    );
+
+    await methods.deleteUserPrompts(String(admin._id));
+
+    await expect(PromptGroup.findById(nativeGroup._id).lean()).resolves.toBeNull();
+    const nativeAcl = await AclEntry.find({
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: nativeGroup._id,
+    }).lean();
+    expect(nativeAcl).toHaveLength(0);
+
+    const survivingGroup = await PromptGroup.findById(langfuseGroup._id).lean();
+    expect(survivingGroup).not.toBeNull();
+
+    const survivingAcl = (await AclEntry.find({
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: langfuseGroup._id,
+    }).lean()) as unknown as LeanAclEntry[];
+    expect(survivingAcl).toHaveLength(1);
+    expect(survivingAcl[0]).toMatchObject({
+      principalType: PrincipalType.PUBLIC,
+      permBits: PermissionBits.VIEW,
+    });
+
+    /**
+     * Documented, not changed: `deleteUserPrompts` only removes groups the user
+     * authored, or solely owns via ACL. A synced group's author is the synthetic
+     * Langfuse identity, not an admin, so running the sync — or deleting the admin
+     * who ran it — never deletes it. If an admin were to grant themselves OWNER on
+     * this same synced group, they would become its sole owner, and it would then
+     * be deleted like any native group.
+     */
+  });
+});

@@ -1,3 +1,11 @@
+import type { AppConfig } from '@librechat/data-schemas';
+
+/** A minimal AppConfig stub carrying only the langfuse.promptSync fields the
+ *  lock-lease and page-cap readers consult. */
+function langfuseAppConfig(promptSync: Record<string, unknown>): AppConfig {
+  return { langfuse: { promptSync } } as unknown as AppConfig;
+}
+
 const envKeys = [
   'LANGFUSE_PUBLIC_KEY',
   'LANGFUSE_SECRET_KEY',
@@ -169,5 +177,49 @@ describe('Langfuse policy', () => {
     const { getLangfusePromptSyncTimeoutMs } = await import('./policy');
 
     expect(getLangfusePromptSyncTimeoutMs()).toBe(10000);
+  });
+
+  it('defaults the Langfuse prompt sync lock lease to 300000ms when unset', async () => {
+    const { getLangfusePromptSyncLockLeaseMs } = await import('./policy');
+
+    expect(getLangfusePromptSyncLockLeaseMs(undefined)).toBe(300000);
+    expect(getLangfusePromptSyncLockLeaseMs(langfuseAppConfig({}))).toBe(300000);
+  });
+
+  it('uses a configured Langfuse prompt sync lock lease', async () => {
+    const { getLangfusePromptSyncLockLeaseMs } = await import('./policy');
+
+    expect(getLangfusePromptSyncLockLeaseMs(langfuseAppConfig({ lockLeaseMs: 120000 }))).toBe(
+      120000,
+    );
+  });
+
+  it('clamps the Langfuse prompt sync lock lease to 60000-3600000', async () => {
+    const { getLangfusePromptSyncLockLeaseMs } = await import('./policy');
+
+    expect(getLangfusePromptSyncLockLeaseMs(langfuseAppConfig({ lockLeaseMs: 1 }))).toBe(60000);
+    expect(getLangfusePromptSyncLockLeaseMs(langfuseAppConfig({ lockLeaseMs: 10000000 }))).toBe(
+      3600000,
+    );
+  });
+
+  it('defaults the Langfuse prompt sync page cap to 50 when unset', async () => {
+    const { getLangfusePromptSyncMaxPages } = await import('./policy');
+
+    expect(getLangfusePromptSyncMaxPages(undefined)).toBe(50);
+    expect(getLangfusePromptSyncMaxPages(langfuseAppConfig({}))).toBe(50);
+  });
+
+  it('uses a configured Langfuse prompt sync page cap', async () => {
+    const { getLangfusePromptSyncMaxPages } = await import('./policy');
+
+    expect(getLangfusePromptSyncMaxPages(langfuseAppConfig({ maxPages: 5 }))).toBe(5);
+  });
+
+  it('clamps the Langfuse prompt sync page cap to 1-1000', async () => {
+    const { getLangfusePromptSyncMaxPages } = await import('./policy');
+
+    expect(getLangfusePromptSyncMaxPages(langfuseAppConfig({ maxPages: 0 }))).toBe(1);
+    expect(getLangfusePromptSyncMaxPages(langfuseAppConfig({ maxPages: 100000 }))).toBe(1000);
   });
 });

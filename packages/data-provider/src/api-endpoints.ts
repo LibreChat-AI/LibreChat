@@ -572,6 +572,7 @@ export const adminLangfuseSessionLink = (conversationId: string) =>
 export const adminLangfusePromptSync = () => `${BASE_URL}/api/admin/langfuse/prompt-sync`;
 export const adminLangfusePrompts = (params: t.TLangfusePromptListParams = {}) =>
   `${BASE_URL}/api/admin/langfuse/prompts${buildQuery(params)}`;
+export const adminLangfuseSyncPrompts = () => `${BASE_URL}/api/admin/langfuse/prompts/sync`;
 export const adminLangfusePrompt = (name: string, version?: number) =>
   `${BASE_URL}/api/admin/langfuse/prompts/${encodeURIComponent(name)}${buildQuery({ version })}`;
 
