@@ -236,6 +236,8 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'gemini-3.6-flash': { prompt: 0.75, completion: 3.75 },
     'gemini-3.7-flash': { prompt: 0.75, completion: 3.75 },
     'gemini-3.8-flash': { prompt: 0.75, completion: 3.75 },
+    // Gemini 4 Argon introductory pricing through 2026-11-30; revert to { prompt: 4, completion: 20 } on 2026-12-01.
+    'gemini-4-argon': { prompt: 2, completion: 10 },
     'gemini-pro-vision': { prompt: 0.5, completion: 1.5 },
     grok: { prompt: 2.0, completion: 10.0 },
     'grok-beta': { prompt: 5.0, completion: 15.0 },
@@ -452,6 +454,8 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'gemini-3.6-flash': { write: 0.75, read: 0.075 },
   'gemini-3.7-flash': { write: 0.75, read: 0.075 },
   'gemini-3.8-flash': { write: 0.75, read: 0.075 },
+  // Gemini 4 Argon (implicit caching only) introductory pricing through 2026-11-30; revert to { write: 4, read: 0.2 } on 2026-12-01.
+  'gemini-4-argon': { write: 2, read: 0.1 },
 };
 
 /**

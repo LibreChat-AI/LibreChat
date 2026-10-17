@@ -320,6 +320,26 @@ endpoints:
       activityPhaseLabel: true
       activityPhaseModel: 'mock-phase-label-model'
 
+    # Gemini-compatible gateway: `defaultParamsEndpoint: google` routes the
+    # request through the Google transform, and `addParams` carries the sampling
+    # params that model-specific rules must strip before they reach the provider.
+    - name: 'Mock Gemini'
+      apiKey: 'e2e-mock-key-gemini'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'gemini-4-argon'
+          - 'gemini-2.5-pro'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Gemini'
+      customParams:
+        defaultParamsEndpoint: google
+      addParams:
+        temperature: 0.8
+        topP: 0.95
+        presencePenalty: 0.5
+
 modelSpecs:
   prioritize: true
   # Enforcement would reject sends from the non-spec paths addedEndpoints
@@ -335,6 +355,7 @@ modelSpecs:
     - 'Mock Provider D'
     - 'Mock Provider E'
     - 'Mock Provider F'
+    - 'Mock Gemini'
     - 'agents'
   list:
     - name: 'e2e-mock-provider-a'

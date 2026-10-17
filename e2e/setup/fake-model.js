@@ -32,6 +32,7 @@ const ASSERT_MANUAL_SKILL_MARKER = 'E2E_ASSERT_MANUAL_SKILL:';
 const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
+const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
@@ -455,6 +456,29 @@ function agentContextAssertionResponses({ messages, text }) {
       }`,
     ],
   };
+}
+
+const SAMPLING_PARAM_KEYS = ['temperature', 'topP', 'topK', 'presencePenalty', 'frequencyPenalty'];
+
+/**
+ * Reports the provider request the primary agent resolved, before the fake
+ * model replaced it: the model, which sampling params survived (top level or
+ * `modelKwargs`), and the context budget left for input. Reads the graph's
+ * agent context because the hook's `agents` are the unresolved agent configs.
+ */
+function llmConfigReportResponses(graph) {
+  const agent = graph?.agentContexts?.values().next().value;
+  const clientOptions = agent?.clientOptions ?? {};
+  const modelKwargs = clientOptions.modelKwargs ?? {};
+  const sampling = SAMPLING_PARAM_KEYS.filter(
+    (key) => clientOptions[key] != null || modelKwargs[key] != null,
+  );
+  const report = {
+    model: clientOptions.model ?? clientOptions.modelName ?? null,
+    sampling,
+    maxContextTokens: agent?.maxContextTokens ?? null,
+  };
+  return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
 }
 
 function collectSystemPromptText(messages) {
@@ -3596,6 +3620,10 @@ function resolveResponses({ graph, messages, text, toolNames }) {
         return projectContextAssertionResponses({ messages: agentView.messages, text });
       },
     };
+  }
+
+  if (text.includes(REPORT_LLM_CONFIG_MARKER)) {
+    return llmConfigReportResponses(graph);
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {

@@ -153,7 +153,7 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         expect(result.tools).toEqual([]);
       });
 
-      it.each(['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash'])(
+      it.each(['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-4-argon'])(
         'should strip Flash-blocked addParams so the transform cannot re-add them (%s)',
         (model) => {
           const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
@@ -185,6 +185,29 @@ describe('getOpenAIConfig - Google Compatibility', () => {
           expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('topK');
           expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('presencePenalty');
           expect(result.llmConfig.modelKwargs).toMatchObject({ maxOutputTokens: 8192 });
+        },
+      );
+
+      it.each([
+        ['gemini-4-argon', false],
+        ['gemini-3.8-flash', true],
+      ])(
+        'should strip candidate-count addParams only where the model rejects them (%s)',
+        (model, kept) => {
+          const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
+          const options = {
+            modelOptions: { model },
+            customParams: { defaultParamsEndpoint: 'google' },
+            addParams: { candidateCount: 2, candidate_count: 2, n: 2 },
+            reverseProxyUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+          };
+
+          const result = getOpenAIConfig(apiKey, options, 'Gemini (Custom)');
+          const sent = { ...result.llmConfig, ...(result.llmConfig.modelKwargs ?? {}) };
+
+          for (const key of ['candidateCount', 'candidate_count', 'n']) {
+            expect(Object.prototype.hasOwnProperty.call(sent, key)).toBe(kept);
+          }
         },
       );
 

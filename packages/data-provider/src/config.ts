@@ -4583,6 +4583,8 @@ export const defaultModels = {
     ...sharedOpenAIModels,
   ],
   [EModelEndpoint.google]: [
+    // Gemini 4 Models
+    'gemini-4-argon',
     // Gemini 3.8 Models
     'gemini-3.8-flash',
     // Gemini 3.7 Models
