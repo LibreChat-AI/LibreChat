@@ -242,7 +242,7 @@ function ControlCombobox({
         portal={portal}
         portalElement={portalElement}
         className={cn(
-          'border-border-light bg-surface-secondary overflow-hidden rounded-xl border shadow-lg',
+          'border-border-light bg-surface-secondary rounded-theme-menu-panel overflow-hidden border shadow-lg',
           popoverMaxHeight != null && 'flex flex-col',
           popoverClassName ?? 'animate-popover',
         )}

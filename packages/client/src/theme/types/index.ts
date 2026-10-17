@@ -655,6 +655,8 @@ export interface IThemeAppearance {
    *  control or surface radii. */
   popoverRadius: string;
   menuPanelRadius: string;
+  /** The corners of the date range picker panel, which drew `rounded-lg`. */
+  compactPanelRadius: string;
   composerActionRadius: string;
   /** The weight of an inline code chip in rendered Markdown. */
   inlineCodeWeight: string;

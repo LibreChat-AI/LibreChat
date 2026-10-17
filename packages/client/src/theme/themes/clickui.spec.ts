@@ -610,6 +610,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   menuRadius: 'click.genericMenu.panel.radii.all',
   popoverRadius: 'click.genericMenu.panel.radii.all',
   menuPanelRadius: 'click.genericMenu.panel.radii.all',
+  compactPanelRadius: 'click.genericMenu.panel.radii.all',
   composerActionRadius: 'click.button.radii.all',
   authControlRadius: 'click.button.radii.all',
   inlineCodeWeight: 'typography.font.weights.2',

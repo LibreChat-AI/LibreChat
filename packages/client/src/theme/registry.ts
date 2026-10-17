@@ -226,6 +226,7 @@ export const themeAppearanceProperties: Readonly<
   menuRadius: '--theme-menu-radius',
   popoverRadius: '--theme-popover-radius',
   menuPanelRadius: '--theme-menu-panel-radius',
+  compactPanelRadius: '--theme-compact-panel-radius',
   composerActionRadius: '--theme-composer-action-radius',
   inlineCodeWeight: '--theme-inline-code-weight',
   tooltipRadius: '--theme-tooltip-radius',
@@ -339,6 +340,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   menuRadius: '0.7rem',
   popoverRadius: '1rem',
   menuPanelRadius: '0.75rem',
+  compactPanelRadius: '0.5rem',
   composerActionRadius: '9999px',
   inlineCodeWeight: '600',
   tooltipRadius: '0.275rem',
@@ -624,7 +626,7 @@ function withFloorableLengths(appearance: IThemeAppearance): IThemeAppearance {
 /**
  * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
  * family before the display role existed, theme-sized controls were padded by the shared spacing,
- * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, and the sign-in controls drew `rounded-2xl` and the other sign-in actions the default Button's height and corner, and the checkbox `rounded-sm`, so a theme that names
+ * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector, the date range picker and the send button drew `rounded-2xl`, `rounded-xl`, `rounded-lg` and the round control corner, and the sign-in controls drew `rounded-2xl` and the other sign-in actions the default Button's height and corner, and the checkbox `rounded-sm`, so a theme that names
  * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
  * follow one that is itself inherited; the other sign-in actions resolve before the sign-in corner
  * is derived, so they follow only a corner the theme names and otherwise keep `radiusLg`.
@@ -638,6 +640,7 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['dialogTitleFontFamily', 'displayFontFamily'],
   ['popoverRadius', 'radius2xl'],
   ['menuPanelRadius', 'radiusXl'],
+  ['compactPanelRadius', 'radiusLg'],
   ['composerActionRadius', 'roundControlRadius'],
   ['authActionRadius', 'authControlRadius'],
   ['authActionRadius', 'radiusLg'],

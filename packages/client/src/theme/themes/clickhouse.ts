@@ -459,6 +459,7 @@ const clickHouseShape = {
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
   popoverRadius: '0.25rem', // genericMenu.panel.radii.all, the panel the composer popovers are
   menuPanelRadius: '0.25rem', // genericMenu.panel.radii.all
+  compactPanelRadius: '0.25rem', // genericMenu.panel.radii.all
   composerActionRadius: '0.25rem', // button.radii.all, Click UI draws its icon buttons square
   inlineCodeWeight: '500', // typography.font.weights.2
   tooltipRadius: '0.25rem', // tooltip.radii.all

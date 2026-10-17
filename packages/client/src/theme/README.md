@@ -65,8 +65,9 @@ Three primitives keep corners of their own outside that scale: the menu panel (`
 `tabRadius` (0.185rem, through `rounded-theme-tab`). The defaults are the corners they always drew.
 
 The composer's popovers read `popoverRadius` (1rem, `rounded-theme-popover`), the model selector's
-panel `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`) and the send and stop buttons
-`composerActionRadius` (a full circle, `rounded-theme-composer-action`), so a theme can bring them
+panel and the form-control pickers `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`), the
+date range picker `compactPanelRadius` (0.5rem, `rounded-theme-compact-panel`) and the send and
+stop buttons `composerActionRadius` (a full circle, `rounded-theme-composer-action`), so a theme can bring them
 onto `menuRadius` or a square corner without moving the control or surface radii. An inline code
 chip in Markdown takes its weight from `inlineCodeWeight` (600).
 

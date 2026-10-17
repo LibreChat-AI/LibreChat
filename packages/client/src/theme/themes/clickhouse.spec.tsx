@@ -594,6 +594,7 @@ describe('clickhouse theme definition', () => {
       composerActionRadius: '0.25rem',
       popoverRadius: appearance.menuRadius,
       menuPanelRadius: appearance.menuRadius,
+      compactPanelRadius: appearance.menuRadius,
       inlineCodeWeight: '500',
     });
   });

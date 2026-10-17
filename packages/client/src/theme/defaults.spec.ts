@@ -95,6 +95,7 @@ const stockAliases: Partial<
   menuShadow: 'shadowLg',
   popoverRadius: 'radius2xl',
   menuPanelRadius: 'radiusXl',
+  compactPanelRadius: 'radiusLg',
   composerActionRadius: 'roundControlRadius',
   authControlRadius: 'radius2xl',
   authActionHeight: 'buttonHeight',

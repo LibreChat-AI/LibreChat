@@ -157,6 +157,7 @@ module.exports = {
         'theme-surface': 'var(--theme-surface-radius, 1rem)',
         'theme-popover': 'var(--theme-popover-radius, 1rem)',
         'theme-menu-panel': 'var(--theme-menu-panel-radius, 0.75rem)',
+        'theme-compact-panel': 'var(--theme-compact-panel-radius, 0.5rem)',
         'theme-composer-action': 'var(--theme-composer-action-radius, 9999px)',
         'theme-auth-control': 'var(--theme-auth-control-radius, 1rem)',
         'theme-auth-action': 'var(--theme-auth-action-radius, 0.5rem)',
