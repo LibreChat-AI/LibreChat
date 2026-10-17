@@ -350,6 +350,47 @@ describe('assertResumeRuntimeContentAllowed', () => {
     );
   });
 
+  it('resolves earlier-turn checkpoint sources in a temporary chat', async () => {
+    const dependencies = createDependencies();
+    dependencies.getAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: [
+              {
+                role: 'human',
+                additional_kwargs: { sourceMessageId: 'earlier-turn' },
+              },
+              {
+                role: 'human',
+                additional_kwargs: { sourceMessageId: 'paused-turn' },
+              },
+            ],
+          },
+        },
+      }),
+    });
+    dependencies.getMessages.mockResolvedValue([
+      { messageId: 'earlier-turn', isCreatedByUser: true, role: 'user', text: 'hi' },
+      { messageId: 'paused-turn', isCreatedByUser: true, role: 'user', text: 'ask me' },
+    ]);
+    const input = {
+      ...createInput({}),
+      isTemporary: true,
+      storedMessages: [{ messageId: 'paused-turn', isCreatedByUser: true, role: 'user' }],
+    };
+
+    await expect(assertResumeRuntimeContentAllowed(input, dependencies)).resolves.toEqual({
+      resolvedFiles: [],
+      checkpointFiles: [],
+    });
+    expect(dependencies.getMessages).toHaveBeenCalledWith({
+      conversationId: 'conversation-1',
+      user: 'user-1',
+    });
+    expect(dependencies.getFiles).not.toHaveBeenCalled();
+  });
+
   it('preserves repeated steer file injections in checkpoint projection', async () => {
     const dependencies = createDependencies();
     dependencies.getAgentCheckpointer.mockResolvedValue({

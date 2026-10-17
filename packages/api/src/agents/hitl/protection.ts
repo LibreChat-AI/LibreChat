@@ -1047,9 +1047,11 @@ export async function assertResumeRuntimeContentAllowed(
   const missingSourceMessageIds = [...checkpointSourceMessageIds].filter(
     (messageId) => !resolvedSourceMessageIds.has(messageId),
   );
+  /** The preflight only carries the paused turn; earlier turns referenced by the
+   * checkpoint are read back for temporary chats too, whose messages stay
+   * persisted until `expiredAt`. */
   if (
     modelBoundProjection?.historyLoaded !== true &&
-    !input.isTemporary &&
     missingSourceMessageIds.length > 0 &&
     input.user?.id
   ) {
