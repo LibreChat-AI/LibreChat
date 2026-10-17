@@ -1,0 +1,11 @@
+{
+  "name": "readme-translate",
+  "private": true,
+  "type": "module",
+  "description": "Dependencies for the README translation sync workflow; installed with npm ci in CI.",
+  "dependencies": {
+    "mdast-util-from-markdown": "2.0.1",
+    "mdast-util-gfm": "3.0.0",
+    "micromark-extension-gfm": "3.0.0"
+  }
+}
