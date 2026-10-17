@@ -299,9 +299,19 @@ function Bar({
   let dictationStatus = '';
   if (dictation.transcribing) {
     dictationStatus = localize('com_ui_transcribing');
+  } else if (dictation.connection === 'connecting') {
+    dictationStatus = localize('com_ui_connecting');
+  } else if (dictation.connection === 'reconnecting') {
+    dictationStatus = localize('com_ui_reconnecting');
   } else if (dictating) {
     dictationStatus = localize('com_ui_listening');
   }
+  /* Live dictation has states worth showing in place of the clock: until it
+     connects nothing is being heard, and a reconnect may lose a few words. */
+  const dictationLabel =
+    dictation.transcribing || dictation.connection != null
+      ? dictationStatus
+      : formatElapsed(dictation.elapsed);
 
   /* The arrangement is frozen for the length of a recording. The controls
      shrink to just the elapsed time while one runs, which would otherwise let
@@ -489,9 +499,7 @@ function Bar({
               )}
             >
               <span className="text-text-secondary text-xs tabular-nums" aria-hidden="true">
-                {dictation.transcribing
-                  ? localize('com_ui_transcribing')
-                  : formatElapsed(dictation.elapsed)}
+                {dictationLabel}
               </span>
             </div>
           </div>

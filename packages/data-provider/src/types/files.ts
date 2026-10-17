@@ -266,6 +266,31 @@ export type SpeechToTextResponse = {
   text: string;
 };
 
+/** Stable, machine-readable error codes for live transcription session failures. */
+export const RealtimeTranscriptionErrorCode = {
+  /** Live transcription is not configured (`speech.stt.openai.realtime`). */
+  NOT_CONFIGURED: 'stt_realtime_not_configured',
+  /** The browser's SDP offer is missing, malformed, or too large. */
+  INVALID_OFFER: 'stt_realtime_invalid_offer',
+  /** The provider refused or failed to open the session. No provider detail is disclosed. */
+  PROVIDER_ERROR: 'stt_realtime_provider_error',
+} as const;
+
+export type RealtimeTranscriptionErrorCode =
+  (typeof RealtimeTranscriptionErrorCode)[keyof typeof RealtimeTranscriptionErrorCode];
+
+/** The browser's WebRTC offer for a live transcription session. */
+export type RealtimeTranscriptionRequest = {
+  sdp: string;
+  /** The user's speech language setting (e.g. `en-US`); the server normalizes it. */
+  language?: string;
+};
+
+/** The provider's WebRTC answer; no credential is returned to the browser. */
+export type RealtimeTranscriptionResponse = {
+  sdp: string;
+};
+
 export type VoiceResponse = string[];
 
 export type UploadMutationOptions = {
@@ -284,6 +309,15 @@ export type SpeechToTextOptions = {
   onSuccess?: (data: SpeechToTextResponse, variables: FormData, context?: unknown) => void;
   onMutate?: (variables: FormData) => void | Promise<unknown>;
   onError?: (error: unknown, variables: FormData, context?: unknown) => void;
+};
+
+export type RealtimeTranscriptionOptions = {
+  onSuccess?: (
+    data: RealtimeTranscriptionResponse,
+    variables: RealtimeTranscriptionRequest,
+    context?: unknown,
+  ) => void;
+  onError?: (error: unknown, variables: RealtimeTranscriptionRequest, context?: unknown) => void;
 };
 
 export type TextToSpeechOptions = {

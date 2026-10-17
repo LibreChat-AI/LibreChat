@@ -418,6 +418,8 @@ export const speech = () => `${files()}/speech`;
 
 export const speechToText = () => `${speech()}/stt`;
 
+export const speechToTextRealtime = () => `${speechToText()}/realtime`;
+
 export const textToSpeech = () => `${speech()}/tts`;
 
 export const textToSpeechManual = () => `${textToSpeech()}/manual`;

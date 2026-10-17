@@ -2389,11 +2389,42 @@ const ttsSchema = z.object({
   localai: ttsLocalaiSchema.optional(),
 });
 
+/** Latency presets for live transcription; lower values return text sooner but less accurately. */
+export const sttRealtimeDelays = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+/** OpenAI rejects the whole request when a keyword spans lines or contains angle brackets. */
+const sttKeywordSchema = z
+  .string()
+  .min(1)
+  .refine((keyword) => !/[<>\r\n]/.test(keyword), {
+    message: 'Keywords cannot contain "<", ">", or line breaks',
+  });
+
+/** ISO 639-1, ISO 639-3, or a regional code such as `zh-tw`. */
+const sttLanguageSchema = z.string().regex(/^[a-z]{2,3}(-[a-z]{2})?$/i, {
+  message: 'Languages must be ISO 639-1 or 639-3 codes, optionally with a region (e.g. "zh-tw")',
+});
+
+const sttRealtimeSchema = z.object({
+  /** Realtime API base URL; defaults to `https://api.openai.com/v1`. */
+  url: z.string().optional(),
+  model: z.string(),
+  delay: z.enum(sttRealtimeDelays).optional(),
+});
+
 const sttOpenaiSchema = z.object({
   url: z.string().optional(),
   apiKey: z.string(),
   apiKeyPreview: apiKeyPreviewSchema,
   model: z.string(),
+  /** Free-form context about the audio, sent with every transcription. */
+  prompt: z.string().optional(),
+  /** Literal terms (names, acronyms) for `gpt-transcribe` models to spell exactly. */
+  keywords: z.array(sttKeywordSchema).optional(),
+  /** Expected languages for `gpt-transcribe` models when the user has not picked one. */
+  languages: z.array(sttLanguageSchema).optional(),
+  /** Enables live dictation over the Realtime API; the recorded path keeps using `model`. */
+  realtime: sttRealtimeSchema.optional(),
 });
 
 const sttAzureOpenAISchema = z.object({
@@ -2447,7 +2478,9 @@ const speechTab = z
       .or(
         z.object({
           /** Provider names remain valid for backward compatibility and are normalized for clients. */
-          engineSTT: z.enum(['browser', 'external', 'openai', 'azureOpenAI']).optional(),
+          engineSTT: z
+            .enum(['browser', 'external', 'realtime', 'openai', 'azureOpenAI'])
+            .optional(),
           languageSTT: z.string().optional(),
           autoTranscribeAudio: z.boolean().optional(),
           decibelValue: z.number().optional(),

@@ -4,7 +4,12 @@ import { EngineTTSDropdown } from '../SettingsTabs/Speech/TTS';
 
 export function EngineSTTSetting() {
   const { data } = useGetCustomConfigSpeechQuery();
-  return <EngineSTTDropdown external={Boolean(data?.sttExternal)} />;
+  return (
+    <EngineSTTDropdown
+      external={Boolean(data?.sttExternal)}
+      realtime={Boolean(data?.sttRealtime)}
+    />
+  );
 }
 
 export function EngineTTSSetting() {

@@ -6,19 +6,22 @@ import store from '~/store';
 
 interface EngineSTTDropdownProps {
   external: boolean;
+  /** Whether the admin configured live transcription (`speech.stt.openai.realtime`). */
+  realtime?: boolean;
 }
 
-const EngineSTTDropdown: React.FC<EngineSTTDropdownProps> = ({ external }) => {
+const EngineSTTDropdown: React.FC<EngineSTTDropdownProps> = ({ external, realtime = false }) => {
   const localize = useLocalize();
   const [engineSTT, setEngineSTT] = useRecoilState<string>(store.engineSTT);
   const speechToText = useRecoilValue(store.speechToText);
 
-  const endpointOptions = external
-    ? [
-        { value: 'browser', label: localize('com_nav_browser') },
-        { value: 'external', label: localize('com_nav_external') },
-      ]
-    : [{ value: 'browser', label: localize('com_nav_browser') }];
+  const endpointOptions = [{ value: 'browser', label: localize('com_nav_browser') }];
+  if (external) {
+    endpointOptions.push({ value: 'external', label: localize('com_nav_external') });
+  }
+  if (external && realtime) {
+    endpointOptions.push({ value: 'realtime', label: localize('com_nav_live') });
+  }
 
   const handleSelect = (value: string) => {
     setEngineSTT(value);

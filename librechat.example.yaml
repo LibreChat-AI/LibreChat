@@ -511,10 +511,30 @@ registration:
 #     openai:
 #       url: ''
 #       apiKey: '${STT_API_KEY}'
-#       model: ''
+#       model: ''  # e.g. 'gpt-transcribe', 'gpt-4o-transcribe', 'whisper-1'
+#       # Optional transcription hints. `keywords` and `languages` are sent only to
+#       # gpt-transcribe / gpt-live-transcribe; older models receive `prompt` and the
+#       # user's language as the singular `language` field instead.
+#       # prompt: 'Internal retail and software terminology may be used.'
+#       # keywords: ['LibreChat', 'OpenShift']
+#       # languages: ['de', 'en']  # narrowed to the user's speech language when one is set
+#       # Optional live dictation over a Realtime transcription session (WebRTC). When set,
+#       # users can pick "Live" under Settings > Speech > Engine. The server opens each
+#       # session with a short-lived client secret, so the API key never reaches the browser.
+#       # Live audio and transcripts flow directly between the browser and the provider and
+#       # are not routed through LibreChat, so `filters` rules for the `transcript` field are
+#       # not applied to them. Live sessions are billed per minute while the microphone is open.
+#       # realtime:
+#       #   model: 'gpt-live-transcribe'  # older realtime models only return text after Stop
+#       #   url: ''  # defaults to https://api.openai.com/v1
+#       #   delay: 'low'  # gpt-live-transcribe only: minimal | low | medium | high | xhigh
 #     allowedAddresses:
 #       - 'localhost:8000'
 #       - '127.0.0.1:8000'
+#
+#   speechTab:
+#     speechToText:
+#       engineSTT: 'external'  # 'browser' | 'external' | 'realtime' (requires stt.openai.realtime)
 
 # OCR (Mistral / Mistral-compatible) outbound requests to `ocr.baseURL` are SSRF-guarded at
 # connect time with the same default-deny for private targets. To point OCR at a private or

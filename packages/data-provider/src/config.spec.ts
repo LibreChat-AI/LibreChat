@@ -1573,8 +1573,49 @@ describe('agent background task config', () => {
   });
 });
 
+describe('speech-to-text OpenAI schema', () => {
+  const parseStt = (openai: Record<string, unknown>) =>
+    configSchema.safeParse({
+      version: '1.0',
+      speech: { stt: { openai: { apiKey: 'sk', model: 'gpt-transcribe', ...openai } } },
+    });
+
+  it('keeps a configuration without hints or a live block valid', () => {
+    expect(parseStt({}).success).toBe(true);
+  });
+
+  it('accepts transcription hints and a live block', () => {
+    const result = parseStt({
+      prompt: 'Retail and software terminology.',
+      keywords: ['LibreChat', 'OpenShift'],
+      languages: ['de', 'EN', 'zh-tw', 'yue'],
+      realtime: { model: 'gpt-live-transcribe', delay: 'low', url: 'https://api.openai.com/v1' },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each(['<b>', 'two\nlines', ''])('rejects the keyword %j', (keyword) => {
+    expect(parseStt({ keywords: [keyword] }).success).toBe(false);
+  });
+
+  it.each(['english', 'en_US', 'en-USA'])('rejects the language %j', (language) => {
+    expect(parseStt({ languages: [language] }).success).toBe(false);
+  });
+
+  it('requires a model for live transcription', () => {
+    expect(parseStt({ realtime: {} }).success).toBe(false);
+  });
+
+  it('rejects an unknown live delay', () => {
+    expect(parseStt({ realtime: { model: 'gpt-live-transcribe', delay: 'instant' } }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('speechTab schema', () => {
-  it.each(['browser', 'external', 'openai', 'azureOpenAI'])(
+  it.each(['browser', 'external', 'realtime', 'openai', 'azureOpenAI'])(
     'accepts the speech-to-text engine "%s"',
     (engineSTT) => {
       const result = configSchema.safeParse({

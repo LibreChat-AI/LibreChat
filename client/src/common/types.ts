@@ -37,6 +37,8 @@ export enum PromptsEditorMode {
 export enum STTEndpoints {
   browser = 'browser',
   external = 'external',
+  /** Streams the microphone to the provider over WebRTC; offered only when the admin configures it. */
+  realtime = 'realtime',
 }
 
 export enum TTSEndpoints {

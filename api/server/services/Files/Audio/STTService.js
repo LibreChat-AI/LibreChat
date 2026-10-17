@@ -11,6 +11,7 @@ const {
   getSafeErrorMetadata,
   applyAxiosProxyConfig,
   resolveConfigSecret,
+  getTranscriptionHints,
   applySSRFSafeAgentIfDirect,
   contentFilterBlockResponse,
   contentFilterUninspectableResponse,
@@ -200,7 +201,9 @@ class STTService {
   }
 
   /**
-   * Prepares the request for the OpenAI STT provider.
+   * Prepares the request for the OpenAI STT provider. `gpt-transcribe` models get the
+   * `languages`/`keywords`/`prompt` hints; older models keep the singular `language`.
+   * Axios serializes array hints as repeated `languages[]` / `keywords[]` form fields.
    * @param {Object} sttSchema - The STT schema for OpenAI.
    * @param {Stream} audioReadStream - The audio data to be transcribed.
    * @param {Object} audioFile - The audio file object (unused in OpenAI provider).
@@ -214,12 +217,8 @@ class STTService {
     const data = {
       file: audioReadStream,
       model: sttSchema.model,
+      ...getTranscriptionHints(sttSchema, sttSchema.model, language),
     };
-
-    const validLanguage = getValidatedLanguageCode(language);
-    if (validLanguage) {
-      data.language = validLanguage;
-    }
 
     const headers = {
       'Content-Type': 'multipart/form-data',

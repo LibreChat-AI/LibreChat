@@ -944,6 +944,12 @@ export const speechToText = (data: FormData): Promise<f.SpeechToTextResponse> =>
   return request.postMultiPart(endpoints.speechToText(), data);
 };
 
+export const createRealtimeTranscription = (
+  data: f.RealtimeTranscriptionRequest,
+): Promise<f.RealtimeTranscriptionResponse> => {
+  return request.post(endpoints.speechToTextRealtime(), data);
+};
+
 export const textToSpeech = (data: FormData): Promise<ArrayBuffer> => {
   return request.postTTS(endpoints.textToSpeechManual(), data);
 };

@@ -142,6 +142,70 @@ describe('useSpeechSettingsInit', () => {
     },
   );
 
+  describe('live engine', () => {
+    it('keeps a saved live engine while the server offers it', async () => {
+      localStorage.setItem('engineSTT', JSON.stringify('realtime'));
+      mockUseGetCustomConfigSpeechQuery.mockReturnValue({
+        data: { sttExternal: true, sttRealtime: true, ttsExternal: true },
+        isFetched: true,
+      });
+
+      const { result } = renderHook(() => useSpeechSettingsHarness(), { wrapper });
+
+      await waitFor(() => expect(result.current.speechSettingsInitialized).toBe(true));
+      expect(result.current.engineSTT).toBe('realtime');
+      expect(localStorage.getItem('sttRealtime')).toBeNull();
+    });
+
+    it('falls back to recorded transcription when the live block is removed', async () => {
+      localStorage.setItem('engineSTT', JSON.stringify('realtime'));
+      mockUseGetCustomConfigSpeechQuery.mockReturnValue({
+        data: { sttExternal: true, sttRealtime: false, ttsExternal: true },
+        isFetched: true,
+      });
+
+      const { result } = renderHook(() => useSpeechSettingsHarness(), { wrapper });
+
+      await waitFor(() => expect(result.current.engineSTT).toBe('external'));
+      expect(localStorage.getItem('engineSTT')).toBe(JSON.stringify('external'));
+    });
+
+    it('falls back to the browser when no speech provider is left', async () => {
+      localStorage.setItem('engineSTT', JSON.stringify('realtime'));
+      mockUseGetCustomConfigSpeechQuery.mockReturnValue({
+        data: { sttExternal: false, sttRealtime: false, ttsExternal: false },
+        isFetched: true,
+      });
+
+      const { result } = renderHook(() => useSpeechSettingsHarness(), { wrapper });
+
+      await waitFor(() => expect(result.current.engineSTT).toBe('browser'));
+    });
+
+    it('seeds the live engine as the server default', async () => {
+      mockUseGetCustomConfigSpeechQuery.mockReturnValue({
+        data: { sttExternal: true, sttRealtime: true, ttsExternal: true, engineSTT: 'realtime' },
+        isFetched: true,
+      });
+
+      const { result } = renderHook(() => useSpeechSettingsHarness(), { wrapper });
+
+      await waitFor(() => expect(result.current.engineSTT).toBe('realtime'));
+    });
+
+    it('does not seed a live default the server cannot serve', async () => {
+      mockUseGetCustomConfigSpeechQuery.mockReturnValue({
+        data: { sttExternal: true, sttRealtime: false, ttsExternal: true, engineSTT: 'realtime' },
+        isFetched: true,
+      });
+
+      const { result } = renderHook(() => useSpeechSettingsHarness(), { wrapper });
+
+      await waitFor(() => expect(result.current.speechSettingsInitialized).toBe(true));
+      await waitFor(() => expect(result.current.engineSTT).toBe('external'));
+    });
+  });
+
   it('normalizes unknown saved engines to browser', async () => {
     localStorage.setItem('engineSTT', JSON.stringify('unknown-stt'));
     localStorage.setItem('engineTTS', JSON.stringify('unknown-tts'));

@@ -31,11 +31,57 @@ describe('getCustomConfigSpeech', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.send).toHaveBeenCalledWith({
         sttExternal: true,
+        sttRealtime: false,
         ttsExternal: false,
         engineSTT: 'external',
       });
     },
   );
+
+  it('advertises live transcription when the OpenAI provider configures a realtime model', async () => {
+    const req = {
+      config: {
+        speech: {
+          stt: {
+            openai: {
+              apiKey: 'sk',
+              model: 'gpt-transcribe',
+              realtime: { model: 'gpt-live-transcribe' },
+            },
+          },
+          speechTab: { speechToText: { engineSTT: 'realtime' } },
+        },
+      },
+    };
+    const res = createResponse();
+
+    await getCustomConfigSpeech(req, res);
+
+    expect(res.send).toHaveBeenCalledWith({
+      sttExternal: true,
+      sttRealtime: true,
+      ttsExternal: false,
+      engineSTT: 'realtime',
+    });
+  });
+
+  it.each([
+    ['without a realtime block', { openai: { apiKey: 'sk', model: 'gpt-transcribe' } }],
+    [
+      'for Azure OpenAI',
+      { azureOpenAI: { apiKey: 'sk', instanceName: 'i', deploymentName: 'd', apiVersion: 'v' } },
+    ],
+  ])('does not advertise live transcription %s', async (_label, stt) => {
+    const res = createResponse();
+
+    await getCustomConfigSpeech({ config: { speech: { stt } } }, res);
+
+    expect(res.send).toHaveBeenCalledWith({
+      sttExternal: true,
+      sttRealtime: false,
+      ttsExternal: false,
+    });
+  });
 
   it.each(['browser', 'external'])('preserves the runtime STT engine "%s"', async (engineSTT) => {
     const req = {
@@ -71,6 +117,7 @@ describe('getCustomConfigSpeech', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.send).toHaveBeenCalledWith({
         sttExternal: false,
+        sttRealtime: false,
         ttsExternal: true,
         engineTTS: 'external',
       });
