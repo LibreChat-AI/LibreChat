@@ -23,7 +23,7 @@ import type { MCPToolAlias, ToolDefinition } from './classification';
 import { resolveJsonSchemaRefs, normalizeJsonSchema, sanitizeGeminiSchema } from '~/mcp/zod';
 import { buildToolClassification } from './classification';
 import { getToolDefinition } from './registry/definitions';
-import { toolkitExpansion } from './toolkits/mapping';
+import { toolkitExpansion, toolkitParent } from './toolkits/mapping';
 import { isMCPAllPlaceholder } from '~/mcp/utils';
 
 export interface MCPServerTool {
@@ -196,7 +196,7 @@ export async function loadToolDefinitions(
     }
 
     if (!mcpToolPattern.test(toolName)) {
-      if (!isBuiltInTool(toolName)) {
+      if (!isBuiltInTool(toolName) && !toolkitParent[toolName]) {
         continue;
       }
       const registryDef = getToolDefinition(toolName);

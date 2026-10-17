@@ -379,6 +379,145 @@ describe('primeResources', () => {
     });
   });
 
+  describe('conversation image fallback for image-edit', () => {
+    const imageFile: TFile = {
+      user: 'user1',
+      file_id: 'conv-image',
+      filename: 'conv.png',
+      filepath: '/uploads/conv.png',
+      object: 'file',
+      type: 'image/png',
+      bytes: 2048,
+      embedded: false,
+      usage: 0,
+      height: 800,
+      width: 600,
+    };
+    const documentFile: TFile = {
+      ...imageFile,
+      file_id: 'conv-doc',
+      filename: 'conv.pdf',
+      filepath: '/uploads/conv.pdf',
+      type: 'application/pdf',
+    };
+
+    it('primes the conversation images when no image is primed yet', async () => {
+      const getConversationImageFiles = jest.fn().mockResolvedValue([imageFile, documentFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: {},
+        agentId: 'agent_edit',
+        conversationId: 'conv1',
+        wantsImageEdit: true,
+        getConversationImageFiles,
+      });
+
+      expect(getConversationImageFiles).toHaveBeenCalledWith('conv1');
+      expect(mockFilterFiles).toHaveBeenCalledWith({
+        files: [imageFile],
+        userId: 'user1',
+        role: 'USER',
+        agentId: 'agent_edit',
+      });
+      expect(result.tool_resources?.[EToolResources.image_edit]?.files).toEqual([imageFile]);
+    });
+
+    it('drops conversation images the requesting user cannot access', async () => {
+      const getConversationImageFiles = jest.fn().mockResolvedValue([imageFile]);
+      mockFilterFiles.mockResolvedValue([]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: {},
+        agentId: 'agent_edit',
+        conversationId: 'conv1',
+        wantsImageEdit: true,
+        getConversationImageFiles,
+      });
+
+      expect(result.tool_resources?.[EToolResources.image_edit]).toBeUndefined();
+    });
+
+    it('does not load conversation images when the agent cannot edit images', async () => {
+      const getConversationImageFiles = jest.fn().mockResolvedValue([imageFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: {},
+        agentId: 'agent_edit',
+        conversationId: 'conv1',
+        wantsImageEdit: false,
+        getConversationImageFiles,
+      });
+
+      expect(getConversationImageFiles).not.toHaveBeenCalled();
+      expect(result.tool_resources?.[EToolResources.image_edit]).toBeUndefined();
+    });
+
+    it('leaves an already primed image_edit resource untouched', async () => {
+      const existing: TFile = { ...imageFile, file_id: 'existing-image' };
+      mockGetFiles.mockResolvedValue([existing]);
+      mockFilterFiles.mockResolvedValue([existing]);
+      const getConversationImageFiles = jest.fn().mockResolvedValue([imageFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: { [EToolResources.image_edit]: { file_ids: ['existing-image'] } },
+        agentId: 'agent_edit',
+        conversationId: 'conv1',
+        wantsImageEdit: true,
+        getConversationImageFiles,
+      });
+
+      expect(getConversationImageFiles).not.toHaveBeenCalled();
+      expect(result.tool_resources?.[EToolResources.image_edit]?.files).toEqual([existing]);
+    });
+
+    it('ignores conversation images missing dimensions', async () => {
+      const noDimensions: TFile = { ...imageFile, file_id: 'no-dimensions' };
+      delete (noDimensions as { height?: number }).height;
+      delete (noDimensions as { width?: number }).width;
+      const getConversationImageFiles = jest.fn().mockResolvedValue([noDimensions]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: {},
+        agentId: 'agent_edit',
+        conversationId: 'conv1',
+        wantsImageEdit: true,
+        getConversationImageFiles,
+      });
+
+      expect(result.tool_resources?.[EToolResources.image_edit]).toBeUndefined();
+    });
+  });
+
   describe('when attachments are provided', () => {
     it('should process files with fileIdentifier as execute_code resources', async () => {
       const mockFiles: TFile[] = [
