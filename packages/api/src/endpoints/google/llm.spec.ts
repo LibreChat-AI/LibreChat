@@ -1285,6 +1285,58 @@ describe('getGoogleConfig', () => {
       });
     });
 
+    it.each([
+      ['gemini-4-argon', 'global', 'aiplatform.googleapis.com'],
+      ['gemini-4-argon-cyber-permissive', 'global', 'aiplatform.googleapis.com'],
+      ['gemini-3.8-flash', 'us-central1', undefined],
+    ])(
+      'should default the Vertex AI location for %s when GOOGLE_LOC is unset',
+      (model, location, endpoint) => {
+        const credentials = {
+          [AuthKeys.GOOGLE_SERVICE_KEY]: {
+            project_id: 'test-project',
+          },
+        };
+
+        const result = getGoogleConfig(credentials, { modelOptions: { model } });
+
+        expect((result.llmConfig as Record<string, unknown>).location).toBe(location);
+        expect((result.llmConfig as Record<string, unknown>).endpoint).toBe(endpoint);
+      },
+    );
+
+    it('should keep a configured regional Vertex AI location for Gemini 4 Argon', () => {
+      process.env.GOOGLE_LOC = 'europe-west1';
+      const credentials = {
+        [AuthKeys.GOOGLE_SERVICE_KEY]: {
+          project_id: 'test-project',
+        },
+      };
+
+      const result = getGoogleConfig(credentials, { modelOptions: { model: 'gemini-4-argon' } });
+
+      expect((result.llmConfig as Record<string, unknown>).location).toBe('europe-west1');
+    });
+
+    it('should remove candidate-count params a stored preset carries for Gemini 4 Argon', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const modelOptions = {
+        model: 'gemini-4-argon',
+        candidateCount: 2,
+        candidate_count: 2,
+        n: 2,
+      } as unknown as t.GoogleParameters;
+
+      const result = getGoogleConfig(credentials, { modelOptions });
+
+      expect(result.llmConfig).not.toHaveProperty('candidateCount');
+      expect(result.llmConfig).not.toHaveProperty('candidate_count');
+      expect(result.llmConfig).not.toHaveProperty('n');
+    });
+
     it('should keep the eu multi-region and apply Argon handling on Vertex AI', () => {
       process.env.GOOGLE_LOC = 'eu';
       const credentials = {

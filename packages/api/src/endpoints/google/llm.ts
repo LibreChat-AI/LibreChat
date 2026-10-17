@@ -20,7 +20,12 @@ type GeminiFlashThinkingRule = {
   default: GoogleThinkingLevel;
   /** Levels the model rejects, mapped to the nearest level it accepts */
   substitutions?: Partial<Record<GoogleThinkingLevel, GoogleThinkingLevel>>;
+  /** Params this model rejects beyond the shared {@link geminiFlashLegacyParams} */
+  blockedParams?: ReadonlyArray<string>;
 };
+
+/** Argon returns HTTP 400 for a candidate count; `n` is its OpenAI-compatible alias. */
+const geminiArgonBlockedParams = ['candidateCount', 'candidate_count', 'n'] as const;
 
 /**
  * Gemini Flash models (3.5+) that drop the deprecated sampling parameters
@@ -47,8 +52,14 @@ const geminiFlashThinkingRules: ReadonlyArray<GeminiFlashThinkingRule> = [
     id: 'gemini-4-argon-cyber-permissive',
     default: 'HIGH',
     substitutions: { MINIMAL: 'LOW' },
+    blockedParams: geminiArgonBlockedParams,
   },
-  { id: 'gemini-4-argon', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
+  {
+    id: 'gemini-4-argon',
+    default: 'MEDIUM',
+    substitutions: { MINIMAL: 'LOW' },
+    blockedParams: geminiArgonBlockedParams,
+  },
   { id: 'gemini-3.8-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
   { id: 'gemini-3.7-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
   { id: 'gemini-3.6-flash', default: 'MEDIUM' },
@@ -77,6 +88,14 @@ const googleThinkingLevels = new Set<GoogleThinkingLevel>([
   'MEDIUM',
   'HIGH',
 ]);
+
+/**
+ * Models served only from the `global`, `us` and `eu` multi-region endpoints.
+ * With `GOOGLE_LOC` unset they use `global` instead of the `us-central1`
+ * regional default, which does not serve them; a configured location is kept.
+ * @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-argon
+ */
+const vertexMultiRegionOnlyModels = ['gemini-4-argon'] as const;
 
 const vertexMultiRegionEndpoints = new Map([
   ['eu', 'aiplatform.eu.rep.googleapis.com'],
@@ -175,15 +194,20 @@ function normalizeGoogleThinkingLevel(value: unknown): GoogleThinkingLevel | und
   return normalized;
 }
 
-function getGeminiFlashThinkingRule(model: string): GeminiFlashThinkingRule | undefined {
+function matchesGeminiModelId(model: string, id: string): boolean {
   const normalized = model.toLowerCase();
   const modelId = normalized.split('/').pop() ?? normalized;
-  for (const rule of geminiFlashThinkingRules) {
-    if (modelId === rule.id || modelId.startsWith(`${rule.id}-`)) {
-      return rule;
-    }
-  }
-  return undefined;
+  return modelId === id || modelId.startsWith(`${id}-`);
+}
+
+function getGeminiFlashThinkingRule(model: string): GeminiFlashThinkingRule | undefined {
+  return geminiFlashThinkingRules.find((rule) => matchesGeminiModelId(model, rule.id));
+}
+
+function getDefaultVertexLocation(model: string): string {
+  return vertexMultiRegionOnlyModels.some((id) => matchesGeminiModelId(model, id))
+    ? 'global'
+    : 'us-central1';
 }
 
 /**
@@ -199,11 +223,13 @@ export function stripGeminiFlashBlockedParams<T extends Record<string, unknown> 
   params: T,
   model: string | undefined,
 ): T {
-  if (params == null || getGeminiFlashThinkingRule(model ?? '') == null) {
+  const rule = params == null ? undefined : getGeminiFlashThinkingRule(model ?? '');
+  if (params == null || rule == null) {
     return params;
   }
   const sanitized = { ...params };
   geminiFlashLegacyParams.forEach((key) => delete sanitized[key]);
+  rule.blockedParams?.forEach((key) => delete sanitized[key]);
   return sanitized as T;
 }
 
@@ -265,6 +291,9 @@ function applyGeminiFlashOverrides({
   }
 
   geminiFlashLegacyParams.forEach((param) => {
+    delete mutableConfig[param];
+  });
+  thinkingRule.blockedParams?.forEach((param) => {
     delete mutableConfig[param];
   });
 
@@ -513,7 +542,7 @@ export function getGoogleConfig(
       },
       true,
     );
-    const location = process.env.GOOGLE_LOC || 'us-central1';
+    const location = process.env.GOOGLE_LOC || getDefaultVertexLocation(llmConfig.model ?? '');
     (llmConfig as VertexAIClientOptions).location = location;
   } else if (apiKey && provider === Providers.GOOGLE) {
     llmConfig.apiKey = apiKey;

@@ -188,6 +188,29 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         },
       );
 
+      it.each([
+        ['gemini-4-argon', false],
+        ['gemini-3.8-flash', true],
+      ])(
+        'should strip candidate-count addParams only where the model rejects them (%s)',
+        (model, kept) => {
+          const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
+          const options = {
+            modelOptions: { model },
+            customParams: { defaultParamsEndpoint: 'google' },
+            addParams: { candidateCount: 2, candidate_count: 2, n: 2 },
+            reverseProxyUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+          };
+
+          const result = getOpenAIConfig(apiKey, options, 'Gemini (Custom)');
+          const sent = { ...result.llmConfig, ...(result.llmConfig.modelKwargs ?? {}) };
+
+          for (const key of ['candidateCount', 'candidate_count', 'n']) {
+            expect(Object.prototype.hasOwnProperty.call(sent, key)).toBe(kept);
+          }
+        },
+      );
+
       it('should drop Google native params with dropParams', () => {
         const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
         const endpoint = 'Gemini (Custom)';
