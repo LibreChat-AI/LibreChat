@@ -9,7 +9,11 @@ import {
   hasToolCallPreview,
   toolCallPreviewsConfigSchema,
 } from 'librechat-data-provider';
-import type { TToolCallPreviewsConfig, ToolCallPreviewMarkers } from 'librechat-data-provider';
+import type {
+  Agents,
+  ToolCallPreviewMarkers,
+  TToolCallPreviewsConfig,
+} from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { AppConfigUserLike, GetAppConfigOptions } from '~/app/service';
 import { getAppConfigOptionsFromUser } from '~/app/service';
@@ -73,6 +77,9 @@ interface StoredToolCall extends ToolCallPreviewMarkers {
   args?: unknown;
   approval?: unknown;
   subagent_content?: unknown;
+  subagentAttachmentCalls?: Agents.SubagentAttachmentCall[];
+  agentId?: unknown;
+  subagentIdentity?: unknown;
 }
 
 interface StoredToolCallPart {
@@ -81,9 +88,10 @@ interface StoredToolCallPart {
   tool_call?: StoredToolCall;
 }
 
-/** A message as read for a client; only `content` is inspected. */
+/** A message as read for a client; `content` is previewed and `attachments` only read. */
 export interface PreviewableMessage {
   content?: unknown[] | null;
+  attachments?: unknown[] | null;
   /** Stamped onto each preview as `previewRevision`, so clients key fetched parts to it. */
   updatedAt?: Date | string | number | null;
 }
@@ -159,6 +167,113 @@ function hasPendingApproval(parts: unknown[]): boolean {
     }
   }
   return false;
+}
+
+/** The agent and step scope an attachment was saved with. */
+type AttachmentScope = { agentId?: string; stepId?: string };
+
+/** Each tool call id a message's attachments were saved under, with the scopes saved with it. */
+type AttachmentScopes = ReadonlyMap<string, readonly AttachmentScope[]>;
+
+/** A scope both sides carry must agree: the ownership rule the client applies. */
+const scopeAgrees = (call: AttachmentScope, file: AttachmentScope): boolean =>
+  (call.agentId == null || file.agentId == null || call.agentId === file.agentId) &&
+  (call.stepId == null || file.stepId == null || call.stepId === file.stepId);
+
+/** The agent a stored subagent call ran, from its persisted identity. */
+const runAgentId = (toolCall: StoredToolCall): string | undefined => {
+  const identity = toolCall.subagentIdentity as { subagentAgentId?: unknown } | undefined;
+  return typeof identity?.subagentAgentId === 'string' ? identity.subagentAgentId : undefined;
+};
+
+/** Whether the call carries every scope the attachment does. */
+const scopeMatches = (call: AttachmentScope, file: AttachmentScope): boolean =>
+  (file.agentId == null || call.agentId === file.agentId) &&
+  (file.stepId == null || call.stepId === file.stepId);
+
+/**
+ * Tool calls anywhere in the parts, including inside nested subagent runs, that one of the
+ * message's attachments can belong to, with the agent and step scope a client checks it against.
+ * For each attachment scope only the first call matching it exactly and the first call agreeing
+ * with it are kept (the two a client can choose between), so a reused id, or an attachment with
+ * no scope to narrow it, does not grow the hint with the transcript.
+ */
+function nestedAttachmentCalls(
+  parts: unknown[],
+  wanted: AttachmentScopes,
+  ownerAgentId?: string,
+): Agents.SubagentAttachmentCall[] {
+  const found = new Map<string, Agents.SubagentAttachmentCall>();
+  const exactFor = new Set<AttachmentScope>();
+  const agreeingFor = new Set<AttachmentScope>();
+  /** Each level carries the agent of the run it belongs to, for parts that do not stamp one. */
+  const stack: Array<[unknown[], string | undefined]> = [[parts, ownerAgentId]];
+  while (stack.length > 0) {
+    const [current, levelOwner] = stack.pop() ?? [[], undefined];
+    for (const part of current) {
+      if (!isToolCallPart(part)) {
+        continue;
+      }
+      const { id, stepId, subagent_content } = part.tool_call;
+      const scopes = typeof id === 'string' ? wanted.get(id) : undefined;
+      if (scopes != null) {
+        /** The owner is stored on the part, on the call, or on the run that holds it. */
+        const owner = part.agentId ?? part.tool_call.agentId ?? levelOwner;
+        const call: Agents.SubagentAttachmentCall = {
+          id: id as string,
+          ...(typeof owner === 'string' ? { agentId: owner } : {}),
+          ...(typeof stepId === 'string' ? { stepId } : {}),
+        };
+        let useful = false;
+        for (const scope of scopes) {
+          if (!exactFor.has(scope) && scopeMatches(call, scope)) {
+            exactFor.add(scope);
+            useful = true;
+          }
+          if (!agreeingFor.has(scope) && scopeAgrees(call, scope)) {
+            agreeingFor.add(scope);
+            useful = true;
+          }
+        }
+        const identity = [call.id, call.agentId ?? '', call.stepId ?? ''].join('\u0000');
+        if (useful && !found.has(identity)) {
+          found.set(identity, call);
+        }
+      }
+      if (Array.isArray(subagent_content)) {
+        stack.push([subagent_content, runAgentId(part.tool_call)]);
+      }
+    }
+  }
+  return [...found.values()];
+}
+
+/** The tool call ids a message's attachments were saved under, with their scopes. */
+function attachmentToolCallIds(message: PreviewableMessage): AttachmentScopes | undefined {
+  if (!Array.isArray(message.attachments) || message.attachments.length === 0) {
+    return undefined;
+  }
+  const scopes = new Map<string, AttachmentScope[]>();
+  for (const attachment of message.attachments) {
+    if (!isObject(attachment)) {
+      continue;
+    }
+    const { toolCallId, agentId, stepId } = attachment as {
+      toolCallId?: unknown;
+      agentId?: unknown;
+      stepId?: unknown;
+    };
+    if (typeof toolCallId !== 'string' || toolCallId === '') {
+      continue;
+    }
+    const entries = scopes.get(toolCallId) ?? [];
+    entries.push({
+      ...(typeof agentId === 'string' ? { agentId } : {}),
+      ...(typeof stepId === 'string' ? { stepId } : {}),
+    });
+    scopes.set(toolCallId, entries);
+  }
+  return scopes.size > 0 ? scopes : undefined;
 }
 
 /** Cuts at `end` without splitting a surrogate pair. */
@@ -444,12 +559,15 @@ export function previewToolCallOutput(
 /**
  * Returns the tool call with long content replaced by previews, or the same object when nothing
  * needed shortening. Only settled calls change: a call still waiting on output, approval or a
- * reader's answer keeps every field, since its card acts on them.
+ * reader's answer keeps every field, since its card acts on them. When the subagent transcript is
+ * left out, its tool calls that `attachmentIds` names stay on the call with their scope, so the
+ * files those calls saved still route to it before the transcript loads.
  */
 export function previewToolCall<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
   revision = '',
+  attachmentIds?: AttachmentScopes,
 ): T {
   if (!isAgentToolCall(toolCall) || !isSettled(toolCall) || !hasIdentity(toolCall)) {
     return toolCall;
@@ -486,6 +604,13 @@ export function previewToolCall<T extends StoredToolCall>(
     delete next.subagent_content;
     next.subagentContentOmitted = true;
     next.subagentContentParts = (subagentContent as unknown[]).length;
+    const childCalls =
+      attachmentIds == null
+        ? []
+        : nestedAttachmentCalls(subagentContent as unknown[], attachmentIds, runAgentId(toolCall));
+    if (childCalls.length > 0) {
+      next.subagentAttachmentCalls = childCalls;
+    }
   }
   if (revision !== '') {
     next.previewRevision = revision;
@@ -501,9 +626,10 @@ function previewToolCallSafely<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
   revision: string,
+  attachmentIds?: AttachmentScopes,
 ): T {
   try {
-    return previewToolCall(toolCall, limits, revision);
+    return previewToolCall(toolCall, limits, revision, attachmentIds);
   } catch (error) {
     logger.warn('[toolCallPreviews] Sending a tool call in full; its preview failed', error);
     return toolCall;
@@ -515,6 +641,7 @@ export function previewContentToolCalls(
   content: unknown[],
   limits: ToolCallPreviewLimits,
   revision = '',
+  attachmentIds?: AttachmentScopes,
 ): unknown[] {
   let result: unknown[] | undefined;
   /** First index of each identity; a repeat sends both calls whole (see `toolCallIdentity`). */
@@ -537,7 +664,7 @@ export function previewContentToolCalls(
       continue;
     }
     firstIndex.set(identity, i);
-    const toolCall = previewToolCallSafely(part.tool_call, limits, revision);
+    const toolCall = previewToolCallSafely(part.tool_call, limits, revision, attachmentIds);
     if (toolCall === part.tool_call) {
       continue;
     }
@@ -566,7 +693,12 @@ export function previewMessagesToolCalls<T extends PreviewableMessage>(
     if (!Array.isArray(message?.content)) {
       continue;
     }
-    const content = previewContentToolCalls(message.content, limits, messageRevision(message));
+    const content = previewContentToolCalls(
+      message.content,
+      limits,
+      messageRevision(message),
+      attachmentToolCallIds(message),
+    );
     if (content === message.content) {
       continue;
     }
@@ -713,16 +845,28 @@ export function withToolCallPreviews<T extends MessagesResult>(
 
 /**
  * Previews one message a mutation returns (an artifact edit's content, a branched response), so
- * a client that asked for previews merges a bounded copy into its conversation cache.
+ * a client that asked for previews merges a bounded copy into its conversation cache. A response
+ * that leaves out the stored `attachments` passes them separately: they only decide which
+ * subagent child calls the preview keeps as hints, and are not added to the response.
  */
 export function withMessageToolCallPreviews<T extends PreviewableMessage>(
   req: PreviewableResultRequest,
   message: T,
+  attachments?: unknown[] | null,
 ): T {
   if (message == null || !Array.isArray(message.content)) {
     return message;
   }
-  return withToolCallPreviews(req, { messages: [message] }).messages[0];
+  if (attachments == null || message.attachments != null) {
+    return withToolCallPreviews(req, { messages: [message] }).messages[0];
+  }
+  const withAttachments = { ...message, attachments };
+  const previewed = withToolCallPreviews(req, { messages: [withAttachments] }).messages[0];
+  if (previewed === withAttachments) {
+    return message;
+  }
+  const { attachments: _attachments, ...rest } = previewed;
+  return rest as T;
 }
 
 interface MessageWriteRequest {

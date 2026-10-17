@@ -3,6 +3,7 @@ import { atomFamily } from 'jotai/utils';
 import { atom, useAtomValue, useStore } from 'jotai';
 import { ContentTypes, getToolTimingDurations } from 'librechat-data-provider';
 import type {
+  Agents,
   PartMetadata,
   SubagentControlReceipt,
   SubagentControlRequest,
@@ -99,6 +100,8 @@ const MAX_RECENT_EVENT_KEYS = 256;
 const MAX_PENDING_SEQUENCE_EVENTS = 100;
 const MAX_PENDING_SEQUENCE_BYTES = 128 * 1024;
 const MAX_LIVE_ACTIVITY_ITEMS = 100;
+/** Evicted child calls kept per invocation for routing their files. */
+const MAX_EVICTED_TOOL_CALLS = 500;
 const MAX_LIVE_ACTIVITY_BYTES = 64 * 1024;
 const MAX_SINGLE_ACTIVITY_ENCODED_BYTES = MAX_LIVE_ACTIVITY_BYTES - 2;
 const MAX_SINGLE_ACTIVITY_TEXT_BYTES = 60 * 1024;
@@ -205,6 +208,7 @@ const boundSingletonPart = (part: SubagentContentPart): SubagentContentPart => {
 const boundContentParts = (
   parts: SubagentContentPart[],
   state: SubagentAggregatorState,
+  ownerAgentId?: string,
 ): { parts: SubagentContentPart[]; state: SubagentAggregatorState } => {
   const start = Math.max(0, parts.length - MAX_LIVE_ACTIVITY_ITEMS);
   let offset = parts.length;
@@ -235,6 +239,8 @@ const boundContentParts = (
       part.type === ContentTypes.TOOL_CALL ? [[part.tool_call.id, index]] : [],
     ),
   );
+  const dropped = bounded.length === 0 ? parts : parts.slice(0, offset);
+  const evicted = collectNestedCalls(dropped, [], ownerAgentId);
   return {
     parts: bounded,
     state: {
@@ -242,6 +248,13 @@ const boundContentParts = (
       openTextIdx: rebase(state.openTextIdx),
       openThinkIdx: rebase(state.openThinkIdx),
       toolCallIndexById,
+      ...(evicted.length === 0
+        ? {}
+        : {
+            evictedToolCalls: [...(state.evictedToolCalls ?? []), ...evicted].slice(
+              -MAX_EVICTED_TOOL_CALLS,
+            ),
+          }),
     },
   };
 };
@@ -476,10 +489,95 @@ export const subagentControlStateByTask = atomFamily<
 /** Stable identity for one subagent invocation in the parent conversation. */
 export { subagentProgressKey } from '@librechat/chat';
 
-/** Progress state keyed by one concrete tool-call content-part occurrence. */
-export const subagentProgressByToolCallId = atomFamily((_key: string) =>
-  atom<SubagentProgress | null>(null),
-);
+type NestedToolCallFields = {
+  id?: string;
+  name?: string;
+  stepId?: string;
+  agentId?: string;
+  subagentIdentity?: { subagentAgentId?: string };
+  subagent_content?: TMessageContentParts[];
+  subagentAttachmentCalls?: Agents.SubagentAttachmentCall[];
+};
+
+/** The tool call of a content part, read with the fields nested runs carry. */
+export const nestedToolCallOf = (
+  part: TMessageContentParts | SubagentContentPart | undefined,
+): NestedToolCallFields | undefined =>
+  part?.type === ContentTypes.TOOL_CALL
+    ? (part[ContentTypes.TOOL_CALL] as NestedToolCallFields | undefined)
+    : undefined;
+
+/**
+ * The tool calls of a subagent transcript, nested runs included, with their
+ * scope: the owner on the part, or on the call when the part has none, or the
+ * agent of the run the call belongs to (`ownerAgentId` for `parts` itself, the
+ * stored `subagentIdentity` of each nested run). A preview that left a
+ * transcript out names the calls its files were saved under in
+ * `subagentAttachmentCalls`.
+ */
+export function collectNestedCalls(
+  parts: ReadonlyArray<TMessageContentParts | SubagentContentPart | undefined> | undefined,
+  calls: Agents.SubagentAttachmentCall[] = [],
+  ownerAgentId?: string,
+): Agents.SubagentAttachmentCall[] {
+  /** An explicit stack, in transcript order: stored chains can nest thousands deep. Each level
+   *  carries the agent of the run it belongs to, for parts that do not stamp their own. */
+  const stack: Array<
+    [ReadonlyArray<TMessageContentParts | SubagentContentPart | undefined>, number, string?]
+  > = parts == null ? [] : [[parts, 0, ownerAgentId]];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const [current, index, levelOwner] = frame;
+    if (index >= current.length) {
+      stack.pop();
+      continue;
+    }
+    frame[1] = index + 1;
+    const part = current[index];
+    const toolCall = nestedToolCallOf(part);
+    if (toolCall?.id) {
+      const agentId =
+        (part as { agentId?: string } | undefined)?.agentId ?? toolCall.agentId ?? levelOwner;
+      calls.push({
+        id: toolCall.id,
+        ...(agentId == null ? {} : { agentId }),
+        ...(toolCall.stepId == null ? {} : { stepId: toolCall.stepId }),
+      });
+    }
+    calls.push(...(toolCall?.subagentAttachmentCalls ?? []));
+    if (Array.isArray(toolCall?.subagent_content)) {
+      stack.push([toolCall.subagent_content, 0, toolCall.subagentIdentity?.subagentAgentId]);
+    }
+  }
+  return calls;
+}
+
+/**
+ * Progress state keyed by one concrete tool-call content-part occurrence. Every write also
+ * records the child tool calls the activity shows (`rememberSubagentChildCalls`), whether or not
+ * anything reads the member, since the bounded activity can evict a call that saved a file
+ * before a reader mounts.
+ */
+export const subagentProgressByToolCallId = atomFamily((key: string) => {
+  const progress = atom<SubagentProgress | null>(null);
+  return atom(
+    (get) => get(progress),
+    (get, set, next: SetStateAction<SubagentProgress | null>) => {
+      const value = typeof next === 'function' ? next(get(progress)) : next;
+      if (value != null) {
+        const segments = [value, ...(value.replaySegments ?? []).map(({ progress }) => progress)];
+        rememberSubagentChildCalls(
+          key,
+          segments.flatMap((segment) => [
+            ...(segment.aggregatorState?.evictedToolCalls ?? []),
+            ...collectNestedCalls(segment.contentParts, [], segment.subagentAgentId),
+          ]),
+        );
+      }
+      set(progress, value);
+    },
+  );
+});
 
 /** Parent delivery remains authoritative until its ordered SSE close boundary. */
 export const subagentParentStreamOpenByToolCallId = atomFamily((_key: string) => atom(false));
@@ -507,11 +605,57 @@ export function listRegisteredSubagentProgressKeys(): string[] {
   return [...registeredSubagentProgressKeys];
 }
 
+/**
+ * Child tool calls each invocation's live activity has shown, kept with the invocation rather
+ * than a reader: the bounded activity evicts early parts, and a reader that remounts after that
+ * still has to route the files those calls saved. Freed with the invocation's members.
+ */
+const seenSubagentChildCalls = new Map<string, Map<string, Agents.SubagentAttachmentCall>>();
+
+/**
+ * Adds `calls` to what the invocation has shown, keeping the most recent `MAX_EVICTED_TOOL_CALLS`
+ * like the eviction list it is fed from. A call already remembered keeps its place, since every
+ * write replays the eviction list; `refresh` moves the given calls to the newest end instead, for
+ * the owners of files a message shows.
+ */
+export function rememberSubagentChildCalls(
+  invocationKey: string,
+  calls: Agents.SubagentAttachmentCall[],
+  refresh = false,
+): void {
+  if (calls.length === 0) return;
+  const seen = seenSubagentChildCalls.get(invocationKey) ?? new Map();
+  for (const call of calls) {
+    const identity = [call.id, call.agentId ?? '', call.stepId ?? ''].join('\u0000');
+    if (seen.has(identity)) {
+      if (!refresh) continue;
+      seen.delete(identity);
+    }
+    seen.set(identity, call);
+  }
+  for (const identity of seen.keys()) {
+    if (seen.size <= MAX_EVICTED_TOOL_CALLS) break;
+    seen.delete(identity);
+  }
+  seenSubagentChildCalls.set(invocationKey, seen);
+}
+
+/** The remembered child calls of an invocation whose id is in `ids`. */
+export function rememberedSubagentChildCalls(
+  invocationKey: string,
+  ids: ReadonlySet<string>,
+): Agents.SubagentAttachmentCall[] {
+  const seen = seenSubagentChildCalls.get(invocationKey);
+  if (seen == null || ids.size === 0) return [];
+  return [...seen.values()].filter((call) => ids.has(call.id));
+}
+
 /** Frees idle invocation members; mounted readers retain their stream identity. */
 export function removeSubagentProgressAtoms(invocationKey: string): void {
   if (subagentProgressReaders.has(invocationKey)) return;
   subagentProgressByToolCallId.remove(invocationKey);
   subagentParentStreamOpenByToolCallId.remove(invocationKey);
+  seenSubagentChildCalls.delete(invocationKey);
 }
 
 /** How many mounted readers hold each invocation's member. Removing one while
@@ -533,24 +677,27 @@ const subagentProgressReaders = new Map<string, number>();
  */
 export function useSubagentProgress(invocationKey: string): SubagentProgress | null {
   const store = useStore();
-  useEffect(() => {
-    subagentProgressReaders.set(
-      invocationKey,
-      (subagentProgressReaders.get(invocationKey) ?? 0) + 1,
-    );
-    return () => {
-      const remaining = (subagentProgressReaders.get(invocationKey) ?? 1) - 1;
-      if (remaining > 0) {
-        subagentProgressReaders.set(invocationKey, remaining);
-        return;
-      }
-      subagentProgressReaders.delete(invocationKey);
-      if (registeredSubagentProgressKeys.has(invocationKey)) return;
-      if (store.get(subagentProgressByToolCallId(invocationKey)) != null) return;
-      removeSubagentProgressAtoms(invocationKey);
-    };
-  }, [invocationKey, store]);
+  useEffect(() => retainSubagentProgress(store, invocationKey), [invocationKey, store]);
   return useAtomValue(subagentProgressByToolCallId(invocationKey));
+}
+
+/** Counts one reader of an invocation's member; the returned release applies the rules above. */
+export function retainSubagentProgress(
+  store: ReturnType<typeof useStore>,
+  invocationKey: string,
+): () => void {
+  subagentProgressReaders.set(invocationKey, (subagentProgressReaders.get(invocationKey) ?? 0) + 1);
+  return () => {
+    const remaining = (subagentProgressReaders.get(invocationKey) ?? 1) - 1;
+    if (remaining > 0) {
+      subagentProgressReaders.set(invocationKey, remaining);
+      return;
+    }
+    subagentProgressReaders.delete(invocationKey);
+    if (registeredSubagentProgressKeys.has(invocationKey)) return;
+    if (store.get(subagentProgressByToolCallId(invocationKey)) != null) return;
+    removeSubagentProgressAtoms(invocationKey);
+  };
 }
 
 const validActivitySequence = (value: number | undefined): value is number =>
@@ -682,6 +829,7 @@ const foldAcceptedSubagentEvents = (
   ({ parts: contentParts, state: aggregatorState } = boundContentParts(
     contentParts,
     aggregatorState,
+    events[events.length - 1].subagentAgentId ?? previous?.subagentAgentId,
   ));
   tickerState = boundTickerState(tickerState);
   const last = events[events.length - 1];
@@ -955,23 +1103,27 @@ function prependSubagentReplay(
     } else target = part.type === ContentTypes.TEXT ? state.openTextIdx! : state.openThinkIdx!;
     indices.set(index, target);
   }
-  const bounded = boundContentParts(parts, {
-    ...previous.aggregatorState,
-    messagePhaseByStepId: inheritMessagePhases
-      ? {
-          ...prefix.aggregatorState.messagePhaseByStepId,
-          ...previous.aggregatorState.messagePhaseByStepId,
-        }
-      : previous.aggregatorState.messagePhaseByStepId,
-    openTextIdx:
-      previous.aggregatorState.openTextIdx == null
-        ? null
-        : (indices.get(previous.aggregatorState.openTextIdx) ?? null),
-    openThinkIdx:
-      previous.aggregatorState.openThinkIdx == null
-        ? null
-        : (indices.get(previous.aggregatorState.openThinkIdx) ?? null),
-  });
+  const bounded = boundContentParts(
+    parts,
+    {
+      ...previous.aggregatorState,
+      messagePhaseByStepId: inheritMessagePhases
+        ? {
+            ...prefix.aggregatorState.messagePhaseByStepId,
+            ...previous.aggregatorState.messagePhaseByStepId,
+          }
+        : previous.aggregatorState.messagePhaseByStepId,
+      openTextIdx:
+        previous.aggregatorState.openTextIdx == null
+          ? null
+          : (indices.get(previous.aggregatorState.openTextIdx) ?? null),
+      openThinkIdx:
+        previous.aggregatorState.openThinkIdx == null
+          ? null
+          : (indices.get(previous.aggregatorState.openThinkIdx) ?? null),
+    },
+    previous.subagentAgentId,
+  );
   const offset = prefix.tickerState.lines.length;
   return {
     ...previous,
@@ -1270,7 +1422,7 @@ function reconcileReplayTiming(
   const bounded =
     parts === progress.contentParts
       ? { parts, state: phased.state }
-      : boundContentParts(parts, phased.state);
+      : boundContentParts(parts, phased.state, progress.subagentAgentId);
   return {
     ...progress,
     contentParts: bounded.parts,

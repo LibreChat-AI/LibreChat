@@ -32,6 +32,9 @@ type TestToolCall = {
   outputTruncated?: true;
   argsTruncated?: true;
   subagentContentOmitted?: true;
+  subagentAttachmentCalls?: Array<{ id: string; agentId?: string; stepId?: string }>;
+  agentId?: string;
+  subagentIdentity?: { subagentKind?: string; subagentAgentId?: string };
   function?: unknown;
 };
 
@@ -413,6 +416,113 @@ describe('previewMessagesToolCalls', () => {
     expect(result[1].content?.[2]).toBe(smallPart);
     expect(result[1].content?.[1]).toMatchObject({ tool_call: { outputTruncated: true } });
     expect(bigPart.tool_call.output).toHaveLength(10_000);
+  });
+
+  it('keeps the nested tool call ids an omitted transcript saved attachments under', () => {
+    const transcript = [
+      toolPart({
+        id: 'child_image',
+        stepId: 'step_child',
+        agentId: 'agent_on_call',
+        output: 'Image generated',
+      }),
+      toolPart({
+        id: 'child_subagent',
+        name: 'subagent',
+        output: 'done',
+        subagent_content: [
+          {
+            ...toolPart({ id: 'grandchild_image', output: 'Image generated' }),
+            agentId: 'agent_grandchild',
+          },
+          toolPart({ id: 'grandchild_search', output: 'found' }),
+        ],
+      }),
+    ];
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'summary',
+      subagent_content: transcript,
+    });
+    const attachments = [
+      { file_id: 'f1', toolCallId: 'child_image' },
+      { file_id: 'f2', toolCallId: 'grandchild_image' },
+      { file_id: 'f3', toolCallId: 'unrelated' },
+    ];
+    const [message] = previewMessagesToolCalls([{ content: [subagent], attachments }], limits);
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call).not.toHaveProperty('subagent_content');
+    expect(part.tool_call.subagentAttachmentCalls).toEqual(
+      expect.arrayContaining([
+        { id: 'child_image', stepId: 'step_child', agentId: 'agent_on_call' },
+        { id: 'grandchild_image', agentId: 'agent_grandchild' },
+      ]),
+    );
+    expect(part.tool_call.subagentAttachmentCalls).toHaveLength(2);
+
+    const [bare] = previewMessagesToolCalls([{ content: [subagent] }], limits);
+    const [barePart] = bare.content as Array<{ tool_call: TestToolCall }>;
+    expect(barePart.tool_call).toMatchObject({ subagentContentOmitted: true });
+    expect(barePart.tool_call).not.toHaveProperty('subagentAttachmentCalls');
+  });
+
+  it('keeps one hint per owning identity when a provider reuses a child id', () => {
+    const reused = Array.from({ length: 50 }, (_, index) =>
+      toolPart({ id: 'call_0', stepId: `step_${index}`, output: 'done' }),
+    );
+    const subagent = toolPart({ name: 'subagent', output: 'summary', subagent_content: reused });
+    const [message] = previewMessagesToolCalls(
+      [{ content: [subagent], attachments: [{ toolCallId: 'call_0', stepId: 'step_7' }] }],
+      limits,
+    );
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toEqual([{ id: 'call_0', stepId: 'step_7' }]);
+  });
+
+  it('keeps one hint for an unscoped attachment whatever the id reuse', () => {
+    const reused = Array.from({ length: 50 }, (_, index) =>
+      toolPart({ id: 'call_0', stepId: `step_${index}`, output: 'done' }),
+    );
+    const subagent = toolPart({ name: 'subagent', output: 'summary', subagent_content: reused });
+    const [message] = previewMessagesToolCalls(
+      [{ content: [subagent], attachments: [{ toolCallId: 'call_0' }] }],
+      limits,
+    );
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toHaveLength(1);
+  });
+
+  it('scopes hints to the agent a stored subagent call ran', () => {
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'summary',
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_child' },
+      subagent_content: [toolPart({ id: 'call_0', output: 'done' })],
+    });
+    const [message] = previewMessagesToolCalls(
+      [{ content: [subagent], attachments: [{ toolCallId: 'call_0', agentId: 'agent_child' }] }],
+      limits,
+    );
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toEqual([
+      { id: 'call_0', agentId: 'agent_child' },
+    ]);
+  });
+
+  it('keeps hints for a mutation response that leaves its attachments out', () => {
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'summary',
+      subagent_content: [toolPart({ id: 'child_image', output: 'Image generated' })],
+    });
+    const req = { query: { toolPreviews: '1' }, config: {} } as unknown as Parameters<
+      typeof withMessageToolCallPreviews
+    >[0];
+    const response = { conversationId: 'c1', content: [subagent], text: '' };
+    const previewed = withMessageToolCallPreviews(req, response, [{ toolCallId: 'child_image' }]);
+    const [part] = previewed.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toEqual([{ id: 'child_image' }]);
+    expect(previewed).not.toHaveProperty('attachments');
   });
 
   it('previews a call only when its identity is unique in the message', () => {

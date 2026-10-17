@@ -178,6 +178,11 @@ export interface SubagentAggregatorState {
   idlessTextPhase?: AssistantTextPhase;
   /** `tool_call.id` → its index in `contentParts` for O(1) updates. */
   toolCallIndexById: Record<string, number>;
+  /**
+   * Tool calls bounding dropped from `contentParts`, with their scope, so the
+   * files they saved keep an owner after their parts are gone. Bounded too.
+   */
+  evictedToolCalls?: Array<{ id: string; agentId?: string; stepId?: string }>;
 }
 
 /** Initial empty aggregator state. */
