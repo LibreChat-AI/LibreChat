@@ -22,6 +22,17 @@ const scope = (Sentry as unknown as { __scope: { setTag: jest.Mock } }).__scope;
 describe('errorReporting', () => {
   beforeEach(() => jest.clearAllMocks());
 
+  it('does not load @sentry/node until a DSN is configured', () => {
+    jest.isolateModules(() => {
+      jest.doMock('@sentry/node', () => {
+        throw new Error('@sentry/node loaded at import time');
+      });
+      const isolated = jest.requireActual<typeof import('./index')>('./index');
+      expect(isolated.initErrorReporting({})).toBe(false);
+      isolated.reportError(new Error('boom'), { source: 'express' });
+    });
+  });
+
   it('stays off without a DSN, and reporting is then a no-op', () => {
     expect(initErrorReporting({ SENTRY_DSN: '  ' })).toBe(false);
     reportError(new Error('boom'), { source: 'express' });

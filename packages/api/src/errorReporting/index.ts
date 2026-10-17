@@ -1,4 +1,4 @@
-import * as Sentry from '@sentry/node';
+type SentryNode = typeof import('@sentry/node');
 
 /**
  * Server error reporting to GlitchTip (Sentry-compatible), TensorGrid's project `tchat` at
@@ -12,6 +12,9 @@ import * as Sentry from '@sentry/node';
  *
  * Privacy: no user info, cookies, headers, bodies or query strings. Conversations and provider
  * keys travel in exactly those places.
+ *
+ * `@sentry/node` is loaded only once a DSN is set. Importing it runs `promisify(fs.readFile)`,
+ * which throws in every spec that mocks `fs` and loads `@librechat/api`.
  */
 export interface ErrorReportingContext {
   /** Where the error surfaced, e.g. `express`, `uncaughtException`. */
@@ -20,13 +23,15 @@ export interface ErrorReportingContext {
   path?: string;
 }
 
-let enabled = false;
+let sentry: SentryNode | undefined;
 
 export function initErrorReporting(env: NodeJS.ProcessEnv = process.env): boolean {
   const dsn = env.SENTRY_DSN?.trim();
   if (!dsn) {
     return false;
   }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy: see module note
+  const Sentry = require('@sentry/node') as SentryNode;
   Sentry.init({
     dsn,
     environment: env.SENTRY_ENVIRONMENT?.trim() || undefined,
@@ -52,15 +57,16 @@ export function initErrorReporting(env: NodeJS.ProcessEnv = process.env): boolea
       urlQueryParams: false,
     },
   });
-  enabled = true;
+  sentry = Sentry;
   return true;
 }
 
 /** Reports an error that reached a boundary (request, process). A no-op when reporting is off. */
 export function reportError(error: unknown, context: ErrorReportingContext): void {
-  if (!enabled) {
+  if (!sentry) {
     return;
   }
+  const Sentry = sentry;
   Sentry.withScope((scope) => {
     scope.setTag('source', context.source);
     if (context.path) {
