@@ -178,6 +178,54 @@ const ChatForm = memo(function ChatForm({
   const localize = useLocalize();
   const remScale = useRemScale();
 
+  /* fynnelsner: redirect any printable keystroke on the chat page back to the composer
+     so the user can start typing without first clicking the textarea, like on leading web-UIs like https://chatgpt.com/ */
+  useEffect(() => {
+    const textarea = textAreaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const focusComposerOnTyping = (event: KeyboardEvent) => {
+      // Respect existing focus in interactive elements.
+      const active = document.activeElement;
+      const tag = active?.tagName ?? '';
+      const isInteractive =
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'BUTTON' ||
+        tag === 'A' ||
+        active?.closest('button') ||
+        active?.closest('a') ||
+        active?.closest('[role="menu"]') ||
+        active?.closest('[role="dialog"]') ||
+        active?.closest('[role="listbox"]') ||
+        active?.closest('[role="combobox"]') ||
+        active?.closest('[role="option"]') ||
+        (active as HTMLElement | null)?.isContentEditable;
+
+      if (isInteractive) {
+        return;
+      }
+
+      // Only intercept actual text input, not shortcuts or navigation keys.
+      if (
+        event.key.length !== 1 ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.isComposing
+      ) {
+        return;
+      }
+
+      textarea.focus({ preventScroll: true });
+    };
+
+    window.addEventListener('keydown', focusComposerOnTyping);
+    return () => window.removeEventListener('keydown', focusComposerOnTyping);
+  }, []);
+
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [, setIsScrollable] = useState(false);
   const [visualRowCount, setVisualRowCount] = useState(1);
