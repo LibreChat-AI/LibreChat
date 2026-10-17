@@ -3,6 +3,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import MessageTimestamp from './MessageTimestamp';
+import { getMessageRowWidthClass } from './width';
 import HeaderLabel from './HeaderLabel';
 import Files from '../Content/Files';
 import { cn } from '~/utils';
@@ -76,18 +77,6 @@ function renderAuthorHeader({
       )}
     </h2>
   );
-}
-
-export function getMessageRowWidthClass({
-  fullWidth = false,
-  hasParallelContent = false,
-}: {
-  fullWidth?: boolean;
-  hasParallelContent?: boolean;
-} = {}) {
-  if (fullWidth) return 'w-full max-w-full sm:px-2';
-  if (hasParallelContent) return 'w-full sm:px-2 md:max-w-[58rem] xl:max-w-[70rem]';
-  return 'w-full sm:px-2 md:max-w-3xl xl:max-w-4xl';
 }
 
 export default function MessageRow({
