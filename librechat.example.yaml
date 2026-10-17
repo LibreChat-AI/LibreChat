@@ -1464,6 +1464,16 @@ endpoints:
 #   imageGeneration: # Image Gen settings, either percentage or px
 #     percentage: 100
 #     px: 1024
+#   # Server-side resolution for stored image uploads. Providers' image tools work on the
+#   # stored upload, so this caps what those tools see (and any server that sizes its
+#   # output to the input's dimensions inherits it). A named preset ('high': short side
+#   # <= 768px, long side <= 2000px; 'low': fits within 512x512), or size options:
+#   #   px: 2048        # cap the longest edge in pixels, keeping aspect ratio
+#   #   percentage: 50  # scale relative to the original
+#   # Use either `px` or `percentage`, not both.
+#   # Defaults to 'high' when unset.
+#   imageUploadResize:
+#     px: 2048
 #   # Client-side image resizing to prevent upload errors
 #   # Users can toggle this in Settings > Chat. Setting `enabled` here overrides
 #   # that choice for everyone and locks the toggle; omit it to leave users in control.

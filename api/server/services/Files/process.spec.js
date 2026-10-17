@@ -2350,6 +2350,57 @@ describe('processImageFile', () => {
       true,
     );
   });
+
+  test('passes configured imageUploadResize through to handleImageUpload', async () => {
+    const handleImageUpload = jest.fn().mockResolvedValue({
+      filepath: '/images/user-123/image.webp',
+      bytes: 256,
+      width: 100,
+      height: 80,
+    });
+    getStrategyFunctions.mockReturnValue({ handleImageUpload });
+    const req = makeReq({ mimetype: 'image/png', ocrConfig: null });
+    req.config.fileConfig = { imageUploadResize: { px: 3072 } };
+
+    await processImageFile({
+      req,
+      res: mockRes,
+      metadata: {
+        file_id: 'image-file-id',
+        temp_file_id: 'temp-image-file-id',
+        endpoint: EModelEndpoint.agents,
+      },
+    });
+
+    expect(handleImageUpload).toHaveBeenCalledWith(
+      expect.objectContaining({ resolution: { px: 3072 } }),
+    );
+  });
+
+  test('leaves resolution unset when imageUploadResize is not configured', async () => {
+    const handleImageUpload = jest.fn().mockResolvedValue({
+      filepath: '/images/user-123/image.webp',
+      bytes: 256,
+      width: 100,
+      height: 80,
+    });
+    getStrategyFunctions.mockReturnValue({ handleImageUpload });
+    const req = makeReq({ mimetype: 'image/png', ocrConfig: null });
+
+    await processImageFile({
+      req,
+      res: mockRes,
+      metadata: {
+        file_id: 'image-file-id',
+        temp_file_id: 'temp-image-file-id',
+        endpoint: EModelEndpoint.agents,
+      },
+    });
+
+    expect(handleImageUpload).toHaveBeenCalledWith(
+      expect.objectContaining({ resolution: undefined }),
+    );
+  });
 });
 
 describe('processFileURL', () => {

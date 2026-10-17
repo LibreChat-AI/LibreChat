@@ -28,6 +28,7 @@ import {
   traceViewerDefaults,
   resolveTraceViewerConfig,
 } from '../src/config';
+import { fileConfigSchema } from '../src/file-config';
 import {
   tModelSpecPresetSchema,
   EModelEndpoint,
@@ -2155,4 +2156,36 @@ describe('reset interval validation', () => {
       );
     },
   );
+});
+
+describe('fileConfigSchema.imageUploadResize', () => {
+  it('accepts the named presets', () => {
+    expect(fileConfigSchema.parse({ imageUploadResize: 'high' }).imageUploadResize).toBe('high');
+    expect(fileConfigSchema.parse({ imageUploadResize: 'low' }).imageUploadResize).toBe('low');
+  });
+
+  it('accepts a max-edge px size and a percentage size', () => {
+    expect(fileConfigSchema.parse({ imageUploadResize: { px: 2048 } }).imageUploadResize).toEqual({
+      px: 2048,
+    });
+    expect(
+      fileConfigSchema.parse({ imageUploadResize: { percentage: 50 } }).imageUploadResize,
+    ).toEqual({ percentage: 50 });
+  });
+
+  it('rejects unknown presets, bare objects, zero values, and dual-key objects', () => {
+    expect(fileConfigSchema.safeParse({ imageUploadResize: 'medium' }).success).toBe(false);
+    expect(fileConfigSchema.safeParse({ imageUploadResize: {} }).success).toBe(false);
+    expect(fileConfigSchema.safeParse({ imageUploadResize: { px: 0 } }).success).toBe(false);
+    expect(fileConfigSchema.safeParse({ imageUploadResize: { percentage: 0 } }).success).toBe(
+      false,
+    );
+    expect(fileConfigSchema.safeParse({ imageUploadResize: { pixel: 2048 } }).success).toBe(false);
+    expect(
+      fileConfigSchema.safeParse({ imageUploadResize: { percentage: 50, px: 2048 } }).success,
+    ).toBe(false);
+    expect(
+      fileConfigSchema.safeParse({ imageUploadResize: { px: 2048, extra: true } }).success,
+    ).toBe(false);
+  });
 });

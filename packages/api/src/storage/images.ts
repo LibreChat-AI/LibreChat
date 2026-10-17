@@ -9,6 +9,7 @@ import type {
   SaveBufferFn,
   UploadImageParams,
   ImageUploadResult,
+  ImageUploadResolution,
   ProcessAvatarParams,
 } from '~/storage/types';
 import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
@@ -16,7 +17,7 @@ import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storag
 export interface ImageServiceDeps {
   resizeImageBuffer: (
     buffer: Buffer,
-    resolution: string,
+    resolution: ImageUploadResolution,
     endpoint: string,
   ) => Promise<{ buffer: Buffer; width: number; height: number }>;
   updateUser: (userId: string, update: { avatar: string }) => Promise<IUser | null>;

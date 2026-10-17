@@ -1,8 +1,8 @@
 import fs from 'fs';
 import sharp from 'sharp';
-import type { ServerRequest } from '~/types';
-import type { SaveBufferFn } from '~/storage/types';
 import type { ImageServiceDeps } from '~/storage/images';
+import type { SaveBufferFn } from '~/storage/types';
+import type { ServerRequest } from '~/types';
 import { ImageService } from '~/storage/images';
 
 jest.mock('fs', () => {
@@ -134,6 +134,22 @@ describe('ImageService', () => {
       });
 
       expect(mockDeps.resizeImageBuffer).toHaveBeenCalledWith(expect.any(Buffer), 'low', 'openAI');
+    });
+
+    it('passes a px-based resolution object through to resizeImageBuffer', async () => {
+      await service.uploadImage({
+        req: mockReq as ServerRequest,
+        file: mockFile,
+        file_id: 'file-456',
+        endpoint: 'openAI',
+        resolution: { px: 2048 },
+      });
+
+      expect(mockDeps.resizeImageBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        { px: 2048 },
+        'openAI',
+      );
     });
 
     it('uses custom basePath when provided', async () => {
