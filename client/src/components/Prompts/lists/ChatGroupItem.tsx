@@ -1,9 +1,7 @@
 import { useState, memo, useRef, useCallback, useId, useMemo } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { PermissionBits } from 'librechat-data-provider';
 import { useNavigate, useParams } from 'react-router-dom';
-import { hasPermissions } from 'librechat-data-provider/react-query';
-import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, User } from 'lucide-react';
+import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, Cloud, User } from 'lucide-react';
 import {
   Label,
   Button,
@@ -15,7 +13,14 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type { TPromptGroup } from 'librechat-data-provider';
-import { detectVariables, cn, rowActionClasses, rowActionSlotClasses } from '~/utils';
+import {
+  cn,
+  detectVariables,
+  getPromptMutationErrorKey,
+  getPromptGroupPermissions,
+  rowActionClasses,
+  rowActionSlotClasses,
+} from '~/utils';
 import { useRecordPromptUsage, useDeletePromptGroup } from '~/data-provider';
 import { useLocalize, useAuthContext, useSubmitMessage } from '~/hooks';
 import VariableDialog from '../dialogs/VariableDialog';
@@ -51,9 +56,7 @@ function ChatGroupItem({
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const groupIsGlobal = group.isPublic === true;
-
-  const canEdit = hasPermissions(permissionBits, PermissionBits.EDIT);
-  const canDelete = hasPermissions(permissionBits, PermissionBits.DELETE);
+  const { isExternal, canEdit, canDelete } = getPromptGroupPermissions(group, permissionBits);
 
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -68,8 +71,11 @@ function ChatGroupItem({
         navigate(PROMPT_PATH, { replace: true });
       }
     },
-    onError: () => {
-      showToast({ status: 'error', message: localize('com_ui_prompt_delete_error') });
+    onError: (error) => {
+      showToast({
+        status: 'error',
+        message: localize(getPromptMutationErrorKey(error, 'com_ui_prompt_delete_error')),
+      });
     },
   });
 
@@ -198,6 +204,22 @@ function ChatGroupItem({
                       className="flex shrink-0 items-center"
                     >
                       <EarthIcon className="text-accent-primary size-3.5" aria-hidden="true" />
+                    </span>
+                  }
+                />
+              )}
+              {isExternal && (
+                <TooltipAnchor
+                  description={localize('com_ui_prompt_source_langfuse')}
+                  side="top"
+                  render={
+                    <span
+                      tabIndex={0}
+                      role="img"
+                      aria-label={localize('com_ui_prompt_source_langfuse')}
+                      className="flex shrink-0 items-center"
+                    >
+                      <Cloud className="text-text-secondary size-3.5" aria-hidden="true" />
                     </span>
                   }
                 />

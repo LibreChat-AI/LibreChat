@@ -676,9 +676,62 @@ describe('createPromptService', () => {
       await expect(service.incrementPromptGroupUsage(group._id)).resolves.toEqual({
         numberOfGenerations: 1,
       });
-      await expect(service.deletePromptGroup(group._id)).resolves.toEqual({
-        message: 'Prompt group deleted successfully',
+      await expect(service.deletePromptGroup({ groupId: group._id })).resolves.toEqual({
+        ok: true,
+        value: { message: 'Prompt group deleted successfully' },
       });
+    });
+
+    it('deletes a native revision', async () => {
+      const draft = await addRevision('Draft');
+
+      await expect(
+        service.deletePrompt({ groupId: group._id, promptId: draft._id }),
+      ).resolves.toEqual({ ok: true, value: { prompt: 'Prompt deleted successfully' } });
+      await expect(db.getPrompt({ _id: draft._id })).resolves.toBeNull();
+    });
+
+    it('collects revision ids after the guard when requested', async () => {
+      const draft = await addRevision('Draft');
+
+      const result = await service.deletePromptGroup({
+        groupId: group._id,
+        collectPromptIds: true,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.value).toMatchObject({
+        message: 'Prompt group deleted successfully',
+        promptIds: expect.arrayContaining([production._id, draft._id]),
+      });
+      await expect(db.getPromptGroup({ _id: group._id })).resolves.toBeNull();
+    });
+
+    it('does not collect revision ids when not requested', async () => {
+      await expect(service.deletePromptGroup({ groupId: group._id })).resolves.toEqual({
+        ok: true,
+        value: { message: 'Prompt group deleted successfully' },
+      });
+    });
+
+    it('deletes the group with no revision ids and logs when reading revisions fails', async () => {
+      const logError = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      jest.spyOn(db, 'getPrompts').mockRejectedValueOnce(new Error('database unavailable'));
+
+      const result = await service.deletePromptGroup({
+        groupId: group._id,
+        collectPromptIds: true,
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        value: { message: 'Prompt group deleted successfully', promptIds: [] },
+      });
+      await expect(db.getPromptGroup({ _id: group._id })).resolves.toBeNull();
+      expect(logError).toHaveBeenCalledWith(
+        expect.stringContaining('[deletePromptGroup] Failed to read revisions'),
+        { groupId: group._id, type: 'Error' },
+      );
     });
   });
 
@@ -735,6 +788,32 @@ describe('createPromptService', () => {
         version: 3,
         labels: ['production'],
         ...overrides,
+      };
+    }
+
+    /** A real stored group and revision, unlike `makeLangfuseGroup`'s in-memory record:
+     *  this is what `readGroup` falls back to reading from the database when no
+     *  `loadedGroup` matches, which includes the `MANAGE_PROMPTS` bypass path where
+     *  `req.resourceAccess` is unset. */
+    async function createPersistedLangfuseGroupWithPrompt() {
+      const persistedGroup = await mongoose.models.PromptGroup.create({
+        name: 'Persisted Langfuse group',
+        author,
+        authorName: 'Author',
+        source: 'langfuse',
+        sourcePromptName: 'langfuse-prompt',
+        sourceProjectId: 'project-1',
+        sourceDestination: 'destination-1',
+      });
+      const promptDoc = await mongoose.models.Prompt.create({
+        groupId: persistedGroup._id,
+        author,
+        prompt: 'Synced from Langfuse',
+        type: 'text',
+      });
+      return {
+        groupId: persistedGroup._id.toString(),
+        promptId: promptDoc._id.toString(),
       };
     }
 
@@ -814,8 +893,9 @@ describe('createPromptService', () => {
       ).resolves.toMatchObject({ ok: false, error: { type: 'blocked_content' } });
     });
 
-    it('returns unsupported for savePrompt on a Langfuse group', async () => {
+    it('returns read_only for savePrompt on a Langfuse group', async () => {
       const langfuseGroup = makeLangfuseGroup();
+      const save = jest.spyOn(db, 'savePrompt');
 
       await expect(
         service.savePrompt({
@@ -824,7 +904,124 @@ describe('createPromptService', () => {
           author,
           loadedGroup: langfuseGroup,
         }),
-      ).resolves.toEqual({ ok: false, error: { type: 'unsupported', operation: 'savePrompt' } });
+      ).resolves.toEqual({ ok: false, error: { type: 'read_only', source: 'langfuse' } });
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it('returns read_only, not invalid_input, for an invalid payload on a Langfuse group', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const save = jest.spyOn(db, 'savePrompt');
+
+      await expect(
+        service.savePrompt({
+          groupId: langfuseGroup._id,
+          prompt: { prompt: '  ', type: 'text' },
+          author,
+          loadedGroup: langfuseGroup,
+        }),
+      ).resolves.toEqual({ ok: false, error: { type: 'read_only', source: 'langfuse' } });
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it('returns read_only for updatePromptGroup on a Langfuse group', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const update = jest.spyOn(db, 'updatePromptGroup');
+
+      await expect(
+        service.updatePromptGroup({
+          groupId: langfuseGroup._id,
+          updates: { name: 'Renamed' },
+          loadedGroup: langfuseGroup,
+        }),
+      ).resolves.toEqual({ ok: false, error: { type: 'read_only', source: 'langfuse' } });
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('returns read_only for deletePromptGroup on a Langfuse group', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const deleteGroup = jest.spyOn(db, 'deletePromptGroup');
+
+      await expect(
+        service.deletePromptGroup({ groupId: langfuseGroup._id, loadedGroup: langfuseGroup }),
+      ).resolves.toEqual({ ok: false, error: { type: 'read_only', source: 'langfuse' } });
+      expect(deleteGroup).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no loaded group (the MANAGE_PROMPTS bypass path)', undefined],
+      ['a loaded group whose _id differs', { ...group, _id: missingId() }],
+    ])(
+      'returns read_only for updatePromptGroup on a persisted Langfuse group with %s',
+      async (_case, mismatchedLoadedGroup) => {
+        const { groupId: langfuseGroupId } = await createPersistedLangfuseGroupWithPrompt();
+        const update = jest.spyOn(db, 'updatePromptGroup');
+
+        await expect(
+          service.updatePromptGroup({
+            groupId: langfuseGroupId,
+            updates: { name: 'Renamed' },
+            loadedGroup: mismatchedLoadedGroup,
+          }),
+        ).resolves.toEqual({ ok: false, error: { type: 'read_only', source: 'langfuse' } });
+        expect(update).not.toHaveBeenCalled();
+        await expect(db.getPromptGroup({ _id: langfuseGroupId })).resolves.toMatchObject({
+          name: 'Persisted Langfuse group',
+        });
+      },
+    );
+
+    it.each([
+      ['no loaded group (the MANAGE_PROMPTS bypass path)', undefined],
+      ['a loaded group whose _id differs', { ...group, _id: missingId() }],
+    ])(
+      'returns read_only for deletePromptGroup on a persisted Langfuse group with %s',
+      async (_case, mismatchedLoadedGroup) => {
+        const { groupId: langfuseGroupId, promptId } =
+          await createPersistedLangfuseGroupWithPrompt();
+        const deleteGroup = jest.spyOn(db, 'deletePromptGroup');
+
+        await expect(
+          service.deletePromptGroup({
+            groupId: langfuseGroupId,
+            loadedGroup: mismatchedLoadedGroup,
+          }),
+        ).resolves.toEqual({ ok: false, error: { type: 'read_only', source: 'langfuse' } });
+        expect(deleteGroup).not.toHaveBeenCalled();
+        await expect(db.getPromptGroup({ _id: langfuseGroupId })).resolves.toMatchObject({
+          name: 'Persisted Langfuse group',
+        });
+        await expect(db.getPrompt({ _id: promptId })).resolves.not.toBeNull();
+      },
+    );
+
+    describe('mutations keyed by revision on a Langfuse group', () => {
+      it('returns read_only for makePromptProduction on a revision of a Langfuse group', async () => {
+        const { groupId: langfuseGroupId, promptId } =
+          await createPersistedLangfuseGroupWithPrompt();
+        const promote = jest.spyOn(db, 'makePromptProduction');
+
+        await expect(service.makePromptProduction({ promptId })).resolves.toEqual({
+          ok: false,
+          error: { type: 'read_only', source: 'langfuse' },
+        });
+        expect(promote).not.toHaveBeenCalled();
+        const storedGroup = (await db.getPromptGroup({ _id: langfuseGroupId })) as {
+          productionId?: unknown;
+        } | null;
+        expect(storedGroup?.productionId).toBeUndefined();
+      });
+
+      it('returns read_only for deletePrompt on a revision of a Langfuse group', async () => {
+        const { groupId: langfuseGroupId, promptId } =
+          await createPersistedLangfuseGroupWithPrompt();
+        const deletePromptSpy = jest.spyOn(db, 'deletePrompt');
+
+        await expect(service.deletePrompt({ groupId: langfuseGroupId, promptId })).resolves.toEqual(
+          { ok: false, error: { type: 'read_only', source: 'langfuse' } },
+        );
+        expect(deletePromptSpy).not.toHaveBeenCalled();
+        await expect(db.getPrompt({ _id: promptId })).resolves.not.toBeNull();
+      });
     });
 
     it('returns unsupported_selection for a version selection on a native group', async () => {

@@ -195,69 +195,47 @@ describe('createPromptHandlers linked-instructions cache clearing', () => {
   });
 
   describe('deletePromptGroup', () => {
-    it('reads every revision before deleting and clears an exact key for each', async () => {
+    it('asks the service to collect revision ids and clears an exact key for each', async () => {
       const invalidateLinkedPrompt = jest.fn().mockResolvedValue(undefined);
-      const callOrder: string[] = [];
-      const service = makeService({
-        getPrompts: jest.fn().mockImplementation(async () => {
-          callOrder.push('getPrompts');
-          return [{ _id: 'prompt-1' }, { _id: 'prompt-2' }];
-        }),
-        deletePromptGroup: jest.fn().mockImplementation(async () => {
-          callOrder.push('deletePromptGroup');
-          return { message: 'Prompt group deleted successfully' };
-        }),
+      const deletePromptGroup = jest.fn().mockResolvedValue({
+        ok: true,
+        value: {
+          message: 'Prompt group deleted successfully',
+          promptIds: ['prompt-1', 'prompt-2'],
+        },
       });
+      const service = makeService({ deletePromptGroup });
       const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
       const res = mockRes();
 
       await handlers.deletePromptGroup(mockReq({ params: { groupId } }), res);
 
-      expect(service.getPrompts).toHaveBeenCalledWith({ groupId });
+      expect(deletePromptGroup).toHaveBeenCalledWith({
+        groupId,
+        loadedGroup: undefined,
+        collectPromptIds: true,
+      });
       expect(invalidateLinkedPrompt).toHaveBeenCalledTimes(1);
       expect(invalidateLinkedPrompt).toHaveBeenCalledWith(groupId, ['prompt-1', 'prompt-2']);
-      // The revisions are read before the group (and its prompts) are deleted.
-      expect(callOrder).toEqual(['getPrompts', 'deletePromptGroup']);
+      // The wire shape is unchanged: promptIds is for cache clearing only.
+      expect(res.body).toEqual({ message: 'Prompt group deleted successfully' });
     });
 
-    it('does not read revisions when no cache dependency is wired', async () => {
-      const service = makeService({
-        deletePromptGroup: jest
-          .fn()
-          .mockResolvedValue({ message: 'Prompt group deleted successfully' }),
-      });
+    it('does not ask the service to collect revision ids when no cache dependency is wired', async () => {
+      const deletePromptGroup = jest
+        .fn()
+        .mockResolvedValue({ ok: true, value: { message: 'Prompt group deleted successfully' } });
+      const service = makeService({ deletePromptGroup });
       const handlers = createPromptHandlers(makeDeps({ service }));
       const res = mockRes();
 
       await handlers.deletePromptGroup(mockReq({ params: { groupId } }), res);
 
-      expect(service.getPrompts).not.toHaveBeenCalled();
-    });
-
-    it('still deletes the group and clears the cache with no ids when reading revisions rejects', async () => {
-      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
-      const invalidateLinkedPrompt = jest.fn().mockResolvedValue(undefined);
-      const service = makeService({
-        getPrompts: jest.fn().mockRejectedValue(new Error('read failed')),
-        deletePromptGroup: jest
-          .fn()
-          .mockResolvedValue({ message: 'Prompt group deleted successfully' }),
+      expect(deletePromptGroup).toHaveBeenCalledWith({
+        groupId,
+        loadedGroup: undefined,
+        collectPromptIds: false,
       });
-      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
-      const res = mockRes();
-
-      await handlers.deletePromptGroup(mockReq({ params: { groupId } }), res);
-
-      expect(service.deletePromptGroup).toHaveBeenCalledWith(groupId);
-      expect(res.statusCode).toBe(200);
-      expect(invalidateLinkedPrompt).toHaveBeenCalledWith(groupId, []);
-      expect(errorSpy).toHaveBeenCalledWith(
-        '[prompts] Failed to read revisions before deleting the group',
-        {
-          groupId,
-          type: 'Error',
-        },
-      );
     });
   });
 
@@ -319,6 +297,133 @@ describe('createPromptHandlers linked-instructions cache clearing', () => {
       expect(savePrompt).toHaveBeenCalledWith(
         expect.objectContaining({ loadedGroup: loadedGroupRecord }),
       );
+    });
+
+    it('forwards the loaded group to updatePromptGroup', async () => {
+      const loadedGroupRecord = { _id: groupId, source: 'native' };
+      const updatePromptGroup = jest.fn().mockResolvedValue({ ok: true, value: { _id: groupId } });
+      const service = makeService({ updatePromptGroup });
+      const handlers = createPromptHandlers(makeDeps({ service }));
+      const res = mockRes();
+
+      await handlers.updatePromptGroup(
+        mockReq({
+          params: { groupId },
+          body: { name: 'Renamed' },
+          resourceAccess: { resourceInfo: loadedGroupRecord },
+        }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(updatePromptGroup).toHaveBeenCalledWith(
+        expect.objectContaining({ loadedGroup: loadedGroupRecord }),
+      );
+    });
+
+    it('forwards the loaded group to deletePromptGroup', async () => {
+      const loadedGroupRecord = { _id: groupId, source: 'native' };
+      const deletePromptGroup = jest
+        .fn()
+        .mockResolvedValue({ ok: true, value: { message: 'Prompt group deleted successfully' } });
+      const service = makeService({ deletePromptGroup });
+      const handlers = createPromptHandlers(makeDeps({ service }));
+      const res = mockRes();
+
+      await handlers.deletePromptGroup(
+        mockReq({ params: { groupId }, resourceAccess: { resourceInfo: loadedGroupRecord } }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(deletePromptGroup).toHaveBeenCalledWith({
+        groupId,
+        loadedGroup: loadedGroupRecord,
+        collectPromptIds: false,
+      });
+    });
+  });
+
+  describe('read_only rejection', () => {
+    it('maps read_only to 403 with the externally-managed message', async () => {
+      const service = makeService({
+        updatePromptGroup: jest
+          .fn()
+          .mockResolvedValue({ ok: false, error: { type: 'read_only', source: 'langfuse' } }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service }));
+      const res = mockRes();
+
+      await handlers.updatePromptGroup(
+        mockReq({ params: { groupId }, body: { name: 'Renamed' } }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toEqual({
+        code: 'read_only',
+        error: 'Externally managed prompts are read-only',
+      });
+    });
+
+    it('does not clear the cache when deletePromptGroup is rejected as read_only', async () => {
+      const invalidateLinkedPrompt = jest.fn();
+      const service = makeService({
+        deletePromptGroup: jest
+          .fn()
+          .mockResolvedValue({ ok: false, error: { type: 'read_only', source: 'langfuse' } }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
+      const res = mockRes();
+
+      await handlers.deletePromptGroup(mockReq({ params: { groupId } }), res);
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toEqual({
+        code: 'read_only',
+        error: 'Externally managed prompts are read-only',
+      });
+      expect(invalidateLinkedPrompt).not.toHaveBeenCalled();
+    });
+
+    it('does not clear the cache when makePromptProduction is rejected as read_only', async () => {
+      const invalidateLinkedPrompt = jest.fn();
+      const service = makeService({
+        makePromptProduction: jest
+          .fn()
+          .mockResolvedValue({ ok: false, error: { type: 'read_only', source: 'langfuse' } }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
+      const res = mockRes();
+
+      await handlers.makePromptProduction(withLoadedRevision(), res);
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toEqual({
+        code: 'read_only',
+        error: 'Externally managed prompts are read-only',
+      });
+      expect(invalidateLinkedPrompt).not.toHaveBeenCalled();
+    });
+
+    it('does not clear the cache when deletePrompt is rejected as read_only', async () => {
+      const invalidateLinkedPrompt = jest.fn();
+      const service = makeService({
+        deletePrompt: jest
+          .fn()
+          .mockResolvedValue({ ok: false, error: { type: 'read_only', source: 'langfuse' } }),
+      });
+      const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
+      const res = mockRes();
+
+      await handlers.deletePrompt(mockReq({ params: { promptId }, query: { groupId } }), res);
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toEqual({
+        code: 'read_only',
+        error: 'Externally managed prompts are read-only',
+      });
+      expect(invalidateLinkedPrompt).not.toHaveBeenCalled();
     });
   });
 
@@ -446,10 +551,10 @@ describe('createPromptHandlers linked-instructions cache clearing', () => {
       const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
       const invalidateLinkedPrompt = jest.fn().mockReturnValue(new Promise(() => {}));
       const service = makeService({
-        getPrompts: jest.fn().mockResolvedValue([{ _id: 'prompt-1' }]),
-        deletePromptGroup: jest
-          .fn()
-          .mockResolvedValue({ message: 'Prompt group deleted successfully' }),
+        deletePromptGroup: jest.fn().mockResolvedValue({
+          ok: true,
+          value: { message: 'Prompt group deleted successfully', promptIds: ['prompt-1'] },
+        }),
       });
       const handlers = createPromptHandlers(makeDeps({ service, invalidateLinkedPrompt }));
       const res = mockRes();
