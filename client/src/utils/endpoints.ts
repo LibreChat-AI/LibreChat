@@ -86,11 +86,11 @@ export const getAvailableEndpoints = (
 
 export function mapEndpoints(endpointsConfig: t.TEndpointsConfig) {
   const filter = getEndpointsFilter(endpointsConfig);
-  return getAvailableEndpoints(filter, endpointsConfig).sort(
-    (a, b) => (endpointsConfig?.[a]?.order ?? 0) - (endpointsConfig?.[b]?.order ?? 0),
-  );
-}
 
+  return getAvailableEndpoints(filter, endpointsConfig)
+    .filter((endpoint) => endpointsConfig?.[endpoint]?.visible !== false)
+    .sort((a, b) => (endpointsConfig?.[a]?.order ?? 0) - (endpointsConfig?.[b]?.order ?? 0));
+}
 const firstLocalConvoKey = LocalStorageKeys.LAST_CONVO_SETUP + '_0';
 
 /**
