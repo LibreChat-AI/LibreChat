@@ -449,7 +449,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'File size limit exceeded: 5 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -487,7 +487,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'com_error_files_skipped_size',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -600,7 +600,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -712,7 +712,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -753,7 +753,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -863,7 +863,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'com_error_files_dupe',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -957,7 +957,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();
@@ -992,7 +992,7 @@ describe('useFileHandling', () => {
         expect(mockShowToast).toHaveBeenCalledWith({
           message: 'Total file size limit exceeded: 7 MB',
           status: 'error',
-          duration: 5000,
+          duration: Infinity,
         });
       } finally {
         jest.useRealTimers();

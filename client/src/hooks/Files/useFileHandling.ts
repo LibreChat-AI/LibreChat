@@ -239,7 +239,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       showToast({
         message: errorList,
         status: 'error',
-        duration: 5000,
+        duration: Infinity,
       });
     } else if (errors.length === 1) {
       // TODO: this should not be a dynamic localize input!!
@@ -247,7 +247,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       showToast({
         message,
         status: 'error',
-        duration: 5000,
+        duration: Infinity,
       });
     }
 
