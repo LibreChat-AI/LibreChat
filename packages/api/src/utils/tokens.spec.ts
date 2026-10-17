@@ -168,6 +168,19 @@ describe('GPT-6 Astra', () => {
   });
 });
 
+describe('Gemini 4 Argon', () => {
+  it('resolves the shared 1,048,576-token context window', () => {
+    expect(getModelMaxTokens('gemini-4-argon', EModelEndpoint.google)).toBe(1048576);
+  });
+
+  it('matches the Argon key for prefixed and variant ids', () => {
+    expect(getModelMaxTokens('models/gemini-4-argon', EModelEndpoint.google)).toBe(1048576);
+    expect(getModelMaxTokens('gemini-4-argon-cyber-permissive', EModelEndpoint.google)).toBe(
+      1048576,
+    );
+  });
+});
+
 describe('Qwen3.5 and later generations', () => {
   it('resolves 262K for the vLLM model id that regressed to the qwen3 window', () => {
     expect(getModelMaxTokens('Qwen/Qwen3.5-397B-A17B-FP8', EModelEndpoint.openAI)).toBe(262144);

@@ -32,14 +32,23 @@ type GeminiFlashThinkingRule = {
  * most-specific-first so `gemini-3.5-flash-lite` resolves before the
  * `gemini-3.5-flash` prefix.
  *
- * Gemini 3.7 and 3.8 Flash support only `low`/`medium`/`high` and error on
- * `minimal`, so an explicit `minimal` is substituted with the nearest supported
- * level.
+ * Gemini 3.7 and 3.8 Flash and Gemini 4 Argon support only `low`/`medium`/`high`
+ * and error on `minimal`, so an explicit `minimal` is substituted with the
+ * nearest supported level. Argon shares the Flash request shape (sampling
+ * ignored, `thinkingBudget` rejected); its allowlisted `cyber-permissive`
+ * variant defaults to `high`.
  * @see https://ai.google.dev/gemini-api/docs/latest-model#api-changes-and-parameter-updates
  * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash
  * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
+ * @see https://ai.google.dev/gemini-api/docs/models/gemini-4-argon
  */
 const geminiFlashThinkingRules: ReadonlyArray<GeminiFlashThinkingRule> = [
+  {
+    id: 'gemini-4-argon-cyber-permissive',
+    default: 'HIGH',
+    substitutions: { MINIMAL: 'LOW' },
+  },
+  { id: 'gemini-4-argon', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
   { id: 'gemini-3.8-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
   { id: 'gemini-3.7-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
   { id: 'gemini-3.6-flash', default: 'MEDIUM' },
