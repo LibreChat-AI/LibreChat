@@ -15,6 +15,7 @@ import {
   createSSRFSafeUndiciConnect,
   applySSRFSafeAgentIfDirect,
 } from './agent';
+import { resolveAllowedAddressesEnv } from './allowedAddresses';
 
 type LookupCallback = (
   err: NodeJS.ErrnoException | null,
@@ -276,6 +277,24 @@ describe('SSRF agents — allowedAddresses exemption', () => {
     const result = await runLookup(lookup, 'private.example.com');
     expect(result.err).toBeTruthy();
     expect(result.err!.code).toBe('ESSRF');
+  });
+
+  it('exempts a service-discovery host resolved from an environment reference', async () => {
+    mockDnsResult('10.0.12.34', 4);
+    const host = 'searxng.search-ns.local';
+    const { addresses } = resolveAllowedAddressesEnv(['${SEARXNG_ALLOWED_ADDRESS}'], {
+      SEARXNG_ALLOWED_ADDRESS: `${host}:8080`,
+    });
+
+    const allowed = await runLookup(createSSRFSafeUndiciConnect(addresses, '8080').lookup, host);
+    const unresolved = await runLookup(
+      createSSRFSafeUndiciConnect(['${SEARXNG_HOST}:8080'], '8080').lookup,
+      host,
+    );
+
+    expect(allowed.err).toBeNull();
+    expect(allowed.address).toBe('10.0.12.34');
+    expect(unresolved.err?.code).toBe('ESSRF');
   });
 
   it('still blocks an unlisted private IP when allowedAddresses is set', async () => {
