@@ -1,10 +1,12 @@
 import type {
   FiltersConfig,
+  PrincipalType,
   TCreatePromptRecord,
   TDeletePromptResponse,
   TMakePromptProductionResponse,
 } from 'librechat-data-provider';
 import type { PromptGroupSource } from '@librechat/data-schemas';
+import type { StoredBaseConfig } from '../langfuse/promptSync';
 import type { ProtectionFinding } from '../protection/types';
 
 export type PromptKind = 'text' | 'chat';
@@ -58,14 +60,29 @@ export interface PromptGroupRecord {
 
 export type PromptSelection =
   | { readonly type: 'production' }
-  | { readonly type: 'exact'; readonly promptId: string };
+  | { readonly type: 'exact'; readonly promptId: string }
+  /** Langfuse only; the native adapter returns `unsupported_selection` for it. */
+  | { readonly type: 'version'; readonly version: number };
 
-export interface ResolvedPrompt {
+export interface NativeResolvedPrompt {
+  readonly source: 'native';
   readonly groupId: string;
   readonly promptId: string;
   readonly prompt: string;
   readonly type: PromptKind;
 }
+
+/** A Langfuse prompt is always text: a chat prompt is rejected before it reaches here. */
+export interface LangfuseResolvedPrompt {
+  readonly source: 'langfuse';
+  readonly groupId: string;
+  readonly prompt: string;
+  readonly type: 'text';
+  readonly version: number;
+  readonly labels: readonly string[];
+}
+
+export type ResolvedPrompt = NativeResolvedPrompt | LangfuseResolvedPrompt;
 
 /** The raw creation body plus the server-supplied creator. */
 export type CreatePromptGroupInput = Omit<TCreatePromptRecord, 'authorName'> & {
@@ -111,7 +128,19 @@ export type PromptServiceError =
       readonly type: 'unavailable_selection';
       readonly reason: 'production' | 'revision';
     }
-  | { readonly type: 'unsupported'; readonly operation: PromptOperation };
+  | { readonly type: 'unsupported'; readonly operation: PromptOperation }
+  /** The selection is not valid for `source` (for example `version` on a native group,
+   *  or `exact` on a Langfuse group). */
+  | { readonly type: 'unsupported_selection'; readonly source: PromptGroupSource }
+  /** Returned by the `allowedSources` check in `resolvePrompt`, before any adapter runs. */
+  | { readonly type: 'unsupported_source'; readonly source: PromptGroupSource }
+  | {
+      readonly type: 'source_unavailable';
+      readonly source: 'langfuse';
+      readonly reason: 'disabled' | 'not_configured' | 'source_changed';
+    }
+  | { readonly type: 'source_not_found'; readonly source: 'langfuse' }
+  | { readonly type: 'unsupported_content'; readonly reason: 'chat_prompt' };
 
 export type PromptServiceResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -132,16 +161,31 @@ export interface ResolvePromptInput {
   readonly loadedGroup?: PromptGroupRecord | null;
   readonly loadedRevision?: PromptRecord | null;
   readonly filters?: FiltersConfig;
+  /** Restricts dispatch to these sources; any other source returns `unsupported_source`
+   *  before an adapter or network call runs. Agent-link resolution passes `['native']`. */
+  readonly allowedSources?: readonly PromptGroupSource[];
 }
 
 /**
- * Operations that need source content. Mutations are optional: a source that cannot
- * perform one leaves it out, and the service returns an `unsupported` result.
+ * Resolves a group's content for a selection. One adapter per `PromptGroupSource`; the
+ * service picks it from `group.source` and dispatches the already-resolved `group`, so
+ * an adapter never has to look its own group up.
  */
 export interface PromptSourceAdapter {
-  /** Returns null when the selection is not available in the group. */
-  resolvePrompt(input: Omit<ResolvePromptInput, 'filters'>): Promise<ResolvedPrompt | null>;
-  getPromptGroup(groupId: string): Promise<PromptGroupRecord | null>;
+  resolvePrompt(input: {
+    readonly group: PromptGroupRecord;
+    readonly selection: PromptSelection;
+    readonly loadedRevision?: PromptRecord | null;
+  }): Promise<PromptServiceResult<ResolvedPrompt>>;
+}
+
+/**
+ * The native adapter additionally performs every operation that is keyed by revision ID
+ * rather than by group — those stay native-only by construction, since a Langfuse group
+ * has no local `Prompt` rows. Mutations are optional: a source that cannot perform one
+ * leaves it out, and the service returns an `unsupported` result.
+ */
+export interface NativePromptAdapter extends PromptSourceAdapter {
   getPrompt(promptId: string): Promise<PromptRecord | null>;
   getPrompts(groupId: string): Promise<readonly PromptRecord[]>;
   createPromptGroup(input: CreatePromptGroupInput): Promise<PromptCreationResult>;
@@ -156,6 +200,7 @@ export interface PromptSourceAdapter {
 
 /** Local catalog operations that do not depend on the content source. */
 export interface PromptCatalogStore {
+  getPromptGroup(groupId: string): Promise<PromptGroupRecord | null>;
   getListPromptGroupsByAccess(
     input: Pick<PromptListInput, 'accessibleIds' | 'name' | 'category' | 'limit' | 'after'>,
   ): Promise<PromptListResult>;
@@ -194,14 +239,24 @@ export interface PromptDatabase {
   updatePromptGroup(filter: { _id: string }, data: Record<string, unknown>): Promise<object>;
   incrementPromptGroupUsage(groupId: string): Promise<{ numberOfGenerations: number }>;
   deletePromptGroup(filter: { _id: string }): Promise<{ message: string }>;
+  /** Reads the deployment's base config, which the Langfuse adapter's source resolver
+   *  checks for the prompt-sync switch. Returns the plain override document, not the
+   *  Mongoose model `~/models` resolves it from. */
+  findConfigByPrincipal(
+    principalType: PrincipalType,
+    principalId: string,
+  ): Promise<StoredBaseConfig | null>;
 }
 
 export interface PromptServiceAdapters {
   /**
-   * The content source for every prompt group. The service does not select a source for
-   * each group: a group has no source field, and some operations receive only a revision ID.
+   * The content source for a group whose `source` is `native`, and for every operation
+   * keyed by revision ID rather than by group (`createPromptGroup`, `getPrompt`,
+   * `savePrompt`, `makePromptProduction`, `deletePrompt`), which stay native-only.
    */
-  readonly source: PromptSourceAdapter;
+  readonly native: NativePromptAdapter;
+  /** The content source for a group whose `source` is `langfuse`. */
+  readonly langfuse: PromptSourceAdapter;
   readonly catalog: PromptCatalogStore;
   readonly grantCreatorOwnership: (input: {
     readonly userId: string;
