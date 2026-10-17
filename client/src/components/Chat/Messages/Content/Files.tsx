@@ -37,6 +37,8 @@ const Files = ({ message }: { message?: TMessage }) => {
           <FileContainer
             key={file.file_id}
             file={file as TFile}
+            buttonClassName="border-surface-user-message max-w-full bg-transparent"
+            containerClassName="max-w-full"
             onClick={() => setSelectedFile(file)}
           />
         ))}
@@ -45,6 +47,7 @@ const Files = ({ message }: { message?: TMessage }) => {
           <Image
             key={file.file_id}
             alignRight
+            className="border-surface-user-message mt-0 shadow-none"
             imagePath={file.preview ?? file.filepath ?? ''}
             height={file.height ?? 1920}
             width={file.width ?? 1080}

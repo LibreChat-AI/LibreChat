@@ -168,6 +168,7 @@ const MessageRender = memo(function MessageRender({
     <Row
       task={subagentWakeup}
       conversationId={msg.conversationId ?? conversation?.conversationId ?? ''}
+      message={wakeupDisplay != null ? undefined : msg}
       id={msg.messageId}
       icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}

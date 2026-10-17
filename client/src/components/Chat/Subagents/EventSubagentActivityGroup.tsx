@@ -4,7 +4,7 @@ import { Button, cn } from '@librechat/client';
 import { Bot, ChevronDown } from 'lucide-react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
 import { isLiveSubagentStatus, subagentStatusDotClass, subagentStatusLabelKey } from './status';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import { useChatSurface, useOpenSubagentPanel } from './surface';
 import { useParentSubagents } from './ParentSubagentsProvider';
 import { eventSubagentSelection } from './eventSelection';

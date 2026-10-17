@@ -2,12 +2,13 @@ import { memo, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
-import MessageRow, { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import { getHeaderModelName } from '~/components/Chat/Messages/ui/HeaderLabel';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import SearchContent, { rendersMarkdownLite } from './Content/SearchContent';
+import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import Icon from '~/components/Chat/Messages/MessageIcon';
 import { useAuthContext, useLocalize } from '~/hooks';
 import SearchButtons from './SearchButtons';
@@ -121,6 +122,7 @@ function SearchMessage({ message }: Pick<TMessageProps, 'message'>) {
         className={cn('border-border-light mx-auto border-b px-4 py-4', getMessageRowWidthClass())}
       >
         <MessageRow
+          message={message}
           id={message.messageId}
           icon={<Icon iconData={iconData} />}
           label={messageLabel}

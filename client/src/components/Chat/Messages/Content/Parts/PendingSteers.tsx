@@ -5,7 +5,7 @@ import { Button, TooltipAnchor } from '@librechat/client';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import useSteerCancel, { useSteerMoveToQueue, useSteerRehome } from '~/hooks/Chat/useSteerCancel';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';

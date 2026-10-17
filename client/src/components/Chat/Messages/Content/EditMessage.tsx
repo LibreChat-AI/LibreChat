@@ -247,7 +247,7 @@ const EditMessage = ({
   );
 
   return (
-    <Container message={message} hideFiles={isUserTurn}>
+    <Container message={message}>
       <section
         aria-label={localize('com_ui_edit_message')}
         className="mt-2 flex w-full flex-col gap-2"

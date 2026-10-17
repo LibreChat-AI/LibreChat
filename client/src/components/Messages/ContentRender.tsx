@@ -168,6 +168,7 @@ const ContentRender = memo(function ContentRender({
 
   return (
     <MessageRow
+      message={msg}
       id={msg.messageId}
       icon={author.icon}
       label={author.label}

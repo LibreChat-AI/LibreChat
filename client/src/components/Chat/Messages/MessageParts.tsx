@@ -116,6 +116,7 @@ function MessageParts(props: TMessageProps) {
     >
       <div className="m-auto justify-center px-4 py-3 sm:px-0">
         <MessageRow
+          message={message}
           id={messageId ?? ''}
           icon={author.icon}
           label={author.label}

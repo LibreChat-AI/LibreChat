@@ -7,7 +7,7 @@ import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
 import { EmptyState, Spinner, useRemScale, useToastContext } from '@librechat/client';
 import type { Index, ListRowProps } from 'react-virtualized';
 import type { TMessage } from 'librechat-data-provider';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import { useElementSize, useLocalize, useAuthContext } from '~/hooks';
 import SearchMessage from '~/components/Chat/Messages/SearchMessage';
 import { useMessagesInfiniteQuery } from '~/data-provider';
