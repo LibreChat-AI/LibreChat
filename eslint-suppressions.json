@@ -934,7 +934,7 @@
   },
   "client/src/components/Prompts/fields/PromptName.tsx": {
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 8
     }
   },
   "client/src/components/Prompts/forms/CreatePromptForm.tsx": {

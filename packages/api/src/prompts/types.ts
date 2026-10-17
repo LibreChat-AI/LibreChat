@@ -129,6 +129,10 @@ export type PromptServiceError =
       readonly reason: 'production' | 'revision';
     }
   | { readonly type: 'unsupported'; readonly operation: PromptOperation }
+  /** The group is not `native`: an externally managed group rejects every mutation,
+   *  including `savePrompt`, `updatePromptGroup`, `deletePromptGroup`,
+   *  `makePromptProduction` and `deletePrompt`. */
+  | { readonly type: 'read_only'; readonly source: PromptGroupSource }
   /** The selection is not valid for `source` (for example `version` on a native group,
    *  or `exact` on a Langfuse group). */
   | { readonly type: 'unsupported_selection'; readonly source: PromptGroupSource }
@@ -181,9 +185,10 @@ export interface PromptSourceAdapter {
 
 /**
  * The native adapter additionally performs every operation that is keyed by revision ID
- * rather than by group — those stay native-only by construction, since a Langfuse group
- * has no local `Prompt` rows. Mutations are optional: a source that cannot perform one
- * leaves it out, and the service returns an `unsupported` result.
+ * rather than by group. Mutations are optional: a source that cannot perform one leaves
+ * it out, and the service returns an `unsupported` result. The service also guards
+ * `savePrompt`, `makePromptProduction` and `deletePrompt` against an external group,
+ * returning `read_only` before any of these are called.
  */
 export interface NativePromptAdapter extends PromptSourceAdapter {
   getPrompt(promptId: string): Promise<PromptRecord | null>;
@@ -198,7 +203,11 @@ export interface NativePromptAdapter extends PromptSourceAdapter {
   }): Promise<TDeletePromptResponse>;
 }
 
-/** Local catalog operations that do not depend on the content source. */
+/**
+ * Local catalog operations that do not depend on the content source. The service guards
+ * `updatePromptGroup` and `deletePromptGroup` against an external group, returning
+ * `read_only` before either reaches here.
+ */
 export interface PromptCatalogStore {
   getPromptGroup(groupId: string): Promise<PromptGroupRecord | null>;
   getListPromptGroupsByAccess(
