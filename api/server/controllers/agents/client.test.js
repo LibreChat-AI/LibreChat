@@ -5577,6 +5577,72 @@ describe('AgentClient - titleConvo', () => {
 
       expect(client.augmentedPrompt).toBe('Retrieved context');
       expect(client.options.agent.additional_instructions).toContain('Retrieved context');
+      const { assembleAdditionalInstructions } = require('@librechat/api');
+      expect(
+        assembleAdditionalInstructions(client.options.agent, ({ kind }) => kind === 'turn'),
+      ).toBe('Retrieved context');
+    });
+
+    it('records the memory and RAG context as the volatile part, apart from the stable part', async () => {
+      client.contextHandlers = { createContext: jest.fn().mockResolvedValue('Retrieved context') };
+      client.useMemory = jest
+        .fn()
+        .mockResolvedValue({ withKeys: 'Memory note', withoutKeys: 'Memory note' });
+      client.options.agent.additional_instructions = 'Static artifacts prompt';
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Hello',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        {},
+      );
+
+      const { assembleAdditionalInstructions } = require('@librechat/api');
+      const additional = client.options.agent.additional_instructions;
+      const volatile = assembleAdditionalInstructions(
+        client.options.agent,
+        ({ kind }) => kind === 'turn',
+      );
+      const stable = assembleAdditionalInstructions(
+        client.options.agent,
+        ({ kind }) => kind !== 'turn',
+      );
+      expect(volatile.startsWith('Retrieved context\n\n')).toBe(true);
+      expect(volatile.endsWith('Memory note')).toBe(true);
+      expect(stable).toBe('Static artifacts prompt');
+      expect(additional).toBe(`Static artifacts prompt\n\n${volatile}`);
+    });
+
+    it('assembles the system tail from initialization, memory and RAG parts byte for byte', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      mockAgent.additional_instructions = 'Agent guidance\n';
+      client.contextHandlers = { createContext: jest.fn(async () => '\nRetrieved context\n') };
+      client.useMemory = jest.fn().mockResolvedValue({ withoutKeys: 'tea: yes\n' });
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Load all context.',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        {},
+      );
+
+      expect(client.options.agent.additional_instructions).toBe(
+        `Agent guidance\n\n\nRetrieved context\n\n\n${memoryInstructions}\n\n# Existing memory about the user:\ntea: yes`,
+      );
     });
 
     it('starts independent context and current-file work at their earliest dependency barriers', async () => {
@@ -7642,6 +7708,100 @@ describe('AgentClient - titleConvo', () => {
       expect(result.tokenCountMap['msg-1']).toBe(77);
       expect(result.tokenCountMap['msg-2']).toBe(3);
       expect(client.memoryPayload).toBeNull();
+    });
+
+    describe('context updates', () => {
+      const conversationHistory = () => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'First question',
+          isCreatedByUser: true,
+          createdAt: '2026-03-09T20:00:00.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-2',
+          parentMessageId: 'msg-1',
+          sender: 'Assistant',
+          text: 'First answer',
+          isCreatedByUser: false,
+          createdAt: '2026-03-09T20:00:10.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-3',
+          parentMessageId: 'msg-2',
+          sender: 'User',
+          text: 'Next question',
+          isCreatedByUser: true,
+        },
+      ];
+
+      beforeEach(() => {
+        mockReq.conversationCreatedAt = '2026-03-09T20:00:00.000Z';
+        mockReq.turnStartedAt = Date.parse('2026-03-10T09:00:00.000Z');
+        mockReq.body.timezone = 'UTC';
+        require('@librechat/api').countFormattedMessageTokens.mockImplementation(({ content }) => {
+          const text = Array.isArray(content)
+            ? content.map((part) => part.text ?? '').join('\n')
+            : String(content ?? '');
+          return text.includes('<context_update>') ? 90 : 10;
+        });
+      });
+
+      it('prepends a date change to the prompt copy only and counts it for the prompt', async () => {
+        mockAgent.dynamicToolContextMap = { web_search: 'Conversation started: ...' };
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: { promptCache: { stableContext: true } },
+        };
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe('First question');
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tue)\n</context_update>\n\nNext question',
+        );
+        expect(result.tokenCountMap['msg-3']).toBe(10);
+        expect(client.indexTokenCountMap[2]).toBe(90);
+        expect(client.memoryPayload[2].content).toBe('Next question');
+      });
+
+      it('stamps every user message with its send time when promptMessageTimestamps is on', async () => {
+        mockReq.config.endpoints = { [EModelEndpoint.agents]: { promptMessageTimestamps: true } };
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-09 20:00:00 +00:00 (Mon)\n</context_update>\n\nFirst question',
+        );
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-10 09:00:00 +00:00 (Tue)\n</context_update>\n\nNext question',
+        );
+        expect(client.memoryPayload[0].content).toBe('First question');
+      });
+
+      it('leaves messages untouched without stableContext, even when a prompt states the date', async () => {
+        mockAgent.dynamicToolContextMap = { web_search: 'Conversation Date & Time: ...' };
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[2].content).toBe('Next question');
+        expect(client.memoryPayload).toBeNull();
+      });
+
+      it('leaves messages untouched when no prompt states the conversation date', async () => {
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: { promptCache: { stableContext: true } },
+        };
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[2].content).toBe('Next question');
+        expect(client.indexTokenCountMap[2]).toBe(10);
+        expect(client.memoryPayload).toBeNull();
+      });
     });
 
     it('does not duplicate a file that is both request context and scoped context', async () => {
