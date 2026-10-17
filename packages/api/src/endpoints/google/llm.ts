@@ -92,10 +92,17 @@ const googleThinkingLevels = new Set<GoogleThinkingLevel>([
 /**
  * Models served only from the `global`, `us` and `eu` multi-region endpoints.
  * With `GOOGLE_LOC` unset they use `global` instead of the `us-central1`
- * regional default, which does not serve them; a configured location is kept.
+ * regional default, which does not serve them. A configured regional location
+ * moves to the multi-region that contains it, so data stays in the same
+ * geography; a region outside `us` and `eu` is kept rather than sent to `global`.
  * @see https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-argon
  */
 const vertexMultiRegionOnlyModels = ['gemini-4-argon'] as const;
+
+const vertexRegionMultiRegions: ReadonlyArray<[prefix: string, multiRegion: string]> = [
+  ['europe-', 'eu'],
+  ['us-', 'us'],
+];
 
 const vertexMultiRegionEndpoints = new Map([
   ['eu', 'aiplatform.eu.rep.googleapis.com'],
@@ -204,10 +211,20 @@ function getGeminiFlashThinkingRule(model: string): GeminiFlashThinkingRule | un
   return geminiFlashThinkingRules.find((rule) => matchesGeminiModelId(model, rule.id));
 }
 
+function isVertexMultiRegionOnlyModel(model: string): boolean {
+  return vertexMultiRegionOnlyModels.some((id) => matchesGeminiModelId(model, id));
+}
+
 function getDefaultVertexLocation(model: string): string {
-  return vertexMultiRegionOnlyModels.some((id) => matchesGeminiModelId(model, id))
-    ? 'global'
-    : 'us-central1';
+  return isVertexMultiRegionOnlyModel(model) ? 'global' : 'us-central1';
+}
+
+function resolveVertexModelLocation(model: string, location: string): string {
+  if (!isVertexMultiRegionOnlyModel(model) || vertexMultiRegionEndpoints.has(location)) {
+    return location;
+  }
+  const match = vertexRegionMultiRegions.find(([prefix]) => location.startsWith(prefix));
+  return match?.[1] ?? location;
 }
 
 /**
@@ -390,10 +407,11 @@ function hasAllowedVertexEndpoint(config: Record<string, unknown>): boolean {
 }
 
 function applyVertexMultiRegionEndpoint(config: VertexAIClientOptions & { endpoint?: string }) {
-  const location = config.location;
-  if (typeof location !== 'string') {
+  if (typeof config.location !== 'string') {
     return;
   }
+  const location = resolveVertexModelLocation(config.model ?? '', config.location);
+  config.location = location;
   const multiRegionEndpoint = getVertexMultiRegionEndpoint(location);
   if (multiRegionEndpoint) {
     config.endpoint = multiRegionEndpoint;

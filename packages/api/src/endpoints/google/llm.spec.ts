@@ -1305,7 +1305,47 @@ describe('getGoogleConfig', () => {
       },
     );
 
-    it('should keep a configured regional Vertex AI location for Gemini 4 Argon', () => {
+    it.each([
+      ['europe-west1', 'eu', 'aiplatform.eu.rep.googleapis.com'],
+      ['us-central1', 'us', 'aiplatform.us.rep.googleapis.com'],
+      ['eu', 'eu', 'aiplatform.eu.rep.googleapis.com'],
+      ['asia-northeast1', 'asia-northeast1', undefined],
+    ])(
+      'should resolve a configured %s Vertex AI location for Gemini 4 Argon to %s',
+      (configured, location, endpoint) => {
+        process.env.GOOGLE_LOC = configured;
+        const credentials = {
+          [AuthKeys.GOOGLE_SERVICE_KEY]: {
+            project_id: 'test-project',
+          },
+        };
+
+        const result = getGoogleConfig(credentials, { modelOptions: { model: 'gemini-4-argon' } });
+
+        expect((result.llmConfig as Record<string, unknown>).location).toBe(location);
+        expect((result.llmConfig as Record<string, unknown>).endpoint).toBe(endpoint);
+      },
+    );
+
+    it('should resolve an addParams regional location for Gemini 4 Argon', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_SERVICE_KEY]: {
+          project_id: 'test-project',
+        },
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: { model: 'gemini-4-argon' },
+        addParams: { location: 'europe-west4' },
+      });
+
+      expect(result.llmConfig).toMatchObject({
+        location: 'eu',
+        endpoint: 'aiplatform.eu.rep.googleapis.com',
+      });
+    });
+
+    it('should keep a configured regional Vertex AI location for older Gemini models', () => {
       process.env.GOOGLE_LOC = 'europe-west1';
       const credentials = {
         [AuthKeys.GOOGLE_SERVICE_KEY]: {
@@ -1313,7 +1353,7 @@ describe('getGoogleConfig', () => {
         },
       };
 
-      const result = getGoogleConfig(credentials, { modelOptions: { model: 'gemini-4-argon' } });
+      const result = getGoogleConfig(credentials, { modelOptions: { model: 'gemini-3.8-flash' } });
 
       expect((result.llmConfig as Record<string, unknown>).location).toBe('europe-west1');
     });
