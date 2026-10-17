@@ -155,9 +155,12 @@ endpoints:
           - 'Qwen/Qwen3.6-35B-A3B-FP8'
           - 'Qwen3.8-27B'
       titleConvo: true
-      # Titles bill the same as any other call, so they use the cheapest model
-      # in the catalog rather than whatever the conversation is running on.
-      titleModel: 'gpt-5.4-mini'
+      # Titles bill the same as any other call, so they use one fixed model
+      # rather than whatever the conversation is running on. It must have an
+      # enabled Gateway channel: every gpt-5.4-mini channel is disabled
+      # (checked 2026-10-17), so no conversation got a title. gpt-6-luna is the
+      # default chat model, so it is served whenever chat works at all.
+      titleModel: 'gpt-6-luna'
       modelDisplayLabel: 'TensorGrid'
       iconURL: '/images/tchat-mark.svg'
 
