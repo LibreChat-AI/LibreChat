@@ -8,6 +8,7 @@ import {
   Label,
   SecretInput,
   Spinner,
+  Switch,
   ESide,
   useToastContext,
 } from '@librechat/client';
@@ -20,7 +21,9 @@ import {
   useGetLangfuseConnectionQuery,
   useUpdateLangfuseConnectionMutation,
   useTestLangfuseConnectionMutation,
+  useUpdateLangfusePromptSyncMutation,
 } from '~/data-provider';
+import LangfusePromptsDialog from './LangfusePromptsDialog';
 import { useLocalize } from '~/hooks';
 
 type ConnectionTestState = 'idle' | 'unverified' | 'checking' | 'connected' | 'failed';
@@ -110,6 +113,7 @@ export default function LangfuseConnection() {
   } = useGetLangfuseConnectionQuery();
   const updateMutation = useUpdateLangfuseConnectionMutation();
   const testMutation = useTestLangfuseConnectionMutation();
+  const promptSyncMutation = useUpdateLangfusePromptSyncMutation();
 
   const [connectionStatus, setConnectionStatus] = useState<TLangfuseConnectionStatus>();
   const [destination, setDestination] = useState('');
@@ -119,6 +123,8 @@ export default function LangfuseConnection() {
   const [isEditingSecretKey, setIsEditingSecretKey] = useState(false);
   const [connectionTestState, setConnectionTestState] = useState<ConnectionTestState>('idle');
   const [connectionTestMessage, setConnectionTestMessage] = useState('');
+  const [promptSyncError, setPromptSyncError] = useState(false);
+  const [isPromptsDialogOpen, setIsPromptsDialogOpen] = useState(false);
   const autoTestedConnectionRef = useRef<string>();
   const connectionTestRequestRef = useRef(0);
   const publicKeyInputRef = useRef<HTMLInputElement>(null);
@@ -143,13 +149,13 @@ export default function LangfuseConnection() {
     setConnectionStatus(status);
   }, [status]);
 
+  // Scoped to the two fields this syncs, not the whole `connectionStatus` object,
+  // so an unrelated update (e.g. toggling prompt sync) cannot reset unsaved edits
+  // to the destination or public key.
   useEffect(() => {
-    if (!connectionStatus) {
-      return;
-    }
-    setDestination(connectionStatus.destination ?? '');
-    setPublicKey(connectionStatus.publicKey ?? '');
-  }, [connectionStatus]);
+    setDestination(connectionStatus?.destination ?? '');
+    setPublicKey(connectionStatus?.publicKey ?? '');
+  }, [connectionStatus?.destination, connectionStatus?.publicKey]);
 
   const secretConfigured = connectionStatus?.configured === true;
   const destinations = connectionStatus?.destinations ?? [];
@@ -189,7 +195,8 @@ export default function LangfuseConnection() {
     destination !== '' &&
     trimmedPublicKey !== '' &&
     ((!connectionCredentialsChanged && secretConfigured) || trimmedSecretKey !== '');
-  const busy = testMutation.isLoading || updateMutation.isLoading;
+  const isSavingStatus = updateMutation.isLoading || promptSyncMutation.isLoading;
+  const busy = testMutation.isLoading || isSavingStatus;
 
   useEffect(() => {
     const storedConnectionTestKey = getStoredConnectionTestKey(connectionStatus);
@@ -362,6 +369,25 @@ export default function LangfuseConnection() {
     };
 
     saveEnabledState();
+  };
+
+  const handlePromptSyncChange = (nextEnabled: boolean) => {
+    setPromptSyncError(false);
+    // The dialog unmounts once the switch is off; reset `open` so re-enabling keeps it closed.
+    if (!nextEnabled) {
+      setIsPromptsDialogOpen(false);
+    }
+    promptSyncMutation.mutate(
+      { enabled: nextEnabled },
+      {
+        onSuccess: (nextStatus) => {
+          setConnectionStatus(nextStatus);
+        },
+        onError: () => {
+          setPromptSyncError(true);
+        },
+      },
+    );
   };
 
   if (isConnectionLoading && connectionStatus == null) {
@@ -546,6 +572,43 @@ export default function LangfuseConnection() {
           </Button>
         )}
       </div>
+
+      {connectionStatus?.promptSync?.available === true && (
+        <div className="border-border-light flex flex-col gap-2 border-t pt-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-0.5">
+              <Label id="langfuse-prompt-sync-label">
+                {localize('com_ui_langfuse_prompt_sync')}
+              </Label>
+              <span className="text-text-secondary text-xs">
+                {localize('com_ui_langfuse_prompt_sync_description')}
+              </span>
+            </div>
+            <Switch
+              checked={connectionStatus.promptSync.enabled}
+              onCheckedChange={handlePromptSyncChange}
+              disabled={isSavingStatus}
+              aria-labelledby="langfuse-prompt-sync-label"
+            />
+          </div>
+          {promptSyncError && (
+            <p className="text-text-destructive text-xs">
+              {localize('com_ui_langfuse_prompt_sync_error')}
+            </p>
+          )}
+          {connectionStatus.promptSync.enabled && (
+            <div>
+              <Button variant="outline" size="sm" onClick={() => setIsPromptsDialogOpen(true)}>
+                {localize('com_ui_langfuse_prompt_sync_open')}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {connectionStatus?.promptSync?.enabled === true && (
+        <LangfusePromptsDialog open={isPromptsDialogOpen} onOpenChange={setIsPromptsDialogOpen} />
+      )}
     </div>
   );
 }

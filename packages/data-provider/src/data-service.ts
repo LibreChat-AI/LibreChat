@@ -94,6 +94,24 @@ export function getLangfuseSessionLink(
   return request.get(endpoints.adminLangfuseSessionLink(conversationId));
 }
 
+export function updateLangfusePromptSync(
+  payload: t.TUpdateLangfusePromptSyncRequest,
+): Promise<t.TLangfuseConnectionStatus> {
+  return request.put(endpoints.adminLangfusePromptSync(), payload);
+}
+
+export function getLangfusePrompts(
+  params: t.TLangfusePromptListParams = {},
+): Promise<t.TLangfusePromptListResponse> {
+  return request.get(endpoints.adminLangfusePrompts(params));
+}
+
+export function getLangfusePrompt(
+  params: t.TLangfusePromptGetParams,
+): Promise<t.TLangfusePromptGetResponse> {
+  return request.get(endpoints.adminLangfusePrompt(params.name, params.version));
+}
+
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
 }
