@@ -7,10 +7,10 @@ import {
   getEndpointFileConfig,
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
+import type { OmittedAttachment, ServerRequest } from '~/types';
 import type { TokenCountFn } from '~/utils/text';
-import type { ServerRequest } from '~/types';
+import { AGENT_ATTACHMENT_LIMIT_EXCEEDED, AGENT_ATTACHMENT_UNSUPPORTED } from './errors';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
-import { AGENT_ATTACHMENT_LIMIT_EXCEEDED } from './errors';
 import { countTokens } from '~/utils/tokenizer';
 import { extractFileContext } from '~/files';
 
@@ -217,6 +217,35 @@ export class AgentAttachmentLimitError extends Error {
   }
 }
 
+/**
+ * A current-turn attachment the model would not receive: its type is not an inline
+ * document for this model, or the turn's file text budget is spent. Rejecting the turn
+ * keeps the model from answering as if it had read the file.
+ */
+export class AgentAttachmentUnsupportedError extends Error {
+  readonly code: typeof AGENT_ATTACHMENT_UNSUPPORTED = AGENT_ATTACHMENT_UNSUPPORTED;
+  readonly status = 415;
+  readonly statusCode = 415;
+
+  constructor(readonly attachments: OmittedAttachment[]) {
+    const describe = (reason: OmittedAttachment['reason']) =>
+      attachments
+        .filter((file) => file.reason === reason)
+        .map((file) => (file.type ? `"${file.filename}" (${file.type})` : `"${file.filename}"`))
+        .join(', ');
+    const unsupported = describe('unsupported_type');
+    const overLimit = describe('text_limit');
+    const sentences = [
+      unsupported &&
+        `This model cannot read ${unsupported}. Remove it, or upload it as text or to the code environment, and try again.`,
+      overLimit &&
+        `${overLimit} exceeds the file text limit for this turn. Remove some attachments or use smaller files and try again.`,
+    ].filter(Boolean);
+    super(sentences.join(' '));
+    this.name = 'AgentAttachmentUnsupportedError';
+  }
+}
+
 export class AgentAttachmentPolicyError extends Error {
   readonly code: typeof AGENT_ATTACHMENT_LIMIT_EXCEEDED = AGENT_ATTACHMENT_LIMIT_EXCEEDED;
   readonly status = 413;
@@ -232,8 +261,15 @@ export class AgentAttachmentPolicyError extends Error {
 
 export function isAgentAttachmentLimitError(
   error: unknown,
-): error is AgentAttachmentLimitError | AgentAttachmentPolicyError {
-  return error instanceof AgentAttachmentLimitError || error instanceof AgentAttachmentPolicyError;
+): error is
+  | AgentAttachmentLimitError
+  | AgentAttachmentPolicyError
+  | AgentAttachmentUnsupportedError {
+  return (
+    error instanceof AgentAttachmentLimitError ||
+    error instanceof AgentAttachmentPolicyError ||
+    error instanceof AgentAttachmentUnsupportedError
+  );
 }
 
 export function collectAgentAttachmentStats(
