@@ -52,6 +52,7 @@ describe('validateVertexConfig region gating', () => {
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-sonnet-5',
+    'claude-haiku-5-5',
   ];
   const legacy = ['claude-sonnet-4-6', 'claude-3-7-sonnet-20250219', 'claude-3-opus@20240229'];
 

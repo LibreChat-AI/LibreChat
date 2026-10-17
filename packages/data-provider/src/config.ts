@@ -3425,6 +3425,7 @@ const sharedAnthropicModels = [
   'claude-opus-4-6',
   'claude-sonnet-4-5',
   'claude-sonnet-4-5-20250929',
+  'claude-haiku-5-5',
   'claude-haiku-4-5',
   'claude-haiku-4-5-20251001',
   'claude-opus-4-1',
@@ -3462,6 +3463,7 @@ export const bedrockModels = [
   'global.anthropic.claude-sonnet-4-6',
   'global.anthropic.claude-opus-4-6-v1',
   'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  'global.anthropic.claude-haiku-5-5',
   'global.anthropic.claude-haiku-4-5-20251001-v1:0',
   'us.anthropic.claude-opus-4-1-20250805-v1:0',
   // 'cohere.command-text-v14', // no conversation history

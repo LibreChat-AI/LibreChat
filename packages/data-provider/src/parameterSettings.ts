@@ -17,7 +17,12 @@ import {
   BedrockProviders,
   anthropicSettings,
 } from './types';
-import { hasAlwaysOnThinking, hasBetweenToolsThinkingFloor, supportsPromptCache } from './bedrock';
+import {
+  hasAlwaysOnThinking,
+  hasAdaptiveHaikuThinking,
+  hasBetweenToolsThinkingFloor,
+  supportsPromptCache,
+} from './bedrock';
 import { SettingDefinition, SettingsConfiguration } from './generate';
 import { resolveEffectiveUseResponsesApi } from './file-config';
 import { gpt6Tier } from './families';
@@ -1380,6 +1385,12 @@ export function applyModelAwareDefaults(
       .filter(
         (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
       );
+  }
+  /** Haiku 5.5+ keeps the toggle ("off" sends `disabled`) but rejects budgets and sampling. */
+  if (hasAdaptiveHaikuThinking(model)) {
+    return settings.filter(
+      (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+    );
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google

@@ -323,6 +323,22 @@ describe('Opus 5.5 token limits', () => {
   });
 });
 
+describe('Haiku 5.5 token limits', () => {
+  it.each([
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ])('resolves %s to the modern Claude profile', (model) => {
+    expect(getModelMaxTokens(model)).toBe(1000000);
+    expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+  });
+
+  it('keeps Haiku 4.5 at a 200K context', () => {
+    expect(getModelMaxTokens('claude-haiku-4-5', EModelEndpoint.anthropic)).toBe(200000);
+  });
+});
+
 describe('Sonnet 5.5 token limits', () => {
   it.each([
     'claude-sonnet-5-5',

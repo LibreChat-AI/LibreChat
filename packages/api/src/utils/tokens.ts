@@ -173,6 +173,8 @@ const anthropicModels = {
   'claude-3.7-sonnet': 200000,
   'claude-4': 200000,
   'claude-haiku-4-5': 200000,
+  'claude-haiku-5-5': 1000000,
+  'claude-haiku-5.5': 1000000,
   'claude-opus-4': 200000,
   'claude-opus-4-5': 200000,
   'claude-sonnet-4': 200000,

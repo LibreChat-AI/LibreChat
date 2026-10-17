@@ -3230,6 +3230,60 @@ describe('Opus 5.5 pricing', () => {
   });
 });
 
+describe('Haiku 5.5 pricing', () => {
+  const models = [
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ];
+
+  it.each(models)('prices %s at its standard rates up to the prompt-size threshold', (model) => {
+    const { threshold } = premiumTokenValues['claude-haiku-5-5'];
+    for (const inputTokenCount of [1000, threshold]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+        tokenValues['claude-haiku-5-5'].prompt,
+      );
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+        tokenValues['claude-haiku-5-5'].completion,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+        cacheTokenValues['claude-haiku-5-5'].write,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+        cacheTokenValues['claude-haiku-5-5'].read,
+      );
+    }
+  });
+
+  it.each(models)('prices %s at its long-prompt rates above the threshold', (model) => {
+    const inputTokenCount = premiumTokenValues['claude-haiku-5-5'].threshold + 1;
+    expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+      premiumTokenValues['claude-haiku-5-5'].prompt,
+    );
+    expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+      premiumTokenValues['claude-haiku-5-5'].completion,
+    );
+    expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+      premiumCacheTokenValues['claude-haiku-5-5'].write,
+    );
+    expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+      premiumCacheTokenValues['claude-haiku-5-5'].read,
+    );
+  });
+
+  it('does not fall back to the default rate', () => {
+    expect(getMultiplier({ model: 'claude-haiku-5-5', tokenType: 'prompt' })).not.toBe(defaultRate);
+  });
+
+  it('keeps Haiku 4.5 on its own flat rates', () => {
+    expect(premiumTokenValues['claude-haiku-4-5']).toBeUndefined();
+    expect(getMultiplier({ model: 'claude-haiku-4-5', tokenType: 'prompt' })).toBe(
+      tokenValues['claude-haiku-4-5'].prompt,
+    );
+  });
+});
+
 describe('Sonnet 5.5 pricing', () => {
   it.each([
     'claude-sonnet-5-5',

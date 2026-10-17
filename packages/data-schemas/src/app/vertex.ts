@@ -26,6 +26,7 @@ export const defaultVertexModels: string[] = [
   'claude-opus-4-6',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
+  'claude-haiku-5-5',
   'claude-3-7-sonnet-20250219',
   'claude-3-5-sonnet-v2@20241022',
   'claude-3-5-sonnet@20240620',
@@ -43,7 +44,7 @@ const MULTI_REGION_LOCATIONS = new Set(['global', 'us', 'eu']);
  * and return 404 for anything newer.
  */
 const REQUIRES_MULTI_REGION =
-  /^claude-(?:opus-(?:4-[7-9]|[5-9])|sonnet-[5-9]|fable-[5-9]|mythos-[5-9])/;
+  /^claude-(?:opus-(?:4-[7-9]|[5-9])|sonnet-[5-9]|haiku-(?:5-[5-9]|[6-9])|fable-[5-9]|mythos-[5-9])/;
 
 /**
  * Whether the configured location can serve models that require `global` or a
