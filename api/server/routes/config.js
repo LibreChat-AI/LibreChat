@@ -24,6 +24,7 @@ const {
   resolveCodeEnvironmentTransitionVersion,
   loadConversationListLimits,
   resolvePullRequestCapabilities,
+  filterModelSpecsForUser,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
@@ -317,7 +318,13 @@ router.get('/', async function (req, res) {
         endpoint: EModelEndpoint.agents,
       }),
       turnstile: appConfig?.turnstileConfig,
-      modelSpecs: sanitizeModelSpecs(excludeHiddenModelSpecs(appConfig?.modelSpecs)),
+      modelSpecs: sanitizeModelSpecs(
+        filterModelSpecsForUser(
+          excludeHiddenModelSpecs(appConfig?.modelSpecs),
+          req.user,
+          appConfig?.endpoints?.userAccess,
+        ),
+      ),
       balance: balanceConfig,
       bundlerURL: process.env.SANDPACK_BUNDLER_URL,
       staticBundlerURL: process.env.SANDPACK_STATIC_BUNDLER_URL,

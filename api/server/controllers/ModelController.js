@@ -1,7 +1,19 @@
 const { logger } = require('@librechat/data-schemas');
-const { loadDefaultModels, loadConfigModels } = require('~/server/services/Config');
+const {
+  filterEndpointCatalog,
+  getAppConfigOptionsFromUser,
+  getUserEndpointAllowlist,
+} = require('@librechat/api');
+const { getAppConfig, loadDefaultModels, loadConfigModels } = require('~/server/services/Config');
 
-const getModelsConfig = (req) => loadModels(req);
+const getModelsConfig = async (req) => {
+  const [modelsConfig, appConfig] = await Promise.all([
+    loadModels(req),
+    req.config ?? getAppConfig(getAppConfigOptionsFromUser(req.user)),
+  ]);
+  const allowedEndpoints = getUserEndpointAllowlist(req.user, appConfig?.endpoints?.userAccess);
+  return filterEndpointCatalog(modelsConfig, allowedEndpoints);
+};
 
 async function loadModels(req) {
   const [defaultModelsConfig, customModelsConfig] = await Promise.all([
@@ -13,7 +25,7 @@ async function loadModels(req) {
 
 async function modelController(req, res) {
   try {
-    const modelConfig = await loadModels(req);
+    const modelConfig = await getModelsConfig(req);
     res.send(modelConfig);
   } catch (error) {
     logger.error('Error fetching models:', error);

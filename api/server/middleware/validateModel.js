@@ -1,5 +1,6 @@
 const { handleError } = require('@librechat/api');
 const { resolveModelCatalogKey, ViolationTypes } = require('librechat-data-provider');
+const { isEndpointAllowedForUser } = require('@librechat/api');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getEndpointsConfig } = require('~/server/services/Config');
 const { logViolation } = require('~/cache');
@@ -18,6 +19,10 @@ const MODEL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]*$/;
 const validateModel = async (req, res, next) => {
   const { endpoint } = req.body;
   const rawModel = req.body.model;
+
+  if (!isEndpointAllowedForUser(req.user, endpoint, req.config?.endpoints?.userAccess)) {
+    return res.status(403).json({ error: 'This endpoint is not available for your account.' });
+  }
 
   if (!rawModel || typeof rawModel !== 'string') {
     return handleError(res, { text: 'Model not provided' });

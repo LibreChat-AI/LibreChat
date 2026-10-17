@@ -3,6 +3,7 @@ const {
   applyModelSpecPreset,
   resolveModelSpecForEndpoint,
   resolveModelSpecPromptPrefixVariables,
+  isEndpointAllowedForUser,
   inspectContent,
   extractChatContent,
   contentFilterBlockResponse,
@@ -59,6 +60,9 @@ function inspectResolvedCurrentUser(req, promptPrefixTemplate) {
 
 async function buildEndpointOption(req, res, next) {
   const { endpoint, endpointType } = req.body;
+  if (!isEndpointAllowedForUser(req.user, endpoint, req.config?.endpoints?.userAccess)) {
+    return res.status(403).json({ error: 'This endpoint is not available for your account.' });
+  }
   const isAgents =
     isAgentsEndpoint(endpoint) || req.baseUrl.startsWith(EndpointURLs[EModelEndpoint.agents]);
 

@@ -118,11 +118,10 @@ export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox'] as const;
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
 /** Fields inside overridable sections that only the operator's YAML sets: a role, group, user
- * or tenant config document can neither change nor remove them. The pull request provider and
- * host decide where the deployment's token is sent, the OAuth app which credentials users grant
- * and which environment secret is sent with them, and the shared cache's slot count where every
- * replica looks for a shared answer. */
+ * or tenant config document can neither change nor remove them. This includes endpoint access
+ * policy, provider routing and host settings, OAuth credentials, and shared cache configuration. */
 export const BASE_ONLY_CONFIG_PATHS = [
+  'endpoints.userAccess',
   'endpoints.agents.pullRequests.provider',
   'endpoints.agents.pullRequests.host',
   'endpoints.agents.pullRequests.oauth',
@@ -3762,6 +3761,51 @@ export const summarizationConfigSchema = z.object({
 export type SummarizationConfig = z.infer<typeof summarizationConfigSchema>;
 
 const customEndpointsSchema = z.array(endpointSchema.partial()).optional();
+const userEndpointAccessSchema = z
+  .array(
+    z
+      .object({
+        userId: z.string().trim().min(1).max(128).optional(),
+        username: z.string().trim().min(1).max(128).optional(),
+        allowedEndpoints: z.array(z.string().trim().min(1).max(128)),
+      })
+      .strict()
+      .superRefine((rule, ctx) => {
+        if ((rule.userId == null) === (rule.username == null)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['userId'],
+            message: 'Specify exactly one of userId or username.',
+          });
+        }
+      }),
+  )
+  .superRefine((rules, ctx) => {
+    const userIds = new Set<string>();
+    const usernames = new Set<string>();
+    for (const [index, rule] of rules.entries()) {
+      if (rule.userId != null) {
+        if (userIds.has(rule.userId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index, 'userId'],
+            message: 'Each user ID may only have one endpoint access rule.',
+          });
+        }
+        userIds.add(rule.userId);
+      } else if (rule.username != null) {
+        const username = rule.username.toLowerCase();
+        if (usernames.has(username)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index, 'username'],
+            message: 'Each username may only have one endpoint access rule.',
+          });
+        }
+        usernames.add(username);
+      }
+    }
+  });
 
 /**
  * Validates a messageFilter PII regex at config load. Defaults to native RegExp so browser
@@ -4321,6 +4365,7 @@ export const configSchema = z.object({
        * endpoint > a custom endpoint's own config.
        */
       all: baseEndpointSchema.omit({ baseURL: true }).optional(),
+      userAccess: userEndpointAccessSchema.optional(),
       [EModelEndpoint.openAI]: modelListEndpointSchema.optional(),
       [EModelEndpoint.google]: modelListEndpointSchema.optional(),
       [EModelEndpoint.anthropic]: anthropicEndpointSchema.optional(),

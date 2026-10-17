@@ -12,6 +12,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, TCustomEndpointsConfig } from '~/types';
 import type { GetAppConfigOptions } from '~/app/service';
 import { loadCustomEndpointsConfig as defaultLoadCustomEndpoints } from '~/endpoints/custom';
+import { filterEndpointCatalog, getUserEndpointAllowlist } from './userAccess';
 import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { getResponsesApiRouting } from './responses';
@@ -188,7 +189,10 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       };
     }
 
-    return orderEndpointsConfig(mergedConfig as TEndpointsConfig);
+    const allowedEndpoints = getUserEndpointAllowlist(req.user, appConfig.endpoints?.userAccess);
+    return orderEndpointsConfig(
+      filterEndpointCatalog(mergedConfig, allowedEndpoints) as TEndpointsConfig,
+    );
   }
 
   async function checkCapability(

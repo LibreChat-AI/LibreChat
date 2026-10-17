@@ -2,6 +2,7 @@ const { EModelEndpoint, Providers, ViolationTypes } = require('librechat-data-pr
 
 jest.mock('@librechat/api', () => ({
   handleError: jest.fn(),
+  isEndpointAllowedForUser: jest.fn(() => true),
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
@@ -16,7 +17,7 @@ jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
 
-const { handleError } = require('@librechat/api');
+const { handleError, isEndpointAllowedForUser } = require('@librechat/api');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getEndpointsConfig } = require('~/server/services/Config');
 const { logViolation } = require('~/cache');
@@ -27,6 +28,7 @@ describe('validateModel', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    isEndpointAllowedForUser.mockReturnValue(true);
     req = { body: { model: 'gpt-4o', endpoint: 'openAI' } };
     res = {};
     next = jest.fn();
@@ -210,5 +212,24 @@ describe('validateModel', () => {
 
       expect(handleError).toHaveBeenCalledWith(res, { text: 'Models not loaded' });
     });
+  });
+
+  it('rejects a provider outside the authenticated user allowlist', async () => {
+    isEndpointAllowedForUser.mockReturnValue(false);
+    res.status = jest.fn().mockReturnThis();
+    res.json = jest.fn();
+    req.config = {
+      endpoints: {
+        userAccess: [{ username: 'restricted-user', allowedEndpoints: ['Allowed Provider'] }],
+      },
+    };
+
+    await validateModel(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'This endpoint is not available for your account.',
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 });

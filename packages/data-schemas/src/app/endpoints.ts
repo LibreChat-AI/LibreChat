@@ -21,6 +21,7 @@ export const loadEndpoints = (
   agentsDefaults?: Partial<TAgentsEndpoint>,
 ): {
   allowedAddresses?: string[];
+  userAccess?: NonNullable<TCustomConfig['endpoints']>['userAccess'];
   openAI?: Partial<import('librechat-data-provider').TEndpoint>;
   google?: Partial<import('librechat-data-provider').TEndpoint>;
   bedrock?: Partial<import('librechat-data-provider').TEndpoint>;
@@ -103,6 +104,10 @@ export const loadEndpoints = (
 
   if (endpoints?.allowedAddresses) {
     loadedEndpoints.allowedAddresses = endpoints.allowedAddresses;
+  }
+
+  if (endpoints?.userAccess) {
+    loadedEndpoints.userAccess = endpoints.userAccess;
   }
 
   return loadedEndpoints;
