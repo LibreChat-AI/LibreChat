@@ -4,6 +4,7 @@ import type {
   TDeletePromptResponse,
   TMakePromptProductionResponse,
 } from 'librechat-data-provider';
+import type { PromptGroupSource } from '@librechat/data-schemas';
 import type { ProtectionFinding } from '../protection/types';
 
 export type PromptKind = 'text' | 'chat';
@@ -49,6 +50,10 @@ export interface PromptGroupRecord {
   readonly createdAt?: PromptTimestamp;
   readonly updatedAt?: PromptTimestamp;
   readonly tenantId?: string;
+  readonly source: PromptGroupSource;
+  readonly sourcePromptName?: string;
+  readonly sourceProjectId?: string;
+  readonly sourceDestination?: string;
 }
 
 export type PromptSelection =

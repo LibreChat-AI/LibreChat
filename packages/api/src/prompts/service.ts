@@ -183,11 +183,26 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!validation.success) {
         return invalidInput(validation.error.issues[0]?.message ?? 'Invalid prompt');
       }
-      const rejection = inspect({ prompt: validation.data, group: input.group }, filters);
+      // The client create path always produces a native group: source identity is set by
+      // import flows, never by a request body. Drop these fields here regardless of what
+      // the client sent, since the database layer upserts whatever `group` it is given.
+      const {
+        source: _clientSource,
+        sourcePromptName: _clientSourcePromptName,
+        sourceProjectId: _clientSourceProjectId,
+        sourceDestination: _clientSourceDestination,
+        ...group
+      } = input.group as typeof input.group & {
+        source?: unknown;
+        sourcePromptName?: unknown;
+        sourceProjectId?: unknown;
+        sourceDestination?: unknown;
+      };
+      const rejection = inspect({ prompt: validation.data, group }, filters);
       if (rejection != null) {
         return rejection;
       }
-      const value = await source.createPromptGroup({ ...input, prompt: validation.data });
+      const value = await source.createPromptGroup({ ...input, group, prompt: validation.data });
       const groupId = value.prompt?.groupId;
       if (value.prompt?._id && groupId) {
         try {

@@ -234,7 +234,7 @@ export function createPromptMethods(
       const groups = await PromptGroup.find(query)
         .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
         .select(
-          'name numberOfGenerations oneliner category author authorName createdAt updatedAt command productionId',
+          'name numberOfGenerations oneliner category author authorName createdAt updatedAt command productionId source sourcePromptName sourceProjectId sourceDestination',
         )
         .lean();
       return await attachProductionPrompts(groups as unknown as Array<Record<string, unknown>>);
@@ -303,7 +303,7 @@ export function createPromptMethods(
           .skip(skip)
           .limit(limit)
           .select(
-            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
+            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command source sourcePromptName sourceProjectId sourceDestination',
           )
           .lean(),
         PromptGroup.countDocuments(query),
@@ -443,7 +443,7 @@ export function createPromptMethods(
     const findQuery = PromptGroup.find(matchQuery)
       .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
       .select(
-        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
+        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command source sourcePromptName sourceProjectId sourceDestination',
       );
 
     if (isPaginated && normalizedLimit) {
@@ -526,7 +526,12 @@ export function createPromptMethods(
       const { prompt, group, author, authorName } = saveData;
 
       let newPromptGroup = await PromptGroup.findOneAndUpdate(
-        { ...group, author, authorName, productionId: null },
+        /**
+         * `productionId: null` also matches a langfuse-sourced group with the same
+         * author/authorName/name, since langfuse groups never have a productionId. Exclude
+         * langfuse groups from the filter so a native create cannot match or overwrite one.
+         */
+        { ...group, author, authorName, productionId: null, source: { $ne: 'langfuse' } },
         { $setOnInsert: { ...group, author, authorName, productionId: null } },
         { new: true, upsert: true },
       )
