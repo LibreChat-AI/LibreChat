@@ -403,6 +403,88 @@ describe('resolveSubagentCodeWorkspaceInheritance', () => {
     expect(peak).toBeGreaterThan(1);
   });
 
+  it('stops a toggle-off or unset managed-machine subagent passing its the parent machine on only when the setting is stateful', async () => {
+    const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
+    const CHILD = 'agent_childOfReviewer00001';
+    await seed(CHILD);
+    const managed: CodeEnvironmentConfig = {
+      id: 'managed',
+      name: 'Managed',
+      type: 'managed',
+      owner: 'deployment',
+      baseURL: 'https://managed.example.com/v1',
+      default: true,
+    };
+    const resolve = () =>
+      resolveSubagentCodeWorkspaceInheritance({
+        selections: incident,
+        roots: [root(lia)],
+        loadSubagent,
+        environments: [...environments, managed],
+        allowEnvironmentSelection: true,
+        codeExecutionAvailable: true,
+      });
+
+    try {
+      for (const stateful_code_sessions of [false, undefined]) {
+        await mongoose.models.Agent.deleteOne({ id: REVIEWER });
+        await seed(REVIEWER, {
+          stateful_code_sessions,
+          code_environment_id: '',
+          subagents: { enabled: true, agent_ids: [CHILD] },
+        });
+        delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+        expect(await resolve()).toEqual(new Map([[CHILD, LIA_RAG]]));
+        process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'default';
+        expect(await resolve()).toEqual(new Map([[CHILD, LIA_RAG]]));
+        process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+        expect((await resolve()).size).toBe(0);
+      }
+    } finally {
+      delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+    }
+  });
+
+  it('never routes a toggle-off subagent on an attached machine as stateful code under the setting', async () => {
+    const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
+    await seed(REVIEWER, { stateful_code_sessions: false });
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+
+    try {
+      const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+        selections: incident,
+        roots: [root(lia)],
+        loadSubagent,
+        environments,
+        allowEnvironmentSelection: true,
+        codeExecutionAvailable: true,
+      });
+      expect(inheritance.size).toBe(0);
+    } finally {
+      delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+    }
+  });
+
+  it('never routes a subagent without execute_code with its parent, whatever the setting', async () => {
+    const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
+    await seed(REVIEWER, { stateful_code_sessions: false, tools: [] });
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+
+    try {
+      const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+        selections: incident,
+        roots: [root(lia)],
+        loadSubagent,
+        environments,
+        allowEnvironmentSelection: true,
+        codeExecutionAvailable: true,
+      });
+      expect(inheritance.size).toBe(0);
+    } finally {
+      delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+    }
+  });
+
   it('reads nothing when the run cannot use stateful code or holds no selection', async () => {
     const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
     for (const [selections, codeExecutionAvailable] of [

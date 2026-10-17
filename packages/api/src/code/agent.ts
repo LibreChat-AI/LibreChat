@@ -8,8 +8,8 @@ import {
   normalizeStatefulCodeEnvironment,
   resolveCodeExecutionWorkspaceSelections,
 } from '~/agents/execution';
+import { isImplicitStatefulCodeRouteAvailable, isStatefulCodeDefaultProfile } from './config';
 import { createStatefulCodeEnvironmentPolicyError } from '~/agents/errors';
-import { isImplicitStatefulCodeRouteAvailable } from './config';
 
 /** The saved agent fields that decide where an agent runs code. */
 export type AgentCodeRouteAgent = Partial<
@@ -53,6 +53,20 @@ export function optsOutOfAttachedCodeEnvironment(
     (configured?.type === 'attached' ||
       (configured == null &&
         (Boolean(agent.code_environment_id) || !implicitStatefulRouteAvailable)))
+  );
+}
+
+/** Whether the stateful default setting applies: the agent's resolved machine is neither attached nor a missing id. */
+export function isStatefulDefaultEligible(
+  agent: AgentCodeRouteAgent | null | undefined,
+  environments: readonly CodeEnvironmentConfig[] | undefined,
+): boolean {
+  if (agent == null || !isStatefulCodeDefaultProfile()) return false;
+  const configured = agent.code_environment_id
+    ? environments?.find(({ id }) => id === agent.code_environment_id)
+    : environments?.find(({ default: isDefault }) => isDefault === true);
+  return (
+    configured?.type !== 'attached' && !(configured == null && Boolean(agent.code_environment_id))
   );
 }
 
@@ -110,16 +124,18 @@ export function resolveAgentCodeFlags(params: AgentCodeFlagsParams): AgentCodeFl
     params.codeExecutionAvailable &&
     agent?.tools?.includes(Tools.execute_code) === true &&
     !attachedEnvironmentOptOut;
-  const statefulSessions =
-    codeEnvAvailable && params.statefulSessionsAvailable && agent?.stateful_code_sessions === true;
   const statefulCodeEnvironment = normalizeStatefulCodeEnvironment(
     agent?.stateful_code_environment,
   );
-  if (
-    statefulSessions &&
-    params.allowedStatefulCodeEnvironments != null &&
-    !params.allowedStatefulCodeEnvironments.includes(statefulCodeEnvironment)
-  ) {
+  const scopeAllowed =
+    params.allowedStatefulCodeEnvironments == null ||
+    params.allowedStatefulCodeEnvironments.includes(statefulCodeEnvironment);
+  const statefulSessions =
+    codeEnvAvailable &&
+    params.statefulSessionsAvailable &&
+    (agent?.stateful_code_sessions === true ||
+      (scopeAllowed && isStatefulDefaultEligible(agent, params.environments)));
+  if (statefulSessions && !scopeAllowed) {
     throw createStatefulCodeEnvironmentPolicyError(statefulCodeEnvironment);
   }
   return { attachedEnvironmentOptOut, codeEnvAvailable, statefulSessions, statefulCodeEnvironment };

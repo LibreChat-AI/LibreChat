@@ -1,5 +1,5 @@
 import { Constants } from '@librechat/agents';
-import { EToolResources, FileContext } from 'librechat-data-provider';
+import { EToolResources, FileContext, FileSources, Tools } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { ProvisionState } from '~/agents/resources';
 import type { ProvisionToolContext } from './callback';
@@ -9,6 +9,9 @@ import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { prepareQueuedCodeFileContext } from '../code/queued';
 import { createSubagentCodeRouting } from '~/code/targets';
 import { createProvisionFilesCallback } from './callback';
+import { resolveAgentCodeExecution } from '~/code/agent';
+import { createCodeApiUploadRegistry } from '~/utils';
+import { createProvisionService } from './service';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), warn: jest.fn(), debug: jest.fn(), info: jest.fn() },
@@ -1082,5 +1085,75 @@ describe('createProvisionFilesCallback', () => {
 
     expect(provisionToCodeEnv).not.toHaveBeenCalled();
     expect(provisionToVectorDB).not.toHaveBeenCalled();
+  });
+});
+
+describe('provisioning under the stateful default profile setting', () => {
+  const uploadReq = {
+    user: { id: 'user-1' },
+    app: { locals: { codeApiUploadRegistry: createCodeApiUploadRegistry() } },
+  } as unknown as ServerRequest;
+  const toggleOff = { id: 'agent-off', tools: [Tools.execute_code], stateful_code_sessions: false };
+
+  beforeEach(() => {
+    process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful.example/v1';
+  });
+
+  afterEach(() => {
+    delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+    delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+  });
+
+  async function uploadedProfile(): Promise<unknown> {
+    const { context } = resolveAgentCodeExecution({
+      agent: toggleOff,
+      codeExecutionAvailable: true,
+      statefulSessionsAvailable: true,
+      userId: 'user-1',
+      conversationId: 'convo-1',
+    });
+    const handleFileUpload = jest
+      .fn()
+      .mockResolvedValue({ storage_session_id: 'sess-1', file_id: 'remote-1' });
+    const service = createProvisionService({
+      getStrategyFunctions: ((source: string) =>
+        source === 'execute_code'
+          ? { handleFileUpload }
+          : {
+              getDownloadStream: jest.fn().mockResolvedValue({ pipe: jest.fn(), on: jest.fn() }),
+            }) as never,
+      uploadVectors: jest.fn(),
+      loadAuthValues: jest.fn().mockResolvedValue({}),
+    } as never);
+    const provisionFiles = createProvisionFilesCallback({
+      req: uploadReq,
+      agentToolContexts: new Map<string, ProvisionToolContext>([
+        [
+          toggleOff.id,
+          {
+            provisionState: state([makeFile({ source: FileSources.local })], []),
+            codeExecutionContext: context,
+          },
+        ],
+      ]),
+      provisionToCodeEnv: service.provisionToCodeEnv,
+      provisionToVectorDB: service.provisionToVectorDB,
+      updateFile: jest.fn(async () => ({})),
+      updateCodeEnvRef: jest.fn(async () => ({})),
+      addEmbeddedEntity: jest.fn(async () => ({})),
+    });
+
+    await provisionFiles([Constants.EXECUTE_CODE], toggleOff.id);
+    expect(handleFileUpload).toHaveBeenCalledTimes(1);
+    return handleFileUpload.mock.calls[0][0].executionProfile;
+  }
+
+  it('uploads a toggle-off agent file with the stateful profile when the setting is stateful', async () => {
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+    await expect(uploadedProfile()).resolves.toBe('stateful');
+  });
+
+  it('uploads the same agent file with the default profile when the setting is unset', async () => {
+    await expect(uploadedProfile()).resolves.toBe('default');
   });
 });

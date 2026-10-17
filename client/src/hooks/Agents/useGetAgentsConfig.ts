@@ -1,6 +1,13 @@
 import { useMemo } from 'react';
 import { EModelEndpoint, AgentCapabilities } from 'librechat-data-provider';
-import type { TAgentsEndpoint, TEndpointsConfig } from 'librechat-data-provider';
+import type {
+  TAgentsEndpoint as TAgentsEndpointSchema,
+  TConfig,
+  TEndpointsConfig,
+} from 'librechat-data-provider';
+
+/** Schema config plus the server-advertised deployment code profile (not a yaml option). */
+type TAgentsEndpoint = TAgentsEndpointSchema & Pick<TConfig, 'codeDefaultProfile'>;
 import { useGetEndpointsQuery } from '~/data-provider';
 
 interface UseGetAgentsConfigOptions {

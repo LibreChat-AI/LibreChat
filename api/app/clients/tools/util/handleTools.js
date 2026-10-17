@@ -32,6 +32,7 @@ const {
   withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
+  isStatefulCodeDefaultProfile,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -329,7 +330,7 @@ const loadTools = async ({
               agent,
               codeExecutionAvailable: true,
               statefulSessionsAvailable:
-                agent?.stateful_code_sessions === true &&
+                (agent?.stateful_code_sessions === true || isStatefulCodeDefaultProfile()) &&
                 (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions)),
               userId: user,
               conversationId: options.req?.body?.conversationId,

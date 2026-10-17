@@ -361,3 +361,65 @@ describe('processAddedConvo', () => {
     expect(mockGetSkillDbMethods).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('processAddedConvo — LIBRECHAT_CODE_DEFAULT_PROFILE', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockValidateAgentModel.mockResolvedValue({ isValid: true });
+    mockInitializeAgent.mockResolvedValue({ id: 'added-agent', userMCPAuthMap: undefined });
+    mockResolveAgentScopedSkillIds.mockReturnValue([]);
+    mockResolveModelSpecSkillIds.mockResolvedValue([]);
+    mockCanAuthorSkillFiles.mockReturnValue(false);
+    mockGetSkillDbMethods.mockReturnValue({
+      getSkillByName: mockRegistryGetSkillByName,
+      listSkillsByAccess: mockRegistryListSkillsByAccess,
+      listAlwaysApplySkills: mockRegistryListAlwaysApplySkills,
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+  });
+
+  const savedAgent = () => ({
+    id: 'added-agent',
+    provider: 'openai',
+    tools: ['execute_code'],
+    stateful_code_sessions: false,
+  });
+
+  it.each([true, false])(
+    'hands initializeAgent the saved toggle-off agent untouched with statefulSessionsAvailable=%s so the setting decides',
+    async (statefulSessionsAvailable) => {
+      process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+      const agent = savedAgent();
+      mockLoadAddedAgent.mockResolvedValue(agent);
+
+      await processAddedConvo({
+        req: makeReq(),
+        res: {},
+        endpointOption: { addedConvo: { model: 'gpt-4o', agent_id: 'added-agent' } },
+        modelsConfig: { openai: ['gpt-4o'] },
+        logViolation: jest.fn(),
+        loadTools: jest.fn(),
+        requestFiles: [],
+        conversationId: 'conv-1',
+        parentMessageId: null,
+        allowedProviders: new Set(['openai']),
+        agentConfigs: new Map(),
+        primaryAgentId: 'primary-id',
+        primaryAgent: { id: 'primary-id' },
+        userMCPAuthMap: undefined,
+        codeEnvAvailable: true,
+        statefulSessionsAvailable,
+      });
+
+      const [params] = mockInitializeAgent.mock.calls[0];
+      expect(params.agent).toBe(agent);
+      expect(params.agent.stateful_code_sessions).toBe(false);
+      expect(params.agent.tools).toEqual(['execute_code']);
+      expect(params.codeEnvAvailable).toBe(true);
+      expect(params.statefulSessionsAvailable).toBe(statefulSessionsAvailable);
+    },
+  );
+});
