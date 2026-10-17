@@ -126,6 +126,7 @@ export default function MessageRow({
             (part.type !== ContentTypes.TEXT ||
               (typeof part.text === 'string' ? part.text : part.text?.value)?.trim()),
         ) ||
+        message?.privacyRevision ||
         message?.error ||
         message?.unfinished ||
         message?.quotes?.length ||

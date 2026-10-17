@@ -6,6 +6,7 @@ import {
   deleteMessagesByConversation,
   seedConversations,
   seedMessages,
+  withMongo,
 } from '../db';
 import { getE2EUser } from '../../../setup/user';
 
@@ -114,6 +115,54 @@ for (const definition of ['stock', 'clickhouse'] as const) {
         await expect(page.getByRole('dialog')).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(page.getByRole('dialog')).toBeHidden();
+        await withMongo(async (db) => {
+          await db
+            .collection('messages')
+            .updateMany(
+              { conversationId, messageId: { $in: [messageId, structuredId] } },
+              { $set: { privacyRevision: 'attachment-revision' } },
+            );
+        });
+        let ownerAvailable = true;
+        const ownerText = 'Owner-only attachment prompt';
+        await page.route(`**/api/messages/${conversationId}/owner-text`, (route) =>
+          route.fulfill({
+            json: {
+              messages: ownerAvailable
+                ? [messageId, structuredId].map((id) => ({
+                    messageId: id,
+                    canonicalText: TEXT,
+                    revision: 'attachment-revision',
+                    text: ownerText,
+                  }))
+                : [],
+            },
+          }),
+        );
+        await page.reload();
+        for (const id of [messageId, structuredId]) {
+          const protectedRow = page.locator(`[id="${id}"]`);
+          await expect(protectedRow.getByTestId('message-body')).toContainText(ownerText);
+          await expect(
+            protectedRow.getByTestId('message-attachments').getByRole('button'),
+          ).toHaveCount(2);
+        }
+        await attachments.getByRole('button', { name: 'View preview.png in dialog' }).click();
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByRole('dialog')).toBeHidden();
+        ownerAvailable = false;
+        await page.reload();
+        for (const id of [messageId, structuredId]) {
+          const protectedRow = page.locator(`[id="${id}"]`);
+          await expect(protectedRow.getByTestId('message-body')).toContainText(TEXT);
+          await expect(
+            protectedRow.getByRole('button', { name: 'Retry loading original' }),
+          ).toBeVisible();
+          await expect(
+            protectedRow.getByTestId('message-attachments').getByRole('button'),
+          ).toHaveCount(2);
+        }
         await page.setViewportSize({ width: 320, height: 800 });
         await expect(attachments).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(

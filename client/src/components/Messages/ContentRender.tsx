@@ -168,7 +168,7 @@ const ContentRender = memo(function ContentRender({
 
   return (
     <MessageRow
-      message={!edit && msg.isCreatedByUser && msg.privacyRevision ? undefined : msg}
+      message={msg}
       id={msg.messageId}
       icon={author.icon}
       label={author.label}
