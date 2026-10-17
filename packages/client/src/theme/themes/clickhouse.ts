@@ -1,4 +1,4 @@
-import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from '../types';
+import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from 'librechat-data-provider';
 
 /**
  * ClickHouse reference theme, built from Click UI's design tokens

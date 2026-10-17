@@ -124,7 +124,7 @@ html {
 /* High contrast appearance modes.
  *
  * Every `IThemeRGB` token is delivered by the theme registry as an inline custom
- * property on <html> (see packages/client/src/theme/themes/highContrast.ts), so
+ * property on <html> (see packages/data-provider/src/themes/highContrast.ts), so
  * this block only covers what the token layer cannot reach: the CSS-only
  * variables and hard-coded literals elsewhere in this stylesheet. Every ratio
  * quoted below is measured against the mode's own canvas, pure white or pure

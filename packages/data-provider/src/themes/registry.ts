@@ -1,20 +1,3 @@
-import {
-  THEME_VERSION,
-  isThemeRGB,
-  collectThemeIssues,
-  isThemeAppearanceToken,
-  collectThemeWarningIssues,
-  defaultSwitchSize,
-  themeColorTokens as sharedColorTokens,
-  renamedThemeColorTokens,
-  themeBrandTokens as sharedBrandTokens,
-} from 'librechat-data-provider';
-import type {
-  ThemeColorToken,
-  ThemeBrandToken,
-  ThemeAppearanceToken,
-  RenamedThemeColorToken,
-} from 'librechat-data-provider';
 import type {
   IThemeAppearance,
   IThemeBrands,
@@ -25,11 +8,25 @@ import type {
   ThemeDefinition,
   ThemeMode,
 } from './types';
-import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
-import { defaultTheme } from './themes/default';
-import { darkTheme } from './themes/dark';
-
-export { THEME_VERSION };
+import type {
+  ThemeColorToken,
+  ThemeBrandToken,
+  ThemeAppearanceToken,
+  RenamedThemeColorToken,
+} from '../theme';
+import {
+  THEME_VERSION,
+  isThemeRGB,
+  collectThemeIssues,
+  isThemeAppearanceToken,
+  collectThemeWarningIssues,
+  defaultSwitchSize,
+  themeColorTokens as sharedColorTokens,
+  renamedThemeColorTokens,
+} from '../theme';
+import { highContrastDarkTheme, highContrastLightTheme } from './highContrast';
+import { defaultTheme } from './default';
+import { darkTheme } from './dark';
 
 /**
  * Compile-time guard: the categorical series scale is declared across three
@@ -60,7 +57,7 @@ export type SharedTokensMatchTypes = [
   Assert<SameKeys<ThemeBrandToken, keyof IThemeBrands>>,
 ];
 
-export const themeColorTokens: readonly (keyof IThemeRGB)[] = sharedColorTokens;
+const themeColorTokens: readonly (keyof IThemeRGB)[] = sharedColorTokens;
 
 const colorTokenSet: ReadonlySet<string> = new Set<string>(themeColorTokens);
 
@@ -460,8 +457,6 @@ export function defaultAppearanceFor(mode: ThemeMode): IThemeAppearance {
   return mode === 'dark' ? { ...defaultAppearance, ...darkAppearanceDefaults } : defaultAppearance;
 }
 
-export const themeBrandTokens: readonly (keyof IThemeBrands)[] = sharedBrandTokens;
-
 export const defaultBrands: IThemeBrands = Object.freeze({
   'provider-openai': '#19C37D',
   'provider-openai-gpt4': '#AB68FF',
@@ -543,7 +538,7 @@ export function validateThemeDefinition(theme: ThemeDefinition): string[] {
  * A partial theme promises that an omitted value falls back, and `Partial<T>` lets a key be
  * present with `undefined`. Spreading that would overwrite the inherited value with nothing:
  * every brand and appearance token is written to the DOM unconditionally, so an avatar would
- * lose its fill and a shadow or radius step its value, unlike colors, which `mapColors` skips.
+ * lose its fill and a shadow or radius step its value, unlike colors, which `describeThemeColors` skips.
  */
 function definedEntries<T extends object>(values?: Partial<T>): Partial<T> {
   if (!values) {

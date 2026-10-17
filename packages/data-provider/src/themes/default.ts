@@ -1,4 +1,4 @@
-import { IThemeRGB } from '../types';
+import type { IThemeRGB } from './types';
 
 /**
  * Default light theme
