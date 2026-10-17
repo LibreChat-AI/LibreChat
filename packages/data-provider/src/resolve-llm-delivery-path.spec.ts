@@ -200,6 +200,12 @@ describe('resolveDefaultLLMDeliveryPath', () => {
       'application/vnd.oasis.opendocument.spreadsheet',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      /* XLSB — regression test for the fix that replaced a hand-duplicated Excel MIME
+       * alternation (missing XLSB) with the shared `excelMimeTypes` pattern. Before that
+       * fix, this type silently fell through to 'none': the upload succeeded with no
+       * error, but the model never received any content. */
+      'application/vnd.ms-excel.sheet.binary.macroenabled.12',
       'message/rfc822',
     ]) {
       expect(resolveDefaultLLMDeliveryPath(mimeType, undefined, undefined, 'openAI')).toBe('text');

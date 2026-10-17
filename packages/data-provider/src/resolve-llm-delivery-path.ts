@@ -7,6 +7,7 @@ import {
   isExplicitMimeConfig,
   isBedrockDocumentType,
   codeInterpreterMimeTypes,
+  excelMimeTypes,
   fileConfig as baseFileConfig,
 } from './file-config';
 import {
@@ -105,9 +106,12 @@ const TEXT_RECOVERABLE_MIME_TYPES: RegExp[] = [
   /* Only the formats the built-in document parser handles. Presentations and graphics
    * are absent from documentParserMimeTypes, so on a deployment without OCR they would
    * fall through to the permissive text matcher and be decoded as ZIP bytes. */
-  /^application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)$/,
+  /^application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$/,
   /^application\/vnd\.oasis\.opendocument\.(text|spreadsheet)$/,
-  /^application\/(vnd\.ms-excel|x-msexcel|msexcel|x-ms-excel|x-excel|x-dos_ms_excel|xls|x-xls)$/,
+  /* All Excel-like MIME types, including XLSB — kept in sync with file-config.ts by
+   * importing the shared pattern instead of hand-duplicating the alternation (the
+   * DOCX/XLSX regex above is split out since excelMimeTypes already covers XLSX). */
+  excelMimeTypes,
   /^message\/rfc822$/,
 ];
 

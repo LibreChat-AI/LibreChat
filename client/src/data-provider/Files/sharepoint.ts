@@ -119,6 +119,7 @@ function getMimeTypeFromFileName(fileName: string): string {
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     xls: 'application/vnd.ms-excel',
     xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xlsb: 'application/vnd.ms-excel.sheet.binary.macroenabled.12',
     ppt: 'application/vnd.ms-powerpoint',
     pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     potx: 'application/vnd.openxmlformats-officedocument.presentationml.template',
