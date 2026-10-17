@@ -77,6 +77,7 @@ const vertexMultiRegionEndpoints = new Map([
 
 const blockedModelOptionParams = [
   'apiKey',
+  'apiVersion',
   'baseUrl',
   'baseURL',
   'endpoint',
