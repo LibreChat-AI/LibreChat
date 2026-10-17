@@ -972,9 +972,9 @@ describe('bedrockInputParser', () => {
       expect(amrf?.anthropic_beta).toEqual(['context-1m-2025-08-07']);
     });
 
-    test('should match anthropic.claude-haiku-6 model without context beta header', () => {
+    test('should match anthropic.claude-haiku-4-5 model without context beta header', () => {
       const input = {
-        model: 'anthropic.claude-haiku-6',
+        model: 'anthropic.claude-haiku-4-5',
       };
       const result = bedrockInputParser.parse(input) as Record<string, unknown>;
       const additionalFields = result.additionalModelRequestFields as Record<string, unknown>;
@@ -2073,5 +2073,31 @@ describe('bedrockInputParser', () => {
       expect(result.promptCache).toBeUndefined();
       expect(result.promptCacheTtl).toBeUndefined();
     });
+  });
+});
+
+describe('Haiku 5.5+ thinking contract', () => {
+  test.each([
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic.claude-haiku-5-5',
+    'claude-haiku-6',
+  ])('%s is adaptive, bound, sampling-free and turns off with explicit disabled', (model) => {
+    expect(supportsAdaptiveThinking(model)).toBe(true);
+    expect(bindsThinkingBlocks(model)).toBe(true);
+    expect(omitsThinkingByDefault(model)).toBe(true);
+    expect(omitsSamplingParameters(model)).toBe(true);
+    expect(supportsContext1m(model)).toBe(true);
+    expect(supportsOutput128k(model)).toBe(true);
+    expect(hasAlwaysOnThinking(model)).toBe(false);
+    expect(requiresExplicitThinkingDisabled(model)).toBe(true);
+    expect(capsEffortWhenThinkingDisabled(model)).toBe(true);
+    expect(resolveThinkingOffConfig(model)).toEqual({ type: 'disabled' });
+  });
+
+  test('Haiku 4.5 keeps manual thinking', () => {
+    expect(supportsAdaptiveThinking('claude-haiku-4-5')).toBe(false);
+    expect(bindsThinkingBlocks('claude-haiku-4-5')).toBe(false);
+    expect(omitsSamplingParameters('claude-haiku-4-5')).toBe(false);
   });
 });

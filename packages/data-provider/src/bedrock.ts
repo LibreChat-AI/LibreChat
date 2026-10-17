@@ -115,6 +115,18 @@ function parseOpusVersion(model: string): ClaudeVersion | null {
   return null;
 }
 
+function parseHaikuVersion(model: string): ClaudeVersion | null {
+  const match =
+    model.match(/claude-haiku[-.]?(\d+)(?:[-.](\d{1,2})(?!\d))?/) ??
+    model.match(/claude-(\d+)(?:[-.](\d{1,2})(?!\d))?-haiku/);
+  return match ? { major: parseInt(match[1], 10), minor: parseInt(match[2] ?? '0', 10) } : null;
+}
+
+/** Haiku 5.5+: adaptive thinking on by default, `disabled` allowed at effort high or below. */
+function isModernHaiku(model: string): boolean {
+  return isAtLeast(parseHaikuVersion(model), 5, 5);
+}
+
 /**
  * Opus 5.5 and later, and the Mythos-class line (Fable/Mythos), run thinking
  * always on and bound to the conversation prefix: both `disabled` and
@@ -138,9 +150,9 @@ export const THINKING_BLOCK_BINDING = {
   prefix_mismatch_behavior: 'drop_block',
 } as const;
 
-/** Models whose thinking blocks are bound to the conversation prefix (Opus 5.5+, Sonnet 5.5+, Fable/Mythos). */
+/** Models whose thinking blocks are bound to the conversation prefix (Opus 5.5+, Sonnet 5.5+, Haiku 5.5+, Fable/Mythos). */
 export function bindsThinkingBlocks(model: string): boolean {
-  return hasAlwaysOnThinking(model) || hasBetweenToolsThinkingFloor(model);
+  return hasAlwaysOnThinking(model) || hasBetweenToolsThinkingFloor(model) || isModernHaiku(model);
 }
 
 export const BETWEEN_TOOLS_THINKING = { type: 'between_tools' } as const;
@@ -192,6 +204,7 @@ export function supportsAdaptiveThinking(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 4, 6) ||
     isAtLeast(parseSonnetVersion(model), 4, 6) ||
+    isModernHaiku(model) ||
     s.isMythosClassModel(model)
   );
 }
@@ -210,6 +223,7 @@ export function omitsThinkingByDefault(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 4, 7) ||
     isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    isModernHaiku(model) ||
     s.isMythosClassModel(model)
   );
 }
@@ -218,6 +232,7 @@ export function omitsSamplingParameters(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 4, 7) ||
     isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    isModernHaiku(model) ||
     s.isMythosClassModel(model)
   );
 }
@@ -239,7 +254,11 @@ export function requiresExplicitThinkingDisabled(model: string): boolean {
   if (hasAlwaysOnThinking(model) || hasBetweenToolsThinkingFloor(model)) {
     return false;
   }
-  return isAtLeast(parseSonnetVersion(model), 5, 0) || isAtLeast(parseOpusVersion(model), 5, 0);
+  return (
+    isAtLeast(parseSonnetVersion(model), 5, 0) ||
+    isAtLeast(parseOpusVersion(model), 5, 0) ||
+    isModernHaiku(model)
+  );
 }
 
 /** Effort levels Opus 5 rejects while thinking is explicitly disabled. */
@@ -265,7 +284,7 @@ export function capsEffortWhenThinkingDisabled(model: string): boolean {
   if (hasBetweenToolsThinkingFloor(model)) {
     return true;
   }
-  return isAtLeast(parseOpusVersion(model), 5, 0);
+  return isAtLeast(parseOpusVersion(model), 5, 0) || isModernHaiku(model);
 }
 
 /**
@@ -328,6 +347,7 @@ export function supportsContext1m(model: string): boolean {
   return (
     isAtLeast(parseSonnetVersion(model), 4, 6) ||
     isAtLeast(parseOpusVersion(model), 4, 6) ||
+    isModernHaiku(model) ||
     s.isMythosClassModel(model)
   );
 }
@@ -337,6 +357,7 @@ export function supportsOutput128k(model: string): boolean {
   return (
     isAtLeast(parseOpusVersion(model), 5, 5) ||
     isAtLeast(parseSonnetVersion(model), 5, 5) ||
+    isModernHaiku(model) ||
     s.isMythosClassModel(model)
   );
 }
