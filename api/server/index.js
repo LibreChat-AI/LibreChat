@@ -16,6 +16,7 @@ const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
   isEnabled,
   issueCsp,
+  reportError,
   apiNotFound,
   createMetrics,
   applyCspNonce,
@@ -24,6 +25,7 @@ const {
   shellCacheHeaders,
   escapeHtmlAttribute,
   ErrorController,
+  initErrorReporting,
   memoryDiagnostics,
   createSecurityHeaders,
   performStartupChecks,
@@ -169,6 +171,8 @@ const configureGenerationStreams = () => {
 
 /** Reserved for the shutdown tasks that run after the generation job manager. */
 const SHUTDOWN_TEARDOWN_RESERVE_MS = 10_000;
+
+initErrorReporting();
 
 const startServer = async () => {
   await waitForKeyvRedisClient();
@@ -565,6 +569,7 @@ let messageCount = 0;
 process.on('uncaughtException', (err) => {
   if (!err.message.includes('fetch failed')) {
     logger.error('There was an uncaught error:', err);
+    reportError(err, { source: 'uncaughtException' });
   }
 
   if (err.message && err.message?.toLowerCase()?.includes('abort')) {
@@ -632,6 +637,7 @@ process.on('uncaughtException', (err) => {
  * "[object Object]" by `String()`.
  */
 process.on('unhandledRejection', (reason) => {
+  reportError(reason, { source: 'unhandledRejection' });
   if (reason instanceof Error) {
     logger.error('Unhandled promise rejection. The app will continue running.', {
       name: reason.name,

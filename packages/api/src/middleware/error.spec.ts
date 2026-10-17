@@ -4,6 +4,9 @@ import type { ValidationError, MongoServerError, CustomError } from '~/types';
 import { MCPAuthenticationRefreshError, MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { ErrorController, createCustomError } from './error';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
+import { reportError } from '~/errorReporting';
+
+jest.mock('~/errorReporting', () => ({ reportError: jest.fn() }));
 
 // Mock the logger
 jest.mock('@librechat/data-schemas', () => ({
@@ -28,7 +31,30 @@ describe('ErrorController', () => {
       send: jest.fn(),
     } as unknown as Response;
     (logger.error as jest.Mock).mockClear();
+    (reportError as jest.Mock).mockClear();
     mockNext = jest.fn();
+  });
+
+  describe('error reporting', () => {
+    it('reports an unknown error that becomes a 500, with the path but not the query', () => {
+      const error = new Error('boom');
+      mockReq = { originalUrl: '/api/convos/abc?token=secret' } as Request;
+
+      ErrorController(error, mockReq, mockRes, mockNext);
+
+      expect(mockRes.status).toHaveBeenCalledWith(500);
+      expect(reportError).toHaveBeenCalledWith(error, {
+        source: 'express',
+        path: '/api/convos/abc?token=secret',
+      });
+    });
+
+    it('does not report errors that map to a client response', () => {
+      ErrorController(createCustomError(404, 'Not found'), mockReq, mockRes, mockNext);
+      ErrorController(new OpenIDReauthRequiredError('again'), mockReq, mockRes, mockNext);
+
+      expect(reportError).not.toHaveBeenCalled();
+    });
   });
 
   describe('ValidationError handling', () => {

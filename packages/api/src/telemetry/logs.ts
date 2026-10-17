@@ -37,11 +37,21 @@ export function attachLogsTransport(config: TelemetryConfig): void {
 
   const transport = new OpenTelemetryTransportV3({
     level: resolveLogsLevel(config.logsLevel),
-    format: winston.format.combine(baseLogFormat, jsonTruncateFormat()),
+    format: winston.format.combine(baseLogFormat, jsonTruncateFormat(), dropTimestampAttribute()),
   });
   logger.add(transport);
   activeTransport = transport;
 }
+
+/**
+ * The log record already carries its emit time. baseLogFormat's ISO `timestamp` string would
+ * otherwise travel as an attribute, and receivers that hoist attributes onto the record
+ * (GlitchTip's OTLP ingest) reject the whole batch because `timestamp` must be numeric there.
+ */
+const dropTimestampAttribute = winston.format((info) => {
+  delete info.timestamp;
+  return info;
+});
 
 export function detachLogsTransport(): void {
   if (!activeTransport) {
