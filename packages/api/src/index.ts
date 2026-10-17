@@ -134,6 +134,8 @@ export * from './stream';
 export { memoryDiagnostics } from './utils/memory';
 /* RUM */
 export * from './rum/proxy';
+export * from './rum/policy';
+export * from './rum/config';
 export * from './rum/limiter';
 /* OpenAPI */
 export { createOpenApiRouter } from './openapi/router';

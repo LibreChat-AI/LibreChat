@@ -20,7 +20,10 @@ jest.mock('~/server/middleware', () => ({
   requireRumProxyAuth: (...args) => mockRequireRumProxyAuth(...args),
 }));
 
+jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
+
 jest.mock('@librechat/api', () => ({
+  loadRumConfig: () => (_req, _res, next) => next(),
   getRumProxyBodyLimit: jest.fn(() => '3mb'),
   limiterCache: (...args) => mockLimiterCache(...args),
   createRumProxyLimiter: (...args) => mockCreateRumProxyLimiter(...args),

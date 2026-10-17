@@ -1,4 +1,5 @@
 import type { TEndpointsConfig } from './types';
+
 import {
   allowedAddressesSchema,
   agentsEndpointSchema,
@@ -6,6 +7,7 @@ import {
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
   configSchema,
+  telemetrySchema,
   chatProjectsConfigSchema,
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
@@ -28,6 +30,27 @@ import {
   resolveEndpointType,
   webSearchSchema,
 } from './config';
+
+describe('independent browser replay opt-in', () => {
+  it('preserves absent configuration for existing environment-based RUM deployments', () => {
+    expect(configSchema.parse({ version: '1.3.17' }).telemetry).toBeUndefined();
+    expect(telemetrySchema.parse({ rum: { enabled: true } })).toEqual({ rum: { enabled: true } });
+  });
+
+  it('defaults an explicitly configured replay block to off', () => {
+    expect(telemetrySchema.parse({ rum: { enabled: true, sessionReplay: {} } })).toEqual({
+      rum: { enabled: true, sessionReplay: { enabled: false } },
+    });
+  });
+
+  it.each([
+    { rum: { sessionReplay: { enabled: 'true' } } },
+    { rum: { sessionReplay: { enable: false } } },
+    { rum: { enable: true } },
+  ])('rejects invalid or misspelled policy %p', (telemetry) => {
+    expect(telemetrySchema.safeParse(telemetry).success).toBe(false);
+  });
+});
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
 import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';

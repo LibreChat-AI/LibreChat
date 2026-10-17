@@ -7,10 +7,13 @@ const {
   requireRumLogsEnabled,
   handleJsonParseError,
   createRumProxyLimiter,
+  loadRumConfig,
 } = require('@librechat/api');
 const { requireRumProxyAuth } = require('~/server/middleware');
+const { getAppConfig } = require('~/server/services/Config/app');
 
 const router = express.Router();
+router.use(loadRumConfig(getAppConfig));
 const rawOtlpBody = express.raw({
   limit: getRumProxyBodyLimit(),
   type: ['application/x-protobuf', 'application/octet-stream'],

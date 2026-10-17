@@ -3197,6 +3197,23 @@ export type TTurnstileConfig = z.infer<typeof turnstileSchema>;
 /** Distinguishes collector acceptance from the proxy's silent 204 authentication drop. */
 export const RUM_COLLECTOR_ACK_HEADER = 'x-librechat-rum-accepted';
 
+export const telemetrySchema = z
+  .object({
+    rum: z
+      .object({
+        enabled: z.boolean().optional(),
+        sessionReplay: z
+          .object({ enabled: z.boolean().default(false) })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type TTelemetryConfig = DeepPartial<z.infer<typeof telemetrySchema>>;
+
 export type TRumConfig = {
   provider: 'hyperdx';
   enabled: boolean;
@@ -3207,6 +3224,8 @@ export type TRumConfig = {
   tracePropagationTargets?: string[];
   consoleCapture?: boolean;
   disableReplay?: boolean;
+  /** Positive replay policy; disableReplay is retained for older browser bundles. */
+  sessionReplay?: { enabled: boolean };
   advancedNetworkCapture?: boolean;
   sampleRate?: number;
   environment?: string;
@@ -4064,6 +4083,7 @@ export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchem
 
 export const configSchema = z.object({
   version: z.string(),
+  telemetry: telemetrySchema.optional(),
   permissions: z
     .object({
       maxWriteAttempts: permissionWriteAttemptsSchema,

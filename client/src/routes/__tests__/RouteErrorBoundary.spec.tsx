@@ -32,7 +32,13 @@ jest.mock('~/hooks/AuthContext', () => ({
 }));
 jest.mock('@hyperdx/browser', () => ({
   __esModule: true,
-  default: { init: jest.fn(), addAction: jest.fn(), setGlobalAttributes: jest.fn() },
+  default: {
+    init: jest.fn(),
+    addAction: jest.fn(),
+    setGlobalAttributes: jest.fn(),
+    stopSessionRecorder: jest.fn(),
+    resumeSessionRecorder: jest.fn(),
+  },
 }));
 
 type ErrorFactory = () => unknown;
