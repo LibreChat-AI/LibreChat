@@ -1,10 +1,12 @@
 import { logger } from '@librechat/data-schemas';
+import { SystemRoles } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { PromptRequest, PromptHandlersDeps } from './handlers';
 import type { PromptService } from './service';
+import type { ResolvedPrompt } from './types';
 import { contentFilterBlockResponse } from '../middleware/contentFilter';
+import { createPromptHandlers, toResolveResponse } from './handlers';
 import { LangfusePromptRequestError } from '../langfuse/prompts';
-import { createPromptHandlers } from './handlers';
 import { PromptStoreError } from './errors';
 
 function mockReq(overrides: Record<string, unknown> = {}): PromptRequest {
@@ -864,5 +866,88 @@ describe('createPromptHandlers resolvePrompt', () => {
 
     expect(res.statusCode).toBe(500);
     expect(res.body).toEqual({ message: 'Error resolving prompt' });
+  });
+
+  it('sends sourceUrl for an admin resolving a Langfuse group', async () => {
+    const resolvePrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        source: 'langfuse',
+        groupId,
+        prompt: 'Hi',
+        type: 'text',
+        version: 3,
+        labels: ['production'],
+        sourceUrl: 'https://langfuse.test/project/p1/prompts/greeting',
+      },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
+    const res = mockRes();
+
+    await handlers.resolvePrompt(
+      mockReq({ user: { id: 'admin-1', role: SystemRoles.ADMIN } }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      sourceUrl: 'https://langfuse.test/project/p1/prompts/greeting',
+    });
+  });
+
+  it('omits sourceUrl for a non-admin resolving a Langfuse group', async () => {
+    const resolvePrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        source: 'langfuse',
+        groupId,
+        prompt: 'Hi',
+        type: 'text',
+        version: 3,
+        labels: ['production'],
+        sourceUrl: 'https://langfuse.test/project/p1/prompts/greeting',
+      },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
+    const res = mockRes();
+
+    await handlers.resolvePrompt(mockReq({ user: { id: 'u1', role: SystemRoles.USER } }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect((res.body as Record<string, unknown>).sourceUrl).toBeUndefined();
+  });
+});
+
+describe('toResolveResponse', () => {
+  const langfuseValue: ResolvedPrompt = {
+    source: 'langfuse',
+    groupId,
+    prompt: 'Hi',
+    type: 'text',
+    version: 1,
+    labels: ['production'],
+    sourceUrl: 'https://langfuse.test/project/p1/prompts/greeting',
+  };
+  const nativeValue: ResolvedPrompt = {
+    source: 'native',
+    groupId,
+    promptId,
+    prompt: 'Hi',
+    type: 'text',
+  };
+
+  it('keeps sourceUrl for an admin', () => {
+    expect(toResolveResponse(langfuseValue, { isAdmin: true })).toEqual(langfuseValue);
+  });
+
+  it('strips sourceUrl for a non-admin', () => {
+    const result = toResolveResponse(langfuseValue, { isAdmin: false });
+    expect(result).not.toHaveProperty('sourceUrl');
+    expect(result).toEqual({ ...langfuseValue, sourceUrl: undefined });
+  });
+
+  it('leaves a native group unaffected either way', () => {
+    expect(toResolveResponse(nativeValue, { isAdmin: false })).toEqual(nativeValue);
+    expect(toResolveResponse(nativeValue, { isAdmin: true })).toEqual(nativeValue);
   });
 });

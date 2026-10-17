@@ -20,7 +20,7 @@ import {
 import type { TLangfusePromptGetParams, TLangfusePromptListParams } from 'librechat-data-provider';
 import type { FormEvent } from 'react';
 import { useLangfusePromptQuery, useLangfusePromptsQuery } from '~/data-provider';
-import { getPromptErrorMessage } from './promptErrors';
+import { getPromptErrorMessage } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 type LangfusePromptsDialogProps = {

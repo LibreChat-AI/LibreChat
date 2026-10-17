@@ -1260,6 +1260,9 @@ export type TResolvedLangfusePrompt = {
   type: 'text';
   version: number;
   labels: string[];
+  /** Deep link to this prompt in the Langfuse console. Present only when the
+   *  requesting user is an admin. */
+  sourceUrl?: string;
 };
 
 export type TResolvedPromptResponse = TResolvedNativePrompt | TResolvedLangfusePrompt;

@@ -3,10 +3,17 @@ import { logger, isValidObjectIdString } from '@librechat/data-schemas';
 import {
   PermissionBits,
   ResourceType,
+  SystemRoles,
   DEFAULT_CACHE_CLEAR_TIMEOUT_MS,
 } from 'librechat-data-provider';
 import type { Response } from 'express';
-import type { PromptGroupRecord, PromptSelection, PromptServiceError, StoredId } from './types';
+import type {
+  PromptGroupRecord,
+  PromptSelection,
+  PromptServiceError,
+  ResolvedPrompt,
+  StoredId,
+} from './types';
 import type { PromptViaGroupResource } from './access';
 import type { PromptService } from './service';
 import type { ServerRequest } from '~/types';
@@ -113,6 +120,21 @@ function sendRejection(res: Response, error: PromptServiceError): Response {
       .send({ code: 'read_only', error: 'Externally managed prompts are read-only' });
   }
   return res.status(400).send({ error: 'Prompt operation is not available' });
+}
+
+/**
+ * Omits `sourceUrl` from a resolved Langfuse prompt for a non-admin requester. A native
+ * result carries no `sourceUrl` and is returned unchanged either way.
+ */
+export function toResolveResponse(
+  value: ResolvedPrompt,
+  { isAdmin }: { isAdmin: boolean },
+): ResolvedPrompt {
+  if (value.source !== 'langfuse' || isAdmin) {
+    return value;
+  }
+  const { sourceUrl: _sourceUrl, ...rest } = value;
+  return rest;
 }
 
 /**
@@ -250,7 +272,9 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
         if (!result.ok) {
           return sendResolveRejection(res, result.error);
         }
-        return res.status(200).send(result.value);
+        return res
+          .status(200)
+          .send(toResolveResponse(result.value, { isAdmin: req.user?.role === SystemRoles.ADMIN }));
       } catch (error) {
         if (error instanceof LangfusePromptRequestError) {
           logger.error('[prompts] Langfuse request failed while resolving a prompt', error);

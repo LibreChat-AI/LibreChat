@@ -25,7 +25,7 @@ import {
   useSyncLangfusePromptsMutation,
 } from '~/data-provider';
 import LangfusePromptsDialog from './LangfusePromptsDialog';
-import { getPromptErrorMessage } from './promptErrors';
+import { getPromptErrorMessage } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 type ConnectionTestState = 'idle' | 'unverified' | 'checking' | 'connected' | 'failed';

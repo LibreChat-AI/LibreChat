@@ -80,6 +80,10 @@ export interface LangfuseResolvedPrompt {
   readonly type: 'text';
   readonly version: number;
   readonly labels: readonly string[];
+  /** Deep link to this prompt in the Langfuse console (`getLangfusePromptUrl`). Present
+   *  only when the adapter resolves it; the `/resolve` handler also strips it from a
+   *  non-admin response. */
+  readonly sourceUrl?: string;
 }
 
 export type ResolvedPrompt = NativeResolvedPrompt | LangfuseResolvedPrompt;

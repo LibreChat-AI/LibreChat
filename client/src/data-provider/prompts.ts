@@ -1,7 +1,8 @@
+import { useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, QueryKeys, ResourceType } from 'librechat-data-provider';
-import type { UseMutationResult } from '@tanstack/react-query';
+import type { QueryObserverResult, UseMutationResult } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import {
   /* Prompts */
@@ -364,4 +365,42 @@ export const useRecordPromptUsage = (): UseMutationResult<
       updateGroupInAll(queryClient, update);
     },
   });
+};
+
+/**
+ * Resolves a prompt group's content: `/api/prompts/groups/:groupId/resolve`.
+ * No cache and no retry, since a Langfuse group's content can change between
+ * requests and a stale read should not linger or be retried silently.
+ */
+export const useResolvePromptGroup = (
+  id: string,
+  config?: { enabled?: boolean },
+): QueryObserverResult<t.TResolvedPromptResponse> => {
+  return useQuery<t.TResolvedPromptResponse>(
+    [QueryKeys.promptGroupContent, id],
+    () => dataService.resolvePromptGroup(id),
+    {
+      enabled: config?.enabled,
+      retry: false,
+      staleTime: 0,
+      cacheTime: 0,
+      refetchOnWindowFocus: false,
+    },
+  );
+};
+
+/** Imperative counterpart to `useResolvePromptGroup`, for callers (for example a
+ *  slash-command submit) that need a single resolved read rather than a hook
+ *  bound to render. */
+export const useResolvePromptGroupFn = (): ((id: string) => Promise<t.TResolvedPromptResponse>) => {
+  const queryClient = useQueryClient();
+  return useCallback(
+    (id: string) =>
+      queryClient.fetchQuery<t.TResolvedPromptResponse>(
+        [QueryKeys.promptGroupContent, id],
+        () => dataService.resolvePromptGroup(id),
+        { retry: false, staleTime: 0, cacheTime: 0 },
+      ),
+    [queryClient],
+  );
 };

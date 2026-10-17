@@ -1,8 +1,8 @@
 import React from 'react';
 import '@testing-library/jest-dom/extend-expect';
 import { render, screen } from '@testing-library/react';
-import { PermissionBits } from 'librechat-data-provider';
-import type { TPromptGroup } from 'librechat-data-provider';
+import { PermissionBits, SystemRoles } from 'librechat-data-provider';
+import type { TPromptGroup, TResolvedPromptResponse } from 'librechat-data-provider';
 import PromptForm from '../PromptForm';
 
 const mockGroup: TPromptGroup = {
@@ -26,6 +26,25 @@ const mockAllBits =
 // Mutable so individual tests can exercise the ACL query's loading state.
 let mockPermissionsLoading = false;
 let mockPermissionBits = mockAllBits;
+
+// Mutable so individual tests can exercise `usePromptContent`'s loading,
+// resolved and error outcomes, and an admin vs. a regular user, without
+// re-mocking the module per test.
+let mockUser: { id: string; role?: string } = { id: 'user-1', role: SystemRoles.USER };
+const mockRefetchPromptContent = jest.fn();
+let mockPromptContent: {
+  text: string;
+  resolved?: TResolvedPromptResponse;
+  isLoading: boolean;
+  error: unknown;
+  refetch: () => void;
+} = {
+  text: '',
+  resolved: undefined,
+  isLoading: false,
+  error: undefined,
+  refetch: mockRefetchPromptContent,
+};
 
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ promptId: 'group-1' }),
@@ -55,6 +74,7 @@ jest.mock('~/data-provider', () => ({
   useAddPromptToGroup: () => ({ mutate: jest.fn(), isLoading: false }),
   useUpdatePromptGroup: () => ({ mutate: jest.fn(), isLoading: false, isError: false }),
   useMakePromptProduction: () => ({ mutate: jest.fn(), isLoading: false }),
+  useRecordPromptUsage: () => ({ mutate: jest.fn() }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -62,6 +82,11 @@ jest.mock('~/hooks', () => ({
     values ? `${key} ${JSON.stringify(values)}` : key,
   useFocusTrap: () => undefined,
   useHasAccess: () => true,
+  useAuthContext: () => ({ user: mockUser }),
+  // Mocked directly rather than through its own data fetch: these tests
+  // exercise the external view's rendering of each outcome, not the hook
+  // itself (covered by `usePromptContent.test.tsx`).
+  usePromptContent: () => mockPromptContent,
   // Not mocked wholesale: the real hook runs so `isExternal` is derived from
   // `group.source`, exercising the same logic the app ships.
   usePromptGroupPermissions: jest.requireActual('~/hooks/Prompts/usePromptGroupPermissions')
@@ -94,6 +119,17 @@ jest.mock('../../editor/PromptEditor', () => ({
 jest.mock('../../display/PromptVariables', () => ({
   __esModule: true,
   default: () => <div data-testid="prompt-variables" />,
+}));
+
+// `PromptTextCard` pulls in the shared Markdown/Artifacts dependency chain
+// (recoil atoms this suite's lightweight `recoil` mock doesn't define);
+// stubbed like `PromptVariables`/`PromptVersions` above, since the external
+// view's own rendering of each resolve outcome is what these tests cover.
+jest.mock('../../display/PromptTextCard', () => ({
+  __esModule: true,
+  default: ({ mainText }: { mainText: string }) => (
+    <div data-testid="prompt-text-card">{mainText}</div>
+  ),
 }));
 
 jest.mock('../../display/PromptVersions', () => ({
@@ -176,6 +212,10 @@ describe('PromptForm external (Langfuse) read-only view', () => {
     expect(screen.queryByTestId('prompt-editor')).not.toBeInTheDocument();
     expect(screen.queryByTestId('prompt-versions')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /com_ui_deploy|com_ui_production/ })).toBeNull();
+    // This standalone management page has no `ChatContext.Provider` ancestor
+    // (unlike the side-panel detail view), so it must not render a control
+    // that submits to the active chat.
+    expect(screen.queryByRole('button', { name: 'com_ui_use_prompt' })).toBeNull();
 
     expect(screen.getByTestId('prompt-name')).toHaveAttribute('data-disabled', 'true');
     expect(screen.getByTestId('category-selector')).toHaveAttribute('data-disabled', 'true');
@@ -201,5 +241,111 @@ describe('PromptForm external (Langfuse) read-only view', () => {
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
     expect(await screen.findByTestId('prompt-name')).toHaveAttribute('data-disabled', 'false');
     expect(screen.getByTestId('category-selector')).toHaveAttribute('data-disabled', 'false');
+  });
+});
+
+function langfuseResolved(
+  overrides: Partial<TResolvedPromptResponse> = {},
+): TResolvedPromptResponse {
+  return {
+    source: 'langfuse',
+    groupId: 'group-1',
+    prompt: 'Live Langfuse text',
+    type: 'text',
+    version: 2,
+    labels: ['production'],
+    sourceUrl: 'https://cloud.langfuse.test/project/project-1/prompts/greeting',
+    ...overrides,
+  } as TResolvedPromptResponse;
+}
+
+describe('PromptForm external (Langfuse) resolved content', () => {
+  beforeEach(() => {
+    mockGroup.source = 'langfuse';
+    mockPermissionsLoading = false;
+    mockPermissionBits = mockAllBits;
+    mockUser = { id: 'user-1', role: SystemRoles.USER };
+    mockRefetchPromptContent.mockClear();
+    mockPromptContent = {
+      text: '',
+      resolved: undefined,
+      isLoading: false,
+      error: undefined,
+      refetch: mockRefetchPromptContent,
+    };
+  });
+
+  it('shows the resolving label while loading', async () => {
+    mockPromptContent = {
+      text: '',
+      resolved: undefined,
+      isLoading: true,
+      error: undefined,
+      refetch: mockRefetchPromptContent,
+    };
+    render(<PromptForm promptId="group-1" />);
+
+    expect(await screen.findByText('com_ui_prompt_resolving')).toBeInTheDocument();
+  });
+
+  it('renders the resolved text and variables', async () => {
+    mockPromptContent = {
+      text: 'Hello {{name}}',
+      resolved: langfuseResolved({ prompt: 'Hello {{name}}' }),
+      isLoading: false,
+      error: undefined,
+      refetch: mockRefetchPromptContent,
+    };
+    render(<PromptForm promptId="group-1" />);
+
+    expect(await screen.findByTestId('prompt-text-card')).toHaveTextContent('Hello');
+    expect(screen.getByTestId('prompt-variables')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_prompt_version {"0":2} · production')).toBeInTheDocument();
+  });
+
+  it('renders the error copy with role=alert on a failed resolution', async () => {
+    mockPromptContent = {
+      text: '',
+      resolved: undefined,
+      isLoading: false,
+      error: new Error('resolve failed'),
+      refetch: mockRefetchPromptContent,
+    };
+    render(<PromptForm promptId="group-1" />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('com_ui_langfuse_prompt_error_fallback');
+    expect(screen.getByRole('button', { name: 'com_ui_retry' })).toBeInTheDocument();
+  });
+
+  it('shows the Open in Langfuse link when sourceUrl is present', async () => {
+    mockPromptContent = {
+      text: 'Live Langfuse text',
+      resolved: langfuseResolved(),
+      isLoading: false,
+      error: undefined,
+      refetch: mockRefetchPromptContent,
+    };
+    render(<PromptForm promptId="group-1" />);
+
+    expect(
+      await screen.findByRole('link', { name: 'com_ui_prompt_open_in_langfuse' }),
+    ).toHaveAttribute('href', 'https://cloud.langfuse.test/project/project-1/prompts/greeting');
+  });
+
+  it('hides the Open in Langfuse link for a regular user, for whom the server strips sourceUrl', async () => {
+    mockPromptContent = {
+      text: 'Live Langfuse text',
+      resolved: langfuseResolved({ sourceUrl: undefined }),
+      isLoading: false,
+      error: undefined,
+      refetch: mockRefetchPromptContent,
+    };
+    render(<PromptForm promptId="group-1" />);
+
+    await screen.findByTestId('prompt-text-card');
+    expect(
+      screen.queryByRole('link', { name: 'com_ui_prompt_open_in_langfuse' }),
+    ).not.toBeInTheDocument();
   });
 });

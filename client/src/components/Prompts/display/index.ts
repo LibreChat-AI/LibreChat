@@ -1,6 +1,9 @@
 export { default as PromptDetails } from './PromptDetails';
 export { default as PromptActions } from './PromptActions';
+export { default as UsePromptButton } from './UsePromptButton';
 export { default as PromptTextCard } from './PromptTextCard';
 export { default as PromptVersions } from './PromptVersions';
 export { default as PromptVariables } from './PromptVariables';
 export { default as PromptDetailHeader } from './PromptDetailHeader';
+export { default as LangfusePromptMeta } from './LangfusePromptMeta';
+export { default as PromptResolvedBody } from './PromptResolvedBody';
