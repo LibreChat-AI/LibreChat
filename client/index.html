@@ -298,6 +298,16 @@
             return false;
           }
         }
+        /* A mismatched chunk can load successfully and still fail while evaluating because
+         * the current build renamed or removed a binding it references. */
+        function isStaleChunkError(message) {
+          return (
+            typeof message === 'string' &&
+            (/ is not defined/.test(message) ||
+              message.indexOf("Can't find variable") !== -1 ||
+              message.indexOf('before initialization') !== -1)
+          );
+        }
         /* Every caller in this page shares one recovery: once a reload is underway, later
          * chunk failures (Vite preload, unhandled rejection, error boundary) join it instead
          * of tripping the loop guard and painting the error page before the reload lands. */
@@ -352,6 +362,11 @@
           function (event) {
             var el = event.target;
             if (!el || !el.tagName) {
+              var message = event.message || (event.error && event.error.message);
+              if (isStaleChunkError(message)) {
+                window.__lcRumPush('chunk-reference-error');
+                window.__lcRecoverStaleAssets();
+              }
               return;
             }
             var failedScript = el.tagName === 'SCRIPT' && el.src;
@@ -375,13 +390,16 @@
           true,
         );
         window.addEventListener('unhandledrejection', function (event) {
-          var message = event.reason && event.reason.message;
-          if (
+          var message =
+            typeof event.reason === 'string' ? event.reason : event.reason && event.reason.message;
+          var isDynamicImportError =
             typeof message === 'string' &&
             (message.indexOf('dynamically imported module') !== -1 ||
-              message.indexOf('Importing a module script failed') !== -1)
-          ) {
-            window.__lcRumPush('dynamic-import-error');
+              message.indexOf('Importing a module script failed') !== -1);
+          if (isDynamicImportError || isStaleChunkError(message)) {
+            window.__lcRumPush(
+              isDynamicImportError ? 'dynamic-import-error' : 'chunk-reference-error',
+            );
             window.__lcRecoverStaleAssets();
           }
         });
