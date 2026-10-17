@@ -1,0 +1,179 @@
+# Render Blueprint for LibreChat (full stack)
+# Deploy: https://render.com/deploy?repo=https://github.com/ojusave/LibreChat
+#
+# Prerequisites:
+#   - A MongoDB instance (e.g. MongoDB Atlas: https://www.mongodb.com/atlas)
+#
+# What gets provisioned:
+#   1. LibreChat        - web service (Docker, from repo Dockerfile)
+#   2. Meilisearch      - private service (conversation search)
+#   3. RAG API          - private service (document embeddings)
+#   4. VectorDB         - Render PostgreSQL with pgvector (for RAG)
+#
+# After deploy, set your AI provider API keys in the Render Dashboard.
+
+services:
+  # ── LibreChat (main app) ──────────────────────────────────────────
+  - type: web
+    name: librechat
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: standard
+    numInstances: 1
+    healthCheckPath: /health
+    autoDeploy: false
+
+    disk:
+      name: librechat-uploads
+      mountPath: /app/uploads
+      sizeGB: 1
+
+    buildFilter:
+      ignoredPaths:
+        - "e2e/**"
+        - "helm/**"
+        - ".github/**"
+        - "*.md"
+
+    envVars:
+      # --- Required ---
+      - key: MONGO_URI
+        sync: false  # Paste your MongoDB connection string (e.g. from Atlas)
+
+      # --- Secrets (auto-generated) ---
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CREDS_KEY
+        generateValue: true
+      - key: CREDS_IV
+        generateValue: true
+
+      # --- Server ---
+      - key: HOST
+        value: "0.0.0.0"
+      - key: PORT
+        value: "3080"
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"
+      - key: NO_INDEX
+        value: "true"
+      - key: DOMAIN_CLIENT
+        value: ""  # Set to your Render URL after first deploy
+      - key: DOMAIN_SERVER
+        value: ""  # Same as DOMAIN_CLIENT
+
+      # --- Meilisearch (wired to private service) ---
+      - key: SEARCH
+        value: "true"
+      - key: MEILI_HOST
+        value: "http://meilisearch:7700"
+      - key: MEILI_MASTER_KEY
+        fromService:
+          name: meilisearch
+          type: pserv
+          envVarKey: MEILI_MASTER_KEY
+
+      # --- RAG API (wired to private service) ---
+      - key: RAG_API_URL
+        value: "http://rag-api:8000"
+      - key: RAG_PORT
+        value: "8000"
+
+      # --- AI Providers (set whichever you use in the Dashboard) ---
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_KEY
+        sync: false
+
+      # --- Registration & Auth ---
+      - key: ALLOW_EMAIL_LOGIN
+        value: "true"
+      - key: ALLOW_REGISTRATION
+        value: "true"
+      - key: ALLOW_SOCIAL_LOGIN
+        value: "false"
+      - key: ALLOW_SOCIAL_REGISTRATION
+        value: "false"
+      - key: ALLOW_UNVERIFIED_EMAIL_LOGIN
+        value: "true"
+
+      # --- Session ---
+      - key: SESSION_EXPIRY
+        value: "900000"
+      - key: REFRESH_TOKEN_EXPIRY
+        value: "604800000"
+
+      # --- Misc ---
+      - key: DEBUG_LOGGING
+        value: "false"
+      - key: CONSOLE_JSON
+        value: "true"
+      - key: APP_TITLE
+        value: LibreChat
+
+  # ── Meilisearch (full-text search) ────────────────────────────────
+  - type: pserv
+    name: meilisearch
+    runtime: image
+    image:
+      url: docker.io/getmeili/meilisearch:v1.35.1
+
+    disk:
+      name: meili-data
+      mountPath: /meili_data
+      sizeGB: 1
+
+    envVars:
+      - key: MEILI_NO_ANALYTICS
+        value: "true"
+      - key: MEILI_MASTER_KEY
+        generateValue: true
+
+  # ── RAG API (document embeddings) ─────────────────────────────────
+  # Note: if the image pull fails, add registry credentials for
+  # registry.librechat.ai in your Render workspace settings.
+  - type: pserv
+    name: rag-api
+    runtime: image
+    image:
+      url: ghcr.io/danny-avila/librechat-rag-api-dev-lite:latest
+
+    envVars:
+      - key: DB_HOST
+        fromDatabase:
+          name: vectordb
+          property: host
+      - key: DB_PORT
+        value: "5432"
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: vectordb
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: vectordb
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: vectordb
+          property: password
+      - key: RAG_PORT
+        value: "8000"
+      - key: EMBEDDINGS_PROVIDER
+        value: "openai"
+      - key: RAG_OPENAI_API_KEY
+        sync: false  # Required for RAG embeddings; set your OpenAI key
+
+# ── PostgreSQL + pgvector (vector store for RAG) ──────────────────
+databases:
+  - name: vectordb
+    plan: basic-256mb
+    databaseName: vectordb
+    ipAllowList: []  # Internal connections only
