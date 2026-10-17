@@ -368,6 +368,36 @@ describe('Agent Context Utilities', () => {
       expect(agent.additional_instructions).toBe('Context');
     });
 
+    it('follows the agent tools, not the request list, when the agent has switchable servers', async () => {
+      const agent: AgentWithTools = {
+        id: 'test-agent',
+        instructions: 'Base',
+        tool_options: {
+          [`${Constants.mcp_server}${Constants.mcp_delimiter}A`]: { user_toggle: 'on' },
+        },
+        tools: [
+          new DynamicStructuredTool({
+            name: `tool${Constants.mcp_delimiter}B`,
+            description: 'Locked server tool',
+            schema: testSchema,
+            func: async () => 'result',
+          }),
+        ],
+      };
+
+      mockMCPManager.formatInstructionsForContext.mockResolvedValue('B MCP');
+
+      await applyContextToAgent({
+        agent,
+        sharedRunContext: '',
+        mcpManager: mockMCPManager,
+        ephemeralAgent: { mcp: ['C'] },
+        logger: mockLogger,
+      });
+
+      expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(['B'], undefined);
+    });
+
     it('should prefer agent tools over empty ephemeral MCP array', async () => {
       const agent: AgentWithTools = {
         id: 'test-agent',

@@ -2678,6 +2678,13 @@
                 "describe_intent": {
                   "type": "boolean"
                 },
+                "user_toggle": {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
+                },
                 "approval_mode": {
                   "type": "string",
                   "enum": [
@@ -3137,6 +3144,13 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "user_toggle": {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
                 },
                 "approval_mode": {
                   "type": "string",
@@ -3621,6 +3635,13 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "user_toggle": {
+                  "type": "string",
+                  "enum": [
+                    "on",
+                    "off"
+                  ]
                 },
                 "approval_mode": {
                   "type": "string",

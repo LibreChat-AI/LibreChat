@@ -6,6 +6,7 @@ import {
   isEphemeralAgentId,
   getEphemeralSender,
   encodeEphemeralAgentId,
+  applyAgentToolSwitches,
   resolveMCPAppsPolicy,
 } from 'librechat-data-provider';
 import type {
@@ -66,6 +67,8 @@ export interface LoadAgentParams {
   agent_id: string;
   endpoint: string;
   model_parameters?: AgentModelParameters & { model?: string };
+  /** The chat's tool switch state; only applied to the primary saved agent. */
+  userToolSwitches?: TEphemeralAgent | null;
 }
 
 /**
@@ -239,7 +242,7 @@ export async function loadAgent(
   params: LoadAgentParams,
   deps: LoadAgentDeps,
 ): Promise<Agent | null> {
-  const { req, spec, agent_id, endpoint, model_parameters } = params;
+  const { req, spec, agent_id, endpoint, model_parameters, userToolSwitches } = params;
   if (!agent_id) {
     return null;
   }
@@ -253,5 +256,8 @@ export async function loadAgent(
   }
 
   agent.version ??= agent.versions?.length ?? 0;
+  if (userToolSwitches !== undefined) {
+    agent.tools = applyAgentToolSwitches(agent, userToolSwitches).tools;
+  }
   return agent;
 }

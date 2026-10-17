@@ -1,5 +1,5 @@
-import { Constants } from 'librechat-data-provider';
 import { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
+import { Constants, getMCPSwitchServerNames } from 'librechat-data-provider';
 import type { Agent, TEphemeralAgent } from 'librechat-data-provider';
 import type { LCTool } from '@librechat/agents';
 import type { Logger } from 'winston';
@@ -160,7 +160,13 @@ export async function applyContextToAgent({
   const additionalInstructions = agent.additional_instructions || '';
 
   try {
-    const mcpServers = ephemeralAgent?.mcp?.length ? ephemeralAgent.mcp : extractMCPServers(agent);
+    /** An agent with switchable servers already had its tools filtered by the chat's
+     *  list, which omits its locked servers, so its tools name the servers. */
+    const requestServers = ephemeralAgent?.mcp;
+    const mcpServers =
+      requestServers?.length && getMCPSwitchServerNames(agent.tool_options).length === 0
+        ? requestServers
+        : extractMCPServers(agent);
     const mcpInstructions = await getMCPInstructionsForServers(
       mcpServers,
       mcpManager,

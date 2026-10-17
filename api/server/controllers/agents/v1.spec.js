@@ -1483,6 +1483,30 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       const response = mockRes.json.mock.calls[0][0];
       expect(response.conversation_starters).toEqual(starters);
     });
+
+    test('should include the tools and only their user switches in the basic VIEW response', async () => {
+      const agent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Switchable Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['web_search', 'search_mcp_docs'],
+        tool_options: {
+          web_search: { user_toggle: 'off', defer_loading: true },
+          search_mcp_docs: { allowed_callers: ['direct'] },
+        },
+      });
+
+      mockReq.params = { id: agent.id };
+
+      await getAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(200);
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.tools).toEqual(['web_search', 'search_mcp_docs']);
+      expect(response.tool_options).toEqual({ web_search: { user_toggle: 'off' } });
+    });
   });
 
   describe('getAgentVersionsHandler', () => {

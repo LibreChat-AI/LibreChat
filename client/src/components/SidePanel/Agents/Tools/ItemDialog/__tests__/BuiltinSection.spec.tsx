@@ -109,3 +109,23 @@ describe('BuiltinSection Run Code settings', () => {
     expect(screen.getByLabelText('com_ui_agent_git_email')).toBeInTheDocument();
   });
 });
+
+describe('BuiltinSection user toggle', () => {
+  const toggleGroup = () => screen.queryByRole('radiogroup', { name: 'com_ui_tool_toggle_label' });
+
+  test.each(['web_search', 'execute_code', 'file_search'])(
+    'offers the chat-user switch setting for %s',
+    (builtinId) => {
+      renderSection(builtinId);
+      expect(toggleGroup()).toBeInTheDocument();
+    },
+  );
+
+  test.each(['memory', 'artifacts', 'context'])(
+    'offers no chat-user switch setting for %s',
+    (builtinId) => {
+      renderSection(builtinId);
+      expect(toggleGroup()).toBeNull();
+    },
+  );
+});

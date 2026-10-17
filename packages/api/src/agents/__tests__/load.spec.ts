@@ -11,7 +11,9 @@ import type {
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { LoadAgentParams, LoadAgentDeps } from '../load';
+import { applyResumeContext, pickResumeContext } from '../hitl/policy';
 import { STANDARD_MCP_CAPABILITY_PROFILE } from '~/mcp/capabilities';
+import { extractMCPServers } from '../context';
 import { loadAddedAgent } from '../added';
 import { loadAgent } from '../load';
 
@@ -1115,6 +1117,160 @@ describe('loadAgent', () => {
     } else {
       expect(result).toBeFalsy();
     }
+  });
+
+  describe('user tool switches', () => {
+    const createSwitchableAgent = async () => {
+      const agentId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: agentId,
+        name: 'Switchable Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['web_search', 'execute_code', 'search_mcp_docs', 'read_mcp_files'],
+        tool_options: {
+          web_search: { user_toggle: 'on' },
+          execute_code: { user_toggle: 'off' },
+          sys__server__sys_mcp_docs: { user_toggle: 'on' },
+        },
+      });
+      return agentId;
+    };
+
+    const load = (agentId: string, userToolSwitches?: LoadAgentParams['userToolSwitches']) =>
+      loadAgent(
+        {
+          req: { user: { id: 'user123' } },
+          agent_id: agentId,
+          endpoint: 'agents',
+          userToolSwitches,
+        },
+        deps,
+      );
+
+    test('keeps creator defaults when the chat sends no switches', async () => {
+      const agentId = await createSwitchableAgent();
+      const result = await load(agentId, {});
+      expect(result!.tools).toEqual(['web_search', 'search_mcp_docs', 'read_mcp_files']);
+    });
+
+    test('drops a built-in and an MCP server the chat switched off', async () => {
+      const agentId = await createSwitchableAgent();
+      const result = await load(agentId, { web_search: false, mcp: [] });
+      expect(result!.tools).toEqual(['read_mcp_files']);
+    });
+
+    test('keeps a default-off built-in the chat switched on, without adding unattached tools', async () => {
+      const agentId = await createSwitchableAgent();
+      const result = await load(agentId, { execute_code: true, file_search: true, mcp: ['docs'] });
+      expect(result!.tools).toEqual([
+        'web_search',
+        'execute_code',
+        'search_mcp_docs',
+        'read_mcp_files',
+      ]);
+    });
+
+    test('does not filter when no switch state is supplied at all', async () => {
+      const agentId = await createSwitchableAgent();
+      const result = await load(agentId);
+      expect(result!.tools).toEqual([
+        'web_search',
+        'execute_code',
+        'search_mcp_docs',
+        'read_mcp_files',
+      ]);
+    });
+
+    test('applies creator defaults when the switch state is null', async () => {
+      const agentId = await createSwitchableAgent();
+      const result = await load(agentId, null);
+      expect(result!.tools).toEqual(['web_search', 'search_mcp_docs', 'read_mcp_files']);
+    });
+
+    test.each([
+      [['C'], ['B']],
+      [['A'], ['A', 'B']],
+    ])(
+      'leaves the request server list intact while the filtered tools name the servers (%j)',
+      async (requestedServers, expectedServers) => {
+        const agentId = `agent_${uuidv4()}`;
+        await createAgent({
+          id: agentId,
+          name: 'Mixed Servers',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: new mongoose.Types.ObjectId(),
+          tools: ['search_mcp_A', 'read_mcp_B'],
+          tool_options: { sys__server__sys_mcp_A: { user_toggle: 'on' } },
+        });
+        const ephemeralAgent = { mcp: requestedServers };
+        const result = await load(agentId, ephemeralAgent);
+        expect(ephemeralAgent).toEqual({ mcp: requestedServers });
+        const toolDefinitions = result!.tools!.map((name) => ({ name }));
+        expect(extractMCPServers({ ...result, toolDefinitions } as never)).toEqual(expectedServers);
+      },
+    );
+
+    test.each([
+      ['on' as const, [], ['web_search']],
+      ['off' as const, ['A'], ['search_mcp_A', 'web_search']],
+    ])(
+      'rebuilds the same tools after a pause and resume (server starts %s, chat sends %j)',
+      async (userToggle, requestedServers, expectedTools) => {
+        const agentId = `agent_${uuidv4()}`;
+        await createAgent({
+          id: agentId,
+          name: 'Paused Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: new mongoose.Types.ObjectId(),
+          tools: ['search_mcp_A', 'web_search'],
+          tool_options: { sys__server__sys_mcp_A: { user_toggle: userToggle } },
+        });
+        const pausedBody: Record<string, unknown> = {
+          agent_id: agentId,
+          ephemeralAgent: { mcp: requestedServers },
+        };
+        const paused = await load(agentId, pausedBody.ephemeralAgent as TEphemeralAgent);
+        const resumedBody: Record<string, unknown> = { agent_id: agentId };
+        applyResumeContext(resumedBody, pickResumeContext(pausedBody));
+        const resumed = await load(agentId, resumedBody.ephemeralAgent as TEphemeralAgent);
+        expect(paused!.tools).toEqual(expectedTools);
+        expect(resumed!.tools).toEqual(expectedTools);
+      },
+    );
+
+    test('leaves the request server list alone when no server is switchable', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: agentId,
+        name: 'Locked Servers',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['web_search', 'read_mcp_B'],
+        tool_options: { web_search: { user_toggle: 'on' } },
+      });
+      const ephemeralAgent = { mcp: ['B'] };
+      await load(agentId, ephemeralAgent);
+      expect(ephemeralAgent.mcp).toEqual(['B']);
+    });
+
+    test('leaves tools untouched for an agent without user toggles', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: agentId,
+        name: 'Plain Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['web_search', 'search_mcp_docs'],
+      });
+      const result = await load(agentId, { web_search: false, mcp: [] });
+      expect(result!.tools).toEqual(['web_search', 'search_mcp_docs']);
+    });
   });
 
   describe('Edge Cases', () => {

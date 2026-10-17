@@ -14,9 +14,9 @@ describe('hasConfigurableSettings', () => {
     expect(hasConfigurableSettings(builtin('memory'))).toBe(true);
   });
 
-  test('web_search is configurable only when auth is user-provided', () => {
-    expect(hasConfigurableSettings(builtin('web_search'))).toBe(false);
-    expect(hasConfigurableSettings(builtin('web_search', { userProvidedAuth: false }))).toBe(false);
+  test('web_search is always configurable because it carries the user toggle', () => {
+    expect(hasConfigurableSettings(builtin('web_search'))).toBe(true);
+    expect(hasConfigurableSettings(builtin('web_search', { userProvidedAuth: false }))).toBe(true);
     expect(hasConfigurableSettings(builtin('web_search', { userProvidedAuth: true }))).toBe(true);
   });
 

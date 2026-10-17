@@ -18,6 +18,7 @@ export function useMCPSelect({
   servers,
   allServers,
   specName,
+  agentServers,
   ownsChatSelection = false,
 }: {
   conversationId?: string | null;
@@ -28,6 +29,8 @@ export function useMCPSelect({
   allServers?: MCPServerDefinition[];
   /** Active model spec, whose pinned servers are exempt from pruning. */
   specName?: string | null;
+  /** The saved agent's switchable servers, exempt from pruning like a spec's. */
+  agentServers?: string[];
   /**
    * Whether this instance drives the chat picker and may therefore rewrite the
    * shared selection. Off by default: every instance keyed to a conversation
@@ -57,21 +60,23 @@ export function useMCPSelect({
   const { data: startupConfig } = useGetStartupConfig();
   /**
    * Selections that survive pruning: what the dropdown offers, plus whatever the
-   * active model spec pins. `chatMenu` hides a server from the picker; it does
-   * not override an admin's spec, so a spec-assigned server stays selected even
-   * when the picker would never have offered it.
+   * active model spec pins or the saved agent makes switchable. `chatMenu` hides a
+   * server from the picker; it does not override an admin's spec or an agent
+   * creator's switch, so such a server stays selected even when the picker would
+   * never have offered it.
    */
   const retainedServers = useMemo(() => {
-    const specServers = getModelSpec({ specName, startupConfig })?.mcpServers;
-    if (!specServers?.length) {
+    const specServers = getModelSpec({ specName, startupConfig })?.mcpServers ?? [];
+    const exempt = [...specServers, ...(agentServers ?? [])];
+    if (!exempt.length) {
       return configuredServers;
     }
     const retained = new Set(configuredServers);
-    for (const serverName of specServers) {
+    for (const serverName of exempt) {
       retained.add(serverName);
     }
     return retained;
-  }, [configuredServers, specName, startupConfig]);
+  }, [configuredServers, specName, startupConfig, agentServers]);
 
   /**
    * For new conversations, key the MCP atom by environment (spec or defaults)
