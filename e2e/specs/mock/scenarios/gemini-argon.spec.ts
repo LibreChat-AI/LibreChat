@@ -2,14 +2,24 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   messagesView,
+  modelSelectorTrigger,
   NEW_CHAT_PATH,
-  selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { withMongo } from '../db';
 
-const ARGON = { label: 'Mock Gemini', model: 'gemini-4-argon' };
-const PRE_ARGON = { label: 'Mock Gemini', model: 'gemini-2.5-pro' };
+const ARGON = 'gemini-4-argon';
+const PRE_ARGON = 'gemini-2.5-pro';
+
+/** The shared helper treats the model submenu as optional; here the model is the subject. */
+async function selectGeminiModel(page: Page, model: string) {
+  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+  await modelSelectorTrigger(page).click();
+  await page.getByRole('option', { name: 'Mock Gemini' }).click();
+  const option = page.getByRole('option', { name: model, exact: true });
+  await expect(option).toBeVisible({ timeout: 10000 });
+  await option.click();
+}
 
 type LlmConfigReport = {
   model: string | null;
@@ -36,8 +46,7 @@ function conversationIdOf(page: Page): string {
 test('Gemini 4 Argon on a Gemini gateway sends no ignored sampling params @scenario:argon-on-a-gemini-gateway-sends-no-ignored-sampling-params', async ({
   page,
 }) => {
-  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await selectMockEndpoint(page, PRE_ARGON);
+  await selectGeminiModel(page, PRE_ARGON);
   const control = await reportLlmConfig(page);
   /** The endpoint's addParams reach older Gemini models, so an empty list for Argon is the rule. */
   expect(control.model).toBe('gemini-2.5-pro');
@@ -45,8 +54,7 @@ test('Gemini 4 Argon on a Gemini gateway sends no ignored sampling params @scena
     expect.arrayContaining(['temperature', 'topP', 'presencePenalty']),
   );
 
-  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await selectMockEndpoint(page, ARGON);
+  await selectGeminiModel(page, ARGON);
   const argon = await reportLlmConfig(page);
   expect(argon.model).toBe('gemini-4-argon');
   expect(argon.sampling).toEqual([]);
@@ -56,8 +64,7 @@ test('Gemini 4 Argon on a Gemini gateway sends no ignored sampling params @scena
 test('A Gemini 4 Argon turn is billed at Argon rates @scenario:an-argon-turn-is-billed-at-argon-rates', async ({
   page,
 }) => {
-  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await selectMockEndpoint(page, ARGON);
+  await selectGeminiModel(page, ARGON);
   await sendMessageAndWaitForCompletion(page, `Argon billing ${Date.now()}`);
   const conversationId = conversationIdOf(page);
 
@@ -67,16 +74,17 @@ test('A Gemini 4 Argon turn is billed at Argon rates @scenario:an-argon-turn-is-
         withMongo(async (db) => {
           const rows = await db
             .collection('transactions')
-            .find({ conversationId, model: 'gemini-4-argon' })
-            .project({ tokenType: 1, rate: 1, _id: 0 })
+            .find({ conversationId })
+            .project({ model: 1, tokenType: 1, rate: 1, _id: 0 })
             .toArray();
+          /** Keyed by model so a turn billed under another model fails with its name. */
           const rates: Record<string, number> = {};
           for (const row of rows) {
-            rates[row.tokenType as string] = row.rate as number;
+            rates[`${row.model}:${row.tokenType}`] = row.rate as number;
           }
           return rates;
         }),
-      { timeout: 15000, intervals: [250, 500, 1000] },
+      { timeout: 30000, intervals: [250, 500, 1000] },
     )
-    .toEqual({ prompt: 2, completion: 10 });
+    .toEqual({ 'gemini-4-argon:prompt': 2, 'gemini-4-argon:completion': 10 });
 });
