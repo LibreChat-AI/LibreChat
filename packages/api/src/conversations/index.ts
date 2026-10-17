@@ -1,6 +1,7 @@
 export * from './announce';
 export * from './archive';
 export * from './chatgpt';
+export * from './files';
 export * from './filters';
 export * from './import';
 export * from './lineage';

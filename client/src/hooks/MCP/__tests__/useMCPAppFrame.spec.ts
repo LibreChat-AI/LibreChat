@@ -152,6 +152,18 @@ describe('useMCPAppFrame', () => {
     });
   });
 
+  it('accepts finite positive width-only reports and ignores invalid widths', () => {
+    const { result } = renderHook(() => useMCPAppFrame(appResource(), { defaultHeight: 100 }));
+    act(() => result.current.onSizeChanged({ width: 400 }));
+    expect(result.current.width).toBe(400);
+    expect(result.current.height).toBe(100);
+    expect(result.current.status).toBe('ready');
+    for (const width of [0, -1, Infinity, NaN]) {
+      act(() => result.current.onSizeChanged({ width }));
+      expect(result.current.width).toBe(400);
+    }
+  });
+
   describe('reveal budget', () => {
     beforeEach(() => jest.useFakeTimers());
     afterEach(() => jest.useRealTimers());

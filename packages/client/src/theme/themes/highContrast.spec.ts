@@ -182,6 +182,13 @@ describe.each([
     expect(theme['rgb-surface-code']).toBe(source);
   });
 
+  it('paints the page canvas in the mode canvas, black in dark and white in light', () => {
+    const expected = theme === highContrastDarkTheme ? '0 0 0' : '255 255 255';
+
+    expect(theme['rgb-page-canvas']).toBe(expected);
+    expect(theme['rgb-page-canvas']).toBe(theme['rgb-surface-primary']);
+  });
+
   it('keeps neutral text at WCAG AAA on every canvas and hover fill', () => {
     expect(below(theme, WCAG_AAA_NORMAL, textTokens, surfaces)).toEqual([]);
   });

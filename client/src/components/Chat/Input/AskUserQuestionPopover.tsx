@@ -207,7 +207,7 @@ function AskUserQuestionPopoverPanel({
               should still come from the recipe. */}
           <Button
             variant="ghost"
-            className="text-text-secondary hover:text-text-primary h-auto cursor-text rounded-md p-0 text-xs font-normal hover:bg-transparent"
+            className="text-text-secondary h-auto cursor-text rounded-md p-0 text-xs font-normal hover:bg-transparent"
             onClick={() => textAreaRef?.current?.focus()}
           >
             {options.length === 0

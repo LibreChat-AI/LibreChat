@@ -3,7 +3,7 @@ import { SquarePen } from 'lucide-react';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { useActivePanel, DEFAULT_PANEL } from '~/Providers';
-import useNewChat from '~/hooks/Chat/useNewChat';
+import useNewChat from '~/hooks/Conversations/useNewChat';
 import { useLocalize } from '~/hooks';
 
 /**

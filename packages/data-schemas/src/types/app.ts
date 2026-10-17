@@ -4,6 +4,7 @@ import type {
   TFileConfig,
   TAzureConfig,
   TCustomConfig,
+  TCredentialsConfig,
   TChatProjectsConfig,
   TMemoryConfig,
   EModelEndpoint,
@@ -70,6 +71,13 @@ export interface AppConfig {
   githubCompare?: TCustomConfig['githubCompare'];
   /** Browser error reporting toggle; the DSN itself comes from `SENTRY_DSN` */
   errorReporting?: TCustomConfig['errorReporting'];
+  skillDeletion?: {
+    finalizationEnabled?: boolean;
+    sweepIntervalMs?: number;
+    claimLeaseMs?: number;
+    batchSize?: number;
+    recheckIntervalMs?: number;
+  };
   /** Source-scoped content filter configuration */
   filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */
@@ -120,6 +128,8 @@ export interface AppConfig {
   fileConfig?: TFileConfig;
   /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
+  /** Stored user credential write format, `v3` unless configured */
+  credentials?: TCredentialsConfig;
   /** Validation limits for the conversation list's filter facets */
   conversationList?: TConversationListConfig;
   /** Bounds for the tool-call previews sent on conversation loads */

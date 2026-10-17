@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { PasswordResetUpdate } from './passwordResetUpdate';
 import { createPasswordResetUpdate } from './passwordResetUpdate';
+import { clearSessionHintCookie } from '~/oauth/csrf';
 import { EMAIL_CHANGE_TOKEN_TYPE } from './email';
 
 /** The stored reset token, in both the typed shape and the untyped legacy one. */
@@ -87,6 +88,7 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
       }
       /** After the revocations, so nothing can mint a post-stamp token while it waits. */
       await deps.awaitAuthUserDocEviction(userId);
+      clearSessionHintCookie(res);
 
       return res.status(200).json(result);
     } catch (error) {

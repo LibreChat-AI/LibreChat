@@ -161,7 +161,7 @@ function SidebarItem({ icon, label, active, onClick, count }: SidebarEntry) {
       <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
       <span className="flex-1 truncate">{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="text-text-secondary text-[11px] tabular-nums">{count}</span>
+        <span className="text-text-secondary text-2xs tabular-nums">{count}</span>
       )}
     </button>
   );
@@ -187,7 +187,7 @@ function SidebarChip({ icon, label, active, onClick, count }: SidebarEntry) {
       <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
       <span>{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="text-text-secondary text-[10px] tabular-nums">{count}</span>
+        <span className="text-text-secondary text-3xs tabular-nums">{count}</span>
       )}
     </button>
   );
@@ -276,8 +276,8 @@ export function MarketplaceFilterBar(props: MarketplaceSidebarProps) {
               render={
                 <Button
                   variant="outline"
-                  size="sm"
-                  className="touch:size-theme-control-touch h-8 w-8 shrink-0 justify-center p-0"
+                  size="bare"
+                  className="touch:size-theme-control-touch h-8 w-8 shrink-0"
                   aria-label={localize('com_ui_tools_create_new')}
                 >
                   <Plus className="size-4" aria-hidden="true" />

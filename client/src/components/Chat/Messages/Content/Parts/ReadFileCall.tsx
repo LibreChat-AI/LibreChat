@@ -66,6 +66,8 @@ export function langFromPath(filePath: string): string {
 }
 
 export default function ReadFileCall({
+  toolCallId,
+  stepId,
   isSubmitting,
   runStepStatus,
   runStepDurationMs,
@@ -76,6 +78,8 @@ export default function ReadFileCall({
   hideAttachments = false,
   onExpand,
 }: {
+  toolCallId?: string;
+  stepId?: string;
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
@@ -118,7 +122,12 @@ export default function ReadFileCall({
     <>
       <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
           <ProgressText
             phase={phase}
             onClick={toggleCode}

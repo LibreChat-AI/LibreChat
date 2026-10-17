@@ -68,6 +68,7 @@ export function createConfigMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     options?: { expectEmpty?: boolean },
   ) => Promise<IConfig | null>;
+  restoreConfig: (snapshot: Record<string, unknown>) => Promise<boolean>;
   toggleConfigActive: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
@@ -75,6 +76,13 @@ export function createConfigMethods(mongoose: typeof import('mongoose')): {
     session?: ClientSession,
     options?: { expectEmpty?: boolean },
   ) => Promise<IConfig | null>;
+  /** Like `toggleConfigActive`, but also reports whether this write changed `isActive`. */
+  toggleConfigActiveTracked: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    isActive: boolean,
+    options?: { expectEmpty?: boolean },
+  ) => Promise<{ config: IConfig; changed: boolean } | null>;
 } {
   async function findConfigByPrincipal(
     principalType: PrincipalType,
@@ -320,6 +328,26 @@ export function createConfigMethods(mongoose: typeof import('mongoose')): {
     return await Config.findOneAndDelete(filter).session(session ?? null);
   }
 
+  function toggleFilter(
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    options?: { expectEmpty?: boolean },
+    extra: FilterQuery<IConfig> = {},
+  ): FilterQuery<IConfig> {
+    const filter: FilterQuery<IConfig> = {
+      principalType,
+      principalId: principalId.toString(),
+      ...extra,
+    };
+    if (options?.expectEmpty) {
+      filter.$and = [
+        { $or: [{ overrides: { $eq: {} } }, { overrides: { $exists: false } }] },
+        { $or: [{ tombstones: { $size: 0 } }, { tombstones: { $exists: false } }] },
+      ];
+    }
+    return filter;
+  }
+
   async function toggleConfigActive(
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
@@ -328,21 +356,47 @@ export function createConfigMethods(mongoose: typeof import('mongoose')): {
     options?: { expectEmpty?: boolean },
   ): Promise<IConfig | null> {
     const Config = mongoose.models.Config as Model<IConfig>;
-    const filter: FilterQuery<IConfig> = {
-      principalType,
-      principalId: principalId.toString(),
-    };
-    if (options?.expectEmpty) {
-      filter.$and = [
-        { $or: [{ overrides: { $eq: {} } }, { overrides: { $exists: false } }] },
-        { $or: [{ tombstones: { $size: 0 } }, { tombstones: { $exists: false } }] },
-      ];
-    }
     return await Config.findOneAndUpdate(
-      filter,
+      toggleFilter(principalType, principalId, options),
       { $set: { isActive } },
       { new: true, ...(session ? { session } : {}) },
     );
+  }
+
+  async function toggleConfigActiveTracked(
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    isActive: boolean,
+    options?: { expectEmpty?: boolean },
+  ): Promise<{ config: IConfig; changed: boolean } | null> {
+    const Config = mongoose.models.Config as Model<IConfig>;
+    /** The filter matches only a document that differs, so a match is exactly one real change. */
+    const changed = await Config.findOneAndUpdate(
+      toggleFilter(principalType, principalId, options, { isActive: { $ne: isActive } }),
+      { $set: { isActive } },
+      { new: true },
+    );
+    if (changed) {
+      return { config: changed, changed: true };
+    }
+    const current = await Config.findOne(toggleFilter(principalType, principalId, options));
+    return current ? { config: current, changed: false } : null;
+  }
+
+  /**
+   * Re-creates a deleted config document exactly as it was (tombstones, active flag,
+   * version), only when no document exists for the principal. Returns whether it
+   * inserted, so a document written after the snapshot is never overwritten.
+   */
+  async function restoreConfig(snapshot: Record<string, unknown>): Promise<boolean> {
+    const Config = mongoose.models.Config as Model<IConfig>;
+    const { principalType, principalId } = snapshot;
+    const result = await Config.updateOne(
+      { principalType, principalId },
+      { $setOnInsert: snapshot },
+      { upsert: true, timestamps: false },
+    );
+    return result.upsertedCount > 0;
   }
 
   return {
@@ -354,7 +408,9 @@ export function createConfigMethods(mongoose: typeof import('mongoose')): {
     tombstoneConfigField,
     unsetConfigField,
     deleteConfig,
+    restoreConfig,
     toggleConfigActive,
+    toggleConfigActiveTracked,
   };
 }
 

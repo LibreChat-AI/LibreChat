@@ -140,25 +140,6 @@ export const CustomMenuSeparator = React.forwardRef<HTMLHRElement, Ariakit.MenuS
   },
 );
 
-export interface CustomMenuGroupProps extends Ariakit.MenuGroupProps {
-  label?: React.ReactNode;
-}
-
-export const CustomMenuGroup = React.forwardRef<HTMLDivElement, CustomMenuGroupProps>(
-  function CustomMenuGroup({ label, ...props }, ref) {
-    return (
-      <Ariakit.MenuGroup ref={ref} {...props} className={cn('', props.className)}>
-        {label && (
-          <Ariakit.MenuGroupLabel className="cursor-default p-2 text-sm font-medium opacity-60 sm:py-1 sm:text-xs">
-            {label}
-          </Ariakit.MenuGroupLabel>
-        )}
-        {props.children}
-      </Ariakit.MenuGroup>
-    );
-  },
-);
-
 const SearchableContext = React.createContext(false);
 
 export interface CustomMenuItemProps extends Omit<Ariakit.ComboboxItemProps, 'store'> {

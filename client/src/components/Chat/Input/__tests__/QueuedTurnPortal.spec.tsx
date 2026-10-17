@@ -3,13 +3,13 @@ import { RecoilRoot } from 'recoil';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { revealedQueuedTurnFamily } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import {
   QueuedTurnPortalProvider,
   useQueuedTurnPortal,
 } from '~/components/Chat/Steering/QueuedTurnPortal';
 import PendingTurn from '~/components/Chat/Messages/PendingTurn';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 import { ChatContext } from '~/Providers';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));

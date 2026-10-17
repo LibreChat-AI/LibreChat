@@ -1,4 +1,4 @@
-import { ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { ContentTypes, ToolCallTypes, stripOpaqueReasoning } from 'librechat-data-provider';
 
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { LocalizeFunction } from '~/common';
@@ -136,7 +136,8 @@ export function formatMessageContent({
   }
 
   if (content.type === ContentTypes.THINK) {
-    const reasoning = stripThinkTags(getTextValue(content.think));
+    /** Encrypted provider reasoning is not something the reader can use. */
+    const reasoning = stripThinkTags(stripOpaqueReasoning(getTextValue(content.think)));
     if (reasoning.trim().length === 0) {
       return [];
     }

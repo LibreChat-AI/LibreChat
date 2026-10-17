@@ -2422,7 +2422,7 @@ describe('agent queued turn methods', () => {
     expect(receipts.map((turn) => turn.queuedTurnId)).not.toContain(deadIds[0]);
   });
 
-  it('isolates owner, tenant, and conversation scopes and drains or deletes exact scopes', async () => {
+  it('isolates owner, tenant, and conversation scopes and deletes exact scopes', async () => {
     const otherUser = new mongoose.Types.ObjectId();
     await Promise.all([
       methods.enqueueAgentQueuedTurn(enqueueInput({ clientRequestId: 'keep', text: 'keep' })),
@@ -2442,14 +2442,6 @@ describe('agent queued turn methods', () => {
       ),
     ]);
 
-    expect(
-      await methods.drainAgentQueuedTurns({
-        user,
-        tenantId: 'tenant-1',
-        conversationId: 'conversation-1',
-        settledAt: START,
-      }),
-    ).toBe(1);
     expect(
       await methods.deleteAgentQueuedTurns({
         user,

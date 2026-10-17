@@ -469,12 +469,6 @@ export function toCatalogConnectionConfig<T extends MCPOptions>(config: T): T {
   return catalogConfig;
 }
 
-export function getRuntimeBodyPlaceholderFields(
-  config: UserScopedConnectionConfig,
-): Array<keyof RequestBody> {
-  return getMCPRequestScope(config).requiredBodyFields;
-}
-
 export function getMissingRuntimeBodyPlaceholderFields(
   config: UserScopedConnectionConfig,
   requestBody?: RequestBody,

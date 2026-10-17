@@ -1,16 +1,15 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageMutation } from 'librechat-data-provider/react-query';
 import type { TEditProps } from '~/common';
-import { useMessagesOperations, useMessagesConversation } from '~/Providers';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
+import { cn, isSubmittableMessage } from '~/utils';
 import { findRerunParent } from './rerunParent';
-import { useGetAddedConvo } from '~/hooks/Chat';
 import { useLocalize } from '~/hooks';
 import Container from './Container';
-import { cn } from '~/utils';
-import store from '~/store';
+import EditFiles from './EditFiles';
 
 const EditMessage = ({
   text,
@@ -24,8 +23,8 @@ const EditMessage = ({
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const submitButtonRef = useRef<HTMLButtonElement | null>(null);
   const [saveError, setSaveError] = useState(false);
-  const { conversation } = useMessagesConversation();
-  const { getMessages, setMessages } = useMessagesOperations();
+  const { useChatDirection, useMessagesEditing } = useMessagePartsHost();
+  const { conversation, getMessages, setMessages } = useMessagesEditing();
 
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -38,16 +37,20 @@ const EditMessage = ({
    *  import — has none. The action is withheld rather than offered and silently
    *  refused, the footer says why, and Save still applies. */
   const canRerun = isUserTurn || findRerunParent(getMessages(), parentMessageId) != null;
+  /** The files the rerun will carry. Removing one only shapes the new version of the turn: the
+   *  message as it was keeps its files on its own branch, and nothing is deleted. */
+  const [keptFiles, setKeptFiles] = useState(message.files);
+  const filesRemoved = isUserTurn && (keptFiles?.length ?? 0) < (message.files?.length ?? 0);
   const updateMessageMutation = useUpdateMessageMutation(conversationId ?? '');
   const localize = useLocalize();
 
-  const chatDirection = useRecoilValue(store.chatDirection).toLowerCase();
-  const isRTL = chatDirection === 'rtl';
+  const isRTL = useChatDirection() === 'rtl';
 
   const getAddedConvo = useGetAddedConvo();
 
   const {
     register,
+    watch,
     handleSubmit,
     setValue,
     formState: { isDirty, isValid },
@@ -78,7 +81,7 @@ const EditMessage = ({
         conversationId,
       },
       {
-        overrideFiles: message.files,
+        overrideFiles: keptFiles,
         /** Pills on the edited user message stay visible after save-and-submit;
          *  carry the picks forward so the new turn primes the same skills
          *  instead of running unprimed. */
@@ -206,7 +209,7 @@ const EditMessage = ({
   const { ref, ...registerProps } = register('text', {
     /** Retained attachments make an otherwise empty edit submittable, matching
      *  the composer; `ask` replays them through `overrideFiles`. */
-    required: (message.files?.length ?? 0) === 0,
+    required: (keptFiles?.length ?? 0) === 0,
     onChange: (e) => {
       setValue('text', e.target.value, { shouldDirty: true, shouldValidate: true });
     },
@@ -216,6 +219,9 @@ const EditMessage = ({
    *  an unsaved draft first, because Cancel discards it, then why the footer offers
    *  no rerun — the question a Save-only editor otherwise leaves unanswered. */
   const getStatusMessage = () => {
+    if (filesRemoved) {
+      return localize('com_ui_edit_files_removed');
+    }
     if (isDirty) {
       return localize(
         isUserTurn || !canRerun ? 'com_ui_unsaved_changes' : 'com_ui_rerun_discards_changes',
@@ -227,13 +233,34 @@ const EditMessage = ({
     return '';
   };
 
+  /** A changed draft is checked against what it would send: removing the last file of a
+   *  files-only message leaves nothing. A pristine one is the persisted message and is never
+   *  gated, because the form's first validation pass has not settled right after mount. */
+  const draftText = watch('text');
+  const isDraftChanged = isDirty || filesRemoved;
+  const isDraftSendable = isSubmittableMessage(draftText, keptFiles?.length ?? 0);
+  const focusEditor = useCallback(() => textAreaRef.current?.focus(), []);
+  const removeFile = useCallback(
+    (file: NonNullable<typeof keptFiles>[number]) =>
+      setKeptFiles((current) => current?.filter((kept) => kept !== file)),
+    [],
+  );
+
   return (
-    <Container message={message}>
+    <Container message={message} hideFiles={isUserTurn}>
       <section
         aria-label={localize('com_ui_edit_message')}
         className="mt-2 flex w-full flex-col gap-2"
       >
         {saveError && <Alert variant="error">{localize('com_ui_save_message_error')}</Alert>}
+        {isUserTurn && (
+          <EditFiles
+            files={keptFiles ?? []}
+            onRemove={removeFile}
+            onEmpty={focusEditor}
+            disabled={isSubmitting || updateMessageMutation.isLoading}
+          />
+        )}
         <TextareaAutosize
           focusOutline="hidden"
           {...registerProps}
@@ -282,7 +309,13 @@ const EditMessage = ({
               ref={saveButtonRef}
               size="sm"
               variant="outline"
-              disabled={isSubmitting || updateMessageMutation.isLoading || !isDirty || !isValid}
+              disabled={
+                isSubmitting ||
+                updateMessageMutation.isLoading ||
+                !isDirty ||
+                !isValid ||
+                filesRemoved
+              }
               onClick={handleSubmit(updateMessage)}
             >
               {updateMessageMutation.isLoading
@@ -304,11 +337,13 @@ const EditMessage = ({
                 disabled={
                   isSubmitting ||
                   updateMessageMutation.isLoading ||
-                  (isUserTurn && isDirty && !isValid)
+                  (isUserTurn && isDraftChanged && !isDraftSendable)
                 }
                 onClick={isUserTurn ? handleSubmit(resubmitMessage) : rerunResponse}
               >
-                {isDirty && isUserTurn ? localize('com_ui_update_rerun') : localize('com_ui_rerun')}
+                {isDraftChanged && isUserTurn
+                  ? localize('com_ui_update_rerun')
+                  : localize('com_ui_rerun')}
               </Button>
             )}
           </div>

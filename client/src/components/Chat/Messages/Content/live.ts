@@ -1,4 +1,10 @@
-import { Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
+import {
+  Constants,
+  ContentTypes,
+  isOpaqueReasoning,
+  readableReasoning,
+  stripToolCallErrorPrefix,
+} from 'librechat-data-provider';
 import type {
   Agents,
   TAttachment,
@@ -308,8 +314,13 @@ function newestLine(
        *  Unless the fold is open: the text is on screen then, and a header
        *  repeating a line of it under the reader's eyes is noise, so the
        *  header keeps to the thought's label. */
-      const reasoning = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
-      const label = part.reasoning_label?.trim();
+      const think = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
+      /** Encrypted reasoning has no sentence to preview, and a label generated
+       *  from it before labels skipped encoded payloads describes the payload. */
+      const opaque = isOpaqueReasoning(think);
+      /** The live header only exists while the run streams. */
+      const reasoning = readableReasoning(think, true);
+      const label = opaque ? undefined : part.reasoning_label?.trim();
       if (preferLabels) {
         /** Only a generated label will do: the generic thinking line is what
          *  the grouped thought row itself says. */
@@ -322,7 +333,7 @@ function newestLine(
       if (sentence != null) {
         return { text: sentence, source: `think:${position}`, comboCount: 1 };
       }
-      if (label || reasoning.trim()) {
+      if (label || think.trim()) {
         return {
           text: label || localize('com_ui_thinking'),
           source: `think:${position}`,

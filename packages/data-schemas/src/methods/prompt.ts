@@ -145,13 +145,6 @@ export interface PromptMethods {
   }): Promise<{ prompt: IPromptRecord }>;
   getPrompts(filter: Record<string, unknown>): Promise<IPromptRecord[]>;
   getPrompt(filter: Record<string, unknown>): Promise<IPromptRecord | null>;
-  getRandomPromptGroups(filter: {
-    skip: number | string;
-    limit: number | string;
-  }): Promise<{ prompts: unknown[] } | { message: string }>;
-  getPromptGroupsWithPrompts(
-    filter: Record<string, unknown>,
-  ): Promise<Record<string, unknown> | null | { message: string }>;
   getPromptGroup(filter: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   getOwnedPromptGroupIds(author: string, readPrimary?: boolean): Promise<Types.ObjectId[]>;
   getPromptGroupAccessContext(params: { userId: string; role?: string }): Promise<{
@@ -310,7 +303,7 @@ export function createPromptMethods(
           .skip(skip)
           .limit(limit)
           .select(
-            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt',
+            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
           )
           .lean(),
         PromptGroup.countDocuments(query),
@@ -450,7 +443,7 @@ export function createPromptMethods(
     const findQuery = PromptGroup.find(matchQuery)
       .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
       .select(
-        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt',
+        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
       );
 
     if (isPaginated && normalizedLimit) {
@@ -616,66 +609,6 @@ export function createPromptMethods(
       filter.groupId = new ObjectId(filter.groupId as string);
     }
     return await Prompt.findOne(filter).lean<IPromptRecord>();
-  }
-
-  /**
-   * Get random prompt groups from distinct categories.
-   */
-  async function getRandomPromptGroups(filter: { skip: number | string; limit: number | string }) {
-    try {
-      const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
-      const categories = await PromptGroup.distinct('category', { category: { $ne: '' } });
-
-      for (let i = categories.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [categories[i], categories[j]] = [categories[j], categories[i]];
-      }
-
-      const skip = +filter.skip;
-      const limit = +filter.limit;
-      const selectedCategories = categories.slice(skip, skip + limit);
-
-      if (selectedCategories.length === 0) {
-        return { prompts: [] };
-      }
-
-      const groups = await PromptGroup.find({ category: { $in: selectedCategories } }).lean();
-
-      const groupByCategory = new Map<string, unknown>();
-      for (const group of groups) {
-        if (!groupByCategory.has(group.category)) {
-          groupByCategory.set(group.category, group);
-        }
-      }
-
-      const prompts = selectedCategories
-        .map((cat: string) => groupByCategory.get(cat))
-        .filter(Boolean);
-
-      return { prompts };
-    } catch (error) {
-      logger.error('Error getting prompt groups', error);
-      return { message: 'Error getting prompt groups' };
-    }
-  }
-
-  /**
-   * Get prompt groups with populated prompts.
-   */
-  async function getPromptGroupsWithPrompts(filter: Record<string, unknown>) {
-    try {
-      const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
-      return await PromptGroup.findOne(filter)
-        .populate({
-          path: 'prompts',
-          select: '-_id -__v -user',
-        })
-        .select('-_id -__v -user')
-        .lean();
-    } catch (error) {
-      logger.error('Error getting prompt groups', error);
-      return { message: 'Error getting prompt groups' };
-    }
   }
 
   /**
@@ -1051,16 +984,17 @@ export function createPromptMethods(
         return;
       }
 
+      /** ACL entries are the retry discovery key for sole-owned groups, so they go last. */
+      await Prompt.deleteMany({ groupId: { $in: allGroupIdsToDelete } });
+      await PromptGroup.deleteMany({ _id: { $in: allGroupIdsToDelete } });
       await AclEntry.deleteMany({
         resourceType: ResourceType.PROMPTGROUP,
         resourceId: { $in: allGroupIdsToDelete },
       });
-
-      await PromptGroup.deleteMany({ _id: { $in: allGroupIdsToDelete } });
-      await Prompt.deleteMany({ groupId: { $in: allGroupIdsToDelete } });
       await invalidatePromptGroupAccessContext();
     } catch (error) {
       logger.error('[deleteUserPrompts] General error:', error);
+      throw error;
     }
   }
 
@@ -1136,8 +1070,6 @@ export function createPromptMethods(
     savePrompt,
     getPrompts,
     getPrompt,
-    getRandomPromptGroups,
-    getPromptGroupsWithPrompts,
     getPromptGroup,
     getOwnedPromptGroupIds,
     getPromptGroupAccessContext,

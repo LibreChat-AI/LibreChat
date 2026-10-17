@@ -1,6 +1,9 @@
 import { useMemo, useCallback } from 'react';
-import { useRecoilValue, useSetRecoilState } from 'recoil';
-import store from '~/store';
+import { useAtom } from 'jotai';
+import {
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
+} from '~/components/Chat/Input/Composer/state';
 
 export type ComposerItemKind = 'quote' | 'skill';
 
@@ -32,10 +35,8 @@ export default function useComposerItems(
   conversationId: string,
   includeQuotes = true,
 ): ComposerItem[] {
-  const quotes = useRecoilValue(store.pendingQuotesByConvoId(conversationId));
-  const skills = useRecoilValue(store.pendingManualSkillsByConvoId(conversationId));
-  const setQuotes = useSetRecoilState(store.pendingQuotesByConvoId(conversationId));
-  const setSkills = useSetRecoilState(store.pendingManualSkillsByConvoId(conversationId));
+  const [quotes, setQuotes] = useAtom(pendingQuotesByConvoId(conversationId));
+  const [skills, setSkills] = useAtom(pendingManualSkillsByConvoId(conversationId));
 
   const removeQuoteAt = useCallback(
     (index: number) => setQuotes((prev) => prev.filter((_, i) => i !== index)),

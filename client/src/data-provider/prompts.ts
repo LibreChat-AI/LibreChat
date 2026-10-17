@@ -264,27 +264,6 @@ export const useDeletePromptGroup = (
   });
 };
 
-export const useUpdatePromptLabels = (
-  options?: t.UpdatePromptLabelOptions,
-): UseMutationResult<
-  t.TUpdatePromptLabelsResponse,
-  unknown,
-  t.TUpdatePromptLabelsRequest,
-  unknown
-> => {
-  const { onSuccess, ...rest } = options || {};
-  return useMutation({
-    mutationFn: (variables: t.TUpdatePromptLabelsRequest) =>
-      dataService.updatePromptLabels(variables),
-    ...rest,
-    onSuccess: (response, variables, context) => {
-      if (onSuccess) {
-        onSuccess(response, variables, context);
-      }
-    },
-  });
-};
-
 export const useMakePromptProduction = (options?: t.MakePromptProductionOptions) => {
   const queryClient = useQueryClient();
   const { onSuccess, onError, onMutate } = options || {};

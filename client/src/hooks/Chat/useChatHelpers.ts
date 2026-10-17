@@ -1,18 +1,27 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { useSetAtom, useStore } from 'jotai';
+import { useRecoilValue } from 'recoil';
 import { useQueryClient } from '@tanstack/react-query';
-import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
+import { useAtom, useSetAtom, useStore, useAtomValue } from 'jotai';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
+import {
+  filesFamily,
+  presetFamily,
+  optionSettingsFamily,
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  isSubmittingFamily,
+  useIsSubmitting,
+  abortScrollFamily,
+  submissionByIndex,
+  useClearSubmissions,
+} from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { ChatContract } from './contract';
-import {
-  useGetStartupConfig,
-  useAbortStreamMutation,
-  supportsGenerationProtocolV2,
-} from '~/data-provider';
+import { stopRequestedByConvoId, drainAfterAbortByIndex, runEndByIndex } from '~/hooks/Chat/queue';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
+import { useAbortStreamMutation, supportsGenerationProtocolV2 } from '~/data-provider';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { drainAfterAbortByIndex, runEndByIndex } from '~/hooks/Chat/queue';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { resolveAbortSteerTarget } from '~/utils';
@@ -21,10 +30,13 @@ import { getMessageCacheIds } from './cache';
 import { useAbortCleanup } from './abort';
 import store from '~/store';
 
+/** The live attachments map the stream and preview polling write. */
+const useLiveAttachments = () => useRecoilValue(store.messageAttachmentsMap);
+
 // this to be set somewhere else
 export default function useChatHelpers(index = 0, paramId?: string): ChatContract {
-  const clearAllSubmissions = store.useClearSubmissionState();
-  const [files, setFiles] = useRecoilState(store.filesByIndex(index));
+  const clearAllSubmissions = useClearSubmissions();
+  const [files, setFiles] = useAtom(filesFamily(index));
   const [filesLoading, setFilesLoading] = useState(false);
 
   const queryClient = useQueryClient();
@@ -80,18 +92,19 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   const { useCreateConversationAtom } = store;
   const { conversation, setConversation } = useCreateConversationAtom(index);
   const { conversationId, endpoint, endpointType } = conversation ?? {};
-  const activeGenerationCreatedAt = useRecoilValue(
-    store.activeGenerationCreatedAtByConvoId(conversationId ?? Constants.NEW_CONVO),
+  const activeGenerationCreatedAt = useAtomValue(
+    activeGenerationCreatedAtByConvoId(conversationId ?? Constants.NEW_CONVO),
   );
-  const activeGenerationProtocolVersion = useRecoilValue(
-    store.activeGenerationProtocolVersionByConvoId(conversationId ?? Constants.NEW_CONVO),
+  const activeGenerationProtocolVersion = useAtomValue(
+    activeGenerationProtocolVersionByConvoId(conversationId ?? Constants.NEW_CONVO),
   );
 
   /** Use paramId (from URL) as primary source for query key - this must match what ChatView uses
   Falling back to conversationId (Recoil) only if paramId is not available */
   const queryParam = paramId === 'new' ? paramId : (paramId ?? conversationId ?? '');
 
-  const [isSubmitting, setIsSubmitting] = useRecoilState(store.isSubmittingFamily(index));
+  const isSubmitting = useIsSubmitting(index);
+  const setIsSubmitting = useSetAtom(isSubmittingFamily(index));
   const latestMessage = useLatestMessage(index, queryParam);
 
   const latestMessageId = useLatestMessageId(index, queryParam) ?? undefined;
@@ -127,26 +140,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     [queryParam, queryClient],
   );
 
-  /* Conversation */
-  // const setActiveConvos = useSetRecoilState(store.activeConversations);
-
-  // const setConversation = useCallback(
-  //   (convoUpdate: TConversation) => {
-  //     _setConversation(prev => {
-  //       const { conversationId: convoId } = prev ?? { conversationId: null };
-  //       const { conversationId: currentId } = convoUpdate;
-  //       if (currentId && convoId && convoId !== 'new' && convoId !== currentId) {
-  //         // for now, we delete the prev convoId from activeConversations
-  //         const newActiveConvos = { [currentId]: true };
-  //         setActiveConvos(newActiveConvos);
-  //       }
-  //       return convoUpdate;
-  //     });
-  //   },
-  //   [_setConversation, setActiveConvos],
-  // );
-
-  const setSubmission = useSetRecoilState(store.submissionByIndex(index));
+  const setSubmission = useSetAtom(submissionByIndex(index));
 
   const { ask: _ask, regenerate: _regenerate } = useChatFunctions({
     index,
@@ -233,6 +227,9 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       // start the NEXT submission) while the abort response is in flight;
       // the fallback clear below must not tear down that new run.
       const submissionAtAbort = captureSubmission();
+      const stoppedRun = { generationCreatedAt: activeGenerationCreatedAt };
+      const stopFamily = stopRequestedByConvoId(conversationId);
+      queueStore.set(stopFamily, stoppedRun);
       try {
         console.log('[useChatHelpers] Calling abort mutation for:', conversationId);
         const response = await abortStream({
@@ -251,8 +248,13 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
         if (canUseV2AbortResponse && response?.settled === true) {
           /** Natural completion/error won the terminal CAS, so this request did
            * not emit an abort FINAL and must not release the abort-drain queue.
-           * The winning terminal event/status owns reconciliation. */
+           * The winning terminal event/status owns reconciliation. A run that
+           * completed or failed was not stopped, so its persisted outcome may
+           * still drain; one another Stop already aborted stays stopped. */
           clearInterruptDrain(conversationId, activeGenerationCreatedAt);
+          if (response.terminalStatus !== 'aborted' && queueStore.get(stopFamily) === stoppedRun) {
+            queueStore.set(stopFamily, null);
+          }
           queryClient.invalidateQueries({
             queryKey: [QueryKeys.messages, conversationId],
             refetchType: 'all',
@@ -340,6 +342,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     conversationId,
     endpoint,
     endpointType,
+    queueStore,
     activeGenerationCreatedAt,
     activeGenerationProtocolVersion,
     abortStream,
@@ -382,17 +385,13 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     [continueGeneration],
   );
 
-  const [preset, setPreset] = useRecoilState(store.presetByIndex(index));
-  const [showPopover, setShowPopover] = useRecoilState(store.showPopoverFamily(index));
-  const [abortScroll, setAbortScroll] = useRecoilState(store.abortScrollFamily(index));
-  const [optionSettings, setOptionSettings] = useRecoilState(store.optionSettingsFamily(index));
+  const [preset, setPreset] = useAtom(presetFamily(index));
+  const [abortScroll, setAbortScroll] = useAtom(abortScrollFamily(index));
+  const [optionSettings, setOptionSettings] = useAtom(optionSettingsFamily(index));
 
   /** Read once per chat rather than per message row: message rows never unmount, so a
-   *  per-row config observer would accumulate for the length of the conversation.
-   *  Stays disabled until the config resolves, so a `feedback: false` deployment never
-   *  flashes controls whose writes the server rejects. */
-  const { data: startupConfig } = useGetStartupConfig();
-  const feedbackEnabled = startupConfig != null && startupConfig.interface?.feedback !== false;
+   *  per-row settings read would accumulate for the length of the conversation. */
+  const { feedbackEnabled } = useChatSettings().config;
 
   return useMemo(
     (): ChatContract => ({
@@ -407,6 +406,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       setSiblingIdx,
       latestMessageId,
       latestMessageDepth,
+      useLiveAttachments,
       ask,
       index,
       regenerate,
@@ -414,8 +414,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       handleStopGenerating,
       handleRegenerate,
       handleContinue,
-      showPopover,
-      setShowPopover,
       abortScroll,
       setAbortScroll,
       preset,
@@ -447,8 +445,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       handleStopGenerating,
       handleRegenerate,
       handleContinue,
-      showPopover,
-      setShowPopover,
       abortScroll,
       setAbortScroll,
       preset,

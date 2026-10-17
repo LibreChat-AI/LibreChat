@@ -5,10 +5,14 @@ import type { TSkillFile, TSkill } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { StrategyFunctions, ServerRequest } from '~/types';
 import type { SaveBufferParams } from '~/storage/types';
+import type { SkillUploadIntentDeps } from './intent';
 import { resolveRequestTenantId } from '~/middleware/tenant';
 import { getStorageMetadata } from '~/storage/metadata';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { blockFilteredSkillFile } from './protection';
 import { resolveSkillFilePathParam } from './path';
+import { withSkillUploadIntent } from './intent';
+import { reserveSkillBlob } from './reservation';
 
 /** Metadata required for replacement and cleanup, independent of a database document. */
 export interface StoredSkillFile {
@@ -22,7 +26,7 @@ export interface StoredSkillFile {
   isExecutable?: boolean;
 }
 
-interface SkillUploadDeps {
+interface SkillUploadDeps extends SkillUploadIntentDeps {
   getSkillFileByPath: (skillId: string, relativePath: string) => Promise<StoredSkillFile | null>;
   getSkillById: (id: string) => Promise<Pick<TSkill, 'source'> | null>;
   upsertSkillFile: (
@@ -104,77 +108,80 @@ export function createSkillUploadHandler(
       const tenantId = resolveRequestTenantId(req);
       const storage = deps.resolveStorage(req, { isImage: file.mimetype.startsWith('image/') });
       const fileId = randomUUID();
-      const filepath = await storage.saveBuffer({
-        userId,
-        buffer: file.buffer,
-        fileName: `${fileId}__${file.originalname}`,
-        basePath: 'uploads',
-        tenantId,
-      });
-      const cleanupReplacedBlob = (): void => {
-        if (!existingFile || existingFile.filepath === filepath) {
-          return;
-        }
-        const deleteFile = deps.getStrategyFunctions(existingFile.source).deleteFile;
-        if (deleteFile) {
-          deleteFile(req, {
-            filepath: existingFile.filepath,
-            storageKey: existingFile.storageKey,
-            storageRegion: existingFile.storageRegion,
-            user: existingFile.author?.toString() ?? userId,
-            tenantId: existingFile.tenantId ?? tenantId,
-          }).catch((error: Error) => logger.error('[uploadFile] Old blob cleanup failed:', error));
-        }
+      const fileName = `${fileId}__${file.originalname}`;
+      const strategy = deps.getStrategyFunctions(storage.source) as Partial<StrategyFunctions> & {
+        getFileURL?: (params: {
+          userId: string;
+          fileName: string;
+          basePath: string;
+          tenantId?: string;
+        }) => Promise<string>;
       };
-      let result: StoredSkillFile;
-      try {
-        result = await deps.upsertSkillFile({
-          skillId,
-          relativePath,
-          expectedFileId,
-          file_id: fileId,
-          filename: file.originalname,
-          filepath,
-          ...getStorageMetadata({ filepath, source: storage.source }),
-          source: storage.source,
-          mimeType: file.mimetype || 'application/octet-stream',
-          bytes: file.size,
-          isExecutable: existingFile?.isExecutable ?? false,
-          author: userId,
-          tenantId,
-        });
-      } catch (error) {
-        try {
-          // A parent-version update can fail after the file row committed. Never
-          // delete its live blob on that ambiguous failure; retain it for reread.
+      if (!strategy.deleteFile) throw new Error('Skill storage has no deletion strategy');
+      const reservation = await reserveSkillBlob({
+        source: storage.source,
+        userId,
+        fileName,
+        tenantId,
+        getFileURL: strategy.getFileURL,
+      });
+      const result = await withSkillUploadIntent(deps, {
+        skillId,
+        author: userId,
+        tenantId,
+        fileId,
+        source: storage.source,
+        reservation,
+        save: () =>
+          storage.saveBuffer({
+            ...reservation.writeLocation,
+            buffer: file.buffer,
+          }),
+        persist: (filepath) =>
+          deps.upsertSkillFile({
+            skillId,
+            relativePath,
+            expectedFileId,
+            file_id: fileId,
+            filename: file.originalname,
+            filepath,
+            ...getStorageMetadata({ filepath, source: storage.source }),
+            source: storage.source,
+            mimeType: file.mimetype || 'application/octet-stream',
+            bytes: file.size,
+            isExecutable: existingFile?.isExecutable ?? false,
+            author: userId,
+            tenantId,
+          }),
+        readPersisted: async () => {
           const persisted = await deps.getSkillFileByPath(skillId, relativePath);
-          if (persisted?.file_id === fileId) {
-            cleanupReplacedBlob();
-          } else {
-            await deps.getStrategyFunctions(storage.source).deleteFile?.(req, {
-              filepath,
-              ...getStorageMetadata({ filepath, source: storage.source }),
-              user: userId,
-              tenantId,
-            });
-          }
-        } catch (cleanupError) {
-          logger.error('[uploadFile] Failed to clean up orphaned blob:', cleanupError);
-        }
-        throw error;
-      }
-      cleanupReplacedBlob();
+          return persisted?.file_id === fileId ? persisted : null;
+        },
+        deleteReserved: (ref, savedPath) =>
+          strategy.deleteFile!(req, {
+            filepath: savedPath ?? ref.filepath,
+            ...getStorageMetadata({
+              filepath: savedPath ?? ref.filepath,
+              source: storage.source,
+            }),
+            user: userId,
+            tenantId,
+          }),
+      });
       return res.status(200).json(result);
     } catch (error) {
       if (error instanceof Error && 'code' in error) {
         if (error.code === 'SKILL_FILE_CONFLICT') {
           return res.status(409).json({ error: 'SKILL_FILE_CONFLICT' });
         }
+        if (error.code === 'SKILL_DELETING') {
+          return res.status(409).json({ error: 'SKILL_DELETING' });
+        }
         if (error.code === 'SKILL_FILE_VALIDATION_FAILED') {
           return res.status(400).json({ error: error.message });
         }
       }
-      logger.error('[uploadFile] Error:', error);
+      logger.error('[uploadFile] Error:', getSafeErrorMetadata(error));
       return res.status(500).json({ error: 'Failed to upload file' });
     }
   };

@@ -137,6 +137,7 @@ jest.mock('~/models', () => ({
   deleteTokens: jest.fn(),
   findPluginAuthsByKeys: jest.fn(),
   getRoleByName: jest.fn(),
+  recordAuditEntry: jest.fn(),
 }));
 
 jest.mock('~/server/services/Config', () => ({
@@ -4063,6 +4064,63 @@ describe('MCP Routes', () => {
       expect(MCPConnection.clearCooldown).toHaveBeenCalledWith(inspectionServerName);
     });
 
+    it('records mcp_server.created with field names and no secret values', async () => {
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      const validConfig = {
+        type: 'sse',
+        url: 'https://mcp-server.example.com/sse',
+        title: 'Audited Server',
+        headers: { Authorization: 'Bearer super-secret-token' },
+      };
+      mockRegistryInstance.addServer.mockResolvedValue({
+        serverName: 'audited-server',
+        config: { ...validConfig, source: 'user' },
+      });
+
+      const response = await request(app).post('/api/mcp/servers').send({ config: validConfig });
+
+      expect(response.status).toBe(201);
+      expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+      const input = recordAuditEntry.mock.calls[0][0];
+      expect(input).toEqual(
+        expect.objectContaining({
+          action: 'mcp_server.created',
+          target: { type: 'mcp_server', id: 'audited-server', name: 'Audited Server' },
+          metadata: { source: 'DB', fields: 'headers,title,type,url' },
+        }),
+      );
+      expect(JSON.stringify(input)).not.toContain('super-secret-token');
+    });
+
+    it('audits a create that committed before the cache refresh failed, then returns 500', async () => {
+      const { MCPCommittedWriteError } = require('@librechat/api');
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      const validConfig = {
+        type: 'sse',
+        url: 'https://mcp-server.example.com/sse',
+        title: 'Audited Server',
+      };
+      mockRegistryInstance.addServer.mockRejectedValueOnce(
+        new MCPCommittedWriteError(
+          { serverName: 'audited-server', config: { ...validConfig, source: 'user' } },
+          new Error('redis down'),
+        ),
+      );
+
+      const response = await request(app).post('/api/mcp/servers').send({ config: validConfig });
+
+      expect(response.status).toBe(500);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'mcp_server.created',
+          target: { type: 'mcp_server', id: 'audited-server', name: 'Audited Server' },
+          metadata: expect.objectContaining({ postWrite: 'failed' }),
+        }),
+      );
+    });
+
     it('should reserve config-managed server names when creating MCP server', async () => {
       const validConfig = {
         type: 'sse',
@@ -4585,6 +4643,93 @@ describe('MCP Routes', () => {
       );
     });
 
+    it('records mcp_server.updated with only the changed field names', async () => {
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      const existing = {
+        type: 'sse',
+        url: 'https://old.example.com/sse',
+        title: 'Same Title',
+        headers: { Authorization: 'Bearer old-secret' },
+      };
+      const updated = {
+        ...existing,
+        url: 'https://new.example.com/sse',
+        headers: { Authorization: 'Bearer new-secret' },
+      };
+      mockRegistryInstance.getServerConfig.mockResolvedValueOnce(existing);
+      mockRegistryInstance.inspectServerUpdate.mockResolvedValue({ ...updated, source: 'user' });
+      mockRegistryInstance.commitServerUpdate.mockResolvedValue({ ...updated, source: 'user' });
+
+      const response = await request(app)
+        .patch('/api/mcp/servers/test-server')
+        .send({ config: updated });
+
+      expect(response.status).toBe(200);
+      expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+      const input = recordAuditEntry.mock.calls[0][0];
+      expect(input).toEqual(
+        expect.objectContaining({
+          action: 'mcp_server.updated',
+          target: { type: 'mcp_server', id: 'test-server', name: 'Same Title' },
+          metadata: { source: 'DB', fields: 'headers,url' },
+        }),
+      );
+      expect(JSON.stringify(input)).not.toContain('secret');
+    });
+
+    it('audits the config this write persisted, not a later overlapping write', async () => {
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      const existing = { type: 'sse', url: 'https://old.example.com/sse', title: 'Same Title' };
+      const submitted = { ...existing, url: 'https://new.example.com/sse' };
+      mockRegistryInstance.getServerConfig.mockResolvedValue({
+        ...existing,
+        url: 'https://other-writer.example.com/sse',
+        title: 'Other Writer',
+      });
+      mockRegistryInstance.getServerConfig.mockResolvedValueOnce(existing);
+      mockRegistryInstance.inspectServerUpdate.mockResolvedValue({ ...submitted, source: 'user' });
+      mockRegistryInstance.commitServerUpdate.mockResolvedValue({ ...submitted, source: 'user' });
+
+      const response = await request(app)
+        .patch('/api/mcp/servers/test-server')
+        .send({ config: submitted });
+
+      expect(response.status).toBe(200);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: { type: 'mcp_server', id: 'test-server', name: 'Same Title' },
+          metadata: { source: 'DB', fields: 'url' },
+        }),
+      );
+    });
+
+    it('audits an update that committed before the cache refresh failed, then returns 500', async () => {
+      const { MCPCommittedWriteError } = require('@librechat/api');
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      const existing = { type: 'sse', url: 'https://old.example.com/sse', title: 'Same Title' };
+      const submitted = { ...existing, url: 'https://new.example.com/sse' };
+      mockRegistryInstance.getServerConfig.mockResolvedValueOnce(existing);
+      mockRegistryInstance.inspectServerUpdate.mockResolvedValue({ ...submitted, source: 'user' });
+      mockRegistryInstance.commitServerUpdate.mockRejectedValueOnce(
+        new MCPCommittedWriteError({ ...submitted, source: 'user' }, new Error('redis down')),
+      );
+
+      const response = await request(app)
+        .patch('/api/mcp/servers/test-server')
+        .send({ config: submitted });
+
+      expect(response.status).toBe(500);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'mcp_server.updated',
+          metadata: { source: 'DB', fields: 'url', postWrite: 'failed' },
+        }),
+      );
+    });
+
     it('should redact secrets from update response', async () => {
       const validConfig = {
         type: 'sse',
@@ -4757,6 +4902,56 @@ describe('MCP Routes', () => {
         'DB',
         'test-user-id',
       );
+    });
+
+    it('records mcp_server.deleted only after the removal succeeds', async () => {
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      mockRegistryInstance.removeServer.mockRejectedValueOnce(new Error('Deletion failed'));
+      await request(app).delete('/api/mcp/servers/audited-server');
+      expect(recordAuditEntry).not.toHaveBeenCalled();
+
+      mockRegistryInstance.removeServer.mockResolvedValue(undefined);
+      const response = await request(app).delete('/api/mcp/servers/audited-server');
+
+      expect(response.status).toBe(200);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'mcp_server.deleted',
+          target: { type: 'mcp_server', id: 'audited-server' },
+          metadata: { source: 'DB' },
+        }),
+      );
+    });
+
+    it('audits a removal that committed before the cache refresh failed, then returns 500', async () => {
+      const { MCPCommittedWriteError } = require('@librechat/api');
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      mockRegistryInstance.removeServer.mockRejectedValueOnce(
+        new MCPCommittedWriteError(undefined, new Error('redis down')),
+      );
+
+      const response = await request(app).delete('/api/mcp/servers/audited-server');
+
+      expect(response.status).toBe(500);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'mcp_server.deleted',
+          metadata: { source: 'DB', postWrite: 'failed' },
+        }),
+      );
+    });
+
+    it('does not audit a delete that found nothing to remove', async () => {
+      const { recordAuditEntry } = require('~/models');
+      recordAuditEntry.mockClear();
+      mockRegistryInstance.removeServer.mockResolvedValueOnce(false);
+
+      const response = await request(app).delete('/api/mcp/servers/already-gone');
+
+      expect(response.status).toBe(200);
+      expect(recordAuditEntry).not.toHaveBeenCalled();
     });
 
     it('should return 500 when registry throws error', async () => {

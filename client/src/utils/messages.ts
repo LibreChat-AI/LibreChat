@@ -1,25 +1,21 @@
+import { QueryKeys, Constants, buildTree, ContentTypes } from 'librechat-data-provider';
 import {
-  QueryKeys,
-  Constants,
-  buildTree,
-  ContentTypes,
-  isEphemeralAgentId,
-  getEphemeralSender,
-  appendAgentIdSuffix,
-  encodeEphemeralAgentId,
-} from 'librechat-data-provider';
-import type {
-  Agents,
-  TMessage,
-  TConversation,
-  TEndpointsConfig,
-  TMessageContentParts,
-} from 'librechat-data-provider';
+  hasStreamStartFailed,
+  stripStreamedIndexStamps,
+  createDualMessageContent,
+  STREAM_START_FAILED_METADATA_KEY,
+} from '@librechat/chat';
+import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { QueryClient } from '@tanstack/react-query';
 import type { LocalizeFunction, TMessageProps } from '~/common';
 
+export {
+  hasStreamStartFailed,
+  stripStreamedIndexStamps,
+  createDualMessageContent,
+  STREAM_START_FAILED_METADATA_KEY,
+};
 export const TEXT_KEY_DIVIDER = '|||';
-export const STREAM_START_FAILED_METADATA_KEY = 'streamStartFailed';
 
 /** A locally submitted user row is not canonical until the server acknowledges it. */
 export function isUnacknowledgedUserMessage(message: TMessage): boolean {
@@ -99,34 +95,6 @@ export const getMessageBranchSiblingParentIds = (
   collectBranchParents(messagesTree, rootSiblingKey);
   return Array.from(parentIds);
 };
-
-/**
- * True when a resumed run's user-message slot is a compaction ANCHOR rather than
- * a turn the run created.
- *
- * A compaction submits no user turn: the slot names the LEAF it summarizes up
- * to, which the server projects as identity only (`projectCompactionAnchor` —
- * id, conversation, empty text, and no parent). Every other run publishes the
- * turn it created, parent included (`getPreliminaryUserMessage`), so the absent
- * parent is what separates the two.
- *
- * The anchor's author cannot separate them: Compact runs on whatever leaf the
- * branch ends with and `canCompact` does not restrict its author, so the anchor
- * is an assistant answer on one branch and a user message on the next (see
- * `isUserInitiatedCompaction`). Testing for a non-user row recognized only the
- * first kind and left the second rewritten on every re-attach.
- */
-export const isCompactionAnchorProjection = (
-  userMessage?: {
-    messageId?: string;
-    parentMessageId?: string | null;
-    text?: string | null;
-  } | null,
-): boolean =>
-  userMessage?.messageId != null &&
-  userMessage.messageId !== '' &&
-  userMessage.parentMessageId == null &&
-  (userMessage.text == null || userMessage.text === '');
 
 export const getBranchSiblingIndexesForTarget = (
   messages: TMessage[] | null | undefined,
@@ -396,32 +364,6 @@ export const preserveStreamedContentIdentity = (
   return stamped ?? finalContent;
 };
 
-/**
- * Drops the client-only `streamedIndex` stamps from a content array. An
- * edited resubmission retains the settled prefix and appends the rerun's
- * parts at the prefix LENGTH — a stamp at or above that length would collide
- * with an appended part's key — so the retained prefix reverts to physical
- * identity for the rerun. Returns the input untouched when nothing is
- * stamped.
- */
-export function stripStreamedIndexStamps(content: TMessageContentParts[]): TMessageContentParts[];
-export function stripStreamedIndexStamps(content: TMessage['content']): TMessage['content'];
-export function stripStreamedIndexStamps(content: TMessage['content']): TMessage['content'] {
-  if (!content?.length) {
-    return content;
-  }
-  let changed = false;
-  const next = content.map((part) => {
-    if (part == null || part.streamedIndex === undefined) {
-      return part;
-    }
-    changed = true;
-    const { streamedIndex: _streamedIndex, ...rest } = part;
-    return rest as TMessageContentParts;
-  });
-  return changed ? next : content;
-}
-
 /** Render-identity index for content-part keys: the streamed position stamped
  * by the final handler survives the sparse→compact swap; everything else keys
  * by the live index. Coordinate logic (edit indexes, phase bounds, cursor)
@@ -437,95 +379,12 @@ export const getPartKeyIndex = (part: TMessageContentParts | undefined, idx: num
 export const isSubmittableMessage = (text?: string | null, fileCount = 0): boolean =>
   (text ?? '').trim() !== '' || fileCount > 0;
 
-export const hasStreamStartFailed = (message?: Pick<TMessage, 'metadata'> | null): boolean =>
-  message?.metadata?.[STREAM_START_FAILED_METADATA_KEY] === true;
-
 export const markStreamStartFailedMetadata = (
   metadata?: TMessage['metadata'],
 ): TMessage['metadata'] => ({
   ...(metadata ?? {}),
   [STREAM_START_FAILED_METADATA_KEY]: true,
 });
-
-const getLatestContentForKey = (message: TMessage): string => {
-  const formatText = (str: string, index: number): string => {
-    if (str.length === 0) {
-      return '0';
-    }
-    const length = str.length;
-    const lastChars = str.slice(-16);
-    return `${length}${TEXT_KEY_DIVIDER}${lastChars}${TEXT_KEY_DIVIDER}${index}`;
-  };
-
-  if (message.text) {
-    return formatText(message.text, -1);
-  }
-
-  if (!message.content || message.content.length === 0) {
-    return '';
-  }
-
-  for (let i = message.content.length - 1; i >= 0; i--) {
-    const part = message.content[i] as TMessageContentParts | undefined;
-    if (!part?.type) {
-      continue;
-    }
-
-    const type = part.type;
-    let text = '';
-
-    // Handle THINK type - extract think content
-    if (type === ContentTypes.THINK && 'think' in part) {
-      text = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
-    }
-    // Handle TEXT type
-    else if (type === ContentTypes.TEXT && 'text' in part) {
-      text = typeof part.text === 'string' ? part.text : (part.text?.value ?? '');
-    }
-    // Handle ERROR type
-    else if (type === ContentTypes.ERROR && 'error' in part) {
-      text = String(part.error || 'err').slice(0, 30);
-    }
-    // Handle TOOL_CALL - use simple marker with type
-    else if (type === ContentTypes.TOOL_CALL && 'tool_call' in part) {
-      const tcType = part.tool_call?.type || 'x';
-      const tcName = String(part.tool_call?.['name'] || 'unknown').slice(0, 20);
-      const tcArgs = String(part.tool_call?.['args'] || 'none').slice(0, 20);
-      const tcOutput = String(part.tool_call?.['output'] || 'none').slice(0, 20);
-      text = `tc_${tcType}_${tcName}_${tcArgs}_${tcOutput}`;
-    }
-    // Handle IMAGE_FILE - use simple marker with file_id suffix
-    else if (type === ContentTypes.IMAGE_FILE && 'image_file' in part) {
-      const fileId = part.image_file?.file_id || 'x';
-      text = `if_${fileId.slice(-8)}`;
-    }
-    // Handle IMAGE_URL - use simple marker
-    else if (type === ContentTypes.IMAGE_URL) {
-      text = 'iu';
-    }
-    // Handle AGENT_UPDATE - use simple marker with agentId suffix
-    else if (type === ContentTypes.AGENT_UPDATE && 'agent_update' in part) {
-      const agentId = String(part.agent_update?.agentId || 'x').slice(0, 30);
-      text = `au_${agentId}`;
-    } else {
-      text = type;
-    }
-
-    if (text.length > 0) {
-      return formatText(text, i);
-    }
-  }
-
-  return '';
-};
-
-export const getTextKey = (message?: TMessage | null, convoId?: string | null) => {
-  if (!message) {
-    return '';
-  }
-  const contentKey = getLatestContentForKey(message);
-  return `${(message.messageId as string | null) ?? ''}${TEXT_KEY_DIVIDER}${contentKey}${TEXT_KEY_DIVIDER}${message.conversationId ?? convoId}`;
-};
 
 export const scrollToEnd = (callback?: () => void) => {
   const messagesEndElement = document.getElementById('messages-end');
@@ -764,102 +623,6 @@ export const getMessageTimestamp = (
     absolute: getAbsoluteFormatter(safeLocale, hour12).format(date),
     isRecent: Math.abs(now.getTime() - date.getTime()) < RECENT_THRESHOLD_MS,
   };
-};
-
-/**
- * Creates initial content parts for dual message display with agent-based grouping.
- * Sets up primary and added agent content parts with agentId for column rendering.
- *
- * @param primaryConvo - The primary conversation configuration
- * @param addedConvo - The added conversation configuration
- * @param endpointsConfig - Endpoints configuration for getting model display labels
- * @param modelSpecs - Model specs list for getting spec labels
- * @returns Array of content parts with agentId for side-by-side rendering
- */
-export const createDualMessageContent = (
-  primaryConvo: TConversation,
-  addedConvo: TConversation,
-  endpointsConfig?: TEndpointsConfig,
-  modelSpecs?: { name: string; label?: string }[],
-): TMessageContentParts[] => {
-  // For real agents (agent_id starts with "agent_"), use agent_id directly
-  // Otherwise create ephemeral ID from endpoint/model
-  let primaryAgentId: string;
-  if (primaryConvo.agent_id && !isEphemeralAgentId(primaryConvo.agent_id)) {
-    primaryAgentId = primaryConvo.agent_id;
-  } else {
-    const primaryEndpoint = primaryConvo.endpoint;
-    const primaryModel = primaryConvo.model ?? '';
-    // Look up model spec for label fallback
-    const primarySpec =
-      primaryConvo.spec != null && primaryConvo.spec !== ''
-        ? modelSpecs?.find((s) => s.name === primaryConvo.spec)
-        : undefined;
-    const primarySender = getEphemeralSender({
-      modelLabel: primaryConvo.modelLabel,
-      specLabel: primarySpec?.label,
-      modelDisplayLabel: primaryEndpoint
-        ? endpointsConfig?.[primaryEndpoint]?.modelDisplayLabel
-        : undefined,
-    });
-    primaryAgentId = encodeEphemeralAgentId({
-      endpoint: primaryEndpoint ?? '',
-      model: primaryModel,
-      sender: primarySender,
-    });
-  }
-
-  // Both agents run in parallel, so they share the same groupId
-  const parallelGroupId = 1;
-
-  // Use empty type - these are just placeholders to establish agentId/groupId
-  // The actual type will be set when real content arrives from the server
-  const primaryContent = {
-    type: '' as const,
-    agentId: primaryAgentId,
-    groupId: parallelGroupId,
-  };
-
-  // For added agent, use agent_id if it's a real agent (starts with "agent_")
-  // Otherwise create ephemeral ID with index suffix
-  // Always append index suffix for added agent to distinguish from primary (even if same agent_id)
-  let addedAgentId: string;
-  if (addedConvo.agent_id && !isEphemeralAgentId(addedConvo.agent_id)) {
-    // Append suffix to distinguish from primary agent (matches ephemeral format)
-    addedAgentId = appendAgentIdSuffix(addedConvo.agent_id, 1);
-  } else {
-    const addedEndpoint = addedConvo.endpoint;
-    const addedModel = addedConvo.model ?? '';
-    // Look up model spec for label fallback
-    const addedSpec =
-      addedConvo.spec != null && addedConvo.spec !== ''
-        ? modelSpecs?.find((s) => s.name === addedConvo.spec)
-        : undefined;
-    const addedSender = getEphemeralSender({
-      modelLabel: addedConvo.modelLabel,
-      specLabel: addedSpec?.label,
-      modelDisplayLabel: addedEndpoint
-        ? endpointsConfig?.[addedEndpoint]?.modelDisplayLabel
-        : undefined,
-    });
-    addedAgentId = encodeEphemeralAgentId({
-      endpoint: addedEndpoint ?? '',
-      model: addedModel,
-      sender: addedSender,
-      index: 1,
-    });
-  }
-
-  // Use empty type - placeholder to establish agentId/groupId
-  const addedContent = {
-    type: '' as const,
-    agentId: addedAgentId,
-    groupId: parallelGroupId,
-  };
-
-  // Cast through unknown since these are placeholder objects with empty type
-  // that will be replaced by real content with proper types from the server
-  return [primaryContent, addedContent] as unknown as TMessageContentParts[];
 };
 
 export function areMessageFilesEqual(prevFiles?: TMessage['files'], nextFiles?: TMessage['files']) {

@@ -67,7 +67,6 @@ export default function useSharePointPicker({
       try {
         switch (message.data.type) {
           case 'notification':
-            console.log('SharePoint picker notification:', message.data);
             break;
 
           case 'command': {
@@ -78,13 +77,9 @@ export default function useSharePointPicker({
             });
 
             const command = message.data.data;
-            console.log('SharePoint picker command:', command);
 
             switch (command.command) {
               case 'authenticate':
-                console.log('Authentication requested, providing token');
-                console.log('Command details:', command); // Add this line
-                console.log('Token available:', !!token?.access_token); // Add this line
                 if (token?.access_token) {
                   port.postMessage({
                     type: 'result',
@@ -111,7 +106,6 @@ export default function useSharePointPicker({
                 break;
 
               case 'close':
-                console.log('Close command received');
                 port.postMessage({
                   type: 'result',
                   id: message.data.id,
@@ -123,10 +117,7 @@ export default function useSharePointPicker({
                 break;
 
               case 'pick': {
-                console.log('Files picked from SharePoint:', command);
-
                 const items = command.items || command.files || [];
-                console.log('Extracted items:', items);
 
                 if (items && items.length > 0) {
                   const selectedFiles = items.map((item: any) => ({
@@ -143,8 +134,6 @@ export default function useSharePointPicker({
                     itemId: item.id || item.driveItem?.id,
                     sharePointItem: item,
                   }));
-
-                  console.log('Processed SharePoint files:', selectedFiles);
 
                   if (onFilesSelected) {
                     onFilesSelected(selectedFiles);
@@ -185,7 +174,6 @@ export default function useSharePointPicker({
           }
 
           default:
-            console.log('Unknown message type:', message.data.type);
             break;
         }
       } catch (error) {
@@ -198,18 +186,11 @@ export default function useSharePointPicker({
   // Initialization message handler - establishes MessagePort communication
   const initMessageHandler = useCallback(
     (event: MessageEvent) => {
-      console.log('=== SharePoint picker init message received ===');
-      console.log('Event source:', event.source);
-      console.log('Event data:', event.data);
-      console.log('Expected channelId:', channelIdRef.current);
-
       // Check if this message is from our iframe
       if (event.source && event.source === iframeRef.current?.contentWindow) {
         const message = event.data;
 
         if (message.type === 'initialize' && message.channelId === channelIdRef.current) {
-          console.log('Establishing MessagePort communication');
-
           // Get the MessagePort from the event
           portRef.current = event.ports[0];
 
@@ -222,8 +203,6 @@ export default function useSharePointPicker({
             portRef.current.postMessage({
               type: 'activate',
             });
-
-            console.log('MessagePort established and activated');
           } else {
             console.error('No MessagePort found in initialize event');
           }
@@ -250,15 +229,6 @@ export default function useSharePointPicker({
     try {
       const channelId = generateChannelId();
       channelIdRef.current = channelId;
-
-      console.log('=== SharePoint File Picker v8 (MessagePort) ===');
-      console.log('Token available:', {
-        hasToken: !!token.access_token,
-        tokenType: token.token_type,
-        expiresIn: token.expires_in,
-        scopes: token.scope,
-      });
-      console.log('Channel ID:', channelId);
 
       const pickerOptions: SPPickerConfig = {
         sdk: '8.0',

@@ -64,13 +64,6 @@ export const resolveRowBeside = (row: HTMLElement | null): HTMLElement | null =>
 export const focusableInRow = (row: HTMLElement | null): HTMLElement | null =>
   row ? focusableWithin(row) : null;
 
-/** Resolves and focuses in one step, for removals that happen synchronously. */
-export const focusRowBeside = (row: HTMLElement | null): boolean => {
-  const target = resolveRowBeside(row);
-  target?.focus();
-  return target != null && document.activeElement === target;
-};
-
 /**
  * Focuses the first surviving row in `scope`, falling back to the New Chat
  * button. For removals that report back only once the row is already gone, so

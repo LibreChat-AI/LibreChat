@@ -10,7 +10,7 @@ import {
   buildAuthUserDocCacheKey,
   AUTH_USER_DOC_CACHE_TTL_MS,
 } from './userDocCache';
-import { isTokenIssuedBeforeCredentialChange } from './credentials';
+import { isTokenRetired } from './twoFactor';
 
 let mongoServer: MongoMemoryServer;
 const originalCacheMode = process.env.AUTH_USER_CACHE_MODE;
@@ -64,10 +64,8 @@ describe('credential change with a failing auth cache', () => {
       throw new Error('expected a cache key');
     }
     await setCachedAuthUserDoc(store, cacheKey, user);
-    const oldToken = { iat: Math.floor(Date.now() / 1000) - 60 };
-    expect(
-      isTokenIssuedBeforeCredentialChange(oldToken, await getCachedAuthUserDoc(store, cacheKey)),
-    ).toBe(false);
+    const oldToken = { issuedAt: Math.floor(Date.now() / 1000) - 60 };
+    expect(isTokenRetired(oldToken, await getCachedAuthUserDoc(store, cacheKey))).toBe(false);
 
     const updated = await methods.updateUser(userId, {
       password: 'new-password-hash',
@@ -80,6 +78,6 @@ describe('credential change with a failing auth cache', () => {
     expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
     await expect(getCachedAuthUserDoc(store, cacheKey)).resolves.toBeUndefined();
     const current = await methods.findUser({ openidId: 'subject-1' });
-    expect(isTokenIssuedBeforeCredentialChange(oldToken, current)).toBe(true);
+    expect(isTokenRetired(oldToken, current)).toBe(true);
   }, 20_000);
 });

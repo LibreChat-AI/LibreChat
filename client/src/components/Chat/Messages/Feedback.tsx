@@ -59,9 +59,9 @@ function FeedbackOptionButton({
 
   return (
     <Button
-      variant="ghost"
+      variant="quiet"
       className={cn(
-        'text-text-secondary hover:bg-surface-hover hover:text-text-primary h-auto w-full justify-start gap-3 rounded-xl p-2 transition-colors duration-200',
+        'h-auto w-full justify-start gap-3 rounded-xl p-2 transition-colors duration-200',
         active && 'bg-surface-hover text-text-primary font-semibold',
       )}
       onClick={onClick}
@@ -318,7 +318,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
             {localize('com_ui_feedback_more_information')}
           </OGDialogTitle>
           <Textarea
-            className="border-border-light h-auto w-full rounded-xl p-2"
+            className="h-auto w-full rounded-xl p-2"
             value={feedback?.text || ''}
             onChange={handleTextChange}
             rows={4}

@@ -525,13 +525,6 @@ describe('ConnectionsRepository', () => {
       expect(mockConnection.dispose).toHaveBeenCalled();
       expect(repository['connections'].has('server1')).toBe(false);
     });
-    //todo revist later when async getAll(): in packages/api/src/mcp/ConnectionsRepository.ts is refactored
-    it.skip('should throw error for non-existent server configuration', async () => {
-      await expect(repository.get('nonexistent')).rejects.toThrow(
-        '[MCP][nonexistent] Server not found in configuration',
-      );
-    });
-
     it('should handle MCPConnectionFactory.create errors', async () => {
       const createError = new Error('Connection creation failed');
       (MCPConnectionFactory.create as jest.Mock).mockRejectedValue(createError);

@@ -1,11 +1,12 @@
 import type { IMongoFile } from '@librechat/data-schemas';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
 import { handleSteerRequest, handleSteerCancel, handleSteerArm } from '../request';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { isSteeringSupported, isSteerPreemptSupported } from '../runtime';
 import { STEER_QUEUE_MAX_DEPTH } from '~/stream/interfaces/IJobStore';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { buildPendingAction } from '~/agents/hitl/policy';
 
 jest.mock('../runtime', () => ({
   ...jest.requireActual('../runtime'),

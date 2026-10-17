@@ -102,7 +102,7 @@ function MorphHeight({ open, children }: { open: boolean; children: ReactNode })
       className={cn(
         'overflow-hidden',
         animate &&
-          'transition-[height] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+          'transition-[height] duration-(--resize-dur) ease-(--resize-ease) motion-reduce:transition-none',
       )}
     >
       {/** Spacing lives inside the measured box so it collapses away with it. */}
@@ -417,7 +417,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 <span className="text-xs">{localize('com_ui_skills_add_row')}</span>
-                <span className="text-text-secondary text-[11px]">
+                <span className="text-text-secondary text-2xs">
                   {localize('com_ui_skills_empty_hint')}
                 </span>
               </button>

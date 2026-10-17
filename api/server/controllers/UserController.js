@@ -15,17 +15,19 @@ const {
   getWebSearchInstallEntries,
   getWebSearchUninstallFields,
   openCheckpointDeletion,
-  isStopConfirmed,
-  waitForGenerationPersistence,
+  stopUserGenerations,
   deleteAllSharedLinksWithCleanup,
+  eraseUserData,
+  deleteUserMCPServers,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
+  clearSessionHintCookie,
 } = require('@librechat/api');
-const { Tools, Constants, FileSources, ResourceType } = require('librechat-data-provider');
+const { Tools, Constants, FileSources } = require('librechat-data-provider');
 const { updateUserPluginAuth, deleteUserPluginAuth } = require('~/server/services/PluginService');
 const { verifyOTPOrBackupCode } = require('~/server/services/twoFactorService');
 const { verifyEmail, resendVerificationEmail } = require('~/server/services/AuthService');
-const { getMCPManager } = require('~/config');
+const { getMCPManager, getMCPServersRegistry } = require('~/config');
 const { maybeUninstallOAuthMCP } = require('~/server/services/MCP/oauthCleanup');
 const { invalidateCachedTools } = require('~/server/services/Config/getCachedTools');
 const {
@@ -154,100 +156,31 @@ const acceptTermsController = async (req, res) => {
   }
 };
 
-const deleteUserFiles = async (req) => {
-  try {
-    const userFiles = await db.getFiles({ user: req.user.id });
-    await processDeleteRequest({
-      req,
-      files: userFiles,
-    });
-  } catch (error) {
-    logger.error('[deleteUserFiles]', error);
-  }
-};
+/** Runtime hooks for MCP servers removed with a deleted account. */
+const createMCPServerCleanup = (userId) => ({
+  findUserErasableMCPServers: db.findUserErasableMCPServers,
+  deleteMCPServersWithAcl: db.deleteMCPServersWithAcl,
+  invalidateMCPServerTools: (serverName) => invalidateCachedTools({ userId, serverName }),
+  disconnectMCPServer: async (serverName) => {
+    await getMCPManager()?.disconnectUserConnection(userId, serverName);
+  },
+  findMCPServerOAuthTokenUserIds: db.findMCPServerOAuthTokenUserIds,
+  findMCPServerViewerEntries: db.findMCPServerViewerEntries,
+  mcpOAuth: {
+    getServerConfig: (serverName) => getMCPServersRegistry().getServerConfig(serverName, userId),
+    getUserPrincipals: (candidateId) => db.getUserPrincipals({ userId: candidateId }),
+    resolveAllowlists: (candidateId) =>
+      getMCPServersRegistry().resolveAllowlists({ userId: candidateId }),
+    invalidateUserTools: (candidateId, serverName) =>
+      invalidateCachedTools({ userId: candidateId, serverName }),
+    disconnectUser: (candidateId, serverName) =>
+      getMCPManager()?.disconnectUserConnection(candidateId, serverName),
+    uninstallOAuthMCP: maybeUninstallOAuthMCP,
+  },
+});
 
-/**
- * Deletes MCP servers solely owned by the user and cleans up their ACLs.
- * Disconnects live sessions for deleted servers before removing DB records.
- * Servers with other owners are left intact; the caller is responsible for
- * removing the user's own ACL principal entries separately.
- *
- * Also handles legacy (pre-ACL) MCP servers that only have the author field set,
- * ensuring they are not orphaned if no permission migration has been run.
- * @param {string} userId - The ID of the user.
- */
-const deleteUserMcpServers = async (userId) => {
-  try {
-    const MCPServer = mongoose.models.MCPServer;
-    const AclEntry = mongoose.models.AclEntry;
-    if (!MCPServer) {
-      return;
-    }
-
-    const userObjectId = new mongoose.Types.ObjectId(userId);
-    const soleOwnedIds = await db.getSoleOwnedResourceIds(userObjectId, ResourceType.MCPSERVER);
-
-    const authoredServers = await MCPServer.find({ author: userObjectId })
-      .select('_id serverName')
-      .lean();
-
-    const migratedEntries =
-      authoredServers.length > 0
-        ? await AclEntry.find({
-            resourceType: ResourceType.MCPSERVER,
-            resourceId: { $in: authoredServers.map((s) => s._id) },
-          })
-            .select('resourceId')
-            .lean()
-        : [];
-    const migratedIds = new Set(migratedEntries.map((e) => e.resourceId.toString()));
-    const legacyServers = authoredServers.filter((s) => !migratedIds.has(s._id.toString()));
-    const legacyServerIds = legacyServers.map((s) => s._id);
-
-    const allServerIdsToDelete = [...soleOwnedIds, ...legacyServerIds];
-
-    if (allServerIdsToDelete.length === 0) {
-      return;
-    }
-
-    const aclOwnedServers =
-      soleOwnedIds.length > 0
-        ? await MCPServer.find({ _id: { $in: soleOwnedIds } })
-            .select('serverName')
-            .lean()
-        : [];
-    const allServersToDelete = [...aclOwnedServers, ...legacyServers];
-
-    const mcpManager = getMCPManager();
-    await Promise.allSettled(
-      allServersToDelete.map(async (s) => {
-        try {
-          await invalidateCachedTools({ userId, serverName: s.serverName });
-        } catch (error) {
-          logger.warn(
-            `[deleteUserMcpServers] Failed to invalidate tools for ${s.serverName}:`,
-            error,
-          );
-        } finally {
-          try {
-            await mcpManager?.disconnectUserConnection(userId, s.serverName);
-          } catch (error) {
-            logger.warn(`[deleteUserMcpServers] Failed to disconnect ${s.serverName}:`, error);
-          }
-        }
-      }),
-    );
-
-    await AclEntry.deleteMany({
-      resourceType: ResourceType.MCPSERVER,
-      resourceId: { $in: allServerIdsToDelete },
-    });
-
-    await MCPServer.deleteMany({ _id: { $in: allServerIdsToDelete } });
-  } catch (error) {
-    logger.error('[deleteUserMcpServers] General error:', error);
-  }
-};
+const deleteUserMcpServers = (userId) =>
+  deleteUserMCPServers(userId, createMCPServerCleanup(userId));
 
 const updateUserPluginsController = async (req, res) => {
   const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
@@ -312,7 +245,13 @@ const updateUserPluginsController = async (req, res) => {
         authService =
           pluginKey === Tools.web_search && value === ''
             ? await deleteUserPluginAuth(user.id, field)
-            : await updateUserPluginAuth(user.id, field, pluginKey, value);
+            : await updateUserPluginAuth(
+                user.id,
+                field,
+                pluginKey,
+                value,
+                appConfig?.credentials?.writeFormat,
+              );
         if (authService instanceof Error) {
           logger.error('[authService]', authService);
           ({ status, message } = normalizeHttpError(authService));
@@ -470,39 +409,7 @@ const deleteUserController = async (req, res) => {
     if (!(await quiesceUserSchedules(user.id, scheduleSuspensionToken))) {
       throw new Error('Scheduled executions could not be confirmed stopped');
     }
-    const activeAgentRuns = await GenerationJobManager.getAccountCleanupJobIdsForUser(
-      user.id,
-      tenantId,
-    );
-    const activeAgentJobs = await Promise.all(
-      activeAgentRuns.map(async (streamId) => ({
-        streamId,
-        job: await GenerationJobManager.getCleanupJob(streamId),
-      })),
-    );
-    const ownedAgentJobs = activeAgentJobs.filter(
-      ({ job }) =>
-        job?.metadata?.userId === user.id &&
-        (!job.metadata.tenantId || job.metadata.tenantId === tenantId),
-    );
-    const stopResults = await Promise.all(
-      ownedAgentJobs.map(({ streamId, job }) =>
-        GenerationJobManager.abortJob(streamId, {
-          expectedCreatedAt: job.createdAt,
-          awaitProviderDrain: true,
-        }),
-      ),
-    );
-    if (stopResults.some((result) => !isStopConfirmed(result))) {
-      throw new Error('Agent generations could not be confirmed stopped');
-    }
-    await Promise.all(
-      ownedAgentJobs.map(({ streamId, job }) =>
-        waitForGenerationPersistence(streamId, job.createdAt, (id) =>
-          GenerationJobManager.getCleanupJob(id),
-        ),
-      ),
-    );
+    await stopUserGenerations(user.id, tenantId, GenerationJobManager);
 
     const appConfig =
       req.config ??
@@ -511,49 +418,23 @@ const deleteUserController = async (req, res) => {
         userId: user.id,
         tenantId,
       }));
-    const checkpointer = appConfig?.endpoints?.agents?.checkpointer;
-    const checkpointDeletion = await openCheckpointDeletion(
-      user.id,
-      tenantId,
-      undefined,
-      checkpointer,
-    );
-    await db.deleteConvos(
-      user.id,
-      {},
+    await eraseUserData(
       {
-        allowEmpty: true,
-        beforeDelete: (ids) => checkpointDeletion.remember(ids),
+        userId: user.id,
+        tenantId,
+        checkpointer: appConfig?.endpoints?.agents?.checkpointer,
+      },
+      {
+        ...db,
+        openCheckpointDeletion,
+        deleteSharedLinks: (id) => deleteAllSharedLinksWithCleanup(id, { awaitCleanup: true }),
+        /** The DELETE carries no body without 2FA, and account erasure targets no assistant. */
+        deleteStoredFiles: (files) =>
+          processDeleteRequest({ req: Object.assign(Object.create(req), { body: {} }), files }),
+        ...createMCPServerCleanup(user.id),
+        onSessionsDeleted: () => clearSessionHintCookie(res),
       },
     );
-    await checkpointDeletion.cleanup();
-    await checkpointDeletion.acknowledge();
-
-    await db.deleteMessages({ user: user.id });
-    await db.deleteAllUserSessions({ userId: user.id });
-    await db.deletePasskeysByUser(user.id);
-    await db.deleteTransactions({ user: user.id });
-    await db.deleteUserKey({ userId: user.id, all: true });
-    await db.deleteBalances({ user: user._id });
-    await db.deletePresets(user.id);
-    await deleteUserPluginAuth(user.id, null, true);
-    await deleteAllSharedLinksWithCleanup(user.id);
-    await deleteUserFiles(req);
-    await db.deleteFiles(null, user.id);
-    await db.deleteToolCalls(user.id);
-    await db.deleteUserAgents(user.id);
-    await db.deleteAllAgentApiKeys(user._id);
-    await db.deleteAssistants({ user: user.id });
-    await db.deleteConversationTags({ user: user.id });
-    await db.deleteAllUserMemories(user.id);
-    await db.deleteUserPrompts(user.id);
-    await db.deleteUserSkills(user.id);
-    await deleteUserMcpServers(user.id);
-    await db.deleteActions({ user: user.id });
-    await db.deleteTokens({ userId: user.id });
-    await db.removeUserFromAllGroups(user.id);
-    await db.deleteAclEntries({ principalId: user._id });
-    await db.deleteSchedulesByUser(user.id);
     const deleteResult = await db.deleteUserById(user.id);
     if (deleteResult.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');
@@ -581,7 +462,7 @@ const deleteUserController = async (req, res) => {
       logger.error('[deleteUserController] code environment cache invalidation failed:', error);
     });
     await purgeAgentTriggerDeliveriesForUser(user.id);
-    logger.info(`User deleted account. Email: ${user.email} ID: ${user.id}`);
+    logger.info(`User deleted account. ID: ${user.id} Tenant: ${tenantId ?? 'none'}`);
     res.status(200).send({ message: 'User deleted' });
   } catch (err) {
     // The account survives this failed attempt, so its schedules must too: restore the

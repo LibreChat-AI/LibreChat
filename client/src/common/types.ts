@@ -1,11 +1,11 @@
 import { RefObject } from 'react';
-import { FileSources, EModelEndpoint, isEphemeralAgentId } from 'librechat-data-provider';
+import { isEphemeralAgentId } from 'librechat-data-provider';
+import type { PaneOptionSettings } from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
-import type * as InputNumberPrimitive from 'rc-input-number';
-import type { SetterOrUpdater, RecoilState } from 'recoil';
-import type { ColumnDef } from '@tanstack/react-table';
+import type { ExtendedFile } from '@librechat/chat';
 import type * as t from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
+import type { SetterOrUpdater } from 'recoil';
 import type { TranslationKeys } from '~/hooks';
 import { MCPServerDefinition } from '~/hooks/MCP/useMCPServerManager';
 
@@ -44,43 +44,12 @@ export enum TTSEndpoints {
   external = 'external',
 }
 
-export type AudioChunk = {
-  audio: string;
-  isFinal: boolean;
-  alignment: {
-    char_start_times_ms: number[];
-    chars_durations_ms: number[];
-    chars: string[];
-  };
-  normalizedAlignment: {
-    char_start_times_ms: number[];
-    chars_durations_ms: number[];
-    chars: string[];
-  };
-};
-
-export type BadgeItem = {
-  id: string;
-  icon: React.ComponentType<any>;
-  label: string;
-  atom: RecoilState<boolean>;
-  isAvailable: boolean;
-};
-
 export type AssistantListItem = {
   id: string;
   name: string;
   metadata: t.Assistant['metadata'];
   model: string;
 };
-
-export type AgentListItem = {
-  id: string;
-  name: string;
-  avatar: t.Agent['avatar'];
-};
-
-export type TPluginMap = Record<string, t.TPlugin>;
 
 export type GenericSetter<T> = (value: T | ((currentValue: T) => T)) => void;
 
@@ -96,13 +65,6 @@ export type ChatFormValues = { text: string };
 export const mainTextareaId = 'prompt-textarea';
 export const globalAudioId = 'global-audio';
 
-export enum IconContext {
-  landing = 'landing',
-  menuItem = 'menu-item',
-  nav = 'nav',
-  message = 'message',
-}
-
 export type NavLink = {
   title: TranslationKeys;
   label?: string;
@@ -113,14 +75,6 @@ export type NavLink = {
   disabled?: boolean;
   id: string;
 };
-
-export interface DataColumnMeta {
-  meta:
-    | {
-        size: number | string;
-      }
-    | undefined;
-}
 
 export enum Panel {
   advanced = 'advanced',
@@ -233,8 +187,6 @@ export type AgentModelPanelProps = {
   setActivePanel: React.Dispatch<React.SetStateAction<Panel>>;
 };
 
-export type AugmentedColumnDef<TData, TValue> = ColumnDef<TData, TValue> & DataColumnMeta;
-
 export type TSetOption = t.TSetOption;
 
 export type TSetExample = (
@@ -242,8 +194,6 @@ export type TSetExample = (
   type: string,
   newValue: number | string | boolean | null,
 ) => void;
-
-export type OnInputNumberChange = InputNumberPrimitive.InputNumberProps['onChange'];
 
 export const defaultDebouncedDelay = 450;
 
@@ -302,14 +252,6 @@ export type TSetOptionsPayload = {
   addExample: () => void;
   removeExample: () => void;
   setOptions?: TSetOptions;
-};
-
-export type TPresetItemProps = {
-  preset: t.TPreset;
-  value: t.TPreset;
-  onSelect: (preset: t.TPreset) => void;
-  onChangePreset: (preset: t.TPreset) => void;
-  onDeletePreset: (preset: t.TPreset) => void;
 };
 
 export type TOnClick = (e: React.MouseEvent<HTMLButtonElement>) => void;
@@ -469,22 +411,6 @@ export type TConfigProps = {
   endpoint: t.EModelEndpoint | string;
 };
 
-export type TDangerButtonProps = {
-  id: string;
-  confirmClear: boolean;
-  className?: string;
-  disabled?: boolean;
-  showText?: boolean;
-  mutation?: UseMutationResult<unknown>;
-  onClick: () => void;
-  infoTextCode: TranslationKeys;
-  actionTextCode: TranslationKeys;
-  dataTestIdInitial: string;
-  dataTestIdConfirm: string;
-  infoDescriptionCode?: TranslationKeys;
-  confirmActionTextCode?: TranslationKeys;
-};
-
 export type TDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -582,46 +508,10 @@ export type PromptOption = MentionOption & {
   id: string;
 };
 
-export type TOptionSettings = {
-  showExamples?: boolean;
-  isCodeChat?: boolean;
-};
+export type TOptionSettings = PaneOptionSettings;
 
-export interface ExtendedFile {
-  file?: File;
-  file_id: string;
-  temp_file_id?: string;
-  type?: string;
-  filepath?: string;
-  filename?: string;
-  width?: number;
-  height?: number;
-  size: number;
-  preview?: string;
-  progress: number;
-  source?: FileSources;
-  attached?: boolean;
-  embedded?: boolean;
-  llmDeliveryPath?: t.TFile['llmDeliveryPath'];
-  tool_resource?: string;
-  metadata?: t.TFile['metadata'];
-}
+export type { ExtendedFile };
 
-export interface ModelItemProps {
-  modelName: string;
-  endpoint: EModelEndpoint;
-  isSelected: boolean;
-  onSelect: () => void;
-  onNavigateBack: () => void;
-  icon?: JSX.Element;
-  className?: string;
-}
-
-export interface SwitcherProps {
-  endpoint?: t.EModelEndpoint | null;
-  endpointKeyProvided: boolean;
-  isCollapsed: boolean;
-}
 export type TLoginLayoutContext = {
   startupConfig: t.TStartupConfig | null;
   startupConfigError: unknown;
@@ -663,26 +553,11 @@ export type TFinalResData = Omit<TBaseResData, 'conversation'> & {
   responseMessage?: t.TMessage;
 };
 
-export type TVectorStore = {
-  _id: string;
-  object: 'vector_store';
-  created_at: string | Date;
-  name: string;
-  bytes?: number;
-  file_counts?: {
-    in_progress: number;
-    completed: number;
-    failed: number;
-    cancelled: number;
-    total: number;
-  };
-};
-
-export type TThread = { id: string; createdAt: string };
-
 declare global {
   interface Window {
     google_tag_manager?: unknown;
+    /** Google Tag Manager's command queue, present once the container has loaded. */
+    dataLayer?: unknown[];
     /** Answers the server emits with the document, ahead of the app's own
      *  scripts, for questions the first render must not guess at. */
     __LIBRECHAT_CONFIG__?: {
@@ -690,6 +565,9 @@ declare global {
       /** Whether this deployment configured footer content of its own, so the
        *  composer reserves the footer bar's band on its first frame. */
       hasConfiguredFooter?: boolean;
+      /** The deployment's `interface.landingFooter`, so the welcome screen does
+       *  not paint a footer the config is about to remove. */
+      landingFooter?: boolean;
     };
   }
 }

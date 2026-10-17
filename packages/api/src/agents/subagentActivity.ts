@@ -682,11 +682,3 @@ export function createSubagentActivityStreamHandler(
     }
   };
 }
-
-export const SUBAGENT_ACTIVITY_STREAM_LIMITS: Readonly<{
-  eventBytes: number;
-  labelBytes: number;
-}> = Object.freeze({
-  eventBytes: MAX_EVENT_BYTES,
-  labelBytes: MAX_LABEL_BYTES,
-});

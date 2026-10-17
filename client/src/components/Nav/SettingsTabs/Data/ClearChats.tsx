@@ -36,7 +36,7 @@ export const ClearChats = () => {
         <OGDialogTrigger asChild>
           <Button
             aria-labelledby="clear-all-chats-label"
-            variant="destructive"
+            variant="destructive-soft"
             onClick={() => setOpen(true)}
           >
             {localize('com_ui_delete')}

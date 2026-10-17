@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
-import { useSetRecoilState } from 'recoil';
+import { useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
+import { submissionByIndex } from '@librechat/chat/react';
 import { useQueryClient, isCancelledError } from '@tanstack/react-query';
 import {
   QueryKeys,
@@ -95,7 +96,7 @@ const useNavigateToConvo = (index = 0) => {
   const queryClient = useQueryClient();
   const clearAllConversations = store.useClearConvoState();
   const applyModelSpecEffects = useApplyModelSpecEffects();
-  const setSubmission = useSetRecoilState(store.submissionByIndex(index));
+  const setSubmission = useSetAtom(submissionByIndex(index));
   const { hasSetConversation, setConversation: setConvo } = store.useSetConversationAtom(index);
 
   const setConversation = useCallback(

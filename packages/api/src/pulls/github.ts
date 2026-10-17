@@ -4,25 +4,36 @@ import type {
   PullRequestState,
   TConversationPullRequest,
 } from 'librechat-data-provider';
+import type { PullRequestFetch } from './shared';
 import type { PullRequestSource } from './types';
+import {
+  isCount,
+  isRecord,
+  COMMIT_ID,
+  isPageUrl,
+  retryAfterMs,
+  isPathSegment,
+  MAX_TITLE_LENGTH,
+  DEFAULT_LOOKUP_TIMEOUT_MS,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  DEFAULT_MAX_CANDIDATE_PAGES,
+  DEFAULT_MAX_HEAD_COMPARISONS,
+  DEFAULT_MAX_CANDIDATE_PULL_REQUESTS,
+} from './shared';
+import { isAllowedRepository } from './repository';
 import { PullRequestSourceError } from './types';
 
-const GITHUB_API_BASE = 'https://api.github.com';
-/** Defaults for the operator bounds in `endpoints.agents.pullRequests`. */
-const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
-const DEFAULT_LOOKUP_TIMEOUT_MS = 30_000;
+export type { PullRequestFetch } from './shared';
+
+export const DEFAULT_GITHUB_HOST = 'github.com';
 const DEFAULT_MAX_CHECK_RUN_PAGES = 10;
 const CHECK_RUN_PAGE_SIZE = 100;
-const DEFAULT_MAX_CANDIDATE_PULL_REQUESTS = 10;
-const DEFAULT_MAX_HEAD_COMPARISONS = 3;
 /**
  * Comparing `recorded...candidate`: `ahead` means the candidate builds on the recorded commit and
  * `identical` that it is the recorded commit. `behind` means the candidate does not contain it
  * (the recorded commit is newer), and `diverged` that the histories split, so neither matches.
  */
 const CONTAINS_RECORDED_STATUSES = new Set(['ahead', 'identical']);
-const COMMIT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-const MAX_TITLE_LENGTH = 256;
 const REPO_PATTERN = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
 const FAILING_CONCLUSIONS = new Set([
   'failure',
@@ -32,9 +43,6 @@ const FAILING_CONCLUSIONS = new Set([
   'startup_failure',
   'stale',
 ]);
-
-/** The only part of `fetch` this module calls, so any compatible client can be injected. */
-export type PullRequestFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 type GitHubPull = {
   number: number;
@@ -48,33 +56,30 @@ type GitHubPull = {
   mergeable: boolean | null;
   /** The head this detail describes; the check runs are read for this same commit. */
   headSha: string;
+  /** The repository that head lives in; a fork's checks run there, not in the base repository. */
+  headRepo?: string;
+  /** The branch the pull request merges from, in whichever repository it lives; null if unsaid. */
+  headRef: string | null;
 };
 
 type GitHubCheckRun = { status: string; conclusion: string | null };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value != null && typeof value === 'object' && !Array.isArray(value);
-
-const isCount = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-
-/** The URL ends up in an href, so only a plain https github.com page is accepted. */
-function isGitHubPageUrl(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && url.hostname === 'github.com';
-  } catch {
-    return false;
-  }
+/**
+ * The REST API of a GitHub host: `api.github.com` for github.com, `api.<host>` for a data residency
+ * tenant on `ghe.com`, and `/api/v3` on the host itself for GitHub Enterprise Server.
+ */
+export function gitHubApiBase(host: string): string {
+  if (host === DEFAULT_GITHUB_HOST) return 'https://api.github.com';
+  if (host.endsWith('.ghe.com')) return `https://api.${host}`;
+  return `https://${host}/api/v3`;
 }
 
-function parsePull(value: unknown): GitHubPull {
+function parsePull(value: unknown, host: string): GitHubPull {
   if (
     !isRecord(value) ||
     !isCount(value.number) ||
     typeof value.title !== 'string' ||
-    !isGitHubPageUrl(value.html_url) ||
+    !isPageUrl(value.html_url, host) ||
     (value.state !== 'open' && value.state !== 'closed') ||
     typeof value.merged !== 'boolean' ||
     typeof value.draft !== 'boolean' ||
@@ -87,6 +92,10 @@ function parsePull(value: unknown): GitHubPull {
   ) {
     throw new PullRequestSourceError('UPSTREAM_ERROR');
   }
+  const headRepo =
+    isRecord(value.head.repo) && typeof value.head.repo.full_name === 'string'
+      ? value.head.repo.full_name
+      : undefined;
   return {
     number: value.number,
     title: value.title,
@@ -98,6 +107,8 @@ function parsePull(value: unknown): GitHubPull {
     deletions: value.deletions,
     mergeable: value.mergeable,
     headSha: value.head.sha,
+    ...(headRepo ? { headRepo } : {}),
+    headRef: typeof value.head.ref === 'string' ? value.head.ref : null,
   };
 }
 
@@ -170,6 +181,7 @@ export function toConversationPullRequest(
     number: pull.number,
     title: pull.title.slice(0, MAX_TITLE_LENGTH),
     url: pull.url,
+    provider: 'github',
     additions: pull.additions,
     deletions: pull.deletions,
     state: summarizeState(pull),
@@ -198,7 +210,7 @@ function isRateLimited(response: Response): boolean {
  * message. The body is read bounded and only matched, never stored or returned.
  */
 async function isSecondaryLimit(response: Response): Promise<boolean> {
-  if (response.status !== 403) return false;
+  if (response.status !== 403 && response.status !== 429) return false;
   try {
     const text = (await response.text()).slice(0, MAX_ERROR_BODY_CHARS);
     return SECONDARY_LIMIT_MESSAGE.test(text);
@@ -207,44 +219,29 @@ async function isSecondaryLimit(response: Response): Promise<boolean> {
   }
 }
 
-/** How long GitHub asked callers to wait: `retry-after` seconds, else the quota reset time. */
-function retryAfterMs(response: Response): number | undefined {
-  const retryAfter = Number(response.headers.get('retry-after'));
-  if (response.headers.get('retry-after') != null && Number.isFinite(retryAfter)) {
-    return Math.max(0, retryAfter * 1000);
-  }
-  const reset = Number(response.headers.get('x-ratelimit-reset'));
-  if (response.headers.get('x-ratelimit-reset') != null && Number.isFinite(reset)) {
-    return Math.max(0, reset * 1000 - Date.now());
-  }
-  return undefined;
-}
-
 /**
  * Reads pull requests through GitHub's REST API with a token the caller supplies. Only the
  * decision (absent, rate limited, failed) leaves this module; response bodies and error text
  * never do.
  */
-/** `.` and `..` match the character class but would rewrite the API path. */
-const isPathSegment = (value: string): boolean => value !== '.' && value !== '..';
-
 export function createGitHubPullRequestSource({
   fetchFn,
-  apiBase = GITHUB_API_BASE,
 }: {
   /** The deployment's HTTP client, so proxying and instrumentation are decided by the caller. */
   fetchFn: PullRequestFetch;
-  apiBase?: string;
 }): PullRequestSource {
   /** One lookup's credential and deadlines, shared by every request it makes. */
   type Lookup = {
     token: string;
+    /** The host's REST API root; every request of the lookup goes there and nowhere else. */
+    apiBase: string;
     requestTimeoutMs: number;
     /** Aborts when the whole lookup runs out of time. */
     deadline: AbortSignal;
     maxCheckRunPages: number;
     maxCandidatePullRequests: number;
     maxHeadComparisons: number;
+    maxCandidatePages: number;
   };
 
   async function getJson(
@@ -252,10 +249,12 @@ export function createGitHubPullRequestSource({
     lookup: Lookup,
     /** Statuses that mean "nothing there" for this request, besides 404. */
     absent: readonly number[] = [],
+    /** Whether a 404 means "nothing there". Check runs for a commit that was just read are not. */
+    notFoundIsAbsent = true,
   ): Promise<unknown | null> {
     let response: Response;
     try {
-      response = await fetchFn(`${apiBase}${pathname}`, {
+      response = await fetchFn(`${lookup.apiBase}${pathname}`, {
         headers: {
           Accept: 'application/vnd.github+json',
           Authorization: `Bearer ${lookup.token}`,
@@ -275,13 +274,21 @@ export function createGitHubPullRequestSource({
       }
     }
     if (isRateLimited(response)) {
-      throw new PullRequestSourceError('RATE_LIMITED', retryAfterMs(response));
+      const hinted = retryAfterMs(response, 'x-ratelimit-reset');
+      /** A 429 that names no wait may still be a secondary limit, told apart by its message. */
+      const wait =
+        hinted == null && (await isSecondaryLimit(response)) ? SECONDARY_LIMIT_WAIT_MS : hinted;
+      throw new PullRequestSourceError('RATE_LIMITED', wait);
     }
     if (await isSecondaryLimit(response)) {
       throw new PullRequestSourceError('RATE_LIMITED', SECONDARY_LIMIT_WAIT_MS);
     }
     /** A repository the token cannot see is indistinguishable from one without pull requests. */
-    if (response.status === 404 || absent.includes(response.status)) return null;
+    if ((notFoundIsAbsent && response.status === 404) || absent.includes(response.status)) {
+      return null;
+    }
+    /** The provider no longer accepts the token: revoked, or expired without a refresh. */
+    if (response.status === 401) throw new PullRequestSourceError('CREDENTIAL_REJECTED');
     throw new PullRequestSourceError('UPSTREAM_ERROR');
   }
 
@@ -292,11 +299,14 @@ export function createGitHubPullRequestSource({
   ): Promise<{ runs: GitHubCheckRun[]; incomplete: boolean }> {
     const runs: GitHubCheckRun[] = [];
     for (let page = 1; page <= lookup.maxCheckRunPages; page++) {
+      /** The head was read a moment ago, so a 404 here is a head that vanished, not no checks. */
       const body = await getJson(
         `${pathname}?per_page=${CHECK_RUN_PAGE_SIZE}&page=${page}`,
         lookup,
+        [],
+        false,
       );
-      if (body == null) return { runs, incomplete: false };
+      if (body == null) throw new PullRequestSourceError('UPSTREAM_ERROR');
       const parsed = parseCheckRuns(body);
       runs.push(...parsed.runs);
       const done =
@@ -309,26 +319,64 @@ export function createGitHubPullRequestSource({
   }
 
   return {
-    async find({ repo, branch, head: recordedHead, token, limits }) {
+    async find({
+      repo,
+      branch,
+      head: recordedHead,
+      pullRequest,
+      host = DEFAULT_GITHUB_HOST,
+      token,
+      limits,
+      allowedRepositories,
+    }) {
+      /**
+       * A lane with a branch and no commit yet has nothing to match a pull request against, and
+       * every candidate would be accepted, including an earlier incarnation of a reused branch
+       * name. `undefined` is a caller that never recorded a head, which keeps matching by branch.
+       */
+      if (recordedHead === null) return null;
       const lookup: Lookup = {
         token,
+        apiBase: gitHubApiBase(host),
         requestTimeoutMs: limits?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
         deadline: AbortSignal.timeout(limits?.lookupTimeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS),
         maxCheckRunPages: limits?.maxCheckRunPages ?? DEFAULT_MAX_CHECK_RUN_PAGES,
         maxCandidatePullRequests:
           limits?.maxCandidatePullRequests ?? DEFAULT_MAX_CANDIDATE_PULL_REQUESTS,
         maxHeadComparisons: limits?.maxHeadComparisons ?? DEFAULT_MAX_HEAD_COMPARISONS,
+        maxCandidatePages: limits?.maxCandidatePages ?? DEFAULT_MAX_CANDIDATE_PAGES,
       };
       const match = REPO_PATTERN.exec(repo);
       if (match == null || branch.length === 0) return null;
       const [, owner, name] = match;
       if (!isPathSegment(owner) || !isPathSegment(name)) return null;
       const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+      /**
+       * A fork's checks run in the fork. Its repository is read only when an administrator named
+       * it, so the server's token is never used against a repository nobody authorized.
+       */
+      const checksBaseOf = (pull: GitHubPull): string => {
+        const headRepo = pull.headRepo;
+        if (headRepo == null || headRepo.toLowerCase() === `${owner}/${name}`.toLowerCase()) {
+          return base;
+        }
+        const parts = REPO_PATTERN.exec(headRepo);
+        if (parts == null || !isPathSegment(parts[1]) || !isPathSegment(parts[2])) return base;
+        if (!isAllowedRepository(headRepo, allowedRepositories)) return base;
+        return `/repos/${encodeURIComponent(parts[1])}/${encodeURIComponent(parts[2])}`;
+      };
+      const report = async (pull: GitHubPull): Promise<TConversationPullRequest> => {
+        const checks = await readCheckRuns(
+          `${checksBaseOf(pull)}/commits/${pull.headSha}/check-runs`,
+          lookup,
+        );
+        return toConversationPullRequest(pull, checks.runs, checks.incomplete);
+      };
       const headFilter = encodeURIComponent(`${owner}:${branch}`);
       /** `undefined`: the repository is not visible. An empty list: it is, and nothing matched. */
-      const listPulls = async (state: 'open' | 'closed', perPage: number) => {
+      const listPulls = async (state: 'open' | 'closed', perPage: number, page = 1) => {
         const listed = await getJson(
-          `${base}/pulls?state=${state}&sort=updated&direction=desc&per_page=${perPage}&head=${headFilter}`,
+          `${base}/pulls?state=${state}&sort=updated&direction=desc&per_page=${perPage}&page=${page}&head=${headFilter}`,
           lookup,
         );
         if (listed == null) return undefined;
@@ -363,15 +411,54 @@ export function createGitHubPullRequestSource({
         }
         return null;
       };
+      /**
+       * Reads pages of one state until a short page, the configured page budget, or (without a
+       * recorded commit, where only the newest matters) the first page. `undefined` is a
+       * repository the token cannot see.
+       */
+      const listAll = async (state: 'open' | 'closed'): Promise<ListItem[] | undefined> => {
+        const perPage =
+          state === 'closed' && recorded == null ? 1 : lookup.maxCandidatePullRequests;
+        const pages = state === 'closed' && recorded == null ? 1 : lookup.maxCandidatePages;
+        const all: ListItem[] = [];
+        for (let page = 1; page <= pages; page++) {
+          const items = await listPulls(state, perPage, page);
+          if (items === undefined) return page === 1 ? undefined : all;
+          all.push(...items);
+          if (items.length < perPage) break;
+        }
+        return all;
+      };
+      /**
+       * A pull request the conversation's own output linked to is read directly, so a lane with
+       * commits not pushed yet still shows it. Its head must be the lane's branch in the lane's
+       * repository. A branch name alone proves nothing for a fork (anyone can open `patch-1`), so
+       * a fork's pull request counts only when it carries the recorded commit, as in the search.
+       */
+      if (pullRequest != null && Number.isSafeInteger(pullRequest) && pullRequest > 0) {
+        const linked = await getJson(`${base}/pulls/${pullRequest}`, lookup);
+        if (linked != null) {
+          const pull = parsePull(linked, host);
+          const sameRepository = pull.headRepo?.toLowerCase() === repo.toLowerCase();
+          if (
+            pull.headRef === branch &&
+            (sameRepository || (recorded != null && (await contains(pull.headSha))))
+          ) {
+            return report(pull);
+          }
+        }
+      }
       /** Open first on its own, so closed history on a reused branch name cannot hide it. */
-      const open = await listPulls('open', lookup.maxCandidatePullRequests);
+      const open = await listAll('open');
       if (open === undefined) return null;
       /**
        * The head filter names the repository's own owner, so a pull request from a fork is not in
        * these lists. The recorded commit finds it instead: GitHub lists the pull requests that
        * carry a commit whatever fork they come from, and the branch name narrows them.
        */
-      const forkCandidates = async (): Promise<ListItem[]> => {
+      let forks: Promise<ListItem[]> | undefined;
+      const forkCandidates = (): Promise<ListItem[]> => (forks ??= findForkCandidates());
+      const findForkCandidates = async (): Promise<ListItem[]> => {
         if (recorded == null) return [];
         const found = await getJson(
           `${base}/commits/${recorded}/pulls?per_page=${lookup.maxCandidatePullRequests}`,
@@ -382,15 +469,17 @@ export function createGitHubPullRequestSource({
         if (!Array.isArray(found)) throw new PullRequestSourceError('UPSTREAM_ERROR');
         return found
           .filter((item) => isRecord(item) && isRecord(item.head) && item.head.ref === branch)
-          .map(parseListItem)
-          .sort((a, b) => Number(a.state !== 'open') - Number(b.state !== 'open'));
+          .map(parseListItem);
       };
+      /**
+       * Open pull requests win over closed ones whichever repository they come from, so a closed
+       * pull request in the base repository cannot hide an open one from a fork.
+       */
       const chosen =
         (await choose(open)) ??
-        (await choose(
-          (await listPulls('closed', recorded == null ? 1 : lookup.maxCandidatePullRequests)) ?? [],
-        )) ??
-        (await choose(await forkCandidates()));
+        (await choose((await forkCandidates()).filter((item) => item.state === 'open'))) ??
+        (await choose((await listAll('closed')) ?? [])) ??
+        (await choose((await forkCandidates()).filter((item) => item.state !== 'open')));
       if (chosen == null) return null;
 
       /**
@@ -400,11 +489,10 @@ export function createGitHubPullRequestSource({
        */
       const detail = await getJson(`${base}/pulls/${chosen.number}`, lookup);
       if (detail == null) return null;
-      const pull = parsePull(detail);
+      const pull = parsePull(detail, host);
       /** A push between the list and the detail can move the head off the recorded commit. */
       if (pull.headSha !== chosen.sha && !(await contains(pull.headSha))) return null;
-      const checks = await readCheckRuns(`${base}/commits/${pull.headSha}/check-runs`, lookup);
-      return toConversationPullRequest(pull, checks.runs, checks.incomplete);
+      return report(pull);
     },
   };
 }

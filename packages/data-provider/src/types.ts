@@ -360,13 +360,6 @@ export type TUpdateUserPreferencesResponse = {
   preferences: TUpdateUserPreferencesRequest;
 };
 
-export type TGetConversationsResponse = {
-  conversations: TConversation[];
-  pageNumber: string;
-  pageSize: string | number;
-  pages: string | number;
-};
-
 export type TUpdateMessageRequest = {
   conversationId: string;
   messageId: string;
@@ -593,6 +586,8 @@ export type TForkConvoRequest = {
   option?: string;
   splitAtTarget?: boolean;
   latestMessageId?: string;
+  /** Copy without uploads or code outputs, and without the conversation's file list. */
+  excludeFiles?: boolean;
 };
 
 export type TForkConvoResponse = {
@@ -610,15 +605,6 @@ export type TForkSharedConvoRequest = {
    *  owner update, so the server rejects a fork whose payload has since moved
    *  instead of resolving the index against different messages. */
   shareRevision?: string;
-};
-
-export type TSearchResults = {
-  conversations: TConversation[];
-  messages: TMessage[];
-  pageNumber: string;
-  pageSize: string | number;
-  pages: string | number;
-  filter: object;
 };
 
 export type TPublicCodeEnvironment = {
@@ -751,6 +737,10 @@ export type TConfig = {
     includeReasoningContent?: boolean;
     includeReasoningHistory?: boolean;
     paramDefinitions?: Partial<SettingDefinition>[];
+    reasoningCatalogTimeoutMs?: number;
+    reasoningCatalogMaxPages?: number;
+    reasoningCatalogFailureTtlMs?: number;
+    reasoningCatalogTtlMs?: number;
   };
 };
 
@@ -769,18 +759,35 @@ export type TModelTokenomics = {
   cacheRead?: number;
 };
 
-/** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */
-export type TTokenConfigMap = Record<string, Record<string, TModelTokenomics>>;
-
-export type TUpdateTokenCountResponse = {
-  count: number;
+/**
+ * The reasoning efforts one model accepts, as the provider reports them
+ * (OpenRouter's per-model `reasoning.supported_efforts` and `reasoning.mandatory`).
+ */
+export type TModelReasoning = {
+  efforts: string[];
+  /** Reasoning cannot be turned off, so `none` is not a valid choice. */
+  mandatory?: boolean;
 };
 
-export type TMessageTreeNode = object;
+/**
+ * endpoint → model → reasoning efforts, from GET /api/endpoints/reasoning-capabilities. A model
+ * with an empty `efforts` list is listed by the provider and exposes no effort selection; a
+ * model absent from the map is unknown.
+ */
+export type TReasoningCapabilityMap = Record<string, Record<string, TModelReasoning>>;
 
-export type TSearchMessage = object;
+/**
+ * What the capabilities route returns: the efforts, and how long the server will keep the catalog
+ * they came from. The client revalidates when that time has passed, so it never holds a list longer
+ * than the server does, however old the server's entry was when it was fetched.
+ */
+export type TReasoningCapabilitiesResponse = {
+  capabilities: TReasoningCapabilityMap;
+  expiresInMs: number;
+};
 
-export type TSearchMessageTreeNode = object;
+/** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */
+export type TTokenConfigMap = Record<string, Record<string, TModelTokenomics>>;
 
 export type TRegisterUserResponse = {
   message: string;

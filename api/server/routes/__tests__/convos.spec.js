@@ -367,6 +367,30 @@ describe('Convos Routes', () => {
       );
     });
 
+    it('forwards excludeFiles only when it is exactly true', async () => {
+      forkConversation.mockResolvedValue({ conversation: { conversationId: 'forked-convo' } });
+
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: true,
+      });
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: 'true',
+      });
+
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ excludeFiles: true }),
+      );
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ excludeFiles: false }),
+      );
+    });
+
     it('returns a raw-free 400 when cloned content is blocked', async () => {
       const error = Object.assign(new Error('PRIVATE-SENTINEL'), {
         code: 'content_filter_block',

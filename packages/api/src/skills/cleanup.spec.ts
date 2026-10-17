@@ -30,6 +30,34 @@ describe('mergeDeleteSkillResults', () => {
       failedCleanupSteps: ['permissions'],
     });
   });
+
+  it('does not lose a pending upload intent when a retry cannot confirm Skill absence', () => {
+    expect(
+      mergeDeleteSkillResults(incomplete('upload_intents'), {
+        deleted: false,
+        skillAbsent: false,
+        cleanupComplete: false,
+        failedCleanupSteps: [],
+      }),
+    ).toEqual({
+      deleted: true,
+      skillAbsent: true,
+      cleanupComplete: false,
+      failedCleanupSteps: ['upload_intents'],
+    });
+  });
+
+  it('does not treat a late upload intent as settled by an earlier clean pass', () => {
+    expect(
+      mergeDeleteSkillResults(
+        { deleted: true, skillAbsent: true, cleanupComplete: true, failedCleanupSteps: [] },
+        incomplete('upload_intents'),
+      ),
+    ).toMatchObject({
+      cleanupComplete: false,
+      failedCleanupSteps: ['upload_intents'],
+    });
+  });
 });
 
 describe('deleteSkillWithRetry', () => {

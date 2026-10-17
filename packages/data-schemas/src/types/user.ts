@@ -5,7 +5,6 @@ import type {
   StatefulCodeEnvironment,
 } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
-import { CursorPaginationParams } from '~/common';
 
 export interface IUser extends Document {
   _id: Types.ObjectId;
@@ -66,6 +65,8 @@ export interface IUser extends Document {
   expiresAt?: Date;
   termsAccepted?: boolean;
   termsAcceptedAt?: Date | null;
+  /** Present only when termsAcceptedAt was backfilled by config/migrate-terms-timestamp.js. */
+  termsAcceptedSource?: 'migration';
   /** Internal fence that prevents agent-trigger admission during account deletion. */
   agentTriggerDeletionStartedAt?: Date;
   /** Expiring fences closing subagent admission while bulk deletions drain. */
@@ -88,6 +89,10 @@ export interface IUser extends Document {
   /** Field for external source identification (for consistency with TPrincipal schema) */
   idOnTheSource?: string;
   tenantId?: string;
+  /** Derived search tokens (see `~/utils/search`); `select: false`. */
+  nameTokens?: string[];
+  emailTokens?: string[];
+  usernameTokens?: string[];
   federatedTokens?: OIDCTokens;
   openidTokens?: OIDCTokens;
 }
@@ -155,52 +160,7 @@ export type CreateUserIfAbsentResult =
   | { ok: true; value: UserRecord }
   | { ok: false; error: { code: 'user_exists' } };
 
-export interface UpdateUserRequest {
-  name?: string;
-  username?: string;
-  email?: string;
-  role?: string;
-  emailVerified?: boolean;
-  avatar?: string;
-  plugins?: string[];
-  twoFactorEnabled?: boolean;
-  termsAccepted?: boolean;
-  termsAcceptedAt?: Date | null;
-  personalization?: {
-    memories?: boolean;
-    statefulCodeEnvironment?: StatefulCodeEnvironment;
-  };
-  skillStates?: Record<string, boolean>;
-}
-
 export interface UserDeleteResult {
   deletedCount: number;
   message: string;
-}
-
-export interface UserFilterOptions extends CursorPaginationParams {
-  _id?: Types.ObjectId | string;
-  // Includes email, username and name
-  search?: string;
-  role?: string;
-  emailVerified?: boolean;
-  provider?: string;
-  twoFactorEnabled?: boolean;
-  // External IDs
-  googleId?: string;
-  facebookId?: string;
-  openidId?: string;
-  samlId?: string;
-  ldapId?: string;
-  githubId?: string;
-  discordId?: string;
-  appleId?: string;
-  // Date filters
-  createdAfter?: string;
-  createdBefore?: string;
-}
-
-export interface UserQueryOptions {
-  fieldsToSelect?: string | string[] | null;
-  lean?: boolean;
 }

@@ -1,7 +1,7 @@
 import React, { useMemo, useEffect, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
+import { useSetRecoilState } from 'recoil';
 import { MCPIcon } from '@librechat/client';
-import { useRecoilValue, useSetRecoilState } from 'recoil';
 import {
   Brain,
   Globe,
@@ -38,11 +38,12 @@ import {
 } from '~/hooks';
 import { imageOptionChips } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptionChips';
 import { imageChoicesAtom } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptions';
+import { pendingManualSkillsByConvoId } from '~/components/Chat/Input/Composer/state';
 import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtils';
 import { filterSkillsForPopover } from '~/components/Chat/Input/SkillsCommand';
 import { useSkillsInfiniteQuery, useGetStartupConfig } from '~/data-provider';
 import { useAgentsMapContext, useBadgeRowContext } from '~/Providers';
-import store, { ephemeralAgentByConvoId } from '~/store';
+import { ephemeralAgentByConvoId } from '~/store';
 import { favoriteKey } from './useToolFavorites';
 import useLocalize from '~/hooks/useLocalize';
 
@@ -186,9 +187,8 @@ export default function usePaletteEntries({
   const agentsMap = useAgentsMapContext();
   const { isActive } = useSkillActiveState();
   const setEphemeralAgent = useSetRecoilState(ephemeralAgentByConvoId(conversationId));
-  const pendingManualSkills = useRecoilValue(store.pendingManualSkillsByConvoId(conversationId));
-  const setPendingManualSkills = useSetRecoilState(
-    store.pendingManualSkillsByConvoId(conversationId),
+  const [pendingManualSkills, setPendingManualSkills] = useAtom(
+    pendingManualSkillsByConvoId(conversationId),
   );
 
   const {

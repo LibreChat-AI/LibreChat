@@ -1,16 +1,14 @@
 import { useCallback } from 'react';
-import { useSetAtom } from 'jotai';
-import { useToastContext } from '@librechat/client';
-import { useRecoilValue, useRecoilCallback } from 'recoil';
+import { useSteerHost } from '@librechat/chat/react';
+import { useSetAtom, useAtomValue, useStore } from 'jotai';
+import { supportsGenerationProtocolV2 } from '@librechat/chat';
 import { DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS } from 'librechat-data-provider';
 import {
-  supportsGenerationProtocolV2,
-  useArmSteerMutation,
-  useGetStartupConfig,
-} from '~/data-provider';
-import { escalatingSteerFamily } from '~/store/steer';
-import useLocalize from '~/hooks/useLocalize';
-import store from '~/store';
+  escalatingSteerFamily,
+  pendingSteersByConvoId,
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+} from '@librechat/chat/react';
 
 type ArmFailure = {
   name?: string;
@@ -47,34 +45,34 @@ export interface EscalateTarget {
  * `onArmed` lets a caller move focus off a control the success state removes.
  */
 export default function useSteerEscalate(conversationId: string) {
-  const localize = useLocalize();
-  const { showToast } = useToastContext();
-  const { mutateAsync: armSteer } = useArmSteerMutation();
-  const { data: startupConfig } = useGetStartupConfig();
+  const host = useSteerHost();
+  const localize = host.useLocalize();
+  const notify = host.useNotify();
+  const armSteer = host.useArmSteer();
+  const { steerArmConfirmationTimeoutMs } = host.useSettings();
   const armConfirmTimeoutMs =
-    startupConfig?.interface?.steerArmConfirmationTimeoutMs ??
-    DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS;
+    steerArmConfirmationTimeoutMs ?? DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS;
   const setEscalating = useSetAtom(escalatingSteerFamily(conversationId));
-  const activeGenerationCreatedAt = useRecoilValue(
-    store.activeGenerationCreatedAtByConvoId(conversationId),
+  const jotaiStore = useStore();
+  const activeGenerationCreatedAt = useAtomValue(
+    activeGenerationCreatedAtByConvoId(conversationId),
   );
-  const activeGenerationProtocolVersion = useRecoilValue(
-    store.activeGenerationProtocolVersionByConvoId(conversationId),
+  const activeGenerationProtocolVersion = useAtomValue(
+    activeGenerationProtocolVersionByConvoId(conversationId),
   );
 
   /** Relabels the chip in place once the server confirms the durable arm:
    *  same steerId, same position, only the `preempt` flag flips. */
-  const markSteerPreempt = useRecoilCallback(
-    ({ set }) =>
-      (steerId: string, revision: number) =>
-        set(store.pendingSteersByConvoId(conversationId), (prev) =>
-          prev.map((item) =>
-            item.steerId === steerId && revision >= (item.preemptRevision ?? 0)
-              ? { ...item, preempt: true, preemptRevision: revision }
-              : item,
-          ),
+  const markSteerPreempt = useCallback(
+    (steerId: string, revision: number) =>
+      jotaiStore.set(pendingSteersByConvoId(conversationId), (prev) =>
+        prev.map((item) =>
+          item.steerId === steerId && revision >= (item.preemptRevision ?? 0)
+            ? { ...item, preempt: true, preemptRevision: revision }
+            : item,
         ),
-    [conversationId],
+      ),
+    [conversationId, jotaiStore],
   );
 
   return useCallback(
@@ -124,7 +122,7 @@ export default function useSteerEscalate(conversationId: string) {
             return;
           }
           if (!responseSupportsNegotiatedProtocol) {
-            showToast({ message: localize('com_ui_steer_arm_unconfirmed'), status: 'warning' });
+            notify({ message: localize('com_ui_steer_arm_unconfirmed'), status: 'warning' });
             return;
           }
           /** Once a response was lost, a later `armed: false` cannot prove the
@@ -132,13 +130,13 @@ export default function useSteerEscalate(conversationId: string) {
            *  may have paused between attempts. Keep the chip event-driven and
            *  report the result as unknown instead of claiming a lost race. */
           if (firstResponseWasLost) {
-            showToast({ message: localize('com_ui_steer_arm_unconfirmed'), status: 'warning' });
+            notify({ message: localize('com_ui_steer_arm_unconfirmed'), status: 'warning' });
             return;
           }
           /* `armed: false` is deliberately ambiguous (injected, cancelled,
            * re-homed, or run over), so the message only says the escalation
            * lost, and the chip defers to the events for what happened. */
-          showToast({
+          notify({
             message: localize(
               response.code === 'PREEMPT_UNSUPPORTED'
                 ? 'com_ui_steer_preempt_unsupported'
@@ -148,10 +146,10 @@ export default function useSteerEscalate(conversationId: string) {
           });
         } catch (error) {
           if (isAmbiguousArmFailure(error)) {
-            showToast({ message: localize('com_ui_steer_arm_unconfirmed'), status: 'warning' });
+            notify({ message: localize('com_ui_steer_arm_unconfirmed'), status: 'warning' });
             return;
           }
-          showToast({
+          notify({
             message: localize(
               armFailureCode(error) === 'PREEMPT_UNSUPPORTED'
                 ? 'com_ui_steer_preempt_unsupported'
@@ -174,7 +172,7 @@ export default function useSteerEscalate(conversationId: string) {
       armConfirmTimeoutMs,
       setEscalating,
       markSteerPreempt,
-      showToast,
+      notify,
       localize,
     ],
   );

@@ -56,20 +56,72 @@ export const AUDIT_CATEGORIES = [
   'permission',
   'auth',
   'approval',
+  'role',
+  'group',
+  'user',
+  'acl',
+  'credential',
+  'audit',
 ] as const;
 export type AuditCategory = (typeof AUDIT_CATEGORIES)[number];
 
 /**
  * Single source of truth for the audit-action enum. Actions are namespaced
- * `<category>.<verb>` so the registry stays readable as it grows and every
- * action maps unambiguously to a category. The Mongoose schema enum and the
- * HTTP handler's whitelist both consume this constant so they cannot drift.
+ * `<resource>.<verb>` (past tense) so the registry stays readable as it grows;
+ * `AUDIT_ACTION_CATEGORY` maps each one to the coarse category used for SIEM
+ * routing and filtering. The Mongoose schema enum and the HTTP handler's
+ * whitelist both consume this constant so they cannot drift. Actions are only
+ * ever appended: stored entries keep their action forever.
+ *
+ * Actor conventions: admin API mutations record `{ type: 'user' }` with the
+ * caller; IdP-driven and startup syncs record `{ type: 'system' }`.
  */
 export const AUDIT_ACTIONS = [
   'grant.assigned',
   'grant.removed',
   'permission.insights_assigned',
   'permission.insights_removed',
+  /** Role lifecycle and membership; target `{ type: 'role', id: name, name }`. */
+  'role.created',
+  'role.updated',
+  'role.permissions_updated',
+  'role.deleted',
+  'role.member_added',
+  'role.member_removed',
+  /** Role permissions rewritten by the startup `librechat.yaml` interface sync. */
+  'role.synced',
+  /** Group lifecycle and membership; target `{ type: 'group', id, name }`. */
+  'group.created',
+  'group.updated',
+  'group.deleted',
+  'group.member_added',
+  'group.member_removed',
+  /** Per-principal config overrides; target `{ type: 'config', id: '<principalType>:<principalId>' }`. */
+  'config.created',
+  'config.updated',
+  'config.deleted',
+  'config.toggled',
+  /** Account lifecycle; `role_changed` covers IdP-driven role assignment. */
+  'user.deleted',
+  'user.role_changed',
+  /** Resource ACL (sharing) changes. */
+  'acl.granted',
+  'acl.revoked',
+  'acl.public_changed',
+  'mcp_server.created',
+  'mcp_server.updated',
+  'mcp_server.deleted',
+  'code_worker.paired',
+  'code_worker.revoked',
+  'langfuse.updated',
+  'skill_credential.set',
+  'skill_credential.deleted',
+  'passkey.registered',
+  'passkey.removed',
+  /** Reads of the audit log itself and retention purges. */
+  'audit.read',
+  'audit.exported',
+  'audit.purged',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -79,6 +131,40 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'grant.removed': 'grant',
   'permission.insights_assigned': 'permission',
   'permission.insights_removed': 'permission',
+  'role.created': 'role',
+  'role.updated': 'role',
+  'role.permissions_updated': 'role',
+  'role.deleted': 'role',
+  'role.member_added': 'role',
+  'role.member_removed': 'role',
+  'role.synced': 'role',
+  'group.created': 'group',
+  'group.updated': 'group',
+  'group.deleted': 'group',
+  'group.member_added': 'group',
+  'group.member_removed': 'group',
+  'config.created': 'config',
+  'config.updated': 'config',
+  'config.deleted': 'config',
+  'config.toggled': 'config',
+  'user.deleted': 'user',
+  'user.role_changed': 'user',
+  'acl.granted': 'acl',
+  'acl.revoked': 'acl',
+  'acl.public_changed': 'acl',
+  'mcp_server.created': 'mcp',
+  'mcp_server.updated': 'mcp',
+  'mcp_server.deleted': 'mcp',
+  'code_worker.paired': 'credential',
+  'code_worker.revoked': 'credential',
+  'langfuse.updated': 'config',
+  'skill_credential.set': 'credential',
+  'skill_credential.deleted': 'credential',
+  'passkey.registered': 'auth',
+  'passkey.removed': 'auth',
+  'audit.read': 'audit',
+  'audit.exported': 'audit',
+  'audit.purged': 'audit',
 };
 
 /** Result of the audited operation. Kept first-class instead of being encoded

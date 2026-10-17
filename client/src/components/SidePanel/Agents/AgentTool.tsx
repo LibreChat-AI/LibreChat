@@ -81,11 +81,8 @@ export default function AgentTool({
           <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full">
             {currentTool.icon ? (
               <div
-                className="bg-surface-tertiary flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-center bg-no-repeat"
-                style={{
-                  backgroundImage: `url(${currentTool.icon})`,
-                  backgroundSize: 'cover',
-                }}
+                className="bg-surface-tertiary flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-(image:--tool-icon) bg-cover bg-center bg-no-repeat"
+                style={{ '--tool-icon': `url(${currentTool.icon})` } as React.CSSProperties}
               />
             ) : (
               <div className="bg-surface-secondary text-text-secondary flex h-6 w-6 items-center justify-center rounded-md">
@@ -93,10 +90,7 @@ export default function AgentTool({
               </div>
             )}
           </div>
-          <div
-            className="grow px-2 py-1.5"
-            style={{ textOverflow: 'ellipsis', wordBreak: 'break-all', overflow: 'hidden' }}
-          >
+          <div className="grow overflow-hidden px-2 py-1.5 break-all text-ellipsis">
             {currentTool.name}
           </div>
         </div>
@@ -106,7 +100,7 @@ export default function AgentTool({
             variant="ghost"
             size="icon"
             className={cn(
-              'hover:bg-surface-hover h-7 w-7 rounded transition-all duration-200',
+              'h-7 w-7 rounded transition-all duration-200',
               'focus:opacity-100 focus-visible:opacity-100',
               isHovering || isFocused ? 'opacity-100' : 'pointer-events-none opacity-0',
             )}
@@ -131,7 +125,9 @@ export default function AgentTool({
               </p>
               {currentTool.description && (
                 <div className="flex items-start gap-2">
-                  <CircleHelpIcon className="text-text-secondary h-4 w-4 shrink-0" />
+                  <span className="text-text-secondary shrink-0">
+                    <CircleHelpIcon className="h-4 w-4" />
+                  </span>
                   <p className="text-sm">{currentTool.description}</p>
                 </div>
               )}

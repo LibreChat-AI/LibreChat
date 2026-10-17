@@ -473,11 +473,7 @@ export const subagentControlStateByTask = atomFamily<
 });
 
 /** Stable identity for one subagent invocation in the parent conversation. */
-export const subagentProgressKey = (
-  parentMessageId: string,
-  toolCallId: string,
-  partIndex: number,
-) => `${parentMessageId}\u0000${toolCallId}\u0000${partIndex}`;
+export { subagentProgressKey } from '@librechat/chat';
 
 /** Progress state keyed by one concrete tool-call content-part occurrence. */
 export const subagentProgressByToolCallId = atomFamily((_key: string) =>

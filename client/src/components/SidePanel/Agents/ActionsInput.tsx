@@ -261,12 +261,13 @@ export default function ActionsInput({
           />
         </div>
         <Textarea
+          variant="transparent"
           id="schemaInput"
           value={inputValue}
           onChange={handleInputChange}
           spellCheck="false"
           placeholder={localize('com_ui_enter_openapi_schema')}
-          className="border-border-light focus-visible:border-border-heavy block min-h-[12rem] w-full resize-y rounded-lg border bg-transparent p-3 font-mono text-xs leading-relaxed transition-colors focus-visible:ring-0"
+          className="focus-visible:border-border-heavy block min-h-[12rem] w-full resize-y p-3 font-mono text-xs leading-relaxed transition-colors focus-visible:ring-0"
         />
         {validationError && (
           <div className="text-text-destructive mt-1.5 text-xs">
@@ -312,14 +313,15 @@ export default function ActionsInput({
               {localize('com_ui_enter_openapi_schema')}
             </OGDialogDescription>
           </OGDialogHeader>
-          <div className="border-border-medium bg-surface-secondary focus-within:border-border-heavy flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
+          <div className="border-border-control bg-surface-secondary focus-within:border-border-heavy flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
             <Textarea
+              variant="transparent"
               value={inputValue}
               onChange={handleInputChange}
               spellCheck="false"
               placeholder={localize('com_ui_enter_openapi_schema')}
               aria-label={localize('com_ui_schema')}
-              className="min-h-0 flex-1 resize-none border-0 bg-transparent p-4 font-mono text-[13px] leading-relaxed focus-visible:ring-0"
+              className="min-h-0 flex-1 resize-none border-0 p-4 font-mono text-[13px] leading-relaxed focus-visible:ring-0"
             />
           </div>
           {validationError && (

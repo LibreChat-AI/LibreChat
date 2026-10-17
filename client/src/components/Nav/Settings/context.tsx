@@ -7,16 +7,18 @@ import {
   isTwoFactorPolicyProvider,
 } from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
+import { useGetStartupConfig, usePullRequestConnectionStatus } from '~/data-provider';
 import useProviderKeys from '../SettingsTabs/ProviderKeys/useProviderKeys';
 import { useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
 import usePersonalizationAccess from '~/hooks/usePersonalizationAccess';
-import { useGetStartupConfig } from '~/data-provider';
+import { hasAnalyticsGtmId } from '~/store/analytics';
 import store from '~/store';
 
 export function useSettingsContext(): SettingsContextValue {
   const { user } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
   const { agentsConfig } = useGetAgentsConfig();
+  const pullRequestConnection = usePullRequestConnectionStatus();
   const { hasAnyPersonalizationFeature, hasMemoryOptOut } = usePersonalizationAccess();
 
   const hasRemoteAgents = useHasAccess({
@@ -39,10 +41,16 @@ export function useSettingsContext(): SettingsContextValue {
   const emailEnabled = startupConfig?.emailEnabled === true;
   const allowEmailChange = startupConfig?.allowEmailChange === true;
   const passkeyLoginEnabled = startupConfig?.passkeyLoginEnabled === true;
+  /** Also while a stored grant outlives its app, so it can still be disconnected. */
+  const hasPullRequestConnect =
+    pullRequestConnection?.connected === true ||
+    (startupConfig?.pullRequestsConnect != null && pullRequestConnection?.configured !== false);
   const twoFactorPolicyProvider = user != null && isTwoFactorPolicyProvider(user.provider);
   const twoFactorEnabled = user?.twoFactorEnabled === true;
   const allowAccountDeletion = startupConfig?.allowAccountDeletion !== false;
   const aboutEnabled = startupConfig?.interface?.buildInfo !== false;
+  /* Offered only once the deployment has answered, so an operator's opt-out never flashes the row. */
+  const mascotAllowed = startupConfig != null && startupConfig.interface?.mascot !== false;
   /* Offered only once the deployment has answered, matching the capability hook the alerts
      read: before then a toggle could store a preference, or raise the browser's permission
      prompt, for a capability the operator turns off. */
@@ -53,6 +61,7 @@ export function useSettingsContext(): SettingsContextValue {
     replyConfigLoaded && replyNotificationsConfig?.desktop !== false;
   const replyNotificationSoundAllowed =
     replyConfigLoaded && replyNotificationsConfig?.sound !== false;
+  const analyticsConfigured = hasAnalyticsGtmId(startupConfig?.analyticsGtmId);
   const hasRemoteAgentsBool = hasRemoteAgents === true;
   const hasMultiConvoBool = hasMultiConvo === true;
   const hasPromptsBool = hasPrompts === true;
@@ -75,16 +84,19 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      hasPullRequestConnect,
       isTwoFactorPolicyProvider: twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
+      mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,
       replyNotificationSoundAllowed,
+      analyticsConfigured,
     }),
     [
       balanceEnabled,
@@ -99,16 +111,19 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      hasPullRequestConnect,
       twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
+      mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,
       replyNotificationSoundAllowed,
+      analyticsConfigured,
     ],
   );
 }

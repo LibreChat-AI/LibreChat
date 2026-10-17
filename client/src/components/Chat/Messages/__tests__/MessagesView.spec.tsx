@@ -54,7 +54,7 @@ jest.mock('~/components/Chat/Subagents/surface', () => ({
 jest.mock('~/store/autoScroll', () => ({ autoScrollAtom: {} }));
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: { isSubmittingFamily: () => ({}) },
+  default: {},
 }));
 
 jest.mock('../Thread', () => ({

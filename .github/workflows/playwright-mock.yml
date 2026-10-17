@@ -70,7 +70,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CHANGED: ${{ github.event.pull_request.changed_files }}
           E2E_SKIP_ARMED: ${{ vars.CODEGRAPH_E2E_SKIP }}
-          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6","email_change":"true"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
+          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
         run: |
           set +e
           note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
@@ -119,7 +119,7 @@ jobs:
             INCLUDE="$FULL_INCLUDE"
             note "| redis transport | run |"
           fi
-          if ! echo "$INCLUDE" | jq -e '.include | length >= 6' >/dev/null 2>&1; then
+          if ! echo "$INCLUDE" | jq -e '.include | length >= 10' >/dev/null 2>&1; then
             note "_matrix assembly failed; running FULL_"
             exit 0
           fi
@@ -178,8 +178,8 @@ jobs:
           (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
           fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
           ((github.event_name == 'pull_request' || inputs.coverage == 'pr') &&
-          fromJSON('{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6","email_change":"true"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
-          fromJSON('{"include":[{"name":"memory, shard 1/2","stream_store":"memory","redis_image":"","suite":"full","shard":"1/2","artifact":"memory-1-of-2","email_change":"true"},{"name":"memory, shard 2/2","stream_store":"memory","redis_image":"","suite":"full","shard":"2/2","artifact":"memory-2-of-2"},{"name":"redis, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/2","artifact":"redis-1-of-2"},{"name":"redis, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/2","artifact":"redis-2-of-2"}]}')
+          fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
+          fromJSON('{"include":[{"name":"memory, shard 1/10","stream_store":"memory","redis_image":"","suite":"full","shard":"1/10","artifact":"memory-1-of-10","email_change":"true"},{"name":"memory, shard 2/10","stream_store":"memory","redis_image":"","suite":"full","shard":"2/10","artifact":"memory-2-of-10"},{"name":"memory, shard 3/10","stream_store":"memory","redis_image":"","suite":"full","shard":"3/10","artifact":"memory-3-of-10"},{"name":"memory, shard 4/10","stream_store":"memory","redis_image":"","suite":"full","shard":"4/10","artifact":"memory-4-of-10"},{"name":"memory, shard 5/10","stream_store":"memory","redis_image":"","suite":"full","shard":"5/10","artifact":"memory-5-of-10"},{"name":"memory, shard 6/10","stream_store":"memory","redis_image":"","suite":"full","shard":"6/10","artifact":"memory-6-of-10"},{"name":"memory, shard 7/10","stream_store":"memory","redis_image":"","suite":"full","shard":"7/10","artifact":"memory-7-of-10"},{"name":"memory, shard 8/10","stream_store":"memory","redis_image":"","suite":"full","shard":"8/10","artifact":"memory-8-of-10"},{"name":"memory, shard 9/10","stream_store":"memory","redis_image":"","suite":"full","shard":"9/10","artifact":"memory-9-of-10"},{"name":"memory, shard 10/10","stream_store":"memory","redis_image":"","suite":"full","shard":"10/10","artifact":"memory-10-of-10"},{"name":"redis, shard 1/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/10","artifact":"redis-1-of-10"},{"name":"redis, shard 2/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/10","artifact":"redis-2-of-10"},{"name":"redis, shard 3/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"3/10","artifact":"redis-3-of-10"},{"name":"redis, shard 4/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"4/10","artifact":"redis-4-of-10"},{"name":"redis, shard 5/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"5/10","artifact":"redis-5-of-10"},{"name":"redis, shard 6/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"6/10","artifact":"redis-6-of-10"},{"name":"redis, shard 7/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"7/10","artifact":"redis-7-of-10"},{"name":"redis, shard 8/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"8/10","artifact":"redis-8-of-10"},{"name":"redis, shard 9/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"9/10","artifact":"redis-9-of-10"},{"name":"redis, shard 10/10","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"10/10","artifact":"redis-10-of-10"}]}')
         }}
     services:
       redis:
@@ -211,6 +211,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
@@ -222,7 +223,7 @@ jobs:
         run: npm ci
 
       - name: Test Playwright matrix selection
-        run: node --test .github/scripts/playwright-matrix.test.mjs
+        run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs
 
       - name: Restore data-provider build cache
         id: cache-data-provider
@@ -268,12 +269,16 @@ jobs:
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
 
+      # About a second, so it is not cached; the chat-package scenarios load the built entries.
+      - name: Build chat package
+        run: npm run build:chat
+
       - name: Restore client app build cache
         id: cache-client-app
         uses: actions/cache@v5
         with:
           path: client/dist
-          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/chat/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
 
       - name: Build client app
         if: steps.cache-client-app.outputs.cache-hit != 'true'
@@ -342,30 +347,31 @@ jobs:
         env:
           CI: 'true'
           E2E_SKIP: ${{ needs.codegraph_select.outputs.e2e_skip }}
+          # Seconds of work memory shard 1 does after its suite (both registered-email profiles
+          # and the title ownership regressions), so the plan hands it that much less of the
+          # suite. Every lane of one store plans with the same value, so they agree.
+          E2E_SHARD_RESERVE: ${{ matrix.stream_store == 'memory' && '1:130' || '' }}
+        # Shards are planned by recorded duration, not test count: Playwright lists the suite,
+        # and .github/scripts/playwright-shards.mjs assigns whole spec files longest-first to
+        # the least-loaded shard, using e2e/timings.mock.json. Every shard derives the same
+        # disjoint partition of the listed files, so together they run exactly the suite.
+        #
+        # Graduated-spec skipping (dark until repo var CODEGRAPH_E2E_SKIP=on upstream) subtracts
+        # the earned skips from that listing before planning, so an unknown or stale name simply
+        # matches nothing; if subtraction would drop everything, nothing is skipped. Skipped specs
+        # still execute post-merge in every full-suite vote run, which is the net that catches a
+        # wrong skip.
         run: |
-          set +e
-          # Graduated-spec skipping (dark until repo var CODEGRAPH_E2E_SKIP=on upstream): subtract
-          # the earned skips from a run list derived from the tree itself, so an unknown or stale
-          # name in the skip list simply matches nothing. If subtraction would drop everything —
-          # or drops nothing — run the full shard exactly as before. Skipped specs still execute
-          # post-merge in every full-suite vote run, which is the net that catches a wrong skip.
-          RUN_ARGS=""
-          if [ -n "$E2E_SKIP" ]; then
-            KEEP=""; DROP=0
-            for spec in $(git ls-files 'e2e/specs/mock/*.spec.ts' 'e2e/specs/mock/**/*.spec.ts' | sed 's|^e2e/||' | sort -u); do
-              case "$spec" in *" "*) KEEP="$KEEP $spec"; continue;; esac
-              case " $E2E_SKIP " in
-                *" $spec "*) DROP=$((DROP+1));;
-                *) KEEP="$KEEP $spec";;
-              esac
-            done
-            if [ "$DROP" -gt 0 ] && [ -n "$KEEP" ]; then
-              RUN_ARGS="$KEEP"
-              echo "codegraph-e2e-skip: dropped $DROP graduated specs from this shard's pool"
-            fi
-          fi
-          set -e
-          npx playwright test --config=e2e/playwright.config.mock.ts --shard=${{ matrix.shard }} $RUN_ARGS
+          PLAYWRIGHT_JSON_OUTPUT_FILE=e2e/.generated/playwright-list.json \
+            npx playwright test --config=e2e/playwright.config.mock.ts --list --reporter=json > /dev/null
+          node .github/scripts/playwright-shards.mjs plan \
+            --list e2e/.generated/playwright-list.json \
+            --timings e2e/timings.mock.json \
+            --shard '${{ matrix.shard }}' \
+            --reserve "$E2E_SHARD_RESERVE" \
+            --skip "$E2E_SKIP" \
+            --out e2e/.generated/shard-tests.txt
+          npx playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt
 
       - name: Run Redis stream transport e2e
         if: matrix.suite == 'transport'
@@ -462,6 +468,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
@@ -608,6 +615,7 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules

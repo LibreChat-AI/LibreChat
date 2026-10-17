@@ -16,14 +16,18 @@ const handlers = createAdminGroupsHandlers({
   countGroups: db.countGroups,
   findGroupById: db.findGroupById,
   createGroup: db.createGroup,
-  updateGroupById: db.updateGroupById,
+  updateGroupFieldsTracked: db.updateGroupFieldsTracked,
   deleteGroup: db.deleteGroup,
   addUserToGroup: db.addUserToGroup,
   removeUserFromGroup: db.removeUserFromGroup,
-  removeMemberById: db.removeMemberById,
+  removeMemberByIdTracked: db.removeMemberByIdTracked,
   findUsers: db.findUsers,
   deleteConfig: db.deleteConfig,
   deleteAclEntries: db.deleteAclEntries,
+  restoreConfig: db.restoreConfig,
+  findConfigByPrincipal: db.findConfigByPrincipal,
+  recordAuditEntry: db.recordAuditEntry,
+  auditFailClosed: process.env.AUDIT_LOG_FAIL_CLOSED === 'true',
 });
 
 router.use(requireJwtAuth, requireAdminAccess);

@@ -15,8 +15,14 @@ import {
   X,
 } from 'lucide-react';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
+import type { CSSProperties } from 'react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
-import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
+import {
+  TOOL_ARTIFACT_TYPES,
+  isCodeOnlyArtifact,
+  isPreviewOnlyArtifact,
+  normalizeArtifactType,
+} from '~/utils/artifacts';
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { artifactsOpenedArtifactId, artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
@@ -185,7 +191,8 @@ export default function Artifacts() {
     mermaidExportState != null && mermaidExportState.artifactId === currentArtifact?.id
       ? mermaidExportState.data
       : null;
-  const isMermaidArtifact = currentArtifact?.type === TOOL_ARTIFACT_TYPES.MERMAID;
+  const isMermaidArtifact =
+    normalizeArtifactType(currentArtifact?.type ?? '') === TOOL_ARTIFACT_TYPES.MERMAID;
 
   const closeArtifacts = useCallback(() => {
     if (isMobile) {
@@ -452,15 +459,16 @@ export default function Artifacts() {
             className={cn(
               'bg-surface-overlay fixed inset-0 z-[99] will-change-[opacity,backdrop-filter] motion-reduce:transition-none',
               isVisible && !isClosing
-                ? 'transition-all duration-300'
+                ? 'opacity-(--backdrop-opacity) backdrop-blur-(--backdrop-blur) transition-all duration-300'
                 : 'pointer-events-none opacity-0 backdrop-blur-none transition-opacity duration-150',
               blurAmount < 8 && isVisible && !isClosing ? 'pointer-events-none' : '',
             )}
-            style={{
-              opacity: isVisible && !isClosing ? backdropOpacity : 0,
-              backdropFilter: isVisible && !isClosing ? `blur(${blurAmount}px)` : 'none',
-              WebkitBackdropFilter: isVisible && !isClosing ? `blur(${blurAmount}px)` : 'none',
-            }}
+            style={
+              {
+                '--backdrop-opacity': backdropOpacity,
+                '--backdrop-blur': `${blurAmount}px`,
+              } as CSSProperties
+            }
             onClick={blurAmount >= 8 ? closeArtifacts : undefined}
             aria-hidden="true"
           />
@@ -479,19 +487,18 @@ export default function Artifacts() {
                   isFullscreen ? 'inset-0 rounded-none' : 'inset-x-0 bottom-0 rounded-t-[20px]',
                   isVisible && !isClosing
                     ? 'translate-y-0 opacity-100'
-                    : 'translate-y-full opacity-0 transition-all',
-                  isDragging ? '' : 'transition-all duration-300',
+                    : 'translate-y-full opacity-0',
+                  !isDragging && 'transition-all',
+                  !isDragging && (isClosing ? 'duration-250' : 'duration-300'),
                 )
               : cn(
-                  'h-full shadow-2xl',
+                  'h-full overflow-hidden shadow-2xl',
                   isVisible && !isClosing
-                    ? 'translate-x-0 opacity-100 transition-all duration-150'
+                    ? 'translate-x-0 opacity-100 transition-all duration-350'
                     : 'translate-x-5 opacity-0 transition-all duration-300',
                 ),
           )}
-          style={
-            isMobile ? { height: isFullscreen ? '100%' : `${height}vh` } : { overflow: 'hidden' }
-          }
+          style={isMobile ? { height: isFullscreen ? '100%' : `${height}vh` } : undefined}
         >
           {isMobile && !isFullscreen && (
             <div

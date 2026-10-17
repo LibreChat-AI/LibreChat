@@ -6295,6 +6295,49 @@ describe('AgentClient - titleConvo', () => {
       expect(client.publishRunContextMeta).toHaveBeenCalledTimes(expectSeed ? 1 : 0);
     });
 
+    it('gives every resent document a unique name before formatting', async () => {
+      const bedrockDocument = (name) => ({
+        type: 'document',
+        document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+      });
+      const firstQuestion = {
+        messageId: 'user-first',
+        parentMessageId: null,
+        sender: 'User',
+        isCreatedByUser: true,
+        text: 'Summarize the fees.',
+        documents: [bedrockDocument('Stripe fees')],
+      };
+      const answer = {
+        messageId: 'assistant-first',
+        parentMessageId: 'user-first',
+        sender: 'Assistant',
+        isCreatedByUser: false,
+        text: 'Here is the summary.',
+      };
+      const secondQuestion = {
+        messageId: 'user-second',
+        parentMessageId: 'assistant-first',
+        sender: 'User',
+        isCreatedByUser: true,
+        text: 'Compare with this one.',
+        documents: [bedrockDocument('Stripe fees')],
+      };
+      const messages = [firstQuestion, answer, secondQuestion];
+      client.setModelBoundStoredMessages(messages);
+
+      const result = await client.buildMessages(messages, 'user-second', {}, {});
+
+      const names = result.prompt.flatMap((message) =>
+        Array.isArray(message.content)
+          ? message.content
+              .filter((part) => part?.type === 'document')
+              .map((part) => part.document.name)
+          : [],
+      );
+      expect(names).toEqual(['Stripe fees', 'Stripe fees (2)']);
+    });
+
     it('preserves persisted source identity through both agent formatting passes', async () => {
       mockReq.config.filters = {
         messages: {

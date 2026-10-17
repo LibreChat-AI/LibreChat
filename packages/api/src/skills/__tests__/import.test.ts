@@ -71,6 +71,19 @@ function mockImportDeps(limits?: ImportSkillDeps['limits']): ImportSkillDeps {
       failedCleanupSteps: [],
     })),
     upsertSkillFile: jest.fn(async () => skillFile),
+    getSkillFileByPath: jest.fn(async () => null),
+    reserveBlob: jest.fn(async (_req, { userId, fileName, tenantId }) => ({
+      filepath: '/tmp/imported-file',
+      source: 'local',
+      writeLocation: { userId, fileName, basePath: 'uploads' as const, tenantId },
+    })),
+    reserveSkillUploadIntent: jest.fn(async (input) => ({
+      ...input,
+      skillId: new Types.ObjectId(input.skillId),
+      author: new Types.ObjectId(input.author),
+      state: 'uploading' as const,
+    })),
+    transitionSkillUploadIntent: jest.fn(async () => true),
     saveBuffer: jest.fn(async () => ({ filepath: '/tmp/imported-file', source: 'local' })),
     deleteFile: jest.fn(async () => undefined),
     grantPermission: jest.fn(async () => undefined),
@@ -601,7 +614,7 @@ describe('createImportHandler', () => {
     );
   });
 
-  it('retries an orphan blob after SkillFile cleanup remains incomplete', async () => {
+  it('retains an orphan intent after immediate cleanup fails', async () => {
     const deps = mockImportDeps();
     deps.deleteSkill = jest.fn(async () => ({
       deleted: true,
@@ -624,7 +637,7 @@ describe('createImportHandler', () => {
     await handler(mockZipRequest(await zipWithAdditionalFiles(1, 64)), res);
 
     expect(deps.deleteSkill).toHaveBeenCalledTimes(2);
-    expect(deps.deleteFile).toHaveBeenCalledTimes(2);
+    expect(deps.deleteFile).toHaveBeenCalledTimes(1);
     expect(res.status).toHaveBeenCalledWith(500);
     expect(importFailure(res.body).error).toBe('skill_import_cleanup_incomplete');
   });
@@ -779,6 +792,12 @@ describe('createImportHandler', () => {
   it('rolls back the skill and its stored blobs when one archive file fails', async () => {
     const deps = mockImportDeps();
     let savedFiles = 0;
+    let reservedFiles = 0;
+    deps.reserveBlob = jest.fn(async (_req, { userId, fileName, tenantId }) => ({
+      filepath: `/tmp/imported-${reservedFiles++}`,
+      source: 'local',
+      writeLocation: { userId, fileName, basePath: 'uploads' as const, tenantId },
+    }));
     deps.saveBuffer = jest.fn(async () => ({
       filepath: `/tmp/imported-${savedFiles++}`,
       source: 'local',
@@ -810,6 +829,47 @@ describe('createImportHandler', () => {
       expect.objectContaining({ filepath: '/tmp/imported-0' }),
     );
     expect(res.body).not.toHaveProperty('_importSummary');
+  });
+
+  it('does not delete persisted blobs twice when durable skill deletion owns storage cleanup', async () => {
+    const deps = mockImportDeps();
+    let savedFiles = 0;
+    let reservedFiles = 0;
+    deps.reserveBlob = jest.fn(async (_req, { userId, fileName, tenantId }) => ({
+      filepath: `/tmp/imported-${reservedFiles++}`,
+      source: 'local',
+      writeLocation: { userId, fileName, basePath: 'uploads' as const, tenantId },
+    }));
+    deps.saveBuffer = jest.fn(async () => ({
+      filepath: `/tmp/imported-${savedFiles++}`,
+      source: 'local',
+    })) as ImportSkillDeps['saveBuffer'];
+    deps.upsertSkillFile = jest
+      .fn()
+      .mockResolvedValueOnce({ _id: new Types.ObjectId() })
+      .mockRejectedValueOnce(
+        new Error('write conflict'),
+      ) as unknown as ImportSkillDeps['upsertSkillFile'];
+    deps.deleteSkill = jest.fn(async () => ({
+      deleted: true,
+      skillAbsent: true,
+      cleanupComplete: true,
+      failedCleanupSteps: [],
+      blobCleanupManaged: true,
+    }));
+    deps.deleteFile = jest.fn(async () => undefined);
+    const handler = createImportHandler(deps);
+    const res = mockResponse();
+
+    await handler(mockZipRequest(await zipWithAdditionalFiles(2, 64)), res);
+
+    expect(deps.deleteSkill).toHaveBeenCalledTimes(1);
+    // The failed, rowless upload is cleaned inline; the durable worker owns the first file.
+    expect(deps.deleteFile).toHaveBeenCalledTimes(1);
+    expect(deps.deleteFile).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ filepath: '/tmp/imported-0' }),
+    );
   });
 
   it('rolls back an archive whose entry path is unsafe instead of importing it partially', async () => {

@@ -370,7 +370,7 @@ export default function LangfuseConnection() {
         data-testid="langfuse-connection-loading"
         className="border-border-light flex items-center justify-center rounded-xl border py-12"
       >
-        <Spinner className="text-text-secondary h-6 w-6" />
+        <Spinner tone="secondary" className="h-6 w-6" />
         <span className="sr-only">{localize('com_ui_loading')}</span>
       </div>
     );

@@ -171,99 +171,101 @@ function DynamicSlider({
       )}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
-          <div className="flex w-full items-center justify-between">
-            <Label
-              htmlFor={`${settingKey}-dynamic-setting`}
-              className="text-left text-xs font-medium break-words"
-            >
-              {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
-              {showDefault && (
-                <small className="high-contrast:opacity-100 opacity-40">
-                  ({localize('com_endpoint_default')}: {getDefaultDisplayValue()})
-                </small>
+        <HoverCardTrigger asChild>
+          <div className="grid h-full w-full content-between items-center gap-2">
+            <div className="flex w-full items-center justify-between">
+              <Label
+                htmlFor={`${settingKey}-dynamic-setting`}
+                className="text-left text-xs font-medium break-words"
+              >
+                {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
+                {showDefault && (
+                  <small className="high-contrast:opacity-100 opacity-40">
+                    ({localize('com_endpoint_default')}: {getDefaultDisplayValue()})
+                  </small>
+                )}
+              </Label>
+              {includeInput && !isEnum ? (
+                <InputNumber
+                  id={`${settingKey}-dynamic-setting-input-number`}
+                  disabled={readonly}
+                  value={inputValue ?? defaultValue}
+                  onChange={(value) => setInputValue(Number(value))}
+                  /** Clicking Save blurs this first, so the pending edit is
+                   *  committed before submitPreset reads the preset. */
+                  onBlur={handleNumberBlur}
+                  max={range ? range.max : (options?.length ?? 0) - 1}
+                  min={range ? range.min : 0}
+                  step={range ? (range.step ?? 1) : 1}
+                  controls={false}
+                  aria-label={localize(label as TranslationKeys)}
+                  className={cn(
+                    defaultTextProps,
+                    cn(
+                      optionText,
+                      'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0 py-1 text-xs',
+                    ),
+                  )}
+                />
+              ) : (
+                <Input
+                  id={`${settingKey}-dynamic-setting-input`}
+                  disabled={readonly}
+                  value={getDisplayValue(selectedValue)}
+                  aria-label={localize(label as TranslationKeys)}
+                  onChange={() => ({})}
+                  className={cn(
+                    defaultTextProps,
+                    cn(
+                      optionText,
+                      'reset-rc-number-input group-hover/temp:border-border-light h-auto w-14 border-0 py-1 pl-1 text-center text-xs',
+                    ),
+                  )}
+                />
               )}
-            </Label>
-            {includeInput && !isEnum ? (
-              <InputNumber
-                id={`${settingKey}-dynamic-setting-input-number`}
-                disabled={readonly}
-                value={inputValue ?? defaultValue}
-                onChange={(value) => setInputValue(Number(value))}
-                /** Clicking Save blurs this first, so the pending edit is
-                 *  committed before submitPreset reads the preset. */
-                onBlur={handleNumberBlur}
-                max={range ? range.max : (options?.length ?? 0) - 1}
-                min={range ? range.min : 0}
-                step={range ? (range.step ?? 1) : 1}
-                controls={false}
-                aria-label={localize(label as TranslationKeys)}
-                className={cn(
-                  defaultTextProps,
-                  cn(
-                    optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0 py-1 text-xs',
-                  ),
-                )}
-              />
-            ) : (
-              <Input
-                id={`${settingKey}-dynamic-setting-input`}
-                disabled={readonly}
-                value={getDisplayValue(selectedValue)}
-                aria-label={localize(label as TranslationKeys)}
-                onChange={() => ({})}
-                className={cn(
-                  defaultTextProps,
-                  cn(
-                    optionText,
-                    'reset-rc-number-input group-hover/temp:border-border-light h-auto w-14 border-0 py-1 pl-1 text-center text-xs',
-                  ),
-                )}
-              />
-            )}
+            </div>
+            <Slider
+              id={`${settingKey}-dynamic-setting-slider`}
+              disabled={readonly}
+              value={[
+                isEnum
+                  ? // A model switch may hide a saved enum value. Keep its stored value
+                    // but retain a valid thumb so keyboard users can choose a supported one.
+                    (enumToNumeric[String(selectedValue ?? '')] ??
+                    enumToNumeric[String(defaultValue)] ??
+                    0)
+                  : ((inputValue as number) ?? (defaultValue as number)),
+              ]}
+              onValueChange={(value) => handleValueChange(value[0])}
+              /** Fires once the drag or keypress settles, which is the point the
+               *  chosen value should be in the preset rather than pending. It is
+               *  set again here before flushing because the keyboard path commits
+               *  before it reports the change, leaving the debouncer empty for a
+               *  flush that only follows the drag path. The track also steps
+               *  straight through the gap between a sentinel minimum and its
+               *  positive floor, which the generated schema rejects, so the
+               *  released value has to land outside it. */
+              onValueCommit={(value) => {
+                if (!isEnum && range != null) {
+                  setInputValue(clampSettingRange(value[0], range));
+                }
+                flushInputValue();
+              }}
+              /** The browser dispatches this after the second release, so the
+               *  commit above has already fired and the reset would otherwise sit
+               *  in the debouncer while an action clicked next reads the old
+               *  value. */
+              onDoubleClick={() => {
+                setInputValue(defaultValue as string | number);
+                flushInputValue();
+              }}
+              max={max}
+              aria-label={localize(label as TranslationKeys)}
+              min={range ? range.min : 0}
+              step={range ? (range.step ?? 1) : 1}
+              className="flex h-4 w-full"
+            />
           </div>
-          <Slider
-            id={`${settingKey}-dynamic-setting-slider`}
-            disabled={readonly}
-            value={[
-              isEnum
-                ? // A model switch may hide a saved enum value. Keep its stored value
-                  // but retain a valid thumb so keyboard users can choose a supported one.
-                  (enumToNumeric[String(selectedValue ?? '')] ??
-                  enumToNumeric[String(defaultValue)] ??
-                  0)
-                : ((inputValue as number) ?? (defaultValue as number)),
-            ]}
-            onValueChange={(value) => handleValueChange(value[0])}
-            /** Fires once the drag or keypress settles, which is the point the
-             *  chosen value should be in the preset rather than pending. It is
-             *  set again here before flushing because the keyboard path commits
-             *  before it reports the change, leaving the debouncer empty for a
-             *  flush that only follows the drag path. The track also steps
-             *  straight through the gap between a sentinel minimum and its
-             *  positive floor, which the generated schema rejects, so the
-             *  released value has to land outside it. */
-            onValueCommit={(value) => {
-              if (!isEnum && range != null) {
-                setInputValue(clampSettingRange(value[0], range));
-              }
-              flushInputValue();
-            }}
-            /** The browser dispatches this after the second release, so the
-             *  commit above has already fired and the reset would otherwise sit
-             *  in the debouncer while an action clicked next reads the old
-             *  value. */
-            onDoubleClick={() => {
-              setInputValue(defaultValue as string | number);
-              flushInputValue();
-            }}
-            max={max}
-            aria-label={localize(label as TranslationKeys)}
-            min={range ? range.min : 0}
-            step={range ? (range.step ?? 1) : 1}
-            className="flex h-4 w-full"
-          />
         </HoverCardTrigger>
         {description && (
           <OptionHover

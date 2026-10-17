@@ -27,7 +27,6 @@ coverage
 .grunt
 
 # translation services
-config/translations/stores/*
 client/src/localization/languages/*_missing_keys.json
 
 # Turborepo

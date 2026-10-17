@@ -39,7 +39,7 @@ services:
       - librechat-data:/app/data
   admin-panel:
     container_name: admin-panel
-    image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
+    image: registry.librechat.ai/librechat-ai/librechat-admin-panel:latest
     ports:
       - "${ADMIN_PANEL_PORT:-3000}:3000"
     depends_on:

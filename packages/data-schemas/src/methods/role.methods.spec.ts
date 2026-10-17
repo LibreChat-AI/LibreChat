@@ -885,6 +885,29 @@ describe('deleteRoleByName', () => {
     expect(carol!.role).toBe(SystemRoles.USER);
   });
 
+  it('leaves a role recreated under the same name when the expected id no longer matches', async () => {
+    const original = await createRoleByName({ name: 'editor' });
+    await Role.deleteOne({ name: 'editor' });
+    await createRoleByName({ name: 'editor' });
+    await User.create({ name: 'Dana', email: 'dana@test.com', role: 'editor', username: 'dana' });
+
+    const result = await deleteRoleByName('editor', { id: String(original._id) });
+
+    expect(result).toBeNull();
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+    const dana = await User.findOne({ email: 'dana@test.com' }).lean();
+    expect(dana!.role).toBe('editor');
+  });
+
+  it('deletes the role when the expected id matches', async () => {
+    const created = await createRoleByName({ name: 'editor' });
+
+    const result = await deleteRoleByName('editor', { id: String(created._id) });
+
+    expect(result?.name).toBe('editor');
+    expect(await Role.exists({ name: 'editor' })).toBeNull();
+  });
+
   it('returns null when role does not exist', async () => {
     const result = await deleteRoleByName('nonexistent');
     expect(result).toBeNull();

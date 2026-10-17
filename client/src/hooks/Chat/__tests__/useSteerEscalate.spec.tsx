@@ -1,17 +1,22 @@
 import React from 'react';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import { RecoilRoot } from 'recoil';
 import { getDefaultStore, useAtomValue } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import type { MutableSnapshot } from 'recoil';
+import {
+  escalatingSteerFamily,
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  pendingSteersByConvoId,
+  resetSteerFamilies,
+} from '@librechat/chat/react';
 import type { PendingSteer } from '~/hooks/Chat/queue';
-import { escalatingSteerFamily } from '~/store/steer';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import useSteerEscalate from '../useSteerEscalate';
-import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const mockArmMutateAsync = jest.fn();
 const mockShowToast = jest.fn();
-type StartupConfigStub = { data?: { interface?: { steerArmConfirmationTimeoutMs?: number } } };
-const mockGetStartupConfig = jest.fn<StartupConfigStub, []>(() => ({ data: undefined }));
+let steerArmConfirmationTimeoutMs: number | undefined;
 
 jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: mockShowToast }),
@@ -20,7 +25,6 @@ jest.mock('@librechat/client', () => ({
 jest.mock('~/data-provider', () => ({
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS: 10_000,
   useArmSteerMutation: () => ({ mutateAsync: mockArmMutateAsync }),
-  useGetStartupConfig: () => mockGetStartupConfig(),
   supportsGenerationProtocolV2: (value: unknown) =>
     value != null &&
     typeof value === 'object' &&
@@ -53,24 +57,32 @@ function setup({
   activeGenerationProtocolVersion = 2,
   steers = [pending()],
 }: SetupOptions = {}) {
-  const initializeState = (snapshot: MutableSnapshot) => {
-    snapshot.set(store.pendingSteersByConvoId(CONVO_ID), steers);
-    if (activeGenerationCreatedAt != null) {
-      snapshot.set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), activeGenerationCreatedAt);
-    }
-    snapshot.set(
-      store.activeGenerationProtocolVersionByConvoId(CONVO_ID),
-      activeGenerationProtocolVersion,
-    );
-  };
+  const jotaiStore = getDefaultStore();
+  jotaiStore.set(pendingSteersByConvoId(CONVO_ID), steers);
+  if (activeGenerationCreatedAt != null) {
+    jotaiStore.set(activeGenerationCreatedAtByConvoId(CONVO_ID), activeGenerationCreatedAt);
+  }
+  jotaiStore.set(
+    activeGenerationProtocolVersionByConvoId(CONVO_ID),
+    activeGenerationProtocolVersion,
+  );
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <RecoilRoot initializeState={initializeState}>{children}</RecoilRoot>
+    <RecoilRoot>
+      <ChatSettingsContext.Provider
+        value={{
+          ...defaultChatSettings,
+          config: { ...defaultChatSettings.config, steerArmConfirmationTimeoutMs },
+        }}
+      >
+        {children}
+      </ChatSettingsContext.Provider>
+    </RecoilRoot>
   );
 
   return renderHook(
     () => ({
       escalate: useSteerEscalate(CONVO_ID),
-      steers: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
+      steers: useAtomValue(pendingSteersByConvoId(CONVO_ID)),
       escalating: useAtomValue(escalatingSteerFamily(CONVO_ID)),
     }),
     { wrapper },
@@ -80,8 +92,9 @@ function setup({
 describe('useSteerEscalate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetSteerFamilies();
     act(() => getDefaultStore().set(escalatingSteerFamily(CONVO_ID), false));
-    mockGetStartupConfig.mockReturnValue({ data: undefined });
+    steerArmConfirmationTimeoutMs = undefined;
   });
 
   afterEach(() => {
@@ -260,9 +273,7 @@ describe('useSteerEscalate', () => {
 
   it('uses the configured arm confirmation timeout', async () => {
     jest.useFakeTimers();
-    mockGetStartupConfig.mockReturnValue({
-      data: { interface: { steerArmConfirmationTimeoutMs: 20_000 } },
-    });
+    steerArmConfirmationTimeoutMs = 20_000;
     mockArmMutateAsync.mockReturnValue(new Promise(() => undefined));
     const { result } = setup();
 

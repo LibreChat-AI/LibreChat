@@ -1,10 +1,15 @@
 import React from 'react';
+import { TextEncoder } from 'util';
+import { webcrypto } from 'crypto';
 import { RecoilRoot } from 'recoil';
+import { getDefaultStore } from 'jotai';
 import { render, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import type { TMessage, TConversation } from 'librechat-data-provider';
+import { getTTSCacheKey, setCachedTTSAudio, getTTSCacheGeneration } from '~/utils';
 import StreamAudio from '../StreamAudio';
 import store from '~/store';
 
@@ -12,15 +17,18 @@ jest.mock('~/hooks', () => ({ useAuthContext: () => ({ token: 'token' }) }));
 
 const conversationId = 'convo-1';
 
-const match = jest.fn(async (_key: string) => ({ blob: async () => new Blob() }));
+const recording = new Blob(['spoken answer'], { type: 'audio/mpeg' });
+const fetchMock = jest.fn(() => Promise.reject(new Error('not cached')));
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('StreamAudio cache', () => {
   beforeAll(() => {
-    Object.defineProperty(global, 'caches', {
-      writable: true,
-      configurable: true,
-      value: { open: async () => ({ match, put: jest.fn() }) },
-    });
+    Object.defineProperty(global, 'crypto', { value: webcrypto, configurable: true });
+    Object.assign(global, { TextEncoder });
+    Object.assign(global, { fetch: fetchMock });
     URL.createObjectURL = jest.fn(() => 'blob:audio');
     URL.revokeObjectURL = jest.fn();
   });
@@ -28,6 +36,8 @@ describe('StreamAudio cache', () => {
   /** Audio cached before reasoning was filtered is keyed by the full text; looking up the
    *  spoken answer instead means that recording is never replayed. */
   it('looks up cached audio by the spoken answer, not the stored text', async () => {
+    const key = await getTTSCacheKey('The capital of Germany is Berlin.');
+    setCachedTTSAudio(key as string, recording, getTTSCacheGeneration());
     const message = {
       messageId: 'assistant-1',
       conversationId,
@@ -47,7 +57,7 @@ describe('StreamAudio cache', () => {
               set(store.conversationByIndex(0), { conversationId } as TConversation);
               set(store.activeRunFamily(0), 'run-1');
               set(store.audioRunFamily(0), null);
-              set(store.isSubmittingFamily(0), false);
+              getDefaultStore().set(isSubmittingFamily(0), false);
             }}
           >
             <Routes>
@@ -58,7 +68,7 @@ describe('StreamAudio cache', () => {
       </QueryClientProvider>,
     );
 
-    await waitFor(() => expect(match).toHaveBeenCalled());
-    expect(match).toHaveBeenCalledWith('The capital of Germany is Berlin.');
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledWith(recording));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

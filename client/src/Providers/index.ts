@@ -1,5 +1,3 @@
-export { default as AssistantsProvider } from './AssistantsContext';
-export { default as AgentsProvider } from './AgentsContext';
 export * from './ActivePanelContext';
 export * from './AgentPanelContext';
 export * from './ChatContext';
@@ -11,8 +9,6 @@ export * from './ChatFormContext';
 export * from './BookmarkContext';
 export * from './MessageContext';
 export * from './AuthorContext';
-export * from './AssistantsContext';
-export * from './AgentsContext';
 export * from './AssistantsMapContext';
 export * from './AnnouncerContext';
 export * from './AgentsMapContext';

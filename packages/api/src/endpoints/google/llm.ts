@@ -559,26 +559,6 @@ export function getGoogleConfig(
     }
   }
 
-  /*
-  let legacyOptions = {};
-  // Filter out any "examples" that are empty
-  legacyOptions.examples = (legacyOptions.examples ?? [])
-    .filter(Boolean)
-    .filter((obj) => obj?.input?.content !== '' && obj?.output?.content !== '');
-
-  // If user has "examples" from legacyOptions, push them onto llmConfig
-  if (legacyOptions.examples?.length) {
-    llmConfig.examples = legacyOptions.examples.map((ex) => {
-      const { input, output } = ex;
-      if (!input?.content || !output?.content) {return undefined;}
-      return {
-        input: new HumanMessage(input.content),
-        output: new AIMessage(output.content),
-      };
-    }).filter(Boolean);
-  }
-  */
-
   if (reverseProxyUrl) {
     (llmConfig as GoogleClientOptions).baseUrl = reverseProxyUrl;
   }

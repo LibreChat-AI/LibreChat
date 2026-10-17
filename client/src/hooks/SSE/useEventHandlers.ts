@@ -1,20 +1,29 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { v4 } from 'uuid';
-import { useStore } from 'jotai';
+import { useSetRecoilState } from 'recoil';
+import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
-import { useSetRecoilState, useRecoilCallback } from 'recoil';
+import { submissionStartFamily } from '@librechat/chat/react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   QueryKeys,
   Constants,
   ContentTypes,
-  tPresetSchema,
   tMessageSchema,
   tConvoUpdateSchema,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import {
+  mergeErrorMessages,
+  buildRecoveryPreset,
+  responseParentMessageId,
+  keepLocalCodeApprovalMode,
+  buildCreatedInitialResponse,
+  mergeRegenerateFinalMessages,
+  isInitialNewConversationSubmission,
+  getExistingConversationAbortMessages,
+} from '@librechat/chat';
 import type {
-  TPreset,
   TMessage,
   TConversation,
   TStartupConfig,
@@ -54,13 +63,11 @@ import {
 } from '~/data-provider';
 import {
   getReasoningStateKey,
+  pendingQuotesByConvoId,
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
-import {
-  getFailedCodeDecisionRequest,
-  withSubmittedCodeDecision,
-} from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
@@ -99,30 +106,6 @@ const SKILL_QUERY_KEYS = [
   QueryKeys.skillNodeContent,
 ] as const;
 
-/** A regenerated response is parented to the saved turn, never its unsaved replay copy. */
-const responseParentMessageId = (
-  initialResponse: TMessage,
-  userMessage: TMessage,
-  isRegenerate?: boolean,
-) =>
-  isRegenerate && initialResponse.parentMessageId
-    ? initialResponse.parentMessageId
-    : userMessage.messageId;
-
-export const buildCreatedInitialResponse = ({
-  initialResponse,
-  userMessage,
-  isRegenerate = false,
-}: Pick<EventSubmission, 'initialResponse' | 'userMessage' | 'isRegenerate'>): TMessage => ({
-  ...initialResponse,
-  parentMessageId: responseParentMessageId(initialResponse, userMessage, isRegenerate),
-  messageId:
-    isRegenerate && initialResponse.messageId
-      ? initialResponse.messageId
-      : `${userMessage.messageId}_`,
-  conversationId: userMessage.conversationId ?? initialResponse.conversationId,
-});
-
 /** Apply the resolved request choice only after acknowledgement. A saved decision may have
  *  moved since this event was emitted, so replay must never replace it. */
 function acknowledgedCodeEnvironment(
@@ -141,123 +124,6 @@ function acknowledgedCodeEnvironment(
     codeWorkspaces: codeEnvironmentMode === 'without_attached' ? undefined : codeWorkspaces,
   };
 }
-
-export const isInitialNewConversationSubmission = ({
-  userMessage,
-}: Pick<EventSubmission, 'userMessage'>): boolean =>
-  userMessage?.parentMessageId === Constants.NO_PARENT;
-
-/**
- * Whether the run was sent from the unsaved-chat composer, which is the only case where
- * finishing it may drop the pane's new-chat draft. Regenerating or resubmitting the first turn
- * of a saved conversation keeps the root parent id, so the root parent alone cannot decide it.
- */
-export const startedAsNewConversation = ({
-  conversation,
-  userMessage,
-  isEdited,
-  isRegenerate,
-}: Pick<
-  EventSubmission,
-  'conversation' | 'userMessage' | 'isEdited' | 'isRegenerate'
->): boolean => {
-  const conversationId = conversation?.conversationId;
-  if (
-    !conversationId ||
-    conversationId === Constants.NEW_CONVO ||
-    conversationId === Constants.PENDING_CONVO
-  ) {
-    return true;
-  }
-
-  return (
-    isEdited !== true &&
-    isRegenerate !== true &&
-    isInitialNewConversationSubmission({ userMessage })
-  );
-};
-
-export const mergeRegenerateFinalMessages = ({
-  messages,
-  responseMessage,
-  initialResponseId,
-}: {
-  messages: TMessage[];
-  responseMessage: TMessage;
-  initialResponseId?: string | null;
-}): TMessage[] => {
-  const finalMessages: TMessage[] = [];
-  let inserted = false;
-
-  for (const message of messages) {
-    if (!message?.messageId || message.messageId === initialResponseId) {
-      continue;
-    }
-
-    if (message.messageId === responseMessage.messageId) {
-      finalMessages.push(responseMessage);
-      inserted = true;
-      continue;
-    }
-
-    finalMessages.push(message);
-  }
-
-  if (!inserted) {
-    finalMessages.push(responseMessage);
-  }
-
-  return finalMessages;
-};
-
-export const getExistingConversationAbortMessages = ({
-  messages,
-  currentMessages,
-  regenerateMessages,
-  isRegenerate = false,
-}: Pick<EventSubmission, 'messages' | 'regenerateMessages' | 'isRegenerate'> & {
-  currentMessages?: TMessage[];
-}): TMessage[] => {
-  if (!isRegenerate) {
-    return [...messages];
-  }
-
-  if (regenerateMessages?.length) {
-    return [...regenerateMessages];
-  }
-
-  const sourceMessages = currentMessages?.length ? currentMessages : messages;
-  return [...sourceMessages];
-};
-
-export const mergeErrorMessages = ({
-  messages,
-  regenerateMessages,
-  userMessage,
-  errorMessage,
-  isRegenerate = false,
-}: Pick<EventSubmission, 'messages' | 'regenerateMessages' | 'userMessage' | 'isRegenerate'> & {
-  errorMessage: TMessage;
-}): TMessage[] => {
-  if (isRegenerate) {
-    const finalMessages: TMessage[] = [];
-    let replaced = false;
-    for (const message of regenerateMessages ?? messages) {
-      if (message.messageId === errorMessage.messageId) {
-        finalMessages.push(errorMessage);
-        replaced = true;
-      } else {
-        finalMessages.push(message);
-      }
-    }
-    if (!replaced) {
-      finalMessages.push(errorMessage);
-    }
-    return finalMessages;
-  }
-
-  return [...messages, userMessage, errorMessage];
-};
 
 export type EventHandlerParams = {
   isAddedRequest?: boolean;
@@ -491,47 +357,6 @@ export const resolveErrorTurn = ({
   };
 };
 
-/**
- * A code approval mode picked locally is newer than any server copy of the
- * conversation: the final and abort events return the mode the run STARTED
- * with, and error recovery rebuilds from the pre-run capture. The local mode
- * therefore survives every merge and the next send carries it. Identity is
- * checked because the conversation atom is index-global: after navigating
- * elsewhere mid-run, that conversation's mode must not land in this one.
- */
-export const keepLocalCodeApprovalMode = <T extends Partial<TConversation>>(
-  merged: T,
-  local: Partial<TConversation> | null | undefined,
-  conversationId: string | null | undefined,
-): T => {
-  const localMode = local?.codeApprovalMode;
-  if (localMode == null || local?.conversationId !== conversationId) {
-    return merged;
-  }
-  return merged.codeApprovalMode === localMode
-    ? merged
-    : { ...merged, codeApprovalMode: localMode };
-};
-
-/** Preset for a conversation rebuilt after a failed or aborted run. The detail
- *  cache holds a mode picked while that run streamed; the capture only the
- *  pre-run one. */
-export const buildRecoveryPreset = (
-  submissionConvo: Partial<TConversation>,
-  cachedConvo: TConversation | null | undefined,
-  conversationId: string,
-  submittedDecision?: Pick<EventSubmission, 'codeEnvironmentMode' | 'codeWorkspaces'>,
-): TPreset =>
-  tPresetSchema.parse(
-    keepLocalCodeApprovalMode(
-      submittedDecision == null
-        ? submissionConvo
-        : withSubmittedCodeDecision(submissionConvo as TConversation, submittedDecision)!,
-      cachedConvo,
-      conversationId,
-    ),
-  );
-
 export const getConvoTitle = ({
   queryClient,
   currentTitle,
@@ -593,7 +418,7 @@ export default function useEventHandlers({
    *  its generation, or a later externally-started run attached at this index
    *  would inherit a stale baseline. Navigation teardown deliberately does not
    *  clear it: a reattach to a still-live run keeps its original start. */
-  const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(runIndex));
+  const setSubmissionStart = useSetAtom(submissionStartFamily(runIndex));
   const { mutate: reconcileCodeDecision } =
     useReconcileConversationCodeEnvironmentMutation(setConversation);
   const reconcileFailedCodeDecision = useCallback(
@@ -639,19 +464,18 @@ export default function useEventHandlers({
   /** Re-stage request context when an early abort restores the draft, so a
    *  retry keeps the references and one-shot reasoning selection already
    *  drained from the composer on submit. */
-  const restorePendingContext = useRecoilCallback(
-    ({ set }) =>
-      (convoId: string, quotes?: string[], reasoningOverride?: TMessage['reasoningOverride']) => {
-        if (Array.isArray(quotes) && quotes.length > 0) {
-          set(store.pendingQuotesByConvoId(convoId), quotes);
-        }
-        if (reasoningOverride != null) {
-          const reasoningAtom = pendingReasoningOverrideFamily(
-            getReasoningStateKey(convoId, runIndex),
-          );
-          reasoningStore.set(reasoningAtom, (current) => current ?? reasoningOverride);
-        }
-      },
+  const restorePendingContext = useCallback(
+    (convoId: string, quotes?: string[], reasoningOverride?: TMessage['reasoningOverride']) => {
+      if (Array.isArray(quotes) && quotes.length > 0) {
+        reasoningStore.set(pendingQuotesByConvoId(convoId), quotes);
+      }
+      if (reasoningOverride != null) {
+        const reasoningAtom = pendingReasoningOverrideFamily(
+          getReasoningStateKey(convoId, runIndex),
+        );
+        reasoningStore.set(reasoningAtom, (current) => current ?? reasoningOverride);
+      }
+    },
     [reasoningStore, runIndex],
   );
 
@@ -688,7 +512,6 @@ export default function useEventHandlers({
     setMessages,
     getMessages,
     announcePolite,
-    setIsSubmitting,
     lastAnnouncementTimeRef,
     onSkillAuthoringComplete,
     onSubagentIndexChange,

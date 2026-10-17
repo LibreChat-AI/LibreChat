@@ -1,3 +1,4 @@
+import type { TModelReasoning, TReasoningCapabilityMap } from './types';
 import type { SettingDefinition } from './generate';
 import {
   paramSettings,
@@ -5,6 +6,11 @@ import {
   resolveReasoningSettingForTarget,
   isReasoningOverrideSupported,
   applyModelAwareDefaults,
+  getModelReasoning,
+  effectiveModelReasoning,
+  hasExplicitReasoningEffort,
+  resolveModelReasoning,
+  isOpenRouterEffortSupported,
   resolveDropParamsUIKeys,
 } from './parameterSettings';
 import { BedrockProviders, EModelEndpoint, Providers } from './types';
@@ -496,5 +502,249 @@ describe('resolveDropParamsUIKeys', () => {
   it('returns an empty set when dropParams is undefined or empty', () => {
     expect(resolveDropParamsUIKeys(undefined, EModelEndpoint.openAI)).toEqual(new Set());
     expect(resolveDropParamsUIKeys([], EModelEndpoint.openAI)).toEqual(new Set());
+  });
+});
+
+describe('per-model OpenRouter reasoning efforts', () => {
+  const openRouterSettings = paramSettings[Providers.OPENROUTER] as SettingDefinition[];
+  const model = 'openai/gpt-6.1-sol';
+  const effortOptions = (
+    modelReasoning?: TModelReasoning | null,
+    endpoint: string = Providers.OPENROUTER,
+    forModel: string = model,
+  ) =>
+    applyModelAwareDefaults(openRouterSettings, endpoint, forModel, undefined, modelReasoning).find(
+      (setting) => setting.key === 'reasoning_effort',
+    )?.options;
+  const target = (modelReasoning?: TModelReasoning | null) =>
+    resolveReasoningSettingForTarget({
+      endpoint: EModelEndpoint.custom,
+      model,
+      defaultParamsEndpoint: Providers.OPENROUTER,
+      reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+      modelReasoning,
+    });
+
+  it('keeps the generic list while capabilities are still unknown', () => {
+    expect(effortOptions(undefined)).toContain(ReasoningEffort.max);
+    expect(target(undefined)?.options).toContain(ReasoningEffort.none);
+  });
+
+  it('offers only the efforts the model supports, plus Auto', () => {
+    expect(effortOptions({ efforts: ['low', 'high'] })).toEqual([
+      ReasoningEffort.unset,
+      ReasoningEffort.low,
+      ReasoningEffort.high,
+    ]);
+  });
+
+  it('drops none for a model whose reasoning is mandatory', () => {
+    expect(effortOptions({ efforts: ['none', 'low', 'high'], mandatory: true })).toEqual([
+      ReasoningEffort.unset,
+      ReasoningEffort.low,
+      ReasoningEffort.high,
+    ]);
+  });
+
+  it('keeps none when reasoning can be turned off', () => {
+    expect(effortOptions({ efforts: ['none', 'low'] })).toContain(ReasoningEffort.none);
+  });
+
+  it('hides the setting for a model without reasoning metadata', () => {
+    expect(effortOptions(null)).toBeUndefined();
+  });
+
+  it('hides the setting when no supported effort is a known level', () => {
+    expect(effortOptions({ efforts: ['ultra'] })).toBeUndefined();
+  });
+
+  it('does not narrow an endpoint that is not OpenRouter', () => {
+    expect(effortOptions({ efforts: ['low'] }, EModelEndpoint.openAI)).toContain(
+      ReasoningEffort.max,
+    );
+  });
+
+  it('keeps a model family list inside the efforts the provider reports', () => {
+    expect(
+      effortOptions({ efforts: ['low', 'max'] }, Providers.OPENROUTER, 'x-ai/grok-4.7'),
+    ).toEqual([ReasoningEffort.unset, ReasoningEffort.low]);
+  });
+
+  it('keeps an administrator-defined reasoning_effort when the model reports no reasoning', () => {
+    const setting = resolveReasoningSettingForTarget({
+      endpoint: EModelEndpoint.custom,
+      model,
+      defaultParamsEndpoint: Providers.OPENROUTER,
+      paramDefinitions: [{ key: 'reasoning_effort', options: ['low', 'max'] }],
+      modelReasoning: null,
+    });
+
+    expect(setting?.options).toEqual(['low', 'max']);
+  });
+
+  it('does not narrow an administrator-defined reasoning_effort', () => {
+    const setting = resolveReasoningSettingForTarget({
+      endpoint: EModelEndpoint.custom,
+      model,
+      defaultParamsEndpoint: Providers.OPENROUTER,
+      paramDefinitions: [{ key: 'reasoning_effort', options: ['low', 'max'] }],
+      modelReasoning: { efforts: ['high'] },
+    });
+
+    expect(setting?.options).toEqual(['low', 'max']);
+  });
+
+  it('narrows the composer setting for an OpenRouter custom endpoint', () => {
+    expect(target({ efforts: ['low', 'high'] })?.options).toEqual([
+      ReasoningEffort.unset,
+      ReasoningEffort.low,
+      ReasoningEffort.high,
+    ]);
+  });
+
+  it('hides the composer setting for a model without reasoning metadata', () => {
+    expect(target(null)).toBeUndefined();
+  });
+
+  it('leaves an explicit reasoning definition untouched', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.custom,
+        model,
+        defaultParamsEndpoint: Providers.OPENROUTER,
+        paramDefinitions: [{ key: 'reasoning_effort', options: ['low', 'max'] }],
+        modelReasoning: null,
+      })?.options,
+    ).toEqual(['low', 'max']);
+  });
+});
+
+describe('getModelReasoning', () => {
+  const capabilities: TReasoningCapabilityMap = {
+    OpenRouter: {
+      'openai/gpt-6.1-sol': { efforts: ['low', 'high'] },
+      'meta/plain': { efforts: [] },
+    },
+  };
+  const lookup = (model: string) => getModelReasoning(capabilities, 'OpenRouter', model);
+
+  it('is unknown when the endpoint was never resolved', () => {
+    expect(getModelReasoning(undefined, 'OpenRouter', 'openai/gpt-6.1-sol')).toBeUndefined();
+    expect(getModelReasoning(capabilities, 'Other', 'openai/gpt-6.1-sol')).toBeUndefined();
+  });
+
+  it('returns the efforts of a listed model', () => {
+    expect(lookup('openai/gpt-6.1-sol')).toEqual({ efforts: ['low', 'high'] });
+  });
+
+  it('matches a model variant to its base model', () => {
+    expect(lookup('openai/gpt-6.1-sol:nitro')).toEqual({ efforts: ['low', 'high'] });
+  });
+
+  it('reports no reasoning for a model the provider lists without effort selection', () => {
+    expect(lookup('meta/plain')).toBeNull();
+    expect(lookup('meta/plain:free')).toBeNull();
+  });
+
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'])(
+    'keeps a model id that names an Object.prototype member unknown: %s',
+    (model) => {
+      expect(lookup(model)).toBeUndefined();
+      expect(lookup(`${model}:free`)).toBeUndefined();
+    },
+  );
+
+  it('keeps an endpoint named after an Object.prototype member unknown', () => {
+    expect(getModelReasoning(capabilities, 'constructor', 'openai/gpt-6.1-sol')).toBeUndefined();
+    expect(getModelReasoning(capabilities, '__proto__', 'openai/gpt-6.1-sol')).toBeUndefined();
+  });
+
+  it('still finds a listed model that happens to be named like a prototype member', () => {
+    const named = { OpenRouter: { constructor: { efforts: ['low'] } } };
+
+    expect(getModelReasoning(named, 'OpenRouter', 'constructor')).toEqual({ efforts: ['low'] });
+  });
+
+  it('keeps a model the provider does not list unknown, such as an alias', () => {
+    expect(lookup('meta/unlisted')).toBeUndefined();
+    expect(lookup('~openai/gpt-latest')).toBeUndefined();
+  });
+});
+
+describe('isOpenRouterEffortSupported', () => {
+  it('accepts anything while the model capabilities are unknown', () => {
+    expect(isOpenRouterEffortSupported('max', undefined)).toBe(true);
+  });
+
+  it('always accepts Auto, which sends no effort', () => {
+    expect(isOpenRouterEffortSupported('', null)).toBe(true);
+    expect(isOpenRouterEffortSupported(ReasoningEffort.unset, { efforts: ['low'] })).toBe(true);
+  });
+
+  it('accepts a reported effort and rejects an unreported one', () => {
+    expect(isOpenRouterEffortSupported('low', { efforts: ['low', 'high'] })).toBe(true);
+    expect(isOpenRouterEffortSupported('max', { efforts: ['low', 'high'] })).toBe(false);
+  });
+
+  it('rejects none for a model whose reasoning is mandatory', () => {
+    expect(isOpenRouterEffortSupported('none', { efforts: ['none', 'low'], mandatory: true })).toBe(
+      false,
+    );
+  });
+
+  it('rejects any effort for a model the provider reports no reasoning for', () => {
+    expect(isOpenRouterEffortSupported('low', null)).toBe(false);
+  });
+});
+
+describe('effectiveModelReasoning', () => {
+  const reported = { efforts: ['low'] };
+
+  it('passes the reported efforts through without an explicit definition', () => {
+    expect(effectiveModelReasoning(reported, undefined)).toBe(reported);
+    expect(effectiveModelReasoning(null, [{ key: 'promptCache' }])).toBeNull();
+  });
+
+  it('ignores the reported efforts when the administrator defines reasoning_effort', () => {
+    expect(effectiveModelReasoning(reported, [{ key: 'reasoning_effort' }])).toBeUndefined();
+    expect(effectiveModelReasoning(null, [{ key: 'reasoning_effort' }])).toBeUndefined();
+  });
+});
+
+describe('hasExplicitReasoningEffort', () => {
+  it('is true only when reasoning_effort is defined', () => {
+    expect(hasExplicitReasoningEffort([{ key: 'reasoning_effort' }])).toBe(true);
+    expect(hasExplicitReasoningEffort([{ key: 'promptCache' }])).toBe(false);
+    expect(hasExplicitReasoningEffort(undefined)).toBe(false);
+    expect(hasExplicitReasoningEffort(null)).toBe(false);
+  });
+});
+
+describe('resolveModelReasoning', () => {
+  const capabilities = { OpenRouter: { 'a/b': { efforts: ['low'] }, 'c/d': { efforts: [] } } };
+  const resolve = (overrides: Partial<Parameters<typeof resolveModelReasoning>[0]> = {}) =>
+    resolveModelReasoning({ capabilities, endpoint: 'OpenRouter', model: 'a/b', ...overrides });
+
+  it('returns the reported efforts once the capabilities are known', () => {
+    expect(resolve()).toEqual({ efforts: ['low'] });
+  });
+
+  it('reports no reasoning for a model the catalog lists without it', () => {
+    expect(resolve({ model: 'c/d' })).toBeNull();
+  });
+
+  it('keeps the generic efforts for a model the catalog does not list', () => {
+    expect(resolve({ model: '~openai/gpt-latest' })).toBeUndefined();
+  });
+
+  it('hides the efforts while the capabilities are unknown, loading or failed', () => {
+    expect(resolve({ capabilities: undefined })).toBeNull();
+  });
+
+  it('never narrows or hides an administrator-defined reasoning_effort', () => {
+    const paramDefinitions = [{ key: 'reasoning_effort' }];
+
+    expect(resolve({ paramDefinitions })).toBeUndefined();
+    expect(resolve({ capabilities: undefined, paramDefinitions })).toBeUndefined();
   });
 });

@@ -1,5 +1,4 @@
 import { EModelEndpoint, Providers } from './schemas';
-import { KnownEndpoints } from './config';
 
 /** Canonical provider identity used for branding across client and server. */
 export enum ProviderId {
@@ -37,29 +36,6 @@ export const endpointToProvider: Partial<Record<EModelEndpoint, ProviderId>> = {
   [EModelEndpoint.anthropic]: ProviderId.anthropic,
   [EModelEndpoint.google]: ProviderId.google,
   [EModelEndpoint.bedrock]: ProviderId.bedrock,
-};
-
-export const knownEndpointToProvider: Record<KnownEndpoints, ProviderId> = {
-  [KnownEndpoints.anyscale]: ProviderId.anyscale,
-  [KnownEndpoints.apipie]: ProviderId.apipie,
-  [KnownEndpoints.cohere]: ProviderId.cohere,
-  [KnownEndpoints.fireworks]: ProviderId.fireworks,
-  [KnownEndpoints.deepseek]: ProviderId.deepseek,
-  [KnownEndpoints.moonshot]: ProviderId.moonshot,
-  [KnownEndpoints.groq]: ProviderId.groq,
-  [KnownEndpoints.helicone]: ProviderId.helicone,
-  [KnownEndpoints.huggingface]: ProviderId.huggingface,
-  [KnownEndpoints.lemonade]: ProviderId.lemonade,
-  [KnownEndpoints.mistral]: ProviderId.mistral,
-  [KnownEndpoints.mlx]: ProviderId.mlx,
-  [KnownEndpoints.ollama]: ProviderId.ollama,
-  [KnownEndpoints.openrouter]: ProviderId.openrouter,
-  [KnownEndpoints.perplexity]: ProviderId.perplexity,
-  [KnownEndpoints.shuttleai]: ProviderId.shuttleai,
-  [KnownEndpoints['together.ai']]: ProviderId.together,
-  [KnownEndpoints.unify]: ProviderId.unify,
-  [KnownEndpoints.vercel]: ProviderId.vercel,
-  [KnownEndpoints.xai]: ProviderId.xai,
 };
 
 const providerAliases: Record<string, ProviderId> = {

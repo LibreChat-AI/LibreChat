@@ -29,12 +29,12 @@ export type ConvoActionsProps = {
  * Owns the row's overflow control: which control is rendered, when it is
  * visible, and where focus lives across the swap between them.
  *
- * Two controls can represent this menu — `ConvoOptions`, which carries six
- * mutations and its own menu store, and a cheap placeholder that stands in
- * until the menu is wanted. Mounting the real one for every overscanned row is
- * wasteful, but the two must agree about identity, visibility, focus and
- * lifecycle, and splitting those decisions across the row is what made them
- * disagree. They are settled together here:
+ * Two controls can represent this menu: `ConvoOptions`, whose trigger and menu
+ * store mount here while its mutations wait until the menu is used, and a cheap
+ * placeholder that stands in until the menu is wanted. Mounting the real one
+ * for every overscanned row is wasteful, but the two must agree about
+ * identity, visibility, focus and lifecycle, and splitting those decisions
+ * across the row is what made them disagree. They are settled together here:
  *
  * - **Which.** A pointer device reveals the menu on hover, so hovering is
  *   enough to mount the real one. Touch has no hover, so the placeholder is

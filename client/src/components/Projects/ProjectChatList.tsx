@@ -279,8 +279,7 @@ const ProjectChatList = ({
             deferredMeasurementCache={cache}
             overscanRowCount={8}
             onRowsRendered={handleRowsRendered}
-            className="outline-hidden"
-            style={{ outline: 'none' }}
+            className="outline-none"
           />
         )}
       </AutoSizer>

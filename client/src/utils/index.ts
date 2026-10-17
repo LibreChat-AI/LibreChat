@@ -4,6 +4,7 @@ import type { TAskFunction } from '~/common';
 import logger from './logger';
 
 export * from './map';
+export * from './ttscache';
 export * from './policies';
 export * from './json';
 export * from './icons';
@@ -50,7 +51,25 @@ export * from './groupToolCalls';
 export * from './toolLabels';
 export * from './favoritesError';
 export * from './approval';
-export * from './steer';
+export {
+  getSteerPart,
+  applySteerPart,
+  MAX_QUOTE_COUNT,
+  dedupeSteersById,
+  insertQueuedOrigin,
+  resolveRunEndTarget,
+  mergeRestagedQuotes,
+  carriedSteerContext,
+  appendAppliedSteerIds,
+  findSteerMessageIndex,
+  collectAppliedSteerIds,
+  resolveAbortSteerTarget,
+  findResponseMessageIndex,
+  collectDroppedSteerQuotes,
+  isLegacyDeliveryUncertain,
+  collectQuotelessAppliedSteerIds,
+} from '@librechat/chat';
+export type { SteerCarriedContext } from '@librechat/chat';
 export * from './pane';
 export * from './activityLabels';
 export * from './agentModelSelection';
@@ -105,17 +124,10 @@ export const cardStyle =
   'transition-colors rounded-md min-w-[4.6875rem] border border-border-medium font-normal bg-surface-secondary hover:bg-surface-hover text-text-primary focus:outline-hidden data-[state=open]:bg-surface-hover';
 
 export const defaultTextProps =
-  'rounded-md border border-border-light focus:border-border-heavy focus:bg-surface-secondary bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.05)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden focus:ring-text-primary/20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
+  'rounded-md border border-border-control focus:border-border-heavy focus:bg-surface-secondary bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.05)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden focus:ring-text-primary/20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
 
 export const optionText =
   'p-0 shadow-none text-right pr-1 h-8 border-transparent hover:bg-surface-hover transition-colors';
-
-export const defaultTextPropsLabel =
-  'rounded-md border border-border-medium bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.10)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50';
-
-export function capitalizeFirstLetter(string: string) {
-  return string.charAt(0).toUpperCase() + string.slice(1);
-}
 
 export const handleDoubleClick: React.MouseEventHandler<HTMLElement> = (event) => {
   const range = document.createRange();

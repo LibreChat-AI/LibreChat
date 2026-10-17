@@ -153,7 +153,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
           <>
             {isLoading && (
               <div className="flex items-center justify-center py-12">
-                <Spinner className="text-text-secondary size-6" />
+                <Spinner tone="secondary" className="size-6" />
               </div>
             )}
 

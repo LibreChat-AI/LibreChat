@@ -91,10 +91,7 @@ export default function ComboboxComponent({
             <div className="assistant-item flex items-center justify-center overflow-hidden rounded-full">
               {SelectIcon ? SelectIcon : <ChevronDownIcon />}
             </div>
-            <span
-              className={cn('ml-2', isCollapsed ? 'hidden' : '')}
-              style={{ userSelect: 'none' }}
-            >
+            <span className={cn('ml-2 select-none', isCollapsed ? 'hidden' : '')}>
               {selectedValue
                 ? (displayValue ?? selectedValue)
                 : selectPlaceholder && selectPlaceholder}

@@ -70,31 +70,6 @@ export interface OAuthClientInformation {
   token_endpoint_auth_method?: string;
 }
 
-export interface MCPOAuthState {
-  /** Current step in the OAuth flow */
-  step: 'discovery' | 'registration' | 'authorization' | 'token_exchange' | 'complete' | 'error';
-  /** Server name */
-  serverName: string;
-  /** User ID */
-  userId: string;
-  /** OAuth metadata from discovery */
-  metadata?: OAuthMetadata;
-  /** Resource metadata */
-  resourceMetadata?: OAuthProtectedResourceMetadata;
-  /** Client information */
-  clientInfo?: OAuthClientInformation;
-  /** Authorization URL */
-  authorizationUrl?: string;
-  /** Code verifier for PKCE */
-  codeVerifier?: string;
-  /** State parameter for OAuth flow */
-  state?: string;
-  /** Error information */
-  error?: string;
-  /** Timestamp */
-  timestamp: number;
-}
-
 export interface MCPOAuthFlowMetadata extends FlowMetadata {
   serverName: string;
   userId: string;

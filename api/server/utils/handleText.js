@@ -59,64 +59,6 @@ const createOnProgress = (
   return { onProgress, getPartialText, sendIntermediateMessage };
 };
 
-const handleText = async (response) => {
-  let { text } = response;
-  response.text = text;
-  return text;
-};
-
-const isObject = (item) => item && typeof item === 'object' && !Array.isArray(item);
-const getString = (input) => (isObject(input) ? JSON.stringify(input) : input);
-
-function formatSteps(steps) {
-  let output = '';
-
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    const actionInput = getString(step.action.toolInput);
-    const observation = step.observation;
-
-    if (actionInput === 'N/A' || observation?.trim()?.length === 0) {
-      continue;
-    }
-
-    output += `Input: ${actionInput}\nOutput: ${getString(observation)}`;
-
-    if (steps.length > 1 && i !== steps.length - 1) {
-      output += '\n---\n';
-    }
-  }
-
-  return output;
-}
-
-function formatAction(action) {
-  const formattedAction = {
-    plugin: action.tool,
-    input: getString(action.toolInput),
-    thought: action.log.includes('Thought: ')
-      ? action.log.split('\n')[0].replace('Thought: ', '')
-      : action.log.split('\n')[0],
-  };
-
-  formattedAction.thought = getString(formattedAction.thought);
-
-  if (action.tool.toLowerCase() === 'self-reflection' || formattedAction.plugin === 'N/A') {
-    formattedAction.inputStr = `{\n\tthought: ${formattedAction.input}${
-      !formattedAction.thought.includes(formattedAction.input)
-        ? ' - ' + formattedAction.thought
-        : ''
-    }\n}`;
-    formattedAction.inputStr = formattedAction.inputStr.replace('N/A - ', '');
-  } else {
-    const hasThought = formattedAction.thought.length > 0;
-    const thought = hasThought ? `\n\tthought: ${formattedAction.thought}` : '';
-    formattedAction.inputStr = `{\n\tplugin: ${formattedAction.plugin}\n\tinput: ${formattedAction.input}\n${thought}}`;
-  }
-
-  return formattedAction;
-}
-
 /**
  * Generate the configuration for a given key and base URL.
  * @param {string} key
@@ -163,10 +105,6 @@ function generateConfig(key, baseURL, endpoint) {
 }
 
 module.exports = {
-  handleText,
-  formatSteps,
-  formatAction,
   generateConfig,
-  addSpaceIfNeeded,
   createOnProgress,
 };

@@ -27,4 +27,13 @@ function resolveMaxWorkers() {
   return Math.max(CI_MIN_WORKERS, Math.floor(cpuCount() / 2));
 }
 
-module.exports = { maxWorkers: resolveMaxWorkers() };
+/**
+ * A worker keeps every module it has required and every transform it has run for
+ * its whole life, so on the backend suites one worker grows past three gigabytes.
+ * Jest restarts a worker between test files once it exceeds this limit.
+ */
+const workerIdleMemoryLimit = '1GB';
+
+const maxWorkers = resolveMaxWorkers();
+
+module.exports = { maxWorkers, workerIdleMemoryLimit };

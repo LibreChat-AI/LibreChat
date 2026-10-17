@@ -124,5 +124,11 @@ test.describe('skill file authoring tools', () => {
     await page.goto(`/skills/${editedSkill._id}`, { timeout: 10000 });
     await expect(page.getByRole('heading', { level: 1, name: skillName })).toBeVisible();
     await expect(page.getByText(EDITED_DESCRIPTION)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Delete' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
+    await expect(page).toHaveURL((url) => url.pathname === '/skills');
+    const token = await getAccessToken(page);
+    await expect.poll(async () => findSkill(page, skillName, token)).toBeNull();
   });
 });

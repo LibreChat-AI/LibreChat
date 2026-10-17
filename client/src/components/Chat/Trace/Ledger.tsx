@@ -552,7 +552,7 @@ function Ledger({
             </span>
           )}
           {model.mode === 'full' && technicalName != null && (
-            <span className="text-text-tertiary hidden min-w-0 shrink-[6] truncate font-mono text-[11px] lg:inline">
+            <span className="text-text-tertiary text-2xs hidden min-w-0 shrink-[6] truncate font-mono lg:inline">
               {technicalName}
             </span>
           )}
@@ -610,7 +610,7 @@ function Ledger({
         aria-hidden="true"
         className={cn(
           grid,
-          'border-border-light bg-presentation text-text-secondary sticky top-0 z-10 h-7 items-center gap-2 border-b px-2 text-[11px] font-medium tracking-wide uppercase',
+          'border-border-light bg-presentation text-text-secondary text-2xs sticky top-0 z-10 h-7 items-center gap-2 border-b px-2 font-medium tracking-wide uppercase',
         )}
       >
         <span>{localize('com_ui_trace_column_name')}</span>

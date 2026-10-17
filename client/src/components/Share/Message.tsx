@@ -58,6 +58,7 @@ export default function Message(props: TMessageProps) {
   const messageLabel = isCreatedByUser ? localize('com_ui_user') : (message.sender ?? '');
   const subagentWakeup = wakeupDisplay?.kind === 'subagent' ? wakeupDisplay.tasks[0] : undefined;
   const Row = subagentWakeup == null ? MessageRow : WakeupRow;
+  const isUserSide = isCreatedByUser && (wakeupDisplay == null || subagentWakeup != null);
 
   return (
     <>
@@ -81,7 +82,7 @@ export default function Message(props: TMessageProps) {
             }
             className="final-completion"
             footer={
-              <SubRow classes={isCreatedByUser ? 'justify-end text-xs' : 'text-xs'}>
+              <SubRow classes={isUserSide ? 'justify-end text-xs' : 'text-xs'}>
                 <SiblingSwitch
                   siblingIdx={siblingIdx}
                   siblingCount={siblingCount}

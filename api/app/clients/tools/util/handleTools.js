@@ -46,7 +46,6 @@ const {
   resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
-  availableTools,
   manifestToolMap,
   // Basic Tools
   GoogleSearchAPI,
@@ -73,74 +72,10 @@ const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSearch');
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
-const { getUserPluginAuthValue } = require('~/server/services/PluginService');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
 const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
-
-/**
- * Validates the availability and authentication of tools for a user based on environment variables or user-specific plugin authentication values.
- * Tools without required authentication or with valid authentication are considered valid.
- *
- * @param {Object} user The user object for whom to validate tool access.
- * @param {Array<string>} tools An array of tool identifiers to validate. Defaults to an empty array.
- * @returns {Promise<Array<string>>} A promise that resolves to an array of valid tool identifiers.
- */
-const validateTools = async (user, tools = []) => {
-  try {
-    const validToolsSet = new Set(tools);
-    const availableToolsToValidate = availableTools.filter((tool) =>
-      validToolsSet.has(tool.pluginKey),
-    );
-
-    /**
-     * Validates the credentials for a given auth field or set of alternate auth fields for a tool.
-     * If valid admin or user authentication is found, the function returns early. Otherwise, it removes the tool from the set of valid tools.
-     *
-     * @param {string} authField The authentication field or fields (separated by "||" for alternates) to validate.
-     * @param {string} toolName The identifier of the tool being validated.
-     */
-    const validateCredentials = async (authField, toolName) => {
-      const fields = authField.split('||');
-      for (const field of fields) {
-        const adminAuth = process.env[field];
-        if (adminAuth && adminAuth.length > 0) {
-          return;
-        }
-
-        let userAuth = null;
-        try {
-          userAuth = await getUserPluginAuthValue(user, field);
-        } catch (err) {
-          if (field === fields[fields.length - 1] && !userAuth) {
-            throw err;
-          }
-        }
-        if (userAuth && userAuth.length > 0) {
-          return;
-        }
-      }
-
-      validToolsSet.delete(toolName);
-    };
-
-    for (const tool of availableToolsToValidate) {
-      if (!tool.authConfig || tool.authConfig.length === 0) {
-        continue;
-      }
-
-      for (const auth of tool.authConfig) {
-        await validateCredentials(auth.authField, tool.pluginKey);
-      }
-    }
-
-    return Array.from(validToolsSet.values());
-  } catch (err) {
-    logger.error('[validateTools] There was a problem validating tools', err);
-    throw new Error(err);
-  }
-};
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
 /** @typedef {import('@librechat/agents/langchain/tools').Tool} Tool */
@@ -732,6 +667,5 @@ const loadTools = async ({
 
 module.exports = {
   loadToolWithAuth,
-  validateTools,
   loadTools,
 };

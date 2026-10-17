@@ -119,6 +119,9 @@ describe('Experimental server configuration', () => {
       expect(start).toBeGreaterThan(-1);
       const call = entrypoint.slice(start, entrypoint.indexOf('});', start));
       expect(call).toContain(`idlePolling: ${config}?.endpoints?.agents?.eventDriven?.idlePolling`);
+      expect(call.replace(/\s+/g, ' ')).toContain(
+        `deadLetterRetentionDays: ${config}?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays`,
+      );
     }
   });
 

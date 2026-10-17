@@ -1,8 +1,8 @@
 import { logger } from '@librechat/data-schemas';
 import { SystemRoles } from 'librechat-data-provider';
-import { requireAdmin } from './admin';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
+import { requireAdmin } from './admin';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -62,7 +62,7 @@ describe('requireAdmin middleware', () => {
 
   describe('when user does not have admin role', () => {
     it('should return 403 when user has no role property', () => {
-      mockReq.user = { email: 'user@test.com' } as ServerRequest['user'];
+      mockReq.user = { id: 'user-123', email: 'user@test.com' } as ServerRequest['user'];
 
       requireAdmin(mockReq as ServerRequest, mockRes as Response, mockNext);
 
@@ -73,8 +73,9 @@ describe('requireAdmin middleware', () => {
       });
       expect(mockNext).not.toHaveBeenCalled();
       expect(logger.debug).toHaveBeenCalledWith(
-        '[requireAdmin] Access denied for non-admin user: user@test.com',
+        '[requireAdmin] Access denied for non-admin user: user-123',
       );
+      expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain('user@test.com');
     });
 
     it('should return 403 when user has USER role', () => {

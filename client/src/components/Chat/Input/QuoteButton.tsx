@@ -1,11 +1,11 @@
 import { memo, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
+import { useSetAtom } from 'jotai';
 import { createPortal } from 'react-dom';
 import { TextQuote } from 'lucide-react';
-import { useSetRecoilState } from 'recoil';
+import { pendingQuotesByConvoId } from '~/components/Chat/Input/Composer/state';
 import { cn, MAX_QUOTE_COUNT } from '~/utils';
 import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 /** Only selections fully inside a rendered chat message get the popup. */
 const MESSAGE_SELECTOR = '.message-render';
@@ -329,7 +329,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
   const pressedTextRef = useRef<string | null>(null);
   /** Set by the listener effect so the press handlers can dismiss the popup. */
   const hideRef = useRef<() => void>(() => undefined);
-  const setQuotes = useSetRecoilState(store.pendingQuotesByConvoId(conversationId));
+  const setQuotes = useSetAtom(pendingQuotesByConvoId(conversationId));
 
   /** Selection and scroll events must not enter React's commit/selection-restoration
    *  path. Keep the portal mounted and update only its transient presentation. */

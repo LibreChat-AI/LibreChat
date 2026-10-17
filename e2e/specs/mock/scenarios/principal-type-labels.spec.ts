@@ -40,6 +40,9 @@ const VARIANT_PARAM = 'e2eThemeVariant';
 const WCAG_AA_NORMAL = 4.5;
 /** WCAG 1.4.11: a graphical object (the dot) owes 3:1 against what it sits on. */
 const WCAG_MARK_MIN = 3;
+/** ClickHouse light holds Click UI's text.muted and chart hues, which sit under the WCAG floors by owner decision (4.05:1 text, 1.19:1 mark at the lowest). */
+const CLICK_UI_TEXT_MIN = 4;
+const CLICK_UI_MARK_MIN = 1.1;
 const SEARCH_LABEL = 'Search for people or groups by name or email';
 
 /**
@@ -134,14 +137,15 @@ function assertBadgePaint(paint: BadgePaint, context: string) {
     paint.dotColor,
   );
   const background = parseRgb(paint.background);
+  const clickUiLight = context.includes('variant=clickhouse mode=light');
   expect(
     contrast(parseRgb(paint.labelColor), background),
     `label contrast (${context})`,
-  ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+  ).toBeGreaterThanOrEqual(clickUiLight ? CLICK_UI_TEXT_MIN : WCAG_AA_NORMAL);
   expect(
     contrast(parseRgb(paint.dotColor), background),
     `dot contrast (${context})`,
-  ).toBeGreaterThanOrEqual(WCAG_MARK_MIN);
+  ).toBeGreaterThanOrEqual(clickUiLight ? CLICK_UI_MARK_MIN : WCAG_MARK_MIN);
 }
 
 async function createAgent(page: Page, name: string): Promise<string> {

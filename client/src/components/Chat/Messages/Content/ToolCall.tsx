@@ -36,6 +36,7 @@ export default function ToolCall({
   isLast = false,
   isSubmitting,
   toolCallId,
+  stepId,
   name,
   args: _args = '',
   output,
@@ -54,6 +55,7 @@ export default function ToolCall({
   isLast?: boolean;
   isSubmitting: boolean;
   toolCallId?: string;
+  stepId?: string;
   name: string;
   args: string | Record<string, unknown>;
   output?: string | null;
@@ -434,6 +436,8 @@ export default function ToolCall({
           ref={rowRef}
           data-testid="tool-call"
           data-tool-call-id={toolCallId}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
         >
           <ProgressText
             phase={phase}
@@ -484,7 +488,7 @@ export default function ToolCall({
         <div className="flex w-full flex-col gap-2.5">
           <div className="mt-2 mb-1">
             <Button
-              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium"
+              className="inline-flex items-center justify-center rounded-xl font-medium"
               variant="default"
               rel="noopener noreferrer"
               disabled={oauthBinding === 'pending'}

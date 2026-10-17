@@ -2,10 +2,13 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
+import { Table, TableBody, TableCell, TableRow } from './Table';
+import { Tabs, TabsList, TabsTrigger } from './Tabs';
 import InputWithDropdown from './InputWithDropDown';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
 import MultiSearch from './MultiSearch';
+import Dropdown from './Dropdown';
 
 jest.mock('./MorphIcon', () => {
   const { createMorphIconMock } = jest.requireActual('../test/mockMorphIcon');
@@ -103,5 +106,46 @@ describe('shared control keyboard focus', () => {
 
     await user.tab();
     expect(ringHost).not.toHaveClass('ring-focus-control');
+  });
+
+  it('names the global outline on the tab triggers, table rows and dropdown trigger', () => {
+    const roleClasses = [
+      'focus-visible:outline-theme-focus',
+      'focus-visible:outline-offset-theme-focus',
+      'focus-visible:outline-focus-outline',
+    ];
+    render(
+      <>
+        <Tabs defaultValue="a">
+          <TabsList>
+            <TabsTrigger value="a">One</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Table>
+          <TableBody>
+            <TableRow data-testid="row">
+              <TableCell>cell</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+        <Dropdown
+          value="a"
+          onChange={jest.fn()}
+          options={['a', 'b']}
+          ariaLabel="Choice"
+          testId="choice"
+        />
+      </>,
+    );
+
+    [
+      screen.getByRole('tab', { name: 'One' }),
+      screen.getByTestId('row'),
+      screen.getByTestId('choice'),
+    ].forEach((node) => {
+      expect(node).toHaveClass(...roleClasses);
+      expect(node).not.toHaveClass('outline-hidden');
+      expect(node).not.toHaveClass('outline-none');
+    });
   });
 });

@@ -12,7 +12,7 @@ import {
 /**
  * A tool call is opened by its run step, grows through argument deltas and is
  * settled by its completion, all folded into one part at the step's index by
- * the tool reducers in `client/src/hooks/SSE/steps/tools.ts`.
+ * the tool reducers in `packages/chat/src/core/steps/tools.ts`.
  */
 
 const FINAL_TEXT = 'E2E execute_code complete';

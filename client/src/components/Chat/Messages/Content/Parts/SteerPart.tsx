@@ -1,4 +1,5 @@
 import { memo, useMemo, useState, useEffect, useCallback } from 'react';
+import { CollapsibleText } from '@librechat/chat/components';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import SteerReceipt, { type SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
@@ -9,7 +10,6 @@ import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import Image from '~/components/Chat/Messages/Content/Image';
-import CollapsibleText from './CollapsibleText';
 import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
@@ -116,7 +116,8 @@ const SteerPart = memo(function SteerPart({
   return (
     <div
       id={steerId ? `steer-${steerId}` : undefined}
-      className="steer-render group relative my-5 flex w-full justify-end"
+      data-steer-render
+      className="group relative my-5 flex w-full justify-end"
       data-testid="steer-part"
     >
       <div className="user-turn relative flex w-fit max-w-[90%] flex-col items-end sm:max-w-[85%]">
@@ -150,7 +151,7 @@ const SteerPart = memo(function SteerPart({
           <CollapsibleText enabled={collapseLongUserMessages}>
             <div
               className={cn(
-                'markdown prose message-content dark:prose-invert light w-full break-words',
+                'markdown prose message-content light w-full break-words',
                 !enableUserMsgMarkdown && 'whitespace-pre-wrap',
                 'text-text-primary',
               )}

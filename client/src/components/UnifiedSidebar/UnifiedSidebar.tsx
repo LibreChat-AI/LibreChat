@@ -218,7 +218,7 @@ function UnifiedSidebar({
          * a site banner above that container stays above the drawer too
          * instead of covering its header strip, as it already does for the
          * scrim and the pane. */
-        'bg-surface-primary-alt text-text-primary absolute inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
+        'bg-surface-sidebar text-text-primary absolute inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
         /** In dark mode the scrim and the drawer are both near-black, and no
          *  scrim opacity separates them by 3:1, so the drawer draws its own
          *  edge. Light palettes get that separation from the scrim, so the
@@ -260,10 +260,7 @@ function UnifiedSidebar({
           <div className="shrink-0 px-3 pt-2 empty:hidden">
             <AgentMarketplaceButton layout="row" onNavigate={handleCollapse} />
           </div>
-          <nav
-            id="chat-history-nav"
-            className="bg-surface-primary-alt min-h-0 flex-1 overflow-hidden"
-          >
+          <nav id="chat-history-nav" className="bg-surface-sidebar min-h-0 flex-1 overflow-hidden">
             <SidePanelNav links={links} />
           </nav>
           <MobileShortcutTargets

@@ -137,10 +137,12 @@ function ToolCardImpl({
               <p className="text-text-primary flex min-w-0 flex-1 items-center gap-1 text-sm font-semibold">
                 <span className="truncate">{name}</span>
                 {isNative && (
-                  <VerifiedIcon
-                    className="text-status-verified size-3.5 shrink-0"
-                    aria-label={localize('com_ui_tools_native')}
-                  />
+                  <span className="text-status-verified shrink-0">
+                    <VerifiedIcon
+                      className="size-3.5"
+                      aria-label={localize('com_ui_tools_native')}
+                    />
+                  </span>
                 )}
               </p>
               {selected && (
@@ -161,7 +163,7 @@ function ToolCardImpl({
                 <span className="truncate">{status.label}</span>
               </p>
             ) : (
-              <p className="text-text-secondary truncate text-[11px] tracking-wide uppercase">
+              <p className="text-text-secondary text-2xs truncate tracking-wide uppercase">
                 {kindLabel}
               </p>
             )}
@@ -177,7 +179,7 @@ function ToolCardImpl({
         {(item.kind === 'action' && item.endpointCount > 0) || isPublicSkill || isSharedSkill ? (
           <div className="mt-auto flex w-full flex-wrap items-center gap-1.5">
             {item.kind === 'action' && item.endpointCount > 0 && (
-              <span className="bg-surface-tertiary text-text-tertiary inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]">
+              <span className="bg-surface-tertiary text-text-tertiary text-3xs inline-flex items-center gap-1 rounded-full px-2 py-0.5">
                 {localize(
                   item.endpointCount === 1
                     ? 'com_ui_tools_endpoint_count_one'
@@ -188,7 +190,7 @@ function ToolCardImpl({
             )}
             {isSharedSkill && skill && (
               <span
-                className="bg-surface-tertiary text-text-tertiary inline-flex max-w-[60%] items-center gap-1 rounded-full px-2 py-0.5 text-[10px]"
+                className="bg-surface-tertiary text-text-tertiary text-3xs inline-flex max-w-[60%] items-center gap-1 rounded-full px-2 py-0.5"
                 title={localize('com_ui_tools_shared_by', { name: skill.authorName })}
                 aria-label={localize('com_ui_tools_shared_by', { name: skill.authorName })}
               >
@@ -198,7 +200,7 @@ function ToolCardImpl({
             )}
             {isPublicSkill && (
               <span
-                className="bg-surface-tertiary text-text-tertiary inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px]"
+                className="bg-surface-tertiary text-text-tertiary text-3xs inline-flex items-center gap-1 rounded-full px-1.5 py-0.5"
                 title={localize('com_ui_sr_public_skill')}
                 aria-label={localize('com_ui_sr_public_skill')}
               >

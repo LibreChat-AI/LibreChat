@@ -1,7 +1,9 @@
 import React, { Profiler, useMemo, useState } from 'react';
+import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
+import { getDefaultStore, useAtom } from 'jotai';
 import { RecoilRoot, useRecoilState } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -12,12 +14,14 @@ import { render, screen, within, waitFor, fireEvent } from '@testing-library/rea
 import type { TFile, TFileUpload, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
+import { pendingQuotesByConvoId } from '~/components/Chat/Input/Composer/state';
 import { getDraft, getPendingDraftId, setDraft } from '~/utils';
-import ChatForm, { toRestoredComposerFile } from '../ChatForm';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import * as FileContainer from '../Files/FileContainer';
+import ChatForm from '../ChatForm';
 import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
@@ -88,8 +92,8 @@ class StubImage {
 let commits = 0;
 
 function Harness() {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting, setIsSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting, setIsSubmitting] = useAtom(isSubmittingFamily(0));
   /* ChatView owns this read and passes it in; the harness stands in for it. */
   const [speechSettingsInitialized] = useRecoilState(store.speechSettingsInitialized);
   const [, setFilesLoading] = useState(false);
@@ -121,8 +125,6 @@ function Harness() {
         },
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
-        showPopover: false,
-        setShowPopover: () => undefined,
         abortScroll: false,
         setAbortScroll: () => undefined,
         preset: null,
@@ -169,13 +171,13 @@ function renderComposer({
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
+  getDefaultStore().set(pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot
         initializeState={({ set }) => {
-          set(store.isSubmittingFamily(0), submitting);
+          getDefaultStore().set(isSubmittingFamily(0), submitting);
           set(store.speechSettingsInitialized, speechSettingsInitialized);
-          set(store.pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
         }}
       >
         <Router>
@@ -197,6 +199,11 @@ const attach = (container: HTMLElement, file: File) =>
   userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, file);
 const image = () => new File(['image-bytes'], 'cat.png', { type: 'image/png' });
 
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+  getDefaultStore().set(filesFamily(0), new Map());
+});
+
 describe('ChatForm attachments', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -211,23 +218,6 @@ describe('ChatForm attachments', () => {
     mockUpload.mockImplementation((body: FormData) =>
       Promise.resolve({ ...uploadResponse, temp_file_id: body.get('file_id') as string }),
     );
-  });
-
-  test('preserves extracted-text delivery when restoring a queued attachment', () => {
-    expect(
-      toRestoredComposerFile({
-        file_id: 'stored-doc',
-        filename: 'report.docx',
-        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        llmDeliveryPath: 'text',
-      }),
-    ).toMatchObject({
-      file_id: 'stored-doc',
-      filename: 'report.docx',
-      progress: 1,
-      attached: true,
-      llmDeliveryPath: 'text',
-    });
   });
 
   test('keeps the mic disabled until speech settings hydrate', async () => {

@@ -47,14 +47,14 @@ const ScrollToBottom = forwardRef<HTMLDivElement, Props>(
         >
           <Button
             type="button"
-            variant="outline"
+            variant="floating"
             size="icon-theme"
             shape="round"
             onClick={scrollHandler}
             disabled={!interactive}
             aria-label={localize('com_ui_scroll_to_bottom')}
             className={cn(
-              'me-2 bg-surface-chat/90 text-text-primary active:scale-[0.96] motion-reduce:active:scale-100',
+              'me-2 active:scale-[0.96] motion-reduce:active:scale-100',
               /* The wrapper owns the fade, so being briefly unreachable must not
                  dim the control on its way in on top of it. */
               'disabled:opacity-100',

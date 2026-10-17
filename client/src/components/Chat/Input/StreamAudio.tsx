@@ -10,9 +10,15 @@ import {
   MediaSourceAppender,
   usePauseGlobalAudio,
 } from '~/hooks/Audio';
+import {
+  logger,
+  getTTSCacheKey,
+  setCachedTTSAudio,
+  getCachedTTSAudio,
+  getTTSCacheGeneration,
+} from '~/utils';
 import { useAuthContext } from '~/hooks';
 import { globalAudioId } from '~/common';
-import { logger } from '~/utils';
 import store from '~/store';
 
 function timeoutPromise(ms: number, message?: string) {
@@ -25,7 +31,7 @@ const promiseTimeoutMessage = 'Reader promise timed out';
 const maxPromiseTime = 15000;
 
 export default function StreamAudio({ index = 0 }) {
-  const { token } = useAuthContext();
+  const { token, user } = useAuthContext();
 
   const cacheTTS = useRecoilValue(store.cacheTTS);
   const playbackRate = useRecoilValue(store.playbackRate);
@@ -57,6 +63,7 @@ export default function StreamAudio({ index = 0 }) {
 
     async function fetchAudio() {
       setIsFetching(true);
+      const generation = getTTSCacheGeneration();
       let mediaSource: MediaSourceAppender | undefined;
 
       try {
@@ -68,15 +75,15 @@ export default function StreamAudio({ index = 0 }) {
 
         /** Keyed by the spoken text, as manual playback is, so audio cached from an
          *  unfiltered message (reasoning included) is never replayed. */
-        let cacheKey = latestMessage ? getSpeechText(latestMessage) : '';
-        const cache = await caches.open('tts-responses');
-        const cachedResponse = await cache.match(cacheKey);
+        let cacheKey = latestMessage
+          ? await getTTSCacheKey(getSpeechText(latestMessage), voice, user?.id)
+          : null;
+        const cachedAudio = cacheKey ? getCachedTTSAudio(cacheKey) : undefined;
 
         setAudioRunId(activeRunId);
-        if (cachedResponse) {
+        if (cachedAudio) {
           logger.log('Audio found in cache');
-          const audioBlob = await cachedResponse.blob();
-          const blobUrl = URL.createObjectURL(audioBlob);
+          const blobUrl = URL.createObjectURL(cachedAudio);
           setGlobalAudioURL(blobUrl);
           setIsFetching(false);
           return;
@@ -141,12 +148,14 @@ export default function StreamAudio({ index = 0 }) {
             const targetMessage = latestMessages.find(
               (msg) => msg.messageId === latestMessage?.messageId,
             );
-            cacheKey = targetMessage ? getSpeechText(targetMessage) : '';
+            cacheKey = targetMessage
+              ? await getTTSCacheKey(getSpeechText(targetMessage), voice, user?.id)
+              : null;
             if (!cacheKey) {
               logger.warn('Cache key not found, skipping audio cache');
             } else {
               logger.log('Adding audio to cache');
-              await cache.put(cacheKey, new Response(audioBlob));
+              setCachedTTSAudio(cacheKey, audioBlob, generation);
             }
           }
         }
@@ -181,6 +190,7 @@ export default function StreamAudio({ index = 0 }) {
     audioRef,
     voice,
     token,
+    user?.id,
   ]);
 
   useEffect(() => {
@@ -208,13 +218,7 @@ export default function StreamAudio({ index = 0 }) {
       ref={audioRef}
       controls
       controlsList="nodownload nofullscreen noremoteplayback"
-      style={{
-        position: 'absolute',
-        overflow: 'hidden',
-        display: 'none',
-        height: '0px',
-        width: '0px',
-      }}
+      className="absolute hidden size-0 overflow-hidden"
       src={globalAudioURL ?? undefined}
       id={globalAudioId}
       autoPlay

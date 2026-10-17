@@ -70,6 +70,7 @@ export interface ChatProjectMethods {
     limits?: Partial<ChatProjectLimits>,
   ): Promise<IChatProject | null>;
   deleteChatProject(user: string, projectId: string): Promise<DeleteChatProjectResult>;
+  deleteUserChatProjects(user: string): Promise<number>;
   addChatProjectFile(
     user: string,
     projectId: string,
@@ -86,7 +87,6 @@ export interface ChatProjectMethods {
     conversationId: string,
     projectId: string | null,
   ): Promise<AssignConversationToProjectResult | null>;
-  refreshChatProjectStats(user: string, projectId: string): Promise<IChatProject | null>;
 }
 
 type ProjectCursor = {
@@ -687,6 +687,13 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     };
   }
 
+  /** Account erasure: the user's conversations are deleted first, so no chat keeps a pointer. */
+  async function deleteUserChatProjects(user: string): Promise<number> {
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    const result = await ChatProject.deleteMany({ user });
+    return result.deletedCount ?? 0;
+  }
+
   async function assignConversationToProject(
     user: string,
     conversationId: string,
@@ -744,22 +751,15 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     };
   }
 
-  async function refreshChatProjectStats(
-    user: string,
-    projectId: string,
-  ): Promise<IChatProject | null> {
-    return await refreshChatProjectStatsForUser(mongoose, user, projectId);
-  }
-
   return {
     createChatProject,
     getChatProject,
     listChatProjects,
     updateChatProject,
     deleteChatProject,
+    deleteUserChatProjects,
     addChatProjectFile,
     removeChatProjectFile,
     assignConversationToProject,
-    refreshChatProjectStats,
   };
 }

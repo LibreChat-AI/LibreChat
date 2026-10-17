@@ -141,6 +141,62 @@ describe('mergeConfigOverrides', () => {
     expect(mergeConfigOverrides(base, configs).mcpAppSandbox).toEqual(base.mcpAppSandbox);
   });
 
+  it('keeps the pull request host from the base config whatever an override does', () => {
+    const pullRequests = { host: 'ghe.example.com', allowedRepositories: ['acme/*'] };
+    const base = { endpoints: { agents: { pullRequests } } } as unknown as AppConfig;
+    const read = (configs: IConfig[]) =>
+      (
+        mergeConfigOverrides(base, configs) as unknown as {
+          endpoints: { agents: { pullRequests: Record<string, unknown> } };
+        }
+      ).endpoints.agents.pullRequests;
+
+    const changed = read([
+      fakeConfig(
+        {
+          endpoints: {
+            agents: { pullRequests: { host: 'evil.example.com', cacheTtlSeconds: 60 } },
+          },
+        },
+        10,
+      ),
+    ]);
+    expect(changed).toMatchObject({ host: 'ghe.example.com', cacheTtlSeconds: 60 });
+
+    const provider = read([
+      fakeConfig({ endpoints: { agents: { pullRequests: { provider: 'gitlab' } } } }, 10),
+    ]);
+    expect(provider.provider).toBeUndefined();
+
+    const slots = read([
+      fakeConfig({ endpoints: { agents: { pullRequests: { sharedCacheSlots: 64 } } } }, 10),
+    ]);
+    expect(slots.sharedCacheSlots).toBeUndefined();
+
+    const oauth = read([
+      fakeConfig(
+        {
+          endpoints: {
+            agents: {
+              pullRequests: { oauth: { clientId: 'x', clientSecret: '${OTHER_SECRET}' } },
+            },
+          },
+        },
+        10,
+      ),
+    ]);
+    expect(oauth.oauth).toBeUndefined();
+
+    const removed = read([fakeConfig({}, 10, ['endpoints.agents.pullRequests.host'])]);
+    expect(removed.host).toBe('ghe.example.com');
+
+    const unset = { endpoints: { agents: { pullRequests: {} } } } as unknown as AppConfig;
+    const added = mergeConfigOverrides(unset, [
+      fakeConfig({ endpoints: { agents: { pullRequests: { host: 'evil.example.com' } } } }, 10),
+    ]) as unknown as { endpoints: { agents: { pullRequests: Record<string, unknown> } } };
+    expect(added.endpoints.agents.pullRequests.host).toBeUndefined();
+  });
+
   it('applies tenant-wide Langfuse settings only from the base principal', () => {
     const configs = [
       fakeConfig(

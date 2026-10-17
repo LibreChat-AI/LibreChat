@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useAtomValue } from 'jotai';
-import { useRecoilValue } from 'recoil';
 import { Constants } from 'librechat-data-provider';
+import { useIsSubmitting } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import {
   useLocalize,
@@ -24,7 +24,6 @@ import ScrollButton from './ScrollButton';
 import PendingTurn from './PendingTurn';
 import MessageNav from './MessageNav';
 import { cn } from '~/utils';
-import store from '~/store';
 
 function MessagesViewContent({
   messagesTree: _messagesTree,
@@ -54,7 +53,7 @@ function MessagesViewContent({
   const fileMap = useFileMapContext();
   const threadRows = useThreadRows(FLAT_THREAD ? messages : null, conversationId, fileMap);
   const { index, latestMessageId, latestMessageDepth, messagesKey } = useChatContext();
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
+  const isSubmitting = useIsSubmitting(index);
   const { showScrollButton, maximizeChatSpace } = useChatSurface();
   const autoScroll = useAtomValue(autoScrollAtom);
 
@@ -136,12 +135,11 @@ function MessagesViewContent({
       <div className="relative flex-1 overflow-hidden overflow-y-auto">
         <div className="relative h-full">
           <div
-            className="scrollbar-gutter-stable"
+            className="scrollbar-gutter-stable overflow-y-auto"
             onScroll={debouncedHandleScroll}
             ref={scrollableRef}
             style={{
               height: '100%',
-              overflowY: 'auto',
               width: '100%',
               /** The mount hook pins the anchor row itself (document-space
                *  measurement); native scroll anchoring reacting to the same

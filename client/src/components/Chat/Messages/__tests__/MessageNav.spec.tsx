@@ -473,7 +473,8 @@ describe('MessageNav', () => {
     ): HTMLDivElement {
       const steer = document.createElement('div');
       steer.id = `steer-${steerId}`;
-      steer.className = 'steer-render group relative';
+      steer.className = 'group relative';
+      steer.setAttribute('data-steer-render', '');
       const header = document.createElement('h2');
       header.textContent = 'Danny';
       const body = document.createElement('div');
@@ -743,7 +744,7 @@ describe('MessageNav', () => {
        *  two places short of the end while the reader sat at the very bottom. */
       const steer = document.createElement('div');
       steer.id = 'steer-s1';
-      steer.className = 'steer-render';
+      steer.setAttribute('data-steer-render', '');
       steer.textContent = 'mid-run steer';
       Object.defineProperty(steer, 'offsetTop', { value: 60, configurable: true });
       Object.defineProperty(steer, 'offsetHeight', { value: 40, configurable: true });
@@ -2515,4 +2516,27 @@ describe('MessageNav', () => {
       restoreLayout();
     });
   });
+});
+
+it('classifies a host-authored background wake-up as System navigation', () => {
+  const text =
+    'A background tool task has finished. Continue using its durable result below.\n' +
+    JSON.stringify([
+      {
+        background_task_id: 'task',
+        tool_call_id: 'call',
+        tool: 'bash_tool',
+        status: 'completed',
+        result: 'done',
+      },
+    ]);
+  const entry = buildEntry('system', asTMessage(buildMessage({ text, isCreatedByUser: true })));
+  expect(entry).toMatchObject({ isUser: false, isSystem: true });
+});
+
+it('classifies a DOM-only System row separately from assistant navigation', () => {
+  const node = document.createElement('div');
+  node.innerHTML =
+    '<div data-system-turn="true"><div data-testid="message-body">Task finished</div></div>';
+  expect(buildFallbackEntry(node, 'system')).toMatchObject({ isSystem: true });
 });

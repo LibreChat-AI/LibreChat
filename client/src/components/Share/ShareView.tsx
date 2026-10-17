@@ -27,6 +27,7 @@ import {
 import SharedSubagentActivityDialog from '~/components/Chat/Subagents/SharedSubagentActivityDialog';
 import { cn, DEFAULT_APP_TITLE, getResponseStatus, selectActiveBranchTail } from '~/utils';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import AnalyticsConsentToggle from '../Nav/SettingsTabs/Data/AnalyticsConsent';
 import { useDeploymentThemeOverride } from '~/Providers/DeploymentTheme';
 import { useLocalize, useDocumentTitle, useAuthContext } from '~/hooks';
 import { ThemeSelector, LangSelector } from '~/components/Appearance';
@@ -34,6 +35,8 @@ import { ShareMessagesProvider } from './ShareMessagesProvider';
 import { useForkSharedConvoMutation } from '~/data-provider';
 import { useGetSharedStartupConfig } from '~/data-provider';
 import { ShareArtifactsContainer } from './ShareArtifacts';
+import AnalyticsConsent from '../System/AnalyticsConsent';
+import { hasAnalyticsGtmId } from '~/store/analytics';
 import AppChatSurface from '../Chat/Surface';
 import { ShareContext } from '~/Providers';
 import MessagesView from './MessagesView';
@@ -205,6 +208,7 @@ function SharedView() {
           langfuseSessionUrl={data.langfuseSessionUrl}
           onContinue={handleContinue}
           isContinuing={forkShare.isLoading}
+          analyticsConfigured={hasAnalyticsGtmId(config?.analyticsGtmId)}
         />
         <ShareMessagesProvider messages={data.messages}>
           <MessagesView messagesTree={messagesTree} conversationId={SHARED_CONVO_KEY} />
@@ -236,6 +240,7 @@ function SharedView() {
       <div className="text-text-primary relative flex h-full min-h-0 flex-col" role="presentation">
         {content}
         {footer}
+        <AnalyticsConsent gtmId={config?.analyticsGtmId} />
       </div>
     </div>
   );
@@ -333,6 +338,8 @@ interface ShareHeaderProps {
   onContinue: () => void;
   onThemeChange: (value: string) => void;
   onLangChange: (value: string) => void;
+  /** Whether the link's deployment set `ANALYTICS_GTM_ID`, which adds the consent toggle. */
+  analyticsConfigured?: boolean;
 }
 
 export function ShareHeader({
@@ -348,6 +355,7 @@ export function ShareHeader({
   onContinue,
   onThemeChange,
   onLangChange,
+  analyticsConfigured = false,
 }: ShareHeaderProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsContent, setSettingsContent] = useState<HTMLDivElement | null>(null);
@@ -376,11 +384,7 @@ export function ShareHeader({
 
           <div className="flex flex-wrap items-center justify-end gap-2 md:flex-nowrap md:self-start">
             {langfuseSessionUrl && (
-              <Button
-                asChild
-                variant="outline"
-                className="border-border-medium text-text-primary gap-2 rounded-full px-4 py-2 text-sm"
-              >
+              <Button asChild variant="outline" shape="round" className="border-border-medium">
                 <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
                   <span>{langfuseSessionLabel}</span>
                   <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
@@ -392,7 +396,7 @@ export function ShareHeader({
               variant="submit"
               onClick={onContinue}
               disabled={isContinuing}
-              className="gap-2 rounded-full px-4 py-2 text-sm"
+              shape="round"
             >
               {isContinuing ? (
                 <Spinner className="size-4" />
@@ -407,9 +411,10 @@ export function ShareHeader({
                   size={isMobile ? 'icon' : 'default'}
                   type="button"
                   variant="outline"
+                  shape="round"
                   aria-label={settingsLabel}
                   className={cn(
-                    'border-border-medium text-text-primary rounded-full text-sm transition-colors',
+                    'border-border-medium transition-colors',
                     isMobile
                       ? 'absolute right-4 bottom-4 justify-center p-0 shadow-lg'
                       : 'gap-2 self-start px-4 py-2',
@@ -443,6 +448,12 @@ export function ShareHeader({
                     portalElement={settingsContent}
                     popoverClassName="z-[150]"
                   />
+                  {analyticsConfigured && (
+                    <>
+                      <Separator orientation="horizontal" />
+                      <AnalyticsConsentToggle />
+                    </>
+                  )}
                 </div>
               </OGDialogContent>
             </OGDialog>

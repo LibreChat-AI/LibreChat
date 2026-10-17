@@ -1,12 +1,5 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
-import type { TableColumn } from './DataTable.types';
-import {
-  useDebounced,
-  useOptimizedRowSelection,
-  useColumnStyles,
-  useKeyboardNavigation,
-  useTableRowHeight,
-} from './DataTable.hooks';
+import { useDebounced, useOptimizedRowSelection, useTableRowHeight } from './DataTable.hooks';
 
 describe('DataTable Hooks', () => {
   describe('useDebounced', () => {
@@ -152,326 +145,29 @@ describe('DataTable Hooks', () => {
       expect(selection).toEqual({ existing: true, new: true });
     });
   });
-
-  describe('useColumnStyles', () => {
-    let mockContainerRef: React.RefObject<HTMLDivElement>;
-    let mockContainer: HTMLDivElement;
-
-    beforeEach(() => {
-      mockContainer = document.createElement('div');
-      Object.defineProperty(mockContainer, 'clientWidth', {
-        configurable: true,
-        value: 1000,
-      });
-      mockContainerRef = { current: mockContainer };
-    });
-
-    it('should return empty object when container width is 0', () => {
-      Object.defineProperty(mockContainer, 'clientWidth', { value: 0 });
-
-      const columns: TableColumn<{ name: string }, string>[] = [
-        { accessorKey: 'name', header: 'Name' },
-      ];
-
-      const { result } = renderHook(() => useColumnStyles(columns, false, mockContainerRef));
-
-      expect(result.current).toEqual({});
-    });
-
-    it('should calculate fixed width columns', () => {
-      const columns: TableColumn<{ name: string; status: string }, string>[] = [
-        { accessorKey: 'name', header: 'Name', meta: { size: 200 } },
-        { accessorKey: 'status', header: 'Status', meta: { size: 100 } },
-      ];
-
-      const { result } = renderHook(() => useColumnStyles(columns, false, mockContainerRef));
-
-      expect(result.current.name).toBeDefined();
-      expect(result.current.status).toBeDefined();
-    });
-
-    it('should distribute available width to flexible columns by priority', () => {
-      const columns: TableColumn<{ col1: string; col2: string; col3: string }, string>[] = [
-        { accessorKey: 'col1', header: 'Col 1', meta: { size: 200 } }, // fixed
-        { accessorKey: 'col2', header: 'Col 2', meta: { priority: 2 } }, // flexible, priority 2
-        { accessorKey: 'col3', header: 'Col 3', meta: { priority: 1 } }, // flexible, priority 1
-      ];
-
-      const { result } = renderHook(() => useColumnStyles(columns, false, mockContainerRef));
-
-      // Available width = 1000 - 200 = 800
-      // Total priority = 3
-      // col2 should get 2/3 = ~533px
-      // col3 should get 1/3 = ~266px
-      expect(result.current.col2).toBeDefined();
-      expect(result.current.col3).toBeDefined();
-    });
-
-    it('should handle mobile vs desktop sizes', () => {
-      const columns: TableColumn<{ name: string }, string>[] = [
-        { accessorKey: 'name', header: 'Name', meta: { size: 200, mobileSize: 150 } },
-      ];
-
-      // Desktop
-      const { result: desktopResult } = renderHook(() =>
-        useColumnStyles(columns, false, mockContainerRef),
-      );
-
-      // Mobile
-      const { result: mobileResult } = renderHook(() =>
-        useColumnStyles(columns, true, mockContainerRef),
-      );
-
-      // Mobile should use mobileSize if defined
-      expect(mobileResult.current.name).toBeDefined();
-      expect(desktopResult.current.name).toBeDefined();
-    });
-
-    it('should handle columns with id instead of accessorKey', () => {
-      const columns: TableColumn<Record<string, unknown>, unknown>[] = [
-        { id: 'custom-column', header: 'Custom', meta: { size: 150 } },
-      ];
-
-      const { result } = renderHook(() => useColumnStyles(columns, false, mockContainerRef));
-
-      expect(result.current['custom-column']).toBeDefined();
-    });
-
-    it('should return empty object when container ref is null', () => {
-      const nullRef = { current: null };
-      const columns: TableColumn<{ name: string }, string>[] = [
-        { accessorKey: 'name', header: 'Name' },
-      ];
-
-      const { result } = renderHook(() =>
-        useColumnStyles(columns, false, nullRef as React.RefObject<HTMLDivElement>),
-      );
-
-      expect(result.current).toEqual({});
-    });
-  });
-
-  describe('useKeyboardNavigation', () => {
-    let mockTableRef: React.RefObject<HTMLDivElement>;
-    let mockTable: HTMLDivElement;
-    let mockOnRowSelect: jest.Mock;
-
-    beforeEach(() => {
-      mockTable = document.createElement('div');
-      document.body.appendChild(mockTable);
-      mockTableRef = { current: mockTable };
-      mockOnRowSelect = jest.fn();
-    });
-
-    afterEach(() => {
-      document.body.removeChild(mockTable);
-    });
-
-    const dispatchKeyEvent = (key: string, target?: HTMLElement) => {
-      const event = new KeyboardEvent('keydown', {
-        key,
-        bubbles: true,
-        cancelable: true,
-      });
-      (target || mockTable).dispatchEvent(event);
-    };
-
-    it('should initialize with focused index of -1', () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      expect(result.current.focusedRowIndex).toBe(-1);
-    });
-
-    it('should navigate down with ArrowDown key', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(0);
-      });
-
-      act(() => {
-        dispatchKeyEvent('ArrowDown');
-      });
-
-      await waitFor(() => {
-        expect(result.current.focusedRowIndex).toBe(1);
-      });
-    });
-
-    it('should navigate up with ArrowUp key', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(5);
-      });
-
-      act(() => {
-        dispatchKeyEvent('ArrowUp');
-      });
-
-      await waitFor(() => {
-        expect(result.current.focusedRowIndex).toBe(4);
-      });
-    });
-
-    it('should not go below 0 with ArrowUp', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(0);
-      });
-
-      act(() => {
-        dispatchKeyEvent('ArrowUp');
-      });
-
-      await waitFor(() => {
-        expect(result.current.focusedRowIndex).toBe(0);
-      });
-    });
-
-    it('should not exceed row count with ArrowDown', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 5, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(4);
-      });
-
-      act(() => {
-        dispatchKeyEvent('ArrowDown');
-      });
-
-      await waitFor(() => {
-        expect(result.current.focusedRowIndex).toBe(4);
-      });
-    });
-
-    it('should jump to first row with Home key', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(5);
-      });
-
-      act(() => {
-        dispatchKeyEvent('Home');
-      });
-
-      await waitFor(() => {
-        expect(result.current.focusedRowIndex).toBe(0);
-      });
-    });
-
-    it('should jump to last row with End key', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(0);
-      });
-
-      act(() => {
-        dispatchKeyEvent('End');
-      });
-
-      await waitFor(() => {
-        expect(result.current.focusedRowIndex).toBe(9);
-      });
-    });
-
-    it('should trigger onRowSelect with Enter key', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(3);
-      });
-
-      act(() => {
-        dispatchKeyEvent('Enter');
-      });
-
-      await waitFor(() => {
-        expect(mockOnRowSelect).toHaveBeenCalledWith(3);
-      });
-    });
-
-    it('should trigger onRowSelect with Space key', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(2);
-      });
-
-      act(() => {
-        dispatchKeyEvent(' ');
-      });
-
-      await waitFor(() => {
-        expect(mockOnRowSelect).toHaveBeenCalledWith(2);
-      });
-    });
-
-    it('should reset focused index with Escape key', async () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(5);
-      });
-
-      act(() => {
-        dispatchKeyEvent('Escape');
-      });
-
-      await waitFor(() => {
-        expect(result.current.focusedRowIndex).toBe(-1);
-      });
-    });
-
-    it('should ignore events outside table', () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      const outsideElement = document.createElement('div');
-      document.body.appendChild(outsideElement);
-
-      act(() => {
-        result.current.setFocusedRowIndex(0);
-      });
-
-      const event = new KeyboardEvent('keydown', {
-        key: 'ArrowDown',
-        bubbles: true,
-      });
-      outsideElement.dispatchEvent(event);
-
-      // Should not change because event target is outside table
-      expect(result.current.focusedRowIndex).toBe(0);
-
-      document.body.removeChild(outsideElement);
-    });
-
-    it('should not call onRowSelect if focused index is -1', () => {
-      renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        dispatchKeyEvent('Enter');
-      });
-
-      expect(mockOnRowSelect).not.toHaveBeenCalled();
-    });
-
-    it('should allow manual focus index setting', () => {
-      const { result } = renderHook(() => useKeyboardNavigation(mockTableRef, 10, mockOnRowSelect));
-
-      act(() => {
-        result.current.setFocusedRowIndex(7);
-      });
-
-      expect(result.current.focusedRowIndex).toBe(7);
-    });
-  });
 });
 
 describe('useTableRowHeight', () => {
+  const originalMatchMedia = window.matchMedia;
+  let listeners: Array<() => void>;
+  let wide: boolean;
+
+  beforeEach(() => {
+    listeners = [];
+    wide = true;
+    window.matchMedia = jest.fn().mockImplementation(() => ({
+      get matches() {
+        return wide;
+      },
+      addEventListener: (_: string, listener: () => void) => listeners.push(listener),
+      removeEventListener: (_: string, listener: () => void) => {
+        listeners = listeners.filter((l) => l !== listener);
+      },
+    }));
+  });
+
   afterEach(() => {
+    window.matchMedia = originalMatchMedia;
     document.documentElement.style.removeProperty('--theme-table-cell-space-y');
     document.documentElement.style.removeProperty('--theme-table-row-stroke');
   });
@@ -494,5 +190,30 @@ describe('useTableRowHeight', () => {
     await waitFor(() => expect(result.current).toBe(37));
     /** The title cell's fixed height is a border box, so the rule sits inside it. */
     expect(titled.result.current).toBe(32);
+  });
+
+  describe('below the sm breakpoint', () => {
+    beforeEach(() => {
+      wide = false;
+    });
+
+    it('is 24px compact on a narrow screen, where the cells carry a quarter of the space', () => {
+      expect(renderHook(() => useTableRowHeight('compact')).result.current).toBe(24);
+      expect(renderHook(() => useTableRowHeight('titled')).result.current).toBe(48);
+    });
+
+    it('re-reads when the viewport crosses sm', () => {
+      const { result, unmount } = renderHook(() => useTableRowHeight('compact'));
+      expect(result.current).toBe(24);
+
+      act(() => {
+        wide = true;
+        listeners.forEach((listener) => listener());
+      });
+      expect(result.current).toBe(36);
+
+      unmount();
+      expect(listeners).toHaveLength(0);
+    });
   });
 });

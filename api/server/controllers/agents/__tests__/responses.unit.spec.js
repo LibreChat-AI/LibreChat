@@ -263,7 +263,6 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   resolvePersistableCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
-  getCodeWorkspaceSelections: jest.fn(),
   createMCPRuntimeRequestBody: ({
     messageId,
     conversationId,
@@ -518,8 +517,6 @@ jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   getSkillDbMethods: jest.fn(() => ({})),
   canAuthorSkillFiles: mockCanAuthorSkillFiles,
   withDeploymentSkillIds: jest.fn((ids = []) => ids),
-  enrichWithSkillConfigurable: mockEnrichWithSkillConfigurable,
-  buildSkillPrimedIdsByName: mockBuildSkillPrimedIdsByName,
   buildAgentToolContext: mockBuildAgentToolContext,
   resolveMemoryAvailability: mockResolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext: mockEnrichLoadedToolsWithAgentContext,
@@ -704,9 +701,6 @@ describe('createResponse controller', () => {
     async (stream) => {
       const api = require('@librechat/api');
       const db = require('~/models');
-      api.getCodeWorkspaceSelections.mockReturnValueOnce([
-        { environmentId: 'machine', workspaceId: 'stale-project' },
-      ]);
       api.validateResponseRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -727,7 +721,6 @@ describe('createResponse controller', () => {
         expect.anything(),
       );
       expect(db.saveConvo.mock.calls.at(-1)[1]).not.toHaveProperty('codeWorkspaces');
-      expect(api.getCodeWorkspaceSelections).not.toHaveBeenCalled();
     },
   );
 

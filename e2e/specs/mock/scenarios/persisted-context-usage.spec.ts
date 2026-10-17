@@ -138,7 +138,7 @@ test.describe('persisted context usage', () => {
       await expect(lastTurn.getByText('Cache write').locator('../..')).toContainText('50');
       await expect(branch.getByText('This branch')).toBeVisible();
       await expect(branch.getByText('Cache read').locator('../..')).toContainText('500');
-      await expect(popover.getByTestId('token-usage-cost')).toContainText('Cost (last turn)');
+      await expect(lastTurn.getByTestId('usage-cost')).toContainText('Cost (last turn)');
       await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
       await page.keyboard.press('Escape');
     };

@@ -7,6 +7,7 @@ import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import { SkillsScope, resolveAgentSkillsScope } from 'librechat-data-provider';
 import type { TSkillSummary } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
+import { pendingManualSkillsByConvoId } from '~/components/Chat/Input/Composer/state';
 import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
 import { useLocalize, useSkillActiveState } from '~/hooks';
 import { useSkillsInfiniteQuery } from '~/data-provider';
@@ -15,7 +16,6 @@ import { useAgentsMapContext } from '~/Providers';
 import { ephemeralAgentByConvoId } from '~/store';
 import { isEphemeralAgent } from '~/common';
 import MentionItem from './MentionItem';
-import store from '~/store';
 
 const commandChar = '$';
 const ROW_HEIGHT = 44;
@@ -92,9 +92,7 @@ function SkillsCommandContent({
   const remScale = useRemScale();
   const setShowSkillsPopover = useSetAtom(showSkillsPopoverFamily(index));
   const setEphemeralAgent = useSetRecoilState(ephemeralAgentByConvoId(conversationId));
-  const setPendingManualSkills = useSetRecoilState(
-    store.pendingManualSkillsByConvoId(conversationId),
-  );
+  const setPendingManualSkills = useSetAtom(pendingManualSkillsByConvoId(conversationId));
 
   const agentsMap = useAgentsMapContext();
   const { isActive } = useSkillActiveState();
@@ -290,7 +288,8 @@ function SkillsCommandContent({
         <Input
           ref={initInputRef}
           placeholder={localize('com_ui_skills_command_placeholder')}
-          className="bg-surface-tertiary-alt text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
+          variant="embedded"
+          className="mb-1"
           autoComplete="off"
           value={searchValue}
           onKeyDown={(e) => {

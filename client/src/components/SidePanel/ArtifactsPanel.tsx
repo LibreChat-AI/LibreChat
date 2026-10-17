@@ -36,9 +36,7 @@ const ArtifactsPanel = memo(function ArtifactsPanel({
 
   return (
     <>
-      {panel != null && (
-        <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
-      )}
+      {panel != null && <ResizableHandleAlt withHandle className="text-text-primary" />}
       <ResizablePanel
         defaultSize="50"
         maxSize="70"

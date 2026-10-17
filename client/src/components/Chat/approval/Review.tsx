@@ -116,10 +116,10 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
             render={
               <Button
                 type="button"
-                variant="ghost"
+                variant="quiet"
                 size="icon"
                 aria-label={localize('com_ui_collapse')}
-                className="text-text-secondary size-auto rounded-md p-1"
+                className="size-auto rounded-md p-1"
                 onClick={() => setOpen(false)}
               >
                 <ChevronDown className="size-4" aria-hidden="true" />
@@ -226,12 +226,12 @@ export const PendingToolApprovalButton = memo(function PendingToolApprovalButton
   return (
     <Button
       type="button"
-      variant="ghost"
+      variant="quiet"
       size="sm"
       aria-expanded={open}
       aria-controls="pending-tool-approval-panel"
       onClick={() => setOpen((current) => !current)}
-      className="text-text-secondary h-8 gap-1.5 rounded-full px-2"
+      className="h-8 gap-1.5 rounded-full px-2"
       data-testid="pending-tool-approval-button"
     >
       <ShieldQuestion className="size-4" aria-hidden="true" />

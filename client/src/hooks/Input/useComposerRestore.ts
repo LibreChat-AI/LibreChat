@@ -1,15 +1,15 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useStore } from 'jotai';
-import { useRecoilCallback } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import type { ExtendedFile, FileSetter } from '~/common';
 import type { useChatFormContext } from '~/Providers';
 import {
   getReasoningStateKey,
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
-import store from '~/store';
 
 export interface ComposerRestore {
   /** Chip "Edit message": replaces the draft outright, since the caller has
@@ -68,24 +68,23 @@ export default function useComposerRestore({
   const reasoningStateKey = getReasoningStateKey(conversationId, index);
   /** Chip "Edit message" restore: quote chips, skill picks, and the reasoning
    *  override merge back into their compose-time atoms. */
-  const restoreComposerContext = useRecoilCallback(
-    ({ set }) =>
-      (context?: QueuedMessageContext) => {
-        const { quotes, manualSkills, reasoningOverride } = context ?? {};
-        if (quotes != null && quotes.length > 0) {
-          set(store.pendingQuotesByConvoId(conversationId), (prev) => [
-            ...new Set([...prev, ...quotes]),
-          ]);
-        }
-        if (manualSkills != null && manualSkills.length > 0) {
-          set(store.pendingManualSkillsByConvoId(conversationId), (prev) => [
-            ...new Set([...prev, ...manualSkills]),
-          ]);
-        }
-        if (reasoningOverride != null) {
-          reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), reasoningOverride);
-        }
-      },
+  const restoreComposerContext = useCallback(
+    (context?: QueuedMessageContext) => {
+      const { quotes, manualSkills, reasoningOverride } = context ?? {};
+      if (quotes != null && quotes.length > 0) {
+        reasoningStore.set(pendingQuotesByConvoId(conversationId), (prev) => [
+          ...new Set([...prev, ...quotes]),
+        ]);
+      }
+      if (manualSkills != null && manualSkills.length > 0) {
+        reasoningStore.set(pendingManualSkillsByConvoId(conversationId), (prev) => [
+          ...new Set([...prev, ...manualSkills]),
+        ]);
+      }
+      if (reasoningOverride != null) {
+        reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), reasoningOverride);
+      }
+    },
     [conversationId, reasoningStateKey, reasoningStore],
   );
 
@@ -165,13 +164,12 @@ export default function useComposerRestore({
    *  MERGES the steer's attachments into the composer's file map and its quotes
    *  and skill picks into their atoms, so restoring over staged context would
    *  glue the two submissions together. */
-  const hasStagedContext = useRecoilCallback(
-    ({ snapshot }) =>
-      (convoId: string) =>
-        snapshot.getLoadable(store.pendingQuotesByConvoId(convoId)).getValue().length > 0 ||
-        snapshot.getLoadable(store.pendingManualSkillsByConvoId(convoId)).getValue().length > 0 ||
-        reasoningStore.get(pendingReasoningOverrideFamily(getReasoningStateKey(convoId, index))) !=
-          null,
+  const hasStagedContext = useCallback(
+    (convoId: string) =>
+      reasoningStore.get(pendingQuotesByConvoId(convoId)).length > 0 ||
+      reasoningStore.get(pendingManualSkillsByConvoId(convoId)).length > 0 ||
+      reasoningStore.get(pendingReasoningOverrideFamily(getReasoningStateKey(convoId, index))) !=
+        null,
     [index, reasoningStore],
   );
 

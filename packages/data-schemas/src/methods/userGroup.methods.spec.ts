@@ -195,64 +195,6 @@ describe('UserGroup Methods - Detailed Tests', () => {
     });
   });
 
-  describe('findGroupsByMemberId', () => {
-    let user1: mongoose.HydratedDocument<t.IUser>;
-
-    beforeEach(async () => {
-      user1 = await User.create({
-        name: 'User 1',
-        email: 'user1@test.com',
-        provider: 'local',
-      });
-    });
-
-    test('should find groups by member ObjectId', async () => {
-      await Group.create([
-        {
-          name: 'Group 1',
-          source: 'local',
-          memberIds: [(user1._id as mongoose.Types.ObjectId).toString(), 'other-user'],
-        },
-        {
-          name: 'Group 2',
-          source: 'local',
-          memberIds: [(user1._id as mongoose.Types.ObjectId).toString()],
-        },
-        {
-          name: 'Group 3',
-          source: 'local',
-          memberIds: ['other-user'],
-        },
-      ]);
-
-      const groups = await methods.findGroupsByMemberId(user1._id as mongoose.Types.ObjectId);
-
-      expect(groups).toHaveLength(2);
-      expect(groups.map((g) => g.name).sort()).toEqual(['Group 1', 'Group 2']);
-    });
-
-    test('should find groups by member string ID', async () => {
-      await Group.create([
-        {
-          name: 'Group 1',
-          source: 'local',
-          memberIds: [(user1._id as mongoose.Types.ObjectId).toString()],
-        },
-      ]);
-
-      const groups = await methods.findGroupsByMemberId(user1._id as mongoose.Types.ObjectId);
-
-      expect(groups).toHaveLength(1);
-      expect(groups[0].name).toBe('Group 1');
-    });
-
-    test('should return empty array for user with no groups', async () => {
-      const groups = await methods.findGroupsByMemberId(user1._id as mongoose.Types.ObjectId);
-
-      expect(groups).toEqual([]);
-    });
-  });
-
   describe('createGroup', () => {
     test('should create a group with all fields', async () => {
       const groupData: Partial<t.IGroup> = {
@@ -412,6 +354,44 @@ describe('UserGroup Methods - Detailed Tests', () => {
       expect(result.group?.memberIds).toContain((user._id as mongoose.Types.ObjectId).toString());
     });
 
+    test('reports a change only for the call that altered membership', async () => {
+      const groupId = group._id as mongoose.Types.ObjectId;
+      const userId = user._id as mongoose.Types.ObjectId;
+
+      const [first, second] = await Promise.all([
+        methods.addUserToGroup(userId, groupId),
+        methods.addUserToGroup(userId, groupId),
+      ]);
+      expect([first.changed, second.changed].filter(Boolean)).toHaveLength(1);
+      expect(first.group?.memberIds).toHaveLength(1);
+
+      const removed = await methods.removeUserFromGroup(userId, groupId);
+      expect(removed.changed).toBe(true);
+      const again = await methods.removeUserFromGroup(userId, groupId);
+      expect(again.changed).toBe(false);
+      expect(again.group).toBeDefined();
+    });
+
+    test('reports a field change only for the call that altered it', async () => {
+      const groupId = group._id as mongoose.Types.ObjectId;
+
+      const [first, second] = await Promise.all([
+        methods.updateGroupFieldsTracked(groupId, { name: 'Renamed' }),
+        methods.updateGroupFieldsTracked(groupId, { name: 'Renamed' }),
+      ]);
+
+      expect([first?.changed, second?.changed].filter(Boolean)).toHaveLength(1);
+      expect(first?.group.name).toBe('Renamed');
+      expect(await methods.updateGroupFieldsTracked(groupId, { name: 'Renamed' })).toMatchObject({
+        changed: false,
+      });
+      const mixed = await methods.updateGroupFieldsTracked(groupId, {
+        name: 'Renamed',
+        description: 'new description',
+      });
+      expect(mixed).toMatchObject({ changed: true, changedFields: ['description'] });
+    });
+
     test('should remove user from group', async () => {
       // First add user
       await methods.addUserToGroup(
@@ -438,165 +418,6 @@ describe('UserGroup Methods - Detailed Tests', () => {
       );
 
       expect(result.group?.memberIds).toHaveLength(0);
-    });
-  });
-
-  describe('getUserGroups', () => {
-    let user: mongoose.HydratedDocument<t.IUser>;
-
-    beforeEach(async () => {
-      user = await User.create({
-        name: 'Test User',
-        email: 'user@test.com',
-        provider: 'local',
-      });
-    });
-
-    test('should get all groups for a user', async () => {
-      // Create groups with user as member
-      await Group.create([
-        {
-          name: 'Group 1',
-          source: 'local',
-          memberIds: [(user._id as mongoose.Types.ObjectId).toString()],
-        },
-        {
-          name: 'Group 2',
-          source: 'local',
-          memberIds: [(user._id as mongoose.Types.ObjectId).toString(), 'other-user'],
-        },
-        {
-          name: 'Group 3',
-          source: 'local',
-          memberIds: ['other-user'],
-        },
-      ]);
-
-      const groups = await methods.getUserGroups(user._id as mongoose.Types.ObjectId);
-
-      expect(groups).toHaveLength(2);
-      expect(groups.map((g) => g.name).sort()).toEqual(['Group 1', 'Group 2']);
-    });
-
-    test('should return empty array for user with no groups', async () => {
-      const groups = await methods.getUserGroups(user._id as mongoose.Types.ObjectId);
-
-      expect(groups).toEqual([]);
-    });
-
-    test('should handle user with idOnTheSource', async () => {
-      const externalUser = await User.create({
-        name: 'External User',
-        email: 'external@test.com',
-        provider: 'entra',
-        idOnTheSource: 'external-456',
-      });
-
-      await Group.create({
-        name: 'External Group',
-        source: 'entra',
-        idOnTheSource: 'entra-external-group',
-        memberIds: ['external-456'], // Using idOnTheSource
-      });
-
-      const groups = await methods.getUserGroups(externalUser._id as mongoose.Types.ObjectId);
-
-      expect(groups).toHaveLength(1);
-      expect(groups[0].name).toBe('External Group');
-    });
-  });
-
-  describe('syncUserEntraGroups', () => {
-    let user: mongoose.HydratedDocument<t.IUser>;
-
-    beforeEach(async () => {
-      user = await User.create({
-        name: 'Entra User',
-        email: 'entra@test.com',
-        provider: 'entra',
-        idOnTheSource: 'entra-user-123',
-      });
-    });
-
-    test('should create new groups and add user', async () => {
-      const entraGroups = [
-        { id: 'group-1', name: 'Entra Group 1' },
-        { id: 'group-2', name: 'Entra Group 2' },
-      ];
-
-      const result = await methods.syncUserEntraGroups(
-        user._id as mongoose.Types.ObjectId,
-        entraGroups,
-      );
-
-      expect(result.user).toBeDefined();
-      expect(result.addedGroups).toHaveLength(2);
-      expect(result.removedGroups).toHaveLength(0);
-
-      // Verify groups were created
-      const groups = await Group.find({ source: 'entra' });
-      expect(groups).toHaveLength(2);
-
-      // Verify user is member of both
-      for (const group of groups) {
-        expect(group.memberIds).toContain('entra-user-123');
-      }
-    });
-
-    test('should remove user from groups not in sync list', async () => {
-      // Create existing groups
-      const group1 = await Group.create({
-        name: 'Keep Group',
-        source: 'entra',
-        idOnTheSource: 'keep-group',
-        memberIds: ['entra-user-123'],
-      });
-
-      const group2 = await Group.create({
-        name: 'Remove Group',
-        source: 'entra',
-        idOnTheSource: 'remove-group',
-        memberIds: ['entra-user-123'],
-      });
-
-      // Sync with only one group
-      const result = await methods.syncUserEntraGroups(user._id as mongoose.Types.ObjectId, [
-        { id: 'keep-group', name: 'Keep Group' },
-      ]);
-
-      expect(result.addedGroups).toHaveLength(0);
-      expect(result.removedGroups).toHaveLength(1);
-
-      // Verify membership
-      const keepGroup = await Group.findById(group1._id);
-      const removeGroup = await Group.findById(group2._id);
-
-      expect(keepGroup?.memberIds).toContain('entra-user-123');
-      expect(removeGroup?.memberIds).not.toContain('entra-user-123');
-    });
-
-    test('should not affect local groups', async () => {
-      // Create local group
-      const localGroup = await Group.create({
-        name: 'Local Group',
-        source: 'local',
-        memberIds: ['entra-user-123'],
-      });
-
-      // Sync entra groups
-      await methods.syncUserEntraGroups(user._id as mongoose.Types.ObjectId, [
-        { id: 'entra-group', name: 'Entra Group' },
-      ]);
-
-      // Verify local group unchanged
-      const savedLocalGroup = await Group.findById(localGroup._id);
-      expect(savedLocalGroup?.memberIds).toContain('entra-user-123');
-    });
-
-    test('should throw error for non-existent user', async () => {
-      const fakeId = new mongoose.Types.ObjectId();
-
-      await expect(methods.syncUserEntraGroups(fakeId, [])).rejects.toThrow('User not found');
     });
   });
 
@@ -705,6 +526,24 @@ describe('UserGroup Methods - Detailed Tests', () => {
       const result = await methods.deleteGroup(fakeId);
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('removeMemberByIdTracked', () => {
+    test('reports whether the member was actually removed', async () => {
+      const group = await Group.create({ name: 'Test', source: 'local', memberIds: ['m1', 'm2'] });
+      const groupId = group._id as mongoose.Types.ObjectId;
+
+      const removed = await methods.removeMemberByIdTracked(groupId, 'm1');
+      expect(removed.changed).toBe(true);
+      expect(removed.group?.memberIds).toEqual(['m2']);
+
+      const absent = await methods.removeMemberByIdTracked(groupId, 'm1');
+      expect(absent.changed).toBe(false);
+      expect(absent.group?.memberIds).toEqual(['m2']);
+
+      const missing = await methods.removeMemberByIdTracked(new mongoose.Types.ObjectId(), 'm1');
+      expect(missing).toEqual({ group: null, changed: false });
     });
   });
 

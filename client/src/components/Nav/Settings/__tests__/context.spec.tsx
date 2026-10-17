@@ -1,12 +1,14 @@
 import { RecoilRoot } from 'recoil';
 import { renderHook } from '@testing-library/react';
-import type { TUser } from 'librechat-data-provider';
+import type { TPullRequestConnection, TStartupConfig, TUser } from 'librechat-data-provider';
 import type { PropsWithChildren } from 'react';
 import { useSettingsContext } from '../context';
 
 type LegacyProviderUser = Omit<TUser, 'provider'> & { provider?: string | null };
 
 let mockUser: LegacyProviderUser | undefined;
+let mockStartup: Partial<TStartupConfig> | undefined;
+let mockConnection: TPullRequestConnection | undefined;
 
 jest.mock('~/hooks', () => ({
   useAuthContext: () => ({ user: mockUser }),
@@ -20,7 +22,8 @@ jest.mock('~/hooks/usePersonalizationAccess', () => () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: undefined }),
+  useGetStartupConfig: () => ({ data: mockStartup }),
+  usePullRequestConnectionStatus: () => mockConnection,
 }));
 
 jest.mock('../../SettingsTabs/ProviderKeys/useProviderKeys', () => () => []);
@@ -74,5 +77,43 @@ describe('useSettingsContext two-factor policy scope', () => {
 
   it('withholds the policy capability when no authenticated user is loaded', () => {
     expect(policyProviderFor(undefined)).toBe(false);
+  });
+});
+
+describe('useSettingsContext connected accounts', () => {
+  afterEach(() => {
+    mockStartup = undefined;
+    mockConnection = undefined;
+  });
+
+  const hasConnect = () =>
+    renderHook(() => useSettingsContext(), { wrapper }).result.current.hasPullRequestConnect;
+
+  it('offers the section when the deployment advertises an app, before the status loads', () => {
+    mockStartup = { pullRequestsConnect: 'github' };
+    expect(hasConnect()).toBe(true);
+  });
+
+  it('hides the section once the server says no app is configured', () => {
+    mockStartup = { pullRequestsConnect: 'github' };
+    mockConnection = { configured: false, connected: false };
+    expect(hasConnect()).toBe(false);
+  });
+
+  it('keeps the section while a stored grant outlives its app', () => {
+    mockStartup = { pullRequestsConnect: 'github' };
+    mockConnection = { configured: false, connected: true };
+    expect(hasConnect()).toBe(true);
+  });
+
+  it('offers the section for a surviving grant when no app is advertised any more', () => {
+    mockStartup = { pullRequestsEnabled: true };
+    mockConnection = { configured: false, connected: true };
+    expect(hasConnect()).toBe(true);
+  });
+
+  it('never offers the section when the deployment advertises no app', () => {
+    mockConnection = { configured: true, provider: 'github', connected: false };
+    expect(hasConnect()).toBe(false);
   });
 });

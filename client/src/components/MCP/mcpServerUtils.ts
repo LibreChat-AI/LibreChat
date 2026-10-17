@@ -161,28 +161,6 @@ export function getStatusTextKey(
 }
 
 /**
- * Determines if a server requires user action to connect.
- * Used to show action buttons and amber status color.
- */
-export function serverNeedsAction(
-  serverStatus?: MCPServerStatus,
-  _hasCustomUserVars?: boolean,
-): boolean {
-  if (!serverStatus) return false;
-  const { connectionState, requiresOAuth, requestScoped } = serverStatus;
-
-  if (requestScoped && connectionState !== 'connecting') return false;
-
-  // Needs OAuth authentication
-  if (connectionState === 'disconnected' && requiresOAuth) return true;
-
-  // Has error - needs retry
-  if (connectionState === 'error') return true;
-
-  return false;
-}
-
-/**
  * Request-scoped servers are usable without an idle transport connection once
  * their authorization requirement is satisfied. Agent tooling uses this
  * readiness signal to attach the runtime wildcard instead of waiting for a

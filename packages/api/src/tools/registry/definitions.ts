@@ -472,11 +472,3 @@ const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
 export function getToolDefinition(toolName: string): ToolRegistryDefinition | undefined {
   return toolDefinitions[toolName] ?? agentToolDefinitions[toolName];
 }
-
-export function getAllToolDefinitions(): ToolRegistryDefinition[] {
-  return [...Object.values(toolDefinitions), ...Object.values(agentToolDefinitions)];
-}
-
-export function getToolSchema(toolName: string): ExtendedJsonSchema | undefined {
-  return getToolDefinition(toolName)?.schema;
-}

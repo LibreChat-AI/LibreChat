@@ -6,6 +6,7 @@ import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
 import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { initializeAnthropic } from '../anthropic/initialize';
 import { initializeBedrock } from '../bedrock/initialize';
+import { getReasoningCapabilityDeps } from '../reasoning';
 import { initializeCustom } from '../custom/initialize';
 import { initializeGoogle } from '../google/initialize';
 import { initializeOpenAI } from '../openai/initialize';
@@ -28,6 +29,16 @@ export function isKnownCustomProvider(provider?: string): boolean {
 }
 
 /**
+ * Production wiring for custom endpoints: the initializer takes its reasoning catalog client
+ * and cache from the caller, and this registry is where the real ones are supplied.
+ */
+const initializeCustomWithReasoning: InitializeFn = (params) =>
+  initializeCustom({
+    ...params,
+    reasoningCapabilityDeps: params.reasoningCapabilityDeps ?? getReasoningCapabilityDeps(),
+  });
+
+/**
  * Provider configuration map mapping providers to their initialization functions.
  *
  * `Providers.VERTEXAI` shares `initializeGoogle` because the runtime distinction
@@ -38,10 +49,10 @@ export function isKnownCustomProvider(provider?: string): boolean {
  * summarization falls back to the raw provider, dropping client overrides.
  */
 export const providerConfigMap: Record<string, InitializeFn> = {
-  [Providers.XAI]: initializeCustom,
-  [Providers.DEEPSEEK]: initializeCustom,
-  [Providers.MOONSHOT]: initializeCustom,
-  [Providers.OPENROUTER]: initializeCustom,
+  [Providers.XAI]: initializeCustomWithReasoning,
+  [Providers.DEEPSEEK]: initializeCustomWithReasoning,
+  [Providers.MOONSHOT]: initializeCustomWithReasoning,
+  [Providers.OPENROUTER]: initializeCustomWithReasoning,
   [Providers.VERTEXAI]: initializeGoogle,
   [EModelEndpoint.openAI]: initializeOpenAI,
   [EModelEndpoint.google]: initializeGoogle,
@@ -153,7 +164,7 @@ export function getProviderConfig({
     if (!customEndpointConfig) {
       throw new Error(`Provider ${provider} not supported`);
     }
-    getOptions = initializeCustom;
+    getOptions = initializeCustomWithReasoning;
     overrideProvider = Providers.OPENAI;
   }
 

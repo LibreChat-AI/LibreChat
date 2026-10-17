@@ -315,12 +315,6 @@ export interface AgentQueuedTurnMethods {
       allowLegacyPredecessorInference?: boolean;
     },
   ) => Promise<AgentQueuedTurnPredecessor | null>;
-  drainAgentQueuedTurns: (
-    input: AgentQueuedTurnOwnerScope & {
-      conversationId?: string;
-      settledAt?: Date;
-    },
-  ) => Promise<number>;
   deleteAgentQueuedTurns: (
     input: AgentQueuedTurnOwnerScope & { conversationId?: string },
   ) => Promise<number>;
@@ -2680,57 +2674,6 @@ export function createAgentQueuedTurnMethods(
     };
   }
 
-  async function drainAgentQueuedTurns(
-    input: AgentQueuedTurnOwnerScope & {
-      conversationId?: string;
-      settledAt?: Date;
-    },
-  ): Promise<number> {
-    const settledAt = input.settledAt ?? new Date();
-    const result = await Turn().updateMany(
-      {
-        ...ownerScope(input),
-        ...(input.conversationId != null && {
-          conversationId: requireBoundedString(input.conversationId, 256),
-        }),
-        status: { $in: ['queued', 'claimed'] },
-        admissionStartedAt: { $exists: false },
-      },
-      {
-        $set: {
-          status: 'cancelled',
-          terminalReceipt: {
-            outcome: 'cancelled',
-            settledAt,
-            failure: {
-              code: 'OWNER_DRAINED',
-              message: 'Queued turn owner was drained',
-            },
-          },
-        },
-        $unset: {
-          activeSlot: 1,
-          admissionSlot: 1,
-          claimId: 1,
-          claimBy: 1,
-          claimUntil: 1,
-        },
-      },
-    );
-    await Turn().updateMany(
-      {
-        ...ownerScope(input),
-        ...(input.conversationId != null && {
-          conversationId: requireBoundedString(input.conversationId, 256),
-        }),
-        status: 'cancelled',
-        deliveryKey: { $exists: false },
-      },
-      { $set: { deliveryState: 'retired' } },
-    );
-    return result.modifiedCount;
-  }
-
   async function deleteAgentQueuedTurns(
     input: AgentQueuedTurnOwnerScope & { conversationId?: string },
   ): Promise<number> {
@@ -3013,7 +2956,6 @@ export function createAgentQueuedTurnMethods(
     hasAgentQueuedTurnAdmissionReceipt,
     deadLetterAgentQueuedTurn,
     getEffectiveAgentQueuedTurnPredecessor,
-    drainAgentQueuedTurns,
     deleteAgentQueuedTurns,
     prepareAgentQueuedTurnConversationDeletion,
     deletePreparedAgentQueuedTurnConversations,

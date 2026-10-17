@@ -211,20 +211,6 @@ export function createScheduleMCPRuntimeHost(
   };
 }
 
-/** Ordinary chats do not construct scheduling dependencies or perform schedule reads. */
-export async function prepareScheduleMCPExecution(
-  input: Parameters<ReturnType<typeof createScheduleMCPRuntimeHost>['prepare']>[0],
-  getHost: () => Pick<ReturnType<typeof createScheduleMCPRuntimeHost>, 'prepare'>,
-): Promise<void> {
-  if (
-    input.restoredJob?.scheduleMCPCompletion === undefined &&
-    !isScheduleFireRequest(input.req) &&
-    !isScheduledMCPCompletionRequest(input.req)
-  )
-    return;
-  await prepareSafely(() => getHost().prepare(input), input.signal);
-}
-
 /** Ordinary startup keeps its original synchronous admission of independent reads. */
 export function initializeWithScheduleMCPExecution<T>(
   input: Parameters<ReturnType<typeof createScheduleMCPRuntimeHost>['prepare']>[0],

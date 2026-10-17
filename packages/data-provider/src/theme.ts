@@ -104,6 +104,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-border-menu',
   'rgb-surface-composer',
   'rgb-surface-search',
+  'rgb-surface-sidebar',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',
@@ -136,6 +137,16 @@ export const themeColorTokens = Object.freeze([
   'rgb-illustration-subtle',
   'rgb-illustration',
   'rgb-illustration-strong',
+  'rgb-scrollbar-thumb',
+  'rgb-page-canvas',
+  'rgb-select-fill',
+  'rgb-select-edge',
+  'rgb-button-neutral-border',
+  'rgb-button-neutral-text',
+  'rgb-button-neutral-hover',
+  'rgb-link-inline',
+  'rgb-toast-edge',
+  'rgb-stroke-ink',
   'rgb-file-document',
   'rgb-file-sheet',
   'rgb-file-code',
@@ -160,14 +171,29 @@ export const themeColorTokens = Object.freeze([
   'rgb-series-6',
   'rgb-series-7',
   'rgb-series-8',
+  'rgb-category-icon-1',
+  'rgb-category-icon-2',
+  'rgb-category-icon-4',
+  'rgb-category-icon-5',
+  'rgb-category-icon-6',
+  'rgb-category-icon-7',
   'rgb-switch-unchecked',
   'rgb-switch-thumb',
+  'rgb-checkbox-fill',
   'rgb-table-header-text',
   'rgb-table-header-fill',
   'rgb-presentation',
 ] as const);
 
 export type ThemeColorToken = (typeof themeColorTokens)[number];
+
+/** Role names a release shipped and a later one renamed. */
+export type RenamedThemeColorToken = 'rgb-category-icon';
+
+/** Each renamed role paired with the name it has now; readers carry a value to the current name. */
+export const renamedThemeColorTokens: ReadonlyArray<
+  readonly [RenamedThemeColorToken, ThemeColorToken]
+> = Object.freeze([['rgb-category-icon', 'rgb-category-icon-4']] as const);
 
 export const themeBrandTokens = Object.freeze([
   'provider-openai',
@@ -180,6 +206,23 @@ export const themeBrandTokens = Object.freeze([
 ] as const);
 
 export type ThemeBrandToken = (typeof themeBrandTokens)[number];
+
+/**
+ * Color utilities the stylesheet computes from other roles, so a theme sets the roles they read
+ * (an overlay, a border, an appearance share) and never the name itself.
+ */
+export const themeDerivedColorTokens = Object.freeze([
+  'scrim',
+  'scrim-alert',
+  'scrim-modal',
+  'border-chrome',
+  'border-chrome-heavy',
+  'border-chrome-medium',
+  'border-inset',
+  'border-inset-medium',
+] as const);
+
+export type ThemeDerivedColorToken = (typeof themeDerivedColorTokens)[number];
 
 /** One problem in a theme definition: where it is, relative to the definition, and what it is. */
 export interface ThemeIssue {
@@ -264,6 +307,10 @@ const lengthWithin =
     const px = parseFloat(value) * (value.endsWith('rem') ? 16 : 1);
     return px >= minPx && px <= maxPx;
   };
+/** A Select list's scroll height, or `none` for no cap of its own, so it fills the room the popper
+ *  leaves. */
+const isListMaxHeight = (value: unknown): value is string =>
+  value === 'none' || lengthWithin(128, 640)(value);
 /** A pointer target never drops under WCAG 2.5.8's 24px minimum, written in px or rem. */
 const isTargetSize = (value: unknown): value is string =>
   isSwitchLength(value) && parseFloat(value) >= (value.endsWith('rem') ? 1.5 : 24);
@@ -390,9 +437,10 @@ const appearanceValidators = {
   tabRadius: isLength,
   tabMinWidth: isTableLength,
   /** A Select list's narrowest width (`0` to size it by its trigger), and the height it scrolls
-   *  past: never under 8rem, so a few options always show, nor over 40rem. */
+   *  past: never under 8rem, so a few options always show, nor over 40rem, or `none` to scroll
+   *  only past the room the popper leaves, which also caps every other value. */
   listMinWidth: isTableLength,
-  listMaxHeight: lengthWithin(128, 640),
+  listMaxHeight: isListMaxHeight,
   radiusSm: isLength,
   radiusMd: isLength,
   radiusLg: isLength,
@@ -403,6 +451,8 @@ const appearanceValidators = {
   /** The inline padding and icon-to-label gap of a theme-sized control, apart from the shared
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
+  /** The Button's default size inline padding. */
+  buttonPaddingX: isLength,
   controlGap: isLength,
   /** An icon's size (0.75 to 1.25rem), and the larger one a dialog's close button draws (1 to
    *  2rem). */
@@ -422,6 +472,13 @@ const appearanceValidators = {
    *  field's edge color. */
   fieldHeight: isLength,
   fieldHeightLg: isTargetSize,
+  /** The sign-in field and submit button heights, each a pointer target, and their corner. */
+  authFieldHeight: isTargetSize,
+  authButtonHeight: isTargetSize,
+  authControlRadius: isLength,
+  /** The second-factor and reset-success actions' height and corner. */
+  authActionHeight: isTargetSize,
+  authActionRadius: isLength,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
   /** Whether a field stays transparent or paints `field-fill`. */
@@ -437,6 +494,10 @@ const appearanceValidators = {
   switchHeight: isSwitchLength,
   /** A checkbox's box and the check inside it, 1 to 1.5rem: never smaller than the box it was. */
   checkboxSize: lengthWithin(16, 24),
+  /** The checkbox's corner, and whether an unchecked box stays transparent or paints
+   *  `checkbox-fill`. */
+  checkboxRadius: isLength,
+  checkboxFillStyle: (value: unknown) => value === 'transparent' || value === 'fill',
   tableCellSpaceY: isTableLength,
   tableRowStroke: isTableLength,
   spaceCompact: isLength,
@@ -452,12 +513,18 @@ const appearanceValidators = {
   textLg: isLength,
   textXl: isLength,
   text2xl: isLength,
+  text3xs: isLength,
+  text2xs: isLength,
+  text1xs: isLength,
+  text1sm: isLength,
+  text3xl: isLength,
   leadingXs: isLineHeight,
   leadingSm: isLineHeight,
   leadingBase: isLineHeight,
   leadingLg: isLineHeight,
   leadingXl: isLineHeight,
   leading2xl: isLineHeight,
+  leading3xl: isLineHeight,
   /** A dialog's edge stroke width, inline padding and title-to-description gap, and its title's
    *  size, leading, weight and family. */
   dialogStroke: isLength,
@@ -471,6 +538,7 @@ const appearanceValidators = {
   scrimOpacity: isOpacity,
   alertScrimOpacity: isOpacity,
   modalScrimOpacity: isOpacity,
+  buttonNeutralBorderOpacity: isOpacity,
   /** Released themes may hold `var()` here, so this role keeps its original, looser check. */
   elevationSurface: (value: unknown) =>
     typeof value === 'string' && value.trim().length > 0 && !/[;{}]|url\s*\(/i.test(value),
@@ -502,10 +570,62 @@ export const themeAppearanceTokens = Object.freeze(
   Object.keys(appearanceValidators) as ThemeAppearanceToken[],
 );
 
+/**
+ * A page-readable cookie naming the signed-in session's owner and expiry, set beside the httpOnly
+ * session cookies with the same lifetime and cleared with them. The session cookies are
+ * unreadable, so the theme boot replay reads this one to replay a cached theme only into a live
+ * session of the identity that cached it. It holds no credential.
+ */
+export const SESSION_HINT_COOKIE = 'session_hint';
+
+export type SessionHint = { expires: number; owner: string };
+
+/** The identity a cached deployment theme belongs to, as the cache and the session hint name it. */
+export const themeOwnerKey = (userId: string, tenantId?: string | null): string =>
+  `${tenantId ?? ''}:${userId}`;
+
+/** `<expiry epoch ms>~<owner key>`; the expiry never contains the separator, the owner may. */
+export const formatSessionHint = ({ expires, owner }: SessionHint): string => `${expires}~${owner}`;
+
+/** Reads a decoded session hint value, or `undefined` when it is malformed. */
+export function parseSessionHint(value: string): SessionHint | undefined {
+  const separator = value.indexOf('~');
+  const expires = Number(value.slice(0, separator));
+  if (separator < 1 || !Number.isFinite(expires)) {
+    return undefined;
+  }
+  return { expires, owner: value.slice(separator + 1) };
+}
+
+/**
+ * Bumped by hand when a release changes what resolving a theme emits without changing its roles
+ * (a palette value, a fallback derivation, an emitted attribute), so cached entries are rebuilt.
+ */
+export const THEME_CACHE_EPOCH = 5 as const;
+
+/**
+ * Names the role set a stored resolved theme was built against: any color, brand or appearance
+ * role added or removed changes it. A cache that replays resolved variables keys itself on this,
+ * so an entry that predates a role is dropped instead of painting that role's stylesheet default.
+ */
+export function themeRoleFingerprint(): string {
+  const roles = [...themeColorTokens, ...themeBrandTokens, ...themeAppearanceTokens]
+    .sort()
+    .join(',');
+  let hash = 5381;
+  for (let i = 0; i < roles.length; i++) {
+    hash = ((hash * 33) ^ roles.charCodeAt(i)) >>> 0;
+  }
+  return `${THEME_VERSION}.${THEME_CACHE_EPOCH}.${hash.toString(36)}`;
+}
+
 export const isThemeAppearanceToken = (key: string): key is ThemeAppearanceToken =>
   Object.prototype.hasOwnProperty.call(appearanceValidators, key);
 
 const colorTokenSet: ReadonlySet<string> = new Set<string>(themeColorTokens);
+const renamedColorTokenSet: ReadonlySet<string> = new Set<string>(
+  renamedThemeColorTokens.map(([from]) => from),
+);
 const brandTokenSet: ReadonlySet<string> = new Set<string>(themeBrandTokens);
 const themeModes = ['light', 'dark'] as const;
 
@@ -601,7 +721,11 @@ export function collectThemeWarningIssues(theme: unknown): ThemeIssue[] {
     const futureColors = isPlainThemeRecord(colors)
       ? Object.entries(colors)
           .filter(
-            ([key, value]) => !colorTokenSet.has(key) && isColorTokenName(key) && isThemeRGB(value),
+            ([key, value]) =>
+              !colorTokenSet.has(key) &&
+              !renamedColorTokenSet.has(key) &&
+              isColorTokenName(key) &&
+              isThemeRGB(value),
           )
           .map(([key]) =>
             issue(['modes', mode, 'colors', key], `Unknown ${mode} color token ignored: ${key}`),

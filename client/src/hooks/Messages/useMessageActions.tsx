@@ -19,8 +19,8 @@ import {
   hasCopyableText,
 } from './useCopyToClipboard';
 import { useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
+import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useAuthContext } from '~/hooks/AuthContext';
-import { useGetAddedConvo } from '~/hooks/Chat';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 

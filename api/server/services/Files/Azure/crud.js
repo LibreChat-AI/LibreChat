@@ -5,6 +5,8 @@ const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
+  createOwnedBlobFileDeleter,
+  extractAzureBlobPath,
   assertRemoteFileURL,
   getSafeErrorMetadata,
   getAzureContainerClient,
@@ -120,26 +122,18 @@ async function getAzureURL({ fileName, basePath = defaultBasePath, userId, conta
  * @param {ServerRequest} params.req - The Express request object.
  * @param {MongoFile} params.file - The file object.
  */
-async function deleteFileFromAzure(req, file) {
-  await deleteRagFile({ userId: req.user.id, file });
-
-  try {
-    const containerClient = await getAzureContainerClient(AZURE_CONTAINER_NAME);
-    const blobPath = file.filepath.split(`${AZURE_CONTAINER_NAME}/`)[1];
-    if (!blobPath.includes(req.user.id)) {
-      throw new Error('User ID not found in blob path');
-    }
-    const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
-    await blockBlobClient.delete();
-    logger.debug('[deleteFileFromAzure] Blob deleted successfully from Azure Blob Storage');
-  } catch (error) {
-    logger.error('[deleteFileFromAzure] Error deleting blob:', error);
-    if (error.statusCode === 404) {
-      return;
-    }
-    throw error;
-  }
-}
+const deleteFileFromAzure = (req, file) =>
+  createOwnedBlobFileDeleter({
+    extractPath: (filepath) => extractAzureBlobPath(filepath, AZURE_CONTAINER_NAME),
+    deleteBlob: async (blobPath) => {
+      const containerClient = await getAzureContainerClient(AZURE_CONTAINER_NAME);
+      const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
+      await blockBlobClient.delete();
+      logger.debug('[deleteFileFromAzure] Blob deleted successfully from Azure Blob Storage');
+    },
+    isMissing: (error) => error?.statusCode === 404,
+    deleteRagFile,
+  })(req, file);
 
 /**
  * Streams a file from disk directly to Azure Blob Storage without loading

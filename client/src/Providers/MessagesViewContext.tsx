@@ -31,6 +31,12 @@ type MessagesOperations = Pick<
   'ask' | 'regenerate' | 'handleContinue' | 'getMessages' | 'setMessages'
 >;
 
+/** The view's conversation with the operations an inline editor writes through. */
+export type MessagesEditing = Pick<
+  MessagesViewContextValue,
+  'conversation' | 'ask' | 'getMessages' | 'setMessages'
+>;
+
 const MessagesViewContext = createContext<MessagesViewContextValue | undefined>(undefined);
 
 /**
@@ -199,13 +205,4 @@ export function useOptionalMessagesConversation() {
   const conversation = context?.conversation;
   const conversationId = context?.conversationId;
   return useMemo(() => ({ conversation, conversationId }), [conversation, conversationId]);
-}
-
-/** Hook for components that only need message state */
-export function useMessagesState() {
-  const { index, latestMessageId, latestMessageDepth } = useMessagesViewContext();
-  return useMemo(
-    () => ({ index, latestMessageId, latestMessageDepth }),
-    [index, latestMessageId, latestMessageDepth],
-  );
 }

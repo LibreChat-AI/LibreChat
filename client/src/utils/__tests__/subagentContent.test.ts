@@ -1,6 +1,6 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { SubagentUpdateEvent } from 'librechat-data-provider';
-import { aggregateSubagentContent, buildSubagentTickerLines } from '../subagentContent';
+import { aggregateSubagentContent, buildSubagentTickerLines } from 'test/subagents';
 
 const makeEvent = (overrides: Partial<SubagentUpdateEvent>): SubagentUpdateEvent => ({
   runId: 'parent-run',

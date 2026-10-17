@@ -16,8 +16,8 @@ import type {
 } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocs } from '~/utils/eviction';
-import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -43,6 +43,9 @@ const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(
 
 /** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
 const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
+
+/** Cached auth documents evicted at once when a reset touches every user. */
+const TERMS_RESET_EVICTION_BATCH = 100;
 
 function isAuthUserDocCacheEnabled(): boolean {
   return process.env.AUTH_USER_CACHE_MODE === 'on';
@@ -95,6 +98,7 @@ export function createUserMethods(
     updateData: TwoFactorEnrollmentUpdate,
   ) => Promise<IUser | null>;
   acceptTerms: (userId: string) => Promise<IUser | null>;
+  resetTermsAcceptance: () => Promise<{ modifiedCount: number }>;
   searchUsers: ({
     searchPattern,
     limit,
@@ -550,13 +554,50 @@ export function createUserMethods(
    * updates are used instead of an aggregation pipeline with $$NOW, which
    * Amazon DocumentDB rejects.
    */
+  /** Withdraws every user's acceptance and evicts their cached auth documents, so a reset takes effect at once. */
+  async function resetTermsAcceptance(): Promise<{ modifiedCount: number }> {
+    const User = mongoose.models.User;
+    const result = await User.updateMany(
+      {},
+      {
+        $set: { termsAccepted: false, termsAcceptedAt: null },
+        $unset: { termsAcceptedSource: 1 },
+      },
+    );
+    /** Every user, not only those read as accepted beforehand: an acceptance racing the update may be cached. */
+    const cursor = User.find({}).select('_id').lean().cursor();
+    let batch: string[] = [];
+    for await (const user of cursor) {
+      batch.push(String(user._id));
+      if (batch.length === TERMS_RESET_EVICTION_BATCH) {
+        await Promise.all(batch.map(invalidateAuthUserDocCache));
+        batch = [];
+      }
+    }
+    await Promise.all(batch.map(invalidateAuthUserDocCache));
+    if (isAuthUserDocCacheEnabled()) {
+      /**
+       * A request that read the old document before the update can still fill the cache after
+       * the eviction above, so no eviction result proves the reset took effect. Only expiry does.
+       */
+      logger.info('[resetTermsAcceptance] Waiting for cached auth documents to expire', {
+        waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
+      });
+      await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+    }
+    return { modifiedCount: result.modifiedCount };
+  }
+
   async function acceptTerms(userId: string): Promise<IUser | null> {
     const User = mongoose.models.User;
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const firstAcceptance = await User.findOneAndUpdate(
         { _id: userId, termsAcceptedAt: null },
-        { $set: { termsAccepted: true, termsAcceptedAt: new Date() } },
+        {
+          $set: { termsAccepted: true, termsAcceptedAt: new Date() },
+          $unset: { termsAcceptedSource: 1 },
+        },
         { new: true, runValidators: true },
       ).lean<IUser>();
       if (firstAcceptance) {
@@ -850,7 +891,7 @@ export function createUserMethods(
   }
 
   /**
-   * Search for users by pattern matching on name, email, or username (case-insensitive)
+   * Search for users by word prefix of name, email, or username (see `buildUserSearchFilter`)
    * @param searchPattern - The pattern to search for
    * @param limit - Maximum number of results to return
    * @param fieldsToSelect - The fields to include or exclude in the returned documents
@@ -934,12 +975,13 @@ export function createUserMethods(
     }
 
     const trimmedPattern = searchPattern.trim();
-    const regex = new RegExp(escapeRegExp(trimmedPattern), 'i');
+    const filter = buildUserSearchFilter(trimmedPattern);
+    if (!filter) {
+      return [];
+    }
     const User = mongoose.models.User;
 
-    const query = User.find({
-      $or: [{ email: regex }, { name: regex }, { username: regex }],
-    }).limit(limit * 2); // Get more results to allow for relevance sorting
+    const query = User.find(filter).limit(limit * 2); // Get more results to allow for relevance sorting
 
     if (fieldsToSelect) {
       query.select(fieldsToSelect);
@@ -947,41 +989,10 @@ export function createUserMethods(
 
     const users = await query.lean<IUser[]>();
 
-    // Score results by relevance
-    const startsWithPattern = trimmedPattern.toLowerCase();
-
-    const scoredUsers = users.map((user) => {
-      const searchableFields = [user.name, user.email, user.username].filter(
-        (field): field is string => typeof field === 'string' && field.length > 0,
-      );
-      let maxScore = 0;
-
-      for (const field of searchableFields) {
-        const fieldLower = field.toLowerCase();
-        let score = 0;
-
-        // Exact match gets highest score
-        if (fieldLower === startsWithPattern) {
-          score = 100;
-        }
-        // Starts with query gets high score
-        else if (fieldLower.startsWith(startsWithPattern)) {
-          score = 80;
-        }
-        // Contains query gets medium score
-        else if (fieldLower.includes(startsWithPattern)) {
-          score = 50;
-        }
-        // Default score for database match
-        else {
-          score = 10;
-        }
-
-        maxScore = Math.max(maxScore, score);
-      }
-
-      return { ...user, _searchScore: maxScore };
-    });
+    const scoredUsers = users.map((user) => ({
+      ...user,
+      _searchScore: scoreSearchMatch([user.name, user.email, user.username], trimmedPattern),
+    }));
 
     /** Top results sorted by relevance */
     return scoredUsers
@@ -1032,6 +1043,7 @@ export function createUserMethods(
     claimSamlIdentity,
     updateTwoFactorEnrollment,
     acceptTerms,
+    resetTermsAcceptance,
     searchUsers,
     getUserById,
     generateToken,

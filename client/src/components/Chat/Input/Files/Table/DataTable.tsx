@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import { useSetRecoilState } from 'recoil';
+import { useSetAtom } from 'jotai';
+import { filesFamily } from '@librechat/chat/react';
 import { FileContext } from 'librechat-data-provider';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -33,7 +34,6 @@ import { ColumnVisibilityDropdown } from './ColumnVisibilityDropdown';
 import { useDeleteFilesFromTable } from '~/hooks/Files';
 import { useLocalize, TranslationKeys } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -60,7 +60,7 @@ type Style = {
 export default function DataTable<TData, TValue>({ columns, data }: DataTableProps<TData, TValue>) {
   const localize = useLocalize();
   const [isDeleting, setIsDeleting] = useState(false);
-  const setFiles = useSetRecoilState(store.filesByIndex(0));
+  const setFiles = useSetAtom(filesFamily(0));
   const { deleteFiles } = useDeleteFilesFromTable(() => setIsDeleting(false));
 
   const [rowSelection, setRowSelection] = useState({});
@@ -225,7 +225,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                             key={cell.id}
                             size="compact"
                             className={cn(
-                              'align-start px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
+                              'px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
                               cell.column.id === 'select' ? 'overflow-visible' : 'overflow-x-auto',
                             )}
                             style={style}

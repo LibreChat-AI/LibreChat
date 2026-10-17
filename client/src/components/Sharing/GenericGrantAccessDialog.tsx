@@ -33,6 +33,7 @@ import UnifiedPeopleSearch from './PeoplePicker/UnifiedPeopleSearch';
 import PeoplePickerAdminSettings from './PeoplePickerAdminSettings';
 import PublicSharingToggle from './PublicSharingToggle';
 import { SelectedPrincipalsList } from './PeoplePicker';
+import { permissionErrorKey } from './errors';
 import { cn } from '~/utils';
 
 export default function GenericGrantAccessDialog({
@@ -220,7 +221,7 @@ export default function GenericGrantAccessDialog({
     } catch (error) {
       console.error('Error updating permissions:', error);
       showToast({
-        message: localize('com_ui_permissions_failed_update'),
+        message: localize(permissionErrorKey(error)),
         status: 'error',
       });
     }
@@ -303,7 +304,7 @@ export default function GenericGrantAccessDialog({
           <Share2Icon className="icon-md h-4 w-4" />
         </span>
         {totalCurrentShares > 0 && (
-          <Label className="text-text-secondary cursor-pointer text-sm font-medium">
+          <Label variant="secondary" className="cursor-pointer text-sm font-medium">
             {totalCurrentShares}
           </Label>
         )}
@@ -449,7 +450,7 @@ export default function GenericGrantAccessDialog({
                       });
                     }}
                     disabled={isCopying}
-                    className={cn('shrink-0 gap-2', isCopying ? 'cursor-default' : '')}
+                    className={cn('shrink-0', isCopying ? 'cursor-default' : '')}
                     aria-label={localize('com_ui_copy_url_to_clipboard')}
                   >
                     <MorphIcon icon={isCopying ? CopyCheck : Link} className="size-4" />

@@ -3,18 +3,18 @@ import type { SubagentUpdateEvent, ToolTimingStamps } from 'librechat-data-provi
 
 /**
  * Client-side helpers for rendering the live `SubagentCall` UI while
- * `ON_SUBAGENT_UPDATE` events stream in. Exports two pure transforms:
+ * `ON_SUBAGENT_UPDATE` events stream in. Exports two incremental folds:
  *
- *   - `aggregateSubagentContent` — folds the raw event stream into an
- *     ordered array of TEXT / THINK / TOOL_CALL parts so the dialog can
- *     render the child's activity through the same `<Part />` pipeline
- *     the parent conversation uses. Frontend-only: on the backend we
- *     fold directly into the SDK's `createContentAggregator` in the
- *     `ON_SUBAGENT_UPDATE` handler, so no shared aggregator is needed.
- *   - `buildSubagentTickerLines` — short, user-readable status lines
- *     for the collapsed ticker. Aggregates message/reasoning deltas
- *     into running previews, surfaces tool-call lifecycle with
- *     args/output snippets, drops low-signal events.
+ *   - `foldSubagentEvent` folds one raw event into an ordered array of
+ *     TEXT / THINK / TOOL_CALL parts so the dialog can render the child's
+ *     activity through the same `<Part />` pipeline the parent conversation
+ *     uses. Frontend-only: on the backend we fold directly into the SDK's
+ *     `createContentAggregator` in the `ON_SUBAGENT_UPDATE` handler, so no
+ *     shared aggregator is needed.
+ *   - `foldSubagentEventIntoTicker` folds one raw event into the short,
+ *     user-readable status lines for the collapsed ticker. Aggregates
+ *     message/reasoning deltas into running previews, surfaces tool-call
+ *     lifecycle with args/output snippets, drops low-signal events.
  */
 
 type RunStepData = {
@@ -665,20 +665,6 @@ export function reconcileSubagentToolTimings(
 }
 
 /**
- * Batch wrapper around {@link foldSubagentEvent}: folds an entire event
- * stream in one go and returns just the parts. Kept for tests and for
- * legacy call-sites that don't need cursor state.
- */
-export function aggregateSubagentContent(events: SubagentUpdateEvent[]): SubagentContentPart[] {
-  let parts: SubagentContentPart[] = [];
-  let state = initSubagentAggregatorState();
-  for (const event of events) {
-    ({ parts, state } = foldSubagentEvent(parts, state, event));
-  }
-  return parts;
-}
-
-/**
  * Discriminated-union ticker line. Keeping the label tokens + body/snippets
  * separate from their rendered strings lets the caller localize at
  * render time (hooks can't live in a pure aggregator) and — more
@@ -896,17 +882,4 @@ export function foldSubagentEventIntoTicker(
   }
 
   return state;
-}
-
-/**
- * Batch wrapper around {@link foldSubagentEventIntoTicker} — folds an
- * entire event stream in one shot. Kept for tests and any legacy
- * consumer that prefers a one-call API.
- */
-export function buildSubagentTickerLines(events: SubagentUpdateEvent[]): SubagentTickerLine[] {
-  let state = initSubagentTickerState();
-  for (const event of events) {
-    state = foldSubagentEventIntoTicker(state, event);
-  }
-  return state.lines;
 }

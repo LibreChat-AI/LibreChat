@@ -1,11 +1,18 @@
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
+import { RecoilRoot, type MutableSnapshot } from 'recoil';
 import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai';
-import { RecoilRoot, useRecoilValue, type MutableSnapshot } from 'recoil';
+import {
+  activeGenerationProtocolVersionByConvoId,
+  appliedSteerIdsByConvoId,
+  pendingSteersByConvoId,
+  resetSteerFamilies,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import useSteerConvert from '../useSteerConvert';
-import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 const mockFetchStreamStatus = jest.fn();
 let mockFileMap: Record<string, { llmDeliveryPath: 'text' }> = {};
@@ -26,7 +33,7 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot
       initializeState={(snapshot) => {
-        snapshot.set(store.activeGenerationProtocolVersionByConvoId(CONVO_ID), 2);
+        getDefaultStore().set(activeGenerationProtocolVersionByConvoId(CONVO_ID), 2);
         initialize?.(snapshot);
       }}
     >
@@ -38,9 +45,9 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
       const setQueue = useSetAtom(queuedMessagesByConvoId(CONVO_ID));
       return {
         convert: useSteerConvert(),
-        chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
+        chips: useAtomValue(pendingSteersByConvoId(CONVO_ID)),
         queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
-        applied: useRecoilValue(store.appliedSteerIdsByConvoId(CONVO_ID)),
+        applied: useAtomValue(appliedSteerIdsByConvoId(CONVO_ID)),
         // Mirrors `useQueueDrain` dequeuing the head item after auto-send.
         drainQueue: () => setQueue((prev) => prev.slice(1)),
       };
@@ -49,7 +56,10 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
   );
 }
 
-beforeEach(() => resetQueueFamilies());
+beforeEach(() => {
+  resetQueueFamilies();
+  resetSteerFamilies();
+});
 
 describe('useSteerConvert', () => {
   beforeEach(() => {
@@ -61,8 +71,8 @@ describe('useSteerConvert', () => {
     'hydrates late metadata during terminal recovery (queued origin: %s)',
     (fromQueue) => {
       const files = [{ file_id: 'f1', filename: 'notes.pdf' }];
-      const { result, rerender } = setup(({ set }) => {
-        set(store.pendingSteersByConvoId(CONVO_ID), [
+      const { result, rerender } = setup(() => {
+        getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
           {
             steerId: 'legacy',
             text: 'recover',
@@ -95,8 +105,8 @@ describe('useSteerConvert', () => {
   );
 
   it('converts leftover steers to queued chips and drops their pending chips', () => {
-    const { result } = setup(({ set }) => {
-      set(store.pendingSteersByConvoId(CONVO_ID), [
+    const { result } = setup(() => {
+      getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
         { steerId: 'srv-1', text: 'leftover', status: 'pending' as const, createdAt: 1 },
         { steerId: 'local-x', text: 'still sending', status: 'sending' as const, createdAt: 2 },
       ]);
@@ -109,8 +119,8 @@ describe('useSteerConvert', () => {
   });
 
   it('restores quotes + manual skills from the local chip (server steers never carry them)', () => {
-    const { result } = setup(({ set }) => {
-      set(store.pendingSteersByConvoId(CONVO_ID), [
+    const { result } = setup(() => {
+      getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
         {
           steerId: 'srv-ctx',
           text: 'carried',
@@ -143,9 +153,9 @@ describe('useSteerConvert', () => {
       quotes: ['original quote'],
     };
     const after = { id: 'queue-after', text: 'still queued', createdAt: 20 };
-    const { result } = setup(({ set }) => {
+    const { result } = setup(() => {
       getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [after]);
-      set(store.pendingSteersByConvoId(CONVO_ID), [
+      getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
         {
           steerId: 'server-replacement-id',
           text: original.text,
@@ -257,9 +267,9 @@ describe('useSteerConvert', () => {
       priority: true,
     };
     const after = { id: 'queue-after-race', text: 'after', createdAt: 20 };
-    const { result } = setup(({ set }) => {
+    const { result } = setup(() => {
       getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [after]);
-      set(store.pendingSteersByConvoId(CONVO_ID), [
+      getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
         {
           steerId: 'local-correlation-id',
           text: original.text,
@@ -329,8 +339,8 @@ describe('useSteerConvert', () => {
   });
 
   it('retains previously applied ids so a late 202 ACK still drops its chip', () => {
-    const { result } = setup(({ set }) => {
-      set(store.appliedSteerIdsByConvoId(CONVO_ID), ['srv-applied']);
+    const { result } = setup(() => {
+      getDefaultStore().set(appliedSteerIdsByConvoId(CONVO_ID), ['srv-applied']);
     });
     act(() => {
       result.current.convert(CONVO_ID, [{ steerId: 'srv-queued', text: 'to queue' }]);
@@ -357,8 +367,8 @@ describe('useSteerConvert', () => {
      A conversion arriving afterwards may only place its own items; sorting the
      whole list would quietly restore the order the messages were written in. */
   it('leaves a hand-reordered queue in the order the user left it', () => {
-    const { result } = setup(({ set }) => {
-      set(store.pendingSteersByConvoId(CONVO_ID), [
+    const { result } = setup(() => {
+      getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
         { steerId: 'srv-late', text: 'converted', status: 'pending' as const, createdAt: 9 },
       ]);
       // As if the user had dragged the newest message to the front.
@@ -375,8 +385,8 @@ describe('useSteerConvert', () => {
   });
 
   it('still places a converted steer ahead of messages written after it', () => {
-    const { result } = setup(({ set }) => {
-      set(store.pendingSteersByConvoId(CONVO_ID), [
+    const { result } = setup(() => {
+      getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
         { steerId: 'srv-early', text: 'accepted first', status: 'pending' as const, createdAt: 1 },
       ]);
       getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [

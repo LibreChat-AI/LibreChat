@@ -19,7 +19,6 @@ import {
   toCatalogConnectionConfig,
   applyRequestHeaders,
   hasRuntimeContextPlaceholders,
-  getRuntimeBodyPlaceholderFields,
   getMissingRuntimeBodyPlaceholderFields,
   isUserSourced,
   validateMCPServerConfig,
@@ -910,7 +909,7 @@ describe('getMCPRequestScope', () => {
         headers: { 'X-Message': `\${${envName}}` },
       };
       expect(getMCPRequestScope(config).requestScoped).toBe(true);
-      expect(getRuntimeBodyPlaceholderFields(config)).toEqual(['messageId']);
+      expect(getMCPRequestScope(config).requiredBodyFields).toEqual(['messageId']);
     } finally {
       if (previous == null) {
         delete process.env[envName];
@@ -939,7 +938,7 @@ describe('getMCPRequestScope', () => {
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
     expect(getMCPRequestScope(config).requestScoped).toBe(false);
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);
     expect(requiresUserScopedConnection(config)).toBe(false);
@@ -957,7 +956,7 @@ describe('getMCPRequestScope', () => {
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
     expect(getMCPRequestScope(config).requestScoped).toBe(false);
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);
     expect(requiresUserScopedConnection(config)).toBe(false);
@@ -975,7 +974,7 @@ describe('getMissingRuntimeBodyPlaceholderFields', () => {
   } as const;
 
   it('returns the request body fields required by trusted runtime placeholders', () => {
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([
       'messageId',
       'parentMessageId',
       'conversationId',

@@ -1,6 +1,7 @@
 import React from 'react';
 import { useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { isSubmittingFamily } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
@@ -162,7 +163,7 @@ const SelectAgentConversation = () => {
 };
 
 const StartAgentRun = () => {
-  const setSubmitting = useSetRecoilState(store.isSubmittingFamily(0));
+  const setSubmitting = useSetAtom(isSubmittingFamily(0));
   return (
     <button type="button" onClick={() => setSubmitting(true)}>
       {mockStartAgentRunLabel}

@@ -48,6 +48,9 @@ const {
   loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
+  injectColorModeHandoff,
+  readBundledThemeBoot,
+  createDeploymentThemeShell,
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
@@ -72,11 +75,13 @@ const {
   sweepOrphanedPreviews,
   getRoleByName,
   seedDatabase,
+  recordAuditEntry,
 } = require('~/models');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
 const { capabilityContextMiddleware } = require('./middleware/roles/capabilities');
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
+const { startSkillDeletionSweep } = require('./services/Skills/deletion');
 const { initializeAgentTriggerService } = require('./services/Agents/triggers');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
@@ -139,6 +144,7 @@ const configureGenerationStreams = () => {
     cleanupOnComplete: !isEnabled(process.env.STREAM_KEEP_COMPLETED_JOBS),
   });
   GenerationJobManager.setApprovalExpiredHandler(recordExpiredScheduleApproval);
+  GenerationJobManager.setAdmissionGuard(agentEventMethods.isAgentTriggerPrincipalActive);
   GenerationJobManager.setTerminalHostActionHandler(
     createAgentEventTerminalHandler(agentEventMethods, {
       resumeDetachedAction: resumeAgentEventDetachedAction,
@@ -262,6 +268,7 @@ const startServer = async () => {
     additionalSkills: getDeploymentPluginSkills(),
   });
   initializeGitHubSkillSync(appConfig);
+  startSkillDeletionSweep(appConfig.skillDeletion);
   startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
   // Register any programmatic tool-approval policy hooks declared in
   // `endpoints.agents.toolApproval.hooks`. Honor the `enabled` kill switch: when tool
@@ -275,7 +282,12 @@ const startServer = async () => {
   });
   await runAsSystem(async () => {
     await performStartupChecks(appConfig);
-    await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName,
+      updateAccessPermissions,
+      recordAuditEntry,
+    });
   });
 
   /* Route modules build their rate limiters as they load, so they load only after the
@@ -305,7 +317,15 @@ const startServer = async () => {
      caller's and the client prefers it. */
   indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
     customFooter: process.env.CUSTOM_FOOTER,
+    landingFooter: appConfig?.interfaceConfig?.landingFooter,
   });
+
+  indexHTML = injectColorModeHandoff(indexHTML, appConfig.interfaceConfig?.colorModeFromUrl);
+  const indexShell = createDeploymentThemeShell(
+    indexHTML,
+    appConfig.interfaceConfig?.theme,
+    readBundledThemeBoot(appConfig.paths.dist),
+  );
 
   const cspPolicy = createCspPolicy(process.env, {
     connectSrc: clientErrorReportingConnectSources({ config: appConfig?.errorReporting }),
@@ -318,7 +338,10 @@ const startServer = async () => {
 
     const lang = req.cookies.lang || req.headers['accept-language']?.split(',')[0] || 'en-US';
     const saneLang = escapeHtmlAttribute(lang);
-    let updatedIndexHtml = indexHTML.replace(/lang="en-US"/g, () => `lang="${saneLang}"`);
+    let updatedIndexHtml = indexShell(req, res).replace(
+      /lang="en-US"/g,
+      () => `lang="${saneLang}"`,
+    );
     updatedIndexHtml = maybeInjectQueryDevtoolsBootstrap(updatedIndexHtml, req);
 
     /* Nonce last: every injected script above must be stamped too. */
@@ -428,6 +451,7 @@ const startServer = async () => {
   app.use('/api/search', routes.search);
   app.use('/api/messages', routes.messages);
   app.use('/api/convos', routes.convos);
+  app.use('/api/pull-requests', preAuthTenantMiddleware, routes.pullRequests);
   app.use('/api/traces', routes.traces);
   app.use('/api/presets', routes.presets);
   app.use('/api/projects', routes.projects);
@@ -519,6 +543,7 @@ const startServer = async () => {
           appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
         completionReceiptBatching:
           appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+        deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;

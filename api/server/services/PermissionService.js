@@ -695,9 +695,6 @@ const hasPublicPermission = async ({ resourceType, resourceId, requiredPermissio
 const accessControlService = new AccessControlService(mongoose, db);
 const bulkUpdateResourcePermissions = (params) =>
   accessControlService.bulkUpdateResourcePermissions(params);
-const restoreInsightsPermissionChanges = (params) =>
-  accessControlService.restoreInsightsPermissionChanges(params);
-
 /**
  * Remove all permissions for a resource (cleanup when resource is deleted)
  * @param {Object} params - Parameters for removing all permissions
@@ -739,7 +736,6 @@ module.exports = {
   hasPublicPermission,
   getAvailableRoles,
   bulkUpdateResourcePermissions,
-  restoreInsightsPermissionChanges,
   ensurePrincipalExists,
   ensureGroupPrincipalExists,
   syncUserEntraGroupMemberships,

@@ -766,4 +766,66 @@ describe('Prompt method failure contracts', () => {
     const all = await methods.getListPromptGroupsByAccess({ accessibleIds });
     expect(all.data).toHaveLength(2);
   });
+
+  it('keeps a sole-owned group discoverable when the prompt delete fails, so a retry erases it', async () => {
+    const { groupId, promptId } = await createGroupWithPrompt('erase retry');
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: testUsers.owner._id,
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: groupId,
+      accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
+      grantedBy: testUsers.owner._id,
+    });
+
+    jest.spyOn(Prompt, 'deleteMany').mockRejectedValueOnce(dbError);
+    await expect(methods.deleteUserPrompts(String(testUsers.owner._id))).rejects.toBe(dbError);
+
+    await methods.deleteUserPrompts(String(testUsers.owner._id));
+    expect(await Prompt.findById(promptId)).toBeNull();
+    expect(await PromptGroup.findById(groupId)).toBeNull();
+    expect(await AclEntry.countDocuments({ resourceId: new ObjectId(groupId) })).toBe(0);
+  });
+});
+
+describe('Prompt group list projections include `command`', () => {
+  let commandGroupId: string;
+
+  beforeEach(async () => {
+    const group = (
+      await PromptGroup.create({
+        name: 'Command Projection Group',
+        command: 'mytest-cmd',
+        productionId: new ObjectId(),
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+      })
+    ).toObject() as unknown as LeanPromptGroup;
+    commandGroupId = String(group._id);
+  });
+
+  afterEach(async () => {
+    await PromptGroup.deleteMany({});
+  });
+
+  it('getPromptGroups includes command in the list projection', async () => {
+    const result = await methods.getPromptGroups({
+      pageNumber: 1,
+      pageSize: 10,
+      name: 'Command Projection',
+    });
+    if (!('promptGroups' in result)) {
+      throw new Error(`Expected prompt groups, received: ${JSON.stringify(result)}`);
+    }
+    expect(result.promptGroups).toHaveLength(1);
+    expect(result.promptGroups[0].command).toBe('mytest-cmd');
+  });
+
+  it('getListPromptGroupsByAccess includes command in the list projection', async () => {
+    const result = await methods.getListPromptGroupsByAccess({
+      accessibleIds: [commandGroupId],
+    });
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].command).toBe('mytest-cmd');
+  });
 });

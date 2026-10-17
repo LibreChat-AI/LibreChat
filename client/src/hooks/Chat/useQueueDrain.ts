@@ -1,9 +1,22 @@
 import { useRef, useEffect, useMemo, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
+import { revealedQueuedTurnFamily, useIsSubmitting } from '@librechat/chat/react';
 import { Constants, DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS } from 'librechat-data-provider';
-import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin, RunEnd } from './queue';
-import type { QueueSendLock } from '~/utils/queueIntent';
+import { acquireQueueSendLock, releaseQueueSendLock, hasQueuedIntent } from '@librechat/chat';
+import {
+  parkRunEnd,
+  batchFileIds,
+  pickDrainable,
+  isBoundaryAdmitted,
+  insertQueuedOrigin,
+  matchesInterruptArm,
+  collectQueuedFileIds,
+  selectQueuedTurnReveal,
+  consumeAdmittedBoundary,
+  QUEUE_USAGE_RENEW_INTERVAL_MS,
+} from '@librechat/chat';
+import type { QueueSendLock } from '@librechat/chat';
+import type { QueuedMessage, QueuedMessageOrigin, RunEnd } from './queue';
 import type { TAskFunction } from '~/common';
 import {
   settledQueuedTurnReceiptsByConvoId,
@@ -18,60 +31,9 @@ import {
   recoveryDisposition,
   canRestoreRecovery,
 } from '~/components/Chat/Steering/recovery';
-import { acquireQueueSendLock, releaseQueueSendLock, hasQueuedIntent } from '~/utils/queueIntent';
-import { useGetStartupConfig, useMarkFilesUsageMutation } from '~/data-provider';
-import { selectQueuedTurnReveal } from '~/hooks/Chat/useQueuedTurnReveal';
-import { revealedQueuedTurnFamily } from '~/store/steer';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import { useMarkFilesUsageMutation } from '~/data-provider';
 import { mergeQueuedMessages } from '~/utils/queue';
-import { insertQueuedOrigin } from '~/utils/steer';
-import store from '~/store';
-
-/** Mirrors the server's per-request cap on a usage touch. */
-const QUEUE_USAGE_MAX_FILES = 10;
-
-/** Well under the server's smallest hold (24h), so no gap between renewals
- *  can outlive one, however long a run pauses. */
-const QUEUE_USAGE_RENEW_INTERVAL_MS = 30 * 60 * 1000;
-
-const collectQueuedFileIds = (items: QueuedMessage[]): string[] => {
-  const fileIds: string[] = [];
-  for (const item of items) {
-    if (item.server != null) {
-      continue;
-    }
-    for (const file of item.files ?? []) {
-      if (typeof file.file_id === 'string' && file.file_id.length > 0) {
-        fileIds.push(file.file_id);
-      }
-    }
-  }
-  return fileIds;
-};
-
-/** The server caps ids per request, so a queue holding more than one batch
- *  has to renew in several. Truncating instead would leave everything after
- *  the first batch on its enqueue-time hold. */
-const batchFileIds = (fileIds: string[]): string[][] => {
-  const batches: string[][] = [];
-  for (let i = 0; i < fileIds.length; i += QUEUE_USAGE_MAX_FILES) {
-    batches.push(fileIds.slice(i, i + QUEUE_USAGE_MAX_FILES));
-  }
-  return batches;
-};
-
-/** Interrupt intent belongs to one generation, never to whichever terminal
- * event happens to occupy the shared pane slot next. The NEW_CONVO alias is
- * the one exception: after its first successful start, the terminal event
- * carries the resolved conversation id while migrating the NEW_CONVO queue. */
-const matchesInterruptArm = (armed: DrainAfterAbort | false, end: RunEnd): boolean => {
-  if (armed === false || end.generationCreatedAt == null) {
-    return false;
-  }
-  const sameConversation =
-    armed.conversationId === end.conversationId ||
-    (end.startedAsNewConvo === true && armed.conversationId === String(Constants.NEW_CONVO));
-  return sameConversation && armed.generationCreatedAt === end.generationCreatedAt;
-};
 
 /**
  * Auto-sends queued follow-up messages when a run finishes.
@@ -99,16 +61,15 @@ export default function useQueueDrain(
   const parkedRunEnd = useAtomValue(
     pendingRunEndByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
+  const isSubmitting = useIsSubmitting(index);
   /** Keyed by pane, because the contended resource is this pane's submission
    * slot: the rail's "Send now" reaches the same `ask` through the composer. */
   const sendLockKey = String(index);
   const sendLockRef = useRef<QueueSendLock | null>(null);
   const revealLockRef = useRef(false);
   const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
-  const { data: startupConfig } = useGetStartupConfig();
-  const sendLockTimeoutMs =
-    startupConfig?.interface?.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
+  const { config } = useChatSettings();
+  const sendLockTimeoutMs = config.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const ownQueue = useAtomValue(
     queuedMessagesByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );
@@ -189,17 +150,11 @@ export default function useQueueDrain(
     if (end == null || end.conversationId == null || end.conversationId === activeConversationId) {
       return false;
     }
-    const armed = jotaiStore.get(drainAfterAbortByIndex(index));
-    const interruptArmed = matchesInterruptArm(armed, end);
+    const interruptArmed = matchesInterruptArm(jotaiStore.get(drainAfterAbortByIndex(index)), end);
     if (interruptArmed) {
       jotaiStore.set(drainAfterAbortByIndex(index), false);
     }
-    jotaiStore.set(pendingRunEndByConvoId(end.conversationId), {
-      ...end,
-      ...((end.interruptArmed === true || interruptArmed) && {
-        interruptArmed: true,
-      }),
-    });
+    jotaiStore.set(pendingRunEndByConvoId(end.conversationId), parkRunEnd(end, interruptArmed));
     jotaiStore.set(runEndByIndex(index), null);
     return true;
   }, [index, activeConversationId, jotaiStore]);
@@ -216,32 +171,20 @@ export default function useQueueDrain(
       }
     | { kind: 'reveal'; item: QueuedMessage; end: RunEnd }
     | null => {
-    let end = jotaiStore.get(runEndByIndex(index));
-    let fromParked = false;
-    if (end != null && end.conversationId != null && end.conversationId !== activeConversationId) {
-      /**
-       * `ask` is the MOUNTED view's sender: draining another
-       * conversation's follow-up here would submit it into the wrong
-       * chat. Park the signal under ITS conversation (freeing the shared
-       * index slot so a later run cannot overwrite it) and drain when
-       * the user returns. The armed interrupt flag travels WITH the
-       * parked signal: leaving it on the index would let another run on
-       * this pane consume it (or drain the wrong conversation).
-       */
-      const armedNow = jotaiStore.get(drainAfterAbortByIndex(index));
-      const interruptArmed = matchesInterruptArm(armedNow, end);
-      if (interruptArmed) {
-        jotaiStore.set(drainAfterAbortByIndex(index), false);
-      }
-      jotaiStore.set(pendingRunEndByConvoId(end.conversationId), {
-        ...end,
-        ...((end.interruptArmed === true || interruptArmed) && {
-          interruptArmed: true,
-        }),
-      });
-      jotaiStore.set(runEndByIndex(index), null);
+    /**
+     * `ask` is the MOUNTED view's sender: draining another conversation's
+     * follow-up here would submit it into the wrong chat. Park the signal
+     * under ITS conversation (freeing the shared index slot so a later run
+     * cannot overwrite it) and drain when the user returns. The armed
+     * interrupt flag travels WITH the parked signal: leaving it on the index
+     * would let another run on this pane consume it (or drain the wrong
+     * conversation).
+     */
+    if (parkForeignRunEnd()) {
       return null;
     }
+    let end = jotaiStore.get(runEndByIndex(index));
+    let fromParked = false;
     if (end == null && activeConversationId) {
       const parked = jotaiStore.get(pendingRunEndByConvoId(activeConversationId));
       if (parked != null) {
@@ -274,14 +217,7 @@ export default function useQueueDrain(
     const shouldDrain = end.outcome === 'completed' || interruptArmed;
     const settledReceipts = jotaiStore.get(settledQueuedTurnReceiptsByConvoId(conversationId));
     const pendingEnqueueIds = jotaiStore.get(pendingQueuedTurnEnqueueIdsByConvoId(conversationId));
-    const consumedReceiptIndex = settledReceipts.findIndex(
-      (receipt) =>
-        receipt.status === 'admitted' &&
-        receipt.boundaryConsumed !== true &&
-        end.generationCreatedAt != null &&
-        receipt.effectivePredecessorCreatedAt === end.generationCreatedAt,
-    );
-    const consumedByServerAdmission = consumedReceiptIndex >= 0;
+    const consumedByServerAdmission = isBoundaryAdmitted(settledReceipts, end.generationCreatedAt);
     const consumeEnd = () => {
       if (fromParked && activeConversationId) {
         jotaiStore.set(pendingRunEndByConvoId(activeConversationId), null);
@@ -299,23 +235,9 @@ export default function useQueueDrain(
         jotaiStore.set(queuedMessagesByConvoId(Constants.NEW_CONVO), []);
         jotaiStore.set(queuedMessagesByConvoId(conversationId), merged);
       }
-      jotaiStore.set(settledQueuedTurnReceiptsByConvoId(conversationId), (previous) => {
-        let consumed = false;
-        return previous.flatMap((receipt) => {
-          if (
-            !consumed &&
-            receipt.status === 'admitted' &&
-            receipt.boundaryConsumed !== true &&
-            receipt.effectivePredecessorCreatedAt === end.generationCreatedAt
-          ) {
-            consumed = true;
-            return pendingEnqueueIds.includes(receipt.clientRequestId)
-              ? [{ ...receipt, boundaryConsumed: true }]
-              : [];
-          }
-          return [receipt];
-        });
-      });
+      jotaiStore.set(settledQueuedTurnReceiptsByConvoId(conversationId), (previous) =>
+        consumeAdmittedBoundary(previous, end.generationCreatedAt, pendingEnqueueIds),
+      );
       consumeEnd();
       return null;
     }
@@ -360,17 +282,16 @@ export default function useQueueDrain(
      * "Send as new" precisely so the user chooses.
      * Both are skipped rather than blocking the whole queue, so an
      * untouched follow-up behind them still goes on this run end. */
-    const nextIndex = shouldDrain
-      ? merged.findIndex(
+    const { next, remainder, origin } = shouldDrain
+      ? pickDrainable(
+          merged,
           (item) =>
-            !hasQueuedIntent(item.id) &&
-            item.needsExplicitSend !== true &&
-            recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(conversationId)), item) ==
+            hasQueuedIntent(item.id) ||
+            item.needsExplicitSend === true ||
+            recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(conversationId)), item) !=
               null,
         )
-      : -1;
-    const next = nextIndex >= 0 ? merged[nextIndex] : null;
-    const remainder = nextIndex >= 0 ? merged.filter((_, at) => at !== nextIndex) : merged;
+      : { next: null, remainder: merged, origin: undefined };
 
     if (shouldMigrate && newConvoQueue.length > 0) {
       jotaiStore.set(queuedMessagesByConvoId(Constants.NEW_CONVO), []);
@@ -378,21 +299,17 @@ export default function useQueueDrain(
     if (remainder.length !== ownQueue.length || shouldMigrate || next != null) {
       jotaiStore.set(queuedMessagesByConvoId(conversationId), remainder);
     }
-    return next
+    return next != null && origin != null
       ? {
           kind: 'drain',
           next,
           conversationId,
-          queuedMessageOrigin: {
-            item: next,
-            beforeIds: merged.slice(0, nextIndex).map((item) => item.id),
-            afterIds: merged.slice(nextIndex + 1).map((item) => item.id),
-          },
+          queuedMessageOrigin: origin,
           expectedPredecessorCreatedAt:
             end.generationCreatedAt ?? next.expectedPredecessorCreatedAt,
         }
       : null;
-  }, [index, activeConversationId, jotaiStore]);
+  }, [index, activeConversationId, jotaiStore, parkForeignRunEnd]);
 
   const restoreQueued = useCallback(
     (convoId: string, origin: QueuedMessageOrigin) => {

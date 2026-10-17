@@ -41,7 +41,7 @@ describe('OutputRenderer', () => {
 
     const copyButton = screen.getByTestId('copy-output');
     expect(copyButton).toHaveClass('absolute', 'right-0', 'bottom-0');
-    expect(copyButton).toHaveClass('[@media(hover:hover)]:group-hover/copy:opacity-100');
+    expect(copyButton).toHaveClass('no-touch:group-hover/copy:opacity-100');
     expect(copyButton.parentElement).toHaveClass('group/copy', 'relative');
     expect(copyButton.parentElement).not.toHaveClass('pr-10');
   });

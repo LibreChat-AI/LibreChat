@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
-import { logger, isValidObjectIdString } from '@librechat/data-schemas';
+import { logger, isValidObjectIdString, buildUserSearchFilter } from '@librechat/data-schemas';
 import type {
   IUser,
   IConfig,
@@ -8,14 +9,60 @@ import type {
   AdminUserSearchResult,
   UserDeleteResult,
 } from '@librechat/data-schemas';
+import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { FilterQuery } from 'mongoose';
 import type { Response } from 'express';
+import type { UserGenerationControl } from '~/user/generations';
+import type { UserErasureDeps } from '~/user/erasure';
 import type { ServerRequest } from '~/types/http';
+import { stopUserGenerations } from '~/user/generations';
 import { parsePagination } from './pagination';
+import { eraseUserData } from '~/user/erasure';
 
 const MAX_SEARCH_LENGTH = 200;
 
+const ERASURE_PROFILE_KEYS = [
+  'name',
+  'username',
+  'email',
+  'provider',
+  'googleId',
+  'facebookId',
+  'openidId',
+  'samlId',
+  'ldapId',
+  'githubId',
+  'discordId',
+  'appleId',
+  'emailVerified',
+  'twoFactorEnabled',
+  'termsAccepted',
+  'termsAcceptedAt',
+] as const;
+
+const ERASURE_TARGET_FIELDS = ['role', 'tenantId', 'idOnTheSource', ...ERASURE_PROFILE_KEYS].join(
+  ' ',
+);
+
+/** The target's plain profile fields, which storage header templates such as the user email read. */
+export type ErasureTargetProfile = Partial<Pick<IUser, (typeof ERASURE_PROFILE_KEYS)[number]>>;
+
 const USER_LIST_FIELDS = '_id name username email avatar role provider createdAt updatedAt';
+
+/** The target account's identity, from which the caller builds storage and MCP cleanup. */
+export interface AdminErasureTarget {
+  id: string;
+  role?: string;
+  tenantId?: string;
+  /** External identity key, so principal resolution reuses the loaded user instead of re-reading it. */
+  idOnTheSource?: string | null;
+  profile?: ErasureTargetProfile;
+}
+
+export interface AdminErasureContext {
+  deps: UserErasureDeps;
+  checkpointer?: TCheckpointerConfig;
+}
 
 export interface AdminUsersDeps {
   findUsers: (
@@ -38,14 +85,22 @@ export interface AdminUsersDeps {
   cancelAgentTriggerUserPurge: (userId: string, fenceStartedAt: Date) => Promise<boolean>;
   purgeAgentTriggerDeliveriesForUser: (userId: string) => Promise<void>;
   revokeUserCodeEnvironmentWorkers?: (userId: string) => Promise<number>;
+  /** Cancels and drains the account's subagent thread tasks. */
+  cancelSubagentTasks?: (userId: string, tenantId?: string) => Promise<unknown>;
   /**
-   * Thin data-layer delete — removes the User document only.
-   * Full cascade of user-owned resources (conversations, messages, files, tokens, etc.)
-   * is handled by `UserController.deleteUserController` in the self-delete flow.
-   * This admin endpoint fences durable triggers around the user commit and currently
-   * cascades Config and AclEntries.
-   * A future iteration should consolidate the full cascade into a shared service function.
+   * Reversibly suspends the account's schedules under a per-attempt token; false means the
+   * executions could not be confirmed stopped. Restored if the deletion fails.
    */
+  quiesceUserSchedules: (userId: string, token: string) => Promise<boolean>;
+  restoreUserSchedulesFromDeletion: (userId: string, token: string) => Promise<unknown>;
+  generationJobs: UserGenerationControl;
+  /**
+   * Resolves the dependencies of the shared `eraseUserData` cascade for the account being
+   * deleted, the same set the self-service controller and the delete-user CLI pass. Storage
+   * cleanup must run as the target user, not the calling admin.
+   */
+  resolveErasure: (target: AdminErasureTarget) => Promise<AdminErasureContext>;
+  /** Thin data-layer delete: removes the User document after the erasure cascade has run. */
   deleteUserById: (userId: string) => Promise<UserDeleteResult>;
   deleteUserCodeEnvironments: (userId: string | Types.ObjectId) => Promise<number>;
   invalidateCodeEnvironmentConfigCache: (tenantId?: string) => Promise<void>;
@@ -85,6 +140,11 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
     deleteConfig,
     deleteAclEntries,
     deletePasskeysByUser,
+    resolveErasure,
+    cancelSubagentTasks,
+    quiesceUserSchedules,
+    restoreUserSchedulesFromDeletion,
+    generationJobs,
   } = deps;
 
   async function listUsersHandler(req: ServerRequest, res: Response) {
@@ -137,14 +197,13 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       }
 
       const searchLimit = Math.min(Math.max(1, parseInt(limitStr, 10) || 20), 50);
-      const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`^${escaped}`, 'i');
-
-      const users = await findUsers(
-        { $or: [{ name: regex }, { email: regex }, { username: regex }] },
-        '_id name email username avatar',
-        { limit: searchLimit, sort: { name: 1 } },
-      );
+      const filter = buildUserSearchFilter(trimmed, { legacyPrefix: true });
+      const users = filter
+        ? await findUsers(filter, '_id name email username avatar', {
+            limit: searchLimit,
+            sort: { name: 1 },
+          })
+        : [];
 
       const results: AdminUserSearchResult[] = users.map((u) => ({
         id: u._id?.toString() ?? '',
@@ -166,6 +225,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
   async function deleteUserHandler(req: ServerRequest, res: Response) {
     let targetUserId: string | undefined;
     let triggerDeletionFence: Date | undefined;
+    let scheduleSuspensionToken: string | undefined;
     let userDeleted = false;
 
     try {
@@ -181,7 +241,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
         return res.status(403).json({ error: 'Cannot delete your own account' });
       }
 
-      const [targetUser] = await findUsers({ _id: id }, 'role tenantId', { limit: 1 });
+      const [targetUser] = await findUsers({ _id: id }, ERASURE_TARGET_FIELDS, { limit: 1 });
       if (targetUser?.role === SystemRoles.ADMIN) {
         const adminCount = await countUsers({ role: SystemRoles.ADMIN });
         if (adminCount <= 1) {
@@ -202,6 +262,24 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       await prepareAgentTriggerUserPurge(id, triggerDeletionFence, targetUser?.tenantId);
       await drainAgentTriggerDeliveriesForUser(id);
 
+      await cancelSubagentTasks?.(id, targetUser?.tenantId);
+      scheduleSuspensionToken = randomUUID();
+      if (!(await quiesceUserSchedules(id, scheduleSuspensionToken))) {
+        throw new Error('Scheduled executions could not be confirmed stopped');
+      }
+      await stopUserGenerations(id, targetUser?.tenantId, generationJobs);
+
+      const { deps: erasureDeps, checkpointer } = await resolveErasure({
+        id,
+        role: targetUser?.role,
+        tenantId: targetUser?.tenantId,
+        idOnTheSource: targetUser?.idOnTheSource ?? null,
+        profile: targetUser,
+      });
+      await eraseUserData(
+        { userId: id, tenantId: targetUser?.tenantId, checkpointer },
+        erasureDeps,
+      );
       const result = await deleteUserById(id);
 
       if (result.deletedCount === 0) {
@@ -248,6 +326,17 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
 
       return res.status(200).json({ message: result.message || 'User deleted successfully' });
     } catch (error) {
+      /** Restore before releasing the fence, as the self-service flow does. */
+      if (targetUserId != null && scheduleSuspensionToken != null && !userDeleted) {
+        try {
+          await restoreUserSchedulesFromDeletion(targetUserId, scheduleSuspensionToken);
+        } catch (restoreError) {
+          logger.error(
+            `[adminUsers] failed to restore suspended schedules for user ${targetUserId} under token ${scheduleSuspensionToken}:`,
+            restoreError,
+          );
+        }
+      }
       if (targetUserId != null && triggerDeletionFence != null && !userDeleted) {
         try {
           await cancelAgentTriggerUserPurge(targetUserId, triggerDeletionFence);

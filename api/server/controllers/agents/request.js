@@ -100,7 +100,6 @@ const {
   claimAgentEventActorSuspension,
   settleAgentEventActorSuspension,
   stampConvoLastResponse,
-  isAgentTriggerPrincipalActive,
   isSubagentOwnerAdmissible,
   appendConvoMessageReference,
 } = require('~/models');
@@ -473,7 +472,7 @@ async function saveErrorTurn(
     /** The existing-row settlement (which row a failed turn settles, and
      *  whether its error row may be written at all) lives in @librechat/api;
      *  this supplies the caller's reads and write. */
-    const coveredByExistingRow = await settleExistingRowsBeforeErrorTurn(req.body, {
+    const settlement = await settleExistingRowsBeforeErrorTurn(req.body, {
       userId,
       conversationId,
       errorMessageId,
@@ -495,9 +494,12 @@ async function saveErrorTurn(
           },
         ),
     });
-    if (coveredByExistingRow) {
+    if (settlement.covered) {
       return;
     }
+    /** The settlement names the error row's id, so an anchor-shaped
+     *  collision can never overwrite the anchor. */
+    errorMessageId = settlement.errorRowMessageId;
 
     const context = 'api/server/controllers/agents/request.js - failed turn';
     const endpoint = endpointOption?.endpoint;
@@ -610,13 +612,6 @@ async function saveErrorTurn(
   }
 }
 
-/**
- * The disconnect save is marker-only while the run is still live; a failed
- * turn is what settles it, so a compaction's partial row is finalized here
- * with the terminal outcome instead of keeping the snapshot's live-run
- * marking. The decision lives in @librechat/api; this is the wiring, reusing
- * the row the caller already loaded.
- */
 function classifyScheduledFailure(error, aborted = false) {
   if (aborted || error?.code === 'SCHEDULE_NO_LONGER_ACTIVE') {
     return { status: 'interrupted', error: error?.message };
@@ -1759,18 +1754,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req.turnStartedAt = jobCreatedAt;
     providerExecutionId = job.metadata?.providerExecutionId;
 
-    /** Authentication can precede a slow admission path. Recheck the durable
-     * account-deletion fence after the job is committed but before execution
-     * starts. This ordering closes both sides of the race for ordinary and
-     * trigger-scoped sessions: a fence that wins first rejects this run; a
-     * fence that starts after this read must observe the already-created job
-     * in account deletion's active-generation drain. */
-    if (!(await isAgentTriggerPrincipalActive(userId))) {
-      throw Object.assign(new Error('Account deletion is in progress'), {
-        code: 'ACCOUNT_DELETION_IN_PROGRESS',
-        status: 409,
-      });
-    }
+    /** Account-deletion admission is enforced inside `createJob`, after the job is committed, so a
+     * fence that wins first refuses this run and one that starts later finds the job in its drain. */
     if (req._agentEventBindingParentConversationId != null) {
       /** The generation job is the durable marker that a deletion on another replica
        * can abort. Recheck only after that marker exists: either the deletion fence
@@ -1958,8 +1943,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
-      if (resolveDisconnectSnapshotMode(jobRecord, jobCreatedAt) === 'skip') {
-        logger.debug('[ResumableAgentController] Skipping partial response save for a settled job');
+      if (resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt) === 'skip') {
+        logger.debug(
+          '[ResumableAgentController] Skipping compaction partial save for a settled job',
+        );
         return;
       }
 
