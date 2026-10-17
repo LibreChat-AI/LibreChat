@@ -23,6 +23,7 @@ const {
   resolveCodeWorkspaceInheritanceCapability,
   resolveCodeEnvironmentTransitionVersion,
   loadConversationListLimits,
+  resolveClientErrorReporting,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
@@ -241,6 +242,7 @@ router.get('/', async function (req, res) {
         socialLogins: baseConfig?.registration?.socialLogins ?? defaultSocialLogins,
         turnstile: baseConfig?.turnstileConfig,
         ...(rum ? { rum } : {}),
+        errorReporting: resolveClientErrorReporting({ config: baseConfig?.errorReporting }),
       };
 
       const interfaceConfig = baseConfig?.interfaceConfig;
@@ -348,6 +350,7 @@ router.get('/', async function (req, res) {
       ...(codeEnvironmentTransitionVersion != null ? { codeEnvironmentTransitionVersion } : {}),
       ...(cloudFront ? { cloudFront } : {}),
       ...(rum ? { rum } : {}),
+      errorReporting: resolveClientErrorReporting({ config: appConfig?.errorReporting }),
       fileUploadSseEnabled: isEnabled(process.env.FILE_UPLOAD_SSE_ENABLED),
       endpointsDropParamsMap: endpointsDropParamsMap,
     };

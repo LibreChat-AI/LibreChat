@@ -1245,3 +1245,48 @@ describe('chat list endpoint filter limit', () => {
     });
   });
 });
+
+describe('GET /api/config errorReporting', () => {
+  const DSN = 'https://publickey@glitchtip.example.com/5';
+  const enabledConfig = {
+    ...baseAppConfig,
+    errorReporting: { client: { enabled: true, sampleRate: 1 } },
+  };
+
+  afterEach(() => {
+    delete process.env.SENTRY_DSN;
+    delete process.env.SENTRY_ENVIRONMENT;
+  });
+
+  it('is absent while librechat.yaml leaves browser reporting off', async () => {
+    process.env.SENTRY_DSN = DSN;
+    mockGetAppConfig.mockResolvedValue(baseAppConfig);
+
+    const anonymous = await request(createApp(null)).get('/api/config');
+    const signedIn = await request(createApp(mockUser)).get('/api/config');
+
+    expect(anonymous.body).not.toHaveProperty('errorReporting');
+    expect(signedIn.body).not.toHaveProperty('errorReporting');
+  });
+
+  it('reaches the browser before and after sign-in once enabled with a DSN', async () => {
+    process.env.SENTRY_DSN = DSN;
+    process.env.SENTRY_ENVIRONMENT = 'dev';
+    mockGetAppConfig.mockResolvedValue(enabledConfig);
+
+    const anonymous = await request(createApp(null)).get('/api/config');
+    const signedIn = await request(createApp(mockUser)).get('/api/config');
+
+    const expected = { dsn: DSN, environment: 'dev', sampleRate: 1 };
+    expect(anonymous.body.errorReporting).toMatchObject(expected);
+    expect(signedIn.body.errorReporting).toMatchObject(expected);
+  });
+
+  it('is absent when enabled without a DSN', async () => {
+    mockGetAppConfig.mockResolvedValue(enabledConfig);
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+
+    expect(response.body).not.toHaveProperty('errorReporting');
+  });
+});

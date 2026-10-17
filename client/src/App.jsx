@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider, QueryCache } from '@tanstack/react-qu
 import { Toast, ToastViewport, ToastProvider, useInputModality } from '@librechat/client';
 import { ScreenshotProvider, useApiErrorBoundary } from './hooks';
 import WakeLockManager from '~/components/System/WakeLockManager';
+import ErrorReporting from '~/components/System/ErrorReporting';
 import QueryDevtoolsGate from '~/components/QueryDevtoolsGate';
 import LanguageSync from '~/components/System/LanguageSync';
 import DeploymentTheme from '~/Providers/DeploymentTheme';
@@ -47,6 +48,7 @@ const App = () => {
   return (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
+        <ErrorReporting />
         <LanguageSync />
         <UiScaleSync />
         <LiveAnnouncer>

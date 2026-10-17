@@ -226,3 +226,20 @@ describe('applyCspNonce', () => {
     expect(applyCspNonce(html, '')).toBe(html);
   });
 });
+
+describe('feature connect sources', () => {
+  it('adds a configured feature origin to connect-src and nothing otherwise', () => {
+    const withOrigin = createCspPolicy(
+      { CSP_ENABLED: 'true' },
+      { connectSrc: ['https://glitchtip.example.com'] },
+    );
+    const without = createCspPolicy({ CSP_ENABLED: 'true' }, { connectSrc: [] });
+    if (!withOrigin || !without) {
+      throw new Error('expected a policy');
+    }
+    expect(issueCsp(withOrigin).headerValue).toMatch(
+      /connect-src 'self' https: wss: https:\/\/glitchtip\.example\.com;/,
+    );
+    expect(issueCsp(without).headerValue).not.toContain('glitchtip');
+  });
+});

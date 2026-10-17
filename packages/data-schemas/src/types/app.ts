@@ -68,6 +68,8 @@ export interface AppConfig {
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
   githubCompare?: TCustomConfig['githubCompare'];
+  /** Browser error reporting toggle; the DSN itself comes from `SENTRY_DSN` */
+  errorReporting?: TCustomConfig['errorReporting'];
   /** Source-scoped content filter configuration */
   filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */

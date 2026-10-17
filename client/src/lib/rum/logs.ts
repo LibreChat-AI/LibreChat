@@ -9,6 +9,7 @@ import {
   getClientPlatform,
   MAX_MESSAGE_LENGTH,
 } from './redact';
+import { captureBoundaryError } from '~/lib/reporting';
 import { setRemoteLogSink } from '~/utils/logger';
 import { getActiveTraceContext } from './trace';
 import { normalizeRumPath } from './routes';
@@ -843,6 +844,7 @@ export function recordClientEvent(
 
 /** Reports an error caught by an error boundary, once per error object. */
 export function reportBoundaryError(boundary: string, error: unknown, chunkLoad = false): void {
+  captureBoundaryError(boundary, error);
   if (!exporter) {
     return;
   }

@@ -67,6 +67,7 @@ export * from './flow/manager';
 export * from './middleware';
 /* Security */
 export * from './security';
+export * from './errorReporting/client';
 /* Content protection */
 export * from './protection';
 /* Imports */
