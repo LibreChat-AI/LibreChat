@@ -525,6 +525,36 @@ describe('useFileHandling', () => {
       }
     });
 
+    it('uploads the rest of a batch when one file has an unsupported type', async () => {
+      jest.useFakeTimers();
+      try {
+        mockFileConfig = mergeFileConfig({
+          endpoints: { default: { fileSizeLimit: 20, totalSizeLimit: 500 } },
+        });
+        const batch = [
+          makeSizedFile('photo.png', 'image/png', 1 * megabyte),
+          makeSizedFile('setup.exe', 'application/x-msdownload', 1 * megabyte),
+          makeSizedFile('notes.txt', 'text/plain', 1 * megabyte),
+        ];
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+
+        await act(async () => {
+          await result.current.handleFiles(batch);
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(250);
+        });
+
+        expect(mockMutate).toHaveBeenCalledTimes(2);
+        expect(mockLocalize).toHaveBeenCalledWith('com_error_files_skipped_type', {
+          0: 'setup.exe',
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('uploads the rest of a batch when one file duplicates an attachment', async () => {
       jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
       try {
