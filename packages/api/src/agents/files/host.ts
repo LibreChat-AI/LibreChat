@@ -159,6 +159,7 @@ export function createRunFileHost<TContext extends RunFileToolContext>({
   }
   const session = createRunFileSession({
     policy: req.config?.endpoints?.agents?.fileSharing,
+    capabilities: req.config?.endpoints?.agents?.capabilities ?? [],
     userId: user.id,
     tenantId: user.tenantId,
     createdAt,

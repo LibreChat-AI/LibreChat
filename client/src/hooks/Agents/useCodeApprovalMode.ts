@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import {
   EModelEndpoint,
   Tools,
+  resolveSubagents,
   isEphemeralAgentId,
   getAllowedCodeApprovalModes,
   CODE_APPROVAL_MODES,
@@ -48,11 +49,20 @@ export default function useCodeApprovalMode(
   const environments = statefulCodeSessions?.environments;
   const reachable = useMemo(
     () =>
-      collectReachableAgents([primaryAgent, addedAgent], agentsMap, [
-        conversation?.agent_id,
-        addedConversation?.agent_id,
-      ]),
-    [addedAgent, agentsMap, primaryAgent, conversation?.agent_id, addedConversation?.agent_id],
+      collectReachableAgents(
+        [primaryAgent, addedAgent],
+        agentsMap,
+        [conversation?.agent_id, addedConversation?.agent_id],
+        agentsConfig?.capabilities,
+      ),
+    [
+      addedAgent,
+      agentsMap,
+      primaryAgent,
+      conversation?.agent_id,
+      addedConversation?.agent_id,
+      agentsConfig?.capabilities,
+    ],
   );
   /** Approval modes intersect every machine an agent could run on, including a subagent's own
    *  default it may no longer use once it follows its parent: offering fewer modes is safe. */
@@ -231,6 +241,7 @@ export function collectReachableAgents(
   roots: Array<Agent | undefined>,
   agentsMap: TAgentsMap | undefined,
   expectedRootIds: Array<string | undefined | null>,
+  capabilities?: readonly string[],
 ): { agents: Agent[]; complete: boolean } {
   const pending = roots.filter((agent): agent is Agent => agent != null);
   const visited = new Set<string>();
@@ -247,7 +258,7 @@ export function collectReachableAgents(
       ...(Array.isArray(edge.from) ? edge.from : [edge.from]),
       ...(Array.isArray(edge.to) ? edge.to : [edge.to]),
     ]);
-    const subagents = agent.subagents?.enabled === true ? agent.subagents : undefined;
+    const subagents = resolveSubagents(agent.subagents, capabilities);
     const graphIds = subagents?.graphs?.flatMap((graph) => graph.agent_ids);
     const ids = [
       ...(agent.agent_ids ?? []),
@@ -277,7 +288,9 @@ function toCodeWorkspaceRoutingAgent(
   agent: Agent,
   environments: TPublicCodeEnvironment[] | undefined,
   allowEnvironmentSelection: boolean | undefined,
+  capabilities?: readonly string[],
 ): CodeWorkspaceRoutingAgent {
+  const subagents = resolveSubagents(agent.subagents, capabilities);
   return {
     id: agent.id,
     routesCode:
@@ -288,10 +301,10 @@ function toCodeWorkspaceRoutingAgent(
     allowSelection:
       getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null,
     subagentIds:
-      agent.subagents?.enabled === true
+      subagents?.enabled === true
         ? [
-            ...(agent.subagents.agent_ids ?? []),
-            ...(agent.subagents.graphs ?? []).flatMap((graph) => graph.agent_ids ?? []),
+            ...(subagents.agent_ids ?? []),
+            ...(subagents.graphs ?? []).flatMap((graph) => graph.agent_ids ?? []),
           ].filter((id) => id.length > 0 && id !== agent.id)
         : undefined,
   };
@@ -311,6 +324,7 @@ export function resolveReachableCodeWorkspaceInheritance(
   selections: CodeWorkspaceSelection[] | undefined,
   /** The chat has not decided yet, so the submission will also select each root's machine. */
   draft = false,
+  capabilities?: readonly string[],
 ): Map<string, string> {
   if (!draft && !selections?.length) return new Map();
   const lookup = (id: string): Agent | undefined =>
@@ -323,7 +337,7 @@ export function resolveReachableCodeWorkspaceInheritance(
     if (agents.has(agent.id)) continue;
     agents.set(
       agent.id,
-      toCodeWorkspaceRoutingAgent(agent, environments, allowEnvironmentSelection),
+      toCodeWorkspaceRoutingAgent(agent, environments, allowEnvironmentSelection, capabilities),
     );
     rootIds.push(agent.id);
     for (const id of getLinkedAgentIds(agent)) {
@@ -336,7 +350,12 @@ export function resolveReachableCodeWorkspaceInheritance(
     const id = pending.shift() as string;
     const agent = agents.has(id) ? undefined : lookup(id);
     if (agent == null) continue;
-    const node = toCodeWorkspaceRoutingAgent(agent, environments, allowEnvironmentSelection);
+    const node = toCodeWorkspaceRoutingAgent(
+      agent,
+      environments,
+      allowEnvironmentSelection,
+      capabilities,
+    );
     agents.set(id, node);
     pending.push(...(node.subagentIds ?? []));
   }

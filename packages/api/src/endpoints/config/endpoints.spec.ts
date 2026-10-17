@@ -6,12 +6,11 @@ import {
   PrincipalType,
   defaultAgentCapabilities,
 } from 'librechat-data-provider';
-
 import type { AppConfig, IConfig } from '@librechat/data-schemas';
 import type { AppConfigServiceDeps } from '~/app/service';
 import type { EndpointsConfigDeps } from './endpoints';
 import type { ServerRequest } from '~/types';
-
+import { resolveToolApprovalPolicy } from '~/agents/hitl/policy';
 import { createEndpointsConfigService } from './endpoints';
 import { createAppConfigService } from '~/app/service';
 
@@ -265,6 +264,63 @@ describe('createEndpointsConfigService', () => {
         ],
       });
     });
+
+    it.each([undefined, false, true])(
+      'public approval metadata preserves attached runtime wiring with endpoint enabled=%s',
+      async (enabled) => {
+        const toolApproval = enabled == null ? undefined : { enabled };
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: {
+                [EModelEndpoint.agents]: {
+                  toolApproval,
+                  capabilities: [
+                    AgentCapabilities.execute_code,
+                    AgentCapabilities.stateful_code_sessions,
+                  ],
+                  statefulCodeSessions: {
+                    allowedEnvironments: ['user'],
+                    environments: [
+                      {
+                        id: 'attached',
+                        name: 'Machine',
+                        type: 'attached',
+                        default: true,
+                        owner: 'principal',
+                        baseURL: 'https://internal-code.example.com',
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+          ),
+        });
+        const result = await createEndpointsConfigService(deps).getEndpointsConfig(fakeReq());
+        const wire: typeof result = JSON.parse(JSON.stringify(result));
+        expect(wire?.[EModelEndpoint.agents]).toMatchObject({
+          toolApproval: { enabled: enabled === true },
+          statefulCodeSessions: {
+            approvalsEnabled: enabled !== false,
+            environments: [{ id: 'attached', type: 'attached', default: true }],
+          },
+        });
+        expect(
+          wire?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments?.[0],
+        ).not.toHaveProperty('baseURL');
+        expect(
+          wire?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments?.[0],
+        ).not.toHaveProperty('owner');
+        expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions?.approvalsEnabled).toBe(
+          resolveToolApprovalPolicy({ endpoint: toolApproval, attachedCodeEnvironment: true })
+            ?.enabled,
+        );
+      },
+    );
 
     it('does not expose a pairing-only control plane as an execution environment', async () => {
       const deps = createMockDeps({

@@ -319,3 +319,15 @@ describe('buildCatalog', () => {
     ]);
   });
 });
+
+test('offers graph teams only under their own capability', () => {
+  const items = buildCatalog({
+    ...emptyInputs,
+    agentsConfig: { capabilities: [AgentCapabilities.subagent_graphs] },
+  });
+  expect(items.some((item) => item.id === AgentCapabilities.subagent_graphs)).toBe(true);
+  expect(items.some((item) => item.id === AgentCapabilities.subagents)).toBe(false);
+  expect(
+    buildCatalog(emptyInputs).some((item) => item.id === AgentCapabilities.subagent_graphs),
+  ).toBe(false);
+});

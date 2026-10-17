@@ -13,7 +13,23 @@ let mockGetValues: UseFormReturn<AgentForm>['getValues'] | undefined;
 const mockSubmit = jest.fn();
 
 jest.mock('@librechat/client', () => ({
-  Switch: () => null,
+  Switch: ({
+    checked,
+    onCheckedChange,
+    'aria-label': label,
+  }: {
+    checked: boolean;
+    onCheckedChange: (value: boolean) => void;
+    'aria-label': string;
+  }) => (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+    />
+  ),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -175,5 +191,23 @@ describe('AgentSubagents', () => {
 
     fireEvent.click(sharing);
     expect(mockGetValues?.('subagents.shareFiles')).toBe(false);
+  });
+  it('keeps legacy teams on their original capability through an enable-toggle round trip', () => {
+    const team = {
+      type: 'legacy',
+      name: 'Legacy',
+      description: 'Work',
+      agent_ids: ['child'],
+      entry_agent_id: 'child',
+      result_agent_id: 'child',
+      edges: [],
+    };
+    const initial = { enabled: true, allowSelf: false, agent_ids: [], graphs: [team] };
+    render(<Harness initialSubagents={initial} />);
+    const enable = screen.getByRole('switch', { name: 'com_ui_agent_subagents_enable' });
+    fireEvent.click(enable);
+    expect(mockGetValues?.('subagents')).toEqual({ ...initial, enabled: false });
+    fireEvent.click(enable);
+    expect(mockGetValues?.('subagents')).toEqual(initial);
   });
 });

@@ -320,3 +320,52 @@ describe('Agent Management read handlers', () => {
     expect(deps.findAccessibleResources).not.toHaveBeenCalled();
   });
 });
+
+it.each([false, true])(
+  'GET and list project graph-enabled=%s saved agents without response validation failures',
+  async (graphsEnabled) => {
+    const subagents = {
+      enabled: false,
+      graphsEnabled,
+      shareFiles: true,
+      allowSelf: false,
+      agent_ids: [],
+      graphs: [
+        {
+          type: 'review',
+          name: 'Review',
+          description: 'Review work',
+          agent_ids: ['member'],
+          edges: [],
+          entry_agent_id: 'member',
+          result_agent_id: 'member',
+        },
+      ],
+    };
+    const saved = { ...agent, subagents };
+    const deps = makeDeps({
+      getAgentWithVersionCount: jest.fn().mockResolvedValue(saved),
+      getAgentManagementListByAccess: jest
+        .fn()
+        .mockResolvedValue({ data: [saved], has_more: false, after: null }),
+    });
+    const handlers = createAgentManagementReadHandlers(deps);
+    const getResponse = makeResponse();
+    await handlers.get(makeRequest({ params: { id: agent.id } }), getResponse);
+    expect(getResponse.status).toHaveBeenCalledWith(200);
+    expect(getResponse.status).not.toHaveBeenCalledWith(500);
+    expect(getResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({ id: agent.id, subagents }),
+    );
+    const listResponse = makeResponse();
+    await handlers.list(makeRequest(), listResponse);
+    expect(listResponse.status).toHaveBeenCalledWith(200);
+    expect(listResponse.status).not.toHaveBeenCalledWith(500);
+    expect(listResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        object: 'list',
+        data: [expect.objectContaining({ id: agent.id, subagents })],
+      }),
+    );
+  },
+);

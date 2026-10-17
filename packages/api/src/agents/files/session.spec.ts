@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto';
-import { FileContext, FileSources } from 'librechat-data-provider';
+import { AgentCapabilities, FileContext, FileSources } from 'librechat-data-provider';
+import type { AgentSubagentsConfig, TFile } from 'librechat-data-provider';
 import type { SubagentExecutionContext } from '@librechat/agents';
-import type { TFile } from 'librechat-data-provider';
 import type { RunArtifactDescriptor } from '~/files/code/publication';
 import type { RunFileSessionDeps } from './session';
 import type { ServerRequest } from '~/types';
-import { createRunFileSession, getAuthorizedRunFileSnapshot } from './session';
+import {
+  createRunFileSession,
+  getAuthorizedRunFileSnapshot,
+  isRunFileSharingRequested,
+} from './session';
 import { AgentAttachmentLimitError } from '../attachments';
 import { resolveTurnDeliveryRouting } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
@@ -16,6 +20,12 @@ function setup(
     signal?: AbortSignal;
     ttlMs?: number;
     inputs?: TFile[];
+    capabilities?: readonly string[];
+    subagents?: AgentSubagentsConfig;
+    agents?: Record<string, AgentSubagentsConfig>;
+    maxFiles?: number;
+    allowSiblingSharing?: boolean;
+    deferActivation?: boolean;
     validateMessages?: RunFileSessionDeps['validateMessages'];
     encodeMessages?: RunFileSessionDeps['encodeMessages'];
   } = {},
@@ -48,20 +58,23 @@ function setup(
   const read = jest.fn(async () => saved);
   const prepared = jest.fn(async () => undefined);
   const emit = jest.fn(async () => undefined);
+  const getInputs = jest.fn(() => options.inputs ?? []);
   const session = createRunFileSession({
+    capabilities: options.capabilities ?? [AgentCapabilities.subagents],
     userId: 'user',
     createdAt: Date.now(),
     policy: {
       enabled: true,
-      allowSiblingSharing: false,
-      maxFiles: 20,
+      allowSiblingSharing: options.allowSiblingSharing ?? false,
+      maxFiles: options.maxFiles ?? 20,
       maxPrivateBytes: 268_435_456,
       ttlMs: options.ttlMs ?? 60_000,
     },
     snapshots,
-    getInputs: () => options.inputs ?? [],
+    getInputs,
     inputFileIds: new Set(options.inputs?.map((file) => file.file_id)),
     getAgent: (id) => {
+      if (options.agents?.[id]) return { id, subagents: options.agents[id] };
       if (id === 'writer') {
         return { id, subagents: { enabled: true, allowSelf: false, agent_ids: ['reader'] } };
       }
@@ -69,7 +82,7 @@ function setup(
         id,
         subagents:
           id === 'parent'
-            ? {
+            ? (options.subagents ?? {
                 enabled: subagentsEnabled,
                 allowSelf: false,
                 shareFiles: true,
@@ -84,7 +97,7 @@ function setup(
                     edges: [{ from: 'reader', to: 'writer', edgeType: 'direct' }],
                   },
                 ],
-              }
+              })
             : undefined,
       };
     },
@@ -142,9 +155,10 @@ function setup(
     signal: new AbortController().signal,
     resumed: false,
   };
-  session.activate('run', 'conversation', ['parent'], options.signal);
+  if (!options.deferActivation) session.activate('run', 'conversation', ['parent'], options.signal);
   return {
     session,
+    getInputs,
     saved,
     context,
     preparation,
@@ -303,6 +317,7 @@ it('keeps a retained sharing preference inactive while the master subagent setti
   expect(read).not.toHaveBeenCalled();
   expect(
     getAuthorizedRunFileSnapshot({
+      capabilities: [AgentCapabilities.subagents],
       policy: {
         enabled: true,
         allowSiblingSharing: false,
@@ -630,4 +645,256 @@ it('restores published references without advertising stale private outputs on r
   expect((await session.list('writer', context)).private_artifact_recovery).toContain('Regenerate');
   await session.close();
   await expect(session.list('parent')).rejects.toThrow('expired');
+});
+
+const fileCapabilityMatrix = [
+  { name: 'ordinary', value: [AgentCapabilities.subagents] },
+  { name: 'graphs', value: [AgentCapabilities.subagent_graphs] },
+  { name: 'both', value: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs] },
+  { name: 'neither', value: [] },
+].flatMap(({ name, value }) =>
+  [false, true].flatMap((enabled) =>
+    [undefined, false, true].map((graphsEnabled) => ({
+      name,
+      capabilities: value,
+      enabled,
+      graphsEnabled,
+    })),
+  ),
+);
+
+it.each(fileCapabilityMatrix)(
+  'gates snapshots and activation with $name capabilities, ordinary=$enabled, graphs=$graphsEnabled',
+  async ({ capabilities, enabled, graphsEnabled }) => {
+    const subagents = {
+      enabled,
+      graphsEnabled,
+      allowSelf: false,
+      shareFiles: true,
+      agent_ids: ['writer'],
+      graphs: [
+        {
+          type: 'team',
+          name: 'Team',
+          description: 'Work',
+          agent_ids: ['reader'],
+          entry_agent_id: 'reader',
+          result_agent_id: 'reader',
+          edges: [],
+        },
+      ],
+    };
+    const expected =
+      (enabled && capabilities.includes(AgentCapabilities.subagents)) ||
+      ((graphsEnabled ?? enabled) &&
+        capabilities.includes(
+          graphsEnabled == null ? AgentCapabilities.subagents : AgentCapabilities.subagent_graphs,
+        ));
+    const { session, getInputs, prepared, read } = setup(enabled, { capabilities, subagents });
+    try {
+      expect(session.isActive()).toBe(expected);
+      expect(
+        isRunFileSharingRequested({
+          capabilities,
+          agent: { subagents },
+          policy: {
+            enabled: true,
+            allowSiblingSharing: false,
+            maxFiles: 1,
+            maxPrivateBytes: 100,
+            ttlMs: 60000,
+          },
+        }),
+      ).toBe(expected);
+      expect(getInputs).toHaveBeenCalledTimes(expected ? 1 : 0);
+      expect(read).not.toHaveBeenCalled();
+      expect(prepared).not.toHaveBeenCalled();
+      expect(
+        getAuthorizedRunFileSnapshot({
+          capabilities,
+          agent: { subagents },
+          files: [],
+          policy: {
+            enabled: true,
+            allowSiblingSharing: false,
+            maxFiles: 1,
+            maxPrivateBytes: 100,
+            ttlMs: 60000,
+          },
+        }),
+      ).toEqual(expected ? [] : undefined);
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+it('disabled graph-only sharing cannot impose manifest limits on ordinary attachments', async () => {
+  const inputs: TFile[] = ['first', 'second'].map((file_id) => ({
+    file_id,
+    filename: `${file_id}.txt`,
+    type: 'text/plain',
+    bytes: 1,
+    user: 'user',
+    embedded: false,
+    filepath: `/files/${file_id}`,
+    object: 'file',
+    usage: 0,
+    source: FileSources.local,
+  }));
+  const subagents = { enabled: false, graphsEnabled: true, shareFiles: true, allowSelf: false };
+  const disabled = setup(false, {
+    capabilities: [AgentCapabilities.subagents],
+    subagents,
+    inputs,
+    maxFiles: 1,
+    deferActivation: true,
+  });
+  const enabled = setup(false, {
+    capabilities: [AgentCapabilities.subagent_graphs],
+    subagents,
+    inputs,
+    maxFiles: 1,
+    deferActivation: true,
+  });
+  try {
+    expect(disabled.session.activate('run', 'conversation', ['parent'])).toBe(false);
+    expect(disabled.getInputs).not.toHaveBeenCalled();
+    expect(disabled.read).not.toHaveBeenCalled();
+    expect(disabled.prepared).not.toHaveBeenCalled();
+    expect(() => enabled.session.activate('run', 'conversation', ['parent'])).toThrow(
+      'configured file limit',
+    );
+  } finally {
+    await disabled.session.close();
+    await enabled.session.close();
+  }
+});
+
+it.each([false, true])(
+  'nested stored graph recipients follow their own capability, enabled=%s',
+  async (graphsAllowed) => {
+    const capabilities = graphsAllowed
+      ? [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs]
+      : [AgentCapabilities.subagents];
+    const { session, context, preparation, prepared } = setup(true, {
+      capabilities,
+      subagents: { enabled: true, allowSelf: false, shareFiles: true, agent_ids: ['writer'] },
+      agents: {
+        writer: {
+          enabled: false,
+          graphsEnabled: true,
+          allowSelf: false,
+          agent_ids: ['forbidden-single'],
+          graphs: [
+            {
+              type: 'nested',
+              name: 'Nested',
+              description: 'Work',
+              agent_ids: ['reader'],
+              entry_agent_id: 'reader',
+              result_agent_id: 'reader',
+              edges: [],
+            },
+          ],
+        },
+      },
+    });
+    try {
+      await session.prepare({ ...preparation, memberAgentIds: ['writer'] });
+      const nested: SubagentExecutionContext = {
+        ...context,
+        depth: 2,
+        ancestry: [
+          ...context.ancestry,
+          {
+            subagentRunId: 'nested-team',
+            subagentType: 'nested',
+            subagentKind: 'graph',
+            subagentAgentId: 'reader',
+            parentRunId: 'child-team',
+            parentAgentId: 'writer',
+            parentToolCallId: 'nested-spawn',
+          },
+        ],
+      };
+      const invocation = {
+        ...preparation,
+        executionContext: nested,
+        memberAgentIds: ['reader'],
+        resumed: true,
+      };
+      if (graphsAllowed)
+        await expect(session.prepare(invocation)).resolves.toMatchObject({
+          messages: [],
+          agentSessions: { reader: expect.anything() },
+        });
+      else {
+        await expect(session.prepare(invocation)).rejects.toThrow('not authorized this child');
+        expect(prepared).toHaveBeenCalledTimes(1);
+      }
+      await expect(
+        session.prepare({
+          ...invocation,
+          executionContext: {
+            ...nested,
+            ancestry: [
+              ...context.ancestry,
+              {
+                ...nested.ancestry[1],
+                subagentRunId: 'forbidden',
+                subagentAgentId: 'forbidden-single',
+              },
+            ],
+          },
+          memberAgentIds: ['forbidden-single'],
+        }),
+      ).rejects.toThrow('not authorized this child');
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+it('disabled graph targets are not granted publication recipient authority', async () => {
+  const { session, context, preparation, saved, snapshots } = setup(true, {
+    capabilities: [AgentCapabilities.subagents],
+    allowSiblingSharing: true,
+    subagents: {
+      enabled: true,
+      allowSelf: false,
+      shareFiles: true,
+      agent_ids: ['writer'],
+      graphsEnabled: true,
+      graphs: [
+        {
+          type: 'team',
+          name: 'Team',
+          description: 'Work',
+          agent_ids: ['disabled-member'],
+          entry_agent_id: 'disabled-member',
+          result_agent_id: 'disabled-member',
+          edges: [],
+        },
+      ],
+    },
+  });
+  try {
+    await session.prepare({ ...preparation, memberAgentIds: ['writer'] });
+    await session.capture('writer', context, 'code-call', {
+      session_id: 'writer-session',
+      files: [{ id: 'output', name: 'results.csv' }],
+    });
+    const artifact = (await session.list('writer', context)).artifacts[0];
+    await expect(
+      session.publish('writer', context, artifact.artifact_id, ['disabled-member']),
+    ).rejects.toThrow('does not authorize');
+    expect(saved).toHaveLength(0);
+    expect(snapshots.discard).not.toHaveBeenCalled();
+    await expect(session.publish('writer', context, artifact.artifact_id)).resolves.toHaveProperty(
+      'file_id',
+    );
+  } finally {
+    await session.close();
+  }
 });

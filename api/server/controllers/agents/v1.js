@@ -54,6 +54,8 @@ const {
   instructionsContentForScan,
 } = require('@librechat/api');
 const {
+  resolveSubagents,
+  hasSubagentCapability,
   Time,
   Tools,
   SkillsScope,
@@ -476,7 +478,7 @@ const validateSubagentReferences = async (
 const isSubagentsCapabilityEnabled = (req) => {
   const capabilities = req.config?.endpoints?.[EModelEndpoint.agents]?.capabilities;
   if (!Array.isArray(capabilities)) return false;
-  return capabilities.includes(AgentCapabilities.subagents);
+  return hasSubagentCapability(capabilities);
 };
 
 const isCodeInterpreterCapabilityEnabled = (req) => {
@@ -491,6 +493,7 @@ const isCodeInterpreterCapabilityEnabled = (req) => {
  * @returns {Promise<{ status: number, body: { error: string, agent_ids: string[] } } | null>}
  */
 const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new Set()) => {
+  subagents = resolveSubagents(subagents, req.config?.endpoints?.agents?.capabilities ?? []);
   if (
     !isSubagentsCapabilityEnabled(req) ||
     subagents?.enabled !== true ||

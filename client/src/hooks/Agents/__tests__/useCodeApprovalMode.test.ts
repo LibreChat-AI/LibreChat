@@ -1,8 +1,10 @@
 import { Provider } from 'jotai';
 import { renderHook } from '@testing-library/react';
 import { LocalStorageKeys } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
-import useCodeApprovalMode from '../useCodeApprovalMode';
+import type { Agent, TConversation } from 'librechat-data-provider';
+import useCodeApprovalMode, {
+  resolveReachableCodeWorkspaceInheritance,
+} from '../useCodeApprovalMode';
 
 const mockUseGetAgentsConfig = jest.fn();
 const mockUseAgentToolPermissions = jest.fn();
@@ -39,6 +41,7 @@ describe('useCodeApprovalMode', () => {
     });
     mockUseGetAgentsConfig.mockReturnValue({
       agentsConfig: {
+        capabilities: ['subagents', 'subagent_graphs'],
         statefulCodeSessions: {
           approvalsEnabled: true,
           approvalModes: ['ask', 'acceptEdits'],
@@ -334,6 +337,97 @@ describe('useCodeApprovalMode', () => {
     const { result } = renderHook(() => useCodeApprovalMode(conversation));
 
     expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+  });
+
+  test('removing the graph capability removes graph-member approval requirements', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result, rerender } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(true);
+    mockUseGetAgentsConfig().agentsConfig.capabilities = ['subagents'];
+    rerender();
+    expect(result.current.available).toBe(false);
+    expect(result.current.modes).toEqual([]);
+  });
+
+  test.each([true, false])(
+    'workspace inheritance excludes a graph with capability enabled=%s',
+    (enabled) => {
+      const root = {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      } as Agent;
+      const member = {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'child-machine',
+        code_environment_ids: ['mac'],
+      } as Agent;
+      const inherited = resolveReachableCodeWorkspaceInheritance(
+        [root],
+        { 'graph-member': member },
+        [
+          { id: 'mac', name: 'Mac', type: 'attached' },
+          { id: 'child-machine', name: 'Child', type: 'attached' },
+        ],
+        true,
+        [{ environmentId: 'mac', workspaceId: 'project' }],
+        false,
+        enabled ? ['subagent_graphs'] : ['subagents'],
+      );
+      expect(inherited.has('graph-member')).toBe(enabled);
+      if (enabled) expect(inherited.get('graph-member')).toBe('mac');
+    },
+  );
+
+  test('graph-only teams remain reachable in public execution metadata', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(true);
+    expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
   });
 
   test('includes attached subagents while preserving their mandatory asks', () => {

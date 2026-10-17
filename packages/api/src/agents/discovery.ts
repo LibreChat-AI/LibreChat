@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import {
   ResourceType,
+  resolveSubagents,
   PermissionBits,
   EModelEndpoint,
   MAX_SUBAGENT_GRAPH_NODES,
@@ -315,9 +316,10 @@ export async function resolveSubagentGraphs(
 
   for (const rootConfig of params.rootConfigs) {
     const resolvedGraphs: NonNullable<GraphSubagentHostConfig['subagentGraphConfigs']> = [];
-    for (const definition of rootConfig.subagents?.enabled === true
-      ? (rootConfig.subagents.graphs ?? [])
-      : []) {
+    for (const definition of resolveSubagents(
+      rootConfig.subagents,
+      params.req.config?.endpoints?.agents?.capabilities,
+    )?.graphs ?? []) {
       const memberIds = [...new Set(definition.agent_ids)];
       const newMemberIds = memberIds.filter(
         (memberId) => !configById.has(memberId) && !attemptedGraphMemberIds.has(memberId),

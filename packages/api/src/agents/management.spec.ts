@@ -338,3 +338,62 @@ describe('Agent Management contract', () => {
     });
   });
 });
+
+describe('graph team management contract parity', () => {
+  const team = {
+    type: 'review',
+    name: 'Review',
+    description: 'Review work',
+    agent_ids: ['member'],
+    edges: [],
+    entry_agent_id: 'member',
+    result_agent_id: 'member',
+  };
+  const cases = [undefined, false, true].flatMap((graphsEnabled) =>
+    [false, true].flatMap((enabled) =>
+      [false, true].map((shareFiles) => ({ graphsEnabled, enabled, shareFiles })),
+    ),
+  );
+  it.each(cases)(
+    'preserves saved graph choices through every public schema: %j',
+    ({ graphsEnabled, enabled, shareFiles }) => {
+      const subagents = {
+        enabled,
+        ...(graphsEnabled != null && { graphsEnabled }),
+        allowSelf: false,
+        shareFiles,
+        agent_ids: [],
+        graphs: [team],
+      };
+      const created = agentManagementCreateSchema.parse({
+        provider: 'openAI',
+        model: 'gpt-5',
+        subagents,
+      });
+      const updated = agentManagementUpdateSchema.parse({ subagents });
+      expect(created.subagents).toEqual(subagents);
+      expect(updated.subagents).toEqual(subagents);
+      const saved = { ...persistedAgent, subagents };
+      const response = projectAgentManagementResponse(saved);
+      expect(response.subagents).toEqual(subagents);
+      expect(agentManagementResponseSchema.parse(response).subagents).toEqual(subagents);
+      const list = projectAgentManagementListResponse({
+        data: [saved],
+        has_more: false,
+        after: null,
+      });
+      expect(agentManagementListResponseSchema.parse(list).data[0].subagents).toEqual(subagents);
+      expect(response).not.toHaveProperty('credentials');
+      expect(response).not.toHaveProperty('author');
+      expect(response).not.toHaveProperty('tenantId');
+    },
+  );
+
+  it('keeps strict output rejection for unknown nested fields', () => {
+    const source = {
+      ...persistedAgent,
+      subagents: { enabled: false, graphsEnabled: false, internalRuntime: 'private' },
+    };
+    expect(() => projectAgentManagementResponse(source)).toThrow(z.ZodError);
+  });
+});

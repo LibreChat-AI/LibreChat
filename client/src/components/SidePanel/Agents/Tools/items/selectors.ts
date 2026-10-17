@@ -1,5 +1,6 @@
 import {
   Constants,
+  isSubagentGraphsEnabled,
   splitMCPToolKey,
   normalizeServerName,
   buildServerNameAliases,
@@ -53,6 +54,8 @@ function isBuiltinSelected(item: AgentItem, form: FormSelection): boolean {
       return Boolean(form.artifacts);
     case 'context':
       return form.context_files.length > 0;
+    case 'subagent_graphs':
+      return isSubagentGraphsEnabled(form.subagents) && (form.subagents?.graphs?.length ?? 0) > 0;
     case 'subagents':
       return form.subagents?.enabled === true;
     case 'handoffs':

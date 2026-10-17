@@ -1,3 +1,4 @@
+import { AgentCapabilities, resolveSubagents } from 'librechat-data-provider';
 import type { AgentSubagentsConfig, GraphEdge } from 'librechat-data-provider';
 import type { FormSelection } from '../selectors';
 import type { AgentItem } from '../types';
@@ -125,4 +126,68 @@ test('handoff removal retains all direct edges and does not mutate stored input'
   expect(removeHandoffs(edges)).toEqual([direct, implicitDirect]);
   expect(edges).toHaveLength(3);
   expect(removeHandoffs()).toEqual([]);
+});
+
+test('graph selection and removal use the graph flag independently of ordinary spawning', () => {
+  const graphItem: AgentItem = {
+    kind: 'builtin',
+    id: 'subagent_graphs',
+    name: '',
+    description: '',
+    iconKey: 'subagent_graphs',
+  };
+  const team = {
+    type: 'team',
+    name: 'Team',
+    description: 'Work',
+    agent_ids: ['child'],
+    entry_agent_id: 'child',
+    result_agent_id: 'child',
+    edges: [],
+  };
+  expect(
+    deriveSelectedItems(
+      { ...form, subagents: { enabled: false, graphsEnabled: true, graphs: [team] } },
+      [graphItem, subagentItem],
+      [],
+    ),
+  ).toEqual([graphItem]);
+  expect(
+    deriveSelectedItems(
+      { ...form, subagents: { enabled: true, graphsEnabled: false, graphs: [team] } },
+      [graphItem, subagentItem],
+      [],
+    ),
+  ).toEqual([subagentItem]);
+  expect(computeToggleAction(graphItem, { selected: true })).toEqual({ type: 'graphs-remove' });
+  expect(computeToggleAction(graphItem, { selected: false })).toEqual({ type: 'configure' });
+});
+
+test('ordinary Subagents toggles do not migrate the capability gate of legacy teams', () => {
+  const team = {
+    type: 'legacy',
+    name: 'Legacy',
+    description: 'Work',
+    agent_ids: ['child'],
+    entry_agent_id: 'child',
+    result_agent_id: 'child',
+    edges: [],
+  };
+  const original = { enabled: true, allowSelf: false, agent_ids: [], graphs: [team] };
+  const disabled = setSubagentsEnabled(original, false);
+  const restored = setSubagentsEnabled(disabled, true);
+  expect(restored).toEqual(original);
+  expect(resolveSubagents(restored, [AgentCapabilities.subagents])?.graphs).toEqual([team]);
+  expect(restored.graphsEnabled).toBeUndefined();
+});
+
+test('ordinary Subagents toggles retain an explicit independent graph choice', () => {
+  const config = {
+    enabled: true,
+    allowSelf: false,
+    graphsEnabled: true,
+    agent_ids: [],
+    graphs: [],
+  };
+  expect(setSubagentsEnabled(config, false)).toEqual({ ...config, enabled: false });
 });

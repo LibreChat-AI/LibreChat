@@ -212,11 +212,20 @@ export default function useCodeWorkspace(
     | undefined;
   const reachable = useMemo(
     () =>
-      collectReachableAgents([primaryAgent, addedAgent], agentsMap, [
-        conversation?.agent_id,
-        addedConversation?.agent_id,
-      ]),
-    [addedAgent, agentsMap, primaryAgent, conversation?.agent_id, addedConversation?.agent_id],
+      collectReachableAgents(
+        [primaryAgent, addedAgent],
+        agentsMap,
+        [conversation?.agent_id, addedConversation?.agent_id],
+        agentsConfig?.capabilities,
+      ),
+    [
+      addedAgent,
+      agentsMap,
+      primaryAgent,
+      conversation?.agent_id,
+      addedConversation?.agent_id,
+      agentsConfig?.capabilities,
+    ],
   );
   const storedSelections = conversation?.codeWorkspaces;
   const isNewChat =
@@ -251,6 +260,7 @@ export default function useCodeWorkspace(
           statefulCodeSessions?.allowEnvironmentSelection,
           conversation?.codeWorkspaces,
           undecided,
+          agentsConfig?.capabilities,
         )
       : new Map<string, string>();
     /** A decision may still select the machine an inheriting subagent ran on before it followed
@@ -316,7 +326,12 @@ export default function useCodeWorkspace(
       [addedAgent, addedConversation?.agent_id],
     ] as const) {
       if (!rootAgent || !rootAgentId) continue;
-      const rootReachable = collectReachableAgents([rootAgent], agentsMap, [rootAgentId]);
+      const rootReachable = collectReachableAgents(
+        [rootAgent],
+        agentsMap,
+        [rootAgentId],
+        agentsConfig?.capabilities,
+      );
       for (const agent of rootReachable.agents) {
         if (agent.stateful_code_sessions !== true || !agent.tools?.includes(Tools.execute_code)) {
           continue;
@@ -350,6 +365,7 @@ export default function useCodeWorkspace(
     conversation?.codeWorkspaces,
     primaryAgent,
     reachable.agents,
+    agentsConfig?.capabilities,
     statefulCodeSessions?.environments,
     statefulCodeSessions?.allowEnvironmentSelection,
     supportsWorkspaceInheritance,
@@ -547,6 +563,8 @@ export default function useCodeWorkspace(
               statefulCodeSessions.environments,
               true,
               resolved,
+              false,
+              agentsConfig?.capabilities,
             )
           : undefined;
       if (
@@ -581,6 +599,7 @@ export default function useCodeWorkspace(
       required,
       selectionMetadataComplete,
       reachable.agents,
+      agentsConfig?.capabilities,
       statefulCodeSessions,
       supportsWorkspaceInheritance,
     ],

@@ -143,7 +143,7 @@ export default function BuiltinSection({
 
   let body: React.ReactNode = null;
 
-  if (builtinId === 'subagents' || builtinId === 'handoffs') {
+  if (builtinId === 'subagents' || builtinId === 'subagent_graphs' || builtinId === 'handoffs') {
     body = <OrchestrationHub currentAgentId={agentId} tool={builtinId} />;
   } else if (builtinId === 'execute_code') {
     body = (
@@ -176,7 +176,10 @@ export default function BuiltinSection({
   }
 
   const localizedDescription =
-    description && builtinId !== 'subagents' && builtinId !== 'handoffs'
+    description &&
+    builtinId !== 'subagents' &&
+    builtinId !== 'subagent_graphs' &&
+    builtinId !== 'handoffs'
       ? localize(description as TranslationKeys)
       : '';
 
