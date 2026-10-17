@@ -66,7 +66,7 @@
     "ai-tokenizer": "^1.0.6",
     "axios": "^1.16.0",
     "bcryptjs": "^2.4.3",
-    "compression": "^1.8.1",
+    "compression": "^1.8.2",
     "connect-redis": "^8.1.0",
     "cookie": "^0.7.2",
     "cookie-parser": "^1.4.7",
