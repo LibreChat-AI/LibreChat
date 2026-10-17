@@ -844,8 +844,8 @@ export function getOpenAILLMConfig({
     /** OpenRouter expects web search as a plugins parameter */
     modelKwargs.plugins = [{ id: 'web' }];
     hasModelKwargs = true;
-  } else if (enableWebSearch) {
-    /** Standard OpenAI web search uses tools API */
+  } else if (enableWebSearch && isCanonicalOpenAIBaseURL(baseURL)) {
+    /** Standard OpenAI web search uses tools API - only for actual OpenAI API */
     llmConfig.useResponsesApi = true;
     tools.push({ type: 'web_search' });
   }
