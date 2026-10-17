@@ -61,10 +61,20 @@ type ResolvedImageConfig = {
   assistantEndpoints: AssistantConfig[];
 };
 
-type CookieAuthResult =
+export type CookieAuthResult =
   | { status: 'missing' }
   | { status: 'invalid' }
   | ({ status: 'authenticated' } & TwoFactorTokenCredential);
+
+/** A cookie-authenticated viewer, with the account fields routes authorize against. */
+export type ViewerAuthResult =
+  | { status: 'missing' }
+  | { status: 'invalid' }
+  | ({
+      status: 'authenticated';
+      role?: string | null;
+      tenantId?: string;
+    } & TwoFactorTokenCredential);
 
 type OpenIdCookieAuthResult =
   | { status: 'invalid' }
@@ -227,7 +237,7 @@ function getStoredPathCandidates(canonicalPath: string): string[] {
 
 async function authenticateRequest(
   req: ImageRequest,
-  deps: ImageAuthorizationDeps,
+  deps: Pick<ImageAuthorizationDeps, 'parseCookies' | 'isOpenIdReuseEnabled' | 'findSession'>,
 ): Promise<CookieAuthResult> {
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) {
@@ -270,6 +280,30 @@ async function authenticateRequest(
     deps.findSession({ userId: credential.userId, refreshToken }),
   );
   return session ? { status: 'authenticated', ...credential } : { status: 'invalid' };
+}
+
+/**
+ * Identifies the signed-in user from the session cookie, for routes an image tag loads
+ * (it sends no bearer token), with the account checks the image route makes before it
+ * trusts a viewer: a token issued before the user's credentials changed or two-factor
+ * enrollment, or an account still required to enroll, is invalid.
+ */
+export async function authenticateViewer(
+  req: ImageRequest,
+  deps: Pick<
+    ImageAuthorizationDeps,
+    'parseCookies' | 'isOpenIdReuseEnabled' | 'findSession' | 'getUserById'
+  >,
+): Promise<ViewerAuthResult> {
+  const auth = await authenticateRequest(req, deps);
+  if (auth.status !== 'authenticated') {
+    return auth;
+  }
+  const viewer = await runAsSystem(() => deps.getUserById(auth.userId, IMAGE_USER_PROJECTION));
+  if (!viewer || isTokenRetired(auth, viewer) || isTwoFactorEnrollmentRequired(viewer)) {
+    return { status: 'invalid' };
+  }
+  return { ...auth, role: viewer.role, tenantId: viewer.tenantId };
 }
 
 function isSharedAssistant(assistant: AssistantImageRecord, configs: AssistantConfig[]): boolean {

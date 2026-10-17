@@ -51,6 +51,11 @@ import {
   assertPathSegment,
   sanitizeContentDispositionFilename,
 } from '~/storage/validation';
+import {
+  getStoredFileURL,
+  getKeyFromStoredFileURL,
+  isStoredFileProxyEnabled,
+} from '~/storage/proxy/link';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { initializeS3 } from '~/cdn/s3';
 import { deleteRagFile } from '~/files';
@@ -295,6 +300,10 @@ async function getS3URLForKey({
   customFilename?: string | null;
   contentType?: string | null;
 }): Promise<string> {
+  if (isStoredFileProxyEnabled()) {
+    return getStoredFileURL(FileSources.s3, key);
+  }
+
   const params: GetObjectCommandInput = { Bucket: bucketName, Key: key };
 
   if (customFilename) {
@@ -664,6 +673,11 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
     throw new Error('Invalid input: URL or key is empty');
   }
 
+  const proxiedKey = getKeyFromStoredFileURL(fileUrlOrKey, FileSources.s3);
+  if (proxiedKey != null) {
+    return proxiedKey;
+  }
+
   if (!fileUrlOrKey.startsWith('http://') && !fileUrlOrKey.startsWith('https://')) {
     return fileUrlOrKey.startsWith('/') ? fileUrlOrKey.substring(1) : fileUrlOrKey;
   }
@@ -879,6 +893,11 @@ export async function getS3DownloadURL({
   customFilename = null,
   contentType = null,
 }: DownloadURLParams): Promise<string> {
+  /** No direct link: the app serves the bytes either way, and the caller's own
+   * streaming route applies its access rules (a shared link's, for one). */
+  if (isStoredFileProxyEnabled()) {
+    return '';
+  }
   const key = resolveStoredS3Key(file);
   if (!key) {
     throw new Error('[getS3DownloadURL] Unable to extract S3 key from file path');
@@ -887,11 +906,19 @@ export async function getS3DownloadURL({
 }
 
 export function needsRefresh(signedUrl: string, bufferSeconds: number): boolean {
+  /** LibreChat's own links never expire; with the proxy off they go back to presigned ones. */
+  if (getKeyFromStoredFileURL(signedUrl, FileSources.s3) != null) {
+    return !isStoredFileProxyEnabled();
+  }
   try {
     const url = new URL(signedUrl);
 
     if (!url.searchParams.has('X-Amz-Signature')) {
       return false;
+    }
+    /** A presigned link stored before the proxy was turned on is replaced with LibreChat's. */
+    if (isStoredFileProxyEnabled()) {
+      return true;
     }
 
     const expiresParam = url.searchParams.get('X-Amz-Expires');
