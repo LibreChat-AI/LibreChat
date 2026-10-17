@@ -355,6 +355,7 @@ export function createInstructionsPromptAccess(deps: {
       groupId: next.groupId,
       selection: next.selection,
       filters,
+      allowedSources: ['native'],
     });
     if (!resolved.ok) {
       return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };

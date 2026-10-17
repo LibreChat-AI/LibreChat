@@ -1,6 +1,6 @@
 import type { FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { LinkedInstructionsCache, LinkedInstructionsLogger } from './linked';
-import type { PromptService, ResolvedPrompt } from '~/prompts';
+import type { PromptService, NativeResolvedPrompt } from '~/prompts';
 import { createLinkedInstructionsResolver, invalidateLinkedPrompt } from './linked';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
@@ -88,8 +88,9 @@ const exactLink: AgentInstructionsPrompt = {
   selection: { type: 'exact', promptId },
 };
 
-function makeResolvedPrompt(overrides: Partial<ResolvedPrompt> = {}): ResolvedPrompt {
+function makeResolvedPrompt(overrides: Partial<NativeResolvedPrompt> = {}): NativeResolvedPrompt {
   return {
+    source: 'native',
     groupId,
     promptId,
     prompt: 'You are a helpful assistant.',
@@ -137,6 +138,7 @@ describe('createLinkedInstructionsResolver', () => {
       groupId,
       selection: { type: 'production' },
       filters: undefined,
+      allowedSources: ['native'],
     });
     await expect(cache.get(`native:${groupId}:production`)).resolves.toMatchObject({
       groupId,
@@ -158,6 +160,7 @@ describe('createLinkedInstructionsResolver', () => {
       groupId,
       selection: { type: 'exact', promptId },
       filters: undefined,
+      allowedSources: ['native'],
     });
     await expect(cache.get(`native:${groupId}:exact:${promptId}`)).resolves.toBeDefined();
   });
@@ -504,6 +507,48 @@ describe('createLinkedInstructionsResolver', () => {
     await expect(blockedResolver({ link: productionLink })).resolves.toEqual({
       status: 'unavailable',
       reason: 'blocked_content',
+    });
+  });
+
+  it('calls resolvePrompt with allowedSources native-only and maps a rejected non-native group (unsupported_source) to unavailable_selection', async () => {
+    const cache = new FakeCache();
+    const promptService = makePromptService({
+      resolvePrompt: jest.fn().mockResolvedValue({
+        ok: false,
+        error: { type: 'unsupported_source', source: 'langfuse' },
+      }),
+    });
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    await expect(resolver({ link: productionLink })).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'unavailable_selection',
+    });
+    expect(promptService.resolvePrompt).toHaveBeenCalledWith({
+      groupId,
+      selection: { type: 'production' },
+      filters: undefined,
+      allowedSources: ['native'],
+    });
+  });
+
+  it.each([
+    ['unsupported_selection', { type: 'unsupported_selection', source: 'native' }],
+    ['source_unavailable', { type: 'source_unavailable', source: 'langfuse', reason: 'disabled' }],
+    ['source_not_found', { type: 'source_not_found', source: 'langfuse' }],
+    ['unsupported_content', { type: 'unsupported_content', reason: 'chat_prompt' }],
+  ] as const)('maps the service error "%s" to the generic "error" reason', async (_name, error) => {
+    const cache = new FakeCache();
+    const promptService = makePromptService({
+      resolvePrompt: jest.fn().mockResolvedValue({ ok: false, error }),
+    });
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    await expect(resolver({ link: productionLink })).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'error',
     });
   });
 

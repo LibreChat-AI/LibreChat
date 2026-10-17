@@ -8,15 +8,17 @@ const {
   ResourceType,
   AccessRoleIds,
   PrincipalType,
+  PrincipalModel,
   PermissionBits,
 } = require('librechat-data-provider');
-const { SystemCapabilities } = require('@librechat/data-schemas');
+const { SystemCapabilities, BASE_CONFIG_PRINCIPAL_ID } = require('@librechat/data-schemas');
 
 let mockAppConfig = {};
 
 // Mock modules before importing
 jest.mock('~/server/services/Config', () => ({
   getCachedTools: jest.fn().mockResolvedValue({}),
+  getAppConfig: jest.fn().mockResolvedValue({}),
 }));
 
 jest.mock('~/models', () => {
@@ -43,6 +45,7 @@ jest.mock('~/server/middleware', () => ({
     next();
   }),
   promptUsageLimiter: (req, res, next) => next(),
+  promptResolveLimiter: (req, res, next) => next(),
   canAccessPromptViaGroup: jest.requireActual('~/server/middleware').canAccessPromptViaGroup,
   canAccessPromptGroupResource:
     jest.requireActual('~/server/middleware').canAccessPromptGroupResource,
@@ -53,9 +56,10 @@ const { configMiddleware } = require('~/server/middleware');
 let app;
 let mongoServer;
 let promptRoutes;
-let Prompt, PromptGroup, AclEntry, AccessRole, User, SystemGrant;
+let Prompt, PromptGroup, AclEntry, AccessRole, User, SystemGrant, Config;
 let testUsers, testRoles;
 let grantPermission;
+let db;
 let currentTestUser; // Track current user for middleware
 
 // Helper function to set user in middleware
@@ -76,6 +80,8 @@ beforeAll(async () => {
   AccessRole = dbModels.AccessRole;
   User = dbModels.User;
   SystemGrant = dbModels.SystemGrant;
+  Config = dbModels.Config;
+  db = require('~/models');
 
   // Import permission service
   const permissionService = require('~/server/services/PermissionService');
@@ -1383,6 +1389,244 @@ async function responseOf(pending) {
   const { status, body } = await pending;
   return { status, body };
 }
+
+describe('GET /api/prompts/groups/:groupId/resolve', () => {
+  afterEach(async () => {
+    await Prompt.deleteMany({});
+    await PromptGroup.deleteMany({});
+    await AclEntry.deleteMany({});
+  });
+
+  it('resolves the production revision for a native group', async () => {
+    const { group, prompt } = await createAccessiblePromptGroup({
+      name: 'Resolve native group',
+      prompt: 'Native production text',
+    });
+
+    const response = await request(app).get(`/api/prompts/groups/${group._id}/resolve`).expect(200);
+
+    expect(response.body).toEqual({
+      source: 'native',
+      groupId: group._id.toString(),
+      promptId: prompt._id.toString(),
+      prompt: 'Native production text',
+      type: 'text',
+    });
+  });
+
+  it('returns 403 without VIEW permission', async () => {
+    const { group } = await createAccessiblePromptGroup({
+      name: 'Resolve forbidden group',
+      prompt: 'Native text',
+    });
+    setTestUser(app, testUsers.noAccess);
+
+    const response = await request(app).get(`/api/prompts/groups/${group._id}/resolve`).expect(403);
+
+    expect(response.body.error).toBe('Forbidden');
+  });
+
+  it('returns 404 for a missing group', async () => {
+    const response = await request(app)
+      .get(`/api/prompts/groups/${new ObjectId()}/resolve`)
+      .expect(404);
+
+    expect(response.body).toEqual({
+      error: 'Not Found',
+      message: `${ResourceType.PROMPTGROUP} not found`,
+    });
+  });
+
+  it('is not captured by GET /:promptId', async () => {
+    const { group, prompt } = await createAccessiblePromptGroup({
+      name: 'Resolve route segments',
+      prompt: 'Native text',
+    });
+
+    const response = await request(app).get(`/api/prompts/groups/${group._id}/resolve`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      source: 'native',
+      groupId: group._id.toString(),
+      promptId: prompt._id.toString(),
+      prompt: 'Native text',
+      type: 'text',
+    });
+  });
+
+  describe('a Langfuse-origin group', () => {
+    const langfuseEnv = {
+      LANGFUSE_PROMPT_SYNC_AVAILABLE: 'true',
+      LANGFUSE_PUBLIC_KEY: 'pk-resolve',
+      LANGFUSE_SECRET_KEY: 'sk-resolve',
+      LANGFUSE_PROJECT_ID: 'resolve-project',
+      LANGFUSE_BASE_URL: 'https://langfuse.resolve.test',
+    };
+    let fetchSpy;
+    let group;
+    let previousLangfuseEnv;
+
+    beforeEach(async () => {
+      previousLangfuseEnv = {};
+      for (const key of Object.keys(langfuseEnv)) {
+        previousLangfuseEnv[key] = process.env[key];
+      }
+      Object.assign(process.env, langfuseEnv);
+      await db.upsertConfig(
+        PrincipalType.ROLE,
+        BASE_CONFIG_PRINCIPAL_ID,
+        PrincipalModel.ROLE,
+        { langfuse: { promptSync: { enabled: true } } },
+        10,
+      );
+      group = await PromptGroup.create({
+        name: 'Langfuse group',
+        category: 'resolve-test',
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+        source: 'langfuse',
+        sourcePromptName: 'greeting',
+        sourceProjectId: 'resolve-project',
+        sourceDestination: 'env',
+      });
+      await grantPermission({
+        principalType: PrincipalType.USER,
+        principalId: testUsers.owner._id,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId: group._id,
+        accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
+        grantedBy: testUsers.owner._id,
+      });
+    });
+
+    afterEach(async () => {
+      for (const key of Object.keys(langfuseEnv)) {
+        if (previousLangfuseEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = previousLangfuseEnv[key];
+        }
+      }
+      if (fetchSpy) {
+        fetchSpy.mockRestore();
+        fetchSpy = undefined;
+      }
+      await Config.deleteMany({});
+    });
+
+    function mockLangfuseFetch(responder) {
+      fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(responder);
+    }
+
+    function textPromptResponse(payload, status = 200) {
+      return new Response(JSON.stringify(payload), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    it('resolves the production label', async () => {
+      mockLangfuseFetch(async () =>
+        textPromptResponse({
+          name: 'greeting',
+          version: 1,
+          type: 'text',
+          labels: ['production'],
+          prompt: 'Hello {{name}}',
+        }),
+      );
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .expect(200);
+
+      expect(response.body).toEqual({
+        source: 'langfuse',
+        groupId: group._id.toString(),
+        prompt: 'Hello {{name}}',
+        type: 'text',
+        version: 1,
+        labels: ['production'],
+      });
+      const [url] = fetchSpy.mock.calls[0];
+      expect(url).toContain('label=production');
+      expect(url).not.toContain('version=');
+    });
+
+    it('resolves an exact version and sends it with no label', async () => {
+      mockLangfuseFetch(async () =>
+        textPromptResponse({
+          name: 'greeting',
+          version: 3,
+          type: 'text',
+          labels: [],
+          prompt: 'Hello v3',
+        }),
+      );
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .query({ version: 3 })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        source: 'langfuse',
+        groupId: group._id.toString(),
+        prompt: 'Hello v3',
+        type: 'text',
+        version: 3,
+        labels: [],
+      });
+      const [url] = fetchSpy.mock.calls[0];
+      expect(url).toContain('version=3');
+      expect(url).not.toContain('label=');
+    });
+
+    it('rejects a chat prompt with 422', async () => {
+      mockLangfuseFetch(async () =>
+        textPromptResponse({
+          name: 'greeting',
+          version: 1,
+          type: 'chat',
+          labels: ['production'],
+          prompt: [{ role: 'system', content: 'secret' }],
+        }),
+      );
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .expect(422);
+
+      expect(response.body).toEqual({ code: 'unsupported_type' });
+    });
+
+    it('returns 404 with the Langfuse message for a missing prompt', async () => {
+      mockLangfuseFetch(async () => new Response(null, { status: 404 }));
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .expect(404);
+
+      expect(response.body).toEqual({
+        code: 'not_found',
+        message: 'Prompt not found in Langfuse',
+      });
+    });
+
+    it('returns 404 not_available when prompt sync is gated off', async () => {
+      delete process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE;
+      mockLangfuseFetch(async () => textPromptResponse({}));
+
+      const response = await request(app)
+        .get(`/api/prompts/groups/${group._id}/resolve`)
+        .expect(404);
+
+      expect(response.body).toEqual({ code: 'not_available' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+});
 
 describe('Prompt Routes - response and failure compatibility', () => {
   let consoleErrorSpy;

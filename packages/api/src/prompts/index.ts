@@ -3,6 +3,7 @@ export * from './artifacts';
 export * from './errors';
 export * from './format';
 export * from './handlers';
+export * from './langfuse';
 export * from './migration';
 export * from './native';
 export * from './protection';
