@@ -7,6 +7,9 @@
  */
 export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center gap-2.5';
 
+/** Leave an 8px gap beside MessageNav's hit area in full-width chat. */
+export const ARTIFACT_ROW_NAV_SPACING = 'pr-3 md:pr-17';
+
 /** Behavior hook for header glyphs, independent of their layout. */
 export const FOLD_GLYPH_CLASS = 'fold-glyph';
 
@@ -40,7 +43,7 @@ export const FOLD_RAIL_CLASSES = 'relative pl-6';
 /**
  * A copy action laid over its pane (`group/copy`) instead of beside it, so it
  * takes no width from the content. Hidden until the pane is hovered or the
- * action holds keyboard focus; touch input, which cannot hover, always sees it.
+ * action holds keyboard focus; any touchscreen, even beside a trackpad, always sees it.
  */
 export const PANE_COPY_REVEAL =
-  '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-visible:opacity-100 [@media(hover:hover)]:group-hover/copy:opacity-100';
+  'no-touch:opacity-0 no-touch:focus-visible:opacity-100 no-touch:group-hover/copy:opacity-100';

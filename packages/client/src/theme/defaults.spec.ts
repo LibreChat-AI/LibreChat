@@ -68,7 +68,7 @@ describe.each([
   const tokens = Object.keys(theme) as Array<keyof IThemeRGB>;
 
   it('covers every registry color', () => {
-    expect(tokens).toHaveLength(151);
+    expect(tokens).toHaveLength(169);
   });
 
   it('resolves every registry color to the runtime theme value', () => {
@@ -96,6 +96,10 @@ const stockAliases: Partial<
   popoverRadius: 'radius2xl',
   menuPanelRadius: 'radiusXl',
   composerActionRadius: 'roundControlRadius',
+  authControlRadius: 'radius2xl',
+  authActionHeight: 'buttonHeight',
+  authActionRadius: 'radiusLg',
+  checkboxRadius: 'radiusSm',
 };
 
 /** Color roles split out of a broader one read it in the stylesheet, in both modes, so a
@@ -109,6 +113,7 @@ const colorAliases: Array<[string, string]> = [
   ['--focus-subtle', '--border-heavy'],
   ['--field-fill', '--surface-primary'],
   ['--field-text', '--text-primary'],
+  ['--checkbox-fill', '--surface-primary'],
 ];
 
 describe('the stock color aliases', () => {

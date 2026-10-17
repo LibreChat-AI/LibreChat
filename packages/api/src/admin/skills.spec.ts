@@ -576,3 +576,67 @@ describe('createAdminSkillsSyncAccess', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('skill sync credential audit entries', () => {
+  function build(overrides: Record<string, jest.Mock> = {}) {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    const handlers = createAdminSkillsSyncHandlers({
+      runner: { getStatus: jest.fn(), runOnce: jest.fn() } as never,
+      upsertCredential: jest.fn().mockResolvedValue({
+        provider: 'github',
+        credentialKey: 'github-skills-prod',
+        credentialPresent: true,
+        tokenFingerprint: 'abcd',
+      }),
+      deleteCredential: jest.fn().mockResolvedValue({ deleted: true }),
+      recordAuditEntry,
+      ...overrides,
+    });
+    return { handlers, recordAuditEntry };
+  }
+  const req = (extra: Record<string, unknown> = {}) =>
+    ({
+      user: { id: 'admin-1', name: 'Admin', tenantId: 'tenant-a' },
+      params: { credentialKey: 'github-skills-prod' },
+      body: { token: 'ghp_supersecrettoken' },
+      headers: {},
+      ...extra,
+    }) as never;
+
+  it('records skill_credential.set on the platform chain without the token', async () => {
+    const { handlers, recordAuditEntry } = build();
+
+    await handlers.setCredential(req(), createResponse());
+
+    expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+    const input = recordAuditEntry.mock.calls[0][0];
+    expect(input).toEqual(
+      expect.objectContaining({
+        action: 'skill_credential.set',
+        target: { type: 'skill_credential', id: 'github-skills-prod', name: 'github' },
+        tenantId: undefined,
+      }),
+    );
+    expect(JSON.stringify(input)).not.toContain('ghp_supersecrettoken');
+  });
+
+  it('records skill_credential.deleted only when something was deleted', async () => {
+    const missing = build({ deleteCredential: jest.fn().mockResolvedValue({ deleted: false }) });
+    await missing.handlers.deleteCredential(req(), createResponse());
+    expect(missing.recordAuditEntry).not.toHaveBeenCalled();
+
+    const { handlers, recordAuditEntry } = build();
+    await handlers.deleteCredential(req(), createResponse());
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'skill_credential.deleted' }),
+    );
+  });
+
+  it('records nothing for an invalid credential key', async () => {
+    const { handlers, recordAuditEntry } = build();
+
+    await handlers.setCredential(req({ params: { credentialKey: 'bad key!' } }), createResponse());
+
+    expect(recordAuditEntry).not.toHaveBeenCalled();
+  });
+});

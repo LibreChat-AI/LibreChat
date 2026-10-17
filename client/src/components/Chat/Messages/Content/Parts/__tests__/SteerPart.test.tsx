@@ -2,11 +2,11 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { QueryKeys } from 'librechat-data-provider';
 import { Provider, createStore, useAtomValue } from 'jotai';
+import { liveAppliedSteerIdsAtom } from '@librechat/chat/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
 import { STEER_ICON } from '~/components/Chat/Steering/identity';
-import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import SteerPart from '../SteerPart';
 import store from '~/store';
 
@@ -178,7 +178,7 @@ describe('SteerPart presentation', () => {
     renderPart();
     const part = screen.getByTestId('steer-part');
     expect(part).toHaveAttribute('id', 'steer-s1');
-    expect(part).toHaveClass('steer-render');
+    expect(part).toHaveAttribute('data-steer-render');
   });
 
   it('stays on the message content edge instead of outdenting', () => {

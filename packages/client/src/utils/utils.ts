@@ -2,6 +2,9 @@
 import { type ClassValue, clsx } from 'clsx';
 import { extendTailwindMerge } from 'tailwind-merge';
 
+/** `text-*` steps off Tailwind's scale; unregistered, twMerge reads them as colors and drops a real one. */
+export const TYPE_STEPS = ['3xs', '2xs', '1xs', '1sm'] as const;
+
 /**
  * Theme utilities whose names Tailwind Merge cannot classify, registered so a caller's own
  * padding or height still replaces the primitive's default instead of both surviving
@@ -33,6 +36,9 @@ const twMerge = extendTailwindMerge({
             'theme-button-compact',
             'theme-field',
             'theme-field-lg',
+            'theme-auth-field',
+            'theme-auth-button',
+            'theme-auth-action',
             'theme-target',
           ],
         },
@@ -51,14 +57,19 @@ const twMerge = extendTailwindMerge({
             'theme-icon',
             'theme-icon-md',
             'theme-icon-lg',
+            'theme-auth-field-action',
           ],
         },
       ],
-      px: [{ px: ['theme-control-x', 'theme-dialog-x'] }],
+      px: [{ px: ['theme-button-x', 'theme-control-x', 'theme-dialog-x'] }],
       gap: [{ gap: ['theme-control-gap'] }],
+      rounded: [{ rounded: ['theme-auth-control', 'theme-auth-action', 'theme-checkbox'] }],
       'space-y': [{ 'space-y': ['theme-dialog-header'] }],
       'font-weight': [{ font: ['theme-control', 'theme-dialog-title-weight', 'theme-label'] }],
       'font-family': [{ font: ['theme-dialog-title'] }],
+      'font-size': [{ text: [...TYPE_STEPS] }],
+      'outline-w': [{ outline: ['theme-focus'] }],
+      'outline-offset': [{ 'outline-offset': ['theme-focus'] }],
     },
   },
 });

@@ -219,8 +219,16 @@ describe('createSkillSyncMethods', () => {
       errorCode: 'TENANT_B_FAILURE',
     });
 
-    const tenantA = await methods.getSkillSyncStatus('github', 'shared-source', 'tenant-a');
-    const tenantB = await methods.getSkillSyncStatus('github', 'shared-source', 'tenant-b');
+    const tenantA = await mongoose.models.SkillSyncStatus.findOne({
+      provider: 'github',
+      sourceId: 'shared-source',
+      tenantId: 'tenant-a',
+    }).lean();
+    const tenantB = await mongoose.models.SkillSyncStatus.findOne({
+      provider: 'github',
+      sourceId: 'shared-source',
+      tenantId: 'tenant-b',
+    }).lean();
 
     expect(tenantA).toMatchObject({
       sourceId: 'shared-source',

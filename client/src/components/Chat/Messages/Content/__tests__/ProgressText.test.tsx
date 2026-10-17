@@ -281,7 +281,12 @@ describe('ProgressText fixed siblings', () => {
 describe('ProgressText verdict', () => {
   it('names the failure reason inside the button on a failed card', () => {
     renderProgressText({ phase: 'failed', verdict: 'exit code 2' });
-    expect(screen.getByRole('button')).toHaveTextContent('· com_ui_tool_failed· exit code 2');
+    expect(screen.getByRole('button')).toHaveTextContent('Completed foo· exit code 2');
+  });
+
+  it('states the reason in place of the generic failure word', () => {
+    renderProgressText({ phase: 'failed', verdict: 'timed out' });
+    expect(screen.queryByText(/com_ui_tool_failed/)).not.toBeInTheDocument();
   });
 
   it('keeps the failure verdict but hides preparation, call, total, and live timers', () => {

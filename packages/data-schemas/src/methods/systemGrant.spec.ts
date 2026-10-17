@@ -776,6 +776,20 @@ describe('systemGrant methods', () => {
     });
   });
 
+  describe('findGrantsForPrincipal', () => {
+    it('reads the grants deleteGrantsForPrincipal would remove, without removing them', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'find-role',
+        capability: SystemCapabilities.READ_USERS,
+      });
+
+      const found = await methods.findGrantsForPrincipal(PrincipalType.ROLE, 'find-role');
+      expect(found.map((g) => g.capability)).toEqual([SystemCapabilities.READ_USERS]);
+      expect(await methods.findGrantsForPrincipal(PrincipalType.ROLE, 'find-role')).toHaveLength(1);
+    });
+  });
+
   describe('deleteGrantsForPrincipal', () => {
     it('deletes all grants for a principal', async () => {
       const groupId = new Types.ObjectId();

@@ -1,8 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { getDefaultStore } from 'jotai';
 import { renderHook } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import { Constants, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TConversation } from 'librechat-data-provider';
 import useAutoplayTrigger from '../useAutoplayTrigger';
@@ -30,7 +32,7 @@ const renderTrigger = (message: TMessage) => {
             set(store.conversationByIndex(0), { conversationId } as TConversation);
             set(store.activeRunFamily(0), 'run-1');
             set(store.audioRunFamily(0), null);
-            set(store.isSubmittingFamily(0), false);
+            getDefaultStore().set(isSubmittingFamily(0), false);
           }}
         >
           <Routes>
@@ -43,6 +45,10 @@ const renderTrigger = (message: TMessage) => {
 
   return renderHook(() => useAutoplayTrigger(0), { wrapper }).result;
 };
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('useAutoplayTrigger', () => {
   it('plays a finalized answer', () => {

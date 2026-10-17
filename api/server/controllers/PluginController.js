@@ -9,47 +9,6 @@ const { getCachedTools, setCachedTools } = require('~/server/services/Config');
 const { availableTools, toolkits } = require('~/app/clients/tools');
 const { getAppConfig } = require('~/server/services/Config');
 
-const getAvailablePluginsController = async (req, res) => {
-  try {
-    const appConfig =
-      req.config ??
-      (await getAppConfig({
-        role: req.user?.role,
-        userId: req.user?.id,
-        tenantId: req.user?.tenantId,
-      }));
-    const { filteredTools = [], includedTools = [] } = appConfig;
-
-    const uniquePlugins = filterUniquePlugins(
-      filterGitHubComparePlugins(availableTools, appConfig?.githubCompare),
-    );
-    const includeSet = new Set(includedTools);
-    const filterSet = new Set(filteredTools);
-
-    /** includedTools takes precedence — filteredTools ignored when both are set. */
-    const plugins = [];
-    for (const plugin of uniquePlugins) {
-      /** Agents-runtime-only tools (e.g. ask_user_question) never work on the
-       *  legacy plugins endpoint — no run to pause, no resume surface. */
-      if (plugin.agentsOnly === true) {
-        continue;
-      }
-      if (includeSet.size > 0) {
-        if (!includeSet.has(plugin.pluginKey)) {
-          continue;
-        }
-      } else if (filterSet.has(plugin.pluginKey)) {
-        continue;
-      }
-      plugins.push(checkPluginAuth(plugin) ? { ...plugin, authenticated: true } : plugin);
-    }
-
-    res.status(200).json(plugins);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
 const getAvailableTools = async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -119,5 +78,4 @@ const getAvailableTools = async (req, res) => {
 
 module.exports = {
   getAvailableTools,
-  getAvailablePluginsController,
 };

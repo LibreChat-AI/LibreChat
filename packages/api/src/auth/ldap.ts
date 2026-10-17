@@ -22,7 +22,7 @@ export async function findLdapUser({
 }): Promise<LoginUserResolution> {
   const user = await findUser({ ldapId });
   if (user && user.provider !== 'ldap') {
-    logger.info(`[ldapStrategy] User ${user.email} already exists with provider ${user.provider}`);
+    logger.info(`[ldapStrategy] User ${user._id} already exists with provider ${user.provider}`);
     return { user: null, error: ErrorTypes.AUTH_FAILED };
   }
   return { user, error: null };

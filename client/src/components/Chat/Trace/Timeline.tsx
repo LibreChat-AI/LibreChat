@@ -259,7 +259,7 @@ function Timeline({
         )}
       </div>
       <div
-        className="text-text-secondary flex justify-between text-[11px] tabular-nums"
+        className="text-text-secondary text-2xs flex justify-between tabular-nums"
         aria-hidden="true"
       >
         {TICKS.map((fraction) => (

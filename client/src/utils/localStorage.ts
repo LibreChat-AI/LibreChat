@@ -1,4 +1,4 @@
-import { LocalStorageKeys, TConversation, isUUID } from 'librechat-data-provider';
+import { LocalStorageKeys, TConversation } from 'librechat-data-provider';
 
 export function getLocalStorageItems() {
   const items = {
@@ -70,23 +70,6 @@ export function clearLocalStorage(skipFirst?: boolean) {
   });
 }
 
-export function clearConversationStorage(conversationId?: string | null) {
-  if (!conversationId) {
-    return;
-  }
-  if (!isUUID.safeParse(conversationId)?.success) {
-    console.warn(
-      `Conversation ID ${conversationId} is not a valid UUID. Skipping local storage cleanup.`,
-    );
-    return;
-  }
-  const keys = Object.keys(localStorage);
-  keys.forEach((key) => {
-    if (key.includes(conversationId)) {
-      localStorage.removeItem(key);
-    }
-  });
-}
 export function clearAllConversationStorage() {
   const keys = Object.keys(localStorage);
   keys.forEach((key) => {

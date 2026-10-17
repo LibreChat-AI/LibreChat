@@ -1,6 +1,8 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { render, screen, fireEvent, act } from '@testing-library/react';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import type { TAttachment } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import Attachment, { AttachmentGroup } from '../Attachment';
@@ -94,8 +96,8 @@ const inMessage = (ui: React.ReactElement, isSubmitting: boolean) => (
 
 const renderWith = (ui: React.ReactElement, opts: { streaming?: boolean } = {}) => {
   const streaming = opts.streaming ?? true;
-  const initializeState = (snapshot: MutableSnapshot) => {
-    snapshot.set(store.isSubmittingFamily(0), streaming);
+  const initializeState = () => {
+    getDefaultStore().set(isSubmittingFamily(0), streaming);
   };
   return render(
     <RecoilRoot initializeState={initializeState}>{inMessage(ui, streaming)}</RecoilRoot>,
@@ -124,8 +126,8 @@ const StateProbe = ({ onSnapshot }: { onSnapshot: (snap: ArtifactsSnapshot) => v
 
 const renderWithProbe = (ui: React.ReactElement, opts: { streaming?: boolean } = {}) => {
   const streaming = opts.streaming ?? true;
-  const initializeState = (snap: MutableSnapshot) => {
-    snap.set(store.isSubmittingFamily(0), streaming);
+  const initializeState = () => {
+    getDefaultStore().set(isSubmittingFamily(0), streaming);
   };
   let snapshot: ArtifactsSnapshot = {
     visibility: false,
@@ -147,6 +149,10 @@ const renderWithProbe = (ui: React.ReactElement, opts: { streaming?: boolean } =
     getSnapshot: () => snapshot,
   };
 };
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('Attachment routing for tool artifacts', () => {
   it('renders an HTML artifact card (panel artifact) and exposes a download control', () => {
@@ -459,7 +465,7 @@ describe('ToolArtifactCard click behaviour', () => {
       text: '<h1>previous answer</h1>',
     });
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), true);
+      getDefaultStore().set(isSubmittingFamily(0), true);
       snap.set(store.artifactsVisibility, false);
     };
     let snapshot: ArtifactsSnapshot = {
@@ -612,8 +618,8 @@ describe('ToolArtifactCard click behaviour', () => {
       filename: 'test.py',
       text: 'print("hello")',
     } as Partial<TAttachment>);
-    const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), true);
+    const initializeState = () => {
+      getDefaultStore().set(isSubmittingFamily(0), true);
     };
     let snapshot: ArtifactsSnapshot = {
       visibility: false,
@@ -649,7 +655,7 @@ describe('ToolArtifactCard click behaviour', () => {
       text: '<h1>fresh</h1>',
     } as Partial<TAttachment>);
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), true);
+      getDefaultStore().set(isSubmittingFamily(0), true);
       snap.set(store.artifactsVisibility, false);
     };
     let snapshot: ArtifactsSnapshot = {
@@ -681,7 +687,7 @@ describe('ToolArtifactCard click behaviour', () => {
       text: '<h1>old</h1>',
     } as Partial<TAttachment>);
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
     };
     let snapshot: ArtifactsSnapshot = {
@@ -721,7 +727,7 @@ describe('ToolArtifactCard click behaviour', () => {
       textFormat: 'html',
     });
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
       snap.set(store.previewJustResolved(['test-response', 'just-resolved-xlsx']), true);
     };
@@ -756,7 +762,7 @@ describe('ToolArtifactCard click behaviour', () => {
       textFormat: 'html',
     });
     const initializeState = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
       snap.set(store.previewJustResolved(['test-response', 'one-shot-xlsx']), true);
     };
@@ -783,7 +789,7 @@ describe('ToolArtifactCard click behaviour', () => {
     unmount();
     snapshot = { visibility: false, currentArtifactId: null, artifactIds: [] };
     const secondInit = (snap: MutableSnapshot) => {
-      snap.set(store.isSubmittingFamily(0), false);
+      getDefaultStore().set(isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
       // flag stays at default (false) — already consumed
     };

@@ -186,7 +186,7 @@ function MentionContent({
         <Input
           ref={initInputRef}
           placeholder={localize(placeholder)}
-          className="bg-surface-secondary text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
+          className="bg-surface-secondary mb-1 h-auto w-full rounded-none border-0 p-2"
           autoComplete="off"
           value={searchValue}
           onKeyDown={(e) => {

@@ -4,9 +4,8 @@ import {
   mergeFileConfig,
   fileConfig,
 } from 'librechat-data-provider';
-import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { RegexLike, TFile } from 'librechat-data-provider';
-import type { ServerRequest } from '~/types';
+import type { AppConfig } from '@librechat/data-schemas';
 
 /**
  * Checks if a MIME type is supported by the endpoint configuration
@@ -21,55 +20,12 @@ function isMimeTypeSupported(mimeType: string, supportedMimeTypes?: RegexLike[])
   return fileConfig.checkType(mimeType, supportedMimeTypes);
 }
 
-/**
- * Filters out files based on endpoint configuration including:
- * - Disabled status
- * - File size limits
- * - MIME type restrictions
- * - Total size limits
- * @param req - The server request object containing config
- * @param params - Object containing files, endpoint, and endpointType
- * @param params.files - Array of processed file documents from MongoDB
- * @param params.endpoint - The endpoint name to check configuration for
- * @param params.endpointType - The endpoint type to check configuration for
- * @returns Filtered array of files
- */
-export function filterFilesByEndpointConfig(
-  req: ServerRequest,
-  params: {
-    files: IMongoFile[] | undefined;
-    endpoint?: string | null;
-    endpointType?: string | null;
-    skipTotalSizeLimit?: boolean;
-    preserveTextSources?: boolean;
-  },
-): IMongoFile[] {
-  return filterFilesByEndpointRuntimeConfig(req.config, params);
-}
-
-/** Request-free endpoint file-policy adapter used by Agent execution hosts. */
-/**
- * Whether this endpoint still presents the explicit upload-destination chooser. In that
- * mode the destination is the user's choice and the upload path acts on it immediately,
- * so nothing may be provisioned to a service they did not select.
- */
-export function isLegacyFileUploadUX(
-  appConfig: AppConfig | undefined,
-  params: { endpoint?: string | null; endpointType?: string | null },
-): boolean {
-  const endpointFileConfig = getEndpointFileConfig({
-    fileConfig: mergeFileConfig(appConfig?.fileConfig),
-    endpoint: params.endpoint,
-    endpointType: params.endpointType,
-  });
-  return endpointFileConfig?.legacyFileUploadUX === true;
-}
-
 type EndpointPolicyFile = Pick<TFile, 'bytes' | 'type'> & {
   source?: string;
   metadata?: { routingMimeType?: string };
 };
 
+/** Request-free endpoint file-policy adapter used by Agent execution hosts. */
 export function filterFilesByEndpointRuntimeConfig<T extends EndpointPolicyFile>(
   appConfig: AppConfig | undefined,
   params: {

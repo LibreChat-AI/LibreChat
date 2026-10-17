@@ -1,29 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, useAtom } from 'jotai';
+import { useRecoilValue } from 'recoil';
 import { useQueryClient } from '@tanstack/react-query';
-import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
+import { useStore, useAtom, useSetAtom, useAtomValue } from 'jotai';
 import {
   Constants,
   QueryKeys,
-  tMessageSchema,
   isAssistantsEndpoint,
   isForcedTemporaryRetention,
 } from 'librechat-data-provider';
-import type { TMessage, TConversation, TSubmission, Agents } from 'librechat-data-provider';
-import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
-import type { StreamStatusResponse } from '~/data-provider';
 import {
-  dedupeSteersById,
-  appendAppliedSteerIds,
-  collectAppliedSteerIds,
-  collectDroppedSteerQuotes,
-  mergeRestagedQuotes,
-  applyPendingAction,
-  carriedSteerContext,
-  getBranchSiblingIndexesForTarget,
-  hydrateFileDeliveryMetadata,
-  isCompactionAnchorProjection,
-} from '~/utils';
+  revealedQueuedTurnFamily,
+  activeGenerationCreatedAtByConvoId,
+  useIsSubmitting,
+  submissionStartFamily,
+  submissionByIndex,
+  useSubmission,
+} from '@librechat/chat/react';
+import {
+  hasSubmissionUserMessage,
+  getGenerationProtocolVersion,
+  supportsGenerationProtocolV2,
+  buildMinimalResumeSubmission,
+  resumeStateMatchesSubmission,
+  getResumeBranchTargetMessageId,
+  buildSubmissionFromResumeState,
+} from '@librechat/chat';
+import type { TMessage, Agents } from 'librechat-data-provider';
 import {
   useStreamStatus,
   useActiveJobs,
@@ -35,16 +37,17 @@ import {
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
 } from '~/data-provider';
 import {
-  getGenerationProtocolVersion,
-  supportsGenerationProtocolV2,
-} from '~/data-provider/SSE/protocol';
+  isDetachedRunManual,
+  resolveDetachedRunEnd,
+  pendingRunEndByConvoId,
+  detachedRunByConvoId,
+} from '~/hooks/Chat/queue';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { dedupeSteersById, getBranchSiblingIndexesForTarget } from '~/utils';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
-import useSteerConvert from '~/hooks/Chat/useSteerConvert';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 import { resumeRequestsAtom } from '~/hooks/Chat/resume';
-import { useFileMapContext } from '~/Providers';
+import useSteerState from './steer';
 import store from '~/store';
 
 /**
@@ -52,229 +55,6 @@ import store from '~/store';
  * faster than the list can change it would only re-read the same snapshot.
  */
 const ACTIVE_JOB_REARM_INTERVAL_MS = 5_000;
-
-function hasSubmissionUserMessage(
-  submission: TSubmission | null,
-  messages: TMessage[] | undefined,
-  conversationId: string | undefined,
-): boolean {
-  const userMessageId = submission?.userMessage?.messageId;
-  if (!userMessageId || !conversationId || !messages?.length) {
-    return false;
-  }
-
-  return messages.some(
-    (message) =>
-      message.isCreatedByUser === true &&
-      message.messageId === userMessageId &&
-      message.conversationId === conversationId,
-  );
-}
-
-function resumeStateMatchesSubmission(
-  streamStatus: StreamStatusResponse | undefined,
-  submission: TSubmission | null,
-): boolean {
-  const resumeState = streamStatus?.resumeState;
-  if (!resumeState || !submission) {
-    return false;
-  }
-
-  const userMessageId = submission.userMessage?.messageId;
-  if (userMessageId && resumeState.userMessage?.messageId === userMessageId) {
-    return true;
-  }
-
-  const responseMessageId = submission.initialResponse?.messageId;
-  return !!responseMessageId && resumeState.responseMessageId === responseMessageId;
-}
-
-/**
- * The row that names the branch a resumed run belongs to when its own response
- * is not in the loaded history yet. A compaction's user-message slot is the leaf
- * it summarizes up to and carries no parent (`projectCompactionAnchor`), so
- * there the anchor itself names the branch — without this the pane restores no
- * sibling selection and a compaction started on an older branch comes back on
- * whichever branch the default lands on.
- */
-function getResumeBranchFallbackMessageId(
-  resumeState: Agents.ResumeState,
-): string | null | undefined {
-  return resumeState.userMessage?.parentMessageId ?? resumeState.userMessage?.messageId;
-}
-
-function getResumeBranchTargetMessageId(
-  resumeState: Agents.ResumeState,
-  messages: TMessage[],
-): string | null | undefined {
-  const responseMessageId = resumeState.responseMessageId;
-  if (!responseMessageId) {
-    return getResumeBranchFallbackMessageId(resumeState);
-  }
-
-  const unpaddedResponseMessageId = responseMessageId.replace(/_+$/, '');
-  let hasResponseMessage = false;
-  let hasUnpaddedResponseMessage = false;
-
-  for (const message of messages) {
-    if (message.messageId === responseMessageId) {
-      hasResponseMessage = true;
-      break;
-    }
-
-    if (message.messageId === unpaddedResponseMessageId) {
-      hasUnpaddedResponseMessage = true;
-    }
-  }
-
-  if (hasResponseMessage) {
-    return responseMessageId;
-  }
-
-  if (hasUnpaddedResponseMessage) {
-    return unpaddedResponseMessageId;
-  }
-
-  return getResumeBranchFallbackMessageId(resumeState);
-}
-
-function preferDefinedString(value?: string | null, fallback?: string): string | undefined {
-  return value != null && value !== '' ? value : fallback;
-}
-
-/**
- * Build a submission object from resume state for reconnected streams.
- * This provides the minimum data needed for useResumableSSE to subscribe.
- */
-function buildSubmissionFromResumeState(
-  resumeState: Agents.ResumeState,
-  streamId: string,
-  messages: TMessage[],
-  conversationId: string,
-  generationCreatedAt?: number,
-  generationProtocolVersion: GenerationProtocolVersion = 1,
-  isTemporary = false,
-): TSubmission {
-  const userMessageData = resumeState.userMessage;
-  const responseMessageId =
-    resumeState.responseMessageId ?? `${userMessageData?.messageId ?? 'resume'}_`;
-
-  /**
-   * The run's user-message slot as the loaded history already holds it. Message
-   * ids are unique per row, so a match is that row whoever wrote it: a
-   * compaction submits no user turn and puts the LEAF it summarizes up to in
-   * this slot (`useCompactConversation` client-side, `projectCompactionAnchor`
-   * server-side), which is usually the assistant answer. Adopting the row keeps
-   * the anchor's own identity — synthesizing an empty, parentless USER row over
-   * it rewrites that answer into a phantom root and folds the thread.
-   */
-  const existingSlotMessage = messages.find((m) => m.messageId === userMessageData?.messageId);
-  /** An anchored run — a compaction — created no user turn: the slot names a row
-   *  the transcript already holds. Judged from the projection's shape, never from
-   *  the anchor's author, which is a user message as often as an answer. Either
-   *  way the run is regenerate-shaped for every consumer: no user turn of its
-   *  own, the response parented onto an existing message. */
-  const isAnchoredRun = isCompactionAnchorProjection(userMessageData);
-
-  // A trailing underscore distinguishes an in-flight regeneration from the persisted
-  // response it replaces. Only the exact response id proves generation ownership.
-  const existingResponseMessage = messages.find(
-    (m) => !m.isCreatedByUser && m.messageId === responseMessageId,
-  );
-  // The persisted row may seed display metadata, but never identity or deduplication.
-  const unpaddedResponseMessageId = responseMessageId.replace(/_+$/, '');
-  const persistedRegenerationResponse =
-    unpaddedResponseMessageId !== responseMessageId
-      ? messages.find((m) => !m.isCreatedByUser && m.messageId === unpaddedResponseMessageId)
-      : undefined;
-  const responseMetadataMessage = existingResponseMessage ?? persistedRegenerationResponse;
-  const isRegenerateResume =
-    resumeState.isRegenerate === true || persistedRegenerationResponse != null || isAnchoredRun;
-  let regenerateMessages: TMessage[] | undefined;
-  if (isRegenerateResume) {
-    regenerateMessages =
-      unpaddedResponseMessageId === responseMessageId
-        ? [...messages]
-        : messages.filter((message) => message.messageId !== responseMessageId);
-  }
-
-  // Create or use the row the slot already names
-  const userMessage: TMessage =
-    existingSlotMessage ??
-    (userMessageData
-      ? (tMessageSchema.parse({
-          messageId: userMessageData.messageId,
-          parentMessageId: userMessageData.parentMessageId ?? Constants.NO_PARENT,
-          conversationId: userMessageData.conversationId ?? conversationId,
-          text: userMessageData.text ?? '',
-          isCreatedByUser: true,
-          role: 'user',
-        }) as TMessage)
-      : (messages[messages.length - 2] ??
-        ({
-          messageId: 'resume_user_msg',
-          conversationId,
-          text: '',
-          isCreatedByUser: true,
-        } as TMessage)));
-
-  // ALWAYS use aggregatedContent from resumeState - it has the latest content from the running job.
-  // DB content may be stale (saved at disconnect, but generation continued).
-  let initialResponse: TMessage = {
-    messageId: existingResponseMessage?.messageId ?? responseMessageId,
-    parentMessageId: existingResponseMessage?.parentMessageId ?? userMessage.messageId,
-    conversationId,
-    text: '',
-    // aggregatedContent is authoritative - it reflects actual job state
-    content: (resumeState.aggregatedContent as TMessage['content']) ?? [],
-    isCreatedByUser: false,
-    role: 'assistant',
-    sender: responseMetadataMessage?.sender ?? resumeState.sender,
-    model: preferDefinedString(responseMetadataMessage?.model, resumeState.model),
-    iconURL: preferDefinedString(responseMetadataMessage?.iconURL, resumeState.iconURL),
-  } as TMessage;
-
-  // Re-paused turn: seed the approval / ask-user controls straight onto the
-  // placeholder so they render on load without waiting for the SSE sync replay.
-  if (resumeState.pendingAction) {
-    initialResponse = applyPendingAction(initialResponse, resumeState.pendingAction);
-  }
-
-  const conversation: TConversation = {
-    conversationId,
-    title: 'Resumed Chat',
-    endpoint: null,
-  } as TConversation;
-
-  // Non-regenerate resumes strip the persisted request/response pair before handlers
-  // re-supply it. A regeneration keeps the original branch for early-abort rollback;
-  // explicit resume metadata covers edited regenerations that reuse the exact response id.
-  const dedupedMessages = messages.filter(
-    (m) =>
-      m.messageId !== initialResponse.messageId &&
-      (isRegenerateResume || m.messageId !== userMessage.messageId),
-  );
-
-  return {
-    messages: dedupedMessages,
-    userMessage,
-    initialResponse,
-    conversation,
-    isRegenerate: isRegenerateResume,
-    ...(isAnchoredRun && { compact: true }),
-    ...(regenerateMessages && { regenerateMessages }),
-    isTemporary,
-    endpointOption: {},
-    // Signal to useResumableSSE to subscribe to existing stream instead of starting new
-    resumeStreamId: streamId,
-    ...(generationCreatedAt != null && { resumeGenerationCreatedAt: generationCreatedAt }),
-    resumeGenerationProtocolVersion: generationProtocolVersion,
-  } as TSubmission & {
-    resumeStreamId: string;
-    resumeGenerationCreatedAt?: number;
-    resumeGenerationProtocolVersion: GenerationProtocolVersion;
-  };
-}
 
 /**
  * Hook to resume streaming if navigating to a conversation with active generation.
@@ -293,15 +73,14 @@ export default function useResumeOnLoad(
   runIndex = 0,
   messagesLoaded = true,
 ) {
-  const fileMap = useFileMapContext();
   const jotaiStore = useStore();
   const queryClient = useQueryClient();
-  const setSubmission = useSetRecoilState(store.submissionByIndex(runIndex));
-  const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(runIndex));
-  const currentSubmission = useRecoilValue(store.submissionByIndex(runIndex));
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(runIndex));
-  const attachedGenerationCreatedAt = useRecoilValue(
-    store.activeGenerationCreatedAtByConvoId(conversationId ?? ''),
+  const setSubmission = useSetAtom(submissionByIndex(runIndex));
+  const setSubmissionStart = useSetAtom(submissionStartFamily(runIndex));
+  const currentSubmission = useSubmission(runIndex);
+  const isSubmitting = useIsSubmitting(runIndex);
+  const attachedGenerationCreatedAt = useAtomValue(
+    activeGenerationCreatedAtByConvoId(conversationId ?? ''),
   );
   const currentConversation = useRecoilValue(store.conversationByIndex(runIndex));
   const endpoint = currentConversation?.endpoint;
@@ -353,128 +132,16 @@ export default function useResumeOnLoad(
   );
 
   /** Restore pending-steer chips for steers the server still has queued
-   *  (injected ones already live inside the resumed aggregatedContent). */
-  const convertSteersToQueued = useSteerConvert();
-
-  const restoreSteerChips = useRecoilCallback(
-    ({ set }) =>
-      (
-        activeConversationId: string,
-        pendingSteers: Agents.ResumeState['pendingSteers'],
-        generationCreatedAt?: number,
-        generationProtocolVersion: GenerationProtocolVersion = 1,
-      ) => {
-        const acceptedClientIds = (pendingSteers ?? []).flatMap((steer) =>
-          steer.clientSteerId ? [steer.clientSteerId] : [],
-        );
-        if (acceptedClientIds.length > 0) {
-          set(store.acceptedSteerClientIdsByConvoId(activeConversationId), (prev) =>
-            appendAppliedSteerIds(prev, acceptedClientIds),
-          );
-        }
-        // Always reconcile against the server's still-queued list (mirrors the
-        // sync-path re-seed in useResumableSSE): a steer applied while this
-        // client was away is absent here (its inline part rides
-        // aggregatedContent instead), so an EMPTY list must clear stale local
-        // pending chips, not leave them stranded beside the applied part.
-        set(store.pendingSteersByConvoId(activeConversationId), (prev) => {
-          const chipById = new Map(prev.map((chip) => [chip.steerId, chip]));
-          const claimedIds = new Set(
-            (pendingSteers ?? []).flatMap((steer) =>
-              steer.clientSteerId ? [steer.steerId, steer.clientSteerId] : [steer.steerId],
-            ),
-          );
-          return [
-            ...(pendingSteers ?? []).map((steer) => {
-              const localChip =
-                chipById.get(steer.steerId) ??
-                (steer.clientSteerId ? chipById.get(steer.clientSteerId) : undefined);
-              const keepLocalPreempt =
-                (localChip?.preemptRevision ?? 0) > (steer.preemptRevision ?? 0);
-              const chipGenerationCreatedAt = generationCreatedAt ?? localChip?.generationCreatedAt;
-              const restoredFiles = hydrateFileDeliveryMetadata(
-                steer.files,
-                localChip?.files,
-                fileMap,
-              );
-              return {
-                steerId: steer.steerId,
-                ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
-                text: steer.text,
-                status: 'pending' as const,
-                createdAt: steer.createdAt ?? Date.now(),
-                ...(restoredFiles && restoredFiles.length > 0 && { files: restoredFiles }),
-                ...((keepLocalPreempt ? localChip?.preempt : steer.preempt) === true && {
-                  preempt: true,
-                }),
-                ...((keepLocalPreempt ? localChip?.preemptRevision : steer.preemptRevision) !=
-                  null && {
-                  preemptRevision: keepLocalPreempt
-                    ? localChip?.preemptRevision
-                    : steer.preemptRevision,
-                }),
-                ...(localChip?.queuedOrigin && { queuedOrigin: localChip.queuedOrigin }),
-                ...(chipGenerationCreatedAt != null && {
-                  generationCreatedAt: chipGenerationCreatedAt,
-                }),
-                generationProtocolVersion,
-                // The local chip carries skill picks the server never sees; a
-                // fresh tab has no chip, so fall back to the server item's
-                // persisted quotes rather than reseeding the chip without them.
-                ...carriedSteerContext(localChip ?? steer),
-              };
-            }),
-            ...prev.filter((steer) => steer.status === 'failed' && !claimedIds.has(steer.steerId)),
-          ];
-        });
-      },
-    [fileMap],
-  );
-
-  const settleAppliedSteerParts = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (activeConversationId: string, values: unknown[] | undefined) => {
-        const ids = collectAppliedSteerIds(values);
-        if (ids.length === 0) {
-          return;
-        }
-        const settled = new Set(ids);
-        /** Chips settled by quote-less applied parts hold the only copy of
-         *  their excerpts (a pre-quotes server injected the words bare) —
-         *  re-stage them as composer chips before the removal below. */
-        const droppedQuotes = collectDroppedSteerQuotes(
-          values,
-          snapshot.getLoadable(store.pendingSteersByConvoId(activeConversationId)).getValue(),
-        );
-        if (droppedQuotes.length > 0) {
-          set(store.pendingQuotesByConvoId(activeConversationId), (prev) =>
-            mergeRestagedQuotes(prev, droppedQuotes),
-          );
-        }
-        set(store.appliedSteerIdsByConvoId(activeConversationId), (prev) =>
-          appendAppliedSteerIds(prev, ids),
-        );
-        set(store.pendingSteersByConvoId(activeConversationId), (prev) =>
-          prev.filter((steer) => !settled.has(steer.steerId)),
-        );
-      },
-    [],
-  );
-  const setActiveGenerationCreatedAt = useRecoilCallback(
-    ({ set }) =>
-      (
-        activeConversationId: string,
-        createdAt: number,
-        generationProtocolVersion: GenerationProtocolVersion,
-      ) => {
-        set(store.activeGenerationCreatedAtByConvoId(activeConversationId), createdAt);
-        set(
-          store.activeGenerationProtocolVersionByConvoId(activeConversationId),
-          generationProtocolVersion,
-        );
-      },
-    [],
-  );
+   *  (injected ones already live inside the resumed aggregatedContent). Always
+   *  reconcile against the server's still-queued list (mirrors the sync-path
+   *  re-seed in useResumableSSE): a steer applied while this client was away is
+   *  absent there, so an EMPTY list must clear stale local pending chips. */
+  const {
+    seedSteerChips: restoreSteerChips,
+    settleAppliedSteerParts,
+    convertSteersToQueued,
+    updateActiveGenerationCreatedAt,
+  } = useSteerState();
 
   // Check for active stream when conversation changes
   const submissionConvoId = currentSubmission?.conversation?.conversationId;
@@ -1001,18 +668,57 @@ export default function useResumeOnLoad(
       // `unrecoveredSteers` above — same empty-list reconcile as the resume path.
       settleAppliedSteerParts(conversationId, getMessages());
       restoreSteerChips(conversationId, undefined);
+      /** A run this pane stopped watching when the user left has ended on the server, which
+       *  deleted the job. Its persisted response tells how it ended; parking that end lets the
+       *  queue drain send a follow-up queued during the run, as an attached run would have.
+       *  The cached history still holds the optimistic response the pane left, which lacks the
+       *  persisted stop and error flags, so only a successful refetch of history may resolve it;
+       *  when that fails or predates the saved response, the next visit tries again. */
+      const detachedFamily = detachedRunByConvoId(conversationId);
+      const detachedRun = jotaiStore.get(detachedFamily);
+      const parkDetachedEnd = () => {
+        if (detachedRun == null || jotaiStore.get(detachedFamily) !== detachedRun) {
+          return;
+        }
+        if (isDetachedRunManual(jotaiStore.get, conversationId, detachedRun)) {
+          jotaiStore.set(detachedFamily, null);
+          return;
+        }
+        const end = resolveDetachedRunEnd(conversationId, detachedRun, getMessages());
+        if (end == null) {
+          return;
+        }
+        jotaiStore.set(detachedFamily, null);
+        jotaiStore.set(pendingRunEndByConvoId(conversationId), end);
+      };
+      /** A run left for a manual send is retired without a read instead of refetching on every
+       *  visit; the check repeats after the read, since a receipt can settle meanwhile. */
+      if (detachedRun != null && isDetachedRunManual(jotaiStore.get, conversationId, detachedRun)) {
+        jotaiStore.set(detachedFamily, null);
+      } else if (detachedRun != null) {
+        queryClient
+          .refetchQueries(
+            { queryKey: [QueryKeys.messages, conversationId], exact: true },
+            { throwOnError: true },
+          )
+          .then(parkDetachedEnd, () => undefined);
+      }
       processedConvoRef.current = conversationId;
       return;
     }
 
+    /** Still generating: a marker left for this run stays until the resume's stream delivers its
+     *  end or its recovery reads it from history, and the resume's start retires a marker left
+     *  for any other run, so the job deleted between this read and the attach is not lost. */
     processedConvoRef.current = conversationId;
     if (handoffGenerationKey != null) {
       consumedHandoffGenerationRef.current = handoffGenerationKey;
     }
     if (streamStatus.createdAt != null) {
-      setActiveGenerationCreatedAt(
+      updateActiveGenerationCreatedAt(
         conversationId,
         streamStatus.createdAt,
+        undefined,
         generationProtocolVersion,
       );
     }
@@ -1071,34 +777,17 @@ export default function useResumeOnLoad(
       );
       setSubmission(submission);
     } else {
-      // Minimal submission without resume state
-      const lastUserMessage = [...messages].reverse().find((m) => m.isCreatedByUser);
-      const submission = {
-        messages,
-        userMessage:
-          lastUserMessage ?? ({ messageId: 'resume', conversationId, text: '' } as TMessage),
-        initialResponse: {
-          messageId: 'resume_',
+      setSubmission(
+        buildMinimalResumeSubmission({
+          messages,
           conversationId,
-          text: '',
-          content: streamStatus.aggregatedContent ?? [{ type: 'text', text: '' }],
-        } as TMessage,
-        conversation: { conversationId, title: 'Resumed Chat' } as TConversation,
-        isRegenerate: false,
-        isTemporary: streamStatus.isTemporary === true || isRetentionForced,
-        endpointOption: {},
-        // Signal to useResumableSSE to subscribe to existing stream instead of starting new
-        resumeStreamId: streamStatus.streamId,
-        ...(streamStatus.createdAt != null && {
-          resumeGenerationCreatedAt: streamStatus.createdAt,
+          streamId: streamStatus.streamId,
+          createdAt: streamStatus.createdAt,
+          aggregatedContent: streamStatus.aggregatedContent,
+          isTemporary: streamStatus.isTemporary === true || isRetentionForced,
+          generationProtocolVersion,
         }),
-        resumeGenerationProtocolVersion: generationProtocolVersion,
-      } as TSubmission & {
-        resumeStreamId: string;
-        resumeGenerationCreatedAt?: number;
-        resumeGenerationProtocolVersion: GenerationProtocolVersion;
-      };
-      setSubmission(submission);
+      );
     }
   }, [
     conversationId,
@@ -1121,7 +810,7 @@ export default function useResumeOnLoad(
     restoreSteerChips,
     settleAppliedSteerParts,
     convertSteersToQueued,
-    setActiveGenerationCreatedAt,
+    updateActiveGenerationCreatedAt,
     jotaiStore,
     externalRunArm,
     isRetentionForced,

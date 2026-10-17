@@ -72,18 +72,30 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-Pull request CI runs the complete mock suite in memory mode across three shards, plus a
-focused Redis transport suite. The Redis suite covers streaming fidelity, steering,
+Pull request CI runs the complete mock suite in memory mode across ten shards, plus a
+focused Redis transport suite across two. The Redis suite covers streaming fidelity, steering,
 interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/3
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/10
 npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes across two shards per mode. Every shard keeps one worker so tests do not contend for its
+modes across ten shards per mode. Every shard keeps one worker so tests do not contend for its
 authenticated user and database.
+
+CI splits the complete suite by recorded duration rather than test count: each shard lists the
+suite, and `.github/scripts/playwright-shards.mjs plan` hands out whole spec files longest-first
+to the least-loaded shard using `e2e/timings.mock.json`. A spec with no recorded time is
+estimated from its test count, so new specs need nothing; refresh the timings when the shards
+drift apart. Each shard's report artifact carries a `results.json`, so download a recent run's
+`playwright-report-memory-*` artifacts and rebuild the file from them:
+
+```sh
+gh run download <run-id> --pattern 'playwright-report-memory-*' --dir /tmp/e2e-reports
+node .github/scripts/playwright-shards.mjs record --out e2e/timings.mock.json /tmp/e2e-reports
+```
 
 ## Property-based browser testing
 

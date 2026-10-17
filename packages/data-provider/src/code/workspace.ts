@@ -133,7 +133,8 @@ export function isCodeWorkspaceEnvironment(
     (environment.repo === undefined ||
       (typeof environment.repo === 'string' &&
         environment.repo.length <= 256 &&
-        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(environment.repo))) &&
+        /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+){1,19}$/.test(environment.repo) &&
+        environment.repo.split('/').every((segment) => segment !== '.' && segment !== '..'))) &&
     (environment.ref === undefined ||
       (typeof environment.ref === 'string' &&
         environment.ref.trim().length > 0 &&

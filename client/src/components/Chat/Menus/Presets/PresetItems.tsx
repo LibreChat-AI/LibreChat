@@ -239,8 +239,9 @@ const PresetItems: FC<{
                     <div className="group rounded-theme-control hover:bg-surface-hover m-1.5 flex items-center gap-2 px-3 py-1.5 text-sm">
                       <Button
                         variant="ghost"
+                        shape="theme"
                         type="button"
-                        className="rounded-theme-control h-auto min-w-0 flex-1 justify-start gap-1 bg-transparent p-2 text-left text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
+                        className="h-auto min-w-0 flex-1 justify-start gap-1 p-2 text-left text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
                         onClick={() => onSelectPreset(preset)}
                         aria-label={presetTitle}
                         data-testid={`preset-item-${presetId}`}
@@ -254,72 +255,82 @@ const PresetItems: FC<{
                         <span className="truncate">{presetTitle}</span>
                       </Button>
                       <div className="flex items-center justify-end gap-1">
-                        <TooltipAnchor
-                          description={
-                            defaultPreset?.presetId === presetId
-                              ? localize('com_ui_unpin')
-                              : localize('com_ui_pin')
-                          }
-                          aria-label={
-                            defaultPreset?.presetId === presetId
-                              ? localize('com_ui_unpin')
-                              : localize('com_ui_pin')
-                          }
-                          render={
-                            <Button
-                              variant="ghost"
-                              className={cn(
-                                'rounded-theme-control-round text-text-tertiary hover:text-text-primary focus:text-text-primary m-0 h-full bg-transparent p-2',
-                                defaultPreset?.presetId === presetId
-                                  ? ''
-                                  : // opacity keeps buttons in the tab order; pointer-events-none
-                                    // while transparent so touch/pointer cannot hit invisible controls
-                                    'sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus:pointer-events-auto sm:focus:opacity-100',
-                              )}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                onSetDefaultPreset(preset, defaultPreset?.presetId === presetId);
-                              }}
-                            >
-                              <PinIcon unpin={defaultPreset?.presetId === presetId} />
-                            </Button>
-                          }
-                        />
-                        <TooltipAnchor
-                          description={localize('com_ui_edit')}
-                          aria-label={localize('com_ui_edit')}
-                          render={
-                            <Button
-                              variant="ghost"
-                              className="rounded-theme-control-round text-text-tertiary hover:text-text-primary focus:text-text-primary m-0 h-full p-2 sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus:pointer-events-auto sm:focus:opacity-100"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                onChangePreset(preset);
-                              }}
-                            >
-                              <EditIcon />
-                            </Button>
-                          }
-                        />
-                        <TooltipAnchor
-                          description={localize('com_ui_delete')}
-                          aria-label={localize('com_ui_delete')}
-                          render={
-                            <Button
-                              variant="ghost"
-                              className="rounded-theme-control-round text-text-tertiary hover:text-text-primary focus:text-text-primary m-0 h-full p-2 sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus:pointer-events-auto sm:focus:opacity-100"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                onDeletePreset(preset);
-                              }}
-                            >
-                              <TrashIcon />
-                            </Button>
-                          }
-                        />
+                        <div
+                          className={cn(
+                            'flex',
+                            // opacity keeps buttons in the tab order; pointer-events-none while
+                            // transparent so touch/pointer cannot hit invisible controls
+                            defaultPreset?.presetId !== presetId &&
+                              'sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus-within:pointer-events-auto sm:focus-within:opacity-100',
+                          )}
+                        >
+                          <TooltipAnchor
+                            description={
+                              defaultPreset?.presetId === presetId
+                                ? localize('com_ui_unpin')
+                                : localize('com_ui_pin')
+                            }
+                            aria-label={
+                              defaultPreset?.presetId === presetId
+                                ? localize('com_ui_unpin')
+                                : localize('com_ui_pin')
+                            }
+                            render={
+                              <Button
+                                variant="ghost"
+                                shape="round"
+                                className="text-text-tertiary hover:text-text-primary focus:text-text-primary m-0 h-full p-2"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  onSetDefaultPreset(preset, defaultPreset?.presetId === presetId);
+                                }}
+                              >
+                                <PinIcon unpin={defaultPreset?.presetId === presetId} />
+                              </Button>
+                            }
+                          />
+                        </div>
+                        <div className="flex sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus-within:pointer-events-auto sm:focus-within:opacity-100">
+                          <TooltipAnchor
+                            description={localize('com_ui_edit')}
+                            aria-label={localize('com_ui_edit')}
+                            render={
+                              <Button
+                                variant="ghost"
+                                shape="round"
+                                className="text-text-tertiary focus:text-text-primary m-0 h-full p-2"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  onChangePreset(preset);
+                                }}
+                              >
+                                <EditIcon />
+                              </Button>
+                            }
+                          />
+                        </div>
+                        <div className="flex sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus-within:pointer-events-auto sm:focus-within:opacity-100">
+                          <TooltipAnchor
+                            description={localize('com_ui_delete')}
+                            aria-label={localize('com_ui_delete')}
+                            render={
+                              <Button
+                                variant="ghost"
+                                shape="round"
+                                className="text-text-tertiary focus:text-text-primary m-0 h-full p-2"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  onDeletePreset(preset);
+                                }}
+                              >
+                                <TrashIcon />
+                              </Button>
+                            }
+                          />
+                        </div>
                       </div>
                     </div>
                   </Flipped>

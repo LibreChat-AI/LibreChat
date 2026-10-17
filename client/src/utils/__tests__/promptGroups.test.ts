@@ -11,7 +11,6 @@ import {
   updateGroupFieldsInPlace,
   updateGroupInAll,
   updatePromptGroup,
-  getSnippet,
   findPromptGroup,
 } from '../promptGroups';
 
@@ -322,40 +321,6 @@ describe('findPromptGroup', () => {
   it('returns undefined when no group matches', () => {
     const data = makeInfiniteData([{ promptGroups: [makeGroup({ _id: 'a' })] }]);
     expect(findPromptGroup(data, (g) => g._id === 'z')).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getSnippet
-// ---------------------------------------------------------------------------
-
-describe('getSnippet', () => {
-  it('returns the full string when it is within the default length', () => {
-    const short = 'Hello';
-    expect(getSnippet(short)).toBe('Hello');
-  });
-
-  it('truncates and appends ellipsis when string exceeds default length', () => {
-    const long = 'a'.repeat(60);
-    const result = getSnippet(long);
-    expect(result.endsWith('...')).toBe(true);
-    expect(result.length).toBe(56);
-  });
-
-  it('respects a custom length parameter', () => {
-    const text = 'abcdefghij';
-    const result = getSnippet(text, 7);
-    expect(result).toBe('abcd...');
-    expect(result.length).toBe(7);
-  });
-
-  it('returns the original string when it equals the length exactly', () => {
-    const text = 'a'.repeat(56);
-    expect(getSnippet(text)).toBe(text);
-  });
-
-  it('handles an empty string without throwing', () => {
-    expect(getSnippet('')).toBe('');
   });
 });
 

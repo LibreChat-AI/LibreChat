@@ -6,16 +6,18 @@ import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
 import type * as ReasoningModule from '~/components/Chat/Input/Reasoning';
+import type { ShortcutActionId } from './useKeyboardShortcuts';
+import type { ShortcutOverride } from '~/store/misc';
 import useKeyboardShortcuts, {
+  isMac,
   isOverridden,
-  effectiveBinding,
+  resolveShortcutBindings,
   useShortcutHint,
   useShortcutActions,
-  getShortcutDisplay,
-  getShortcutAriaKey,
   useShortcutDisplay,
   useShortcutAriaKey,
 } from './useKeyboardShortcuts';
+import { bindingDisplayString, bindingToString } from '~/utils/shortcuts';
 import { ReasoningControl } from '~/components/Chat/Input/Reasoning';
 import Thinking from '~/components/Chat/Input/Composer/Thinking';
 import store from '~/store';
@@ -221,47 +223,46 @@ function appendPortalFocus(paneIndex: number, tag: 'button' | 'input' = 'button'
 }
 
 describe('binding resolution helpers', () => {
+  const bindingFor = (id: ShortcutActionId, overrides: Record<string, ShortcutOverride> = {}) =>
+    resolveShortcutBindings(overrides).get(id) ?? null;
+  const displayFor = (id: ShortcutActionId, overrides: Record<string, ShortcutOverride> = {}) => {
+    const binding = bindingFor(id, overrides);
+    return binding ? bindingDisplayString(binding, isMac) : '';
+  };
+  const ariaFor = (id: ShortcutActionId, overrides: Record<string, ShortcutOverride> = {}) => {
+    const binding = bindingFor(id, overrides);
+    return binding ? (bindingToString(binding) ?? '') : '';
+  };
+
   it('falls back to the default binding when there is no override', () => {
-    const binding = effectiveBinding('newChat');
-    expect(binding).toMatchObject({ ctrl: true, shift: true, key: 'O' });
-    expect(getShortcutDisplay('newChat')).toBe('Ctrl+Shift+O');
-    expect(getShortcutAriaKey('newChat')).toBe('Control+Shift+O');
+    expect(bindingFor('newChat')).toMatchObject({ ctrl: true, shift: true, key: 'O' });
+    expect(displayFor('newChat')).toBe('Ctrl+Shift+O');
+    expect(ariaFor('newChat')).toBe('Control+Shift+O');
   });
 
-  it('honors a stored custom binding for the current platform', () => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ newChat: { mac: 'Meta+Shift+P', other: 'Control+Shift+P' } }),
-    );
-    expect(effectiveBinding('newChat')).toMatchObject({ ctrl: true, shift: true, key: 'P' });
-    expect(getShortcutAriaKey('newChat')).toBe('Control+Shift+P');
+  it('honors a custom binding for the current platform', () => {
+    const overrides = { newChat: { mac: 'Meta+Shift+P', other: 'Control+Shift+P' } };
+    expect(bindingFor('newChat', overrides)).toMatchObject({ ctrl: true, shift: true, key: 'P' });
+    expect(ariaFor('newChat', overrides)).toBe('Control+Shift+P');
   });
 
   it('treats a null platform override as an unbound shortcut', () => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ newChat: { mac: null, other: null } }),
-    );
-    expect(effectiveBinding('newChat')).toBeNull();
-    expect(getShortcutDisplay('newChat')).toBe('');
+    const overrides = { newChat: { mac: null, other: null } };
+    expect(bindingFor('newChat', overrides)).toBeNull();
+    expect(displayFor('newChat', overrides)).toBe('');
   });
 
   it('keeps a persisted custom chord when a new default later claims the same keys', () => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        toggleSidebar: { mac: 'Meta+Shift+.', other: 'Control+Shift+.' },
-      }),
-    );
+    const overrides = { toggleSidebar: { mac: 'Meta+Shift+.', other: 'Control+Shift+.' } };
 
-    expect(effectiveBinding('toggleSidebar')).toMatchObject({
+    expect(bindingFor('toggleSidebar', overrides)).toMatchObject({
       ctrl: true,
       shift: true,
       key: '.',
     });
-    expect(effectiveBinding('escalateSteer')).toBeNull();
-    expect(getShortcutDisplay('escalateSteer')).toBe('');
-    expect(getShortcutAriaKey('escalateSteer')).toBe('');
+    expect(bindingFor('escalateSteer', overrides)).toBeNull();
+    expect(displayFor('escalateSteer', overrides)).toBe('');
+    expect(ariaFor('escalateSteer', overrides)).toBe('');
   });
 
   it("does not treat an other-platform edit's copied default as a custom claim", () => {
@@ -270,12 +271,12 @@ describe('binding resolution helpers', () => {
       toggleSidebar: { mac: 'Meta+Shift+O', other: 'Control+Shift+O' },
     };
 
-    expect(effectiveBinding('toggleSidebar', overrides)).toMatchObject({
+    expect(bindingFor('toggleSidebar', overrides)).toMatchObject({
       ctrl: true,
       shift: true,
       key: 'O',
     });
-    expect(effectiveBinding('newChat', overrides)).toBeNull();
+    expect(bindingFor('newChat', overrides)).toBeNull();
   });
 
   it('detects whether an override diverges from the default', () => {

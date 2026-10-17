@@ -69,7 +69,7 @@ function EndpointArt({ endpoint, id, size }: { endpoint: Endpoint; id?: string; 
     <span
       aria-hidden="true"
       style={{ width: size, height: size }}
-      className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border-light bg-surface-primary text-text-primary"
+      className="border-border-light bg-surface-primary text-text-primary inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border"
     >
       {avatar ? (
         <img src={avatar} alt="" className="h-full w-full object-cover" />
@@ -86,7 +86,7 @@ function SpecArt({ spec, size }: { spec: TModelSpec; size: number }) {
     <span
       aria-hidden="true"
       style={{ width: size, height: size }}
-      className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border-light bg-surface-primary"
+      className="border-border-light bg-surface-primary inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border"
     >
       <SpecIcon
         currentSpec={spec}
@@ -109,7 +109,7 @@ function ImageMark({ size }: { size: number }) {
     <span
       aria-hidden="true"
       style={{ width: size, height: size }}
-      className="inline-flex shrink-0 items-center justify-center rounded-lg border border-border-light bg-surface-primary text-text-primary"
+      className="border-border-light bg-surface-primary text-text-primary inline-flex shrink-0 items-center justify-center rounded-lg border"
     >
       <ImageIcon style={{ width: size * 0.6, height: size * 0.6 }} />
     </span>
@@ -349,7 +349,7 @@ function FreeTag({ className }: { className?: string }) {
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center rounded-full border border-border-medium px-1.5 text-[11px] font-medium leading-4 text-text-primary',
+        'border-border-medium text-2xs text-text-primary inline-flex shrink-0 items-center rounded-full border px-1.5 leading-4 font-medium',
         className,
       )}
     >
@@ -374,17 +374,17 @@ function ModelRow({ row, onPicked }: { row: Row; onPicked: () => void }) {
         'data-[active-item]:bg-surface-hover',
         row.selected
           ? 'border-border-medium bg-surface-active-alt'
-          : 'border-transparent hover:bg-surface-hover',
+          : 'hover:bg-surface-hover border-transparent',
       )}
     >
       {row.mark}
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium text-text-primary">{row.label}</span>
+          <span className="text-text-primary truncate text-sm font-medium">{row.label}</span>
           {row.free && <FreeTag />}
         </span>
         {row.detail && (
-          <span className="truncate font-mono text-xs text-text-secondary">{row.detail}</span>
+          <span className="text-text-secondary truncate font-mono text-xs">{row.detail}</span>
         )}
       </span>
       {row.onTogglePin && (
@@ -397,7 +397,7 @@ function ModelRow({ row, onPicked }: { row: Row; onPicked: () => void }) {
           }}
           aria-label={row.pinned ? localize('com_ui_unpin') : localize('com_ui_pin')}
           className={cn(
-            'flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-active hover:text-text-primary',
+            'text-text-secondary hover:bg-surface-active hover:text-text-primary flex size-7 shrink-0 items-center justify-center rounded-md',
             row.pinned
               ? 'opacity-100'
               : 'opacity-0 group-hover:opacity-100 group-data-[active-item]:opacity-100',
@@ -408,7 +408,7 @@ function ModelRow({ row, onPicked }: { row: Row; onPicked: () => void }) {
       )}
       {row.selected && (
         <>
-          <Check className="size-4 shrink-0 text-text-primary" aria-hidden="true" />
+          <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
           <Ariakit.VisuallyHidden>{localize('com_ui_current')}</Ariakit.VisuallyHidden>
         </>
       )}
@@ -508,7 +508,7 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
               : localize('com_ui_select_model')
           }
           className={cn(
-            'my-1 flex h-9 max-w-full items-center gap-2 rounded-xl border border-border-light py-1 pl-1.5 pr-2.5 text-sm text-text-primary',
+            'border-border-light text-text-primary my-1 flex h-9 max-w-full items-center gap-2 rounded-xl border py-1 pr-2.5 pl-1.5 text-sm',
             open ? 'bg-surface-active-alt' : 'bg-presentation hover:bg-surface-active-alt',
           )}
         >
@@ -517,13 +517,13 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
             {current?.label ?? localize('com_ui_select_model')}
           </span>
           {current?.caption && (
-            <span className="hidden shrink-0 text-text-secondary sm:inline">{current.caption}</span>
+            <span className="text-text-secondary hidden shrink-0 sm:inline">{current.caption}</span>
           )}
           {current?.free && <FreeTag />}
           {image && (
             <span
               title={`${localize('com_ui_image_gen')}: ${image.label}`}
-              className="flex shrink-0 items-center gap-1 rounded-md border border-border-medium px-1.5 py-0.5 text-xs text-text-secondary"
+              className="border-border-medium text-text-secondary flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs"
             >
               <ImageIcon className="size-3.5" aria-hidden="true" />
               <span className="hidden max-w-[10rem] truncate md:inline">{image.label}</span>
@@ -535,7 +535,7 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
           <ChevronDown
             aria-hidden="true"
             className={cn(
-              'size-4 shrink-0 text-text-secondary transition-transform',
+              'text-text-secondary size-4 shrink-0 transition-transform',
               open && 'rotate-180',
             )}
           />
@@ -545,7 +545,7 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
   );
 
   return (
-    <div className="relative flex min-w-0 max-w-[60vw] flex-col items-center gap-2 sm:max-w-md">
+    <div className="relative flex max-w-[60vw] min-w-0 flex-col items-center gap-2 sm:max-w-md">
       <Ariakit.PopoverProvider open={open} setOpen={onOpenChange} placement="bottom-start">
         <Ariakit.PopoverDisclosure render={trigger} />
         <Ariakit.Popover
@@ -554,25 +554,25 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
           unmountOnHide
           aria-label={localize('com_ui_select_model')}
           className={cn(
-            'animate-popover z-50 flex flex-col overflow-hidden rounded-2xl border border-border-light bg-presentation text-text-primary shadow-lg outline-none',
+            'animate-popover border-border-light bg-presentation text-text-primary z-50 flex flex-col overflow-hidden rounded-2xl border shadow-lg outline-none',
             'max-h-[min(560px,var(--popover-available-height,560px))] w-[min(720px,calc(100vw-1rem))]',
           )}
         >
           <Ariakit.ComboboxProvider value={search} setValue={setSearch} includesBaseElement={false}>
-            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border-light px-4">
-              <Search className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+            <div className="border-border-light flex h-12 shrink-0 items-center gap-2 border-b px-4">
+              <Search className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
               <Ariakit.Combobox
                 autoSelect
                 aria-label={localize('com_endpoint_search_models')}
                 placeholder={localize('com_endpoint_search_models')}
-                className="h-full w-full border-none bg-transparent text-base text-text-primary outline-none placeholder:text-text-secondary focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-sm"
+                className="text-text-primary placeholder:text-text-secondary h-full w-full border-none bg-transparent text-base outline-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none sm:text-sm"
               />
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
               <nav
                 aria-label={localize('com_ui_provider')}
-                className="flex shrink-0 gap-1 overflow-x-auto border-b border-border-light p-2 sm:w-48 sm:flex-col sm:overflow-y-auto sm:overflow-x-hidden sm:border-b-0 sm:border-r"
+                className="border-border-light flex shrink-0 gap-1 overflow-x-auto border-b p-2 sm:w-48 sm:flex-col sm:overflow-x-hidden sm:overflow-y-auto sm:border-r sm:border-b-0"
               >
                 <RailButton
                   active={filter === ALL}
@@ -598,19 +598,19 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
                 className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-2"
               >
                 {showCurrent && current && (
-                  <div className="flex items-center gap-3 rounded-xl border border-border-medium bg-surface-active-alt px-3 py-2.5">
+                  <div className="border-border-medium bg-surface-active-alt flex items-center gap-3 rounded-xl border px-3 py-2.5">
                     {current.mark}
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm font-semibold">{current.label}</span>
                         {current.free && <FreeTag />}
                       </span>
-                      <span className="truncate text-xs text-text-secondary">
+                      <span className="text-text-secondary truncate text-xs">
                         {[current.caption, current.detail].filter(Boolean).join(' · ')}
                       </span>
                     </span>
-                    <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-text-secondary">
-                      <Check className="size-4 text-text-primary" aria-hidden="true" />
+                    <span className="text-text-secondary flex shrink-0 items-center gap-1 text-xs font-medium">
+                      <Check className="text-text-primary size-4" aria-hidden="true" />
                       {localize('com_ui_current')}
                     </span>
                   </div>
@@ -618,10 +618,10 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
 
                 {visible.map((group) => (
                   <Ariakit.ComboboxGroup key={group.id} className="flex flex-col gap-0.5">
-                    <Ariakit.ComboboxGroupLabel className="sticky -top-2 z-10 flex items-center gap-2 bg-presentation px-1 py-1.5">
+                    <Ariakit.ComboboxGroupLabel className="bg-presentation sticky -top-2 z-10 flex items-center gap-2 px-1 py-1.5">
                       {group.mark}
-                      <span className="text-xs font-semibold text-text-primary">{group.label}</span>
-                      <span className="text-xs text-text-secondary">
+                      <span className="text-text-primary text-xs font-semibold">{group.label}</span>
+                      <span className="text-text-secondary text-xs">
                         {[group.caption, group.rows.length]
                           .filter((v) => v != null && v !== '')
                           .join(' · ')}
@@ -640,9 +640,9 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
                           close();
                           navigate('/agents');
                         }}
-                        className="flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-lg px-3 text-left text-sm outline-none hover:bg-surface-hover data-[active-item]:bg-surface-hover"
+                        className="hover:bg-surface-hover data-[active-item]:bg-surface-hover flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-lg px-3 text-left text-sm outline-none"
                       >
-                        <LayoutGrid className="size-5 text-text-primary" aria-hidden="true" />
+                        <LayoutGrid className="text-text-primary size-5" aria-hidden="true" />
                         <span className="truncate">{marketplaceLabel}</span>
                       </Ariakit.ComboboxItem>
                     )}
@@ -650,13 +650,13 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
                 ))}
 
                 {visible.length === 0 && (
-                  <div className="flex flex-col items-center gap-3 px-4 py-12 text-center text-sm text-text-secondary">
+                  <div className="text-text-secondary flex flex-col items-center gap-3 px-4 py-12 text-center text-sm">
                     <span>{localize('com_ui_no_results_found')}</span>
                     {filter !== ALL && (
                       <button
                         type="button"
                         onClick={() => setFilter(ALL)}
-                        className="rounded-lg border border-border-light px-3 py-1.5 text-text-primary hover:bg-surface-hover"
+                        className="border-border-light text-text-primary hover:bg-surface-hover rounded-lg border px-3 py-1.5"
                       >
                         {localize('com_ui_all_proper')}
                       </button>
@@ -695,16 +695,16 @@ function RailButton({
       className={cn(
         'flex h-9 shrink-0 items-center gap-2 rounded-lg px-2 text-left text-sm sm:w-full',
         active
-          ? 'bg-surface-active-alt font-medium text-text-primary'
+          ? 'bg-surface-active-alt text-text-primary font-medium'
           : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
       )}
     >
       {mark}
       <span className="truncate sm:flex-1">{label}</span>
       {isCurrent && (
-        <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-text-primary" />
+        <span aria-hidden="true" className="bg-text-primary size-1.5 shrink-0 rounded-full" />
       )}
-      <span className="shrink-0 text-xs text-text-secondary">{count}</span>
+      <span className="text-text-secondary shrink-0 text-xs">{count}</span>
     </button>
   );
 }

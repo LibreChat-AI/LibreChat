@@ -979,6 +979,15 @@ describe('getEndpointFileConfig', () => {
       expect(merged.skills?.fileSizeLimit).toBe(50 * 1024 * 1024);
     });
 
+    it('defaults whole-Skill deletion concurrency and preserves configured overrides', () => {
+      expect(mergeFileConfig(undefined).skills?.deletionCleanupConcurrency).toBe(8);
+      const parsed = fileConfigSchema.parse({ skills: { deletionCleanupConcurrency: 3 } });
+      expect(mergeFileConfig(parsed).skills?.deletionCleanupConcurrency).toBe(3);
+      expect(
+        fileConfigSchema.safeParse({ skills: { deletionCleanupConcurrency: 0 } }).success,
+      ).toBe(false);
+    });
+
     it.each([0, -1, 1.5])('rejects invalid rollback concurrency %s', (concurrency) => {
       expect(
         fileConfigSchema.safeParse({ skills: { importCleanupConcurrency: concurrency } }).success,

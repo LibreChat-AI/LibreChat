@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
-import type { Agents, TConversation, TPendingSteer } from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
+import type { StreamStatusResponse } from '@librechat/chat';
 import {
   isNotFoundError,
   updateConvoInAllQueries,
@@ -11,32 +12,7 @@ import {
 import { generationProtocolHeaders, withGenerationProtocolQuery } from './protocol';
 import { useGetStartupConfig } from '../Endpoints';
 
-export interface StreamStatusResponse {
-  /** Exact protocol selected by the job. Missing/1 is always legacy. */
-  generationProtocolVersion?: number;
-  active: boolean;
-  /** Client-local cache marker used to force useResumeOnLoad to replace a
-   * stale generation attachment with the newer epoch occupying this stream. */
-  generationHandoff?: boolean;
-  streamId?: string;
-  status?: 'running' | 'complete' | 'error' | 'aborted' | 'requires_action';
-  aggregatedContent?: Array<{ type: string; text?: string }>;
-  createdAt?: number;
-  /** Generation age computed on the server's clock, so a reattaching client
-   *  can rebuild a clock-local elapsed baseline free of cross-machine skew. */
-  elapsedMs?: number;
-  resumeState?: Agents.ResumeState;
-  /** The run's temporary state as the server recorded it at admission, so a rebuilt
-   *  submission keeps a hidden chat out of history and titling after a reload. */
-  isTemporary?: boolean;
-  /** Live pending approval when `status === 'requires_action'`; mirrors
-   *  `resumeState.pendingAction`, surfaced top-level for the resume-on-load path. */
-  pendingAction?: Agents.PendingAction;
-  /** Acknowledged steers a terminal drain parked because no subscriber was
-   *  live for the final/abort event. Reads are replayable until an exact
-   *  recovery turn persists or the user discards the item. */
-  unrecoveredSteers?: TPendingSteer[];
-}
+export type { StreamStatusResponse } from '@librechat/chat';
 
 export const streamStatusQueryKey = (conversationId: string) => ['streamStatus', conversationId];
 

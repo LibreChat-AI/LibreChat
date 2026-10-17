@@ -117,16 +117,16 @@ export default function MCPServerCard({
         aria-label={`${displayName} - ${getStatusText()}`}
       >
         {/* Server Icon with Status Dot */}
-        <div className="relative shrink-0">
+        <div className="text-text-primary relative shrink-0">
           {server.config?.iconPath ? (
             <CustomIcon
               src={server.config.iconPath}
-              className="text-text-primary size-8 rounded-lg object-cover"
+              className="size-8 rounded-lg object-cover"
               alt=""
             />
           ) : (
-            <div className="bg-surface-tertiary flex size-8 items-center justify-center rounded-lg">
-              <MCPIcon className="text-text-secondary size-5" aria-hidden="true" />
+            <div className="bg-surface-tertiary text-text-secondary flex size-8 items-center justify-center rounded-lg">
+              <MCPIcon className="size-5" aria-hidden="true" />
             </div>
           )}
           {/* Status dot - color indicates connection state */}

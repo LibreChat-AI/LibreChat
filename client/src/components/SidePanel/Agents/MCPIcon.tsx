@@ -25,11 +25,12 @@ export default function MCPIcon({ icon, onIconChange, errorId }: MCPIconProps) {
     <div className="flex items-center gap-4">
       <Button
         variant="ghost"
+        size="bare"
         onClick={handleClick}
         aria-label={localize('com_ui_upload_icon')}
         aria-invalid={errorId != null}
         aria-describedby={errorId}
-        className="border-border-medium bg-surface-secondary hover:bg-surface-hover flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border-2 border-dashed p-0"
+        className="border-border-medium bg-surface-secondary flex h-16 w-16 shrink-0 rounded-xl border-2 border-dashed"
       >
         {icon ? (
           <CustomIcon
@@ -51,7 +52,7 @@ export default function MCPIcon({ icon, onIconChange, errorId }: MCPIconProps) {
         accept="image/png,.png,image/jpeg,.jpg,.jpeg,image/gif,.gif,image/webp,.webp,image/svg+xml,.svg"
         multiple={false}
         type="file"
-        style={{ display: 'none' }}
+        className="hidden"
         onChange={onIconChange}
         ref={fileInputRef}
       />

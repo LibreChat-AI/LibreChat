@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { pendingSteersByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
@@ -86,6 +87,7 @@ function renderPending(
   });
   queryClient.setQueryData([QueryKeys.messages, CONVO_ID], messages ?? []);
   const jotaiStore = createStore();
+  jotaiStore.set(pendingSteersByConvoId(CONVO_ID), steers);
   if (activeSiblingIndex != null) {
     jotaiStore.set(
       siblingIdxFamily(
@@ -110,7 +112,6 @@ function renderPending(
                   conversationId: CONVO_ID,
                 } as TConversation);
               }
-              set(store.pendingSteersByConvoId(CONVO_ID), steers);
             }}
           >
             <PendingSteers conversationId={CONVO_ID} index={pane?.index} fullWidth={fullWidth} />
@@ -151,6 +152,24 @@ describe('PendingSteers', () => {
     if (receiptState !== 'sending') {
       expect(screen.queryByText('com_ui_steer_sending')).not.toBeInTheDocument();
     }
+  });
+
+  it('renders queue as an icon-only message action', () => {
+    renderPending([pending({ status: 'pending' })]);
+
+    expect(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }).textContent).toBe('');
+  });
+
+  it('renders cancel as an icon-only message action', () => {
+    renderPending([pending({ status: 'pending' })]);
+
+    expect(screen.getByRole('button', { name: 'com_ui_cancel' }).textContent).toBe('');
+  });
+
+  it('uses the message-action treatment for interrupting a pending steer', () => {
+    renderPending([pending({ status: 'pending' })]);
+
+    expect(screen.getByTestId('steer-escalate-now')).toHaveClass('text-text-secondary-alt');
   });
 
   it('keeps delivered controls available and aligned with the bubble', () => {
@@ -242,7 +261,7 @@ describe('PendingSteers', () => {
     const steer = pending({ status: 'pending', steerId: 's-ack' });
     renderPending([steer]);
 
-    fireEvent.click(screen.getByText('com_ui_convert_to_queue'));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
 
     await waitFor(() => expect(mockMoveToQueue).toHaveBeenCalledWith(steer));
   });
@@ -251,7 +270,7 @@ describe('PendingSteers', () => {
     mockMoveToQueue.mockResolvedValue('applied');
     renderPending([pending({ status: 'pending' })]);
 
-    fireEvent.click(screen.getByText('com_ui_convert_to_queue'));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
 
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith({

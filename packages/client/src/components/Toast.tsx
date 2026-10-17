@@ -44,11 +44,8 @@ export function Toast(): JSX.Element {
       open={toast.open}
       onOpenChange={(open) => onOpenChange(open, toast.id)}
       duration={toast.duration}
-      className="toast-root"
-      style={{
-        minHeight: '74px',
-        marginBottom: '0px',
-      }}
+      className="toast-root mb-0"
+      style={{ minHeight: '74px' }}
     >
       <div className="w-full p-1 text-center md:w-auto md:text-justify">
         <div

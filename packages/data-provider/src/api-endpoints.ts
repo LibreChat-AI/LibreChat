@@ -171,6 +171,16 @@ export const backgroundTasksCancel = (conversationId: string) =>
 export const conversationPullRequest = (conversationId: string) =>
   `${conversationsRoot}/${encodeURIComponent(conversationId)}/pull-request`;
 
+export const conversationPullRequests = () => `${conversationsRoot}/pull-requests`;
+
+const pullRequestOAuthRoot = `${BASE_URL}/api/pull-requests/oauth`;
+
+export const pullRequestConnection = () => `${pullRequestOAuthRoot}/status`;
+
+export const pullRequestConnect = () => `${pullRequestOAuthRoot}/connect`;
+
+export const pullRequestDisconnect = () => pullRequestOAuthRoot;
+
 export const genTitle = (conversationId: string) =>
   `${conversationsRoot}/gen_title/${encodeURIComponent(conversationId)}`;
 
@@ -225,19 +235,16 @@ export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
 export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
 
-export const models = () => `${BASE_URL}/api/models`;
+export const reasoningCapabilities = (endpoint: string) =>
+  `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
-export const tokenizer = () => `${BASE_URL}/api/tokenizer`;
+export const models = () => `${BASE_URL}/api/models`;
 
 export const login = () => `${BASE_URL}/api/auth/login`;
 
 export const logout = () => `${BASE_URL}/api/auth/logout`;
 
 export const register = () => `${BASE_URL}/api/auth/register`;
-
-export const loginFacebook = () => `${BASE_URL}/api/auth/facebook`;
-
-export const loginGoogle = () => `${BASE_URL}/api/auth/google`;
 
 export const refreshToken = (retry?: boolean) =>
   `${BASE_URL}/api/auth/refresh${retry === true ? '?retry=true' : ''}`;
@@ -284,13 +291,9 @@ export function buildLoginRedirectUrl(pathname?: string, search?: string, hash?:
 
 export const resendVerificationEmail = () => `${BASE_URL}/api/user/verify/resend`;
 
-export const plugins = () => `${BASE_URL}/api/plugins`;
-
 export const mcpReinitialize = (serverName: string) =>
   `${BASE_URL}/api/mcp/${serverName}/reinitialize`;
 export const mcpConnectionStatus = () => `${BASE_URL}/api/mcp/connection/status`;
-export const mcpServerConnectionStatus = (serverName: string) =>
-  `${BASE_URL}/api/mcp/connection/status/${serverName}`;
 export const mcpAuthValues = (serverName: string) => {
   return `${BASE_URL}/api/mcp/${serverName}/auth-values`;
 };
@@ -591,11 +594,6 @@ export const updateSkillPermissions = (roleName: string) => `${getRole(roleName)
 /* Conversation Tags */
 export const conversationTags = (tag?: string) =>
   `${BASE_URL}/api/tags${tag != null && tag ? `/${encodeURIComponent(tag)}` : ''}`;
-
-export const conversationTagsList = (pageNumber: string, sort?: string, order?: string) =>
-  `${conversationTags()}/list?pageNumber=${pageNumber}${sort ? `&sort=${sort}` : ''}${
-    order ? `&order=${order}` : ''
-  }`;
 
 export const addTagToConversation = (conversationId: string) =>
   `${conversationTags()}/convo/${conversationId}`;

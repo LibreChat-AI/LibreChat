@@ -219,39 +219,6 @@ describe('role-only ACL writes', () => {
     expect((await entries.findOne(filter))!.permBits).toBe(19);
   });
 
-  test('keeps explicit Insights upsert indices correct after expanded role-only writes', async () => {
-    await seed(17);
-    raceBeforeWrite(() => entries.deleteMany(filter));
-    const result = await service.bulkUpdateResourcePermissions({
-      resourceType: ResourceType.AGENT,
-      resourceId,
-      updatedPrincipals: [
-        {
-          type: PrincipalType.USER,
-          id: new Types.ObjectId().toString(),
-          accessRoleId: AccessRoleIds.AGENT_EDITOR,
-        },
-        {
-          type: PrincipalType.USER,
-          id: userId.toString(),
-          accessRoleId: AccessRoleIds.AGENT_EDITOR,
-          viewInsights: false,
-        },
-      ],
-      grantedBy,
-    });
-    expect(result.insightsChanges).toEqual([
-      expect.objectContaining({ action: 'removed', previousEntry: null }),
-    ]);
-    await service.restoreInsightsPermissionChanges({
-      resourceType: ResourceType.AGENT,
-      resourceId,
-      changes: result.insightsChanges,
-    });
-    expect(await entries.findOne(filter)).toBeNull();
-    expect(await entries.countDocuments({ resourceId })).toBe(1);
-  });
-
   test('initializes missing legacy permission fields without inheriting Insights', async () => {
     await seed(1);
     await entries.collection.updateMany(filter, { $unset: { permBits: '' } });

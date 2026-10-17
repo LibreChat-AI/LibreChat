@@ -1,4 +1,4 @@
-import { maxWorkers } from '../../config/jest.workers.cjs';
+import { maxWorkers, workerIdleMemoryLimit } from '../../config/jest.workers.cjs';
 
 const esModules = [
   '@langchain/langgraph',
@@ -56,6 +56,7 @@ export default {
   // },
   setupFiles: ['<rootDir>/jest.setup.cjs', '<rootDir>/../../config/jest.setup.logging.cjs'],
   maxWorkers,
+  workerIdleMemoryLimit,
   restoreMocks: true,
   testTimeout: 15000,
 };

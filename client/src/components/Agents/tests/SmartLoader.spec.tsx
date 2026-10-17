@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor, act } from '@testing-library/react';
-import { SmartLoader, useHasData } from '../SmartLoader';
+import { SmartLoader } from '../SmartLoader';
 
 // Mock setTimeout and clearTimeout for testing
 jest.useFakeTimers();
@@ -294,106 +294,5 @@ describe('SmartLoader', () => {
         expect(container.firstChild).toHaveClass('custom-class');
       });
     });
-  });
-});
-
-describe('useHasData', () => {
-  const TestComponent: React.FC<{ data: any }> = ({ data }) => {
-    const hasData = useHasData(data);
-    return <div data-testid="result">{hasData ? 'has-data' : 'no-data'}</div>;
-  };
-
-  it('returns false for null data', () => {
-    render(<TestComponent data={null} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('returns false for undefined data', () => {
-    render(<TestComponent data={undefined} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('detects empty data array (AgentListResponse) as no data', () => {
-    render(
-      <TestComponent
-        data={{ object: 'list', data: [], first_id: '', last_id: '', has_more: false }}
-      />,
-    );
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('detects non-empty data array (AgentListResponse) as has data', () => {
-    render(
-      <TestComponent
-        data={{
-          object: 'list',
-          data: [{ id: 'agent_1', name: 'Test Agent' }],
-          first_id: 'agent_1',
-          last_id: 'agent_1',
-          has_more: false,
-        }}
-      />,
-    );
-    expect(screen.getByTestId('result')).toHaveTextContent('has-data');
-  });
-
-  it('detects invalid data property as no data', () => {
-    render(<TestComponent data={{ data: 'not-array' }} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('detects empty agents array as no data', () => {
-    render(<TestComponent data={{ agents: [] }} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('detects non-empty agents array as has data', () => {
-    render(<TestComponent data={{ agents: [{ id: '1', name: 'Test' }] }} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('has-data');
-  });
-
-  it('detects invalid agents property as no data', () => {
-    render(<TestComponent data={{ agents: 'not-array' }} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('detects empty array as no data', () => {
-    render(<TestComponent data={[]} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('detects non-empty array as has data', () => {
-    render(<TestComponent data={[{ name: 'category1' }]} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('has-data');
-  });
-
-  it('detects agent with id as has data', () => {
-    render(<TestComponent data={{ id: '123', name: 'Test Agent' }} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('has-data');
-  });
-
-  it('detects agent with name only as has data', () => {
-    render(<TestComponent data={{ name: 'Test Agent' }} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('has-data');
-  });
-
-  it('detects object without id or name as no data', () => {
-    render(<TestComponent data={{ description: 'Some description' }} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('handles string data as no data', () => {
-    render(<TestComponent data="some string" />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('handles number data as no data', () => {
-    render(<TestComponent data={42} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
-  });
-
-  it('handles boolean data as no data', () => {
-    render(<TestComponent data={true} />);
-    expect(screen.getByTestId('result')).toHaveTextContent('no-data');
   });
 });

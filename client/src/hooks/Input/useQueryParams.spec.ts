@@ -76,7 +76,6 @@ jest.mock('~/utils', () => {
     // Only mock logger to suppress test output
     logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
     // Mock theme utilities that interact with DOM
-    getInitialTheme: jest.fn(() => 'light'),
     applyFontSize: jest.fn(),
   };
 });

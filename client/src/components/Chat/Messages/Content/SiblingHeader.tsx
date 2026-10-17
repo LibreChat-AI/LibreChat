@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
 import { GitBranchPlus } from 'lucide-react';
-import { useToastContext } from '@librechat/client';
 import { EModelEndpoint, parseEphemeralAgentId, stripAgentIdSuffix } from 'librechat-data-provider';
 import type { TMessage, Agent } from 'librechat-data-provider';
 import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useBranchMessageMutation } from '~/data-provider/Messages';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
@@ -36,7 +36,7 @@ export default function SiblingHeader({
 }: SiblingHeaderProps) {
   const agentsMap = useAgentsMapContext();
   const localize = useLocalize();
-  const { showToast } = useToastContext();
+  const showToast = useMessagePartsHost().useToast();
 
   const branchMessage = useBranchMessageMutation(conversationId ?? null, {
     onSuccess: () => {

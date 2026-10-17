@@ -591,12 +591,13 @@ interface GraphEdges {
 async function removeAgentIdsFromEdges(
   Agent: Model<IAgent>,
   agentIds: string[],
-  tenantId?: string,
+  tenantId?: string | null,
 ): Promise<void> {
   if (agentIds.length === 0) {
     return;
   }
   const filter: FilterQuery<IAgent> = {
+    /** `null` pins the cleanup to tenantless graphs (matches a missing field). */
     ...(tenantId !== undefined ? { tenantId } : {}),
     $or: [{ 'edges.from': { $in: agentIds } }, { 'edges.to': { $in: agentIds } }],
   };
@@ -1923,7 +1924,9 @@ export function createAgentMethods(
         ResourceType.REMOTE_AGENT,
       ]);
 
-      const authoredAgents = await Agent.find({ author: userObjectId }).select('id _id').lean();
+      const authoredAgents = await Agent.find({ author: userObjectId })
+        .select('id _id tenantId')
+        .lean();
 
       const migratedEntries =
         authoredAgents.length > 0
@@ -1940,42 +1943,48 @@ export function createAgentMethods(
       const soleOwnedAgents =
         soleOwnedObjectIds.length > 0
           ? await Agent.find({ _id: { $in: soleOwnedObjectIds } })
-              .select('id _id')
+              .select('id _id tenantId')
               .lean()
           : [];
 
       const allAgents = [...soleOwnedAgents, ...legacyAgents];
+      /** Sole-owned ids whose agent is already gone: ACLs left by an interrupted earlier attempt. */
+      const aclResourceIds = [...soleOwnedObjectIds, ...legacyAgents.map((a) => a._id)];
 
-      if (allAgents.length === 0) {
+      if (aclResourceIds.length === 0) {
         return;
       }
 
-      const agentIds = allAgents.map((agent) => agent.id);
       const agentObjectIds = allAgents.map((agent) => agent._id);
-
-      await AclEntry.deleteMany({
-        resourceType: { $in: [ResourceType.AGENT, ResourceType.REMOTE_AGENT] },
-        resourceId: { $in: agentObjectIds },
-      });
-
-      try {
-        await removeAgentIdsFromEdges(Agent, agentIds);
-      } catch (error) {
-        logger.error('[deleteUserAgents] Error removing agents from handoff edges', error);
+      /** Agent ids are unique per tenant only, so reference cleanup runs once per agent tenant. */
+      const idsByTenant = new Map<string | null, string[]>();
+      for (const agent of allAgents) {
+        const tenant = agent.tenantId ?? null;
+        const bucket = idsByTenant.get(tenant);
+        if (bucket) {
+          bucket.push(agent.id);
+        } else {
+          idsByTenant.set(tenant, [agent.id]);
+        }
       }
-
-      try {
+      /** Reference cleanup precedes the irreversible delete, so a failure keeps the agent discoverable for retry. */
+      for (const [tenant, tenantAgentIds] of idsByTenant) {
+        await removeAgentIdsFromEdges(Agent, tenantAgentIds, tenant);
         await User.updateMany(
-          { 'favorites.agentId': { $in: agentIds } },
-          { $pull: { favorites: { agentId: { $in: agentIds } } } },
+          { tenantId: tenant, 'favorites.agentId': { $in: tenantAgentIds } },
+          { $pull: { favorites: { agentId: { $in: tenantAgentIds } } } },
         );
-      } catch (error) {
-        logger.error('[deleteUserAgents] Error removing agents from user favorites', error);
       }
 
       await Agent.deleteMany({ _id: { $in: agentObjectIds } });
+      /** ACL entries are the retry discovery key for sole-owned agents, so they go last. */
+      await AclEntry.deleteMany({
+        resourceType: { $in: [ResourceType.AGENT, ResourceType.REMOTE_AGENT] },
+        resourceId: { $in: aclResourceIds },
+      });
     } catch (error) {
       logger.error('[deleteUserAgents] General error:', error);
+      throw error;
     }
   }
 

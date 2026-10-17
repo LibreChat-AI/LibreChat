@@ -10,12 +10,6 @@ export interface IPluginAuth extends Document {
   tenantId?: string;
 }
 
-export interface PluginAuthQuery {
-  userId: string;
-  authField?: string;
-  pluginKey?: string;
-}
-
 export interface FindPluginAuthParams {
   userId: string;
   authField: string;

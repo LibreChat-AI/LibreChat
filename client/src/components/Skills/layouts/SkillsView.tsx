@@ -40,7 +40,7 @@ export default function SkillsView() {
   if (!rolesLoaded) {
     return (
       <div className="bg-surface-primary-alt flex h-full w-full items-center justify-center">
-        <Spinner className="text-text-secondary" aria-label={localize('com_ui_loading')} />
+        <Spinner tone="secondary" aria-label={localize('com_ui_loading')} />
       </div>
     );
   }
@@ -110,7 +110,7 @@ function DetailView({ skillId }: { skillId: string }) {
   if (skillQuery.isLoading) {
     return (
       <div className="bg-surface-primary-alt flex h-full w-full items-center justify-center">
-        <Spinner className="text-text-secondary" aria-label={localize('com_ui_loading')} />
+        <Spinner tone="secondary" aria-label={localize('com_ui_loading')} />
       </div>
     );
   }

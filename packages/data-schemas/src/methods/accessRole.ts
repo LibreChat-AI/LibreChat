@@ -1,4 +1,4 @@
-import { AccessRoleIds, ResourceType, PermissionBits } from 'librechat-data-provider';
+import { AccessRoleIds, ResourceType } from 'librechat-data-provider';
 import type { Model, Types, DeleteResult } from 'mongoose';
 import type { IAccessRole } from '~/types';
 import { getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
@@ -11,18 +11,8 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
     updateData: Partial<IAccessRole>,
   ) => Promise<IAccessRole | null>;
   deleteRole: (accessRoleId: string | Types.ObjectId) => Promise<DeleteResult>;
-  getAllRoles: () => Promise<IAccessRole[]>;
-  findRoleById: (roleId: string | Types.ObjectId) => Promise<IAccessRole | null>;
   seedDefaultRoles: () => Promise<Record<string, IAccessRole>>;
   findRoleByIdentifier: (accessRoleId: string | Types.ObjectId) => Promise<IAccessRole | null>;
-  getRoleForPermissions: (
-    resourceType: string,
-    permBits: PermissionBits | RoleBits,
-  ) => Promise<IAccessRole | null>;
-  findRoleByPermissions: (
-    resourceType: string,
-    permBits: PermissionBits | RoleBits,
-  ) => Promise<IAccessRole | null>;
   findRolesByResourceType: (resourceType: string) => Promise<IAccessRole[]>;
 } {
   /** True inside a tenant's own context; false with no context or a system one. */
@@ -74,16 +64,6 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
-   * Find an access role by its ID
-   * @param roleId - The role ID
-   * @returns The role document or null if not found
-   */
-  async function findRoleById(roleId: string | Types.ObjectId): Promise<IAccessRole | null> {
-    const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
-    return await AccessRole.findById(roleId).lean<IAccessRole>();
-  }
-
-  /**
    * Find an access role by its unique identifier
    * @param accessRoleId - The unique identifier (e.g., "agent_viewer")
    * @returns The role document or null if not found
@@ -122,26 +102,6 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
-   * Find an access role by resource type and permission bits
-   * @param resourceType - The type of resource
-   * @param permBits - The permission bits (use PermissionBits or RoleBits enum)
-   * @returns The role document or null if not found
-   */
-  async function findRoleByPermissions(
-    resourceType: string,
-    permBits: PermissionBits | RoleBits,
-  ): Promise<IAccessRole | null> {
-    const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
-    if (!inTenantScope()) {
-      return await AccessRole.findOne({ resourceType, permBits }).lean<IAccessRole>().exec();
-    }
-    /** Selected from the visible set rather than queried directly, so a global role
-     * whose identifier the tenant has redefined cannot match on its superseded bits. */
-    const roles = await findRolesByResourceType(resourceType);
-    return roles.find((role) => role.permBits === permBits) ?? null;
-  }
-
-  /**
    * Create a new access role
    * @param roleData - Role data (accessRoleId, name, description, resourceType, permBits)
    * @returns The created role document
@@ -177,15 +137,6 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
   async function deleteRole(accessRoleId: string | Types.ObjectId): Promise<DeleteResult> {
     const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
     return await AccessRole.deleteOne({ accessRoleId });
-  }
-
-  /**
-   * Get all predefined roles
-   * @returns Array of all role documents
-   */
-  async function getAllRoles(): Promise<IAccessRole[]> {
-    const AccessRole = mongoose.models.AccessRole as Model<IAccessRole>;
-    return await AccessRole.find().lean<IAccessRole[]>();
   }
 
   /**
@@ -354,43 +305,12 @@ export function createAccessRoleMethods(mongoose: typeof import('mongoose')): {
     return result;
   }
 
-  /**
-   * Helper to get the appropriate role for a set of permissions
-   * @param resourceType - The type of resource
-   * @param permBits - The permission bits
-   * @returns The matching role or null if none found
-   */
-  async function getRoleForPermissions(
-    resourceType: string,
-    permBits: PermissionBits | RoleBits,
-  ): Promise<IAccessRole | null> {
-    /** Both matches come from the one visible set, so an exact hit on a global role
-     * the tenant has redefined cannot win over the tenant's own definition. */
-    const roles = await findRolesByResourceType(resourceType);
-
-    const exactMatch = roles.find((role) => role.permBits === permBits);
-    if (exactMatch) {
-      return exactMatch;
-    }
-
-    /** If no exact match, the closest role without exceeding permissions */
-    return (
-      [...roles]
-        .sort((a, b) => b.permBits - a.permBits)
-        .find((role) => (role.permBits & permBits) === role.permBits) || null
-    );
-  }
-
   return {
     createRole,
     updateRole,
     deleteRole,
-    getAllRoles,
-    findRoleById,
     seedDefaultRoles,
     findRoleByIdentifier,
-    getRoleForPermissions,
-    findRoleByPermissions,
     findRolesByResourceType,
   };
 }

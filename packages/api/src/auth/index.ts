@@ -13,7 +13,6 @@ export * from './password';
 export * from './recovery';
 export * from './passkey';
 export * from './passkey/handlers';
-export * from './credentials';
 export * from './verification';
 export * from './invite';
 export * from './codeapi';

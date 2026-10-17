@@ -221,6 +221,31 @@ describe('loadFiltersConfig', () => {
 });
 
 describe('AppService assistants config', () => {
+  it('exposes default Skill deletion worker settings when the block is omitted', async () => {
+    const result = await AppService({ config: {} });
+    expect(result.skillDeletion).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 120_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+  });
+
+  it('fills omitted Skill deletion settings around an explicit override', async () => {
+    const config = {
+      skillDeletion: { claimLeaseMs: 180_000 },
+    } as unknown as DeepPartial<TCustomConfig>;
+    const result = await AppService({ config });
+    expect(result.skillDeletion).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 180_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+  });
+
   it('preserves configured Assistants API versions', async () => {
     const config = {
       endpoints: {
@@ -306,6 +331,20 @@ describe('AppService MCP App sandbox configuration', () => {
       maxSerializedLength: 8192,
       maxAdmissionRequestsPerMinute: 480,
     });
+  });
+});
+
+describe('AppService credential write format', () => {
+  it('defaults stored credential writes to v3', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.credentials).toEqual({ writeFormat: 'v3' });
+  });
+
+  it('carries a configured legacy write format onto the app config', async () => {
+    const result = await AppService({
+      config: { credentials: { writeFormat: 'legacy' } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.credentials).toEqual({ writeFormat: 'legacy' });
   });
 });
 

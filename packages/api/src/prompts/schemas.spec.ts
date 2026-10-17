@@ -1,6 +1,5 @@
 import {
   updatePromptGroupSchema,
-  validatePromptGroupUpdate,
   safeValidatePromptPayload,
   safeValidatePromptGroupUpdate,
 } from './schemas';
@@ -199,18 +198,6 @@ describe('updatePromptGroupSchema', () => {
       const result = updatePromptGroupSchema.safeParse({ command: 'my_command!' });
       expect(result.success).toBe(false);
     });
-  });
-});
-
-describe('validatePromptGroupUpdate', () => {
-  it('should return validated data for valid input', () => {
-    const input = { name: 'Test', category: 'testing' };
-    const result = validatePromptGroupUpdate(input);
-    expect(result).toEqual(input);
-  });
-
-  it('should throw ZodError for invalid input', () => {
-    expect(() => validatePromptGroupUpdate({ author: 'malicious-id' })).toThrow();
   });
 });
 

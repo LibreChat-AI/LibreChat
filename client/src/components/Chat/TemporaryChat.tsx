@@ -1,7 +1,7 @@
 import { HatGlasses } from 'lucide-react';
 import { Chip, TooltipAnchor } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
-import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
+import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

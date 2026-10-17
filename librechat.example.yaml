@@ -29,6 +29,14 @@ projects:
 #   outputChars: 512   # characters of each output kept, half from the start and half from the end
 #   argsChars: 512     # characters of serialized arguments kept; JSON stays valid JSON
 
+# Stored user credentials (tool and web search keys, MCP custom user variables) are
+# written with a random IV per value ("v3", the default). Both formats are always read.
+# During a rolling upgrade of a multi-replica deployment, set "legacy" until every
+# replica runs a release that reads v3, then remove it. A rollback to a release that
+# predates v3 cannot read credentials saved in the v3 format.
+# credentials:
+#   writeFormat: v3
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central
@@ -167,6 +175,13 @@ projects:
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
+  # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
+  # user's name, for deployments where the header selector already names the agent.
+  # landingHeading: entity
+  # Show the generic disclaimer and policy links beneath the welcome screen's composer (default: true).
+  # When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
+  # landingFooter: true
   # Allow renaming a running chat or one with a placeholder title (default: true).
   # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
   # title-generation jobs have drained. While false, rename is disabled for running chats
@@ -267,6 +282,8 @@ interface:
     create: true
     share: false
     public: false
+  # Allow Lia, the welcome screen mascot. Users still opt in from Settings (default: true).
+  mascot: true
   # Scheduled chats are experimental and disabled unless explicitly enabled.
   # A deployment with Redis-backed resumable streams can run this on every replica.
   # A single-process deployment without Redis must also set
@@ -714,6 +731,10 @@ endpoints:
   #   modelResponseBodyTimeoutMs: 900000
   #   # Maximum wait for provider response headers. Defaults to 5 minutes; 0 disables.
   #   modelResponseHeadersTimeoutMs: 300000
+  #   # Interval between keepalive comments on a chat stream that is quiet (for example while a
+  #   # long tool runs), so proxies with an idle timeout (Cloudflare 100 s, nginx 60 s) keep it
+  #   # open. Defaults to 25000 ms; 0 disables.
+  #   streamKeepaliveIntervalMs: 25000
   #   # (optional) Default recursion depth for agents, defaults to 25
   #   recursionLimit: 50
   #   # Maximum provider error characters retained without content protection (0 hides detail).
@@ -922,20 +943,48 @@ endpoints:
   #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
-  #   # (optional) Show a conversation's pull request in the chat header. Off by default. It needs
-  #   # a code worker built from LibreChat-AI/code-interpreter#311 or later that reports its
-  #   # branch, with CODEAPI_BRIDGE_LANE_GIT=true set on the Code API; without both, every chat
-  #   # simply shows no pull request. It also needs a GitHub token held on the server. Use a
-  #   # fine-grained token limited to the repositories involved, with read-only "Pull requests",
-  #   # "Checks" and "Contents" permissions. Without "Checks" every matched pull request fails to
-  #   # load, and without "Contents" a chat whose branch has moved on since its last command does.
+  #   # (optional) Show a conversation's pull request in the chat header and the sidebar. It is on
+  #   # as soon as the server has a GitHub token and a repository scope, with no switch needed:
+  #   # the token is `token` below, else the first of GITHUB_PULL_REQUEST_TOKEN, GITHUB_TOKEN and
+  #   # GH_TOKEN that is set, and the scope is `allowedRepositories` or `allowAllRepositories`.
+  #   # Without either, every chat simply shows no pull request. It also needs a code worker built
+  #   # from LibreChat-AI/code-interpreter#311 or later that reports its branch, with
+  #   # CODEAPI_BRIDGE_LANE_GIT=true set on the Code API. Use a fine-grained token limited to the
+  #   # repositories involved, with read-only "Pull requests", "Checks" and "Contents" permissions.
+  #   # Without "Checks" every matched pull request fails to load, and without "Contents" a chat
+  #   # whose branch has moved on since its last command does.
+  #   # On GitLab the fallbacks are GITLAB_PULL_REQUEST_TOKEN and GITLAB_TOKEN, and the token needs
+  #   # read_api; on Bitbucket the fallback is BITBUCKET_PULL_REQUEST_TOKEN. Repositories may be
+  #   # nested GitLab group paths such as group/sub/name or group/sub/*.
   #   pullRequests:
-  #     enabled: false
-  #     # Environment variable reference only, never the token itself.
+  #     enabled: true # set false to turn the feature off
+  #     # github (default), gitlab, or bitbucket (Bitbucket Cloud). Read from this file only.
+  #     # provider: "gitlab"
+  #     # GitHub Enterprise Server, a *.ghe.com tenant, or a self-managed GitLab host; the
+  #     # provider's own host (github.com, gitlab.com, bitbucket.org) when omitted.
+  #     # host: "github.example.com"
+  #     # Environment variable reference only, never the token itself. Optional, see above.
   #     token: "${GITHUB_PULL_REQUEST_TOKEN}"
-  #     # Repositories the token may be used for, as owner/name or owner/*. Required: a worker
-  #     # reports its own repository, and only these are ever looked up with the server's token.
+  #     # Let each user connect their own account, so lookups use their token, rate limit and
+  #     # repository access instead of the server's (read from this file only). Register
+  #     # <DOMAIN_SERVER>/api/pull-requests/oauth/callback as the app's callback URL. On GitHub a
+  #     # GitHub App with read-only Pull requests, Checks and Contents permissions is recommended.
+  #     # Changing clientId, provider or host asks users to connect again; a changed scope only
+  #     # applies to new connections. Disconnecting removes every grant of the user.
+  #     # oauth:
+  #     #   clientId: "${GITHUB_PR_OAUTH_CLIENT_ID}"
+  #     #   clientSecret: "${GITHUB_PR_OAUTH_CLIENT_SECRET}"
+  #     #   scope: "repo" # only for a classic OAuth app; GitLab defaults to read_api
+  #     #   flowTimeoutMinutes: 10 # time to approve at the provider
+  #     #   requestTimeoutSeconds: 10 # per code exchange or token refresh
+  #     #   retentionDays: 180 # an unused connection is removed after this; each use extends it
+  #     # Repositories the token may be used for, as owner/name or owner/*. A worker reports its
+  #     # own repository, and only these are ever looked up with the server's token.
   #     allowedRepositories: ["LibreChat-AI/LibreChat"]
+  #     # Or look up every repository a worker reports, limited only by what the token can read.
+  #     # Off by default: any user could then point the server's token at any repository it can
+  #     # see, so use a read-only token scoped to the repositories you are willing to show.
+  #     allowAllRepositories: false
   #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
   #     cacheTtlSeconds: 30
   #     # Results cached per credential before the oldest is evicted (10 to 100000). Raise it when many
@@ -944,12 +993,27 @@ endpoints:
   #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
   #     # past it. When principals configure different values, the largest applies.
   #     cacheMaxCredentials: 256
+  #     # Lookups one sidebar request runs at once (1 to 16); each is a few GitHub requests.
+  #     maxConcurrentLookups: 4
+  #     # Seconds one sidebar request may stay open in total (1 to 120); entries still waiting then
+  #     # answer with an upstream error and the row shows nothing until the next refresh.
+  #     batchTimeoutSeconds: 20
   #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
   #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
   #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
   #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
   #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxCandidatePages: 1 # pages of those read per state, for branch names reused more often (1 to 10)
   #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
+  #     # Share looked-up pull requests and GitHub rate limit cooldowns between replicas, so they
+  #     # do not each spend the token on the same answer. Only takes effect with USE_REDIS. Failed
+  #     # lookups are never shared.
+  #     sharedCache: false
+  #     # Milliseconds one shared cache call may take before a lookup carries on without it (10 to 5000).
+  #     sharedCacheTimeoutMs: 250
+  #     # Redis keys the shared cache uses at most, for results and again for rate limits (64 to
+  #     # 1000000). Read from this file only.
+  #     sharedCacheSlots: 65536
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.
@@ -1399,7 +1463,7 @@ endpoints:
 #   # Users can toggle this in Settings > Chat. Setting `enabled` here overrides
 #   # that choice for everyone and locks the toggle; omit it to leave users in control.
 #   clientImageResize:
-#     enabled: false  # Enable/disable client-side image resizing (default: false)
+#     enabled: false  # Force resizing on (true) or off (false) for everyone; omit it and each user decides, with resizing on by default
 #     maxWidth: 1900  # Maximum width for resized images (default: 1900)
 #     maxHeight: 1900  # Maximum height for resized images (default: 1900)
 #     quality: 0.92  # JPEG quality for compression (0.0-1.0, default: 0.92)
@@ -1685,3 +1749,5 @@ endpoints:
 # ACL writes retry only conflicts on an individual document.
 # permissions:
 #   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.
+#   leaseTtlMs: 30000 # Integer 1000-600000. Sharing updates on deployments without transactions hold a per-resource lease this long between renewals.
+#   leaseWaitMs: 3000 # Integer 0-60000. How long an update waits for a contended lease before answering 409.

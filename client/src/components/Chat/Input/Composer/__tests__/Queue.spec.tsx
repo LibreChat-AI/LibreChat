@@ -4,16 +4,20 @@ import { DndProvider } from 'react-dnd';
 import { getDefaultStore, useSetAtom } from 'jotai';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { ReasoningEffort } from 'librechat-data-provider';
+import { hasQueuedIntent, releaseQueuedIntent } from '@librechat/chat';
 import { act, render, screen, within, waitFor, fireEvent } from '@testing-library/react';
+import {
+  revealedQueuedTurnFamily,
+  resetSteerFamilies,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/hooks/Chat/queue';
 import {
   QueuedTurnPortalProvider,
   useQueuedTurnPortal,
 } from '~/components/Chat/Steering/QueuedTurnPortal';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
-import { hasQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
-import { revealedQueuedTurnFamily } from '~/store/steer';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import Queue from '../Queue';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) => {
@@ -201,7 +205,10 @@ function renderQueue(
   );
 }
 
-beforeEach(() => resetQueueFamilies());
+beforeEach(() => {
+  resetQueueFamilies();
+  resetSteerFamilies();
+});
 
 describe('Queue', () => {
   beforeEach(() => jest.clearAllMocks());

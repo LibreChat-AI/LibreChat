@@ -21,7 +21,12 @@ const {
   restoreTenantContextFromReq,
   resolveToolRoleGrants,
 } = require('@librechat/api');
-const { checkBan, configMiddleware, createFileLimiters } = require('~/server/middleware');
+const {
+  checkBan,
+  configMiddleware,
+  createFileLimiters,
+  requireTermsAcceptance,
+} = require('~/server/middleware');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const { createMulterInstance } = require('~/server/routes/files/multer');
@@ -148,6 +153,7 @@ const handleUploadError = (error, _req, res, _next) => {
 };
 
 router.use(requireAgentManagementAuth);
+router.use(requireTermsAcceptance);
 router.use(checkBan);
 
 router.post('/', configMiddleware, createHandler);

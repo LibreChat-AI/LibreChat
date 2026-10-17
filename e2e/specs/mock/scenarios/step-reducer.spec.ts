@@ -12,7 +12,7 @@ import {
 
 /**
  * Streamed content parts are folded into the response by the step reducers in
- * `client/src/hooks/SSE/steps`, each at its step's index. These scenarios pin
+ * `packages/chat/src/core/steps`, each at its step's index. These scenarios pin
  * what that looks like on screen, live and after the persisted copy reloads.
  */
 

@@ -478,9 +478,9 @@ export function createAttachedWorkspaceBashTool({
   baseUrl: string;
   authHeaders: () => Promise<Record<string, string>> | Record<string, string>;
   workspaceId: string;
-  /** Receives the lane's branch and head when a finished command reports them. It is not awaited
-   *  and must not throw: a failure here never changes the command's result. */
-  onLaneGit?: (laneGit: WorkspaceLaneGit) => void;
+  /** Receives the lane's branch and head when a finished command reports them, with the command's
+   *  output. It is not awaited and must not throw: a failure here never changes the result. */
+  onLaneGit?: (laneGit: WorkspaceLaneGit, output: string) => void;
   workspaceInstanceId?: string;
   /** The worker runs each `.worktrees/<name>` in its own lane; a matching `cwd` is routed there. */
   linkedWorktrees?: boolean;
@@ -617,7 +617,9 @@ export function createAttachedWorkspaceBashTool({
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
-        if (result.laneGit != null) onLaneGit?.(result.laneGit);
+        if (result.laneGit != null) {
+          onLaneGit?.(result.laneGit, `${result.stdout}\n${result.stderr}`);
+        }
         let content = formatCommandResult(
           result,
           selectedTimeoutMs,

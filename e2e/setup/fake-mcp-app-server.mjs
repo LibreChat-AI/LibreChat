@@ -72,10 +72,13 @@ const appHtml = `<!doctype html>
       <p data-testid="events"></p>
       <p data-testid="capabilities"></p>
       <button data-testid="call-tool" type="button">Call follow-up tool</button>
+      <button data-testid="call-two-tools" type="button">Call two follow-up tools</button>
       <button data-testid="read-resource" type="button">Read resource</button>
       <button data-testid="list-resources" type="button">List resources</button>
       <button data-testid="send-message" type="button">Send message</button>
       <button data-testid="open-link" type="button">Open permitted link</button>
+      <button data-testid="detach-view" type="button">Send pagehide signal</button>
+      <button data-testid="navigate-view" type="button">Navigate away from App</button>
       <output data-testid="operation"></output>
     </main>
     <script type="module">
@@ -122,6 +125,7 @@ const appHtml = `<!doctype html>
       await app.sendSizeChanged({ height: 260, width: 640 });
 
       byTestId('call-tool').disabled = !capabilities.serverTools;
+      byTestId('call-two-tools').disabled = !capabilities.serverTools;
       byTestId('read-resource').disabled = !capabilities.serverResources;
       byTestId('list-resources').disabled = !capabilities.serverResources;
       byTestId('send-message').disabled = !capabilities.message;
@@ -133,6 +137,12 @@ const appHtml = `<!doctype html>
           arguments: { label: 'from-view' },
         });
         return result.structuredContent;
+      }));
+      byTestId('call-two-tools').addEventListener('click', () => run(async () => {
+        const results = await Promise.all(['queued-first', 'queued-second'].map((label) =>
+          app.callServerTool({ name: 'follow_up', arguments: { label } }),
+        ));
+        return results.map((result) => result.structuredContent);
       }));
       byTestId('read-resource').addEventListener('click', () => run(async () => {
         const result = await app.readServerResource({ uri: '${DETAIL_URI}' });
@@ -149,6 +159,10 @@ const appHtml = `<!doctype html>
         });
         return 'message-sent';
       }));
+      byTestId('detach-view').addEventListener('click', () =>
+        dispatchEvent(new PageTransitionEvent('pagehide')),
+      );
+      byTestId('navigate-view').addEventListener('click', () => location.replace('about:blank'));
       byTestId('open-link').addEventListener('click', () => run(async () => {
         return app.openLink({ url: '${LINK_ORIGIN}/opened' });
       }));

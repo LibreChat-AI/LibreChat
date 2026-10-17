@@ -23,7 +23,7 @@ export const DisableTwoFactorToggle: React.FC<DisableTwoFactorToggleProps> = ({
   const actionButton = (
     <Button
       ref={buttonRef}
-      variant={enabled ? 'destructive' : 'outline'}
+      variant={enabled ? 'destructive-soft' : 'outline'}
       onClick={isDisableBlockedByPolicy ? undefined : onChange}
       disabled={disabled}
       aria-disabled={isDisableBlockedByPolicy || disabled || undefined}

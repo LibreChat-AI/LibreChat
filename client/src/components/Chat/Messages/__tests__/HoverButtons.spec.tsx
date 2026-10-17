@@ -162,6 +162,30 @@ describe('HoverButtons edit affordance', () => {
     expect(screen.getByTestId('copy-response-button')).toBeEnabled();
   });
 
+  /** A fork of the failed row would copy the provider's error as an ordinary answer, and its text
+   *  is the persisted error, so neither is offered; the error card carries the way out. */
+  it('withholds fork and edit on an error response', () => {
+    const errorMessage = {
+      ...userMessage,
+      messageId: 'assistant-error',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      error: true,
+      text: 'Error uploading code environment file: 429',
+    } as TMessage;
+
+    const container = renderHoverButtons({
+      isSubmitting: false,
+      message: errorMessage,
+      isLast: true,
+      latestMessageId: errorMessage.messageId,
+      thread: [userMessage, errorMessage],
+    });
+
+    expect(screen.queryByRole('button', { name: 'Open Fork Menu' })).toBeNull();
+    expect(container.querySelector(`#edit-${errorMessage.messageId}`)).toBeNull();
+  });
+
   it('disables copy when the response serializes to nothing', () => {
     const errorPartMessage = {
       ...userMessage,

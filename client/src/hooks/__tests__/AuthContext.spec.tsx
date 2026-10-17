@@ -15,17 +15,20 @@ import {
 } from 'librechat-data-provider';
 import type { TAuthConfig } from '~/common';
 import {
+  SESSION_KEY,
+  getCachedTTSAudio,
+  setCachedTTSAudio,
+  retainFileDeletion,
+  getTTSCacheGeneration,
+  clearRetainedFileDeletions,
+  takeRetainedFileDeletions,
+} from '~/utils';
+import {
   chatFilterStatusAtom,
   chatFilterTagsAtom,
   chatSortAtom,
   resetChatFilterSessionAtom,
 } from '~/components/Conversations/chatFilters';
-import {
-  SESSION_KEY,
-  retainFileDeletion,
-  clearRetainedFileDeletions,
-  takeRetainedFileDeletions,
-} from '~/utils';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
 
 const mockNavigate = jest.fn();
@@ -52,6 +55,7 @@ let mockCapturedLogoutOptions: {
   onError: (...args: unknown[]) => void;
 };
 
+const mockEndPullRequestSession = jest.fn();
 const mockRefreshMutate = jest.fn();
 const mockLoginMutate = jest.fn();
 const mockLogoutMutate = jest.fn();
@@ -83,6 +87,8 @@ jest.mock('~/data-provider', () => ({
     error: null,
   })),
   useGetRole: jest.fn(() => ({ data: null })),
+  endPullRequestSession: jest.fn(() => mockEndPullRequestSession()),
+  setPullRequestSessionOwner: jest.fn(),
   useListRoles: jest.fn(() => ({ data: undefined })),
 }));
 
@@ -508,6 +514,28 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
     jotaiStore.set(resetChatFilterSessionAtom);
   });
 
+  it('ends the sidebar pull request queue at the logout session boundary', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(mockEndPullRequestSession).toHaveBeenCalled();
+  });
+
+  it('does not end the sidebar pull request queue while a session is being established', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+
+    expect(mockEndPullRequestSession).not.toHaveBeenCalled();
+  });
+
   it('does not call window.location.replace when redirect is absent', async () => {
     const replaceSpy = jest.spyOn(window.location, 'replace').mockImplementation(() => {});
 
@@ -790,6 +818,33 @@ describe('AuthContextProvider — optional authentication', () => {
       'data-auth-ready',
       'true',
     );
+  });
+});
+
+describe('AuthContextProvider — prerendered page', () => {
+  const setPrerendering = (value: boolean) =>
+    Object.defineProperty(document, 'prerendering', { configurable: true, value });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setPrerendering(true);
+  });
+
+  afterEach(() => {
+    delete (document as Document & { prerendering?: boolean }).prerendering;
+  });
+
+  it('defers the silent refresh until the prerendered page is shown', () => {
+    renderProviderLive();
+
+    expect(mockRefreshMutate).not.toHaveBeenCalled();
+
+    setPrerendering(false);
+    act(() => {
+      document.dispatchEvent(new Event('prerenderingchange'));
+    });
+
+    expect(mockRefreshMutate).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1120,5 +1175,99 @@ describe('AuthContextProvider: enrollment hand-off that keeps the document', () 
     dispatchHandoff(true);
 
     expect(readTwoFactorSetupToken()).toBe('setup-token');
+  });
+});
+
+describe('AuthContextProvider: read-aloud cache at every session end', () => {
+  const mockUseGetUserQuery = jest.requireMock('~/data-provider').useGetUserQuery;
+  const cacheAudio = () =>
+    setCachedTTSAudio('departing', new Blob(['audio']), getTTSCacheGeneration());
+  const refreshOptions = () =>
+    mockRefreshMutate.mock.calls[0][1] as {
+      onSuccess: (data: unknown) => void;
+      onError: (error: unknown) => void;
+    };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(window.location, 'replace').mockImplementation(() => {});
+    cacheAudio();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('empties on logout', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' }));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties on an IdP logout redirect', () => {
+    renderProvider();
+    act(() =>
+      mockCapturedLogoutOptions.onSuccess({
+        message: 'Logout successful',
+        redirect: 'https://idp.example.com/logout',
+      }),
+    );
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the logout request fails', () => {
+    renderProvider();
+    act(() => mockCapturedLogoutOptions.onError(new Error('network')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the refresh token is rejected', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onError(new Error('401')));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when a refresh returns no session', () => {
+    renderProviderLive();
+    act(() => refreshOptions().onSuccess({}));
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('empties when the user query fails', () => {
+    mockUseGetUserQuery.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: new Error('401'),
+    });
+    renderProvider();
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+    mockUseGetUserQuery.mockReturnValue({ data: undefined, isError: false, error: null });
+  });
+
+  it('empties when a different account signs in without a logout', () => {
+    jest.useFakeTimers();
+    renderProviderLive();
+    act(() => {
+      refreshOptions().onSuccess({ user: { id: 'first', role: 'USER' }, token: 'first-token' });
+      jest.advanceTimersByTime(100);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('second-token', { id: 'second' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeUndefined();
+  });
+
+  it('keeps the cache when the same account signs in again', () => {
+    renderProvider();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token', { id: 'same' } as never);
+    });
+    cacheAudio();
+    act(() => {
+      capturedAuthContext?.completeAuthentication('token-2', { id: 'same' } as never);
+    });
+    expect(getCachedTTSAudio('departing')).toBeDefined();
   });
 });

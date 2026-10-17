@@ -2,7 +2,7 @@ import { useState, useId } from 'react';
 import { Ellipsis } from 'lucide-react';
 import * as Ariakit from '@ariakit/react';
 import { DropdownPopup, TooltipAnchor, useMediaQuery } from '@librechat/client';
-import useChatOptions from '~/hooks/Chat/useChatOptions';
+import useChatOptions from '~/hooks/Sharing/useChatOptions';
 import { useLocalize } from '~/hooks';
 
 export default function ExportAndShareMenu({
@@ -19,6 +19,7 @@ export default function ExportAndShareMenu({
   const { show, items, hasSharedLink, dialogs } = useChatOptions({
     isSharedButtonEnabled,
     readOnly,
+    isMenuOpen: isPopoverActive,
     closeMenu: () => setIsPopoverActive(false),
   });
 

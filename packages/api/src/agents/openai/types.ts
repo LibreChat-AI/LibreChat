@@ -165,13 +165,6 @@ export interface ChatCompletionChunk {
 }
 
 /**
- * SSE event wrapper for streaming
- */
-export interface SSEEvent {
-  data: ChatCompletionChunk | '[DONE]';
-}
-
-/**
  * Context for building OpenAI responses
  */
 export interface OpenAIResponseContext {
@@ -181,14 +174,6 @@ export interface OpenAIResponseContext {
   model: string;
   /** Created timestamp */
   created: number;
-}
-
-/**
- * Aggregated content for building final response
- */
-export interface AggregatedContent {
-  text: string;
-  toolCalls: ToolCall[];
 }
 
 /**

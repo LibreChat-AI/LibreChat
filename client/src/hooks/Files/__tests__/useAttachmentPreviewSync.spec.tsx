@@ -17,8 +17,10 @@
 
 import { useEffect } from 'react';
 import { Tools } from 'librechat-data-provider';
+import { getDefaultStore, useSetAtom } from 'jotai';
 import { renderHook } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import type {
   TAttachment,
   TFile,
@@ -104,7 +106,7 @@ function setup({
      * so we have to populate both for the selector to fire. */
     const setMap = useSetRecoilState(store.messageAttachmentsMap);
     const setKeys = useSetRecoilState(store.conversationKeysAtom);
-    const setSubmitting = useSetRecoilState(store.isSubmittingFamily(0));
+    const setSubmitting = useSetAtom(isSubmittingFamily(0));
     useEffect(() => {
       if (seedLiveMap) {
         setMap({ [messageId]: seedEntries ?? [attachment] });
@@ -193,8 +195,8 @@ function setupWithTransitions(
       initialProps: { attachment: makeAttachment({ status: 'pending' }) },
       wrapper: ({ children }: { children: ReactNode }) => (
         <RecoilRoot
-          initializeState={(snap) => {
-            snap.set(store.isSubmittingFamily(0), isSubmittingAtMount);
+          initializeState={() => {
+            getDefaultStore().set(isSubmittingFamily(0), isSubmittingAtMount);
           }}
         >
           <FlagProbe id={fileId} />
@@ -218,6 +220,10 @@ function setupWithTransitions(
     },
   };
 }
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('useAttachmentPreviewSync', () => {
   it('enables polling whenever status=pending (no longer gated on isSubmitting)', () => {

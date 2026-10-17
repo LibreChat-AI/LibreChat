@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import { Button } from '@librechat/client';
 import type { TAttachment, UIResource } from 'librechat-data-provider';
+import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import { useMCPAppsHost, useMCPAppViewAtCapacity } from '~/Providers/MCPAppsPolicyContext';
 import { selectToolCallUIResources, getInlineResourceHtml } from '~/utils/mcpApps';
 import { useIsMessagesViewReadOnly } from '~/Providers/MessagesViewContext';
@@ -49,7 +50,9 @@ function ActiveMCPAppView({
   ordinal: number;
 }) {
   const localize = useLocalize();
-  const approval = useMCPAppApproval();
+  const { policy } = useMCPAppsHost();
+  // Reuse the deployment operation limit to bound requests awaiting consent in this View.
+  const approval = useMCPAppApproval(policy.operationLimits?.maxActive);
   const frame = useMCPAppFrame(app, {
     defaultHeight: DEFAULT_APP_VIEW_HEIGHT,
     toolArgs: app.toolArgs,
@@ -89,7 +92,10 @@ function ActiveMCPAppView({
     );
   } else if (frame.status !== 'tornDown') {
     body = (
-      <div className="relative my-2 overflow-hidden" style={{ height: frame.height }}>
+      <div
+        className="relative my-2 overflow-hidden"
+        style={{ height: frame.height, width: frame.width, maxWidth: '100%' }}
+      >
         <MCPAppFrame frame={frame} resource={app} spinner />
       </div>
     );
@@ -229,7 +235,15 @@ const MCPAppView = React.memo(function MCPAppView({
   );
 });
 
-export function MCPAppViews({ attachments }: { attachments?: TAttachment[] }) {
+export function MCPAppViews({
+  attachments,
+  resources,
+  ordinalStart = 1,
+}: {
+  attachments?: TAttachment[];
+  resources?: MCPAppResourceOccurrence[];
+  ordinalStart?: number;
+}) {
   const suppressedAttachments = React.useContext(MCPAppSuppressionContext);
   const { policy, userId } = useMCPAppsHost();
   const visibleAttachments = useMemo(
@@ -239,7 +253,12 @@ export function MCPAppViews({ attachments }: { attachments?: TAttachment[] }) {
         : attachments?.filter((attachment) => !suppressedAttachments.has(attachment)),
     [attachments, suppressedAttachments],
   );
-  const apps = useMemo(() => selectToolCallUIResources(visibleAttachments), [visibleAttachments]);
+  const apps = useMemo(
+    () =>
+      resources?.filter(({ attachment }) => !suppressedAttachments?.has(attachment)) ??
+      selectToolCallUIResources(visibleAttachments),
+    [resources, suppressedAttachments, visibleAttachments],
+  );
 
   if (!policy.enabled || !userId || apps.length === 0) {
     return null;
@@ -252,7 +271,7 @@ export function MCPAppViews({ attachments }: { attachments?: TAttachment[] }) {
           key={JSON.stringify([userId, key])}
           app={resource}
           userId={userId}
-          ordinal={index + 1}
+          ordinal={ordinalStart + index}
         />
       ))}
     </>

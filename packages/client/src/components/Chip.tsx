@@ -6,7 +6,7 @@ import { IconButton } from './IconButton';
 import { cn } from '~/utils';
 
 type ChipVariantProps = {
-  tone?: 'surface' | 'neutral' | 'info' | 'success' | 'warning' | 'error' | null;
+  tone?: 'surface' | 'neutral' | 'info' | 'success' | 'warning' | 'error' | 'merged' | null;
   size?: 'sm' | 'md' | 'theme' | null;
   shape?: 'round' | 'theme' | null;
 };
@@ -22,6 +22,7 @@ const chipVariants: (props?: ChipVariantProps & ClassProp) => string = cva(
         success: 'border-status-success-border bg-status-success-subtle text-status-success',
         warning: 'border-status-warning-border bg-status-warning-subtle text-status-warning',
         error: 'border-status-error-border bg-status-error-subtle text-status-error',
+        merged: 'border-brand-purple/40 bg-transparent text-brand-purple',
       },
       size: {
         sm: 'min-h-6 px-2 py-0.5',

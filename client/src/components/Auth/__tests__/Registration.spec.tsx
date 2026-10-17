@@ -129,7 +129,7 @@ jest.mock('react-router-dom', () => ({
 test('renders registration form', () => {
   const { getByText, getByTestId, getByRole } = setup();
   expect(getByText(/Create your account/i)).toBeInTheDocument();
-  expect(getByRole('textbox', { name: /Full name/i })).toHaveClass('h-auto');
+  expect(getByRole('textbox', { name: /Full name/i })).toHaveClass('h-theme-auth-field');
   expect(getByRole('form', { name: /Registration form/i })).toBeVisible();
   expect(getByRole('textbox', { name: /Username/i })).toBeInTheDocument();
   expect(getByRole('textbox', { name: /Email/i })).toBeInTheDocument();
@@ -164,32 +164,6 @@ test('renders registration form', () => {
     'mock-server/oauth/saml',
   );
 });
-
-// test('calls registerUser.mutate on registration', async () => {
-//   const mutate = jest.fn();
-//   const { getByTestId, getByRole, history } = setup({
-//     // @ts-ignore - we don't need all parameters of the QueryObserverResult
-//     useLoginUserReturnValue: {
-//       isLoading: false,
-//       mutate: mutate,
-//       isError: false,
-//       isSuccess: true,
-//     },
-//   });
-
-//   await userEvent.type(getByRole('textbox', { name: /Full name/i }), 'John Doe');
-//   await userEvent.type(getByRole('textbox', { name: /Username/i }), 'johndoe');
-//   await userEvent.type(getByRole('textbox', { name: /Email/i }), 'test@test.com');
-//   await userEvent.type(getByTestId('password'), 'password');
-//   await userEvent.type(getByTestId('confirm_password'), 'password');
-//   await userEvent.click(getByRole('button', { name: /Submit registration/i }));
-
-//   console.log(history);
-//   waitFor(() => {
-//     // expect(mutate).toHaveBeenCalled();
-//     expect(history.location.pathname).toBe('/c/new');
-//   });
-// });
 
 test('shows validation error messages', async () => {
   const { getByTestId, getAllByRole, getByRole } = setup();

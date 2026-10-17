@@ -555,9 +555,9 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(toggle());
 
       const totals = within(screen.getByTestId('token-usage-totals'));
-      expect(
-        totals.getByText('com_ui_context_subagents_all').parentElement?.nextElementSibling,
-      ).toHaveTextContent('1K');
+      expect(totals.getByText('com_ui_context_subagents_all').nextElementSibling).toHaveTextContent(
+        '1K',
+      );
     });
   });
 
@@ -594,11 +594,11 @@ describe('TokenUsage Breakdown', () => {
         expect(screen.queryByTestId('token-usage-totals')).not.toBeInTheDocument();
         expect(screen.getByTestId('token-usage-all-branches')).toHaveTextContent('800');
         if (showCost) {
-          expect(screen.getByTestId('token-usage-cost')).toHaveTextContent(
-            'com_ui_context_cost_total',
-          );
+          expect(
+            within(screen.getByTestId('token-usage-all-branches')).getByTestId('usage-cost'),
+          ).toHaveTextContent('com_ui_context_cost_total');
         } else {
-          expect(screen.queryByTestId('token-usage-cost')).not.toBeInTheDocument();
+          expect(screen.queryByTestId('usage-cost')).not.toBeInTheDocument();
         }
       },
     );
@@ -655,10 +655,9 @@ describe('TokenUsage Breakdown', () => {
       expect(all.getByText('com_ui_cache_read').parentElement?.parentElement).toHaveTextContent(
         '900',
       );
-      const cost = within(screen.getByTestId('token-usage-cost'));
-      expect(cost.getByText('com_ui_context_cost_last_turn')).toBeInTheDocument();
-      expect(cost.getByText('com_ui_context_cost_branch')).toBeInTheDocument();
-      expect(cost.getByText('com_ui_context_cost_total')).toBeInTheDocument();
+      expect(last.getByTestId('usage-cost')).toHaveTextContent('com_ui_context_cost_last_turn');
+      expect(totals.getByTestId('usage-cost')).toHaveTextContent('com_ui_context_cost_branch');
+      expect(all.getByTestId('usage-cost')).toHaveTextContent('com_ui_context_cost_total');
     });
 
     it('exposes all-branches token differences without requiring cost coverage', async () => {
@@ -680,12 +679,12 @@ describe('TokenUsage Breakdown', () => {
       });
       await userEvent.click(toggle());
       expect(screen.getByTestId('token-usage-all-branches')).toHaveTextContent('25');
-      expect(screen.getByTestId('token-usage-cost')).toHaveTextContent(
-        'com_ui_context_cost_last_turn',
-      );
-      expect(screen.getByTestId('token-usage-cost')).not.toHaveTextContent(
-        'com_ui_context_cost_branch',
-      );
+      expect(
+        within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
+      ).toHaveTextContent('com_ui_context_cost_last_turn');
+      expect(
+        within(screen.getByTestId('token-usage-totals')).queryByTestId('usage-cost'),
+      ).not.toBeInTheDocument();
     });
 
     it('shows waiting and unavailable states without presenting old totals as the current turn', async () => {
@@ -728,9 +727,9 @@ describe('TokenUsage Breakdown', () => {
       expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
         'com_ui_context_current_turn',
       );
-      expect(screen.getByTestId('token-usage-cost')).toHaveTextContent(
-        'com_ui_context_cost_current_turn',
-      );
+      expect(
+        within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
+      ).toHaveTextContent('com_ui_context_cost_current_turn');
     });
 
     it('keeps a known zero cost and hides a missing cost', async () => {
@@ -753,12 +752,12 @@ describe('TokenUsage Breakdown', () => {
       expect(screen.getByTestId('token-usage-last-turn')).toHaveTextContent(
         'com_ui_context_last_turn',
       );
-      expect(screen.getByTestId('token-usage-cost')).toHaveTextContent(
-        'com_ui_context_cost_last_turn',
-      );
-      expect(screen.getByTestId('token-usage-cost')).not.toHaveTextContent(
-        'com_ui_context_cost_branch',
-      );
+      expect(
+        within(screen.getByTestId('token-usage-last-turn')).getByTestId('usage-cost'),
+      ).toHaveTextContent('com_ui_context_cost_last_turn');
+      expect(
+        within(screen.getByTestId('token-usage-totals')).queryByTestId('usage-cost'),
+      ).not.toBeInTheDocument();
     });
   });
 

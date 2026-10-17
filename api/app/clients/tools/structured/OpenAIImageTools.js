@@ -126,7 +126,7 @@ function createOpenAIImageTools(fields = {}) {
 
   /** The Image Gen picker passes the model the user chose; the env var is the
    *  default for deployments that offer only one. */
-  const imageModel = fields.imageModel || process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-1';
+  const imageModel = fields.imageModel || process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-2.5-flare';
 
   let baseURL = 'https://api.openai.com/v1/';
   if (!override && process.env.IMAGE_GEN_OAI_BASEURL) {

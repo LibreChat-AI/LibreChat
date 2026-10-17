@@ -10,6 +10,7 @@ module.exports = {
     './src/**/*.{js,jsx,ts,tsx}',
     // Include component library files
     '../packages/client/src/**/*.{js,jsx,ts,tsx}',
+    '../packages/chat/src/**/*.{js,jsx,ts,tsx}',
   ],
   // darkMode: 'class',
   darkMode: ['class'],

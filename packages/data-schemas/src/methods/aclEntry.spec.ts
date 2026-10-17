@@ -97,39 +97,6 @@ describe('AclEntry Model Tests', () => {
       expect(entry?.principalModel).toBeUndefined();
     });
 
-    test('should find entries by principal', async () => {
-      /** Create two different permissions for the same user */
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-        PermissionBits.VIEW,
-        grantedById,
-      );
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        'project',
-        new mongoose.Types.ObjectId(),
-        PermissionBits.EDIT,
-        grantedById,
-      );
-
-      /** Find all entries for the user */
-      const entries = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entries).toHaveLength(2);
-
-      /** Find entries filtered by resource type */
-      const agentEntries = await methods.findEntriesByPrincipal(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-      );
-      expect(agentEntries).toHaveLength(1);
-      expect(agentEntries[0].resourceType).toBe(ResourceType.AGENT);
-    });
-
     test('should find entries by resource', async () => {
       /** Grant permissions to different principals for the same resource */
       await methods.grantPermission(
@@ -205,6 +172,25 @@ describe('AclEntry Model Tests', () => {
         resourceId,
       );
       expect(entries).toHaveLength(2);
+    });
+
+    test('reads mutation snapshots from the primary even when a session is supplied', async () => {
+      const read = jest.spyOn(mongoose.Query.prototype, 'read');
+      const session = await mongoose.startSession();
+      try {
+        const entries = await methods.findEntriesByPrincipalsAndResource(
+          [{ principalType: PrincipalType.USER, principalId: userId }],
+          ResourceType.AGENT,
+          resourceId,
+          session,
+          true,
+        );
+        expect(entries).toHaveLength(1);
+        expect(read).toHaveBeenCalledWith('primary');
+      } finally {
+        read.mockRestore();
+        await session.endSession();
+      }
     });
 
     test('should check if user has permission', async () => {
@@ -293,35 +279,6 @@ describe('AclEntry Model Tests', () => {
   });
 
   describe('Permission Modification', () => {
-    test('should revoke permission', async () => {
-      /** Grant permission first */
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-        PermissionBits.VIEW,
-        grantedById,
-      );
-
-      /** Check it exists */
-      const entriesBefore = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entriesBefore).toHaveLength(1);
-
-      /** Revoke it */
-      const result = await methods.revokePermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-      );
-      expect(result.deletedCount).toBe(1);
-
-      /** Verify it's gone */
-      const entriesAfter = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entriesAfter).toHaveLength(0);
-    });
-
     test('should modify permission bits - add permissions', async () => {
       /** Start with VIEW permission */
       await methods.grantPermission(
@@ -457,32 +414,6 @@ describe('AclEntry Model Tests', () => {
       expect(entry?.principalModel).toBe(PrincipalModel.ROLE);
     });
 
-    test('should handle string principalId in revokePermission', async () => {
-      // First grant permission with ObjectId
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-        PermissionBits.VIEW,
-        grantedById,
-      );
-
-      // Then revoke with string ID
-      const result = await methods.revokePermission(
-        PrincipalType.USER,
-        userId.toString(), // Pass string
-        ResourceType.AGENT,
-        resourceId,
-      );
-
-      expect(result.deletedCount).toBe(1);
-
-      // Verify it's actually deleted
-      const entries = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entries).toHaveLength(0);
-    });
-
     test('should handle string principalId in modifyPermissionBits', async () => {
       // First grant permission with ObjectId
       await methods.grantPermission(
@@ -579,8 +510,11 @@ describe('AclEntry Model Tests', () => {
       );
 
       // Should still only be one entry
-      const entries = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entries).toHaveLength(1);
+      const entryCount = await AclEntry.countDocuments({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+      });
+      expect(entryCount).toBe(1);
     });
   });
 

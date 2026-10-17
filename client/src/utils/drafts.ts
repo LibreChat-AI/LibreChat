@@ -201,11 +201,6 @@ export const resolvePendingPasteInsertStart = (
   );
 };
 
-export const applyPendingPasteToDraft = (
-  draftText: string,
-  pendingPaste: PendingTextAttachmentDraft,
-): string => applyPendingPastesToDraft(draftText, [pendingPaste]);
-
 /** Replay leftover pre-deletion ranges, then insert paste text at rebased or anchored offsets. */
 export const applyPendingPastesToDraft = (
   draftText: string,

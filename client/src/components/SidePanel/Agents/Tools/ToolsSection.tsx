@@ -361,10 +361,10 @@ function SelectedSection({
   return (
     <div className="mb-3 flex flex-col">
       <div className="mb-1 flex items-center justify-between">
-        <label className="text-text-secondary block text-[11px] font-medium tracking-wide uppercase">
+        <label className="text-text-secondary text-2xs block font-medium tracking-wide uppercase">
           {title}
           {badge != null && (
-            <span className="bg-surface-tertiary text-text-secondary ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 text-[10px] font-medium tracking-normal normal-case">
+            <span className="bg-surface-tertiary text-text-secondary text-3xs ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 font-medium tracking-normal normal-case">
               {badge}
             </span>
           )}
@@ -387,7 +387,7 @@ function SelectedSection({
         >
           <Plus className="h-4 w-4" aria-hidden="true" />
           <span className="text-xs">{emptyLabel}</span>
-          <span className="text-text-secondary text-[11px]">{emptyHint}</span>
+          <span className="text-text-secondary text-2xs">{emptyHint}</span>
         </button>
       ) : (
         <ul className="flex flex-col gap-1.5">

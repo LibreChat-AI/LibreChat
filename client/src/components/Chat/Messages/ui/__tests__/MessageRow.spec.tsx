@@ -49,20 +49,35 @@ const renderRow = ({
   );
 
 describe('MessageRow', () => {
-  it('renders a system row on the user side as an outlined bubble under a visible heading', () => {
+  it('renders a system row in the transcript under a visible heading', () => {
     renderRow({ isCreatedByUser: true, systemLabel: 'System' });
 
     const row = screen.getByLabelText('User message');
     const messageSurface = screen.getByText(MESSAGE_BODY).parentElement;
     const heading = screen.getByRole('heading', { name: 'System' });
 
-    expect(row).toHaveClass('justify-end');
-    expect(row.querySelector('.user-turn')).toHaveClass('items-end');
-    expect(messageSurface).toHaveClass('border', 'border-border-medium', 'rounded-theme-surface');
+    expect(row).toHaveClass('items-start');
+    expect(row.querySelector('[data-system-turn]')).not.toHaveClass('items-end');
+    expect(messageSurface).toHaveClass('w-full');
     expect(messageSurface).not.toHaveClass('bg-surface-user-message');
     expect(heading).not.toHaveClass('sr-only');
     expect(screen.queryByText('You')).not.toBeInTheDocument();
     expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+  });
+
+  it('excludes System output from the assistant code shortcut selector', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+    expect(screen.getByLabelText('User message').querySelector('.agent-turn')).toBeNull();
+  });
+
+  it('keeps System events on the transcript side', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+    expect(screen.getByLabelText('User message')).not.toHaveClass('justify-end');
+  });
+
+  it('does not wrap System content in a user bubble', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+    expect(screen.getByTestId('message-body')).not.toHaveClass('border');
   });
 
   it('names another author of a user-side turn with the agent header, mirrored', () => {

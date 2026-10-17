@@ -28,14 +28,6 @@ export function setTimestamp(key: string): void {
 }
 
 /**
- * Set a value in localStorage with an associated timestamp
- */
-export function setTimestampedValue(key: string, value: any): void {
-  localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
-  localStorage.setItem(`${key}${TIMESTAMP_SUFFIX}`, Date.now().toString());
-}
-
-/**
  * Get a value from localStorage, checking if it has a valid timestamp
  * Returns null if the value is too old or has no timestamp
  */
@@ -57,14 +49,6 @@ export function getTimestampedValue(key: string): string | null {
   }
 
   return localStorage.getItem(key);
-}
-
-/**
- * Remove a value and its timestamp from localStorage
- */
-export function removeTimestampedValue(key: string): void {
-  localStorage.removeItem(key);
-  localStorage.removeItem(`${key}${TIMESTAMP_SUFFIX}`);
 }
 
 /**
@@ -111,30 +95,5 @@ export function cleanupTimestampedStorage(): void {
     keysToRemove.forEach((key) => localStorage.removeItem(key));
   } catch (error) {
     console.error('Error during cleanup of timestamped storage:', error);
-  }
-}
-
-/**
- * Migration function to add timestamps to existing entries
- * This ensures existing entries don't get immediately cleaned up
- */
-export function migrateExistingEntries(): void {
-  const now = Date.now().toString();
-
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (!key) continue;
-
-    const isTimestampedKey = TIMESTAMPED_KEYS.some((prefix) => key.startsWith(prefix));
-
-    if (isTimestampedKey && !key.endsWith(TIMESTAMP_SUFFIX)) {
-      const timestampKey = `${key}${TIMESTAMP_SUFFIX}`;
-      const hasTimestamp = localStorage.getItem(timestampKey);
-
-      if (!hasTimestamp) {
-        // Add timestamp to existing entry
-        localStorage.setItem(timestampKey, now);
-      }
-    }
   }
 }

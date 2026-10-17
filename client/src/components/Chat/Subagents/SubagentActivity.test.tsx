@@ -14,11 +14,6 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/components/Chat/Messages/Content/Parts/Text', () => ({
-  __esModule: true,
-  default: ({ text }: { text: string }) => <div>{text}</div>,
-}));
-
 jest.mock('~/components/Chat/Messages/Content/Parts', () => ({
   EmptyText: () => <div data-testid="thinking-cursor" />,
 }));

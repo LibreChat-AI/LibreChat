@@ -65,6 +65,7 @@ jobs:
               - '!**.md'
             eslint_config:
               - 'eslint.config.mjs'
+              - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
             # The recorded design-rule backlog is data the lint reads, not code it
             # lints, so a diff that only edits it matches no source file. Its own
@@ -76,6 +77,7 @@ jobs:
               - '**/eslint-suppressions.json'
               - 'client/src/**'
               - 'packages/client/src/**'
+              - 'packages/chat/src/**'
               # The bundle the rules resolve primitives through is named by the
               # library's manifest, produced by its build config and shaped by
               # its compiler options.
@@ -83,6 +85,9 @@ jobs:
               - 'packages/client/tsdown.config.mjs'
               - 'packages/client/tsconfig.json'
               - 'eslint.config.mjs'
+              # The local design rules: a change to what one reports changes
+              # every count it owns.
+              - 'scripts/eslint/**'
               # The plugin is a dependency: a bump changes what the rules
               # classify and a removal takes them with it, and neither touches a
               # source file.
@@ -92,8 +97,22 @@ jobs:
               # count is measured against, so a change to it has to run against
               # the record — the ESLint step above only ever sees sources.
               - 'scripts/static-checks.mts'
+              - 'scripts/diagnostics*.mts'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
+            # Stylesheets are outside the design lint, which reads JSX.
+            css_colors:
+              - 'client/src/**/*.css'
+              - 'packages/client/src/**/*.css'
+              - 'packages/chat/src/**/*.css'
+              - 'packages/client/src/theme/allowlist.md'
+              # The scanner parses with postcss: an upgrade changes what it reads.
+              - 'package.json'
+              - 'package-lock.json'
+              - 'scripts/css-colors.mts'
+              - 'scripts/css-colors.test.mts'
+              - 'scripts/static-checks.mts'
+              - '.github/workflows/static-checks.yml'
             config:
               - 'api/**'
               - 'config/**'
@@ -106,6 +125,7 @@ jobs:
               - 'api/**'
               - 'client/src/**'
               - 'packages/client/**'
+              - 'packages/chat/src/**'
               - 'packages/data-provider/src/**'
               - 'packages/data-schemas/src/**'
               - '.github/workflows/static-checks.yml'
@@ -119,6 +139,7 @@ jobs:
               - 'client/**'
               - 'packages/api/**'
               - 'packages/client/**'
+              - 'packages/chat/**'
               # Every workspace manifest the JSON validation step covers, plus
               # the ones whose dependencies feed the unused-package calculation
               # through api/package.json's @librechat/data-schemas entry.
@@ -295,6 +316,7 @@ jobs:
         run: |
           node_modules/.bin/eslint --config eslint.config.mjs \
             api/server/index.js client/src/main.jsx packages/api/src/index.ts
+          node --test scripts/eslint/design.test.mjs scripts/eslint/chat.test.mjs
 
       - name: Validate the design-rule suppressions baseline
         id: suppressions
@@ -309,6 +331,14 @@ jobs:
           # the diff rather than one file name.
           BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --only suppressions
+
+      - name: Check CSS colour literals
+        id: css_colors
+        if: always() && steps.paths.outputs.css_colors == 'true'
+        continue-on-error: true
+        run: |
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          node scripts/static-checks.mts --against "$BASE_SHA" --only css-colors
 
       - name: Restore data-provider build cache
         if: always() && steps.paths.outputs.config == 'true'
@@ -404,7 +434,7 @@ jobs:
         if: always() && steps.paths.outputs.unused_packages == 'true'
         continue-on-error: true
         run: |
-          for FILE in package.json client/package.json api/package.json packages/api/package.json packages/client/package.json packages/data-provider/package.json packages/data-schemas/package.json; do
+          for FILE in package.json client/package.json api/package.json packages/api/package.json packages/client/package.json packages/chat/package.json packages/data-provider/package.json packages/data-schemas/package.json; do
             if [[ -f "$FILE" ]]; then
               jq empty "$FILE" || (echo "::error title=Invalid JSON::$FILE is invalid" && exit 1)
             fi
@@ -636,12 +666,28 @@ jobs:
             cd ..
           fi
 
+      - name: Run depcheck for packages/chat/package.json
+        if: always() && steps.paths.outputs.unused_packages == 'true'
+        id: check-chat
+        continue-on-error: true
+        run: |
+          if [[ -f "packages/chat/package.json" ]]; then
+            cd packages/chat
+            UNUSED=$(depcheck --json | jq -r '.dependencies | join("\n")' || echo "")
+            # Exclude dependencies the package's own scripts invoke
+            UNUSED=$(comm -23 <(echo "$UNUSED" | sort) <(jq -r '.scripts // {} | .[]' package.json | tr ' ' '\n' | sort -u) || echo "")
+            echo "CHAT_UNUSED<<EOF" >> $GITHUB_ENV
+            echo "$UNUSED" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            cd ../..
+          fi
+
       - name: Fail workflow if unused dependencies found
         id: unused_packages
         if: >
           always() &&
           steps.paths.outputs.unused_packages == 'true' &&
-          (env.ROOT_UNUSED != '' || env.CLIENT_UNUSED != '' || env.API_UNUSED != '')
+          (env.ROOT_UNUSED != '' || env.CLIENT_UNUSED != '' || env.API_UNUSED != '' || env.CHAT_UNUSED != '')
         continue-on-error: true
         run: exit 1
 
@@ -653,6 +699,7 @@ jobs:
           ESLINT_CONFIG_OUTCOME: ${{ steps.eslint_config.outcome }}
           DESIGN_RULES_BUILD_OUTCOME: ${{ steps.design_rules_build.outcome }}
           SUPPRESSIONS_OUTCOME: ${{ steps.suppressions.outcome }}
+          CSS_COLORS_OUTCOME: ${{ steps.css_colors.outcome }}
           PRETTIER_OUTCOME: ${{ steps.prettier.outcome }}
           IMPORT_SORT_OUTCOME: ${{ steps.import_sort.outcome }}
           RUNNER_OUTCOME: ${{ steps.runner.outcome }}
@@ -677,6 +724,7 @@ jobs:
           CHECK_ROOT_OUTCOME: ${{ steps.check-root.outcome }}
           CHECK_CLIENT_OUTCOME: ${{ steps.check-client.outcome }}
           CHECK_API_OUTCOME: ${{ steps.check-api.outcome }}
+          CHECK_CHAT_OUTCOME: ${{ steps.check-chat.outcome }}
           UNUSED_PACKAGES_OUTCOME: ${{ steps.unused_packages.outcome }}
         run: |
           failures=()
@@ -692,6 +740,7 @@ jobs:
           record_failure "ESLint config validation" "$ESLINT_CONFIG_OUTCOME"
           record_failure "Client-package build for the design rules" "$DESIGN_RULES_BUILD_OUTCOME"
           record_failure "Design-rule suppressions" "$SUPPRESSIONS_OUTCOME"
+          record_failure "CSS colour literals" "$CSS_COLORS_OUTCOME"
           record_failure "Prettier" "$PRETTIER_OUTCOME"
           record_failure "Import sorting" "$IMPORT_SORT_OUTCOME"
           record_failure "Local static-checks runner" "$RUNNER_OUTCOME"
@@ -716,12 +765,14 @@ jobs:
           record_failure "Root depcheck" "$CHECK_ROOT_OUTCOME"
           record_failure "Client depcheck" "$CHECK_CLIENT_OUTCOME"
           record_failure "API depcheck" "$CHECK_API_OUTCOME"
+          record_failure "Chat depcheck" "$CHECK_CHAT_OUTCOME"
           record_failure "Unused NPM packages" "$UNUSED_PACKAGES_OUTCOME"
 
           if [[ "$UNUSED_PACKAGES_OUTCOME" == "failure" ]]; then
             [[ -n "$ROOT_UNUSED" ]] && printf 'Root unused dependencies:\n%s\n' "$ROOT_UNUSED"
             [[ -n "$CLIENT_UNUSED" ]] && printf 'Client unused dependencies:\n%s\n' "$CLIENT_UNUSED"
             [[ -n "$API_UNUSED" ]] && printf 'API unused dependencies:\n%s\n' "$API_UNUSED"
+            [[ -n "$CHAT_UNUSED" ]] && printf 'Chat unused dependencies:\n%s\n' "$CHAT_UNUSED"
           fi
 
           if [[ ${#failures[@]} -eq 0 ]]; then
@@ -759,6 +810,7 @@ jobs:
           filters: |
             eslint_config:
               - 'eslint.config.mjs'
+              - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
 
       - name: Set up Node.js 24.16.0

@@ -41,6 +41,7 @@ const handlers = createAdminLangfuseHandlers({
   toggleConfigActive: db.toggleConfigActive,
   getMessages: db.getMessages,
   invalidateConfigCaches,
+  recordAuditEntry: db.recordAuditEntry,
 });
 
 // `configMiddleware` runs last so unauthorized callers are rejected before the

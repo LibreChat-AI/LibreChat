@@ -69,7 +69,7 @@ export default function AskOptions({
           >
             <span
               className={cn(
-                'flex size-5 shrink-0 items-center justify-center rounded-md text-[11px] font-medium tabular-nums',
+                'text-2xs flex size-5 shrink-0 items-center justify-center rounded-md font-medium tabular-nums',
                 isChecked
                   ? 'bg-surface-submit text-text-on-status'
                   : 'bg-surface-tertiary text-text-secondary',

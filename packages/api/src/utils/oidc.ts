@@ -303,19 +303,3 @@ export function processOpenIDPlaceholders(
 
   return processedValue;
 }
-
-export function createBearerAuthHeader(tokenInfo: OpenIDTokenInfo | null): string {
-  if (!tokenInfo || !tokenInfo.accessToken) {
-    return '';
-  }
-
-  return `Bearer ${tokenInfo.accessToken}`;
-}
-
-export function isOpenIDAvailable(): boolean {
-  const openidClientId = process.env.OPENID_CLIENT_ID;
-  const openidClientSecret = process.env.OPENID_CLIENT_SECRET;
-  const openidIssuer = process.env.OPENID_ISSUER;
-
-  return !!(openidClientId && openidClientSecret && openidIssuer);
-}

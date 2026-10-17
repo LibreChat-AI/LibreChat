@@ -75,6 +75,18 @@ describe('loadDefaultInterface', () => {
     expect(configuredInterface?.queuedTurnReconciliationTimeoutMs).toBe(180_000);
   });
 
+  it('allows the mascot by default and preserves an explicit opt-out', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({ config: {}, configDefaults });
+    expect(defaultInterface?.mascot).toBe(true);
+
+    const disabledInterface = await loadDefaultInterface({
+      config: { interface: { mascot: false } },
+      configDefaults,
+    });
+    expect(disabledInterface?.mascot).toBe(false);
+  });
+
   it('uses and preserves the schema default for the queued-send lock expiry', async () => {
     const configDefaults = getConfigDefaults();
     const defaultInterface = await loadDefaultInterface({
@@ -155,6 +167,20 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.autoSubmitFromUrl).toBe(false);
+  });
+
+  it('keeps the colour-mode URL handoff off unless configured', async () => {
+    const unset = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+    const enabled = await loadDefaultInterface({
+      config: { interface: { colorModeFromUrl: true } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(unset?.colorModeFromUrl).toBe(false);
+    expect(enabled?.colorModeFromUrl).toBe(true);
   });
 
   it('preserves a disabled build info flag', async () => {
@@ -457,5 +483,25 @@ describe('running chat rename deployment fence', () => {
       configDefaults,
     });
     expect(interfaceConfig?.runningChatRename).toBe(expected);
+  });
+});
+
+describe('welcome screen heading and footer', () => {
+  it('keeps the entity heading and the full footer by default', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.landingHeading).toBe('entity');
+    expect(interfaceConfig?.landingFooter).toBe(true);
+  });
+
+  it('copies the configured settings through', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { landingHeading: 'greeting', landingFooter: false } },
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.landingHeading).toBe('greeting');
+    expect(interfaceConfig?.landingFooter).toBe(false);
   });
 });

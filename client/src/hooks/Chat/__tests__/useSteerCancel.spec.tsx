@@ -1,17 +1,23 @@
 import React from 'react';
-import { useAtomValue } from 'jotai';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import { RecoilRoot } from 'recoil';
+import { useAtomValue, getDefaultStore } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
 import { ReasoningEffort } from 'librechat-data-provider';
+import {
+  activeGenerationCreatedAtByConvoId,
+  pendingSteersByConvoId,
+  resetSteerFamilies,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
 import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
 import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   ComposerRestoreProvider,
   useComposerRestoreHost,
 } from '~/Providers/ComposerRestoreContext';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import useSteerCancel, { useSteerMoveToQueue } from '../useSteerCancel';
-import store from '~/store';
+import '~/Providers/SteerHostContext';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 
 const mockCancelAsync = jest.fn();
 
@@ -39,9 +45,9 @@ const pending = (overrides: Partial<PendingSteer> = {}): PendingSteer => ({
 function setup(steer: PendingSteer) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot
-      initializeState={({ set }) => {
-        set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 100);
-        set(store.pendingSteersByConvoId(CONVO_ID), [steer]);
+      initializeState={() => {
+        getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), 100);
+        getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [steer]);
       }}
     >
       {children}
@@ -50,14 +56,17 @@ function setup(steer: PendingSteer) {
   return renderHook(
     () => ({
       moveToQueue: useSteerMoveToQueue(CONVO_ID),
-      chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
+      chips: useAtomValue(pendingSteersByConvoId(CONVO_ID)),
       queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
     }),
     { wrapper },
   );
 }
 
-beforeEach(() => resetQueueFamilies());
+beforeEach(() => {
+  resetQueueFamilies();
+  resetSteerFamilies();
+});
 
 describe('useSteerMoveToQueue', () => {
   beforeEach(() => {
@@ -115,9 +124,9 @@ describe('useSteerMoveToQueue', () => {
     const steer = pending();
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <RecoilRoot
-        initializeState={({ set }) => {
-          set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 100);
-          set(store.pendingSteersByConvoId(CONVO_ID), [steer]);
+        initializeState={() => {
+          getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), 100);
+          getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [steer]);
         }}
       >
         <ComposerRestoreProvider>
@@ -197,9 +206,9 @@ function setupCancel(
 ) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot
-      initializeState={({ set }) => {
-        set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 100);
-        set(store.pendingSteersByConvoId(CONVO_ID), [steer]);
+      initializeState={() => {
+        getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), 100);
+        getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [steer]);
       }}
     >
       <ComposerRestoreProvider>
@@ -212,7 +221,7 @@ function setupCancel(
   return renderHook(
     () => ({
       cancel: useSteerCancel(CONVO_ID),
-      chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
+      chips: useAtomValue(pendingSteersByConvoId(CONVO_ID)),
       queue: useAtomValue(queuedMessagesByConvoId(CONVO_ID)),
     }),
     { wrapper },

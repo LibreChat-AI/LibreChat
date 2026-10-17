@@ -12,11 +12,8 @@ import {
   mergeChildConversationTurns,
   retainBoundedMovingWindowTurns,
 } from './adapters';
-import {
-  aggregateSubagentContent,
-  initSubagentAggregatorState,
-  initSubagentTickerState,
-} from '~/utils/subagentContent';
+import { initSubagentAggregatorState, initSubagentTickerState } from '~/utils/subagentContent';
+import { aggregateSubagentContent } from 'test/subagents';
 
 describe('child activity adapters', () => {
   it('passes child dispatch and completed durations to the generic tool card', () => {

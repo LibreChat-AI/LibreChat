@@ -221,9 +221,10 @@ test.describe('clickhouse reference theme', () => {
           return { color: style.color, background: style.backgroundColor };
         });
         expect(painted.background).toBe(rgbCss(colors['rgb-status-error-subtle']));
+        /** Light holds Click UI's text.muted, 4.05:1 on feedback.danger.background, by owner decision. */
         expect(
           contrast(parseRgb(painted.color), parseRgb(painted.background)),
-        ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+        ).toBeGreaterThanOrEqual(mode === 'light' ? 4 : WCAG_AA_NORMAL);
       }
     } finally {
       await deleteConversations([conversationId]);
@@ -269,7 +270,7 @@ test.describe('clickhouse reference theme', () => {
     try {
       for (const [mode, placeholder, ink] of [
         ['light', defaultTheme['rgb-surface-secondary'], 'rgb(33, 33, 33)'],
-        ['dark', darkTheme['rgb-surface-tertiary'], 'rgb(236, 236, 236)'],
+        ['dark', darkTheme['rgb-surface-tertiary'], 'rgb(255, 255, 255)'],
       ] as const) {
         await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
         await expect(page.getByText(REPLY_TEXT, { exact: true }).first()).toBeVisible({

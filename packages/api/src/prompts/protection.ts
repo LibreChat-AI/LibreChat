@@ -113,17 +113,6 @@ function projectStoredPromptWithPolicy<T extends PromptRecordInput>(
   };
 }
 
-/** Reapplies current prompt policy while retaining structural management fields. */
-export function projectStoredPrompt<T extends PromptRecordInput>(
-  prompt: T,
-  filters?: FiltersConfig,
-): ProjectedStoredPrompt<T> {
-  if (filters == null || !hasPromptPolicy(filters)) {
-    return prompt;
-  }
-  return projectStoredPromptWithPolicy(prompt, filters);
-}
-
 /** Projects stored prompts in one pass under the current prompt policy. */
 export function projectStoredPrompts<T extends PromptRecordInput>(
   prompts: readonly T[],
@@ -239,22 +228,6 @@ function projectStoredPresetWithPolicy<T extends PresetContentInput>(
     title: '',
     contentFilterBlocked: true,
   };
-}
-
-/** Reapplies prompt and model-parameter policy to stored presets. */
-export function projectStoredPreset<T extends PresetContentInput>(
-  preset: T,
-  filters?: FiltersConfig,
-): ProjectedStoredPreset<T> {
-  if (filters == null) {
-    return preset;
-  }
-  const inspectPrompt = hasPromptPolicy(filters);
-  const inspectModelParameters = hasModelParameterPolicy(filters);
-  if (!inspectPrompt && !inspectModelParameters) {
-    return preset;
-  }
-  return projectStoredPresetWithPolicy(preset, filters, inspectPrompt, inspectModelParameters);
 }
 
 /** Projects stored presets in one pass under the current prompt/model policy. */

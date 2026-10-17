@@ -4,7 +4,6 @@ import {
   VerifyEmail,
   Registration,
   ResetPassword,
-  ApiErrorWatcher,
   TwoFactorScreen,
   TwoFactorSetupScreen,
   RequestPasswordReset,
@@ -28,7 +27,6 @@ const AuthLayout = () => (
     <WithRum>
       <Outlet />
     </WithRum>
-    <ApiErrorWatcher />
   </AuthContextProvider>
 );
 

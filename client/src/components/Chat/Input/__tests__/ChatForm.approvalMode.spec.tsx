@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
+import { getDefaultStore, useAtom } from 'jotai';
+import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
-import { RecoilRoot, useRecoilState } from 'recoil';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { render, screen } from '@testing-library/react';
 import { BrowserRouter as Router } from 'react-router-dom';
@@ -13,7 +15,7 @@ import type { ChatFormValues } from '~/common';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import ChatForm from '../ChatForm';
-import store from '~/store';
+import '~/Providers/SteerHostContext';
 
 jest.mock('~/hooks/Agents/useCodeApprovalMode', () => ({
   __esModule: true,
@@ -33,8 +35,8 @@ const conversation = {
 } as TConversation;
 
 function Harness() {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
 
@@ -58,8 +60,6 @@ function Harness() {
         ask: () => undefined,
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
-        showPopover: false,
-        setShowPopover: () => undefined,
         abortScroll: false,
         setAbortScroll: () => undefined,
         preset: null,
@@ -90,7 +90,7 @@ function renderComposer({ submitting }: { submitting: boolean }) {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot initializeState={({ set }) => set(store.isSubmittingFamily(0), submitting)}>
+      <RecoilRoot initializeState={() => getDefaultStore().set(isSubmittingFamily(0), submitting)}>
         <Router>
           <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
             <DndProvider backend={HTML5Backend}>
@@ -102,6 +102,11 @@ function renderComposer({ submitting }: { submitting: boolean }) {
     </QueryClientProvider>,
   );
 }
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+  getDefaultStore().set(filesFamily(0), new Map());
+});
 
 describe('ChatForm code approval mode', () => {
   beforeEach(() => {

@@ -3,7 +3,6 @@ import type { FileConfig } from 'librechat-data-provider';
 import {
   getViableUploadOptions,
   resolvePastedTextFile,
-  isPastedTextFilename,
   nextPastedTextFilename,
   PASTE_AS_FILE_MIN_LENGTH,
   PASTED_TEXT_FILENAME,
@@ -203,8 +202,8 @@ describe('resolvePastedTextFile', () => {
   });
 });
 
-describe('isPastedTextFilename', () => {
-  it('accepts every name the paste flow generates', () => {
+describe('nextPastedTextFilename', () => {
+  it('starts at the bare name and counts from 2', () => {
     const attachedFilenames = new Set<string>();
     const generated = Array.from({ length: 4 }, () => {
       const name = nextPastedTextFilename(attachedFilenames);
@@ -218,26 +217,5 @@ describe('isPastedTextFilename', () => {
       'pasted-text-3.txt',
       'pasted-text-4.txt',
     ]);
-    expect(generated.every(isPastedTextFilename)).toBe(true);
-    /** The counter has no ceiling: a busy composer reaches double digits. */
-    expect(isPastedTextFilename('pasted-text-10.txt')).toBe(true);
-  });
-
-  it.each([
-    ['a deliberate upload that merely mentions pasting', 'my-pasted-text.txt'],
-    ['a different extension', 'pasted-text.md'],
-    ['a suffix that is not a paste number', 'pasted-text-final.txt'],
-    ['a name with the marker in the middle', 'notes-pasted-text.txt'],
-    ['a counter the generator never produces', 'pasted-text-1.txt'],
-    ['a zero counter the generator never produces', 'pasted-text-0.txt'],
-    ['a zero-padded counter the generator never produces', 'pasted-text-02.txt'],
-    ['an empty name', ''],
-  ])('rejects %s', (_label, filename) => {
-    expect(isPastedTextFilename(filename)).toBe(false);
-  });
-
-  it('rejects a missing name rather than throwing', () => {
-    expect(isPastedTextFilename(undefined)).toBe(false);
-    expect(isPastedTextFilename(null)).toBe(false);
   });
 });

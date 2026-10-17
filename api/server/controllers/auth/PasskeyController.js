@@ -20,4 +20,5 @@ module.exports = createPasskeyHandlers({
   findPasskeysByUser: db.findPasskeysByUser,
   countPasskeysByUser: db.countPasskeysByUser,
   findPasskeyByCredentialId: db.findPasskeyByCredentialId,
+  recordAuditEntry: db.recordAuditEntry,
 });

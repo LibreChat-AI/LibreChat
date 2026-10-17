@@ -66,13 +66,15 @@ export default function Background({ toolIds, switchId, labelKey, infoKey }: Pro
         <div className="flex items-center space-x-2">
           <div className="text-sm">{localize(labelKey)}</div>
           <HoverCardTrigger>
-            <CircleHelpIcon className="h-4 w-4 text-text-tertiary" />
+            <span className="text-text-tertiary">
+              <CircleHelpIcon className="h-4 w-4" />
+            </span>
           </HoverCardTrigger>
         </div>
         <HoverCardPortal>
           <HoverCardContent side={ESide.Top} className="w-80">
             <div className="space-y-2">
-              <p className="text-sm text-text-secondary">{localize(infoKey)}</p>
+              <p className="text-text-secondary text-sm">{localize(infoKey)}</p>
             </div>
           </HoverCardContent>
         </HoverCardPortal>

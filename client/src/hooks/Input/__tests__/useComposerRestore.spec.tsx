@@ -1,14 +1,15 @@
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import { ReasoningEffort } from 'librechat-data-provider';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import type { TMessage } from 'librechat-data-provider';
-import type { MutableSnapshot } from 'recoil';
 import type { ExtendedFile } from '~/common';
-import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
+import {
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
+  pendingReasoningOverrideFamily,
+} from '~/components/Chat/Input/Composer/state';
 import useComposerRestore from '../useComposerRestore';
-import store from '~/store';
 
 /**
  * The guarded restore is the one path in the composer that can destroy text
@@ -36,7 +37,7 @@ function setup({
   files?: Map<string, ExtendedFile>;
   answerModeActive?: boolean;
   reasoningOverride?: TMessage['reasoningOverride'];
-  initialize?: (snapshot: MutableSnapshot) => void;
+  initialize?: (jotaiStore: ReturnType<typeof createStore>) => void;
 } = {}) {
   let text = draft;
   const setFiles = jest.fn();
@@ -49,10 +50,9 @@ function setup({
   const textAreaRef = { current: { focus: jest.fn() } };
   const reasoningStore = createStore();
   reasoningStore.set(pendingReasoningOverrideFamily(conversationId), reasoningOverride);
+  initialize?.(reasoningStore);
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <JotaiProvider store={reasoningStore}>
-      <RecoilRoot initializeState={initialize}>{children}</RecoilRoot>
-    </JotaiProvider>
+    <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
   );
   const view = renderHook(
     (props: { conversationId: string; answerModeActive: boolean }) =>
@@ -120,13 +120,13 @@ describe('useComposerRestore', () => {
     it.each([
       [
         'a quote',
-        (snapshot: MutableSnapshot) =>
-          snapshot.set(store.pendingQuotesByConvoId(CONVO_ID), ['an excerpt']),
+        (jotaiStore: ReturnType<typeof createStore>) =>
+          jotaiStore.set(pendingQuotesByConvoId(CONVO_ID), ['an excerpt']),
       ],
       [
         'a skill pick',
-        (snapshot: MutableSnapshot) =>
-          snapshot.set(store.pendingManualSkillsByConvoId(CONVO_ID), ['writer']),
+        (jotaiStore: ReturnType<typeof createStore>) =>
+          jotaiStore.set(pendingManualSkillsByConvoId(CONVO_ID), ['writer']),
       ],
     ])('refuses when %s is staged', (_label, initialize) => {
       const { result } = setup({ initialize });

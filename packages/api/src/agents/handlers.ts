@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
 import { Types } from 'mongoose';
-import { GraphEvents, Constants, ToolEndHandler } from '@librechat/agents';
+import { Constants, ToolEndHandler } from '@librechat/agents';
 import {
   logger,
   normalizeSkillFrontmatterKeys,
@@ -3836,6 +3836,9 @@ async function writeBundledSkillFile({
           ? `File already exists: ${displayPath}. Re-read it and pass overwrite: true to replace.`
           : `Skill file changed while editing. Re-read ${displayPath} and retry.`,
       );
+    }
+    if (error instanceof Error && 'code' in error && error.code === 'SKILL_DELETING') {
+      return errorResult(tc, `Skill is being deleted. Re-read ${displayPath} before retrying.`);
     }
     throw error;
   }
@@ -7858,17 +7861,5 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
         reject(outerError as Error);
       }
     },
-  };
-}
-
-/**
- * Creates a handlers object that includes ON_TOOL_EXECUTE.
- * Can be merged with other handler objects.
- */
-export function createToolExecuteHandlers(
-  options: ToolExecuteOptions,
-): Record<string, EventHandler> {
-  return {
-    [GraphEvents.ON_TOOL_EXECUTE]: createToolExecuteHandler(options),
   };
 }

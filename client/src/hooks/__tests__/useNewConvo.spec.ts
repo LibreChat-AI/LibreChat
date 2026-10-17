@@ -1,9 +1,11 @@
+import { getDefaultStore } from 'jotai';
+import { filesFamily } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
+import type { ExtendedFile } from '~/common';
 
 const mockDeleteFiles = jest.fn();
-const mockSetFiles = jest.fn();
 const mockRemoveTabAttachmentPresence = jest.fn();
 const mockCollectForeignAttachmentClaims = jest.fn(
   (_excludeDraftIds: string[], _excludeOwnPane?: number | 'tab') => new Set(mockForeignClaims),
@@ -38,7 +40,6 @@ jest.mock('~/Providers/ChatSettingsContext', () => ({
 }));
 
 jest.mock('recoil', () => ({
-  useRecoilState: () => [mockFiles, mockSetFiles],
   useRecoilValue: (key: string) => {
     if (key === 'saveBadgesState') {
       return true;
@@ -98,7 +99,6 @@ jest.mock('../Assistants/useAssistantListMap', () => ({
   default: () => ({}),
 }));
 jest.mock('../Files/useFileHandling', () => ({ clearUploadRecovery: jest.fn() }));
-jest.mock('../useChatBadges', () => ({ useResetChatBadges: () => jest.fn() }));
 jest.mock('../Agents', () => ({ useApplyModelSpecEffects: () => jest.fn() }));
 jest.mock('../Audio', () => ({ usePauseGlobalAudio: () => ({ pauseGlobalAudio: jest.fn() }) }));
 jest.mock('~/Providers', () => ({ useAgentsMapContext: () => ({}) }));
@@ -108,8 +108,6 @@ jest.mock('~/store', () => ({
   default: {
     defaultPreset: 'defaultPreset',
     saveBadgesState: 'saveBadgesState',
-    filesByIndex: () => 'filesByIndex',
-    submissionByIndex: () => 'submissionByIndex',
     useClearConvoState: () => jest.fn(),
     useSetConversationAtom: () => ({ setConversation: jest.fn() }),
   },
@@ -183,6 +181,10 @@ describe('useNewConvo reset cleanup', () => {
       filepath: '/uploads/own-file.txt',
       source: 'local',
     });
+    /** The hook reads the real pane atom, so each pane a test renders starts on this map. */
+    for (const index of [0, 2]) {
+      getDefaultStore().set(filesFamily(index), mockFiles as Map<string, ExtendedFile>);
+    }
   });
 
   it('does not delete a file claimed by another tab but deletes an unclaimed file', () => {

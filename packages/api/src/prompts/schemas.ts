@@ -66,17 +66,6 @@ export const updatePromptGroupSchema: z.ZodObject<
 export type TUpdatePromptGroupSchema = z.infer<typeof updatePromptGroupSchema>;
 
 /**
- * Validates and sanitizes a prompt group update payload.
- * Returns only the allowed fields, stripping any sensitive fields.
- * @param data - The raw request body to validate
- * @returns The validated and sanitized payload
- * @throws ZodError if validation fails
- */
-export function validatePromptGroupUpdate(data: unknown): TUpdatePromptGroupSchema {
-  return updatePromptGroupSchema.parse(data);
-}
-
-/**
  * Safely validates a prompt group update payload without throwing.
  * @param data - The raw request body to validate
  * @returns A SafeParseResult with either the validated data or validation errors

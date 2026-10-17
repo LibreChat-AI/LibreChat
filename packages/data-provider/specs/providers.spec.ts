@@ -3,10 +3,8 @@ import {
   resolveProviderId,
   resolveModelCatalogKey,
   endpointToProvider,
-  knownEndpointToProvider,
 } from '../src/providers';
 import { EModelEndpoint, Providers } from '../src/schemas';
-import { KnownEndpoints } from '../src/config';
 
 describe('ProviderId', () => {
   it('declares every value as its own lowercase key', () => {
@@ -72,13 +70,6 @@ describe('mapping tables', () => {
     expect(endpointToProvider[EModelEndpoint.assistants]).toBeUndefined();
     expect(endpointToProvider[EModelEndpoint.azureAssistants]).toBeUndefined();
     expect(endpointToProvider[EModelEndpoint.custom]).toBeUndefined();
-  });
-
-  it('covers every KnownEndpoints value', () => {
-    for (const known of Object.values(KnownEndpoints)) {
-      expect(knownEndpointToProvider[known]).toBeDefined();
-    }
-    expect(knownEndpointToProvider[KnownEndpoints['together.ai']]).toBe(ProviderId.together);
   });
 });
 

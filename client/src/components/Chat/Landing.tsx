@@ -13,7 +13,7 @@ import AgentContact from '~/components/Agents/AgentContact';
 import ConvoIcon from '~/components/Endpoints/ConvoIcon';
 
 const containerClassName =
-  'shadow-stroke relative flex h-full items-center justify-center rounded-full bg-presentation text-text-primary dark:after:shadow-none ';
+  'relative flex h-full items-center justify-center rounded-full bg-presentation text-text-primary';
 
 /** Stable references: fresh literals re-initialized SplitText's springs and
  * re-rendered every grapheme span on each Landing render. */
@@ -64,7 +64,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
     });
   }, [conversation?.endpoint, conversation?.iconURL, endpointsConfig]);
 
-  const { entity, isAgent, isAssistant } = getEntity({
+  const { entity, isAgent } = getEntity({
     endpoint: endpointType,
     agentsMap,
     assistantMap,
@@ -79,7 +79,10 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
 
   const brandedSpecLabel = modelSpec?.showOnLanding ? modelSpec.label : '';
   const brandedSpecDescription = (modelSpec?.showOnLanding && modelSpec.description) || '';
-  const name = isTemporary ? '' : (entity?.name ?? brandedSpecLabel);
+  const name =
+    isTemporary || startupConfig?.interface?.landingHeading === 'greeting'
+      ? ''
+      : (entity?.name ?? brandedSpecLabel);
   const description = isTemporary
     ? localize('com_ui_temporary_description')
     : ((entity?.description || brandedSpecDescription || conversation?.greeting) ?? '');
@@ -143,22 +146,24 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
           className={`flex ${textHasMultipleLines ? 'flex-col' : 'flex-col md:flex-row'} items-center justify-center gap-2`}
         >
           <div className={`relative size-10 justify-center ${textHasMultipleLines ? 'mb-2' : ''}`}>
-            {isTemporary ? (
-              <div className={containerClassName}>
-                <HatGlasses className="text-text-primary h-2/3 w-2/3" aria-hidden="true" />
-              </div>
-            ) : (
-              <ConvoIcon
-                agentsMap={agentsMap}
-                assistantMap={assistantMap}
-                conversation={conversation}
-                endpointsConfig={endpointsConfig}
-                containerClassName={containerClassName}
-                context="landing"
-                className="text-text-primary h-2/3 w-2/3"
-                size={41}
-              />
-            )}
+            <div className="avatar-stroke size-full rounded-full dark:after:shadow-none">
+              {isTemporary ? (
+                <div className={containerClassName}>
+                  <HatGlasses className="text-text-primary h-2/3 w-2/3" aria-hidden="true" />
+                </div>
+              ) : (
+                <ConvoIcon
+                  agentsMap={agentsMap}
+                  assistantMap={assistantMap}
+                  conversation={conversation}
+                  endpointsConfig={endpointsConfig}
+                  containerClassName={containerClassName}
+                  context="landing"
+                  className="text-text-primary h-2/3 w-2/3"
+                  size={41}
+                />
+              )}
+            </div>
             {startupConfig?.showBirthdayIcon && (
               <TooltipAnchor
                 className="absolute right-2 bottom-[1.6875rem]"
@@ -169,7 +174,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
               </TooltipAnchor>
             )}
           </div>
-          {((isAgent || isAssistant) && name) || name ? (
+          {name ? (
             <div className="flex flex-col items-center gap-0 p-2">
               <SplitText
                 key={`split-text-${name}`}

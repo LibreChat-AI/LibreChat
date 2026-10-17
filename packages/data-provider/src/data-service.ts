@@ -297,10 +297,6 @@ export function getUserBalance(): Promise<t.TBalanceResponse> {
   return request.get(endpoints.balance());
 }
 
-export const updateTokenCount = (text: string) => {
-  return request.post(endpoints.tokenizer(), { arg: text });
-};
-
 export const login = (payload: t.TLoginUser): Promise<t.TLoginResponse> => {
   return request.post(endpoints.login(), payload);
 };
@@ -315,10 +311,6 @@ export const register = (payload: t.TRegisterUser) => {
 
 export const userKeyQuery = (name: string): Promise<t.TCheckUserKeyResponse> =>
   request.get(endpoints.userKeyQuery(name));
-
-export const getLoginGoogle = () => {
-  return request.get(endpoints.loginGoogle());
-};
 
 export const requestPasswordReset = (
   payload: t.TRequestPasswordReset,
@@ -352,10 +344,6 @@ export const resendVerificationEmail = (
   return request.post(endpoints.resendVerificationEmail(), payload);
 };
 
-export const getAvailablePlugins = (): Promise<s.TPlugin[]> => {
-  return request.get(endpoints.plugins());
-};
-
 export const updateUserPlugins = (payload: t.TUpdateUserPlugins) => {
   return request.post(endpoints.userPlugins(), payload);
 };
@@ -374,12 +362,6 @@ export const bindActionOAuth = (actionId: string): Promise<{ success: boolean }>
 
 export const getMCPConnectionStatus = (): Promise<q.MCPConnectionStatusResponse> => {
   return request.get(endpoints.mcpConnectionStatus());
-};
-
-export const getMCPServerConnectionStatus = (
-  serverName: string,
-): Promise<q.MCPServerConnectionStatusResponse> => {
-  return request.get(endpoints.mcpServerConnectionStatus(serverName));
 };
 
 export const getMCPAuthValues = (serverName: string): Promise<q.MCPAuthValuesResponse> => {
@@ -416,6 +398,12 @@ export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {
 
 export const getTokenConfig = (): Promise<t.TTokenConfigMap> => {
   return request.get(endpoints.tokenConfig());
+};
+
+export const getReasoningCapabilities = (
+  endpoint: string,
+): Promise<t.TReasoningCapabilitiesResponse> => {
+  return request.get(endpoints.reasoningCapabilities(endpoint));
 };
 
 export const getModels = async (): Promise<t.TModelsConfig> => {
@@ -1013,10 +1001,6 @@ export const listConversations = (
   return request.get(endpoints.conversations(params ?? {}));
 };
 
-export function getConversations(cursor: string): Promise<t.TGetConversationsResponse> {
-  return request.get(endpoints.conversations({ cursor }));
-}
-
 export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
   return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
 }
@@ -1229,8 +1213,28 @@ export function cancelBackgroundTasks(
 
 export function getConversationPullRequest(
   conversationId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<t.TConversationPullRequestResponse> {
-  return request.get(endpoints.conversationPullRequest(conversationId));
+  return request.get(endpoints.conversationPullRequest(conversationId), options);
+}
+
+export function getConversationPullRequests(
+  conversationIds: string[],
+  options?: { signal?: AbortSignal },
+): Promise<t.TConversationPullRequestsResponse> {
+  return request.post(endpoints.conversationPullRequests(), { conversationIds }, options);
+}
+
+export function getPullRequestConnection(): Promise<t.TPullRequestConnection> {
+  return request.get(endpoints.pullRequestConnection());
+}
+
+export function connectPullRequestAccount(): Promise<t.TPullRequestConnectStart> {
+  return request.get(endpoints.pullRequestConnect());
+}
+
+export function disconnectPullRequestAccount(): Promise<void> {
+  return request.delete(endpoints.pullRequestDisconnect());
 }
 
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
@@ -1623,10 +1627,6 @@ export function addTagToConversation(
 ): Promise<t.TTagConversationResponse> {
   return request.put(endpoints.addTagToConversation(conversationId), payload);
 }
-export function rebuildConversationTags(): Promise<t.TConversationTagsResponse> {
-  return request.post(endpoints.conversationTags('rebuild'));
-}
-
 export function healthCheck(): Promise<string> {
   return request.get(endpoints.health());
 }
@@ -1839,10 +1839,6 @@ export function getAllEffectivePermissions(
 // SharePoint Graph API Token
 export function getGraphApiToken(params: q.GraphTokenParams): Promise<q.GraphTokenResponse> {
   return request.get(endpoints.graphToken(params.scopes));
-}
-
-export function getDomainServerBaseUrl(): string {
-  return `${endpoints.apiBaseUrl()}/api`;
 }
 
 /* Active Jobs */

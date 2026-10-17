@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { EventSubmission, TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useAttachments from '~/hooks/Messages/useAttachments';
 import { ParallelColumns } from '../ParallelContent';
@@ -41,14 +42,31 @@ jest.mock('~/hooks/MCP', () => {
   };
 });
 
+jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
+  useMCPAppsPolicy: () => ({ enabled: true }),
+}));
+
 jest.mock('~/components/MCPUIResource', () => {
   const ReactActual = jest.requireActual('react') as typeof React;
   const MCPAppSuppressionContext = ReactActual.createContext<ReadonlySet<TAttachment> | null>(null);
   return {
     MCPAppSuppressionContext,
-    MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => {
+    MCPAppViews: ({
+      attachments,
+      resources,
+    }: {
+      attachments?: TAttachment[];
+      resources?: MCPAppResourceOccurrence[];
+    }) => {
       const suppressed = ReactActual.useContext(MCPAppSuppressionContext);
-      const visible = (attachments ?? []).filter((attachment) => !suppressed?.has(attachment));
+      const selectedAttachments =
+        resources?.map(({ attachment, resource }) => ({
+          ...attachment,
+          ui_resources: [resource],
+        })) ?? attachments;
+      const visible = (selectedAttachments ?? []).filter(
+        (attachment) => !suppressed?.has(attachment),
+      );
       if (visible.length === 0) {
         return null;
       }
@@ -100,6 +118,7 @@ jest.mock('lucide-react', () => ({
   ...jest.requireActual('lucide-react'),
   ChevronDown: () => <span>{'chevron'}</span>,
   TriangleAlert: () => <span>{'alert'}</span>,
+  CircleX: () => <span>{'failed'}</span>,
   Users: () => <span>{'users'}</span>,
 }));
 
@@ -134,15 +153,35 @@ jest.mock('../Parts', () => ({
   },
   ExecuteCode: () => <div data-testid="execute-code" />,
   ImageGen: () => <div data-testid="image-gen" />,
-  AgentUpdate: () => <div data-testid="agent-update" />,
+  AgentUpdate: ({ currentAgentId }: { currentAgentId?: string }) => (
+    <div data-testid="agent-update" data-agent-id={currentAgentId} />
+  ),
   EmptyText: () => <div data-testid="empty-text" />,
   Reasoning: () => <div data-testid="reasoning" />,
   ReasoningCompact: () => <div data-testid="compact-reasoning" />,
   Summary: () => <div data-testid="summary" />,
+  SteerPart: () => <div data-testid="steer" />,
   Text: jest.fn(({ text }: { text?: string }) => <div data-testid="text">{text}</div>),
   MemoryCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="memory-call" data-count={attachments?.length ?? 0} />
   ),
+}));
+
+jest.mock('~/components/Web/Sources', () => ({
+  __esModule: true,
+  default: ({ messageId, conversationId }: { messageId?: string; conversationId?: string }) => {
+    const { searchResults } = jest
+      .requireActual<typeof import('~/Providers/SearchContext')>('~/Providers/SearchContext')
+      .useSearchContext();
+    return (
+      <div
+        data-testid="sources"
+        data-message-id={messageId}
+        data-conversation-id={conversationId}
+        data-search-keys={Object.keys(searchResults ?? {}).join(',')}
+      />
+    );
+  },
 }));
 
 jest.mock('../MemoryArtifacts', () => ({
@@ -539,6 +578,132 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     ]);
   });
 
+  const appAttachment = (toolCallId: string): TAttachment =>
+    ({
+      type: Tools.ui_resources,
+      toolCallId,
+      ui_resources: [
+        {
+          resourceId: toolCallId,
+          uri: 'ui://demo/view',
+          mimeType: 'text/html;profile=mcp-app',
+          toolName: 'show_app',
+          serverName: 'demo',
+        },
+      ],
+    }) as TAttachment;
+
+  it.each([false, true])(
+    'retains the handed-off author after an App with phase %s',
+    (withPhase) => {
+      const handoff: TMessageContentParts = {
+        type: ContentTypes.AGENT_UPDATE,
+        agent_update: { agentId: 'agent_b', index: 1, runId: 'run' },
+      };
+      renderContentParts({
+        ...baseProps,
+        authorHeader: <div data-testid="top-level-author" />,
+        content: [
+          handoff,
+          makeMcpToolCall('app'),
+          undefined,
+          { type: ContentTypes.STEER, steer: 'continue' },
+          undefined,
+          makeTextPart('resumed answer'),
+          ...(withPhase ? [makePhasePart(3, 6, 'Resumed work')] : []),
+        ],
+        attachments: [appAttachment('app')],
+      });
+      if (withPhase) fireEvent.click(screen.getByRole('button', { name: /Resumed work/ }));
+      const markers = screen.getAllByTestId('agent-update');
+      expect(markers).toHaveLength(2);
+      expect(markers[1]).toHaveAttribute('data-agent-id', 'agent_b');
+      expect(screen.queryByTestId('top-level-author')).toBeNull();
+      expect(markers[1].compareDocumentPosition(screen.getByText('resumed answer'))).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+    },
+  );
+
+  it.each(['before', 'after', 'between', 'phase', 'none'])(
+    'renders Sources once with Apps %s parallel content',
+    (layout) => {
+      const lanes: TMessageContentParts[] = [
+        { ...makeTextPart('lane A'), agentId: 'agent_a', groupId: 1 },
+        { ...makeTextPart('lane B'), agentId: 'agent_b', groupId: 1 },
+      ];
+      const app = makeMcpToolCall('app');
+      const layouts: Record<string, TMessageContentParts[]> = {
+        before: [app, ...lanes],
+        after: [...lanes, app],
+        between: [app, ...lanes, makeMcpToolCall('second-app')],
+        phase: [app, ...lanes, makePhasePart(1, 3, 'Parallel research')],
+        none: lanes,
+      };
+      renderContentParts({
+        ...baseProps,
+        conversationId: 'conversation',
+        content: layouts[layout],
+        attachments: [appAttachment('app'), appAttachment('second-app')],
+        searchResults: { search: { organic: [] } },
+      });
+      expect(screen.getAllByTestId('sources')).toHaveLength(1);
+      expect(screen.getByTestId('sources')).toHaveAttribute('data-message-id', 'msg1');
+      expect(screen.getByTestId('sources')).toHaveAttribute('data-conversation-id', 'conversation');
+      expect(screen.getByTestId('sources')).toHaveAttribute('data-search-keys', 'search');
+    },
+  );
+
+  it('updates Sources as parallel content streams after an App', () => {
+    const frame = (content: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...baseProps} content={content} attachments={[appAttachment('app')]} />
+      </RecoilRoot>
+    );
+    const app = makeMcpToolCall('app');
+    const { rerender } = render(frame([app]));
+    expect(screen.queryByTestId('sources')).toBeNull();
+    const lanes: TMessageContentParts[] = [
+      { ...makeTextPart('lane A'), agentId: 'agent_a', groupId: 1 },
+      { ...makeTextPart('lane B'), agentId: 'agent_b', groupId: 1 },
+    ];
+    rerender(frame([app, ...lanes]));
+    const sources = screen.getByTestId('sources');
+    rerender(frame([app, ...lanes, makeTextPart('answer')]));
+    expect(screen.getAllByTestId('sources')).toEqual([sources]);
+  });
+
+  it('uses the latest handoff across multiple Apps and a subsequent handoff to the top-level author', () => {
+    const handoff = (agentId: string): TMessageContentParts => ({
+      type: ContentTypes.AGENT_UPDATE,
+      agent_update: { agentId, index: 1, runId: 'run' },
+    });
+    const steer: TMessageContentParts = { type: ContentTypes.STEER, steer: 'continue' };
+    renderContentParts({
+      ...baseProps,
+      authorHeader: <div data-testid="top-level-author" />,
+      content: [
+        handoff('agent_a'),
+        makeMcpToolCall('app'),
+        handoff('agent_b'),
+        makeMcpToolCall('second-app'),
+        steer,
+        makeTextPart('agent answer'),
+        handoff(''),
+        steer,
+        makeTextPart('top-level answer'),
+      ],
+      attachments: [appAttachment('app'), appAttachment('second-app')],
+    });
+    expect(screen.getAllByTestId('agent-update').map((marker) => marker.dataset.agentId)).toEqual([
+      'agent_a',
+      'agent_b',
+      'agent_b',
+      '',
+    ]);
+    expect(screen.getAllByTestId('top-level-author')).toHaveLength(1);
+  });
+
   it('routes repeated App call ids by agent and exact-or-fallback host step', () => {
     const content = [
       makeMcpToolCall('call_0', true, 'step-1', 'agent-a'),
@@ -581,7 +746,7 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     renderContentParts({ ...baseProps, content, attachments });
 
     expect(screen.getAllByTestId('mcp-app-attachments').map((view) => view.dataset.owners)).toEqual(
-      ['agent-a/step-1/alpha,agent-a/step-2/beta,agent-b/step-1/gamma'],
+      ['agent-a/step-1/alpha', 'agent-a/step-2/beta', 'agent-b/step-1/gamma'],
     );
   });
 
@@ -619,12 +784,18 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
         />
       </RecoilRoot>
     );
-    const { rerender } = render(frame({}));
+    const { rerender } = render(frame({ content: [undefined, ...content] }));
     const appView = screen.getByTestId('mcp-app-attachments');
 
     /** `createdHandler` replaces both the user-derived response id and new-chat conversation id,
      * while `clientQueueParentMessageId` keeps this response linked to its submission. */
-    rerender(frame({ messageId: 'server-user_', conversationId: 'conversation-1' }));
+    rerender(
+      frame({
+        messageId: 'server-user_',
+        conversationId: 'conversation-1',
+        content: [undefined, ...content],
+      }),
+    );
     expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
 
     /** `finalHandler` installs the durable response and drops the client-only owner anchor. */
@@ -673,6 +844,14 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     );
     const { rerender } = render(frame([appCall]));
     const appView = screen.getByTestId('mcp-app-attachments');
+    rerender(frame([makeTextPart('inserted preface'), appCall]));
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
+    rerender(frame([appCall, makeTextPart('after the app')]));
+    expect(
+      appView.compareDocumentPosition(screen.getByText('after the app')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
 
     /** A second adjacent call changes the sequential card presentation. */
     rerender(frame([appCall, otherCall]));
@@ -689,6 +868,47 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     ] as unknown as TMessageContentParts[];
     rerender(frame(parallel));
     expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
+  });
+
+  it('retains an existing resource when another App is inserted into its tool result', () => {
+    const call = makeMcpToolCall('call_app', true, 'step-1', 'agent-a');
+    const resource = (resourceId: string) => ({
+      resourceId,
+      uri: 'ui://demo/view',
+      mimeType: 'text/html;profile=mcp-app',
+      toolName: 'show_app',
+      serverName: 'demo',
+    });
+    const alpha = resource('alpha');
+    const beta = resource('beta');
+    const frame = (resources: (typeof alpha)[]) => (
+      <RecoilRoot>
+        <ContentParts
+          {...baseProps}
+          content={[call]}
+          attachments={[
+            {
+              type: Tools.ui_resources,
+              toolCallId: 'call_app',
+              agentId: 'agent-a',
+              stepId: 'step-1',
+              [Tools.ui_resources]: resources,
+            } as unknown as TAttachment,
+          ]}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame([alpha]));
+    const original = screen.getByTestId('mcp-app-attachments');
+    rerender(frame([beta, alpha]));
+    const views = screen.getAllByTestId('mcp-app-attachments');
+    expect(views.map((view) => view.dataset.owners)).toEqual([
+      'agent-a/step-1/beta',
+      'agent-a/step-1/alpha',
+    ]);
+    expect(views[1]).toBe(original);
+    rerender(frame([alpha]));
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(original);
   });
 
   it('remounts an App for a same-parent regeneration and a real sibling switch', () => {
@@ -864,7 +1084,7 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     fireEvent.click(screen.getByRole('button', { name: 'stream beta' }));
 
     expect(screen.getAllByTestId('mcp-app-attachments').map((view) => view.dataset.owners)).toEqual(
-      ['agent-a/step-1/alpha,agent-a/step-2/beta'],
+      ['agent-a/step-1/alpha', 'agent-a/step-2/beta'],
     );
   });
 
@@ -1064,7 +1284,7 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
   });
 });
 
-describe('ContentParts — synthesized activity folds', () => {
+describe('ContentParts: synthesized activity folds', () => {
   /** Settled by default: the fold is content-derived, so history and a live
    *  run partition identically. The streaming case gets its own test below. */
   const baseProps = {
@@ -1134,7 +1354,9 @@ describe('ContentParts — synthesized activity folds', () => {
     const { rerender } = renderContentParts(props);
 
     const phase = screen.getByTestId('activity-phase-card');
-    expect(within(phase).getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(within(phase).getByTestId('failed-reveal-pill')).toHaveTextContent(
+      'com_ui_n_actions_failed',
+    );
     fireEvent.click(within(phase).getAllByRole('button')[0]);
 
     const group = screen.getByRole('button', { name: /Running 2 actions.*1\/2 failed/ });

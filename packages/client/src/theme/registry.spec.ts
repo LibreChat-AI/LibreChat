@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { ThemeDefinition } from './types';
+import type { IThemeAppearance, IThemeRGB, ThemeDefinition } from './types';
 import {
   collectThemeWarnings,
   darkAppearanceDefaults,
@@ -14,6 +14,7 @@ import {
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
+import { describeResolvedTheme } from './utils/applyTheme';
 import { clickHouseTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
@@ -507,6 +508,38 @@ describe('theme registry', () => {
     expect(explicit.colors['rgb-drawer-edge']).toBe('1 2 3');
   });
 
+  it('draws the light drawer edge on the sidebar role when a theme sets it', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22', 'rgb-surface-sidebar': '40 41 42' };
+    const theme = {
+      version: 1 as const,
+      name: 'sidebar-drawer-edge',
+      modes: { light: { colors } },
+    };
+
+    expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('40 41 42');
+  });
+
+  it('keeps the page canvas on the surface a theme repaints, unless it sets the role', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22' };
+    const theme = {
+      version: 1 as const,
+      name: 'legacy-page-canvas',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-page-canvas',
+        modes: { dark: { colors: { ...colors, 'rgb-page-canvas': '1 2 3' } } },
+      },
+      'dark',
+    );
+
+    expect(resolveTheme(theme, 'dark').colors['rgb-page-canvas']).toBe('20 21 22');
+    expect(resolveTheme(theme, 'light').colors['rgb-page-canvas']).toBe('20 21 22');
+    expect(explicit.colors['rgb-page-canvas']).toBe('1 2 3');
+  });
+
   it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
     const inherited = resolveTheme(
       {
@@ -609,6 +642,67 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-text-tooltip']).toBe('1 2 3');
     expect(resolved.colors['rgb-alert-error-fill']).toBe('4 5 6');
     expect(resolved.colors['rgb-alert-error-border']).toBe('7 8 9');
+  });
+
+  it('keeps the category icons on the series slots a theme repainted, unless it names them', () => {
+    const inherited = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-series',
+        modes: { light: { colors: { 'rgb-series-2': '1 2 3', 'rgb-series-4': '4 5 6' } } },
+      },
+      'light',
+    );
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-category-icon',
+        modes: { light: { colors: { 'rgb-series-4': '4 5 6', 'rgb-category-icon-4': '7 8 9' } } },
+      },
+      'light',
+    );
+
+    expect(inherited.colors['rgb-category-icon-2']).toBe('1 2 3');
+    expect(inherited.colors['rgb-category-icon-4']).toBe('4 5 6');
+    expect(explicit.colors['rgb-category-icon-4']).toBe('7 8 9');
+    expect(explicit.colors['rgb-series-4']).toBe('4 5 6');
+  });
+
+  it('carries the slot 4 category icon from the role name it first shipped under', () => {
+    const legacy = { 'rgb-series-4': '4 5 6', 'rgb-category-icon': '7 8 9' } as IThemeRGB;
+    const renamed = resolveTheme(
+      { version: 1, name: 'renamed-category-icon', modes: { light: { colors: legacy } } },
+      'light',
+    );
+    const named = resolveTheme(
+      {
+        version: 1,
+        name: 'current-category-icon',
+        modes: { light: { colors: { ...legacy, 'rgb-category-icon-4': '1 2 3' } } },
+      },
+      'light',
+    );
+
+    expect(renamed.colors['rgb-category-icon-4']).toBe('7 8 9');
+    expect(named.colors['rgb-category-icon-4']).toBe('1 2 3');
+    expect(renamed.colors).not.toHaveProperty('rgb-category-icon');
+  });
+
+  it('keeps a renamed category icon role through the legacy color adapter', () => {
+    const legacy = { 'rgb-category-icon': '7 8 9' } as IThemeRGB;
+
+    expect(fromLegacyTheme(legacy).modes.light?.colors?.['rgb-category-icon-4']).toBe('7 8 9');
+    expect(fromLegacyTheme(legacy).modes.light?.colors).not.toHaveProperty('rgb-category-icon');
+  });
+
+  it('does not warn that a renamed category icon role is ignored', () => {
+    const theme = {
+      version: 1,
+      name: 'renamed-category-icon-warning',
+      modes: { light: { colors: { 'rgb-category-icon': '7 8 9' } as IThemeRGB } },
+    };
+
+    expect(collectThemeWarnings(theme)).toEqual([]);
   });
 
   it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {
@@ -910,6 +1004,19 @@ describe('theme registry', () => {
     });
   });
 
+  it('writes a zero Button height as a length the 24px floor can compare', () => {
+    const { appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'zero-buttons',
+        modes: { light: { appearance: { buttonHeight: '0', buttonHeightSm: '0' } } },
+      },
+      'light',
+    );
+
+    expect(appearance).toMatchObject({ buttonHeight: '0px', buttonHeightSm: '0px' });
+  });
+
   it('keeps LibreChat’s button weight and heights by default', () => {
     expect(defaultAppearance).toMatchObject({
       controlFontWeight: '500',
@@ -1119,6 +1226,7 @@ describe('theme registry', () => {
     it('names the legacy surface of each layer outright', () => {
       const legacy: Record<string, [string, string]> = {
         'rgb-surface-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+        'rgb-page-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
         'rgb-surface-user-message': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
         'rgb-surface-card': ['rgb-surface-secondary', 'rgb-surface-secondary'],
         'rgb-surface-card-hover': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
@@ -1130,6 +1238,7 @@ describe('theme registry', () => {
         'rgb-border-menu': ['rgb-border-light', 'rgb-border-light'],
         'rgb-surface-composer': ['rgb-surface-chat', 'rgb-surface-chat'],
         'rgb-surface-search': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+        'rgb-surface-sidebar': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
       };
       expect(
         Object.fromEntries(layerRoleSources.map(([role, light, dark]) => [role, [light, dark]])),
@@ -1209,6 +1318,69 @@ describe('theme registry', () => {
         'Invalid appearance value for fieldFillStyle: glass',
       ]);
       expect(issues({ colors: { 'rgb-field-fill': '1 2 3 / 0.5' } })).toHaveLength(1);
+    });
+  });
+
+  describe('checkbox fill and corner', () => {
+    const checkboxTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'checkbox-reference',
+      modes,
+    });
+
+    it('keeps an unchecked checkbox clear and on the small corner by default', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors, appearance } = resolveTheme(checkboxTheme({}), mode);
+        const base = mode === 'dark' ? darkTheme : defaultTheme;
+        expect(appearance.checkboxFillStyle).toBe('transparent');
+        expect(appearance.checkboxRadius).toBe(appearance.radiusSm);
+        expect(colors['rgb-checkbox-fill']).toBe(base['rgb-surface-primary']);
+      }
+    });
+
+    it('keeps a theme that predates the roles on its own canvas and small corner', () => {
+      const { colors, appearance } = resolveTheme(
+        checkboxTheme({
+          light: {
+            colors: { 'rgb-surface-primary': '40 50 60' },
+            appearance: { radiusSm: '3px' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-checkbox-fill']).toBe('40 50 60');
+      expect(appearance.checkboxRadius).toBe('3px');
+      expect(appearance.checkboxFillStyle).toBe('transparent');
+    });
+
+    it('paints the checkbox from its own roles when a theme names them', () => {
+      const { colors, appearance } = resolveTheme(
+        checkboxTheme({
+          light: {
+            colors: { 'rgb-checkbox-fill': '246 247 250' },
+            appearance: { checkboxFillStyle: 'fill', checkboxRadius: '0.125rem', radiusSm: '4px' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-checkbox-fill']).toBe('246 247 250');
+      expect(colors['rgb-surface-primary']).toBe(defaultTheme['rgb-surface-primary']);
+      expect(appearance.checkboxFillStyle).toBe('fill');
+      expect(appearance.checkboxRadius).toBe('0.125rem');
+      expect(appearance.radiusSm).toBe('4px');
+    });
+
+    it('rejects a fill style it does not know, a translucent fill and a non-length corner', () => {
+      const issues = (mode: ThemeDefinition['modes']['light']) =>
+        validateThemeDefinition(checkboxTheme({ light: mode }));
+      expect(issues({ appearance: { checkboxFillStyle: 'fill' } })).toEqual([]);
+      expect(issues({ appearance: { checkboxFillStyle: 'glass' as 'fill' } })).toEqual([
+        'Invalid appearance value for checkboxFillStyle: glass',
+      ]);
+      expect(issues({ appearance: { checkboxRadius: 'round' } })).toEqual([
+        'Invalid appearance value for checkboxRadius: round',
+      ]);
+      expect(issues({ colors: { 'rgb-checkbox-fill': '1 2 3 / 0.5' } })).toHaveLength(1);
     });
   });
 
@@ -1341,10 +1513,42 @@ describe('theme registry', () => {
       buttonHeightLg: '2.75rem',
       iconButtonSizeSm: '2rem',
       fieldHeightLg: '3rem',
+      authFieldHeight: '2.75rem',
+      authButtonHeight: '3rem',
+      authControlRadius: '1rem',
+      authActionHeight: '2.5rem',
+      authActionRadius: '0.5rem',
       checkboxSize: '1rem',
       listMinWidth: '8rem',
       listMaxHeight: '24rem',
     });
+  });
+
+  it('sizes the other sign-in actions from the sign-in pair, then the Button roles they drew', () => {
+    const resolve = (appearance: Partial<IThemeAppearance>) =>
+      resolveTheme({ version: 1, name: 'auth-actions', modes: { light: { appearance } } }, 'light')
+        .appearance;
+
+    expect(resolve({})).toMatchObject({ authActionHeight: '2.5rem', authActionRadius: '0.5rem' });
+    expect(resolve({ buttonHeight: '2.25rem', radiusLg: '3px' })).toMatchObject({
+      authActionHeight: '2.25rem',
+      authActionRadius: '3px',
+    });
+    expect(
+      resolve({
+        buttonHeight: '2.25rem',
+        radiusLg: '3px',
+        authButtonHeight: '2rem',
+        authControlRadius: '0',
+      }),
+    ).toMatchObject({ authActionHeight: '2rem', authActionRadius: '0' });
+    expect(resolve({ radius2xl: '2px', radiusLg: '5px' })).toMatchObject({
+      authControlRadius: '2px',
+      authActionRadius: '5px',
+    });
+    expect(
+      resolve({ authButtonHeight: '2rem', authActionHeight: '3.5rem', authActionRadius: '1px' }),
+    ).toMatchObject({ authActionHeight: '3.5rem', authActionRadius: '1px' });
   });
 
   it("bounds a Select list's width and scroll height", () => {
@@ -1357,8 +1561,10 @@ describe('theme registry', () => {
 
     expect(issues({ listMinWidth: '0', listMaxHeight: '8rem' })).toEqual([]);
     expect(issues({ listMinWidth: '12rem', listMaxHeight: '640px' })).toEqual([]);
+    expect(issues({ listMaxHeight: 'none' })).toEqual([]);
     [
       { listMinWidth: 'auto' },
+      { listMaxHeight: 'auto' },
       { listMinWidth: '-1rem' },
       { listMaxHeight: '0' },
       { listMaxHeight: '7rem' },
@@ -1387,6 +1593,8 @@ describe('theme registry', () => {
       { fieldHeightLg: '20px' },
       { fieldHeightLg: '1rem' },
       { fieldHeightLg: '1.5em' },
+      { authFieldHeight: '20px' },
+      { authButtonHeight: 'auto' },
       { iconSize: '0' },
       { iconSize: '1.5rem' },
       { iconSize: '10px' },
@@ -1467,6 +1675,7 @@ describe('theme registry', () => {
       ['lg', 'textLg', 'leadingLg'],
       ['xl', 'textXl', 'leadingXl'],
       ['2xl', 'text2xl', 'leading2xl'],
+      ['3xl', 'text3xl', 'leading3xl'],
     ] as const;
     const declared = (name: string) =>
       new RegExp(`--${name}:\\s*([^;]+);`).exec(tailwind)?.[1].trim();
@@ -1477,13 +1686,30 @@ describe('theme registry', () => {
     });
   });
 
-  it('keeps every bundled theme’s largest themed step below the unthemed text-3xl', () => {
-    const rem = (value: string) => parseFloat(value);
-    [
+  /** A heading never shrinks as the scale rises, and the largest themed step stays at or below
+   *  Tailwind's unthemed `text-4xl` (2.25rem). */
+  it('keeps the type scale monotonic in every bundled theme', () => {
+    const sizes = [
+      'textXs',
+      'textSm',
+      'textBase',
+      'textLg',
+      'textXl',
+      'text2xl',
+      'text3xl',
+    ] as const;
+    const appearances = [
       defaultAppearance,
-      { ...defaultAppearance, ...clickHouseTheme.modes.light?.appearance },
-    ].forEach((appearance) => {
-      expect(rem(appearance.text2xl)).toBeLessThan(1.875);
+      ...Object.values(clickHouseTheme.modes).map((mode) => ({
+        ...defaultAppearance,
+        ...mode?.appearance,
+      })),
+    ];
+
+    appearances.forEach((appearance) => {
+      const rems = sizes.map((size) => parseFloat(appearance[size]));
+      expect(rems).toEqual([...rems].sort((a, b) => a - b));
+      expect(rems[rems.length - 1]).toBeLessThanOrEqual(2.25);
     });
   });
 
@@ -2145,5 +2371,53 @@ describe('theme registry', () => {
   ])('rejects malformed runtime %s', (_label, definition, expectedError) => {
     expect(validateThemeDefinition(definition as ThemeDefinition)).toContain(expectedError);
     expect(() => resolveTheme(definition as ThemeDefinition, 'light')).toThrow(TypeError);
+  });
+});
+
+describe('appearance families substitute through the emitted variables', () => {
+  const reference: ThemeDefinition = {
+    version: 1,
+    name: 'family-reference',
+    modes: {
+      light: {
+        appearance: {
+          radiusLg: '0.125rem',
+          fontFamily: 'Georgia, serif',
+          shadowMd: '0 1px 2px 0 rgb(0 0 0 / 0.3)',
+          controlHeight: '3rem',
+          spaceNormal: '1rem',
+        },
+      },
+    },
+  };
+  const emitted = (theme: ThemeDefinition) =>
+    new Map(describeResolvedTheme(resolveTheme(theme, 'light')).properties);
+
+  it.each([
+    ['radius', '--theme-radius-lg', '0.125rem'],
+    ['font', '--theme-font-family', 'Georgia, serif'],
+    ['shadow', '--theme-shadow-md', '0 1px 2px 0 rgb(0 0 0 / 0.3)'],
+    ['density (control height)', '--theme-control-height', '3rem'],
+    ['density (spacing)', '--theme-space-normal', '1rem'],
+  ])(
+    'changes the %s variable and only restates it for a reference theme',
+    (_family, property, value) => {
+      const base = emitted(libreChatTheme);
+      const themed = emitted(reference);
+
+      expect(base.get(property)).toBeDefined();
+      expect(themed.get(property)).toBe(value);
+      expect(themed.get(property)).not.toBe(base.get(property));
+    },
+  );
+
+  it('writes a `none` list height as the viewport height its available-height cap undercuts', () => {
+    const uncapped = emitted({
+      ...reference,
+      modes: { light: { appearance: { listMaxHeight: 'none' } } },
+    });
+
+    expect(emitted(libreChatTheme).get('--theme-list-max-height')).toBe('24rem');
+    expect(uncapped.get('--theme-list-max-height')).toBe('100dvh');
   });
 });

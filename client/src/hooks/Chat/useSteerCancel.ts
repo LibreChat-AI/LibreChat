@@ -1,14 +1,17 @@
 import { useCallback } from 'react';
-import { useSetAtom, useStore } from 'jotai';
-import { useRecoilCallback, useRecoilValue } from 'recoil';
+import { useSteerHost } from '@librechat/chat/react';
+import { useSetAtom, useStore, useAtomValue } from 'jotai';
+import {
+  pendingSteerCancelClientIdsFamily,
+  pendingSteersByConvoId,
+  appliedSteerIdsByConvoId,
+  activeGenerationCreatedAtByConvoId,
+} from '@librechat/chat/react';
 import type { PendingSteer } from '~/hooks/Chat/queue';
 import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { appendAppliedSteerIds, carriedSteerContext } from '~/utils';
-import { pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
-import { useCancelSteerMutation } from '~/data-provider';
-import store from '~/store';
 
 export type SteerCancelOutcome = 'reclaimed' | 'applied' | 'failed';
 
@@ -20,38 +23,37 @@ export type SteerRehomeTarget = 'composer' | 'queue';
  * confirmed reclaim proves the words remain safe to move elsewhere.
  */
 export function useSteerReclaim(conversationId: string) {
-  const cancelMutation = useCancelSteerMutation();
-  const activeGenerationCreatedAt = useRecoilValue(
-    store.activeGenerationCreatedAtByConvoId(conversationId),
+  const cancelSteer = useSteerHost().useCancelSteer();
+  const activeGenerationCreatedAt = useAtomValue(
+    activeGenerationCreatedAtByConvoId(conversationId),
   );
   const setPendingCancelIds = useSetAtom(pendingSteerCancelClientIdsFamily(conversationId));
-  const queueStore = useStore();
-  const settleReclaimed = useRecoilCallback(
-    ({ set }) =>
-      (steer: PendingSteer) => {
-        const ids = [steer.steerId, ...(steer.clientSteerId ? [steer.clientSteerId] : [])];
-        const settled = new Set(ids);
-        set(store.appliedSteerIdsByConvoId(conversationId), (prev) =>
-          appendAppliedSteerIds(prev, ids),
-        );
-        set(store.pendingSteersByConvoId(conversationId), (prev) =>
-          prev.filter(
-            (item) =>
-              !settled.has(item.steerId) &&
-              (item.clientSteerId == null || !settled.has(item.clientSteerId)),
-          ),
-        );
-        setPendingCancelIds((prev) => prev.filter((id) => !ids.includes(id)));
-        queueStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
-          prev.filter(
-            (item) =>
-              !settled.has(item.id) &&
-              (item.recoverySteerId == null || !settled.has(item.recoverySteerId)) &&
-              (item.recoveryClientSteerId == null || !settled.has(item.recoveryClientSteerId)),
-          ),
-        );
-      },
-    [conversationId, setPendingCancelIds, queueStore],
+  const jotaiStore = useStore();
+  const settleReclaimed = useCallback(
+    (steer: PendingSteer) => {
+      const ids = [steer.steerId, ...(steer.clientSteerId ? [steer.clientSteerId] : [])];
+      const settled = new Set(ids);
+      jotaiStore.set(appliedSteerIdsByConvoId(conversationId), (prev) =>
+        appendAppliedSteerIds(prev, ids),
+      );
+      jotaiStore.set(pendingSteersByConvoId(conversationId), (prev) =>
+        prev.filter(
+          (item) =>
+            !settled.has(item.steerId) &&
+            (item.clientSteerId == null || !settled.has(item.clientSteerId)),
+        ),
+      );
+      setPendingCancelIds((prev) => prev.filter((id) => !ids.includes(id)));
+      jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
+        prev.filter(
+          (item) =>
+            !settled.has(item.id) &&
+            (item.recoverySteerId == null || !settled.has(item.recoverySteerId)) &&
+            (item.recoveryClientSteerId == null || !settled.has(item.recoveryClientSteerId)),
+        ),
+      );
+    },
+    [conversationId, setPendingCancelIds, jotaiStore],
   );
 
   return useCallback(
@@ -62,7 +64,7 @@ export function useSteerReclaim(conversationId: string) {
         if (generationCreatedAt == null) {
           return 'failed';
         }
-        const { removed } = await cancelMutation.mutateAsync({
+        const { removed } = await cancelSteer({
           conversationId,
           steerId: steer.steerId,
           ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
@@ -77,7 +79,7 @@ export function useSteerReclaim(conversationId: string) {
         return 'failed';
       }
     },
-    [conversationId, cancelMutation, settleReclaimed, activeGenerationCreatedAt],
+    [conversationId, cancelSteer, settleReclaimed, activeGenerationCreatedAt],
   );
 }
 
@@ -130,19 +132,18 @@ export interface SteerRehomeOptions {
 export function useSteerRehome(conversationId: string) {
   const { restore, rewakeDrain } = useComposerRestoreHost();
   const convertSteersToQueued = useSteerConvert();
-  const dropPendingSteer = useRecoilCallback(
-    ({ set }) =>
-      (steer: PendingSteer) => {
-        const ids = new Set([steer.steerId, ...(steer.clientSteerId ? [steer.clientSteerId] : [])]);
-        set(store.pendingSteersByConvoId(conversationId), (prev) =>
-          prev.filter(
-            (item) =>
-              !ids.has(item.steerId) &&
-              (item.clientSteerId == null || !ids.has(item.clientSteerId)),
-          ),
-        );
-      },
-    [conversationId],
+  const jotaiStore = useStore();
+  const dropPendingSteer = useCallback(
+    (steer: PendingSteer) => {
+      const ids = new Set([steer.steerId, ...(steer.clientSteerId ? [steer.clientSteerId] : [])]);
+      jotaiStore.set(pendingSteersByConvoId(conversationId), (prev) =>
+        prev.filter(
+          (item) =>
+            !ids.has(item.steerId) && (item.clientSteerId == null || !ids.has(item.clientSteerId)),
+        ),
+      );
+    },
+    [conversationId, jotaiStore],
   );
 
   return useCallback(
@@ -173,18 +174,18 @@ export default function useSteerCancel(conversationId: string) {
   const reclaim = useSteerReclaim(conversationId);
   const rehome = useSteerRehome(conversationId);
   const setPendingCancelIds = useSetAtom(pendingSteerCancelClientIdsFamily(conversationId));
-  const markOptimisticCancel = useRecoilCallback(
-    ({ set }) =>
-      (steer: PendingSteer) => {
-        const clientId = steer.clientSteerId ?? steer.steerId;
-        setPendingCancelIds((prev) => (prev.includes(clientId) ? prev : [...prev, clientId]));
-        if (steer.status === 'sending') {
-          set(store.pendingSteersByConvoId(conversationId), (prev) =>
-            prev.filter((item) => item.steerId !== steer.steerId),
-          );
-        }
-      },
-    [conversationId, setPendingCancelIds],
+  const jotaiStore = useStore();
+  const markOptimisticCancel = useCallback(
+    (steer: PendingSteer) => {
+      const clientId = steer.clientSteerId ?? steer.steerId;
+      setPendingCancelIds((prev) => (prev.includes(clientId) ? prev : [...prev, clientId]));
+      if (steer.status === 'sending') {
+        jotaiStore.set(pendingSteersByConvoId(conversationId), (prev) =>
+          prev.filter((item) => item.steerId !== steer.steerId),
+        );
+      }
+    },
+    [conversationId, setPendingCancelIds, jotaiStore],
   );
   const clearOptimisticCancel = useCallback(
     (steer: PendingSteer) => {

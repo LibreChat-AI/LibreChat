@@ -22,12 +22,12 @@ const {
   createDeploymentSkillMethods,
   createSkillFileSaver,
   createSkillManagementFileSaver,
+  createSkillStorageResolver,
   isDeploymentSkillFileSource,
   getDeploymentSkillDownloadStream,
 } = require('@librechat/api');
 const {
   Permissions,
-  FileContext,
   ResourceType,
   PermissionBits,
   AccessRoleIds,
@@ -39,6 +39,7 @@ const {
 const { checkPermission, grantPermission } = require('~/server/services/PermissionService');
 const { getFileStrategy } = require('~/server/utils/getFileStrategy');
 const db = require('~/models');
+const { deleteSkillForLegacy } = require('~/server/services/Skills/deletion');
 
 const deploymentSkillMethods = createDeploymentSkillMethods({
   getSkillById: db.getSkillById,
@@ -68,20 +69,19 @@ function getSkillStrategyFunctions(source) {
   return getStrategyFunctions(source);
 }
 
-function resolveSkillStorage(req, { isImage = false } = {}) {
-  const source = getFileStrategy(req.config, { context: FileContext.skill_file, isImage });
-  const strategy = getStrategyFunctions(source);
-  if (!strategy.saveBuffer) {
-    throw new Error(`Storage backend "${source}" does not support file writes`);
-  }
-  return { saveBuffer: strategy.saveBuffer, source };
-}
+const resolveSkillStorageForConfig = createSkillStorageResolver({
+  getFileStrategy,
+  getStrategyFunctions,
+});
+const resolveSkillStorage = (req, options) => resolveSkillStorageForConfig(req.config, options);
 
 const skillFileSaveDeps = {
   getSkillFileByPath: db.getSkillFileByPath,
   upsertSkillFile: db.upsertSkillFile,
   resolveStorage: resolveSkillStorage,
   getStrategyFunctions,
+  reserveSkillUploadIntent: db.reserveSkillUploadIntent,
+  transitionSkillUploadIntent: db.transitionSkillUploadIntent,
 };
 const saveSkillFileContent = createSkillFileSaver(skillFileSaveDeps);
 const saveSkillManagementFileContent = createSkillManagementFileSaver(skillFileSaveDeps);
@@ -328,7 +328,7 @@ const skillToolDeps = {
   getAuthorSkillByName,
   createSkill: db.createSkill,
   updateSkill: db.updateSkill,
-  deleteSkill: db.deleteSkill,
+  deleteSkill: deleteSkillForLegacy,
   canCreateSkill,
   canEditSkill,
   grantSkillOwner,
@@ -373,12 +373,9 @@ module.exports = {
   getSkillToolDeps,
   getSkillManagementFileSaver,
   canAuthorSkillFiles,
-  isAgentSkillAuthoringEnabledForRun,
   getSkillDbMethods,
   withDeploymentSkillIds,
   getSkillStrategyFunctions,
-  enrichWithSkillConfigurable,
-  buildSkillPrimedIdsByName,
   buildAgentToolContext,
   resolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext,

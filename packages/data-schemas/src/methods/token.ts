@@ -53,7 +53,9 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
 
       return await Token.create(newTokenData);
     } catch (error) {
-      logger.debug('An error occurred while creating token:', error);
+      logger.debug('An error occurred while creating token', {
+        type: error instanceof Error ? error.name : typeof error,
+      });
       throw error;
     }
   }
@@ -102,7 +104,9 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
         throw error;
       }
     } catch (error) {
-      logger.debug('An error occurred while conditionally replacing token:', error);
+      logger.debug('An error occurred while conditionally replacing token', {
+        type: error instanceof Error ? error.name : typeof error,
+      });
       throw error;
     }
   }
@@ -129,7 +133,9 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
 
       return await Token.findOneAndUpdate(dbQuery, dataToUpdate, { new: true });
     } catch (error) {
-      logger.debug('An error occurred while updating token:', error);
+      logger.debug('An error occurred while updating token', {
+        type: error instanceof Error ? error.name : typeof error,
+      });
       throw error;
     }
   }
@@ -171,7 +177,9 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
         $and: conditions,
       });
     } catch (error) {
-      logger.debug('An error occurred while deleting tokens:', error);
+      logger.debug('An error occurred while deleting tokens', {
+        type: error instanceof Error ? error.name : typeof error,
+      });
       throw error;
     }
   }
@@ -212,7 +220,9 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
 
       return token as IToken | null;
     } catch (error) {
-      logger.debug('An error occurred while finding token:', error);
+      logger.debug('An error occurred while finding token', {
+        type: error instanceof Error ? error.name : typeof error,
+      });
       throw error;
     }
   }

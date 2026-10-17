@@ -391,10 +391,6 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/server/cleanup', () => ({
   disposeClient: jest.fn(),
-  clientRegistry: null,
-  requestDataMap: {
-    set: jest.fn(),
-  },
 }));
 
 jest.mock('~/server/middleware', () => ({
@@ -1100,7 +1096,12 @@ describe('ResumableAgentController resume metadata', () => {
   });
 
   it('rejects any session fenced after authentication before generation execution starts', async () => {
-    mockIsAgentTriggerPrincipalActive.mockResolvedValue(false);
+    mockGenerationJobManager.createJob.mockRejectedValueOnce(
+      Object.assign(new Error('Account deletion is in progress'), {
+        code: 'ACCOUNT_DELETION_IN_PROGRESS',
+        status: 409,
+      }),
+    );
     const req = {
       user: { id: 'user-123' },
       body: {
@@ -1118,10 +1119,6 @@ describe('ResumableAgentController resume metadata', () => {
     await AgentController(req, res, jest.fn(), initializeClient, null);
 
     expect(mockGenerationJobManager.createJob).toHaveBeenCalledTimes(1);
-    expect(mockIsAgentTriggerPrincipalActive).toHaveBeenCalledWith('user-123');
-    expect(mockGenerationJobManager.createJob.mock.invocationCallOrder[0]).toBeLessThan(
-      mockIsAgentTriggerPrincipalActive.mock.invocationCallOrder[0],
-    );
     expect(mockGenerationJobManager.beginProviderExecution).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json).toHaveBeenCalledWith({
@@ -1132,15 +1129,8 @@ describe('ResumableAgentController resume metadata', () => {
     });
     expect(initializeClient).not.toHaveBeenCalled();
     expect(mockAcceptAgentStartupTelemetry).not.toHaveBeenCalled();
-    expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
-      'conversation-123',
-      JSON.stringify({
-        status: 409,
-        code: 'ACCOUNT_DELETION_IN_PROGRESS',
-        error: 'Account deletion is in progress',
-      }),
-      1000,
-    );
+    /** createJob retired the refused job itself, so the controller has none to complete. */
+    expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
     expect(mockGenerationJobManager.releaseGeneration).toHaveBeenCalledWith(
       'user-123',
       'trigger-request',
@@ -1239,10 +1229,6 @@ describe('ResumableAgentController resume metadata', () => {
 
     await AgentController(req, res, jest.fn(), initializeClient, null);
 
-    expect(mockIsAgentTriggerPrincipalActive).toHaveBeenCalledWith('user-123');
-    expect(mockIsAgentTriggerPrincipalActive.mock.invocationCallOrder[0]).toBeLessThan(
-      mockGenerationJobManager.beginProviderExecution.mock.invocationCallOrder[0],
-    );
     expect(initializeClient).not.toHaveBeenCalled();
     expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
       'conversation-123',

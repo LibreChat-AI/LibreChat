@@ -109,7 +109,4 @@ module.exports = {
     const methods = require('~/models');
     return !(await methods.isAgentTriggerPrincipalActive(userId));
   },
-  // Identity-fenced delete for a retained job whose run has since been settled
-  // inline; reconciliation only reaches jobs whose run is still active.
-  clearScheduledJob: (...args) => getService().engineDeps.clearReconciledJob(...args),
 };

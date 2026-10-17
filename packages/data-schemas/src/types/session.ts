@@ -18,11 +18,6 @@ export interface UpsertSessionOptions {
   tenantId?: string;
 }
 
-export interface UpdateExpirationOptions {
-  /** Duration in milliseconds for session expiry. Default: 7 days */
-  expiresIn?: number;
-}
-
 export interface SessionSearchParams {
   refreshToken?: string;
   userId?: string;

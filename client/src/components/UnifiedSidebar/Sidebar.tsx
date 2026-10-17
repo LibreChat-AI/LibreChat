@@ -46,7 +46,7 @@ function Sidebar({
              *  the edge is drawn here. The panel and the content beside it now sit
              *  on the same surface, so the fill no longer separates them on its
              *  own and the boundary has to be a line in every theme. */
-            'border-border-light bg-surface-primary-alt min-h-0 flex-1 overflow-hidden border-r',
+            'border-border-light bg-surface-sidebar min-h-0 flex-1 overflow-hidden border-r',
             expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
           style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}

@@ -20,15 +20,20 @@ module.exports = {
       height: {
         'theme-control': 'var(--theme-control-height, 2.25rem)',
         'theme-switch': 'var(--theme-switch-height, 1.5rem)',
-        /** The Button's default and `sm` heights. */
-        'theme-button': 'var(--theme-button-height, 2.5rem)',
-        'theme-button-sm': 'var(--theme-button-height-sm, 2.25rem)',
+        /** The Button's default and `sm` heights, held at WCAG 2.5.8's 24px target minimum with
+         *  `max()` so a stored theme that names less still loads and draws a reachable control. */
+        'theme-button': 'max(var(--theme-button-height, 2.5rem), 24px)',
+        'theme-button-sm': 'max(var(--theme-button-height-sm, 2.25rem), 24px)',
         'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
         'theme-button-lg': 'var(--theme-button-height-lg, 2.75rem)',
         'theme-button-compact': 'var(--theme-button-height-compact, 2rem)',
         /** A form field's height, and the large `title` field's. */
         'theme-field': 'var(--theme-field-height, 2.5rem)',
         'theme-field-lg': 'var(--theme-field-height-lg, 3rem)',
+        /** The sign-in form's floating-label field and submit button. */
+        'theme-auth-field': 'var(--theme-auth-field-height, 2.75rem)',
+        'theme-auth-button': 'var(--theme-auth-button-height, 3rem)',
+        'theme-auth-action': 'var(--theme-auth-action-height, 2.5rem)',
         /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
          *  smaller. */
         'theme-target': '24px',
@@ -52,8 +57,16 @@ module.exports = {
         'theme-list': 'var(--theme-list-min-width, 8rem)',
       },
       maxHeight: {
-        /** The tallest a Select's list draws before it scrolls. */
-        'theme-list': 'var(--theme-list-max-height, 24rem)',
+        /** The tallest a Select's list draws before it scrolls, never past the room the popper
+         *  leaves between its trigger and the viewport's edge. */
+        'theme-list':
+          'min(var(--theme-list-max-height, 24rem), var(--radix-select-content-available-height, 100dvh))',
+      },
+      inset: {
+        /** Where a sign-in label rests in its field: centered 2px low, as on the stock 44px field,
+         *  and never past the field's bottom edge at the 24px minimum height. Read on the label, so
+         *  `lh` is the label's own line. */
+        'theme-auth-label-rest': 'min(calc(50% - 0.5lh + 2px), calc(100% - 1lh))',
       },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */
@@ -64,16 +77,23 @@ module.exports = {
         'theme-compact': 'var(--theme-space-compact, 0.375rem)',
         'theme-normal': 'var(--theme-space-normal, 0.75rem)',
         'theme-control': 'var(--theme-control-height, 2.25rem)',
-        /** Square sizes: icon buttons as wide as their row is tall, the checkbox, and icons. */
-        'theme-button': 'var(--theme-button-height, 2.5rem)',
+        /** Square sizes: icon buttons as wide as their row is tall (never under the 24px target
+         *  floor, like the height they follow), the checkbox, and icons. */
+        'theme-button': 'max(var(--theme-button-height, 2.5rem), 24px)',
         'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
         'theme-icon-button-sm': 'var(--theme-icon-button-size-sm, 2rem)',
         'theme-checkbox': 'var(--theme-checkbox-size, 1rem)',
         'theme-icon': 'var(--theme-icon-size, 1rem)',
         'theme-icon-md': 'var(--theme-icon-size-md, 1.25rem)',
         'theme-icon-lg': 'var(--theme-icon-size-lg, 1.5rem)',
+        /** A square control inside the sign-in field, 4px off its edges, never under the 24px
+         *  target and never over the stock 2.25rem the field's end padding reserves: the password
+         *  field's reveal and copy buttons. */
+        'theme-auth-field-action':
+          'clamp(24px, calc(var(--theme-auth-field-height, 2.75rem) - 0.5rem), 2.25rem)',
         /** A theme-sized control's inline padding and gap, falling back to the shared spacing it
          *  read before, for a stylesheet that predates the roles. */
+        'theme-button-x': 'var(--theme-button-padding-x, 1rem)',
         'theme-control-x': 'var(--theme-control-padding-x, var(--theme-space-normal, 0.75rem))',
         'theme-control-gap': 'var(--theme-control-gap, var(--theme-space-compact, 0.375rem))',
         /** A dialog's inline padding and the gap between its title and description. */
@@ -138,12 +158,22 @@ module.exports = {
         'theme-popover': 'var(--theme-popover-radius, 1rem)',
         'theme-menu-panel': 'var(--theme-menu-panel-radius, 0.75rem)',
         'theme-composer-action': 'var(--theme-composer-action-radius, 9999px)',
+        'theme-auth-control': 'var(--theme-auth-control-radius, 1rem)',
+        'theme-auth-action': 'var(--theme-auth-action-radius, 0.5rem)',
         'theme-surface-lg': 'var(--theme-large-surface-radius, 1.5rem)',
         'theme-tab': 'var(--theme-tab-radius, 0.185rem)',
+        'theme-checkbox': 'var(--theme-checkbox-radius, calc(0.5rem - 4px))',
       },
       boxShadow: {
         'theme-surface':
           'var(--theme-elevation-surface, 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1))',
+      },
+      /** The width and offset of the keyboard focus outline, the `focusRingWidth` and `focusRingOffset` roles. */
+      outlineWidth: {
+        'theme-focus': 'var(--theme-focus-ring-width, 2px)',
+      },
+      outlineOffset: {
+        'theme-focus': 'var(--theme-focus-ring-offset, 2px)',
       },
       transitionDuration: {
         'theme-fast': 'var(--theme-motion-fast, 150ms)',
@@ -197,17 +227,19 @@ module.exports = {
       addVariant('touch', '@media (any-pointer: coarse)');
 
       /**
-       * The inverse of `touch`, for hiding something until hover: hover-gating
-       * alone strands the finger user of a 2-in-1, because `(hover: hover)` is
-       * true there — it describes the trackpad — while the touchscreen sits
-       * right next to it. Gating the hidden state on the absence of any coarse
-       * pointer keeps a reveal-on-hover affordance from ever hiding a control
-       * that only a tap can reach.
+       * For hiding something until hover. Hover-gating alone strands the finger
+       * user of a 2-in-1, because `(hover: hover)` is true there (it describes
+       * the trackpad) while the touchscreen sits right next to it, so the hidden
+       * state also needs the absence of any coarse pointer. The absence alone is
+       * not enough either: it matches a pointerless or print context, where no
+       * hover can ever reveal the control again, so both conditions nest.
        *
        * `not all and`, not the Media Queries Level 4 `not (...)`, because
        * lightningcss lowers this for the production build's browser targets.
        */
-      addVariant('no-touch', '@media not all and (any-pointer: coarse)');
+      addVariant('no-touch', {
+        '@media (hover: hover)': { '@media not all and (any-pointer: coarse)': '@slot' },
+      });
     },
   ],
 };

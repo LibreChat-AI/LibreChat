@@ -33,26 +33,6 @@ const getCurrentVersion = async (req, endpoint) => {
 };
 
 /**
- * Asynchronously lists assistants based on provided query parameters.
- *
- * Initializes the client with the current request and response objects and lists assistants
- * according to the query parameters. This function abstracts the logic for non-Azure paths.
- *
- * @deprecated
- * @async
- * @param {object} params - The parameters object.
- * @param {object} params.req - The request object, used for initializing the client.
- * @param {object} params.res - The response object, used for initializing the client.
- * @param {string} params.version - The API version to use.
- * @param {object} params.query - The query parameters to list assistants (e.g., limit, order).
- * @returns {Promise<object>} A promise that resolves to the response from the `openai.beta.assistants.list` method call.
- */
-const _listAssistants = async ({ req, res, version, query }) => {
-  const { openai } = await getOpenAIClient({ req, res, version });
-  return openai.beta.assistants.list(query);
-};
-
-/**
  * Fetches all assistants based on provided query params, until `has_more` is `false`.
  *
  * @async
@@ -285,5 +265,4 @@ function filterAssistants({ assistants, userId, assistantsConfig }) {
 module.exports = {
   getOpenAIClient,
   fetchAssistants,
-  getCurrentVersion,
 };

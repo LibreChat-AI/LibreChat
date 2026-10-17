@@ -1,12 +1,5 @@
 import { useEffect, useState } from 'react';
-import {
-  Select,
-  SelectItem,
-  SelectValue,
-  SelectContent,
-  SelectTrigger,
-  useToastContext,
-} from '@librechat/client';
+import { Dropdown, useToastContext } from '@librechat/client';
 import {
   STATEFUL_CODE_ENVIRONMENTS,
   resolveAllowedStatefulCodeEnvironments,
@@ -59,41 +52,36 @@ export default function StatefulWorkspaceDefault() {
     mutation.mutate({ statefulCodeEnvironment });
   };
 
+  const options = STATEFUL_CODE_ENVIRONMENTS.filter(
+    (candidate) => allowedEnvironments.includes(candidate) || candidate === savedEnvironment,
+  ).map((candidate) => ({
+    value: candidate,
+    label: localize(ENVIRONMENT_LABELS[candidate]),
+    disabled: !allowedEnvironments.includes(candidate),
+  }));
+
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-      <div>
-        <label id="default-stateful-workspace-label" htmlFor="default-stateful-workspace">
+      <div className="min-w-0">
+        <div id="default-stateful-workspace-label" className="text-text-primary text-sm">
           {localize('com_ui_default_stateful_workspace')}
-        </label>
+        </div>
         <p id="default-stateful-workspace-description" className="text-text-secondary mt-1 text-xs">
           {localize('com_ui_default_stateful_workspace_description')}
         </p>
       </div>
-      <Select value={environment} onValueChange={handleChange} disabled={mutation.isLoading}>
-        <SelectTrigger
-          id="default-stateful-workspace"
-          className="w-full shrink-0 sm:w-[13.75rem]"
-          aria-labelledby="default-stateful-workspace-label"
-          aria-describedby="default-stateful-workspace-description"
-          data-testid="default-stateful-workspace"
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {STATEFUL_CODE_ENVIRONMENTS.filter(
-            (candidate) =>
-              allowedEnvironments.includes(candidate) || candidate === savedEnvironment,
-          ).map((candidate) => (
-            <SelectItem
-              key={candidate}
-              value={candidate}
-              disabled={!allowedEnvironments.includes(candidate)}
-            >
-              {localize(ENVIRONMENT_LABELS[candidate])}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Dropdown
+        value={environment}
+        options={options}
+        onChange={handleChange}
+        disabled={mutation.isLoading}
+        testId="default-stateful-workspace"
+        aria-labelledby="default-stateful-workspace-label"
+        aria-describedby="default-stateful-workspace-description"
+        className="shrink-0"
+        sizeClasses="z-50 min-w-[18rem]"
+        triggerClassName="w-full sm:w-[16rem]"
+      />
     </div>
   );
 }

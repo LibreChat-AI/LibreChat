@@ -152,7 +152,9 @@ export default function CodeSettings() {
               {localize('com_ui_stateful_sessions')}
             </div>
             <HoverCardTrigger>
-              <CircleHelpIcon className="text-text-tertiary h-4 w-4" />
+              <span className="text-text-tertiary">
+                <CircleHelpIcon className="h-4 w-4" />
+              </span>
             </HoverCardTrigger>
           </div>
           <HoverCardPortal>

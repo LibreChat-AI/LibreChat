@@ -776,7 +776,7 @@ describe('live fold parity with the cards it hides', () => {
       expect(header.querySelector('.lucide-file-text')).not.toBeNull();
     });
 
-    it.each([true, false])('puts failure ahead of site identity (fold=%s)', (fold) => {
+    it.each([true, false])('keeps identity for mixed outcomes (fold=%s)', (fold) => {
       const failed = toPart({ name: Tools.web_search, output: 'results', runStepStatus: 'failed' });
       const view = mount(
         [failed, toPart({ name: 'lookup', output: 'ok' }, 't2')],
@@ -784,8 +784,8 @@ describe('live fold parity with the cards it hides', () => {
         fold,
       );
       const header = within(view.container).getAllByRole('button')[0];
-      expect(header.querySelector('.lucide-triangle-alert')).not.toBeNull();
-      expect(sites(header)).toEqual([]);
+      expect(header.querySelector('.lucide-circle-x')).toBeNull();
+      expect(sites(header)).toEqual(['youtube.com', 'cnbc.com']);
     });
 
     it.each([true, false])('puts cancellation ahead of tool identity (fold=%s)', (fold) => {
@@ -807,7 +807,7 @@ describe('live fold parity with the cards it hides', () => {
       );
       const header = screen.getByRole('button', { name: 'Reviewed the work' });
       expect(
-        header.querySelector(status === 'failed' ? '.lucide-triangle-alert' : '.lucide-x'),
+        header.querySelector(status === 'failed' ? '.lucide-circle-x' : '.lucide-x'),
       ).not.toBeNull();
     });
 
@@ -824,7 +824,7 @@ describe('live fold parity with the cards it hides', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Reviewed the work' }));
       const group = screen.getByRole('button', { name: /Ran 2 actions.*1\/2 failed/ });
       expect(group).toHaveAccessibleName(/1\/2 failed/);
-      expect(group.querySelector('.lucide-triangle-alert')).not.toBeNull();
+      expect(group.querySelector('.lucide-circle-x')).toBeNull();
     });
 
     it('shows the sites a search read on the live row, one per domain, with no card mounted', () => {
@@ -874,7 +874,7 @@ describe('live fold parity with the cards it hides', () => {
       const button = screen.getByRole('button', { name: 'Could not reach the site' });
 
       expect(sites(button)).toEqual([]);
-      expect(button.querySelector('.lucide-triangle-alert')).not.toBeNull();
+      expect(button.querySelector('.lucide-circle-x')).not.toBeNull();
     });
   });
 
@@ -1237,7 +1237,9 @@ describe('live activity hardening transitions', () => {
     expect(screen.getByText('Ran agent').closest('[data-testid="activity-phase-card"]')).toBeNull();
   });
 
-  it.each(['x'.repeat(1199), 'Earlier sentence. ' + 'x'.repeat(1199)])(
+  /** A non-ASCII run: an unbroken ASCII alphanumeric run this long is
+   *  classified as an encoded provider payload and never previewed. */
+  it.each(['é'.repeat(1199), 'Earlier sentence. ' + 'é'.repeat(1199)])(
     'does not repeatedly announce one thought as its bounded preview window moves',
     (initial) => {
       jest.useFakeTimers();
@@ -1255,7 +1257,7 @@ describe('live activity hardening transitions', () => {
       expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
       /** The finished sentence is the long run itself, clamped to one line;
        *  the sentence after it is still being written. */
-      expect(screen.getByRole('button')).toHaveAccessibleName(`${'x'.repeat(255)}…`);
+      expect(screen.getByRole('button')).toHaveAccessibleName(`${'é'.repeat(255)}…`);
     },
   );
 
@@ -1392,9 +1394,11 @@ describe('live disclosure ownership', () => {
     global.IntersectionObserver = originalObserver;
   });
   beforeEach(() => {
-    const observer: IntersectionObserver = {
+    // Unannotated so the extra `scrollMargin` is accepted by DOM libs that predate it.
+    const observer = {
       root: null,
       rootMargin: '',
+      scrollMargin: '',
       thresholds: [],
       observe: jest.fn(),
       unobserve: jest.fn(),
@@ -1704,3 +1708,63 @@ it.each(['lookup', 'image_gen_oai'])(
     }
   },
 );
+
+describe('live activity over encrypted reasoning', () => {
+  /** Bedrock `redactedContent`, base64-encoded into THINK text by the SDK. */
+  const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
+    'base64',
+  );
+  const think = (text: string, label?: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.THINK,
+      think: text,
+      ...(label != null && { reasoning_label: label }),
+    }) as TMessageContentParts;
+
+  it('names an encrypted thought generically instead of previewing the payload', () => {
+    const activity = getLiveActivity(
+      [think(encoded, 'Inspecting an encoded data snapshot')],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('com_ui_thinking');
+  });
+
+  it('never titles a span with a label generated from an encrypted thought', () => {
+    const activity = getLiveActivity(
+      [think(encoded, 'Inspecting an encoded data snapshot')],
+      (key) => key,
+      [],
+      undefined,
+      true,
+    );
+    expect(activity.text).toBe('com_ui_running');
+  });
+
+  it('previews the readable text of reasoning mixed with an encrypted payload', () => {
+    const activity = getLiveActivity(
+      [think(`Comparing both lockfiles. ${encoded}`)],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('Comparing both lockfiles.');
+  });
+
+  it('never previews the undecided start of a streaming payload', () => {
+    const activity = getLiveActivity(
+      [think(`Comparing both lockfiles. ${encoded.slice(0, 100)}`)],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('Comparing both lockfiles.');
+  });
+
+  it('still previews readable reasoning', () => {
+    const activity = getLiveActivity(
+      [think('Comparing both lockfiles. The resolver pins an older range.')],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('The resolver pins an older range.');
+  });
+});

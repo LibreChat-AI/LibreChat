@@ -29,6 +29,16 @@
   --color-illustration-subtle: rgb(var(--illustration-subtle));
   --color-illustration: rgb(var(--illustration));
   --color-illustration-strong: rgb(var(--illustration-strong));
+  --color-scrollbar-thumb: rgb(var(--scrollbar-thumb));
+  --color-page-canvas: rgb(var(--page-canvas));
+  --color-select-fill: rgb(var(--select-fill));
+  --color-select-edge: rgb(var(--select-edge));
+  --color-button-neutral-border: rgb(var(--button-neutral-border));
+  --color-button-neutral-text: rgb(var(--button-neutral-text));
+  --color-button-neutral-hover: rgb(var(--button-neutral-hover));
+  --color-link-inline: rgb(var(--link-inline));
+  --color-toast-edge: rgb(var(--toast-edge));
+  --color-stroke-ink: rgb(var(--stroke-ink));
   --color-file-document: rgb(var(--file-document));
   --color-file-sheet: rgb(var(--file-sheet));
   --color-file-code: rgb(var(--file-code));
@@ -138,6 +148,7 @@
   /* Follow the canvas and the primary ink, for a stylesheet that predates them. */
   --color-field-fill: rgb(var(--field-fill, var(--surface-primary)));
   --color-field-text: rgb(var(--field-text, var(--text-primary)));
+  --color-checkbox-fill: rgb(var(--checkbox-fill, var(--surface-primary)));
   /* Follow the roles they were painted in before they had their own, for a stylesheet that
      predates them. */
   --color-surface-tooltip: rgb(var(--surface-tooltip, var(--surface-primary)));
@@ -158,6 +169,7 @@
   );
   --color-surface-composer: rgb(var(--surface-composer));
   --color-surface-search: rgb(var(--surface-search));
+  --color-surface-sidebar: rgb(var(--surface-sidebar));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */
@@ -191,6 +203,13 @@
   --color-series-6: rgb(var(--series-6));
   --color-series-7: rgb(var(--series-7));
   --color-series-8: rgb(var(--series-8));
+  /* Each follows the slot it was painted in before its role, for a stylesheet that predates it. */
+  --color-category-icon-1: rgb(var(--category-icon-1, var(--series-1)));
+  --color-category-icon-2: rgb(var(--category-icon-2, var(--series-2)));
+  --color-category-icon-4: rgb(var(--category-icon-4, var(--series-4)));
+  --color-category-icon-5: rgb(var(--category-icon-5, var(--series-5)));
+  --color-category-icon-6: rgb(var(--category-icon-6, var(--series-6)));
+  --color-category-icon-7: rgb(var(--category-icon-7, var(--series-7)));
 
   /* charts and controls */
   --color-chart-widget-surface: rgb(var(--chart-widget-surface));
@@ -200,6 +219,18 @@
   --color-switch-thumb: rgb(var(--switch-thumb, var(--surface-primary)));
   --color-table-header-text: rgb(var(--table-header-text, var(--text-secondary)));
   --color-table-header-fill: rgb(var(--table-header-fill, var(--surface-dialog)));
+  /* The code-syntax palette and the shimmer animation are painted from stylesheets, so these carry no
+   * utility today; each is declared so the registry and this file name the same colors. */
+  --color-syntax-text: rgb(var(--syntax-text));
+  --color-syntax-comment: rgb(var(--syntax-comment));
+  --color-syntax-meta: rgb(var(--syntax-meta));
+  --color-syntax-builtin: rgb(var(--syntax-builtin));
+  --color-syntax-keyword: rgb(var(--syntax-keyword));
+  --color-syntax-string: rgb(var(--syntax-string));
+  --color-syntax-attr: rgb(var(--syntax-attr));
+  --color-syntax-title: rgb(var(--syntax-title));
+  --color-shimmer-base: rgb(var(--shimmer-base) / var(--shimmer-base-alpha, 1));
+  --color-shimmer-dip: rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1));
 }
 
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
@@ -230,6 +261,12 @@
   --text-xl--line-height: var(--theme-text-xl-leading);
   --text-2xl: var(--theme-text-2xl);
   --text-2xl--line-height: var(--theme-text-2xl-leading);
+  --text-3xs: var(--theme-text-3xs);
+  --text-2xs: var(--theme-text-2xs);
+  --text-1xs: var(--theme-text-1xs);
+  --text-1sm: var(--theme-text-1sm);
+  --text-3xl: var(--theme-text-3xl);
+  --text-3xl--line-height: var(--theme-text-3xl-leading);
   --shadow: var(--theme-shadow-sm);
   --shadow-2xs: var(--theme-shadow-2xs);
   --shadow-xs: var(--theme-shadow-xs);
@@ -287,6 +324,18 @@
   }
 }
 
+/* A theme whose `chromeBorderAlpha` is `0` draws no outline on chrome controls, so a control that
+ * floats over content or a bar that sits over a scrolling thread needs a surface in place of the
+ * edge. Read, like the disabled style, from the `--theme-border-chrome-alpha` property the nearest
+ * themed root carries. */
+@custom-variant theme-chrome-quiet {
+  @container style(--theme-border-chrome-alpha: 0) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
 /* A theme whose `fieldFocusStyle` is `border` swaps a focused field's edge color instead of
  * drawing a ring. Read, like the disabled style, from the `--theme-field-focus-style` property
  * the nearest themed root carries. */
@@ -304,6 +353,16 @@
  * fill carries a single class's weight, so a hover, open or disabled fill still paints over it. */
 @custom-variant theme-field-fill {
   @container style(--theme-field-fill-style: fill) {
+    @slot;
+  }
+}
+
+/* A theme whose `checkboxFillStyle` is `fill` paints an unchecked checkbox in `checkbox-fill`
+ * instead of leaving it on the surface it sits on, read like the field fill from the nearest
+ * themed root. The default `transparent` style, and a browser without style queries, keep the
+ * box clear; the checked fill carries a state selector's weight, so it still paints over it. */
+@custom-variant theme-checkbox-fill {
+  @container style(--theme-checkbox-fill-style: fill) {
     @slot;
   }
 }

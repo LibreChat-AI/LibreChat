@@ -145,6 +145,7 @@ const {
   collectFreshSkillPrimeNames,
   isSkillPrimeMessage,
   collectFileIds,
+  dedupeDocumentNames,
   processTextWithTokenLimit,
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
@@ -603,8 +604,6 @@ class AgentClient extends BaseClient {
      * @type {string} */
     this.clientName = EModelEndpoint.agents;
 
-    /** @deprecated @type {true} - Is a Chat Completion Request */
-    this.isChatCompletion = true;
     /** @type {number | undefined} */
     this.jobCreatedAt = options.jobCreatedAt;
     /** Generation-scoped LangGraph checkpoint namespace. Legacy paused jobs
@@ -2902,6 +2901,8 @@ class AgentClient extends BaseClient {
         }
       }
     }
+    /** After the steer stamp, which adds replayed steers' documents of its own. */
+    dedupeDocumentNames(payload);
     if (hasFileContext) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
@@ -4948,33 +4949,6 @@ class AgentClient extends BaseClient {
           initialModelBoundAdmission,
         );
         config = withPrivateTextAdmissionConfig(config, initialModelBoundAdmission);
-
-        // TODO: needs to be added as part of AgentContext initialization
-        // const noSystemModelRegex = [/\b(o1-preview|o1-mini|amazon\.titan-text)\b/gi];
-        // const noSystemMessages = noSystemModelRegex.some((regex) =>
-        //   agent.model_parameters.model.match(regex),
-        // );
-        // if (noSystemMessages === true && systemContent?.length) {
-        //   const latestMessageContent = _messages.pop().content;
-        //   if (typeof latestMessageContent !== 'string') {
-        //     latestMessageContent[0].text = [systemContent, latestMessageContent[0].text].join('\n');
-        //     _messages.push(new HumanMessage({ content: latestMessageContent }));
-        //   } else {
-        //     const text = [systemContent, latestMessageContent].join('\n');
-        //     _messages.push(new HumanMessage(text));
-        //   }
-        // }
-        // let messages = _messages;
-        // if (agent.useLegacyContent === true) {
-        //   messages = formatContentStrings(messages);
-        // }
-        // if (
-        //   agent.model_parameters?.clientOptions?.defaultHeaders?.['anthropic-beta']?.includes(
-        //     'prompt-caching',
-        //   )
-        // ) {
-        //   messages = addCacheControl(messages);
-        // }
 
         if (this.processMemory && !isCompactionTurn) {
           memoryPromise = this.runMemory(memoryMessages);

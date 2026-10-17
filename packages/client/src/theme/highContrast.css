@@ -40,7 +40,8 @@ html.high-contrast [data-active-item],
 html.high-contrast .select-item:focus-visible,
 html.high-contrast [data-state='selected'],
 html.high-contrast
-  :is(.bg-surface-active, .bg-surface-active-alt, .bg-surface-nav-selected):not(span) {
+  :is(.bg-surface-active, .bg-surface-active-alt, .bg-surface-nav-selected):not(span),
+html.high-contrast [aria-pressed='true'][class*='aria-pressed:bg-surface-nav-selected']:not(span) {
   outline: 3px solid rgb(var(--text-primary)) !important;
   outline-offset: -3px;
 }

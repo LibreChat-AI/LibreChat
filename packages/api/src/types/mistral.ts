@@ -52,17 +52,6 @@ export interface OCRResult {
   usage_info: OCRUsageInfo;
 }
 
-export interface MistralOCRRequest {
-  model: string;
-  image_limit?: number;
-  include_image_base64?: boolean;
-  document: {
-    type: 'document_url' | 'image_url';
-    document_url?: string;
-    image_url?: string;
-  };
-}
-
 export interface MistralOCRError {
   detail?: string;
   message?: string;

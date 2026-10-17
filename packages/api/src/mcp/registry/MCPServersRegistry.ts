@@ -14,7 +14,11 @@ import {
   APP_CACHE_NAMESPACE,
   CONFIG_CACHE_NAMESPACE,
 } from './cache/ServerConfigsCacheFactory';
-import { MCPInspectionFailedError, isMCPDomainNotAllowedError } from '~/mcp/errors';
+import {
+  MCPCommittedWriteError,
+  MCPInspectionFailedError,
+  isMCPDomainNotAllowedError,
+} from '~/mcp/errors';
 import { normalizeLegacyHeaderMaps, normalizeLegacyHeaderMapsIn } from './compat';
 import { canBackfillSharedServerInstructions, isUserSourced } from '~/mcp/utils';
 import { ReadThroughAllCache } from './cache/ReadThroughAllCache';
@@ -23,6 +27,7 @@ import { requireApiKeyReentryForRebinding } from './binding';
 import { ReadThroughCache } from './cache/ReadThroughCache';
 import { MCPServerInspector } from './MCPServerInspector';
 import { ServerConfigsDB } from './db/ServerConfigsDB';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { cacheConfig } from '~/cache';
 import { withTimeout } from '~/utils';
 
@@ -429,8 +434,11 @@ export class MCPServersRegistry {
     allowedDomains?: string[] | null;
     allowedAddresses?: string[] | null;
   }): Promise<t.MCPConnectionTarget | undefined> {
-    const baseConfigs = await this.getBaseServerConfigs(userId, role);
-    const base = baseConfigs[serverName];
+    // Validation concerns exactly one persisted binding. Avoid the all-server path here: besides
+    // doing unrelated ACL/decryption work, one slow or malformed server can otherwise prevent an
+    // independent inline App from ever reaching its sandbox. getServerConfig applies the same
+    // YAML-over-user precedence with an ACL-aware, per-server DB fallback.
+    const base = await this.getServerConfig(serverName, userId, undefined, role);
     const rawConfig = mcpConfig[serverName];
     let selectedConfig = base;
 
@@ -478,10 +486,11 @@ export class MCPServersRegistry {
     serverName: string,
     userId?: string,
     configServers?: Record<string, t.ParsedServerConfig>,
+    role?: string,
   ): Promise<t.ParsedServerConfig | undefined> {
     const candidate = configServers?.[serverName];
 
-    const cacheKey = this.getReadThroughCacheKey(serverName, userId);
+    const cacheKey = this.getReadThroughCacheKey(serverName, userId, role);
     let base: t.ParsedServerConfig | undefined;
     const cached = await this.readThroughCache.getEntry(cacheKey);
     if (cached.hit) {
@@ -491,7 +500,7 @@ export class MCPServersRegistry {
       if (configFromYaml) {
         base = configFromYaml;
       } else {
-        base = await this.dbConfigsRepo.get(serverName, userId);
+        base = await this.dbConfigsRepo.get(serverName, userId, role);
       }
       await this.readThroughCache.set(cacheKey, base, cached.fill);
     }
@@ -690,20 +699,71 @@ export class MCPServersRegistry {
       ...parsedConfig,
       source,
     };
-    const result =
-      storageLocation === 'DB'
-        ? await this.dbConfigsRepo.add(
-            serverName,
-            tagged,
-            userId,
-            await this.getOperatorManagedServerNames(reservedServerNames),
-          )
-        : await configRepo.add(serverName, tagged, userId);
-    await this.invalidateServerReadCaches(result.serverName, userId, storageLocation);
+    let result: t.AddServerResult;
+    try {
+      result =
+        storageLocation === 'DB'
+          ? await this.dbConfigsRepo.add(
+              serverName,
+              tagged,
+              userId,
+              await this.getOperatorManagedServerNames(reservedServerNames),
+            )
+          : await configRepo.add(serverName, tagged, userId);
+    } catch (error) {
+      await this.invalidateAfterCommittedFailure(error, serverName, userId, storageLocation);
+      throw error;
+    }
+    await this.invalidateCommitted(result, () =>
+      this.invalidateServerReadCaches(result.serverName, userId, storageLocation),
+    );
     if (storageLocation === 'CACHE') {
       this.resetYamlServerNamesMemo();
     }
     return result;
+  }
+
+  /**
+   * A repository step after a committed write failed (for example permission bookkeeping),
+   * so the stored config changed even though the call rejects: refresh the read caches
+   * best-effort before the failure propagates, or they would keep serving the old state.
+   */
+  private async invalidateAfterCommittedFailure(
+    error: unknown,
+    serverName: string,
+    userId: string | undefined,
+    storageLocation: 'CACHE' | 'DB',
+  ): Promise<void> {
+    if (!(error instanceof MCPCommittedWriteError)) {
+      return;
+    }
+    const committed = error.committed as t.AddServerResult | undefined;
+    await this.invalidateServerReadCaches(
+      committed?.serverName ?? serverName,
+      userId,
+      storageLocation,
+    ).catch((invalidationError) =>
+      logger.error(
+        '[MCPServersRegistry] cache invalidation failed after a committed write error:',
+        getSafeErrorMetadata(invalidationError),
+      ),
+    );
+  }
+
+  /**
+   * Runs the cache invalidation that follows a committed write. A failure is rethrown as
+   * `MCPCommittedWriteError` carrying what was persisted, so the caller can record
+   * the committed change instead of mistaking it for a write that never happened.
+   */
+  private async invalidateCommitted<T>(
+    committed: T | undefined,
+    invalidate: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await invalidate();
+    } catch (error) {
+      throw new MCPCommittedWriteError(committed, error);
+    }
   }
 
   /**
@@ -1077,9 +1137,11 @@ export class MCPServersRegistry {
     userId?: string,
   ): Promise<t.ParsedServerConfig> {
     const configRepo = this.getConfigRepository(storageLocation);
-    await configRepo.update(serverName, parsedConfig, userId);
-    await this.invalidateServerReadCaches(serverName, userId, storageLocation);
-    return parsedConfig;
+    const persisted = (await configRepo.update(serverName, parsedConfig, userId)) ?? parsedConfig;
+    await this.invalidateCommitted(persisted, () =>
+      this.invalidateServerReadCaches(serverName, userId, storageLocation),
+    );
+    return persisted;
   }
 
   public async updateServer(
@@ -1341,13 +1403,22 @@ export class MCPServersRegistry {
     serverName: string,
     storageLocation: 'CACHE' | 'DB',
     userId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const configRepo = this.getConfigRepository(storageLocation);
-    await configRepo.remove(serverName, userId);
-    await this.invalidateServerReadCaches(serverName, userId, storageLocation);
+    let removed: boolean | void;
+    try {
+      removed = await configRepo.remove(serverName, userId);
+    } catch (error) {
+      await this.invalidateAfterCommittedFailure(error, serverName, userId, storageLocation);
+      throw error;
+    }
+    await this.invalidateCommitted(removed !== false, () =>
+      this.invalidateServerReadCaches(serverName, userId, storageLocation),
+    );
     if (storageLocation === 'CACHE') {
       this.resetYamlServerNamesMemo();
     }
+    return removed !== false;
   }
 
   private getConfigRepository(storageLocation: 'CACHE' | 'DB'): IServerConfigsRepositoryInterface {
@@ -1365,8 +1436,10 @@ export class MCPServersRegistry {
 
   /** Tenant-scoped because DB-backed lookups are filtered by the active tenant:
    *  an entry populated in one tenant's context must never satisfy another's. */
-  private getReadThroughCacheKey(serverName: string, userId?: string): string {
-    return scopedCacheKey(userId ? `${serverName}::${userId}` : serverName);
+  private getReadThroughCacheKey(serverName: string, userId?: string, role?: string): string {
+    return scopedCacheKey(
+      userId ? `${serverName}::${userId}${role != null ? `::role:${role}` : ''}` : serverName,
+    );
   }
 
   /**

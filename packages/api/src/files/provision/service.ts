@@ -111,11 +111,6 @@ export interface ProvisionService {
     existingStream?: Readable;
     signal?: AbortSignal;
   }) => Promise<{ embedded: boolean; fileUpdate: ProvisionFileUpdate | null }>;
-  checkCodeEnvFileAlive: (params: {
-    file: TFile;
-    apiKey?: string;
-    req?: ServerRequest;
-  }) => Promise<boolean>;
   checkSessionsAlive: (params: {
     files: TFile[];
     apiKey?: string;
@@ -191,22 +186,6 @@ export function createProvisionService({
       signal.throwIfAborted();
     }
     return stream;
-  }
-
-  /** Uses managed bearer auth when available, otherwise the configured legacy API key. */
-  async function buildCodeApiHeaders({
-    apiKey,
-    req,
-  }: {
-    apiKey?: string;
-    req?: ServerRequest;
-  }): Promise<Record<string, string>> {
-    const authHeaders = await getCodeApiAuthHeaders(req);
-    return {
-      'User-Agent': 'LibreChat/1.0',
-      ...(authHeaders.Authorization == null && apiKey ? { 'X-API-Key': apiKey } : {}),
-      ...authHeaders,
-    };
   }
 
   /**
@@ -467,54 +446,6 @@ export function createProvisionService({
   }
 
   /**
-   * Check if a single code env file is still alive by querying its session.
-   *
-   * @param {object} params
-   * @param {import('librechat-data-provider').TFile} params.file - File with metadata.codeEnvRef
-   * @param {string} [params.apiKey] - Legacy CODE_API_KEY, when configured
-   * @param {object} [params.req] - Request used to mint JWT code auth, when enabled
-   * @returns {Promise<boolean>} true if the file is still accessible in the code env
-   */
-  async function checkCodeEnvFileAlive({
-    file,
-    apiKey,
-    req,
-  }: {
-    file: TFile;
-    apiKey?: string;
-    req?: ServerRequest;
-  }): Promise<boolean> {
-    const ref = file.metadata?.codeEnvRef;
-    if (!ref?.storage_session_id || !ref?.file_id) {
-      return false;
-    }
-
-    try {
-      const baseURL = getCodeBaseURL();
-      const response = await getAxios()({
-        method: 'get',
-        url: `${baseURL}/files/${ref.storage_session_id}`,
-        params: { detail: 'summary' },
-        headers: await buildCodeApiHeaders({ apiKey, req }),
-        httpAgent: codeServerHttpAgent,
-        httpsAgent: codeServerHttpsAgent,
-        timeout: 5000,
-      });
-
-      const found = (response.data as Array<{ fileId?: string }> | undefined)?.some(
-        (f) => f.fileId === ref.file_id,
-      );
-      return !!found;
-    } catch (error) {
-      logAxiosError({
-        message: `[checkCodeEnvFileAlive] Error checking file "${file.filename}": ${(error as Error).message}`,
-        error,
-      });
-      return false;
-    }
-  }
-
-  /**
    * Batch-check code env file liveness by `storage_session_id`.
    * Groups files by session, makes one API call per session.
    *
@@ -690,7 +621,6 @@ export function createProvisionService({
     loadCodeApiKey,
     provisionToCodeEnv,
     provisionToVectorDB,
-    checkCodeEnvFileAlive,
     checkSessionsAlive,
   };
 }

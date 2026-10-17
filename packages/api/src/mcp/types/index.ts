@@ -10,19 +10,13 @@ import {
 } from 'librechat-data-provider';
 import type {
   EmbeddedResource,
-  ListToolsResult,
   ResourceLink,
   ImageContent,
   AudioContent,
   TextContent,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import type {
-  SearchResultData,
-  UIResource,
-  TPlugin,
-  TMCPAppOperationLimits,
-} from 'librechat-data-provider';
+import type { SearchResultData, UIResource, TMCPAppOperationLimits } from 'librechat-data-provider';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type { LCTool } from '@librechat/agents';
 import type {
@@ -70,8 +64,6 @@ export interface LCFunctionTool {
 }
 
 export type LCAvailableTools = Record<string, LCFunctionTool>;
-export type LCManifestTool = TPlugin;
-export type LCToolManifest = TPlugin[];
 export interface MCPPrompt {
   name: string;
   description?: string;
@@ -83,7 +75,6 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
 export type OAuthHandledSource = 'silent-refresh' | 'interactive';
 
 export type MCPTool = Tool;
-export type MCPToolListResponse = ListToolsResult;
 export type ToolContentPart =
   | TextContent
   | ImageContent

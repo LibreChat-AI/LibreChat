@@ -9,6 +9,7 @@ import {
   InfoHoverCard,
   useOnClickOutside,
 } from '@librechat/client';
+import { clearTTSCache, hasLegacyTTSCache, hasCachedTTSAudio } from '~/utils';
 import { useLocalize } from '~/hooks';
 import { ESide } from '~/common';
 
@@ -22,9 +23,7 @@ export const DeleteCache = ({ disabled = false }: { disabled?: boolean }) => {
   useOnClickOutside(contentRef, () => confirmClear && setConfirmClear(false), []);
 
   const checkCache = useCallback(async () => {
-    const cache = await caches.open('tts-responses');
-    const keys = await cache.keys();
-    setIsCacheEmpty(keys.length === 0);
+    setIsCacheEmpty(!hasCachedTTSAudio() && !(await hasLegacyTTSCache()));
   }, []);
 
   useEffect(() => {
@@ -33,10 +32,11 @@ export const DeleteCache = ({ disabled = false }: { disabled?: boolean }) => {
 
   const revokeAllUserKeys = useCallback(async () => {
     setIsLoading(true);
-    const cache = await caches.open('tts-responses');
-    await cache.keys().then((keys) => Promise.all(keys.map((key) => cache.delete(key))));
+    await clearTTSCache();
+    /** A legacy delete that failed leaves the action available for another try. */
+    await checkCache();
     setIsLoading(false);
-  }, []);
+  }, [checkCache]);
 
   return (
     <div className="flex items-center justify-between">
@@ -47,7 +47,7 @@ export const DeleteCache = ({ disabled = false }: { disabled?: boolean }) => {
       <OGDialog open={open} onOpenChange={setOpen}>
         <OGDialogTrigger asChild>
           <Button
-            variant="destructive"
+            variant="destructive-soft"
             onClick={() => setOpen(true)}
             disabled={disabled || isCacheEmpty}
             aria-labelledby="delete-cache-label"

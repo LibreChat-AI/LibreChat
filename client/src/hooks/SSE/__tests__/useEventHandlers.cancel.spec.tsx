@@ -23,7 +23,7 @@ jest.mock('react-router-dom', () => ({
 }));
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: { abortScroll: 'abortScroll', submissionStartFamily: () => 'start' },
+  default: { abortScroll: 'abortScroll' },
 }));
 jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({}) }));
 jest.mock('~/Providers', () => ({ useLiveAnnouncer: () => ({ announcePolite: jest.fn() }) }));

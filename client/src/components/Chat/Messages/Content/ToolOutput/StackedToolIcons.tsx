@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TriangleAlert, X } from 'lucide-react';
+import { CircleX, X } from 'lucide-react';
 import type { ToolIconType } from './ToolIcon';
 import ToolIcon, { getToolIconType, getMCPServerName } from './ToolIcon';
 import { FaviconImage } from '~/components/Web/SourceHovercard';
@@ -61,9 +61,11 @@ export default function StackedToolIcons({
     return result;
   }, [toolNames, mcpIconMap, mcpServerNames, sourceDomains]);
 
-  if (status != null) {
-    const StatusIcon = status === 'failed' ? TriangleAlert : X;
-    return <StatusIcon className="text-text-warning size-4 shrink-0" aria-hidden="true" />;
+  if (status === 'failed') {
+    return <CircleX className="text-status-error size-4 shrink-0" aria-hidden="true" />;
+  }
+  if (status === 'cancelled') {
+    return <X className="text-text-warning size-4 shrink-0" aria-hidden="true" />;
   }
 
   const visibleIcons = uniqueIcons.slice(0, maxIcons);

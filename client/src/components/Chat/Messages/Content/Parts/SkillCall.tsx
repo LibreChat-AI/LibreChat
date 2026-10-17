@@ -91,7 +91,7 @@ export default function SkillCall({
               )}
             >
               <div className="p-4 text-xs">
-                <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
+                <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
                 <div className="text-text-primary max-h-[12.5rem] overflow-auto">

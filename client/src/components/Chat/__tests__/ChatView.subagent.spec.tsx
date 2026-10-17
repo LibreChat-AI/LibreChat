@@ -70,6 +70,7 @@ jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode })
 ));
 jest.mock('../Input/ChatForm', () => () => <div data-testid="chat-form" />);
 jest.mock('../Landing', () => () => <div data-testid="landing" />);
+jest.mock('~/components/Lia', () => () => null);
 jest.mock('../Trace', () => ({
   TraceSurface: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -77,6 +78,7 @@ jest.mock('../Footer', () => ({
   __esModule: true,
   default: () => <div data-testid="footer" />,
   useConfiguredFooter: () => false,
+  useLandingFooter: () => true,
 }));
 jest.mock('../Header', () => ({ readOnly }: { readOnly?: boolean }) => (
   <div data-read-only={String(readOnly)} data-testid="header" />
@@ -89,8 +91,6 @@ jest.mock('~/utils', () => ({
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    submissionByIndex: jest.fn(),
-    isSubmittingFamily: jest.fn(),
     centerFormOnLanding: {},
   },
 }));

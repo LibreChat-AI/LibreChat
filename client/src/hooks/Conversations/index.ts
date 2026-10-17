@@ -14,7 +14,6 @@ export {
 export { default as useReplyWatcher } from './useReplyWatcher';
 export { default as useDefaultConvo } from './useDefaultConvo';
 export { default as useSearchEnabled } from './useSearchEnabled';
-export { default as useGenerateConvo } from './useGenerateConvo';
 export { default as useDebouncedInput } from './useDebouncedInput';
 export { default as useGetConversation } from './useGetConversation';
 export { default as useBookmarkSuccess } from './useBookmarkSuccess';
@@ -25,3 +24,8 @@ export { default as useConversationSeen } from './useConversationSeen';
 export { default as useUpdateTagsInConvo } from './useUpdateTagsInConvo';
 export { default as useExportConversation } from './useExportConversation';
 export { default as useUnseenConversations } from './useUnseenConversations';
+export { default as useNewChat } from './useNewChat';
+export { default as useMultiConvo } from './useMultiConvo';
+export { default as useTemporaryChat } from './useTemporaryChat';
+export { default as useAddedResponse } from './useAddedResponse';
+export { default as useGetAddedConvo } from './useGetAddedConvo';

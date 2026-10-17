@@ -10,6 +10,8 @@ interface ToggleSwitchProps {
   stateAtom: RecoilState<boolean> | WritableAtom<boolean, [boolean], void>;
   localizationKey: LocalizeKey;
   hoverCardText?: LocalizeKey;
+  /** Rendered after the label, outside its accessible name (for example a Beta pill). */
+  badge?: React.ReactNode;
   switchId: string;
   onCheckedChange?: (value: boolean) => void;
   showSwitch?: boolean;
@@ -27,6 +29,7 @@ const RecoilToggle: React.FC<
   stateAtom,
   localizationKey,
   hoverCardText,
+  badge,
   switchId,
   onCheckedChange,
   disabled = false,
@@ -48,6 +51,7 @@ const RecoilToggle: React.FC<
         <div id={labelId}>
           {strongLabel ? <strong>{localize(localizationKey)}</strong> : localize(localizationKey)}
         </div>
+        {badge}
         {hoverCardText && <InfoHoverCard side={ESide.Bottom} text={localize(hoverCardText)} />}
       </div>
       <Switch
@@ -69,6 +73,7 @@ const JotaiToggle: React.FC<
   stateAtom,
   localizationKey,
   hoverCardText,
+  badge,
   switchId,
   onCheckedChange,
   disabled = false,
@@ -90,6 +95,7 @@ const JotaiToggle: React.FC<
         <div id={labelId}>
           {strongLabel ? <strong>{localize(localizationKey)}</strong> : localize(localizationKey)}
         </div>
+        {badge}
         {hoverCardText && <InfoHoverCard side={ESide.Bottom} text={localize(hoverCardText)} />}
       </div>
       <Switch

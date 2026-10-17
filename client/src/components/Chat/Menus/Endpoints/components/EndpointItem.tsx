@@ -70,7 +70,7 @@ const SettingsButton = ({
       <span
         aria-hidden="true"
         className={cn(
-          'grid overflow-hidden transition-[grid-template-columns,opacity] duration-150 ease-out',
+          'grid overflow-hidden transition-all duration-150 ease-out',
           'grid-cols-[0fr] opacity-0',
           'group-hover/button:grid-cols-[1fr] group-hover/button:opacity-100',
           'group-focus-visible/button:grid-cols-[1fr] group-focus-visible/button:opacity-100',

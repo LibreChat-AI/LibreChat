@@ -8,8 +8,8 @@ import {
 import type { FullToolCall, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { ToolContentRequestContext, ToolContentPendingContext } from './disclosure';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useToolCallPartQuery } from '~/data-provider';
-import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
 type ToolCallPart = Extract<TMessageContentParts, { type: ContentTypes.TOOL_CALL }>;
@@ -66,7 +66,7 @@ export function PreviewedToolCallPart({
   children: (part: TMessageContentParts) => ReactNode;
 }) {
   const localize = useLocalize();
-  const { messageId, conversationId, partIndex } = useMessageContext();
+  const { messageId, conversationId, partIndex } = useMessagePartsHost().useMessage();
   const [requested, setRequested] = useState(false);
   const request = useCallback(() => setRequested(true), []);
   const toolCall = part.tool_call as FullToolCall;

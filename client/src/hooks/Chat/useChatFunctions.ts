@@ -1,55 +1,42 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { v4 } from 'uuid';
-import { useStore } from 'jotai';
 import { cloneDeep } from 'lodash';
+import { useStore, useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
+import { hasPendingAssistantParent } from '@librechat/chat';
 import {
   Constants,
   QueryKeys,
-  ContentTypes,
   EModelEndpoint,
-  getEndpointField,
-  isAgentsEndpoint,
-  parseCompactConvo,
-  replaceSpecialVars,
   isAssistantsEndpoint,
-  getDefaultParamsEndpoint,
-  isReasoningOverrideSupported,
-  resolveReasoningSettingForTarget,
 } from 'librechat-data-provider';
+import {
+  isSubmittingFamily,
+  submissionStartFamily,
+  showStopButtonByIndex,
+  revealedQueuedTurnFamily,
+} from '@librechat/chat/react';
 import type {
-  Agent,
   TMessage,
   TSubmission,
   TConversation,
   TStartupConfig,
-  TEndpointOption,
   TEndpointsConfig,
-  EndpointSchemaKey,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TAskFunction, ExtendedFile } from '~/common';
 import {
-  logger,
-  requestChatFocus,
-  resolveAgentTarget,
-  markPasteSubmitted,
-  hasStreamStartFailed,
-  isSubmittableMessage,
-  createDualMessageContent,
-  getRouteChatProjectId,
-  stripStreamedIndexStamps,
-} from '~/utils';
-import {
   getReasoningStateKey,
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
 import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
+import { logger, requestChatFocus, markPasteSubmitted, isSubmittableMessage } from '~/utils';
+import { activeUsageResponseIdFamily } from '~/components/Chat/Input/TokenUsage/store';
 import { withImageChoice } from '~/components/Chat/Menus/Endpoints/Tchat/imageOptions';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
@@ -59,165 +46,18 @@ import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
-import { activeUsageResponseIdFamily } from '~/store/usage';
-import { revealedQueuedTurnFamily } from '~/store/steer';
-import store, { useGetEphemeralAgent } from '~/store';
+import { resolveSubmittedReasoning } from './ask/reasoning';
+import { isHistoryRevalidating } from './ask/guards';
+import { createRegenerate } from './ask/regenerate';
 import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
-import { useAuthContext } from '~/hooks';
+import { buildTurn } from './ask/turn';
 
-/** A revalidating cache younger than this is locally authoritative (the run
- * that just streamed wrote it) and stays sendable; older ones wait for the
- * refetch so a send can't fork from an outdated tail. */
-const STALE_SEND_REVALIDATION_MS = 5_000;
-
-const logChatRequest = (request: Record<string, unknown>) => {
-  logger.log('=====================================\nAsk function called with:');
-  logger.dir({
-    conversationId: request.conversationId,
-    messageId: request.messageId,
-    parentMessageId: request.parentMessageId,
-    isEdited: request.isEdited,
-    isContinued: request.isContinued,
-    isRegenerate: request.isRegenerate,
-  });
-  logger.log('=====================================');
-};
-
-const getAppendParentMessageId = ({
-  latestMessage,
-  currentMessages,
-}: {
-  latestMessage: TMessage | null;
-  currentMessages: TMessage[];
-}) => {
-  if (!latestMessage) {
-    return Constants.NO_PARENT;
-  }
-
-  if (!hasStreamStartFailed(latestMessage)) {
-    return latestMessage.messageId;
-  }
-
-  const failedUserMessage = currentMessages.find(
-    (message) => message.messageId === latestMessage.parentMessageId,
-  );
-  if (failedUserMessage?.isCreatedByUser !== true) {
-    return latestMessage.messageId;
-  }
-
-  return failedUserMessage.parentMessageId ?? Constants.NO_PARENT;
-};
-
-const hasPendingAssistantParent = (message: TMessage | null) =>
-  !!message?.messageId &&
-  message.isCreatedByUser !== true &&
-  message.messageId.endsWith('_') &&
-  message.createdAt == null &&
-  message.updatedAt == null &&
-  !hasStreamStartFailed(message);
-
-type RegenerateTargetResponseArgs = {
-  messages: TMessage[];
-  parentMessageId?: string | null;
-  targetResponseMessageId?: string | null;
-  latestMessage?: TMessage | null;
-};
-
-const isAssistantResponseForParent = (
-  message: TMessage | null | undefined,
-  parentMessageId?: string | null,
-): message is TMessage =>
-  !!message &&
-  !message.isCreatedByUser &&
-  !!parentMessageId &&
-  message.parentMessageId === parentMessageId;
-
-export function getPreliminaryRegenerateResponseMessageId(
-  responseMessageId?: string | null,
-): string | null {
-  if (typeof responseMessageId !== 'string' || responseMessageId.length === 0) {
-    return null;
-  }
-
-  return `${responseMessageId.replace(/_+$/, '')}_`;
-}
-
-export function getRegenerateTargetResponseMessage({
-  messages,
-  parentMessageId,
-  targetResponseMessageId,
-  latestMessage,
-}: RegenerateTargetResponseArgs): TMessage | null {
-  if (!parentMessageId) {
-    return null;
-  }
-
-  if (targetResponseMessageId) {
-    const targetResponse = messages.find(
-      (message) =>
-        message.messageId === targetResponseMessageId &&
-        isAssistantResponseForParent(message, parentMessageId),
-    );
-    if (targetResponse) {
-      return targetResponse;
-    }
-  }
-
-  if (isAssistantResponseForParent(latestMessage, parentMessageId)) {
-    return latestMessage;
-  }
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (isAssistantResponseForParent(message, parentMessageId)) {
-      return message;
-    }
-  }
-
-  return null;
-}
-
-export function getRegenerateSubmissionMessages({
-  messages,
-  targetResponseMessage,
-  initialResponseId,
-}: {
-  messages: TMessage[];
-  targetResponseMessage?: TMessage | null;
-  initialResponseId?: string | null;
-}): TMessage[] {
-  if (targetResponseMessage?.messageId) {
-    /**
-     * Remove the response being regenerated and its descendants only: NOT a
-     * flat `slice(0, targetIndex)`, which also drops unrelated sibling branches
-     * that merely sit later in the array. That collapse made the optimistic
-     * render briefly lose other branches mid-regenerate (visible flash, and the
-     * scroll jumping to the shrunken content). Keeping them holds the thread
-     * (and scroll) steady. This array is render-only; the server regenerates
-     * from `parentMessageId`, so removing by subtree never affects the payload.
-     */
-    const removed = new Set<string>([targetResponseMessage.messageId]);
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const message of messages) {
-        const parentMessageId = message.parentMessageId;
-        if (
-          parentMessageId != null &&
-          removed.has(parentMessageId) &&
-          !removed.has(message.messageId)
-        ) {
-          removed.add(message.messageId);
-          grew = true;
-        }
-      }
-    }
-    return messages.filter((message) => !removed.has(message.messageId));
-  }
-
-  return messages.filter((msg) => msg.messageId !== initialResponseId);
-}
+export {
+  getRegenerateTargetResponseMessage,
+  getRegenerateSubmissionMessages,
+  getPreliminaryRegenerateResponseMessageId,
+} from '@librechat/chat';
 
 export default function useChatFunctions({
   index = 0,
@@ -248,20 +88,17 @@ export default function useChatFunctions({
   const navigate = useNavigate();
   const reasoningStore = useStore();
   const getSender = useGetSender();
-  const { user } = useAuthContext();
   const queryClient = useQueryClient();
   const setFilesToDelete = useSetFilesToDelete();
-  const getEphemeralAgent = useGetEphemeralAgent();
   const agentsMap = useAgentsMapContext();
-  const { isTemporary } = useChatSettings();
+  const { isTemporary, config, auth, getEphemeralAgent, addedConversation } = useChatSettings();
   const { getExpiry } = useUserKey(immutableConversation?.endpoint ?? '');
-  const setIsSubmitting = useSetRecoilState(store.isSubmittingFamily(index));
-  const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(index));
+  const setIsSubmitting = useSetAtom(isSubmittingFamily(index));
+  const setSubmissionStart = useSetAtom(submissionStartFamily(index));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(index));
   const focusRegeneratedResponse = useFocusRegeneratedResponse();
   const jotaiStore = useStore();
   const getConversation = useGetConversation(index);
-  const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
   const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
   const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
     immutableConversation,
@@ -290,8 +127,8 @@ export default function useChatFunctions({
 
   /**
    * Atomically read + reset the per-conversation queue of manually-invoked
-   * skills from the `$` popover. Reading and resetting in a single Recoil
-   * snapshot guarantees that if the user selects more skills between here and
+   * skills from the `$` popover. Reading and resetting in one synchronous
+   * store pass guarantees that if the user selects more skills between here and
    * the next submission, their picks are never silently lost into a reset atom.
    *
    * The `hasValue` guard is defensive: this atom has a synchronous default of
@@ -299,17 +136,15 @@ export default function useChatFunctions({
    * `.contents` on a loading/errored loadable yields a Promise/Error, which
    * would make the `string[]` cast unsound.
    */
-  const drainPendingManualSkills = useRecoilCallback(
-    ({ snapshot, reset }) =>
-      (convoId: string): string[] => {
-        const loadable = snapshot.getLoadable(store.pendingManualSkillsByConvoId(convoId));
-        const skills = loadable.state === 'hasValue' ? (loadable.contents as string[]) : [];
-        if (skills.length > 0) {
-          reset(store.pendingManualSkillsByConvoId(convoId));
-        }
-        return skills;
-      },
-    [],
+  const drainPendingManualSkills = useCallback(
+    (convoId: string): string[] => {
+      const skills = jotaiStore.get(pendingManualSkillsByConvoId(convoId));
+      if (skills.length > 0) {
+        jotaiStore.set(pendingManualSkillsByConvoId(convoId), []);
+      }
+      return skills;
+    },
+    [jotaiStore],
   );
 
   /**
@@ -318,17 +153,15 @@ export default function useChatFunctions({
    * `drainPendingManualSkills`: a single snapshot read + reset so excerpts
    * added between here and submission are never lost into a reset atom.
    */
-  const drainPendingQuotes = useRecoilCallback(
-    ({ snapshot, reset }) =>
-      (convoId: string): string[] => {
-        const loadable = snapshot.getLoadable(store.pendingQuotesByConvoId(convoId));
-        const quotes = loadable.state === 'hasValue' ? (loadable.contents as string[]) : [];
-        if (quotes.length > 0) {
-          reset(store.pendingQuotesByConvoId(convoId));
-        }
-        return quotes;
-      },
-    [],
+  const drainPendingQuotes = useCallback(
+    (convoId: string): string[] => {
+      const quotes = jotaiStore.get(pendingQuotesByConvoId(convoId));
+      if (quotes.length > 0) {
+        jotaiStore.set(pendingQuotesByConvoId(convoId), []);
+      }
+      return quotes;
+    },
+    [jotaiStore],
   );
 
   const drainPendingReasoning = useCallback(
@@ -444,14 +277,8 @@ export default function useChatFunctions({
      * rapid follow-ups during the post-run reconcile.
      */
     if (isExistingConversation && overrideMessages == null) {
-      const messagesQueryState = queryClient.getQueryState<TMessage[]>([
-        QueryKeys.messages,
-        conversationId,
-      ]);
-      const isRevalidating =
-        messagesQueryState?.isInvalidated === true && messagesQueryState.fetchStatus === 'fetching';
-      const cacheAgeMs = Date.now() - (messagesQueryState?.dataUpdatedAt ?? 0);
-      if (isRevalidating && cacheAgeMs > STALE_SEND_REVALIDATION_MS) {
+      const isStale = isHistoryRevalidating(queryClient, conversationId);
+      if (isStale) {
         logger.warn('[useChatFunctions] Refusing to send while conversation history revalidates');
         return false;
       }
@@ -472,15 +299,13 @@ export default function useChatFunctions({
 
     setShowStopButton(false);
 
-    const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-    const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
     /* TCHAT: the pinned image parameters travel with the Image Gen selection. */
+    const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
     const ephemeralAgent = withImageChoice(
       getEphemeralAgent(conversationId ?? Constants.NEW_CONVO),
       startupConfig?.modelSpecs?.imageList,
     );
-    const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
-    const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
+    const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
     /**
      * Manual skill selection resolution:
      *  - Explicit `overrideManualSkills` wins (regenerate / save-and-submit
@@ -521,365 +346,100 @@ export default function useChatFunctions({
       }
     }
     let reasoningOverride = overrideReasoning ?? undefined;
-    if (overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited) {
-      reasoningOverride = drainPendingReasoning(getReasoningStateKey(conversationId, index));
+    const reasoningStateKey = getReasoningStateKey(conversationId, index);
+    const drainedReasoning =
+      overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited;
+    if (drainedReasoning) {
+      reasoningOverride = drainPendingReasoning(reasoningStateKey);
     }
+    const stagedReasoning = reasoningOverride;
     if (reasoningOverride != null) {
-      const isAgent = isAgentsEndpoint(endpoint);
-      const agentId = isAgent ? conversation?.agent_id : undefined;
-      const savedAgent =
-        agentId != null
-          ? (queryClient.getQueryData<Agent>([QueryKeys.agent, agentId]) ?? agentsMap?.[agentId])
-          : undefined;
-      const agentTarget = isAgent ? resolveAgentTarget(agentId, savedAgent) : undefined;
-      const effectiveEndpoint = isAgent ? agentTarget?.provider : endpoint;
-      const effectiveModel = isAgent ? agentTarget?.model : conversation?.model;
-      const effectiveEndpointType = getEndpointField(endpointsConfig, effectiveEndpoint, 'type');
-      const customParams =
-        effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
-      const supportedSetting =
-        effectiveEndpoint == null
-          ? undefined
-          : resolveReasoningSettingForTarget({
-              endpoint: effectiveEndpointType ?? effectiveEndpoint,
-              model: effectiveModel,
-              isAgent,
-              defaultParamsEndpoint: customParams?.defaultParamsEndpoint,
-              reasoningFormat: customParams?.reasoningFormat,
-              paramDefinitions: customParams?.paramDefinitions,
-            });
-      if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
-        reasoningOverride = undefined;
+      const resolved = resolveSubmittedReasoning({
+        queryClient,
+        agentsMap,
+        endpoint,
+        conversation,
+        endpointsConfig,
+        reasoningOverride,
+        drainedReasoning,
+        stagedReasoning,
+      });
+      reasoningOverride = resolved.reasoningOverride;
+      if (resolved.restoreStaged && stagedReasoning != null) {
+        reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), stagedReasoning);
       }
     }
-    const isEditOrContinue = isEdited || isContinued;
 
-    let currentMessages: TMessage[] = overrideMessages ?? cachedMessages ?? [];
-
-    if (conversation?.promptPrefix) {
-      conversation.promptPrefix = replaceSpecialVars({
-        text: conversation.promptPrefix,
-        user,
-      });
-    }
-
-    const chatProjectId =
-      conversationId === Constants.NEW_CONVO
-        ? getRouteChatProjectId()
-        : (conversation?.chatProjectId ?? null);
-    const conversationForPayload =
-      chatProjectId != null ? { ...(conversation ?? {}), chatProjectId } : (conversation ?? {});
-
-    // construct the query message
-    // this is not a real messageId, it is used as placeholder before real messageId returned
-    const intermediateId = overrideUserMessageId ?? v4();
-    /** Stable idempotency key for this submission: fresh per `ask()` (so regenerate differs)
-     *  but reused across the client's start-generation network retries, letting the server
-     *  dedup a retried request instead of starting a second billed generation. */
-    const clientRequestId = overrideClientRequestId ?? v4();
-    if (parentMessageId == null) {
-      parentMessageId = getAppendParentMessageId({ latestMessage, currentMessages });
-    }
-
-    logChatRequest({
+    const turn = buildTurn({
+      text,
+      params: { text, overrideConvoId, overrideUserMessageId, parentMessageId, messageId },
+      options: {
+        editedContent: editedContent ?? undefined,
+        editedMessageId,
+        isRegenerate,
+        isContinued,
+        isEdited,
+        compact,
+        overrideMessages,
+        overrideFiles,
+        targetResponseMessageId,
+        addedConvo,
+        overrideClientRequestId,
+        overrideRecoverySteerId,
+        overrideExpectedPredecessorCreatedAt,
+        overrideQueuedMessageOrigin,
+      },
+      conversationId,
       index,
       conversation,
       latestMessage,
-      conversationId,
-      intermediateId,
-      parentMessageId,
-      currentMessages,
-    });
-
-    if (conversationId == Constants.NEW_CONVO) {
-      parentMessageId = Constants.NO_PARENT;
-      currentMessages = [];
-      conversationId = null;
-      const projectSearch = chatProjectId ? `?projectId=${encodeURIComponent(chatProjectId)}` : '';
-      requestChatFocus();
-      navigate(`/c/new${projectSearch}`);
-    }
-
-    const targetParentMessageId = regenerateShaped ? messageId : latestMessage?.parentMessageId;
-    /**
-     * If the user regenerated or resubmitted the message, the current parent is technically
-     * the latest user message, which is passed into `ask`; otherwise, we can rely on the
-     * latestMessage to find the parent.
-     */
-    const targetParentMessage = currentMessages.find(
-      (msg) => msg.messageId === targetParentMessageId,
-    );
-    const targetResponseMessage = isRegenerate
-      ? getRegenerateTargetResponseMessage({
-          messages: currentMessages,
-          parentMessageId: messageId,
-          targetResponseMessageId,
-          latestMessage,
-        })
-      : null;
-
-    let thread_id = targetParentMessage?.thread_id ?? latestMessage?.thread_id;
-    if (thread_id == null) {
-      thread_id = currentMessages.find((message) => message.thread_id)?.thread_id;
-    }
-
-    const iconURL = conversation?.iconURL;
-
-    /** This becomes part of the `endpointOption` */
-    const convo = parseCompactConvo({
-      endpoint: endpoint as EndpointSchemaKey,
-      endpointType: endpointType as EndpointSchemaKey,
-      conversation: conversationForPayload,
-      defaultParamsEndpoint,
-    });
-
-    const { modelDisplayLabel } = endpointsConfig?.[endpoint ?? ''] ?? {};
-    const endpointOption = Object.assign(
-      {
-        endpoint,
-        endpointType,
-        overrideConvoId,
-        overrideUserMessageId:
-          overrideUserMessageId ??
-          (endpoint === EModelEndpoint.agents && !regenerateShaped && !isContinued
-            ? `${intermediateId}${Constants.COMMON_DIVIDER}0`
-            : undefined),
-      },
-      convo,
-      chatProjectId ? { chatProjectId } : {},
-    ) as TEndpointOption;
-    if (endpoint !== EModelEndpoint.agents) {
-      endpointOption.key = getExpiry();
-      endpointOption.thread_id = thread_id;
-      endpointOption.modelDisplayLabel = modelDisplayLabel;
-    } else {
-      endpointOption.key = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    }
-    const responseSender = getSender({ model: conversation?.model, ...endpointOption });
-
-    const currentMsg: TMessage = {
-      text,
-      sender: 'User',
-      clientTimestamp: new Date().toLocaleString('sv').replace(' ', 'T'),
-      isCreatedByUser: true,
-      parentMessageId,
-      conversationId,
-      /** A compaction's "user message" is the leaf itself, so an error lands under it. */
-      messageId:
-        (isContinued || compact) && messageId != null && messageId ? messageId : intermediateId,
-      thread_id,
-      error: false,
-      /**
-       * UI-only metadata. Survives reload because the backend persists the
-       * field on the message schema, and `SkillPills` reads straight
-       * off the message so there's no Recoil state to clean up. Runtime
-       * skill resolution reads the top-level `manualSkills` payload field.
-       */
-      manualSkills: manualSkills.length > 0 ? manualSkills : undefined,
-      /**
-       * Quoted excerpts the user referenced this turn. Persisted on the
-       * message (backend echoes it back on `req.body.quotes`) so `MessageQuotes`
-       * renders the references on the user bubble after reload. The backend
-       * also merges these into the model-facing user text at request time.
-       */
-      quotes: quotes.length > 0 ? quotes : undefined,
+      cachedMessages,
+      files,
+      canClearFiles: setFiles != null,
+      endpointsConfig,
+      modelSpecs: config.modelSpecs,
+      user: auth.user,
+      isTemporary,
+      ephemeralAgent,
+      getSender,
+      userKey: endpoint !== EModelEndpoint.agents ? getExpiry() : undefined,
+      manualSkills,
+      quotes,
       reasoningOverride,
-    };
+      code: {
+        approvalMode: codeApprovalMode,
+        latestApprovalMode: latestCodeApprovalMode,
+        environmentMode: codeEnvironmentMode,
+        workspaces: codeWorkspaces,
+      },
+    });
+    const {
+      submission,
+      currentMsg,
+      initialResponse,
+      submissionMessages,
+      regenerateShaped: isRegenerateShaped,
+      isEditOrContinue,
+      newChatPath,
+      fileEffects,
+    } = turn;
+    conversationId = turn.conversationId;
 
-    /** The leaf's files already sit in history; a compaction re-attaches nothing. */
-    const submissionFiles = compact ? undefined : (overrideFiles ?? targetParentMessage?.files);
-    const reuseFiles =
-      (isRegenerate || (overrideFiles != null && overrideFiles.length)) &&
-      submissionFiles &&
-      submissionFiles.length > 0;
-
-    if (setFiles && reuseFiles === true) {
-      currentMsg.files = [...submissionFiles];
-      /** Queued override files were consumed just like composer files, so mark their identities
-       * as submitted before later draft cleanup can classify the restored paste as unsent. */
-      const submittedFileIds: (string | undefined)[] = [];
-      for (const file of submissionFiles) {
-        submittedFileIds.push(file.file_id, file.temp_file_id);
-      }
-      markPasteSubmitted(...submittedFileIds);
-      // Caller-supplied overrideFiles were consumed elsewhere (queued
-      // during-run messages take theirs out of the composer at queue time);
-      // clearing here would eat attachments staged for the user's NEXT send.
-      if (isRegenerate) {
+    if (newChatPath != null) {
+      requestChatFocus();
+      navigate(newChatPath);
+    }
+    if (fileEffects != null && setFiles) {
+      markPasteSubmitted(...fileEffects.submittedFileIds);
+      if (fileEffects.clearComposer) {
         setFiles(new Map());
         setFilesToDelete({});
       }
-    } else if (!compact && setFiles && files && files.size > 0 && overrideFiles == null) {
-      /** A compaction attaches nothing and must not consume files the user
-       *  staged in the composer for their next message. */
-      // `overrideFiles` (even empty) is authoritative for the submission:
-      // auto-drained queued messages must never vacuum up attachments the
-      // user has staged in the composer for their NEXT message.
-      const submittedFileIds: (string | undefined)[] = [];
-      currentMsg.files = [];
-      for (const [key, file] of files) {
-        currentMsg.files.push({
-          file_id: file.file_id,
-          filepath: file.filepath,
-          filename: file.filename,
-          type: file.type ?? '',
-          llmDeliveryPath: file.llmDeliveryPath,
-          height: file.height,
-          width: file.width,
-        });
-        submittedFileIds.push(key, file.file_id, file.temp_file_id);
-      }
-      // Publish every alias before clearing the composer or its draft.
-      markPasteSubmitted(...submittedFileIds);
-      setFiles(new Map());
-      setFilesToDelete({});
     }
-
-    const responseMessageId =
-      editedMessageId ??
-      (isRegenerate
-        ? getPreliminaryRegenerateResponseMessageId(
-            targetResponseMessage?.messageId ?? targetResponseMessageId,
-          )
-        : null) ??
-      null;
-    /** Set only for edited resubmissions; see `TSubmission.editPrefixLength`. */
-    let editPrefixLength: number | undefined;
-    const initialResponseId =
-      responseMessageId ??
-      `${regenerateShaped ? messageId : intermediateId}`.replace(/_+$/, '') + '_';
-
-    const initialResponse: TMessage = {
-      sender: responseSender,
-      text: '',
-      endpoint: endpoint ?? '',
-      parentMessageId: regenerateShaped ? messageId : intermediateId,
-      messageId: initialResponseId,
-      thread_id,
-      conversationId,
-      unfinished: false,
-      isCreatedByUser: false,
-      model: convo?.model,
-      error: false,
-      iconURL,
-      clientQueueParentMessageId: regenerateShaped ? (messageId ?? undefined) : intermediateId,
-      /**
-       * Seed the assistant placeholder with the turn's manually-invoked
-       * skill names so `ContentParts` can render interim `SkillCall` cards
-       * from the very first render: no round-trip through the `created`
-       * SSE event required. Rides along with every subsequent spread
-       * (`useStepHandler` response construction, `updateContent` result
-       * spreads) and drops out naturally at `finalHandler` when the
-       * server-backed `responseMessage` replacement takes over.
-       */
-      manualSkills: manualSkills.length > 0 ? manualSkills : undefined,
-    };
-
-    if (isAssistantsEndpoint(endpoint)) {
-      initialResponse.model = conversation?.assistant_id ?? '';
-      initialResponse.text = '';
-      initialResponse.content = [
-        {
-          type: ContentTypes.TEXT,
-          [ContentTypes.TEXT]: {
-            value: '',
-          },
-        },
-      ];
-    } else if (endpoint != null) {
-      initialResponse.model = isAgentsEndpoint(endpoint)
-        ? (conversation?.agent_id ?? '')
-        : (conversation?.model ?? '');
-      initialResponse.text = '';
-
-      if (editedContent && latestMessage?.content) {
-        /** Stamps off: the rerun appends provider parts at the prefix LENGTH,
-         *  and a retained `streamedIndex` at or above it would collide with an
-         *  appended part's render key (see `stripStreamedIndexStamps`). */
-        initialResponse.content = stripStreamedIndexStamps(cloneDeep(latestMessage.content));
-        /** Captured now, while it is still the retained prefix: a later resume
-         *  sync replaces this array with the server's completion-local
-         *  snapshot, after which its length no longer describes the offset. */
-        editPrefixLength = initialResponse.content.length;
-        const { index, type, ...part } = editedContent;
-        if (initialResponse.content && index >= 0 && index < initialResponse.content.length) {
-          const contentPart = initialResponse.content[index];
-          if (type === ContentTypes.THINK && contentPart.type === ContentTypes.THINK) {
-            contentPart[ContentTypes.THINK] = part[ContentTypes.THINK];
-            delete contentPart.reasoning_label;
-            delete contentPart.reasoning_label_step_id;
-            delete contentPart.reasoning_label_attempts;
-            delete contentPart.reasoning_label_submitted_chars;
-            delete contentPart.reasoning_label_revision;
-            delete contentPart.reasoning_label_status;
-          } else if (type === ContentTypes.TEXT && contentPart.type === ContentTypes.TEXT) {
-            contentPart[ContentTypes.TEXT] = part[ContentTypes.TEXT];
-          }
-        }
-      } else if (addedConvo && conversation) {
-        // Pre-populate placeholders for smooth UI - these will be overridden/extended
-        // as SSE events arrive with actual content, preserving the agent-based agentId
-        initialResponse.content = createDualMessageContent(
-          conversation,
-          addedConvo,
-          endpointsConfig,
-          startupConfig?.modelSpecs?.list,
-        );
-      } else {
-        initialResponse.content = [];
-      }
+    if (turn.startsSubmitting) {
       setIsSubmitting(true);
       setShowStopButton(true);
     }
-
-    if (isContinued) {
-      currentMessages = currentMessages.filter((msg) => msg.messageId !== responseMessageId);
-    }
-
-    const submissionMessages = regenerateShaped
-      ? getRegenerateSubmissionMessages({
-          messages: currentMessages,
-          targetResponseMessage,
-          initialResponseId: initialResponse.messageId,
-        })
-      : currentMessages;
-    const regenerateMessages = regenerateShaped ? [...currentMessages] : undefined;
-
-    logger.log('message_state', initialResponse);
-    const submission: TSubmission = {
-      conversation: {
-        ...conversation,
-        ...(chatProjectId ? { chatProjectId } : {}),
-        ...(latestCodeApprovalMode != null ? { codeApprovalMode: latestCodeApprovalMode } : {}),
-        conversationId,
-      },
-      endpointOption,
-      userMessage: {
-        ...currentMsg,
-        responseMessageId,
-        overrideParentMessageId: isRegenerate ? messageId : null,
-      },
-      messages: submissionMessages,
-      regenerateMessages,
-      isEdited: isEditOrContinue,
-      isContinued,
-      isRegenerate: regenerateShaped,
-      ...(compact && { compact: true }),
-      initialResponse,
-      isTemporary,
-      ephemeralAgent,
-      editedContent,
-      editPrefixLength,
-      addedConvo,
-      manualSkills: manualSkills.length > 0 ? manualSkills : undefined,
-      codeApprovalMode,
-      codeEnvironmentMode,
-      codeWorkspaces,
-      clientRequestId,
-      recoverySteerId: overrideRecoverySteerId,
-      expectedPredecessorCreatedAt: overrideExpectedPredecessorCreatedAt,
-      queuedMessageOrigin: overrideQueuedMessageOrigin,
-    };
 
     /** Bind before publishing the optimistic tail, not after the first provider
      * event: a waiting request already owns a turn even when no usage exists. */
@@ -888,7 +448,7 @@ export default function useChatFunctions({
       initialResponse.messageId,
     );
 
-    if (regenerateShaped) {
+    if (isRegenerateShaped) {
       setMessages([...submissionMessages, initialResponse]);
       focusRegeneratedResponse(initialResponse.parentMessageId);
     } else {
@@ -914,48 +474,12 @@ export default function useChatFunctions({
       messageId: currentMsg.messageId,
       parentMessageId: currentMsg.parentMessageId,
       isEdited: isEditOrContinue,
-      isRegenerate: regenerateShaped,
+      isRegenerate: isRegenerateShaped,
       isContinued,
     });
   };
 
-  const regenerate = (
-    message: Partial<Pick<TMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser'>>,
-    options?: { addedConvo?: TConversation | null },
-  ) => {
-    const messages = getMessages();
-    const parentMessageId =
-      message.isCreatedByUser === true ? message.messageId : message.parentMessageId;
-    const targetResponseMessageId =
-      message.isCreatedByUser === true ? undefined : message.messageId;
-    const parentMessage = messages?.find((element) => element.messageId == parentMessageId);
-
-    if (parentMessage && parentMessage.isCreatedByUser) {
-      ask(
-        { ...parentMessage },
-        {
-          isRegenerate: true,
-          addedConvo: options?.addedConvo ?? undefined,
-          targetResponseMessageId,
-          /** Carry the original user message's manual skill picks forward
-           *  so the regenerated response is primed with the same skills.
-           *  The compose-time atom was drained on the first submit; without
-           *  this the model sees an unprimed turn even though the pills
-           *  still show on the user bubble. */
-          overrideManualSkills: parentMessage.manualSkills,
-          /** Carry the original user message's quoted excerpts forward so the
-           *  regenerated response is sent the same referenced context. */
-          overrideQuotes: parentMessage.quotes,
-          /** Replay the exact request-scoped reasoning selection used by this turn. */
-          overrideReasoning: parentMessage.reasoningOverride ?? null,
-        },
-      );
-    } else {
-      console.error(
-        'Failed to regenerate the message: parentMessage not found or not created by user.',
-      );
-    }
-  };
+  const regenerate = createRegenerate(ask, getMessages);
 
   return {
     ask,

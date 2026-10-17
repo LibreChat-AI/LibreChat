@@ -17,6 +17,7 @@ export * from './errors';
 export * from './runSteps';
 /* ui parts */
 export * from './parts';
+export * from './reasoning';
 export * from './toolTiming';
 /* artifacts  */
 export * from './artifacts';

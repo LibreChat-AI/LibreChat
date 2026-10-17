@@ -2,6 +2,7 @@ import { memo, useRef, useMemo, useState, useEffect, useCallback, useLayoutEffec
 import { CircleHelp } from 'lucide-react';
 import { Constants, reasoningOverrideSchema } from 'librechat-data-provider';
 import {
+  Button,
   HoverCard,
   IconButton,
   HoverCardTrigger,
@@ -465,9 +466,9 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
              destructured here where `left`/`right` are visibly the only keys. */
           const { left, right } = hitArea(index);
           return (
-            <button
+            <Button
               key={value}
-              type="button"
+              variant="hit-area"
               role="radio"
               aria-checked={!isUngraded && index === activeIndex}
               aria-label={label(value)}
@@ -491,7 +492,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
               }}
               onClick={() => select(value)}
               style={{ left, right }}
-              className="focus-visible:ring-text-primary absolute inset-y-0 rounded-full focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
+              className="absolute inset-y-0"
             />
           );
         })}
@@ -526,19 +527,13 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
             {/* Always present so the separate mode reads as something the user
                 can turn on and off rather than as a one-way escape hatch. */}
             {ungradedValue != null && (
-              <button
-                type="button"
+              <Button
+                variant="pill-toggle"
                 aria-pressed={isUngraded}
                 onClick={() => select(isUngraded ? levels[restoreIndex] : ungradedValue)}
-                className={cn(
-                  'rounded-full px-2 py-0.5 text-xs transition-colors',
-                  isUngraded
-                    ? 'bg-accent-primary/15 text-accent-primary'
-                    : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-                )}
               >
                 {label(ungradedValue)}
-              </button>
+              </Button>
             )}
             {descriptionText != null && descriptionText !== '' && (
               <HoverCard openDelay={200}>

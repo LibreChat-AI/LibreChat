@@ -196,10 +196,6 @@ export function setMCPToolsChangedHandler(fn: MCPToolsChangedHandler | null): vo
   }
 }
 
-export function hasMCPToolsChangedHandler(): boolean {
-  return handler != null;
-}
-
 /** Registers the app-layer provider for connection-bound publication generations. */
 export function setMCPToolsChangedGenerationHandler(
   fn: MCPToolsChangedGenerationHandler | null,

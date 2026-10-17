@@ -70,7 +70,7 @@ jobs:
               'frontend-review.yml': (59789527, {
                   'Build packages', 'Client build recovery regression',
                   'TypeScript type checks (client)', 'Vite build verification',
-                  'Tests: @librechat/client',
+                  'Tests: @librechat/client', 'Tests: @librechat/chat',
                   *[f'Tests: Ubuntu (shard {n}/2)' for n in range(1, 3)],
               }),
           }

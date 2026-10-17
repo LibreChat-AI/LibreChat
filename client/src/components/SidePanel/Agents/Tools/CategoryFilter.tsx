@@ -59,8 +59,8 @@ export default function CategoryFilter({ options, value, onChange }: Props) {
           render={
             <Button
               variant="outline"
-              size="default"
-              className="h-10 gap-1.5 px-3 text-sm font-normal"
+              size="dense"
+              className="h-10 gap-1.5 font-normal"
               aria-label={localize('com_ui_category')}
             >
               <Filter

@@ -1,10 +1,15 @@
 import { memo, useId, useRef, useMemo, useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
-import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
 import * as Ariakit from '@ariakit/react';
 import { useDrag, useDrop } from 'react-dnd';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { claimQueuedIntent, releaseQueuedIntent, hasQueuedIntent } from '@librechat/chat';
+import {
+  escalatingSteerFamily,
+  revealedQueuedTurnFamily,
+  pendingSteersByConvoId,
+} from '@librechat/chat/react';
 import {
   Button,
   IconButton,
@@ -29,14 +34,11 @@ import type { MenuItemProps } from '@librechat/client';
 import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/hooks/Chat/queue';
-import { claimQueuedIntent, releaseQueuedIntent, hasQueuedIntent } from '~/utils/queueIntent';
 import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
-import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 const DRAG_TYPE = 'queued-message';
 
@@ -733,7 +735,7 @@ function Queue({
      `aria-describedby` at whichever copy the document happened to keep. */
   const reorderHintId = useId();
   const queued = useAtomValue(queuedMessagesByConvoId(steering.queueKey));
-  const pendingSteers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
+  const pendingSteers = useAtomValue(pendingSteersByConvoId(conversationId));
   const escalating = useAtomValue(escalatingSteerFamily(conversationId));
   /* Only one interrupt can be unresolved at a time: a second arm would seal the
      same run twice. The escalating flag covers an arm's round trip, before its

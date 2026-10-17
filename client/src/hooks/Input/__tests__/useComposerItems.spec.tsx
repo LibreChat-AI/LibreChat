@@ -1,8 +1,11 @@
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, type MutableSnapshot } from 'recoil';
+import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
+import {
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
+} from '~/components/Chat/Input/Composer/state';
 import useComposerItems from '../useComposerItems';
-import store from '~/store';
 
 /**
  * The tray's staged context. Removal is the whole surface here, and quotes are
@@ -11,24 +14,26 @@ import store from '~/store';
 
 const CONVO_ID = 'convo-items';
 
-function setup(initialize?: (snapshot: MutableSnapshot) => void) {
+function setup(initialize?: (jotaiStore: ReturnType<typeof createStore>) => void) {
+  const jotaiStore = createStore();
+  initialize?.(jotaiStore);
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <RecoilRoot initializeState={initialize}>{children}</RecoilRoot>
+    <JotaiProvider store={jotaiStore}>{children}</JotaiProvider>
   );
   return renderHook(
     () => ({
       items: useComposerItems(CONVO_ID),
-      quotes: useRecoilValue(store.pendingQuotesByConvoId(CONVO_ID)),
-      skills: useRecoilValue(store.pendingManualSkillsByConvoId(CONVO_ID)),
+      quotes: useAtomValue(pendingQuotesByConvoId(CONVO_ID)),
+      skills: useAtomValue(pendingManualSkillsByConvoId(CONVO_ID)),
     }),
     { wrapper },
   );
 }
 
 const withStaged = (quotes: string[], skills: string[] = []) =>
-  setup(({ set }) => {
-    set(store.pendingQuotesByConvoId(CONVO_ID), quotes);
-    set(store.pendingManualSkillsByConvoId(CONVO_ID), skills);
+  setup((jotaiStore) => {
+    jotaiStore.set(pendingQuotesByConvoId(CONVO_ID), quotes);
+    jotaiStore.set(pendingManualSkillsByConvoId(CONVO_ID), skills);
   });
 
 describe('useComposerItems', () => {

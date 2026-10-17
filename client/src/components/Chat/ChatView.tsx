@@ -1,10 +1,11 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
 import { Constants, buildTree } from 'librechat-data-provider';
+import { useIsSubmitting, submissionByIndex } from '@librechat/chat/react';
 import type { TChatProject } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import {
@@ -24,7 +25,9 @@ import {
   useFileMapContext,
   ComposerRestoreProvider,
 } from '~/Providers';
+import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
 import { QueuedTurnPortalProvider } from './Steering/QueuedTurnPortal';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
@@ -32,12 +35,12 @@ import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { composerLiftFamily } from './Input/Composer/state';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { useGetMessagesByConvoId } from '~/data-provider';
-import Footer, { useConfiguredFooter } from './Footer';
 import { AskAnswerHostProvider } from './ask/state';
 import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
+import Lia from '~/components/Lia';
 import Landing from './Landing';
 import Header from './Header';
 import { cn } from '~/utils';
@@ -65,9 +68,9 @@ function ChatView({
 }) {
   const { conversationId } = useParams();
   const localize = useLocalize();
-  const rootSubmission = useRecoilValue(store.submissionByIndex(index));
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
-  const saveDrafts = useRecoilValue(store.saveDrafts);
+  const rootSubmission = useAtomValue(submissionByIndex(index));
+  const isSubmitting = useIsSubmitting(index);
+  const { saveDrafts } = useChatSettings();
   const enterToSend = useRecoilValue(store.enterToSend);
   const autoSendText = useRecoilValue(store.autoSendText);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
@@ -84,9 +87,13 @@ function ChatView({
    *  composer's clearance has to account for the bar when it does — including
    *  before the config answers, so a cold load does not jump. */
   const configuredFooter = useConfiguredFooter();
+  const landingFooter = useLandingFooter();
 
   /** Room an open composer popover needs below the composer; see the atom. */
   const composerLift = useAtomValue(composerLiftFamily(index));
+
+  /** Lia, the welcome screen mascot, stands on the composer band's top edge. */
+  const composerBandRef = useRef<HTMLDivElement>(null);
 
   const methods = useForm<ChatFormValues>({
     defaultValues: { text: '' },
@@ -144,11 +151,10 @@ function ChatView({
     (!messagesTree || messagesTree.length === 0) &&
     (conversationId === Constants.NEW_CONVO || !conversationId);
 
-  /** A footer bar renders beneath the composer on the welcome screen always, and
-   *  in a conversation when the deployment configured one. The shell already
-   *  carried that answer, so this is the same value before and after the config
-   *  resolves. */
-  const footerBelow = isLandingPage || configuredFooter;
+  /** The welcome screen carries the full footer unless the deployment turned it
+   *  off; otherwise a footer bar renders only for configured content. */
+  const fullFooter = isLandingPage && landingFooter;
+  const footerBelow = fullFooter || configuredFooter;
   const isNavigating = (!messagesTree || messagesTree.length === 0) && conversationId != null;
   const isProjectLandingPage = isLandingPage && project != null;
 
@@ -213,6 +219,7 @@ function ChatView({
                           }
                           className={cn(
                             'flex flex-col',
+                            isLandingPage && 'relative',
                             isLandingPage
                               ? /* The gutter is reserved once per state, wherever the
                                centring happens. A conversation centres the composer
@@ -242,6 +249,7 @@ function ChatView({
                         is a stacking context; keep it above positioned tool glyphs
                         so they cannot paint through the approval preview. */}
                           <div
+                            ref={composerBandRef}
                             className={cn(
                               'bg-surface-canvas relative z-10 w-full [view-transition-name:chat-form]',
                               !isLandingPage && 'scrollbar-gutter-spacer',
@@ -273,10 +281,15 @@ function ChatView({
                             {/* The generic disclaimer and the policy links are the
                               welcome screen's; a deployment's own footer stays
                               with the conversation that always showed it. */}
-                            {!isLandingPage && configuredFooter && <Footer configuredOnly />}
+                            {!fullFooter && configuredFooter && <Footer configuredOnly />}
                           </div>
+                          <Lia
+                            bandRef={composerBandRef}
+                            landing={isLandingPage}
+                            submission={rootSubmission}
+                          />
                         </div>
-                        {isLandingPage && <Footer />}
+                        {fullFooter && <Footer />}
                       </>
                     </TraceSurface>
                   </Presentation>

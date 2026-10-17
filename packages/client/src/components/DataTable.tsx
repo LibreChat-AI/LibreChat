@@ -105,12 +105,16 @@ const TableRowComponent = <TData, TValue>({
       ref={measureRef}
       data-index={index}
       data-state={row.getIsSelected() ? 'selected' : undefined}
-      className="motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out"
-      style={{
-        animationDelay: `${index * 20}ms`,
-        transform: `translateY(${isSearching ? '4px' : '0'})`,
-        opacity: isSearching ? 0.5 : 1,
-      }}
+      className={cn(
+        'motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out [animation-delay:var(--row-delay)]',
+        isSearching && 'opacity-50',
+      )}
+      style={
+        {
+          '--row-delay': `${index * 20}ms`,
+          transform: `translateY(${isSearching ? '4px' : '0'})`,
+        } as React.CSSProperties
+      }
     >
       {row.getVisibleCells().map((cell) => {
         if (cell.column.id === 'select') {
@@ -297,16 +301,9 @@ export default function DataTable<TData, TValue>({
   const { rows } = table.getRowModel();
 
   /** The first guess for a row that has not rendered yet, from the columns it will carry: a
-   *  title cell's height when there is one, a compact row otherwise. Both follow the theme's cell
-   *  space and row rule, and rendered rows are measured. */
-  const hasTitleColumn = useMemo(
-    () =>
-      columns.some(
-        (column) =>
-          column.id === 'title' || ('accessorKey' in column && column.accessorKey === 'title'),
-      ),
-    [columns],
-  );
+   *  title cell's height when a visible leaf column is the title, a compact row otherwise. Both
+   *  follow the theme's cell space and row rule, and rendered rows are measured. */
+  const hasTitleColumn = table.getVisibleLeafColumns().some((column) => column.id === 'title');
   const rowHeight = useTableRowHeight(hasTitleColumn ? 'titled' : 'compact');
   const rowVirtualizer = useVirtualizer({
     count: rows.length,

@@ -7,15 +7,12 @@ const { getAssistant } = require('~/models');
  * @param {object} params
  * @param {object} params.req - Express Request
  * @param {object} params.req.body - The request payload.
- * @param {string} params.overrideEndpoint - The override endpoint
- * @param {string} params.overrideAssistantId - The override assistant ID
  * @param {OpenAIClient} params.openai - OpenAI API Client
  * @returns {Promise<void>}
  */
-const validateAuthor = async ({ req, openai, overrideEndpoint, overrideAssistantId }) => {
-  const endpoint = overrideEndpoint ?? req.body.endpoint ?? req.query.endpoint;
-  const assistant_id =
-    overrideAssistantId ?? req.params.id ?? req.body.assistant_id ?? req.query.assistant_id;
+const validateAuthor = async ({ req, openai }) => {
+  const endpoint = req.body.endpoint ?? req.query.endpoint;
+  const assistant_id = req.params.id ?? req.body.assistant_id ?? req.query.assistant_id;
 
   const appConfig = req.config;
   /** @type {Partial<TAssistantEndpoint>} */

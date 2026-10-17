@@ -70,6 +70,18 @@ panel `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`) and the send and s
 onto `menuRadius` or a square corner without moving the control or surface radii. An inline code
 chip in Markdown takes its weight from `inlineCodeWeight` (600).
 
+The checkbox reads `checkboxRadius` (`rounded-theme-checkbox`), which follows `radiusSm`, the
+`rounded-sm` it drew before, when a theme names that and not this.
+
+The sign-in forms' floating-label field reads `authFieldHeight` (2.75rem, `h-theme-auth-field`), their
+submit button `authButtonHeight` (3rem, the Button's `auth` size) and both the corner
+`authControlRadius` (1rem, the Button's `soft` shape), which follows `radius2xl` when a theme names
+that and not this. The flow's other actions, the second-factor verify and the reset-success continue
+buttons, read `authActionHeight` (the Button's `auth-action` size) and `authActionRadius` (its
+`auth-action` shape; the 2FA button keeps `soft`). They follow `authButtonHeight` and
+`authControlRadius` when a theme names those, and otherwise the `buttonHeight` and `radiusLg` they
+drew before (2.5rem and 0.5rem). Every height here rejects a value under 24px.
+
 Most appearance defaults hold in both modes. `darkAppearanceDefaults` lists the ones that differ in
 dark mode, and `defaultAppearanceFor(mode)` returns the full set for a mode: the menu panel's
 `menuShadow` and the tooltip's `tooltipShadow` are heavier on a dark page, as they always were. A
@@ -311,6 +323,7 @@ function MyComponent() {
 - `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
 - `fill-file-document`, `fill-file-sheet`, `fill-file-code`, `fill-file-artifact`, `fill-file-audio`, `fill-file-video`, `fill-file-generic` - File-type tile fills; `stroke-file-ink` and `fill-file-ink` draw the glyph on them
 - `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
+- `scrollbar-thumb`, `page-canvas`, `select-fill`, `select-edge`, `button-neutral-border`, `button-neutral-text`, `button-neutral-hover`, `link-inline`, `toast-edge`, `stroke-ink` - The stylesheet-level colour roles, read by the stylesheet as `rgb(var(--name))`: the scrollbar thumb, the dark page behind the app, a native `select`, the legacy `.btn-neutral`, inline links on mobile, the toast's shadow tint and the avatar's translucent ring. Their opacities stay in CSS, except the neutral border's, which is the `buttonNeutralBorderOpacity` appearance role (10% in light, solid in dark)
 
 ### Border Colors
 
@@ -342,6 +355,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `bg-avatar-fill` / `text-avatar-text` - The default user avatar drawn when a
   user has no image, and its glyph. A theme that sets `rgb-text-primary` but not
   `rgb-avatar-text` inks the glyph in its primary text, as it did before the role.
+  The bundled dark theme inks it white, which clears the 3:1 WCAG 1.4.11 sets for
+  the glyph on the fill where its #ececec primary text does not.
 - `bg-avatar-placeholder` - Behind an agent or assistant avatar while its image
   loads or where it is transparent. A theme that sets only its surfaces keeps it
   on `surface-secondary` in light and `surface-tertiary` in dark, where it sat
@@ -376,33 +391,47 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
   input, and `h-theme-target` the switch's hit area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
   trigger. `min-w-theme-list` and `max-h-theme-list` (`listMinWidth`, `0` to size the list by
-  its trigger, and `listMaxHeight`, 8 to 40rem) bound the Select's list. Every default is the size the primitive drew before. The icon and checkbox roles
+  its trigger, and `listMaxHeight`, 8 to 40rem or `none`) bound the Select's list, which never
+  grows past the room the popper leaves between its trigger and the viewport's edge, so `none`
+  drops the fixed cap and keeps only that one. Every default is the size the primitive drew before. The icon and checkbox roles
   are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
   exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
   1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is
   a fixed 24px, WCAG 2.5.8's minimum, not a role, so a theme cannot lower it. The Button's
   `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg` reject a value under 24px;
-  `controlHeight`, `buttonHeight`, `buttonHeightSm` and `fieldHeight` predate the floor and
-  keep their earlier validation.
+  `buttonHeight` and `buttonHeightSm` predate the floor, so they keep their earlier validation
+  and are floored where they are drawn instead: `h-theme-button`, `h-theme-button-sm` and
+  `size-theme-button` never draw under 24px, so a stored theme naming less still loads.
+  `controlHeight` and `fieldHeight` keep their earlier validation. The exported Dialog's close
+  button takes the same 24px floor around its `iconSizeMd` glyph.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's
   `fieldFillStyle` appearance role is `fill` (the default is `transparent`),
   read from the nearest themed root through the `theme-field-fill:` variant.
+- `bg-checkbox-fill` - An unchecked checkbox's fill. It follows `surface-primary`
+  when a theme names that and not this. The box stays clear unless the theme's
+  `checkboxFillStyle` appearance role is `fill` (the default is `transparent`),
+  read through the `theme-checkbox-fill:` variant; a checked box keeps
+  `surface-inverted`.
 - `bg-surface-tooltip` / `text-tooltip` - The tooltip chip and its label. They follow
   `surface-primary` and `text-primary` when a theme names those and not these. The padding and
   text size are the `tooltipPaddingX`, `tooltipPaddingY` and `tooltipTextSize` appearance roles
   (0.5rem, 0.25rem and 1rem by default).
 - `bg-alert-error-fill` / `border-alert-error-border` - The error `Alert`'s fill and edge. They
   follow `status-error-subtle` and `status-error-border`, which the badges, tags and diffs keep.
+- `text-category-icon-1`, `-2`, `-4`, `-5`, `-6`, `-7` - The prompt category icons, one role per
+  series slot they were drawn in. Each follows its `series-N`, so a theme can quiet the icons
+  without moving the chart slots; ClickHouse draws all of them in its muted text, as Click UI
+  draws its icons.
 - Layering roles - `bg-surface-canvas` (the chat canvas and its header fade),
   `bg-surface-user-message` (the user turn's bubble), `bg-surface-card` and
   `bg-surface-card-hover` (marketplace cards), `bg-surface-nav-hover` and
   `bg-surface-nav-selected` (sidebar, rail and drawer rows), `bg-surface-tab-selected`
   (the settings tab rail), `bg-surface-menu` and `bg-surface-popover` with `border-border-menu` (menu and popover
   panels), `bg-surface-composer` (the composer box) and `bg-surface-search` (the sidebar
-  search pill). Each follows the surface it painted before it had a name
-  (`surface-primary-alt`, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
+  search pill) and `bg-surface-sidebar` (the sidebar panel). Each follows the surface it painted before it had a name
+  (`surface-primary-alt` for the canvas and the sidebar, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
   `presentation` for menus, `surface-primary` or `surface-secondary` for popovers, `border-light`, `surface-chat`),
   so a theme that repaints that surface keeps the layer on it, and a theme steps the layers
   apart by naming them.
@@ -426,7 +455,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `text-dialog-title` - An OGDialog title's ink. Follows `text-primary` when a
   theme names only that.
 - OGDialog chrome - `border-(length:--theme-dialog-stroke)` (`dialogStroke`, painted in
-  `border-light`, none by default), `px-theme-dialog-x` (`dialogPaddingX`),
+  `border-light`, none by default), `px-theme-button-x` (`buttonPaddingX`, the Button's default
+  size), `px-theme-dialog-x` (`dialogPaddingX`),
   `space-y-theme-dialog-header` (`dialogHeaderGap`), and for the title
   `text-(length:--theme-dialog-title-size)` and
   `leading-(--theme-dialog-title-leading)` (`dialogTitleSize`, `dialogTitleLeading`),
@@ -434,17 +464,21 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `font-theme-dialog-title` (`dialogTitleFontFamily`). The title size and family
   follow `textLg` and `displayFontFamily` when a theme omits them, and a caller's
   own padding, size or weight class replaces the role.
-- `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
-  `leadingXs`..`leading2xl`, in the app and in a consumer alike; the defaults are
+- `text-3xs`, `text-2xs`, `text-1xs`, `text-1sm` - The 10, 11, 13 and 15px steps (`text3xs`, `text2xs`, `text1xs`, `text1sm`); they set a size only, never a line height.
+- `text-xs` to `text-3xl` - Sizes and line heights read `textXs`..`text3xl` and
+  `leadingXs`..`leading3xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.
 - `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
   `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
   65% by default). A bundled scrim dims the page and never lifts it.
-- `theme-destructive-soft:` - A variant for a `destructive` Button's tint: the
+- `theme-destructive-soft:` - A variant for a `destructive-soft` Button's tint (the inline delete or revoke; a dialog's confirming `destructive` button stays solid): the
   button paints a 10% tint of the destructive surface under the destructive ink
   when the theme's `destructiveStyle` is `soft`. The default `fill` keeps the
   solid destructive surface.
+- `theme-chrome-quiet:` - A variant for a surface that stands in for a chrome
+  outline: it applies when the theme's `chromeBorderAlpha` is `0`, so a floating
+  control or a bar over a scrolling thread stays separable once its edge is gone.
 - `border-border-inset-medium` - `border-medium` at the `insetBorderAlpha`
   appearance role, for the box edges of a form that sits on a stroked page.
 - `ring-focus-subtle` / `outline-focus-subtle` - The keyboard ring of a row or

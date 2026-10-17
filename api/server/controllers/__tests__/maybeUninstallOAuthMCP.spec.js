@@ -157,6 +157,8 @@ jest.mock('~/models', () => ({
   removeUserFromAllGroups: jest.fn(),
   deleteAclEntries: jest.fn(),
   getSoleOwnedResourceIds: jest.fn().mockResolvedValue([]),
+  findUserErasableMCPServers: jest.fn().mockResolvedValue([]),
+  deleteMCPServersWithAcl: jest.fn(),
 }));
 
 const { maybeUninstallOAuthMCP } = require('~/server/controllers/UserController');

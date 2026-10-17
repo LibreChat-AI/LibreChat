@@ -303,14 +303,6 @@ export function clampOutputConfigEffort(model: string, outputConfig: unknown): v
   outputConfig.effort = clampEffortForDisabledThinking(model, outputConfig.effort);
 }
 
-/** Whether a resolved thinking config is an explicit `{ type: 'disabled' }`. */
-export function isThinkingDisabled(thinking: unknown): boolean {
-  if (typeof thinking !== 'object' || thinking === null || !('type' in thinking)) {
-    return false;
-  }
-  return thinking.type === 'disabled';
-}
-
 /** Whether a resolved thinking config asks for mid-thinking display updates (beta-gated). */
 export function requestsThinkingDisplayUpdates(thinking: unknown): boolean {
   if (typeof thinking !== 'object' || thinking === null || !('display' in thinking)) {
