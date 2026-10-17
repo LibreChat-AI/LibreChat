@@ -561,6 +561,74 @@ describe('useFileHandling', () => {
       }
     });
 
+    it('uploads the rest of a batch when one file has an unsupported type', async () => {
+      jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+      try {
+        mockFileConfig = mergeFileConfig({
+          endpoints: { default: { fileSizeLimit: 20, totalSizeLimit: 500 } },
+        });
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+
+        let accepted: boolean | undefined;
+        await act(async () => {
+          accepted = await result.current.handleFiles([
+            makeSizedFile('photo.png', 'image/png', 1 * megabyte),
+            makeSizedFile('setup.exe', 'application/x-msdownload', 2 * megabyte),
+          ]);
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(250);
+        });
+
+        expect(accepted).toBe(true);
+        expect(mockMutate).toHaveBeenCalledTimes(1);
+        expect(mockMutate.mock.calls[0][0].get('file').name).toBe('photo.png');
+        expect(mockLocalize).toHaveBeenCalledWith('com_error_files_skipped_unsupported', {
+          0: 'setup.exe',
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('rejects the whole batch when nothing in it is supported', async () => {
+      jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+      try {
+        mockFileConfig = mergeFileConfig({
+          endpoints: { default: { fileSizeLimit: 20, totalSizeLimit: 500 } },
+        });
+        mockValidateFiles.mockImplementation(jest.requireActual('~/utils/files').validateFiles);
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+
+        let accepted: boolean | undefined;
+        await act(async () => {
+          accepted = await result.current.handleFiles([
+            makeSizedFile('setup.exe', 'application/x-msdownload', 1 * megabyte),
+            makeSizedFile('run.exe', 'application/x-msdownload', 2 * megabyte),
+          ]);
+        });
+        await act(async () => {
+          jest.advanceTimersByTime(250);
+        });
+
+        expect(accepted).toBe(false);
+        expect(mockMutate).not.toHaveBeenCalled();
+        expect(mockLocalize).not.toHaveBeenCalledWith(
+          'com_error_files_skipped_unsupported',
+          expect.anything(),
+        );
+        expect(mockShowToast).toHaveBeenCalledWith({
+          message: 'Unsupported file type: application/x-msdownload',
+          status: 'error',
+          duration: 5000,
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('does not announce skipped files when the batch is rejected anyway', async () => {
       jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
       try {
