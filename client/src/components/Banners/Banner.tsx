@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { XIcon } from 'lucide-react';
 import { useRecoilState } from 'recoil';
 import { Button, cn } from '@librechat/client';
+import type { BannerVariant } from 'librechat-data-provider';
 import {
   CONFIG_HTML_TEXT_TAGS,
   CONFIG_HTML_CLASS_ATTR,
@@ -9,6 +10,14 @@ import {
 } from '~/utils/configHtml';
 import { useGetBannerQuery } from '~/data-provider';
 import store from '~/store';
+
+const variantClasses: Record<BannerVariant, string> = {
+  info: 'border-status-info-border bg-status-info-subtle text-status-info',
+  success: 'border-status-success-border bg-status-success-subtle text-status-success',
+  warning: 'border-status-warning-border bg-status-warning-subtle text-status-warning',
+  error: 'border-alert-error-border bg-alert-error-fill text-status-error',
+  neutral: 'border-status-neutral-border bg-status-neutral-subtle text-status-neutral',
+};
 
 export const Banner = ({ onHeightChange }: { onHeightChange?: (height: number) => void }) => {
   const { data: banner } = useGetBannerQuery();
@@ -58,11 +67,17 @@ export const Banner = ({ onHeightChange }: { onHeightChange?: (height: number) =
   return (
     <div
       ref={bannerRef}
-      className="bg-presentation text-text-primary sticky top-0 z-20 flex items-center px-2 py-1 md:relative"
+      className={cn(
+        'sticky top-0 z-20 flex items-center px-2 py-1 md:relative',
+        banner.variant
+          ? cn('border-b', variantClasses[banner.variant])
+          : 'bg-presentation text-text-primary',
+      )}
     >
       <div
         className={cn(
-          '[&_a]:text-link w-full truncate text-center text-base [&_a]:underline',
+          'w-full truncate text-center text-base [&_a]:underline',
+          banner.variant ? '[&_a]:text-inherit' : '[&_a]:text-link',
           !banner.persistable && 'px-4',
         )}
         dangerouslySetInnerHTML={{ __html: sanitizedMessage }}
@@ -75,7 +90,10 @@ export const Banner = ({ onHeightChange }: { onHeightChange?: (height: number) =
           className="size-8"
           onClick={onClick}
         >
-          <XIcon className="text-text-primary mx-auto h-4 w-4" aria-hidden="true" />
+          <XIcon
+            className={cn('mx-auto h-4 w-4', !banner.variant && 'text-text-primary')}
+            aria-hidden="true"
+          />
         </Button>
       )}
     </div>

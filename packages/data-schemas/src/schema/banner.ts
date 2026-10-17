@@ -1,4 +1,6 @@
 import { Schema, Document } from 'mongoose';
+import { BANNER_VARIANTS } from 'librechat-data-provider';
+import type { BannerVariant } from 'librechat-data-provider';
 
 export interface IBanner extends Document {
   bannerId: string;
@@ -7,6 +9,7 @@ export interface IBanner extends Document {
   displayTo?: Date;
   type: 'banner' | 'popup';
   isPublic: boolean;
+  variant?: BannerVariant;
   persistable: boolean;
   tenantId?: string;
 }
@@ -37,6 +40,10 @@ const bannerSchema: Schema<IBanner> = new Schema<IBanner>(
     isPublic: {
       type: Boolean,
       default: false,
+    },
+    variant: {
+      type: String,
+      enum: BANNER_VARIANTS,
     },
     persistable: {
       type: Boolean,
