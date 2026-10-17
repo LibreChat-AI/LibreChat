@@ -9,6 +9,7 @@ import type { LocatorTraversalFailure } from '../protection/diagnostics';
 import { agentStartupMilestones, agentStartupResults } from '~/agents/phases';
 
 const PATH_NORMALIZATIONS: [RegExp, string][] = [
+  [/^(\/api\/insights(?:\/access)?)\/?$/, '$1'],
   [/^\/api\/agents\/chat\/stream\/[^/]+(?=\/|$)/, '/api/agents/chat/stream/#id'],
   [/^\/api\/agents\/chat\/status\/[^/]+(?=\/|$)/, '/api/agents/chat/status/#id'],
   [/^\/api\/files\/code\/download\/[^/]+\/[^/]+(?=\/|$)/, '/api/files/code/download/#id/#id'],
@@ -39,6 +40,8 @@ const STATIC_PATHS = new Set([
   '/metrics',
   '/api/auth/login',
   '/api/config',
+  '/api/insights',
+  '/api/insights/access',
   '/api/agents/chat/abort',
   '/api/agents/chat/active',
   '/api/agents/v1/chat/completions',
