@@ -18,7 +18,13 @@ export interface ImageServiceDeps {
     buffer: Buffer,
     resolution: string,
     endpoint: string,
-  ) => Promise<{ buffer: Buffer; width: number; height: number }>;
+  ) => Promise<{
+    buffer: Buffer;
+    width: number;
+    height: number;
+    /** Media type of the re-encoded bytes; `undefined` when sharp named no type for them. */
+    type?: string;
+  }>;
   updateUser: (userId: string, update: { avatar: string }) => Promise<IUser | null>;
   updateFile: (params: { file_id: string }) => Promise<TFile>;
 }
@@ -71,6 +77,7 @@ export class ImageService {
         buffer: resizedBuffer,
         width,
         height,
+        type,
       } = await this.deps.resizeImageBuffer(inputBuffer, resolution, endpoint);
 
       const extension = path.extname(inputFilePath);
@@ -81,7 +88,9 @@ export class ImageService {
       let processedBuffer: Buffer;
       let fileName = `${file_id}__${path.basename(inputFilePath)}`;
 
-      if (extension.toLowerCase() === targetExtension) {
+      /* The name is only a claim about the contents; the bytes have to agree before conversion is
+       * skipped, or the record is typed from a name that misdescribes what was stored. */
+      if (extension.toLowerCase() === targetExtension && type === `image/${outputType}`) {
         processedBuffer = resizedBuffer;
       } else {
         const outputFormat = outputType as keyof FormatEnum;

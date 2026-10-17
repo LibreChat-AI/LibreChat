@@ -1,4 +1,8 @@
-jest.mock('sharp', () => ({}));
+jest.mock('sharp', () => {
+  const toBuffer = jest.fn(async () => Buffer.from('converted-bytes'));
+  const sharpMock = jest.fn(() => ({ toFormat: jest.fn().mockReturnThis(), toBuffer }));
+  return sharpMock;
+});
 jest.mock('@librechat/api', () => ({
   stripCacheBust: jest.fn((filepath) => filepath.split('?')[0]),
 }));
@@ -11,8 +15,10 @@ jest.mock('~/models', () => ({
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const sharp = require('sharp');
 const { updateFile } = require('~/models');
-const { prepareImagesLocal } = require('../images');
+const { resizeImageBuffer } = require('../../images/resize');
+const { prepareImagesLocal, uploadLocalImage } = require('../images');
 
 describe('prepareImagesLocal', () => {
   let tmpDir;
@@ -60,5 +66,82 @@ describe('prepareImagesLocal', () => {
     });
 
     expect(encoded).toBe(Buffer.from('plain-png-bytes').toString('base64'));
+  });
+});
+
+describe('uploadLocalImage', () => {
+  let tmpDir;
+  let imageOutput;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'upload-local-image-'));
+    imageOutput = path.join(tmpDir, 'images');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const makeReq = (imageOutputType) => ({
+    user: { id: 'user-1' },
+    config: { paths: { imageOutput }, imageOutputType },
+  });
+
+  /** The caller records the upload as `image/${imageOutputType}`, so whatever this writes has to
+   * be in that format — the type is handed to providers verbatim as `media_type`. */
+  const upload = async (name, resized) => {
+    const inputFilePath = path.join(tmpDir, name);
+    fs.writeFileSync(inputFilePath, Buffer.from('uploaded-bytes'));
+    resizeImageBuffer.mockResolvedValue({ width: 8, height: 8, ...resized });
+
+    const { filepath } = await uploadLocalImage({
+      req: makeReq('png'),
+      file: { path: inputFilePath },
+      file_id: 'file-1',
+      endpoint: 'anthropic',
+    });
+
+    return fs.readFileSync(path.join(imageOutput, 'user-1', path.basename(filepath)));
+  };
+
+  it('converts a JPEG that was given a .png name', async () => {
+    const written = await upload('fake.png', {
+      buffer: Buffer.from('resized-jpeg-bytes'),
+      type: 'image/jpeg',
+    });
+
+    expect(sharp).toHaveBeenCalledWith(Buffer.from('resized-jpeg-bytes'));
+    expect(written).toEqual(Buffer.from('converted-bytes'));
+  });
+
+  it('writes the resized bytes untouched when the name and the bytes both match the target', async () => {
+    const written = await upload('real.png', {
+      buffer: Buffer.from('resized-png-bytes'),
+      type: 'image/png',
+    });
+
+    expect(sharp).not.toHaveBeenCalled();
+    expect(written).toEqual(Buffer.from('resized-png-bytes'));
+  });
+
+  it('converts when sharp named no format for the resized bytes', async () => {
+    const written = await upload('unknown.png', {
+      buffer: Buffer.from('resized-unknown-bytes'),
+      type: undefined,
+    });
+
+    expect(sharp).toHaveBeenCalled();
+    expect(written).toEqual(Buffer.from('converted-bytes'));
+  });
+
+  it('still converts a name that does not carry the target extension', async () => {
+    const written = await upload('photo.jpg', {
+      buffer: Buffer.from('resized-jpeg-bytes'),
+      type: 'image/jpeg',
+    });
+
+    expect(sharp).toHaveBeenCalled();
+    expect(written).toEqual(Buffer.from('converted-bytes'));
   });
 });

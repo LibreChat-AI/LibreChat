@@ -37,6 +37,7 @@ async function uploadImageToAzure({
       buffer: resizedBuffer,
       width,
       height,
+      type,
     } = await resizeImageBuffer(inputBuffer, resolution, endpoint);
     const extension = path.extname(inputFilePath);
     const userId = req.user.id;
@@ -44,7 +45,12 @@ async function uploadImageToAzure({
     let fileName = `${file_id}__${path.basename(inputFilePath)}`;
     const targetExtension = `.${appConfig.imageOutputType}`;
 
-    if (extension.toLowerCase() === targetExtension) {
+    /* The name is only a claim about the contents; the bytes have to agree before conversion is
+     * skipped, or the record is typed from a name that misdescribes what was stored. */
+    if (
+      extension.toLowerCase() === targetExtension &&
+      type === `image/${appConfig.imageOutputType}`
+    ) {
       webPBuffer = resizedBuffer;
     } else {
       webPBuffer = await sharp(resizedBuffer).toFormat(appConfig.imageOutputType).toBuffer();

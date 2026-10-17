@@ -43,6 +43,7 @@ describe('ImageService', () => {
         buffer: Buffer.from('resized'),
         width: 800,
         height: 600,
+        type: 'image/jpeg',
       }),
       updateUser: jest.fn().mockResolvedValue(undefined),
       updateFile: jest.fn().mockResolvedValue(null),
@@ -108,11 +109,18 @@ describe('ImageService', () => {
       ).rejects.toThrow('User not authenticated');
     });
 
-    it('skips format conversion when extension matches target', async () => {
-      const webpFile = {
-        path: '/tmp/upload-123.webp',
-        originalname: 'photo.webp',
-      } as Express.Multer.File;
+    const webpFile = {
+      path: '/tmp/upload-123.webp',
+      originalname: 'photo.webp',
+    } as Express.Multer.File;
+
+    it('skips format conversion when the name and the bytes both match the target', async () => {
+      (mockDeps.resizeImageBuffer as jest.Mock).mockResolvedValue({
+        buffer: Buffer.from('resized'),
+        width: 800,
+        height: 600,
+        type: 'image/webp',
+      });
 
       await service.uploadImage({
         req: mockReq as ServerRequest,
@@ -122,6 +130,38 @@ describe('ImageService', () => {
       });
 
       expect(sharp).not.toHaveBeenCalled();
+    });
+
+    /* The record is typed from the output format the upload was meant to be in, so bytes that
+     * skipped conversion on the strength of their name alone leave it describing a format they are
+     * not in — and that type is handed to providers verbatim as `media_type`. */
+    it('converts bytes that are not in the target format, whatever the name says', async () => {
+      await service.uploadImage({
+        req: mockReq as ServerRequest,
+        file: webpFile,
+        file_id: 'file-456',
+        endpoint: 'openAI',
+      });
+
+      expect(sharp).toHaveBeenCalled();
+    });
+
+    it('converts when sharp named no format for the resized bytes', async () => {
+      (mockDeps.resizeImageBuffer as jest.Mock).mockResolvedValue({
+        buffer: Buffer.from('resized'),
+        width: 800,
+        height: 600,
+        type: undefined,
+      });
+
+      await service.uploadImage({
+        req: mockReq as ServerRequest,
+        file: webpFile,
+        file_id: 'file-456',
+        endpoint: 'openAI',
+      });
+
+      expect(sharp).toHaveBeenCalled();
     });
 
     it('uses custom resolution when provided', async () => {
