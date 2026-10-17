@@ -554,7 +554,7 @@ function TchatModelSelectorContent({ imageSpecs }: { imageSpecs: TImageSpec[] })
           unmountOnHide
           aria-label={localize('com_ui_select_model')}
           className={cn(
-            'animate-popover border-border-light bg-presentation text-text-primary z-50 flex flex-col overflow-hidden rounded-2xl border shadow-lg outline-none',
+            'animate-popover border-border-light bg-presentation text-text-primary rounded-theme-popover z-50 flex flex-col overflow-hidden border shadow-lg outline-none',
             'max-h-[min(560px,var(--popover-available-height,560px))] w-[min(720px,calc(100vw-1rem))]',
           )}
         >
