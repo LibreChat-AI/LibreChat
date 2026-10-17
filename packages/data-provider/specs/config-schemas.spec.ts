@@ -7,6 +7,7 @@ import {
   isAllDataRetention,
   isForcedTemporaryRetention,
   configSchema,
+  errorReportingConfigSchema,
   balanceSchema,
   interfaceSchema,
   fileStorageSchema,
@@ -2030,4 +2031,32 @@ describe('reset interval validation', () => {
       );
     },
   );
+});
+
+describe('errorReportingConfigSchema', () => {
+  it('defaults browser reporting off and samples every error once enabled', () => {
+    expect(errorReportingConfigSchema.parse({})).toEqual({
+      client: { enabled: false, sampleRate: 1 },
+    });
+    expect(errorReportingConfigSchema.parse({ client: { enabled: true } })).toEqual({
+      client: { enabled: true, sampleRate: 1 },
+    });
+  });
+
+  it('rejects an out-of-range sample rate and unknown keys', () => {
+    expect(errorReportingConfigSchema.safeParse({ client: { sampleRate: 1.5 } }).success).toBe(
+      false,
+    );
+    expect(errorReportingConfigSchema.safeParse({ client: { dsn: 'https://x@y/1' } }).success).toBe(
+      false,
+    );
+  });
+
+  it('is accepted under configSchema.errorReporting', () => {
+    const parsed = configSchema.safeParse({
+      version: '1.0.0',
+      errorReporting: { client: { enabled: true, sampleRate: 0.25 } },
+    });
+    expect(parsed.success && parsed.data.errorReporting?.client.sampleRate).toBe(0.25);
+  });
 });

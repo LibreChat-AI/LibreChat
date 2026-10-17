@@ -12,6 +12,13 @@
 version: 1.3.17
 cache: true
 
+# Browser errors go to GlitchTip project `tchat`, alongside the server's. The
+# DSN and environment come from SENTRY_DSN / SENTRY_ENVIRONMENT in Doppler
+# (tchat-be-fe); with no DSN the browser reports nothing.
+errorReporting:
+  client:
+    enabled: true
+
 interface:
   customWelcome: 'Welcome to Tchat — TensorGrid models, billed to your TensorGrid credit.'
   privacyPolicy:

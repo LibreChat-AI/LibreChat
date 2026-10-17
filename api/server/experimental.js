@@ -27,6 +27,7 @@ const {
   apiNotFound,
   applyCspNonce,
   createCspPolicy,
+  clientErrorReportingConnectSources,
   shellCacheHeaders,
   escapeHtmlAttribute,
   ErrorController,
@@ -544,7 +545,9 @@ if (cluster.isMaster) {
       customFooter: process.env.CUSTOM_FOOTER,
     });
 
-    const cspPolicy = createCspPolicy();
+    const cspPolicy = createCspPolicy(process.env, {
+      connectSrc: clientErrorReportingConnectSources({ config: appConfig?.errorReporting }),
+    });
     const shellCache = shellCacheHeaders(cspPolicy != null);
 
     const sendIndexHtml = (req, res) => {

@@ -20,6 +20,7 @@ const {
   createMetrics,
   applyCspNonce,
   createCspPolicy,
+  clientErrorReportingConnectSources,
   shellCacheHeaders,
   escapeHtmlAttribute,
   ErrorController,
@@ -302,7 +303,9 @@ const startServer = async () => {
     customFooter: process.env.CUSTOM_FOOTER,
   });
 
-  const cspPolicy = createCspPolicy();
+  const cspPolicy = createCspPolicy(process.env, {
+    connectSrc: clientErrorReportingConnectSources({ config: appConfig?.errorReporting }),
+  });
   const shellCache = shellCacheHeaders(cspPolicy != null);
 
   const sendIndexHtml = (req, res) => {

@@ -3208,6 +3208,7 @@ export type TStartupConfig = {
   titleGenerationTiming?: 'immediate' | 'final';
   analyticsGtmId?: string;
   rum?: TRumConfig;
+  errorReporting?: TClientErrorReporting;
   bundlerURL?: string;
   staticBundlerURL?: string;
   /** Whether the deployment has a configured RAG service. */
@@ -3726,6 +3727,35 @@ export const langfuseTraceConfigSchema = z.object({
 
 export type LangfuseTraceConfig = z.infer<typeof langfuseTraceConfigSchema>;
 
+/**
+ * Browser error reporting to a Sentry-compatible collector (GlitchTip). The collector address
+ * comes from `SENTRY_DSN`, the same variable the server reports with, so the browser and the
+ * API land in one project; this block only decides whether the browser sends at all. Off by
+ * default: every visitor's browser receives the DSN and connects to the collector's origin.
+ */
+export const errorReportingConfigSchema = z
+  .object({
+    client: z
+      .object({
+        enabled: z.boolean().default(false),
+        /** Share of browser errors sent, 0 to 1. */
+        sampleRate: z.number().min(0).max(1).default(1),
+      })
+      .strict()
+      .default({}),
+  })
+  .strict();
+
+export type TErrorReportingConfig = z.infer<typeof errorReportingConfigSchema>;
+
+/** What the browser needs to report errors; present only when reporting is on and the DSN valid. */
+export type TClientErrorReporting = {
+  dsn: string;
+  environment?: string;
+  release?: string;
+  sampleRate: number;
+};
+
 export const langfuseConfigSchema = z.object({
   enabled: z.boolean().optional(),
   publicKey: z.string().optional(),
@@ -3856,6 +3886,7 @@ export const configSchema = z.object({
     .strict()
     .optional(),
   langfuse: langfuseConfigSchema.optional(),
+  errorReporting: errorReportingConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),
   skillSync: skillSyncConfigSchema,

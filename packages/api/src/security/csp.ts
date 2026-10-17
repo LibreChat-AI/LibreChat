@@ -159,7 +159,16 @@ function mergeDirectives(directives: CspDirective[]): CspDirective[] {
   return order.map((name) => [name, merged.get(name) ?? []]);
 }
 
-export function buildCspDirectives(env: NodeJS.ProcessEnv = process.env): CspDirective[] {
+/** Sources the app adds for features it has configured, on top of the operator's env extras. */
+export interface CspFeatureSources {
+  /** e.g. the error-reporting collector's origin, present only while reporting is on. */
+  connectSrc?: string[];
+}
+
+export function buildCspDirectives(
+  env: NodeJS.ProcessEnv = process.env,
+  features: CspFeatureSources = {},
+): CspDirective[] {
   const scriptExtras = splitSourceList(env.CSP_SCRIPT_SRC_EXTRA);
   const frameAncestors = splitSourceList(env.CSP_FRAME_ANCESTORS);
   const directives = defaultDirectives(
@@ -174,6 +183,10 @@ export function buildCspDirectives(env: NodeJS.ProcessEnv = process.env): CspDir
     if (extraSources.length > 0) {
       directives.push([directive, extraSources]);
     }
+  }
+
+  if (features.connectSrc?.length) {
+    directives.push(['connect-src', features.connectSrc]);
   }
 
   const reportUri = env.CSP_REPORT_URI?.trim();
@@ -197,7 +210,10 @@ export function serializeCspDirectives(directives: CspDirective[]): string {
  * Resolves the policy once at startup. Returns `null` unless `CSP_ENABLED` is set,
  * so existing deployments are unaffected until they opt in.
  */
-export function createCspPolicy(env: NodeJS.ProcessEnv = process.env): CspPolicy | null {
+export function createCspPolicy(
+  env: NodeJS.ProcessEnv = process.env,
+  features: CspFeatureSources = {},
+): CspPolicy | null {
   if (!isEnabled(env.CSP_ENABLED)) {
     return null;
   }
@@ -209,7 +225,7 @@ export function createCspPolicy(env: NodeJS.ProcessEnv = process.env): CspPolicy
     return null;
   }
 
-  const serialized = serializeCspDirectives(buildCspDirectives(env));
+  const serialized = serializeCspDirectives(buildCspDirectives(env, features));
   const [prefix, suffix] = serialized.split(NONCE_SLOT);
   if (suffix == null) {
     logger.error(
