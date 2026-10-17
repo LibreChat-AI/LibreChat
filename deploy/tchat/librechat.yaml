@@ -126,6 +126,22 @@ endpoints:
         X-Tchat-User-Id: '{{LIBRECHAT_USER_ID}}'
         X-Tchat-User-Email: '{{LIBRECHAT_USER_EMAIL}}'
         X-Tchat-User-Openid: '{{LIBRECHAT_USER_OPENIDID}}'
+      # Shows the composer's reasoning-effort picker for every model here. A
+      # custom endpoint gets no picker by default. The OpenAI parameter set
+      # alone gates it by model name, which covers GPT but not DeepSeek, Qwen
+      # or Kimi, so `reasoning_effort` is also declared explicitly. The default
+      # is Auto, which sends no effort, so a chat changes only when its user
+      # picks a level. Request parsing is identical under `openAI` and the
+      # former `custom` set (checked 2026-10-18).
+      #
+      # Probed through the Gateway on 2026-10-17: DeepSeek (#236/#237) and Qwen
+      # stream real thinking. GPT on the CLIProxy channels (#235/#238) accepts
+      # the effort, but the ChatGPT-account Codex backend ignores it, so for
+      # GPT the picker has no measurable effect yet.
+      customParams:
+        defaultParamsEndpoint: 'openAI'
+        paramDefinitions:
+          - key: 'reasoning_effort'
       models:
         # Live from the Gateway catalog via /v1/models through the broker, so
         # adding a model in the Gateway admin publishes it here with no redeploy.
