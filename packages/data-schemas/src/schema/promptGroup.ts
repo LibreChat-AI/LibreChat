@@ -25,7 +25,9 @@ const promptGroupSchema: Schema<IPromptGroupDocument> = new Schema<IPromptGroupD
     productionId: {
       type: Schema.Types.ObjectId,
       ref: 'Prompt',
-      required: true,
+      required: function (this: IPromptGroupDocument) {
+        return (this.source ?? 'native') === 'native';
+      },
       index: true,
     },
     author: {
@@ -53,6 +55,38 @@ const promptGroupSchema: Schema<IPromptGroupDocument> = new Schema<IPromptGroupD
         `Command cannot be longer than ${Constants.COMMANDS_MAX_LENGTH} characters`,
       ],
     }, // Casting here bypasses the type error for the command field.
+    /**
+     * Provenance of this prompt group.
+     *
+     * - `native` — authored directly inside LibreChat.
+     * - `langfuse` — mirrored from a configured Langfuse prompt.
+     */
+    source: {
+      type: String,
+      enum: ['native', 'langfuse'],
+      default: 'native',
+    },
+    /** Name of the prompt in its Langfuse project. */
+    sourcePromptName: {
+      type: String,
+      required: function (this: IPromptGroupDocument) {
+        return this.source === 'langfuse';
+      },
+    },
+    /** Langfuse project ID the prompt was mirrored from. */
+    sourceProjectId: {
+      type: String,
+      required: function (this: IPromptGroupDocument) {
+        return this.source === 'langfuse';
+      },
+    },
+    /** Tenant's Langfuse destination key (e.g. `eu`) the prompt was mirrored from. */
+    sourceDestination: {
+      type: String,
+      required: function (this: IPromptGroupDocument) {
+        return this.source === 'langfuse';
+      },
+    },
     tenantId: {
       type: String,
       index: true,
@@ -64,5 +98,12 @@ const promptGroupSchema: Schema<IPromptGroupDocument> = new Schema<IPromptGroupD
 );
 
 promptGroupSchema.index({ numberOfGenerations: -1, updatedAt: -1, _id: 1 });
+promptGroupSchema.index(
+  { tenantId: 1, sourceDestination: 1, sourceProjectId: 1, sourcePromptName: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { sourcePromptName: { $exists: true } },
+  },
+);
 
 export default promptGroupSchema;

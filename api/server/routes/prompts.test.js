@@ -1577,11 +1577,12 @@ describe('Prompt Routes - response and failure compatibility', () => {
         'numberOfGenerations',
         'oneliner',
         'productionId',
+        'source',
         'updatedAt',
       ].sort(),
     );
     expect(response.body).toEqual(
-      expect.objectContaining({ name: 'Renamed Group', command: 'renamed' }),
+      expect.objectContaining({ name: 'Renamed Group', command: 'renamed', source: 'native' }),
     );
   });
 
