@@ -2667,6 +2667,214 @@ describe('primeResources', () => {
       ]);
     });
 
+    describe('legacy File Search files held by the agent', () => {
+      /* Before namespaces were tracked, a file joined an agent's file_search resources only
+       * by being embedded for it. Embedding it again stores a second copy under the same
+       * file_id, and every search returns each passage twice. */
+      const legacySearchFile = (): TFile =>
+        ({
+          user: 'user1',
+          file_id: 'legacy-search',
+          filename: 'handbook.pdf',
+          filepath: '/uploads/handbook.pdf',
+          object: 'file',
+          type: 'application/pdf',
+          bytes: 2048,
+          embedded: true,
+          usage: 0,
+          source: FileSources.local,
+          context: FileContext.agents,
+        }) as TFile;
+
+      const primeLegacy = (
+        hasEntityEmbeddings: jest.Mock,
+        adoptLegacySearchEmbeddings: jest.Mock,
+      ) => {
+        mockGetFiles.mockResolvedValue([legacySearchFile()]);
+        return primeResources({
+          req: mockReq,
+          appConfig: mockAppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: { [EToolResources.file_search]: { file_ids: ['legacy-search'] } },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search]),
+          hasEntityEmbeddings,
+          adoptLegacySearchEmbeddings,
+        });
+      };
+
+      it("does not re-embed a file whose vectors are in this agent's namespace", async () => {
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockResolvedValue(['legacy-search']);
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(probe).toHaveBeenCalledWith({
+          userId: 'user1',
+          file_id: 'legacy-search',
+          entity_id: 'agent1',
+          query: 'handbook.pdf',
+          timeoutMs: 5000,
+        });
+        expect(adopt).toHaveBeenCalledWith({
+          files: [{ file_id: 'legacy-search', user: 'user1' }],
+          agentId: 'agent1',
+        });
+        expect(result.provisionState).toBeUndefined();
+        expect(result.tool_resources?.[EToolResources.file_search]?.file_ids).toEqual([
+          'legacy-search',
+        ]);
+      });
+
+      it('bounds the check by the configured timeout', async () => {
+        const probe = jest.fn().mockResolvedValue(true);
+        mockGetFiles.mockResolvedValue([legacySearchFile()]);
+
+        await primeResources({
+          req: mockReq,
+          appConfig: {
+            ...mockAppConfig,
+            fileConfig: { ...mockAppConfig.fileConfig, legacySearchProbeTimeoutMs: 1234 },
+          } as AppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: { [EToolResources.file_search]: { file_ids: ['legacy-search'] } },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search]),
+          hasEntityEmbeddings: probe,
+          adoptLegacySearchEmbeddings: jest.fn().mockResolvedValue(['legacy-search']),
+        });
+
+        expect(probe).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1234 }));
+      });
+
+      it('checks a file another agent recorded first before embedding it here', async () => {
+        /* An inheriting agent embedded and recorded it first; this agent's own older vectors
+         * went unrecorded, so embedding again would duplicate them. */
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockResolvedValue(['legacy-search']);
+        mockGetFiles.mockResolvedValue([
+          { ...legacySearchFile(), metadata: { embeddedEntities: ['agent2'] } } as TFile,
+        ]);
+
+        const result = await primeResources({
+          req: mockReq,
+          appConfig: mockAppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: { [EToolResources.file_search]: { file_ids: ['legacy-search'] } },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search]),
+          hasEntityEmbeddings: probe,
+          adoptLegacySearchEmbeddings: adopt,
+        });
+
+        expect(probe).toHaveBeenCalledWith(expect.objectContaining({ entity_id: 'agent1' }));
+        expect(result.provisionState).toBeUndefined();
+      });
+
+      it("embeds a file whose vectors are not in this agent's namespace", async () => {
+        /* Another agent embedded it, so this agent's namespace holds none of its vectors and
+         * search would return nothing. */
+        const probe = jest.fn().mockResolvedValue(false);
+        const adopt = jest.fn();
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(adopt).not.toHaveBeenCalled();
+        expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+          'legacy-search',
+        ]);
+      });
+
+      it('logs a failed check without the vector store response body', async () => {
+        const error = Object.assign(new Error('Request failed with status code 500'), {
+          response: { status: 500, data: { detail: 'upstream secret text' } },
+        });
+        const probe = jest.fn().mockRejectedValue(error);
+
+        await primeLegacy(probe, jest.fn());
+
+        expect(logger.error).toHaveBeenCalled();
+        expect(JSON.stringify((logger.error as jest.Mock).mock.calls)).not.toContain(
+          'upstream secret text',
+        );
+      });
+
+      it('keeps the file queued when the vector store cannot be asked', async () => {
+        const probe = jest.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+        const adopt = jest.fn();
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(adopt).not.toHaveBeenCalled();
+        expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+          'legacy-search',
+        ]);
+      });
+
+      it('uses confirmed vectors even when recording the namespace fails', async () => {
+        /* The vectors are there; embedding again would store the duplicate copy. */
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockRejectedValue(new Error('database unavailable'));
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(result.provisionState).toBeUndefined();
+      });
+
+      it('starts the legacy check before the code liveness probe settles', async () => {
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockResolvedValue(['legacy-search']);
+        let checkStartedFirst = false;
+        const checkSessionsAlive = jest.fn(async () => {
+          checkStartedFirst = probe.mock.calls.length === 1;
+          return new Set(['legacy-search']);
+        });
+        mockGetFiles.mockResolvedValue([
+          {
+            ...legacySearchFile(),
+            metadata: {
+              codeEnvRef: {
+                kind: 'agent',
+                id: 'agent1',
+                storage_session_id: 'sess',
+                file_id: 'fid',
+              },
+            },
+          } as TFile,
+        ]);
+
+        await primeResources({
+          req: mockReq,
+          appConfig: mockAppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: {
+            [EToolResources.file_search]: { file_ids: ['legacy-search'] },
+            [EToolResources.execute_code]: { file_ids: ['legacy-search'] },
+          },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search, EToolResources.execute_code]),
+          checkSessionsAlive,
+          hasEntityEmbeddings: probe,
+          adoptLegacySearchEmbeddings: adopt,
+        });
+
+        expect(checkSessionsAlive).toHaveBeenCalled();
+        expect(checkStartedFirst).toBe(true);
+      });
+    });
+
     it('leaves a file alone whose destination came from the legacy chooser', async () => {
       /* The endpoint deciding this turn need not be the one the file was uploaded under,
        * so the request-level legacy check cannot answer for it. Its missing references

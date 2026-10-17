@@ -68,7 +68,14 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function harness(options: { inputs?: TFile[]; setup?: TFile[] } = {}) {
+function harness(
+  options: {
+    inputs?: TFile[];
+    setup?: TFile[];
+    hasEntityEmbeddings?: jest.Mock;
+    adoptLegacySearchEmbeddings?: jest.Mock;
+  } = {},
+) {
   const input = options.inputs ?? [file('input')];
   const setup = options.setup ?? [file('worker-setup', { context: FileContext.agents })];
   const parsed = configSchema.parse({
@@ -198,6 +205,8 @@ function harness(options: { inputs?: TFile[]; setup?: TFile[] } = {}) {
       updateCodeEnvRef,
       updateFile: jest.fn(async () => undefined),
       addEmbeddedEntity,
+      hasEntityEmbeddings: options.hasEntityEmbeddings,
+      adoptLegacySearchEmbeddings: options.adoptLegacySearchEmbeddings,
     },
   });
   const deps = spy.mock.calls[spy.mock.calls.length - 1][0];
@@ -385,6 +394,27 @@ describe('run file execution host', () => {
     expect(
       h.contexts.get('worker')?.tool_resources?.execute_code?.files?.map((entry) => entry.file_id),
     ).toEqual(['historical']);
+  });
+
+  it('confirms an unrecorded setup embedding instead of embedding it again', async () => {
+    /* A worker's File Search setup file embedded before namespaces were tracked already has
+     * vectors in the worker's namespace; a shared-file run must not store a second copy. */
+    const hasEntityEmbeddings = jest.fn().mockResolvedValue(true);
+    const adoptLegacySearchEmbeddings = jest.fn().mockResolvedValue(['worker-setup']);
+    const h = harness({
+      setup: [file('worker-setup', { context: FileContext.agents, embedded: true })],
+      hasEntityEmbeddings,
+      adoptLegacySearchEmbeddings,
+    });
+    await h.prepare();
+    await h.host.provision(['file_search'], 'worker', h.signal, identity());
+
+    expect(hasEntityEmbeddings).toHaveBeenCalledWith(
+      expect.objectContaining({ file_id: 'worker-setup', entity_id: 'worker' }),
+    );
+    expect(h.provisionToVectorDB.mock.calls.map(([params]) => params.file.file_id)).not.toContain(
+      'worker-setup',
+    );
   });
 
   it('retains only admitted advertised paths when preparing isolated child queues', async () => {

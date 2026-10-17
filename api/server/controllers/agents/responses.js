@@ -93,6 +93,7 @@ const {
   getConversationWriteContext,
   isTemporaryTurn,
   getModelEndUsage,
+  hasEntityEmbeddings,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -805,6 +806,8 @@ const executeResponse = async (envelope, { req, res }) => {
         getUserCodeFiles: db.getUserCodeFiles,
         getDeferredProvisionFiles: db.getDeferredProvisionFiles,
         checkSessionsAlive,
+        adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
         loadCodeApiKey,
         getToolFilesByIds: db.getToolFilesByIds,
         getCodeGeneratedFiles: db.getCodeGeneratedFiles,

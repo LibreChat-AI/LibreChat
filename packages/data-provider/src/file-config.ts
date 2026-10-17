@@ -667,6 +667,7 @@ export const fileConfigSchema = z.object({
   fileContextSizeLimit: z.number().min(0).optional(),
   fileContextCharLimit: z.number().min(0).optional(),
   codeEnvLivenessSafeWindowMs: z.number().min(0).optional(),
+  legacySearchProbeTimeoutMs: z.number().min(1).optional(),
   imageGeneration: z
     .object({
       percentage: z.number().min(0).max(100).optional(),

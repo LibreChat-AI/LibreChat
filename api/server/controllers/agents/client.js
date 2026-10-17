@@ -209,6 +209,7 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getChatProjectContextKey,
   isTemporaryTurn,
+  hasEntityEmbeddings,
 } = require('@librechat/api');
 const {
   Run,
@@ -3423,6 +3424,8 @@ class AgentClient extends BaseClient {
       {
         getProjectFiles: db.getProjectFiles,
         getFiles: db.getFiles,
+        adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
         getUserKey: db.getUserKey,
         getConvoFiles: db.getConvoFiles,
         getAccessibleMcpServerNames,

@@ -17,6 +17,13 @@ import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { escapeRegExp } from '~/utils/string';
 import logger from '../config/winston';
 
+/** A loaded file record, named by the fields that identify it: `file_id` is not unique alone. */
+export type LegacySearchFileRef = {
+  file_id: string;
+  user: string;
+  tenantId?: string;
+};
+
 export const DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT = 20;
 export const MAX_AVAILABLE_PROJECT_FILES_LIMIT = 50;
 
@@ -348,6 +355,10 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     file_id: string;
     entityId: string;
   }) => Promise<IMongoFile | null>;
+  adoptLegacySearchEmbeddings: (data: {
+    files: LegacySearchFileRef[];
+    agentId: string;
+  }) => Promise<string[]>;
   updateFileUsage: (data: {
     file_id: string;
     inc?: number;
@@ -1223,6 +1234,54 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
+   * Records an agent's namespace on embedded files whose vectors the caller has confirmed are
+   * in it, keeping any namespaces already recorded. Each record is matched by its owner and
+   * tenant as well as its `file_id`, which is not unique on its own.
+   *
+   * @param data - Verified file records, and the agent whose namespace holds their vectors
+   * @returns The file ids that now record the agent's namespace
+   */
+  async function adoptLegacySearchEmbeddings(data: {
+    files: LegacySearchFileRef[];
+    agentId: string;
+  }): Promise<string[]> {
+    if (data.files.length === 0) {
+      return [];
+    }
+    const File = mongoose.models.File as Model<IMongoFile>;
+    /* An untenanted record is matched as untenanted: omitting the predicate would let a
+     * same-id record under a tenant match instead. Each write settles on its own, so a
+     * committed one is reported even when a sibling fails. */
+    const settled = await Promise.allSettled(
+      data.files.map((file) =>
+        File.findOneAndUpdate(
+          {
+            file_id: file.file_id,
+            user: file.user,
+            tenantId: file.tenantId ?? null,
+            context: FileContext.agents,
+            embedded: true,
+          },
+          { $addToSet: { 'metadata.embeddedEntities': data.agentId } },
+          { projection: { file_id: 1 } },
+        ).lean<Pick<IMongoFile, 'file_id'>>(),
+      ),
+    );
+    const adopted: string[] = [];
+    settled.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        logger.error('[adoptLegacySearchEmbeddings] Failed to record a confirmed embedding', {
+          file_id: data.files[index].file_id,
+          error: (result.reason as Error)?.message,
+        });
+      } else if (result.value) {
+        adopted.push(result.value.file_id);
+      }
+    });
+    return adopted;
+  }
+
+  /**
    * Increments the usage of a file identified by file_id.
    * @param data - The data to update, must contain file_id and the increment value for usage
    * @returns A promise that resolves to the updated file document
@@ -1569,6 +1628,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     updateFile,
     updateFileCodeEnvRef,
     addFileEmbeddedEntity,
+    adoptLegacySearchEmbeddings,
     updateFileUsage,
     deleteFile,
     deleteFiles,

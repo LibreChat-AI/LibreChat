@@ -77,6 +77,7 @@ const {
   createTerminalRunErrorObserver,
   isTemporaryTurn,
   getModelEndUsage,
+  hasEntityEmbeddings,
 } = require('@librechat/api');
 const {
   buildSummarizationHandlers,
@@ -550,6 +551,8 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         getUserCodeFiles: db.getUserCodeFiles,
         getDeferredProvisionFiles: db.getDeferredProvisionFiles,
         checkSessionsAlive,
+        adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
         loadCodeApiKey,
         getToolFilesByIds: db.getToolFilesByIds,
         getCodeGeneratedFiles: db.getCodeGeneratedFiles,
