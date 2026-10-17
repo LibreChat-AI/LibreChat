@@ -1,4 +1,4 @@
-import { IThemeRGB } from '../types';
+import type { IThemeRGB } from './types';
 
 /**
  * High contrast accessibility themes.

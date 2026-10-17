@@ -2,14 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import '@testing-library/jest-dom';
 import { render, waitFor } from '@testing-library/react';
-import type { ThemeMode, IThemeRGB } from '../types';
 import {
   defaultAppearance,
   libreChatTheme,
   resolveTheme,
   themeColorTokens,
   validateThemeDefinition,
-} from '../registry';
+} from 'librechat-data-provider';
+import type { ThemeMode, IThemeRGB } from 'librechat-data-provider';
 import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './clickhouse';
 import { ThemeProvider } from '../context/ThemeProvider';
 

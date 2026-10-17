@@ -610,7 +610,7 @@ function ThemeToggle() {
 - `'high-contrast-dark'` - Accessibility mode: white on black, WCAG AAA
 
 High contrast applies the built-in `highContrastTheme` definition
-(`themes/highContrast.ts`), which outranks a deployment's custom theme, and adds
+(`packages/data-provider/src/themes/highContrast.ts`), which outranks a deployment's custom theme, and adds
 a `high-contrast` class to `<html>` for the CSS-only variables the token layer
 cannot reach.
 
@@ -678,11 +678,8 @@ const { theme, setTheme } = useContext(ThemeContext);
 packages/client/src/theme/
 ├── context/
 │   └── ThemeProvider.tsx    # Main theme provider
-├── types/
-│   └── index.ts            # TypeScript interfaces
 ├── themes/
-│   ├── default.ts          # Light theme colors
-│   ├── dark.ts             # Dark theme colors
+│   ├── clickhouse.ts       # The bundled ClickHouse theme
 │   └── index.ts            # Theme exports
 ├── utils/
 │   ├── applyTheme.ts       # Apply CSS variables
@@ -691,6 +688,11 @@ packages/client/src/theme/
 ├── README.md               # This documentation
 └── index.ts               # Main exports
 ```
+
+The theme types, the resolver (`registry.ts`), the default, dark and high contrast palettes and
+`describeResolvedTheme` live in `packages/data-provider/src/themes`, so the server resolves a
+deployment's inline `interface.theme` for the shell's first paint with the same code the client
+runs. This package re-exports them.
 
 ### CSS Variable Format
 

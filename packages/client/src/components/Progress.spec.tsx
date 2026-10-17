@@ -2,8 +2,8 @@ import '@testing-library/jest-dom';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { render, screen } from '@testing-library/react';
-import type { ThemeDefinition } from '../theme/types';
-import { resolveTheme, validateThemeDefinition, THEME_VERSION } from '../theme/registry';
+import { resolveTheme, validateThemeDefinition, THEME_VERSION } from 'librechat-data-provider';
+import type { ThemeDefinition } from 'librechat-data-provider';
 import { applyResolvedTheme, clearAppliedTheme } from '../theme/utils/applyTheme';
 import { Progress } from './Progress';
 

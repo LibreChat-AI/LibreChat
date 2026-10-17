@@ -4,7 +4,7 @@
  * palettes they complete.
  *
  * `ThemeProvider` puts `high-contrast` on <html> and paints the palette as
- * inline custom properties (see `themes/highContrast.ts`). Two of those tokens
+ * inline custom properties (see `packages/data-provider/src/themes/highContrast.ts`). Two of those tokens
  * are not self-sufficient, and the rules below are what make them correct:
  * the selected fills are deliberately light so their label clears AAA, which
  * only works because selection is marked by a perimeter; and `::placeholder`
@@ -22,7 +22,7 @@
 /**
  * Selection and navigation are conveyed by a fill alone almost everywhere, and
  * these palettes keep fills light on purpose so the label on them can clear AAA
- * (see the `surface-active` note in `themes/highContrast.ts`). The cue is
+ * (see the `surface-active` note in `packages/data-provider/src/themes/highContrast.ts`). The cue is
  * therefore a perimeter: `text-primary` is 21:1 against either canvas, and it
  * is what discharges WCAG 1.4.11 for the fill.
  *

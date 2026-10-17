@@ -1,12 +1,15 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { IThemeAppearance, IThemeRGB } from './types';
+import {
+  darkTheme,
+  defaultTheme,
+  defaultAppearance,
+  highContrastDarkTheme,
+  highContrastLightTheme,
+} from 'librechat-data-provider';
+import type { IThemeAppearance, IThemeRGB } from 'librechat-data-provider';
 import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './themes/clickhouse';
-import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
 import { fieldControl } from '../components/Field';
-import { defaultTheme } from './themes/default';
-import { defaultAppearance } from './registry';
-import { darkTheme } from './themes/dark';
 
 const sharedComponents = [
   'AnimatedSearchInput.tsx',

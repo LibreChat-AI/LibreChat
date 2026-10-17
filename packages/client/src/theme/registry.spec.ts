@@ -1,7 +1,8 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { IThemeAppearance, IThemeRGB, ThemeDefinition } from './types';
 import {
+  darkTheme,
+  defaultTheme,
   collectThemeWarnings,
   darkAppearanceDefaults,
   defaultAppearanceFor,
@@ -13,11 +14,10 @@ import {
   layerRoleSources,
   themeColorTokens,
   validateThemeDefinition,
-} from './registry';
+} from 'librechat-data-provider';
+import type { IThemeAppearance, IThemeRGB, ThemeDefinition } from 'librechat-data-provider';
 import { describeResolvedTheme } from './utils/applyTheme';
 import { clickHouseTheme } from './themes/clickhouse';
-import { defaultTheme } from './themes/default';
-import { darkTheme } from './themes/dark';
 import * as themeEntry from './index';
 
 const compactTheme: ThemeDefinition = {

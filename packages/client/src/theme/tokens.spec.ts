@@ -3,8 +3,7 @@ import path from 'path';
 import fsp from 'fs/promises';
 import { compile } from 'tailwindcss';
 import { deserialize, serialize } from 'v8';
-import { themeColorTokens, themeDerivedColorTokens } from 'librechat-data-provider';
-import { defaultTheme } from './themes/default';
+import { defaultTheme, themeColorTokens, themeDerivedColorTokens } from 'librechat-data-provider';
 
 /** Tailwind's compiler clones its theme with `structuredClone`, which jsdom does not provide.
  *  V8 serialization is the same structured-clone algorithm Node's global uses. */
