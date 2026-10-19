@@ -1,4 +1,9 @@
-import { ContextPartKeys, contributeContext, listContextParts } from '../systemParts';
+import {
+  ContextPartKeys,
+  assembleSystemPrompt,
+  contributeContext,
+  listContextParts,
+} from '../systemParts';
 import { applyTurnContextToRuntime, applyTurnMemoryToAgent, getConversationAgents } from './anchor';
 
 describe('getConversationAgents', () => {
@@ -46,6 +51,26 @@ describe('applyTurnMemoryToAgent', () => {
     expect(listContextParts(agent).find(({ key }) => key === 'conversation')).toMatchObject({
       kind: 'conversation',
       text: 'Anchored memory.',
+    });
+  });
+
+  it('keeps the anchored memory out of the tail the SDK relocates when the conversation block is cached', () => {
+    const agent: { instructions: string; additional_instructions?: string } = {
+      instructions: 'Base',
+    };
+    contributeContext(agent, ContextPartKeys.memory, 'Live memory.');
+    const options = { stableContext: true, conversationBlock: true };
+    expect(assembleSystemPrompt(agent, options)).toMatchObject({
+      conversation_instructions: '',
+      additional_instructions: 'Live memory.',
+    });
+
+    contributeContext(agent, ContextPartKeys.memory, undefined);
+    applyTurnMemoryToAgent(agent, { memoryBlock: 'Anchored memory.' });
+
+    expect(assembleSystemPrompt(agent, options)).toMatchObject({
+      conversation_instructions: 'Anchored memory.',
+      additional_instructions: '',
     });
   });
 });
