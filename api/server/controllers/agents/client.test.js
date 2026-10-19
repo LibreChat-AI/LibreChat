@@ -8158,6 +8158,32 @@ describe('AgentClient - titleConvo', () => {
         expect(client.memoryPayload[2].content).toBe('Next question');
       });
 
+      it('gives a handoff target on the primary memory partition the anchored memory, not a live per-turn copy', async () => {
+        mockReq.turnStartedAt = Date.parse('2026-03-09T21:00:00.000Z');
+        mockReq.config.memory = {
+          agent: { enabled: true, provider: EModelEndpoint.openAI, model: 'gpt-4' },
+        };
+        client.useMemory = jest.fn().mockResolvedValue({ withoutKeys: 'tea: yes\n' });
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          { key: 'memory', value: 'Anchored memory.' },
+        ]);
+        const handoffAgent = {
+          id: 'handoff-agent',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          instructions: 'Handoff instructions',
+          model_parameters: { model: 'gpt-4' },
+          tools: [],
+        };
+        client.agentConfigs = new Map([[handoffAgent.id, handoffAgent]]);
+
+        await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(handoffAgent.additional_instructions).toBe('Anchored memory.');
+        expect(handoffAgent.additional_instructions).not.toContain('tea: yes');
+      });
+
       it('rebuilds a resumed turn from the anchor of the paused turn, not from the live state', async () => {
         const { assembleSystemPrompt } = api();
         models().getConvoContextAnchor.mockResolvedValue([
