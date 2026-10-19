@@ -15,6 +15,7 @@ export type { TurnContextMessage } from './anchor';
 export {
   applyTurnContext,
   applyTurnContextToRuntime,
+  applyTurnMemoryToAgent,
   createAnchor,
   getConversationAgents,
   reanchor,

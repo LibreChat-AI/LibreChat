@@ -629,6 +629,19 @@ describe('planTurnContext', () => {
       expect(last(on.texts)).toContain(entry('a', '1'));
     });
 
+    it('keeps the anchored memory block while later changes arrive as updates, and drops it while off', () => {
+      const convo = new Conversation();
+      const first = convo.send(base, minutes(0)).plan;
+      expect(first.memoryBlock).toBe('Likes tea.');
+      const changed = convo.send({ ...base, memory: 'Likes tea. Works in logistics.' }, minutes(1));
+      expect(changed.plan.memoryBlock).toBe(first.memoryBlock);
+      const off = convo.send({ ...base, memory: undefined }, minutes(2));
+      expect(off.plan.memoryBlock).toBe('');
+      expect(
+        new Conversation().send({ ...base, memory: undefined }, minutes(0)).plan.memoryBlock,
+      ).toBe('');
+    });
+
     it('withholds memory everywhere while it is off, and records nothing', () => {
       const convo = new Conversation();
       convo.send(base, minutes(0));
