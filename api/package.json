@@ -60,7 +60,7 @@
     "@opentelemetry/instrumentation-mongoose": "^0.54.0",
     "@opentelemetry/instrumentation-undici": "^0.18.0",
     "@opentelemetry/resources": "^2.6.1",
-    "@opentelemetry/sdk-node": "^0.207.0",
+    "@opentelemetry/sdk-node": "^0.217.0",
     "@opentelemetry/semantic-conventions": "^1.39.0",
     "@smithy/node-http-handler": "^4.4.5",
     "ai-tokenizer": "^1.0.6",
