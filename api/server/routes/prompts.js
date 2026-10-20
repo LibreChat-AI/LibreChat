@@ -63,6 +63,12 @@ router.get(
   configMiddleware,
   handlers.resolvePrompt,
 );
+router.get(
+  '/groups/:groupId/revisions',
+  promptResolveLimiter,
+  canAccessPromptGroupResource({ requiredPermission: PermissionBits.VIEW }),
+  handlers.listRevisions,
+);
 router.get('/all', configMiddleware, handlers.listAllPromptGroups);
 router.get('/groups', configMiddleware, handlers.listPromptGroups);
 

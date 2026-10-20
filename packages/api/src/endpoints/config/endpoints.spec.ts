@@ -203,6 +203,57 @@ describe('createEndpointsConfigService', () => {
       },
     );
 
+    describe('linkedInstructions.langfuse.enabled', () => {
+      it('defaults to false when omitted from the agents config', async () => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(appConfig({ endpoints: { [EModelEndpoint.agents]: {} } })),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]?.linkedInstructions).toEqual({
+          langfuse: { enabled: false },
+        });
+      });
+
+      it.each([true, false])(
+        'copies the switch through as configured (enabled=%s)',
+        async (enabled) => {
+          const deps = createMockDeps({
+            loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+              [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+            }),
+            getAppConfig: jest.fn().mockResolvedValue(
+              appConfig({
+                endpoints: {
+                  [EModelEndpoint.agents]: {
+                    linkedInstructions: {
+                      timeoutMs: 5_000,
+                      native: { cacheTtlMs: 60_000 },
+                      langfuse: { enabled },
+                    },
+                  },
+                },
+              }),
+            ),
+          });
+          const { getEndpointsConfig } = createEndpointsConfigService(deps);
+          const result = await getEndpointsConfig(fakeReq());
+
+          // Only the switch itself reaches the client; `timeoutMs` and `native` stay
+          // server-side budget/cache configuration the Builder never needs.
+          expect(result?.[EModelEndpoint.agents]?.linkedInstructions).toEqual({
+            langfuse: { enabled },
+          });
+        },
+      );
+    });
+
     it('exposes the deployment stateful environment allowlist', async () => {
       const deps = createMockDeps({
         loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({

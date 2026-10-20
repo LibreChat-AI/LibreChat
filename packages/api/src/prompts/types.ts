@@ -3,6 +3,7 @@ import type {
   PrincipalType,
   TCreatePromptRecord,
   TDeletePromptResponse,
+  TPromptRevisionChoicesResponse,
   TMakePromptProductionResponse,
 } from 'librechat-data-provider';
 import type { PromptGroupSource } from '@librechat/data-schemas';
@@ -204,10 +205,19 @@ export interface ResolvePromptInput {
   readonly allowedSources?: readonly PromptGroupSource[];
 }
 
+export interface ListRevisionsInput {
+  readonly groupId: string;
+  readonly loadedGroup?: PromptGroupRecord | null;
+  /** Restricts dispatch to these sources; any other source returns `unsupported_source`
+   *  before an adapter or network call runs. */
+  readonly allowedSources?: readonly PromptGroupSource[];
+}
+
 /**
- * Resolves a group's content for a selection. One adapter per `PromptGroupSource`; the
- * service picks it from `group.source` and dispatches the already-resolved `group`, so
- * an adapter never has to look its own group up.
+ * Resolves a group's content for a selection, or lists its revision choices. One
+ * adapter per `PromptGroupSource`; the service picks it from `group.source` and
+ * dispatches the already-resolved `group`, so an adapter never has to look its own
+ * group up.
  */
 export interface PromptSourceAdapter {
   resolvePrompt(input: {
@@ -215,6 +225,11 @@ export interface PromptSourceAdapter {
     readonly selection: PromptSelection;
     readonly loadedRevision?: PromptRecord | null;
   }): Promise<PromptServiceResult<ResolvedPrompt>>;
+  /** Lists the group's revision choices, newest first, metadata only — no prompt
+   *  content. */
+  listRevisions(input: {
+    readonly group: PromptGroupRecord;
+  }): Promise<PromptServiceResult<TPromptRevisionChoicesResponse>>;
 }
 
 /**

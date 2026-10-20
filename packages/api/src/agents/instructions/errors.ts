@@ -5,6 +5,7 @@ import type {
   InstructionsPromptAccessUser,
   InstructionsPromptAccessRequest,
 } from './access';
+import type { LinkedInstructionsConfig } from './linked';
 
 /** User-safe copy for each stable `instructionsPrompt` write-rejection code. */
 const INSTRUCTIONS_PROMPT_ERROR_MESSAGES: Record<InstructionsPromptErrorCode, string> = {
@@ -45,6 +46,7 @@ export async function getInstructionsPromptLinkError({
   previous,
   next,
   filters,
+  linkedInstructions,
   req,
 }: {
   access: Pick<InstructionsPromptAccess, 'validateLinkWrite'>;
@@ -52,6 +54,8 @@ export async function getInstructionsPromptLinkError({
   previous: AgentInstructionsPrompt | null | undefined;
   next: AgentInstructionsPrompt | null | undefined;
   filters?: FiltersConfig;
+  /** The Langfuse rollout switch, passed through unexamined to `validateLinkWrite`. */
+  linkedInstructions?: Pick<LinkedInstructionsConfig, 'langfuse'>;
   /** Forwarded unexamined to `validateLinkWrite` so its role lookup can reuse the
    *  caller's per-request role cache. */
   req?: InstructionsPromptAccessRequest;
@@ -61,6 +65,7 @@ export async function getInstructionsPromptLinkError({
     previous,
     next,
     filters,
+    linkedInstructions,
     req,
   });
   if (result.ok) {

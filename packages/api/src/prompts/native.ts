@@ -75,9 +75,9 @@ export function selectionUnavailableReason(selection: PromptSelection): 'product
 }
 
 /** Native prompts stored in the LibreChat database; resolves content through the
- *  store's `getPrompt`. */
+ *  store's `getPrompt` and lists revisions through its `getPrompts`. */
 export function createNativePromptAdapter(
-  store: Pick<PromptStore, 'getPrompt'>,
+  store: Pick<PromptStore, 'getPrompt' | 'getPrompts'>,
 ): PromptSourceAdapter {
   return {
     resolvePrompt: async ({ group, selection, loadedRevision }) => {
@@ -95,6 +95,27 @@ export function createNativePromptAdapter(
         };
       }
       return { ok: true, value: { source: 'native', ...resolved } };
+    },
+
+    listRevisions: async ({ group }) => {
+      // `getPrompts` returns revisions newest (`createdAt`) first, so the oldest
+      // revision is version 1 and the newest is `total`: `total - index` turns that
+      // order directly into a version number with no separate counter stored.
+      const revisions = await store.getPrompts(group._id);
+      const total = revisions.length;
+      return {
+        ok: true,
+        value: {
+          source: 'native',
+          groupId: group._id,
+          revisions: revisions.map((revision, index) => ({
+            source: 'native',
+            promptId: revision._id,
+            version: total - index,
+            isProduction: revision._id === group.productionId,
+          })),
+        },
+      };
     },
   };
 }

@@ -67,6 +67,7 @@ export interface PromptHandlersDeps {
 export interface PromptHandlers {
   getPromptGroup: PromptHandler;
   resolvePrompt: PromptHandler;
+  listRevisions: PromptHandler;
   listAllPromptGroups: PromptHandler;
   listPromptGroups: PromptHandler;
   createPromptGroup: PromptHandler;
@@ -138,11 +139,11 @@ export function toResolveResponse(
 }
 
 /**
- * Maps a `resolvePrompt` rejection to its `/resolve` response. `unsupported_source` only
- * comes from the `allowedSources` check, which this route never passes, and
- * `invalid_input`/`unsupported` belong to other operations; none of the three can reach
- * here through this route, so they fall through to the generic 500 like any other
- * unexpected failure.
+ * Maps a `resolvePrompt` or `listRevisions` rejection to its HTTP response. Shared by
+ * `/resolve` and `/revisions`: neither route passes `allowedSources`, and
+ * `invalid_input`/`unsupported` belong to other operations, so none of the three can
+ * reach here through either route and all fall through to the generic 500 like any
+ * other unexpected failure.
  */
 function sendResolveRejection(res: Response, error: PromptServiceError): Response {
   switch (error.type) {
@@ -286,6 +287,32 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           return res.status(404).send({ code: 'not_found' });
         }
         return res.status(500).send({ message: 'Error resolving prompt' });
+      }
+    },
+
+    /**
+     * Lists a group's revision choices, newest first, metadata only. Unlike
+     * `resolvePrompt`, a database read failure (`PromptStoreError`) is a failed call,
+     * not an absent group, so it maps to the same 500 as any other unexpected error
+     * rather than to `resolvePrompt`'s 404. Never increments usage: that happens once,
+     * on a successful initialization, not while browsing versions.
+     */
+    async listRevisions(req, res) {
+      const groupId = param(req, 'groupId');
+      try {
+        const result = await service.listRevisions({ groupId, loadedGroup: loadedGroup(req) });
+        if (!result.ok) {
+          return sendResolveRejection(res, result.error);
+        }
+        return res.status(200).send(result.value);
+      } catch (error) {
+        if (error instanceof LangfusePromptRequestError) {
+          logger.error('[prompts] Langfuse request failed while listing prompt revisions', error);
+          const { status, body } = toLangfusePromptErrorResponse(error);
+          return res.status(status).send(body);
+        }
+        logger.error('Error listing prompt revisions', error);
+        return res.status(500).send({ message: 'Error listing prompt revisions' });
       }
     },
 

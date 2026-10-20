@@ -1,12 +1,16 @@
 import { InstructionsPromptErrorCode, PermissionBits, ResourceType } from 'librechat-data-provider';
 import type {
   FiltersConfig,
+  TPromptGroupSource,
   AgentInstructionsPrompt,
   RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
+import type { LinkedInstructionsConfig } from './linked';
 import type { PromptService } from '~/prompts';
 import { isContentFilterError } from '~/middleware/contentFilter';
+import { LangfusePromptRequestError } from '~/langfuse/prompts';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { toPromptSelection } from './selection';
 
 /** Matches the `logger` shape injected elsewhere in this module family
  *  (`createLinkedInstructionsResolver`). */
@@ -82,23 +86,33 @@ export interface InstructionsPromptAccess {
    * requested) — ok. Keeping, removing (`next === null`), or re-submitting the
    * unchanged link (`isSameLink`) is always ok: agent EDIT already authorizes all
    * three, and none of them reveals anything about `previous`'s group that EDIT
-   * doesn't already know.
+   * doesn't already know. This also means an unchanged Langfuse link, or its
+   * removal, stays editable while `linkedInstructions.langfuse.enabled` is off.
    *
-   * A genuinely new or changed `next` requires the role-level PROMPTS `USE`
+   * Next, a genuinely new or changed `source: 'langfuse'` link is rejected with
+   * `UNAVAILABLE` while `linkedInstructions?.langfuse?.enabled !== true` — before the
+   * USE/VIEW checks below, so no permission check or adapter call runs for a link the
+   * switch has disabled. A native replacement is never blocked by this switch.
+   *
+   * A genuinely new or changed `next` otherwise requires the role-level PROMPTS `USE`
    * permission (`canUsePrompts`) and PROMPTGROUP `VIEW` on `next.groupId`
    * (`canViewGroup`), `FORBIDDEN` otherwise — a PROMPTGROUP `VIEW` grant on one group
    * says nothing about whether the role may link prompts at all, and `next` not
    * existing is indistinguishable from `next` existing but hidden, so group
    * existence is never revealed through it. The two checks are independent, so both
    * run concurrently instead of one gating the start of the other. Once both pass,
-   * the selection must still resolve and pass content policy (`UNAVAILABLE`
-   * otherwise).
+   * the selection must still resolve (restricted to `next.source`) and pass content
+   * policy (`UNAVAILABLE` otherwise); a thrown `LangfusePromptRequestError` from that
+   * resolution also maps to `UNAVAILABLE`.
    */
   validateLinkWrite(input: {
     user: InstructionsPromptAccessUser;
     previous: AgentInstructionsPrompt | null | undefined;
     next: AgentInstructionsPrompt | null | undefined;
     filters?: FiltersConfig;
+    /** The rollout switch for a Langfuse link, passed explicitly by the caller
+     *  rather than looked up from `req` — see `InstructionsPromptAccessRequest`. */
+    linkedInstructions?: Pick<LinkedInstructionsConfig, 'langfuse'>;
     /** Forwarded unexamined to `canUsePrompts` so its role lookup can reuse the
      *  caller's per-request role cache. */
     req?: InstructionsPromptAccessRequest;
@@ -152,8 +166,19 @@ function isSameLink(
   if (left.selection.type !== right.selection.type) {
     return false;
   }
-  if (left.selection.type === 'exact' && right.selection.type === 'exact') {
-    return left.selection.promptId === right.selection.promptId;
+  // `left.source === right.source` is already established above; the pairwise check
+  // on each side (rather than `left.source` alone) is what narrows both operands'
+  // `selection` to the same source's shape — native's `exact` carries `promptId`,
+  // Langfuse's carries `version`.
+  if (left.source === 'native' && right.source === 'native') {
+    return left.selection.type === 'exact' && right.selection.type === 'exact'
+      ? left.selection.promptId === right.selection.promptId
+      : true;
+  }
+  if (left.source === 'langfuse' && right.source === 'langfuse') {
+    return left.selection.type === 'exact' && right.selection.type === 'exact'
+      ? left.selection.version === right.selection.version
+      : true;
   }
   return true;
 }
@@ -164,7 +189,10 @@ function isRestrictedStub(
   return (link as RestrictedAgentInstructionsPrompt).restricted === true;
 }
 
-const RESTRICTED_STUB: RestrictedAgentInstructionsPrompt = { source: 'native', restricted: true };
+/** The restricted stub for a hidden link, carrying only the hidden link's own source. */
+function restrictedStub(source: TPromptGroupSource): RestrictedAgentInstructionsPrompt {
+  return { source, restricted: true };
+}
 
 /** Every distinct, non-restricted-stub `groupId` referenced by the given links. */
 function collectLinkGroupIds(
@@ -270,17 +298,16 @@ export function createInstructionsPromptAccess(deps: {
     }
     const stub: RestrictedAgentInstructionsPrompt =
       currentLink === undefined
-        ? RESTRICTED_STUB
-        : { ...RESTRICTED_STUB, matchesCurrent: isSameLink(link, currentLink) };
+        ? restrictedStub(link.source)
+        : { ...restrictedStub(link.source), matchesCurrent: isSameLink(link, currentLink) };
     return { ...carrier, instructionsPrompt: stub };
   }
 
   /** Unconditional stub, used only on the fail-closed path below: every link is
    *  hidden because whether it may be shown could not be determined. */
   function stubLink<T extends AgentInstructionsPromptCarrier>(carrier: T): T {
-    return carrier.instructionsPrompt == null
-      ? carrier
-      : { ...carrier, instructionsPrompt: RESTRICTED_STUB };
+    const link = carrier.instructionsPrompt;
+    return link == null ? carrier : { ...carrier, instructionsPrompt: restrictedStub(link.source) };
   }
 
   /** Content-free failure log shared by every fail-closed path below. */
@@ -307,12 +334,14 @@ export function createInstructionsPromptAccess(deps: {
     previous,
     next,
     filters,
+    linkedInstructions,
     req,
   }: {
     user: InstructionsPromptAccessUser;
     previous: AgentInstructionsPrompt | null | undefined;
     next: AgentInstructionsPrompt | null | undefined;
     filters?: FiltersConfig;
+    linkedInstructions?: Pick<LinkedInstructionsConfig, 'langfuse'>;
     req?: InstructionsPromptAccessRequest;
   }): Promise<InstructionsPromptWriteResult> {
     if (next === undefined) {
@@ -328,6 +357,13 @@ export function createInstructionsPromptAccess(deps: {
       // Removing a link, regardless of whether the editor could VIEW the previous
       // group, is always allowed — agent EDIT is the only authority this needs.
       return { ok: true };
+    }
+    if (next.source === 'langfuse' && linkedInstructions?.langfuse?.enabled !== true) {
+      // A genuinely new or changed Langfuse link (never a removal, and never a
+      // re-selection of the unchanged value — both returned above) while the rollout
+      // switch is off: reject before the USE/VIEW checks and before any resolve call.
+      // A native replacement is never blocked by this switch.
+      return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
     }
     // A genuinely new or changed link (never a removal, and never a re-selection of the
     // unchanged value — both returned above): the role must grant PROMPTS USE, and the
@@ -351,13 +387,31 @@ export function createInstructionsPromptAccess(deps: {
       // revealed through a new link.
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
     }
-    const resolved = await promptService.resolvePrompt({
-      groupId: next.groupId,
-      selection: next.selection,
-      filters,
-      allowedSources: ['native'],
-    });
+    let resolved;
+    try {
+      resolved = await promptService.resolvePrompt({
+        groupId: next.groupId,
+        selection: toPromptSelection(next),
+        filters,
+        allowedSources: [next.source],
+      });
+    } catch (error) {
+      if (error instanceof LangfusePromptRequestError) {
+        logger.warn(
+          '[createInstructionsPromptAccess] Langfuse request failed validating a linked instructions-prompt write',
+          { code: error.code },
+        );
+        return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
+      }
+      throw error;
+    }
     if (!resolved.ok) {
+      return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
+    }
+    if (resolved.value.source !== next.source) {
+      /* allowedSources: [next.source] above means the service only ever resolves a
+       * group of that source here; this check narrows the type for the compiler and
+       * cannot be reached at runtime. */
       return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
     }
     try {
@@ -393,15 +447,17 @@ export function createInstructionsPromptAccess(deps: {
       return failClosed(error, agent);
     }
     const topLevelLink = agent.instructionsPrompt;
-    const topLevelRedacted =
-      topLevelLink != null && !isRestrictedStub(topLevelLink) && redact.has(topLevelLink.groupId);
+    const topLevelStub =
+      topLevelLink != null && !isRestrictedStub(topLevelLink) && redact.has(topLevelLink.groupId)
+        ? restrictedStub(topLevelLink.source)
+        : null;
     const versionsUnchanged =
       versions == null ||
       versions.every((version) => {
         const link = version.instructionsPrompt;
         return link == null || isRestrictedStub(link) || !redact.has(link.groupId);
       });
-    if (!topLevelRedacted && versionsUnchanged) {
+    if (topLevelStub == null && versionsUnchanged) {
       return agent;
     }
     // The agent's own raw link, used to flag a redacted version snapshot as
@@ -411,7 +467,7 @@ export function createInstructionsPromptAccess(deps: {
       topLevelLink != null && !isRestrictedStub(topLevelLink) ? topLevelLink : null;
     return {
       ...agent,
-      ...(topLevelRedacted ? { instructionsPrompt: RESTRICTED_STUB } : {}),
+      ...(topLevelStub != null ? { instructionsPrompt: topLevelStub } : {}),
       ...(versions == null
         ? {}
         : { versions: versions.map((version) => redactIfHidden(version, redact, currentRawLink)) }),

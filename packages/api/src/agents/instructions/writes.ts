@@ -11,6 +11,7 @@ import type {
   InstructionsPromptAccessRequest,
 } from './access';
 import type { InstructionsPromptLinkErrorResponse } from './errors';
+import type { LinkedInstructionsConfig } from './linked';
 import { getInstructionsPromptLinkError, buildInstructionsPromptError } from './errors';
 import { isContentFilterError } from '~/middleware/contentFilter';
 import { isValidInstructionsPromptLink } from './linked';
@@ -58,6 +59,7 @@ export async function checkInstructionsPromptWrite({
   previous,
   next,
   filters,
+  linkedInstructions,
   logger,
   req,
 }: {
@@ -67,6 +69,8 @@ export async function checkInstructionsPromptWrite({
   previous: AgentInstructionsPrompt | null | undefined;
   next: AgentInstructionsPrompt | null | undefined;
   filters?: FiltersConfig;
+  /** The Langfuse rollout switch, passed through unexamined to `validateLinkWrite`. */
+  linkedInstructions?: Pick<LinkedInstructionsConfig, 'langfuse'>;
   logger: InstructionsPromptAccessLogger;
   /** Forwarded unexamined to `access.validateLinkWrite` so its role lookup can reuse
    *  the caller's per-request role cache. */
@@ -82,6 +86,7 @@ export async function checkInstructionsPromptWrite({
       previous: previous ?? null,
       next,
       filters,
+      linkedInstructions,
       req,
     });
   } catch (error) {

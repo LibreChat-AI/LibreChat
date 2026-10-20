@@ -50,6 +50,7 @@ function mockRes(): Response & MockRes {
 function makeService(overrides: Partial<PromptService> = {}): PromptService {
   return {
     resolvePrompt: jest.fn(),
+    listRevisions: jest.fn(),
     getListPromptGroupsByAccess: jest.fn(),
     getPrompts: jest.fn().mockResolvedValue([]),
     createPromptGroup: jest.fn(),
@@ -915,6 +916,185 @@ describe('createPromptHandlers resolvePrompt', () => {
 
     expect(res.statusCode).toBe(200);
     expect((res.body as Record<string, unknown>).sourceUrl).toBeUndefined();
+  });
+});
+
+describe('createPromptHandlers listRevisions', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function revisionsReq(): PromptRequest {
+    return mockReq({ params: { groupId } });
+  }
+
+  it('lists revisions and calls the service without filters or a selection', async () => {
+    const listed = {
+      source: 'native' as const,
+      groupId,
+      revisions: [{ source: 'native' as const, promptId, version: 1, isProduction: true }],
+    };
+    const listRevisions = jest.fn().mockResolvedValue({ ok: true, value: listed });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(listRevisions).toHaveBeenCalledWith({ groupId, loadedGroup: undefined });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(listed);
+  });
+
+  it('does not increment usage', async () => {
+    const incrementPromptGroupUsage = jest.fn();
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: true,
+      value: { source: 'native', groupId, revisions: [] },
+    });
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ listRevisions, incrementPromptGroupUsage }) }),
+    );
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(incrementPromptGroupUsage).not.toHaveBeenCalled();
+  });
+
+  it('maps a missing group (unavailable_selection) to 404 not_found', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'unavailable_selection', reason: 'revision' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found' });
+  });
+
+  it('maps source_not_found to 404 with the Langfuse message', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'source_not_found', source: 'langfuse' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found', message: 'Prompt not found in Langfuse' });
+  });
+
+  it('maps unsupported_content to 422 unsupported_type', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'unsupported_content', reason: 'chat_prompt' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(422);
+    expect(res.body).toEqual({ code: 'unsupported_type' });
+  });
+
+  it.each([
+    ['disabled', 404, { code: 'not_available' }],
+    ['not_configured', 409, { code: 'not_configured' }],
+    ['source_changed', 409, { code: 'source_changed' }],
+  ] as const)('maps source_unavailable reason %s to %i %j', async (reason, status, body) => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'source_unavailable', source: 'langfuse', reason },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toEqual(body);
+  });
+
+  it('falls back to the shared sendResolveRejection default for an unlisted error variant such as unsupported_source', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'unsupported_source', source: 'native' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    // `sendResolveRejection` is shared with `/resolve`, so an error type neither
+    // route's adapters actually produce still falls through to its own 500 body,
+    // not `listRevisions`'s own `catch` message.
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ message: 'Error resolving prompt' });
+  });
+
+  it('maps a thrown Langfuse timeout to 504', async () => {
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest
+      .fn()
+      .mockRejectedValue(new LangfusePromptRequestError('timeout', 'Langfuse request timed out'));
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(504);
+    expect(res.body).toEqual({ code: 'timeout' });
+  });
+
+  it('maps a thrown Langfuse 401 to 502, never 401', async () => {
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest
+      .fn()
+      .mockRejectedValue(
+        new LangfusePromptRequestError('unauthorized', 'Langfuse responded with 401', 401),
+      );
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.statusCode).not.toBe(401);
+    expect(res.body).toEqual({ code: 'unauthorized' });
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('maps a thrown read PromptStoreError to the generic 500, not a 404', async () => {
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest
+      .fn()
+      .mockRejectedValue(new PromptStoreError('read', new Error('db down')));
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ message: 'Error listing prompt revisions' });
+  });
+
+  it('returns 500 for an unexpected thrown error', async () => {
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest.fn().mockRejectedValue(new Error('database unavailable'));
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ message: 'Error listing prompt revisions' });
+    expect(errorSpy).toHaveBeenCalledWith('Error listing prompt revisions', expect.any(Error));
   });
 });
 

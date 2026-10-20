@@ -1,7 +1,7 @@
 import React from 'react';
 import { useForm, FormProvider } from 'react-hook-form';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import type { TPromptGroup, TPrompt } from 'librechat-data-provider';
+import type { TPromptGroup, TPromptRevisionChoicesResponse } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import InstructionsPromptFields from '../InstructionsPromptFields';
@@ -13,17 +13,33 @@ let mockGroupsQuery: {
   error?: unknown;
   refetch: jest.Mock;
 };
-let mockPromptsQuery: {
+let mockRevisionsQuery: {
   data?: unknown;
   isLoading: boolean;
   isError: boolean;
+  isFetching: boolean;
   error?: unknown;
   refetch: jest.Mock;
 };
+let mockLangfuseEnabled: boolean;
+
+/** Wraps the mocked hook so a test can read what `InstructionsPromptFields` passed
+ *  it (specifically `enabled`), which the fixed object `mockRevisionsQuery` cannot
+ *  capture on its own. */
+const mockUseGetPromptGroupRevisions = jest.fn(
+  (_id: string, _options: { enabled?: boolean }) => mockRevisionsQuery,
+);
 
 jest.mock('~/data-provider', () => ({
   useGetAllPromptGroups: () => mockGroupsQuery,
-  useGetPrompts: () => mockPromptsQuery,
+  useGetPromptGroupRevisions: (id: string, options: { enabled?: boolean }) =>
+    mockUseGetPromptGroupRevisions(id, options),
+}));
+
+jest.mock('~/Providers/AgentPanelContext', () => ({
+  useAgentPanelContext: () => ({
+    agentsConfig: { linkedInstructions: { langfuse: { enabled: mockLangfuseEnabled } } },
+  }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -43,6 +59,7 @@ jest.mock('@librechat/client', () => ({
   Label: ({ children, ...props }: React.ComponentProps<'label'>) => (
     <label {...props}>{children}</label>
   ),
+  TooltipAnchor: ({ render: content }: { render: React.ReactNode }) => content,
   ControlCombobox: ({
     ariaLabel,
     selectId,
@@ -50,13 +67,15 @@ jest.mock('@librechat/client', () => ({
     selectedValue,
     displayValue,
     setValue,
+    SelectIcon,
   }: {
     ariaLabel: string;
     selectId?: string;
-    items: Array<{ value: string; label: string }>;
+    items: Array<{ value: string; label: string; icon?: React.ReactNode }>;
     selectedValue: string;
     displayValue?: string;
     setValue: (value: string) => void;
+    SelectIcon?: React.ReactNode;
   }) => (
     <div>
       {/* Mirrors the real combobox's current-value text for the Prompt dropdown only,
@@ -65,6 +84,9 @@ jest.mock('@librechat/client', () => ({
        *  doesn't duplicate the Version dropdown's option text in other assertions. */}
       {selectId === 'instructions-prompt-group' && (
         <span data-testid={`${selectId}-display-value`}>{displayValue}</span>
+      )}
+      {selectId === 'instructions-prompt-group' && SelectIcon != null && (
+        <span data-testid={`${selectId}-select-icon`}>{SelectIcon}</span>
       )}
       <select
         aria-label={ariaLabel}
@@ -78,6 +100,12 @@ jest.mock('@librechat/client', () => ({
           </option>
         ))}
       </select>
+      {selectId === 'instructions-prompt-group' &&
+        items.map((item) => (
+          <span key={`icon-${item.value}`} data-testid={`item-icon-${item.value}`}>
+            {item.icon}
+          </span>
+        ))}
     </div>
   ),
 }));
@@ -91,14 +119,23 @@ const group = (overrides: Partial<TPromptGroup> = {}): TPromptGroup => ({
   ...overrides,
 });
 
-const prompt = (overrides: Partial<TPrompt> = {}): TPrompt => ({
+const nativeRevisions = (
+  revisions: Array<{ promptId: string; version: number; isProduction?: boolean }>,
+): TPromptRevisionChoicesResponse => ({
+  source: 'native',
   groupId: 'group1',
-  author: 'user1',
-  prompt: 'text',
-  type: 'text',
-  createdAt: '',
-  updatedAt: '',
-  ...overrides,
+  revisions: revisions.map((revision) => ({
+    source: 'native' as const,
+    promptId: revision.promptId,
+    version: revision.version,
+    isProduction: revision.isProduction ?? false,
+  })),
+});
+
+const langfuseRevisions = (versions: number[]): TPromptRevisionChoicesResponse => ({
+  source: 'langfuse',
+  groupId: 'group2',
+  revisions: versions.map((version) => ({ source: 'langfuse' as const, version })),
 });
 
 function Harness({
@@ -125,6 +162,7 @@ function Harness({
 }
 
 beforeEach(() => {
+  mockLangfuseEnabled = false;
   mockGroupsQuery = {
     data: [],
     isLoading: false,
@@ -132,13 +170,15 @@ beforeEach(() => {
     error: undefined,
     refetch: jest.fn(),
   };
-  mockPromptsQuery = {
-    data: [],
+  mockRevisionsQuery = {
+    data: undefined,
     isLoading: false,
     isError: false,
+    isFetching: false,
     error: undefined,
     refetch: jest.fn(),
   };
+  mockUseGetPromptGroupRevisions.mockClear();
 });
 
 describe('InstructionsPromptFields', () => {
@@ -175,7 +215,7 @@ describe('InstructionsPromptFields', () => {
     expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
   });
 
-  it('selecting a prompt group defaults the selection to Production', () => {
+  it('selecting a native prompt group defaults the selection to Production and writes source "native"', () => {
     mockGroupsQuery.data = [group()];
     let methods: UseFormReturn<AgentForm> | undefined;
     render(<Harness onMethods={(m) => (methods = m)} />);
@@ -191,55 +231,405 @@ describe('InstructionsPromptFields', () => {
     });
   });
 
-  it('lists Production first, then versions newest to oldest', () => {
-    mockGroupsQuery.data = [group({ productionId: 'p2' })];
-    mockPromptsQuery.data = [prompt({ _id: 'p3' }), prompt({ _id: 'p2' }), prompt({ _id: 'p1' })];
-    render(
-      <Harness
-        defaultInstructionsPrompt={{
-          source: 'native',
-          groupId: 'group1',
-          selection: { type: 'production' },
-        }}
-      />,
-    );
+  it('selecting a Langfuse prompt group defaults the selection to Production and writes source "langfuse"', () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse', name: 'Langfuse group' })];
+    let methods: UseFormReturn<AgentForm> | undefined;
+    render(<Harness onMethods={(m) => (methods = m)} />);
 
-    const versionSelect = screen.getByRole('combobox', {
-      name: 'com_agents_instructions_prompt_version_label',
+    fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+      target: { value: 'group2' },
     });
-    const optionValues = Array.from(versionSelect.querySelectorAll('option')).map(
-      (option) => (option as HTMLOptionElement).value,
-    );
-    expect(optionValues).toEqual(['production', 'p3', 'p2', 'p1']);
+
+    expect(methods?.getValues('instructionsPrompt')).toEqual({
+      source: 'langfuse',
+      groupId: 'group2',
+      selection: { type: 'production' },
+    });
+  });
+
+  it('shows a cloud badge icon for a Langfuse group and none for a native group', () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [group(), group({ _id: 'group2', source: 'langfuse' })];
+    render(<Harness />);
+
+    expect(screen.getByTestId('item-icon-group1')).toBeEmptyDOMElement();
     expect(
-      screen.getByText('com_agents_instructions_prompt_production_version:{"0":"2"}'),
+      screen.getByTestId('item-icon-group2').querySelector('[role="img"]'),
     ).toBeInTheDocument();
   });
 
-  it('selecting a version produces an exact selection', () => {
-    mockGroupsQuery.data = [group()];
-    mockPromptsQuery.data = [prompt({ _id: 'p2' }), prompt({ _id: 'p1' })];
-    let methods: UseFormReturn<AgentForm> | undefined;
+  it('renders the combobox option badge with no tabindex, since it sits inside an already-interactive option', () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+    render(<Harness />);
+
+    const badge = screen.getByTestId('item-icon-group2').querySelector('[role="img"]');
+    expect(badge).not.toHaveAttribute('tabindex');
+  });
+
+  it('passes a SelectIcon for a selected Langfuse group', () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
     render(
       <Harness
         defaultInstructionsPrompt={{
-          source: 'native',
-          groupId: 'group1',
+          source: 'langfuse',
+          groupId: 'group2',
           selection: { type: 'production' },
         }}
-        onMethods={(m) => (methods = m)}
       />,
     );
 
-    fireEvent.change(
-      screen.getByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
-      { target: { value: 'p1' } },
-    );
+    const selectIconBadge = screen
+      .getByTestId('instructions-prompt-group-select-icon')
+      .querySelector('[role="img"]');
+    expect(selectIconBadge).toBeInTheDocument();
+    expect(selectIconBadge).not.toHaveAttribute('tabindex');
+  });
 
-    expect(methods?.getValues('instructionsPrompt')).toEqual({
-      source: 'native',
-      groupId: 'group1',
-      selection: { type: 'exact', promptId: 'p1' },
+  describe('the rollout switch', () => {
+    it('hides a Langfuse group from the picker while the switch is off', () => {
+      mockGroupsQuery.data = [group(), group({ _id: 'group2', source: 'langfuse' })];
+      render(<Harness />);
+
+      const options = Array.from(
+        screen.getByRole('combobox', { name: 'com_ui_prompt' }).querySelectorAll('option'),
+      ).map((option) => (option as HTMLOptionElement).value);
+      expect(options).toEqual(['group1']);
+    });
+
+    it('shows the empty-state copy, not an enabled empty combobox, when every group is Langfuse and none is linked', () => {
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      render(<Harness />);
+
+      expect(screen.getByText('com_agents_instructions_prompt_empty')).toBeInTheDocument();
+      expect(screen.queryByRole('combobox', { name: 'com_ui_prompt' })).not.toBeInTheDocument();
+    });
+
+    it('still lists the currently saved Langfuse group while the switch is off', () => {
+      mockGroupsQuery.data = [group(), group({ _id: 'group2', source: 'langfuse' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      const options = Array.from(
+        screen.getByRole('combobox', { name: 'com_ui_prompt' }).querySelectorAll('option'),
+      ).map((option) => (option as HTMLOptionElement).value);
+      expect(options).toEqual(['group1', 'group2']);
+    });
+
+    it('shows a disabled note next to the saved Langfuse link, keeping it and the picker usable', () => {
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse', name: 'Langfuse group' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'exact', version: 4 },
+          }}
+        />,
+      );
+
+      expect(screen.getByRole('note')).toHaveTextContent(
+        'com_agents_instructions_prompt_source_disabled',
+      );
+      expect(screen.getByRole('combobox', { name: 'com_ui_prompt' })).toBeInTheDocument();
+      expect(screen.getByTestId('instructions-prompt-group-display-value')).toHaveTextContent(
+        'Langfuse group',
+      );
+    });
+
+    it('still shows the disabled note and read-only version when the saved group is missing from the listing', () => {
+      /** The group list here has no entry for 'group2' at all (deleted, or the
+       *  editor's share access was revoked); the disabled state must still read off
+       *  the link's own `source`, not a `selectedGroup` that cannot be found. This
+       *  also trips the separate "Prompt not found" note, so both notes are present;
+       *  the assertion below targets the disabled-source one specifically. */
+      mockGroupsQuery.data = [];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'exact', version: 4 },
+          }}
+        />,
+      );
+
+      const notes = screen.getAllByRole('note');
+      expect(
+        notes.some((note) => note.textContent === 'com_agents_instructions_prompt_source_disabled'),
+      ).toBe(true);
+      expect(screen.getByText('com_ui_version_var:{"0":"4"}')).toBeInTheDocument();
+      expect(mockUseGetPromptGroupRevisions).toHaveBeenLastCalledWith(
+        'group2',
+        expect.objectContaining({ enabled: false }),
+      );
+    });
+
+    it('shows the saved version as plain text with no revisions request while disabled', () => {
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'exact', version: 4 },
+          }}
+        />,
+      );
+
+      expect(screen.getByText('com_ui_version_var:{"0":"4"}')).toBeInTheDocument();
+      expect(
+        screen.queryByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
+      ).not.toBeInTheDocument();
+      expect(mockUseGetPromptGroupRevisions).toHaveBeenLastCalledWith(
+        'group2',
+        expect.objectContaining({ enabled: false }),
+      );
+    });
+
+    it('shows no disabled note and no restriction once the switch is on', () => {
+      mockLangfuseEnabled = true;
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      mockRevisionsQuery.data = langfuseRevisions([4, 3]);
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'exact', version: 4 },
+          }}
+        />,
+      );
+
+      expect(
+        screen.queryByText('com_agents_instructions_prompt_source_disabled'),
+      ).not.toBeInTheDocument();
+      expect(mockUseGetPromptGroupRevisions).toHaveBeenLastCalledWith(
+        'group2',
+        expect.objectContaining({ enabled: true }),
+      );
+      expect(
+        screen.getByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
+      ).toBeInTheDocument();
+    });
+
+    it('still allows switching a disabled Langfuse link to a native group', () => {
+      mockGroupsQuery.data = [
+        group(),
+        group({ _id: 'group2', source: 'langfuse', name: 'Langfuse group' }),
+      ];
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'production' },
+          }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+        target: { value: 'group1' },
+      });
+
+      expect(methods?.getValues('instructionsPrompt')).toEqual({
+        source: 'native',
+        groupId: 'group1',
+        selection: { type: 'production' },
+      });
+    });
+
+    it('still allows removing a disabled Langfuse link', () => {
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'production' },
+          }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+        target: { value: '' },
+      });
+
+      expect(methods?.getValues('instructionsPrompt')).toBeNull();
+    });
+
+    it('keeps the saved selection when the same disabled Langfuse group is re-picked', () => {
+      /** Re-selecting the already-linked group must not reset it to Production: the
+       *  server rejects a write that changes a pinned, currently-unavailable Langfuse
+       *  link, so an unchanged pick has to stay unchanged. */
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'exact', version: 4 },
+          }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+        target: { value: 'group2' },
+      });
+
+      expect(methods?.getValues('instructionsPrompt')).toEqual({
+        source: 'langfuse',
+        groupId: 'group2',
+        selection: { type: 'exact', version: 4 },
+      });
+    });
+  });
+
+  describe('native version options', () => {
+    it('lists Production first, then versions newest to oldest', () => {
+      mockGroupsQuery.data = [group()];
+      mockRevisionsQuery.data = nativeRevisions([
+        { promptId: 'p3', version: 3 },
+        { promptId: 'p2', version: 2, isProduction: true },
+        { promptId: 'p1', version: 1 },
+      ]);
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group1',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      const versionSelect = screen.getByRole('combobox', {
+        name: 'com_agents_instructions_prompt_version_label',
+      });
+      const optionValues = Array.from(versionSelect.querySelectorAll('option')).map(
+        (option) => (option as HTMLOptionElement).value,
+      );
+      expect(optionValues).toEqual(['production', 'p3', 'p2', 'p1']);
+      expect(
+        screen.getByText('com_agents_instructions_prompt_production_version:{"0":"2"}'),
+      ).toBeInTheDocument();
+    });
+
+    it('selecting a version produces an exact selection', () => {
+      mockGroupsQuery.data = [group()];
+      mockRevisionsQuery.data = nativeRevisions([
+        { promptId: 'p2', version: 2 },
+        { promptId: 'p1', version: 1 },
+      ]);
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group1',
+            selection: { type: 'production' },
+          }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      fireEvent.change(
+        screen.getByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
+        { target: { value: 'p1' } },
+      );
+
+      expect(methods?.getValues('instructionsPrompt')).toEqual({
+        source: 'native',
+        groupId: 'group1',
+        selection: { type: 'exact', promptId: 'p1' },
+      });
+    });
+
+    it('appends the saved version, labelled as missing, when it matches no listed revision', () => {
+      mockGroupsQuery.data = [group()];
+      mockRevisionsQuery.data = nativeRevisions([{ promptId: 'p1', version: 1 }]);
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'native',
+            groupId: 'group1',
+            selection: { type: 'exact', promptId: 'deleted' },
+          }}
+        />,
+      );
+
+      expect(
+        screen.getByText('com_agents_instructions_prompt_version_missing'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('Langfuse version options', () => {
+    it('lists Production first with a plain label, then pinned versions newest to oldest', () => {
+      mockLangfuseEnabled = true;
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      mockRevisionsQuery.data = langfuseRevisions([3, 2, 1]);
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'production' },
+          }}
+        />,
+      );
+
+      const versionSelect = screen.getByRole('combobox', {
+        name: 'com_agents_instructions_prompt_version_label',
+      });
+      const optionValues = Array.from(versionSelect.querySelectorAll('option')).map(
+        (option) => (option as HTMLOptionElement).value,
+      );
+      expect(optionValues).toEqual(['production', 'v3', 'v2', 'v1']);
+      expect(screen.getByText('com_ui_production')).toBeInTheDocument();
+    });
+
+    it('selecting a pinned version produces a Langfuse version selection', () => {
+      mockLangfuseEnabled = true;
+      mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+      mockRevisionsQuery.data = langfuseRevisions([3, 2, 1]);
+      let methods: UseFormReturn<AgentForm> | undefined;
+      render(
+        <Harness
+          defaultInstructionsPrompt={{
+            source: 'langfuse',
+            groupId: 'group2',
+            selection: { type: 'production' },
+          }}
+          onMethods={(m) => (methods = m)}
+        />,
+      );
+
+      fireEvent.change(
+        screen.getByRole('combobox', { name: 'com_agents_instructions_prompt_version_label' }),
+        { target: { value: 'v2' } },
+      );
+
+      expect(methods?.getValues('instructionsPrompt')).toEqual({
+        source: 'langfuse',
+        groupId: 'group2',
+        selection: { type: 'exact', version: 2 },
+      });
     });
   });
 
@@ -254,8 +644,8 @@ describe('InstructionsPromptFields', () => {
 
   it('surfaces a 403 for the Version dropdown separately from the Prompt dropdown', () => {
     mockGroupsQuery.data = [group()];
-    mockPromptsQuery.isError = true;
-    mockPromptsQuery.error = { isAxiosError: true, response: { status: 403, data: {} } };
+    mockRevisionsQuery.isError = true;
+    mockRevisionsQuery.error = { isAxiosError: true, response: { status: 403, data: {} } };
     render(
       <Harness
         defaultInstructionsPrompt={{
@@ -267,11 +657,83 @@ describe('InstructionsPromptFields', () => {
     );
 
     expect(screen.getByText('com_agents_instructions_prompt_forbidden')).toBeInTheDocument();
+    /** Retrying a 403 cannot succeed, matching the Prompt dropdown's own 403 case. */
+    expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
   });
 
-  it('guards a 200 {message} version response as a load failure, not a crash', () => {
+  it('keeps the saved selection and shows Retry on a revisions load error', () => {
     mockGroupsQuery.data = [group()];
-    mockPromptsQuery.data = { message: 'not allowed' };
+    mockRevisionsQuery.isError = true;
+    mockRevisionsQuery.error = new Error('network down');
+    let methods: UseFormReturn<AgentForm> | undefined;
+    render(
+      <Harness
+        defaultInstructionsPrompt={{
+          source: 'native',
+          groupId: 'group1',
+          selection: { type: 'exact', promptId: 'p1' },
+        }}
+        onMethods={(m) => (methods = m)}
+      />,
+    );
+
+    expect(screen.getByText('com_agents_instructions_prompt_load_error')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    expect(mockRevisionsQuery.refetch).toHaveBeenCalledTimes(1);
+    expect(methods?.getValues('instructionsPrompt')).toEqual({
+      source: 'native',
+      groupId: 'group1',
+      selection: { type: 'exact', promptId: 'p1' },
+    });
+  });
+
+  it('disables Retry while a revisions retry is already in flight, so a repeated click does nothing', () => {
+    mockGroupsQuery.data = [group()];
+    mockRevisionsQuery.isError = true;
+    mockRevisionsQuery.error = new Error('network down');
+    mockRevisionsQuery.isFetching = true;
+    render(
+      <Harness
+        defaultInstructionsPrompt={{
+          source: 'native',
+          groupId: 'group1',
+          selection: { type: 'exact', promptId: 'p1' },
+        }}
+      />,
+    );
+
+    const retryButton = screen.getByRole('button', { name: 'com_ui_retry' });
+    expect(retryButton).toBeDisabled();
+    fireEvent.click(retryButton);
+    expect(mockRevisionsQuery.refetch).not.toHaveBeenCalled();
+  });
+
+  it('shows the source-unavailable copy for a Langfuse chat-prompt rejection (422)', () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
+    mockRevisionsQuery.isError = true;
+    mockRevisionsQuery.error = {
+      isAxiosError: true,
+      response: { status: 422, data: { code: 'unsupported_type' } },
+    };
+    render(
+      <Harness
+        defaultInstructionsPrompt={{
+          source: 'langfuse',
+          groupId: 'group2',
+          selection: { type: 'production' },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText('com_agents_instructions_prompt_source_unavailable'),
+    ).toBeInTheDocument();
+  });
+
+  it('guards a malformed 200 revisions response as a load failure, not a crash', () => {
+    mockGroupsQuery.data = [group()];
+    mockRevisionsQuery.data = { message: 'not allowed' };
     render(
       <Harness
         defaultInstructionsPrompt={{
@@ -451,7 +913,10 @@ describe('InstructionsPromptFields', () => {
 
     it('keeps the Version dropdown usable for switching away from the missing group', () => {
       mockGroupsQuery.data = [group({ _id: 'group_other', name: 'Other prompt' })];
-      mockPromptsQuery.data = [prompt({ _id: 'p2' }), prompt({ _id: 'p1' })];
+      mockRevisionsQuery.data = nativeRevisions([
+        { promptId: 'p2', version: 2 },
+        { promptId: 'p1', version: 1 },
+      ]);
       render(
         <Harness
           defaultInstructionsPrompt={{
@@ -560,7 +1025,7 @@ describe('InstructionsPromptFields', () => {
 
     it('names the Version field before and after a group is selected', async () => {
       mockGroupsQuery.data = [group()];
-      mockPromptsQuery.data = [prompt()];
+      mockRevisionsQuery.data = nativeRevisions([{ promptId: 'p1', version: 1 }]);
       let methods: UseFormReturn<AgentForm> | undefined;
       render(<Harness onMethods={(m) => (methods = m)} />);
 

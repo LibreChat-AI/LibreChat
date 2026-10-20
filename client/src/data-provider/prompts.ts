@@ -389,6 +389,31 @@ export const useResolvePromptGroup = (
   );
 };
 
+/**
+ * Lists a prompt group's revisions for the Builder's version picker:
+ * `GET /api/prompts/groups/:groupId/revisions`. No cache and no retry, for the
+ * same reason as `useResolvePromptGroup`: a Langfuse group's revisions can
+ * change between requests and a stale read should not linger or be retried
+ * silently.
+ */
+export const useGetPromptGroupRevisions = (
+  id: string,
+  config?: { enabled?: boolean },
+): QueryObserverResult<t.TPromptRevisionChoicesResponse> => {
+  return useQuery<t.TPromptRevisionChoicesResponse>(
+    [QueryKeys.promptGroupRevisions, id],
+    () => dataService.getPromptGroupRevisions(id),
+    {
+      enabled: config?.enabled,
+      retry: false,
+      staleTime: 0,
+      cacheTime: 0,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    },
+  );
+};
+
 /** Imperative counterpart to `useResolvePromptGroup`, for callers (for example a
  *  slash-command submit) that need a single resolved read rather than a hook
  *  bound to render. */

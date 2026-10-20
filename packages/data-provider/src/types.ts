@@ -710,6 +710,12 @@ export type TConfig = {
   /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
   maxSubagents?: number;
   fileSharing?: TAgentsEndpoint['fileSharing'];
+  /** Rollout switches for linking an agent's instructions to a prompt-group revision,
+   *  served from `endpoints.agents.linkedInstructions`. Only the named fields the
+   *  Builder needs are copied in. */
+  linkedInstructions?: {
+    langfuse?: { enabled?: boolean };
+  };
   /** Concurrent Code API uploads allowed per route and authenticated principal. */
   codeApiUploadConcurrency?: number;
   /** Milliseconds one operation may spend waiting on Code API rate limits. */
@@ -1271,6 +1277,22 @@ export type TResolvedLangfusePrompt = {
 };
 
 export type TResolvedPromptResponse = TResolvedNativePrompt | TResolvedLangfusePrompt;
+
+/** One revision choice in `GET /api/prompts/groups/:groupId/revisions` — metadata
+ *  only, no prompt content. */
+export type TPromptRevisionChoice =
+  | { source: 'native'; promptId: string; version: number; isProduction: boolean }
+  | { source: 'langfuse'; version: number };
+
+/** `GET /api/prompts/groups/:groupId/revisions`. Lists a group's revisions newest
+ *  first, for the Builder's version picker; the Production entry is identified by
+ *  `isProduction` (native) or carries no separate marker (Langfuse, where the
+ *  Production label is resolved live rather than listed here). */
+export type TPromptRevisionChoicesResponse = {
+  source: TPromptGroupSource;
+  groupId: string;
+  revisions: TPromptRevisionChoice[];
+};
 
 /** `code` values the `/resolve` route returns, including the Langfuse request
  *  failure codes relayed through `toLangfusePromptErrorResponse` (`unauthorized`,

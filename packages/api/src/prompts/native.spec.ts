@@ -192,4 +192,50 @@ describe('createNativePromptAdapter', () => {
       }),
     ).resolves.toMatchObject({ ok: true, value: { promptId: draft._id, type: 'text' } });
   });
+
+  describe('listRevisions', () => {
+    it('lists revisions newest first, numbered from the oldest, with Production marked', async () => {
+      const adapter = createNativePromptAdapter(createPromptStore(db));
+
+      await expect(adapter.listRevisions({ group })).resolves.toEqual({
+        ok: true,
+        value: {
+          source: 'native',
+          groupId: group._id,
+          revisions: [
+            { source: 'native', promptId: draft._id, version: 2, isProduction: false },
+            { source: 'native', promptId: production._id, version: 1, isProduction: true },
+          ],
+        },
+      });
+    });
+
+    it('marks no revision as Production when the group has none', async () => {
+      const adapter = createNativePromptAdapter(createPromptStore(db));
+
+      await expect(
+        adapter.listRevisions({ group: { ...group, productionId: null } }),
+      ).resolves.toEqual({
+        ok: true,
+        value: {
+          source: 'native',
+          groupId: group._id,
+          revisions: [
+            { source: 'native', promptId: draft._id, version: 2, isProduction: false },
+            { source: 'native', promptId: production._id, version: 1, isProduction: false },
+          ],
+        },
+      });
+    });
+
+    it('returns an empty revision list for a group with no stored revisions', async () => {
+      const adapter = createNativePromptAdapter(createPromptStore(db));
+      const otherGroup = { ...group, _id: new Types.ObjectId().toString() };
+
+      await expect(adapter.listRevisions({ group: otherGroup })).resolves.toEqual({
+        ok: true,
+        value: { source: 'native', groupId: otherGroup._id, revisions: [] },
+      });
+    });
+  });
 });

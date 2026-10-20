@@ -389,20 +389,50 @@ const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefine
 /** A 24-character hexadecimal Mongo ObjectId string. */
 const objectIdStringSchema = z.string().refine(isValidObjectIdString);
 
-/** Selects which revision of a linked prompt group an agent's instructions follow. */
-const instructionsPromptSelectionSchema = z.discriminatedUnion('type', [
+/** Selects which revision of a linked native prompt group an agent's instructions follow. */
+const nativeInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('production') }).strict(),
   z.object({ type: z.literal('exact'), promptId: objectIdStringSchema }).strict(),
 ]);
 
+/** Selects which revision of a linked Langfuse prompt group an agent's instructions
+ *  follow: the group's Production label, or a pinned exact version number. */
+const langfuseInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('production') }).strict(),
+  z
+    .object({
+      type: z.literal('exact'),
+      version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    })
+    .strict(),
+]);
+
 /** Links an agent's instructions to a native LibreChat prompt group revision. */
-export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> = z
+const nativeAgentInstructionsPromptSchema = z
   .object({
     source: z.literal('native'),
     groupId: objectIdStringSchema,
-    selection: instructionsPromptSelectionSchema,
+    selection: nativeInstructionsPromptSelectionSchema,
   })
   .strict();
+
+/** Links an agent's instructions to a Langfuse prompt group revision. */
+const langfuseAgentInstructionsPromptSchema = z
+  .object({
+    source: z.literal('langfuse'),
+    groupId: objectIdStringSchema,
+    selection: langfuseInstructionsPromptSelectionSchema,
+  })
+  .strict();
+
+/** Links an agent's instructions to a native or Langfuse prompt group revision,
+ *  discriminated on `source`. A Langfuse link is rejected at the write boundary
+ *  (`validateLinkWrite`) rather than here when the rollout switch is off. */
+export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> =
+  z.discriminatedUnion('source', [
+    nativeAgentInstructionsPromptSchema,
+    langfuseAgentInstructionsPromptSchema,
+  ]);
 
 /** Shared field schema: `.nullable().optional()` per contract, `null` removes the link. */
 const agentInstructionsPromptFieldSchema: z.ZodOptional<

@@ -1,6 +1,10 @@
 import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
 import { AccessRoleIds, PrincipalType, ResourceType } from 'librechat-data-provider';
-import type { FiltersConfig, TDeletePromptResponse } from 'librechat-data-provider';
+import type {
+  FiltersConfig,
+  TDeletePromptResponse,
+  TPromptRevisionChoicesResponse,
+} from 'librechat-data-provider';
 import type {
   PromptRecord,
   PromptDatabase,
@@ -9,6 +13,7 @@ import type {
   PromptOperation,
   PromptGroupRecord,
   ResolvePromptInput,
+  ListRevisionsInput,
   PromptServiceError,
   PromptServiceResult,
   ImportSourceGroupInput,
@@ -56,6 +61,11 @@ export interface PromptServiceListResult {
  */
 export interface PromptService {
   resolvePrompt(input: ResolvePromptInput): Promise<PromptServiceResult<ResolvedPrompt>>;
+  /** Returns the group's revision choices, newest first, metadata only — no prompt
+   *  content. Dispatches by `group.source` the same way `resolvePrompt` does. */
+  listRevisions(
+    input: ListRevisionsInput,
+  ): Promise<PromptServiceResult<TPromptRevisionChoicesResponse>>;
   getListPromptGroupsByAccess(input: PromptListInput): Promise<PromptServiceListResult>;
   /** Returns the group's revisions, newest first. */
   getPrompts(
@@ -192,6 +202,17 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
         return resolved;
       }
       return inspect({ prompt: resolved.value.prompt }, filters) ?? resolved;
+    },
+
+    async listRevisions({ groupId, loadedGroup, allowedSources }) {
+      const group = await readGroup(groupId, loadedGroup);
+      if (group == null) {
+        return { ok: false, error: { type: 'unavailable_selection', reason: 'revision' } };
+      }
+      if (allowedSources != null && !allowedSources.includes(group.source)) {
+        return { ok: false, error: { type: 'unsupported_source', source: group.source } };
+      }
+      return sources[group.source].listRevisions({ group });
     },
 
     async getListPromptGroupsByAccess(input) {

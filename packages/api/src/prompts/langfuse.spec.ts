@@ -329,4 +329,179 @@ describe('createLangfusePromptAdapter', () => {
     expect(result).toMatchObject({ ok: true });
     timeoutSpy.mockRestore();
   });
+
+  describe('listRevisions', () => {
+    function listResponse(
+      items: Array<{
+        name?: string;
+        type?: 'text' | 'chat';
+        versions?: number[];
+      }>,
+      totalItems: number,
+    ) {
+      return jsonResponse({
+        data: items.map((item) => ({
+          name: 'greeting',
+          type: 'text',
+          versions: [1],
+          labels: [],
+          tags: [],
+          lastUpdatedAt: '2026-01-01T00:00:00.000Z',
+          ...item,
+        })),
+        meta: { page: 1, limit: 1, totalItems, totalPages: 1 },
+      });
+    }
+
+    it('sends a filter with the name condition only, page 1 and limit 1, no type', async () => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+      fetchMock.mockResolvedValue(listResponse([{ versions: [1, 2, 3] }], 1));
+
+      await adapter.listRevisions({ group: makeGroup() });
+
+      const [url] = fetchMock.mock.calls[0];
+      const parsedUrl = new URL(url as string);
+      expect(parsedUrl.searchParams.get('page')).toBe('1');
+      expect(parsedUrl.searchParams.get('limit')).toBe('1');
+      expect(parsedUrl.searchParams.get('name')).toBe('greeting');
+      expect(JSON.parse(parsedUrl.searchParams.get('filter') as string)).toEqual([
+        { type: 'string', column: 'name', operator: '=', value: 'greeting' },
+      ]);
+    });
+
+    it('forwards the configured timeout to listPrompts', async () => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 7000 });
+      fetchMock.mockResolvedValue(listResponse([{ versions: [1] }], 1));
+      const timeoutSpy = jest.spyOn(AbortSignal, 'timeout');
+
+      await adapter.listRevisions({ group: makeGroup() });
+
+      // Mirrors the `resolvePrompt` default-timeout test: asserts the timeout
+      // the adapter was configured with reaches the request `listPrompts`
+      // makes, rather than some other value or the shared default.
+      expect(timeoutSpy).toHaveBeenCalledWith(7000);
+      timeoutSpy.mockRestore();
+    });
+
+    it('lists versions newest first for a matched text prompt', async () => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+      fetchMock.mockResolvedValue(listResponse([{ versions: [1, 3, 2] }], 1));
+
+      const result = await adapter.listRevisions({ group: makeGroup() });
+
+      expect(result).toEqual({
+        ok: true,
+        value: {
+          source: 'langfuse',
+          groupId: 'group-1',
+          revisions: [
+            { source: 'langfuse', version: 3 },
+            { source: 'langfuse', version: 2 },
+            { source: 'langfuse', version: 1 },
+          ],
+        },
+      });
+    });
+
+    it('returns source_not_found when no items and totalItems is 0', async () => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+      fetchMock.mockResolvedValue(listResponse([], 0));
+
+      const result = await adapter.listRevisions({ group: makeGroup() });
+
+      expect(result).toEqual({
+        ok: false,
+        error: { type: 'source_not_found', source: 'langfuse' },
+      });
+    });
+
+    it('returns unsupported_content chat_prompt for a matched chat prompt', async () => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+      fetchMock.mockResolvedValue(listResponse([{ type: 'chat', versions: [1] }], 1));
+
+      const result = await adapter.listRevisions({ group: makeGroup() });
+
+      expect(result).toEqual({
+        ok: false,
+        error: { type: 'unsupported_content', reason: 'chat_prompt' },
+      });
+    });
+
+    it('returns source_unavailable not_configured when the group has no sourcePromptName, without fetching', async () => {
+      const resolveSource = jest.fn();
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+
+      const result = await adapter.listRevisions({
+        group: makeGroup({ sourcePromptName: undefined }),
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: { type: 'source_unavailable', source: 'langfuse', reason: 'not_configured' },
+      });
+      expect(resolveSource).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['disabled', 'not_configured', 'source_changed'] as const)(
+      'passes a resolveSource %s reason through as source_unavailable, without fetching',
+      async (reason) => {
+        const resolveSource = jest.fn().mockResolvedValue({ ok: false, reason });
+        const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+
+        const result = await adapter.listRevisions({ group: makeGroup() });
+
+        expect(result).toEqual({
+          ok: false,
+          error: { type: 'source_unavailable', source: 'langfuse', reason },
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('propagates a thrown LangfusePromptRequestError from the list request', async () => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+      fetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+
+      expect.assertions(2);
+      try {
+        await adapter.listRevisions({ group: makeGroup() });
+      } catch (error) {
+        expect(error).toBeInstanceOf(LangfusePromptRequestError);
+        expect(error).toMatchObject({ code: 'unauthorized' });
+      }
+    });
+
+    it.each<[string, Array<{ name?: string; versions?: number[] }>, number]>([
+      ['a returned name that differs from sourcePromptName', [{ name: 'other', versions: [1] }], 1],
+      ['totalItems greater than 1 despite one item', [{ versions: [1] }], 2],
+      ['items present but totalItems is 0', [{ versions: [1] }], 0],
+      ['no items despite totalItems greater than 0', [], 1],
+      ['a matched text prompt with no versions', [{ versions: [] }], 1],
+    ])('throws invalid_response for %s', async (_label, items, totalItems) => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+      fetchMock.mockResolvedValue(listResponse(items, totalItems));
+
+      await expect(adapter.listRevisions({ group: makeGroup() })).rejects.toMatchObject({
+        code: 'invalid_response',
+      });
+    });
+
+    it('does not include credentials or a URL in a successful result', async () => {
+      const resolveSource = jest.fn().mockResolvedValue(okResolution());
+      const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
+      fetchMock.mockResolvedValue(listResponse([{ versions: [1] }], 1));
+
+      const result = await adapter.listRevisions({ group: makeGroup() });
+
+      expect(JSON.stringify(result)).not.toMatch(/authorization|cloud\.langfuse\.test/i);
+    });
+  });
 });

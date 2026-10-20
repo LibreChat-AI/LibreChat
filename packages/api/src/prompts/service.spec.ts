@@ -219,7 +219,7 @@ describe('createPromptService', () => {
         store,
         sources: {
           native: createNativePromptAdapter(store),
-          langfuse: { resolvePrompt: jest.fn() },
+          langfuse: { resolvePrompt: jest.fn(), listRevisions: jest.fn() },
         },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer: jest.fn(),
@@ -517,7 +517,7 @@ describe('createPromptService', () => {
         store,
         sources: {
           native: createNativePromptAdapter(store),
-          langfuse: { resolvePrompt: jest.fn() },
+          langfuse: { resolvePrompt: jest.fn(), listRevisions: jest.fn() },
         },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer,
@@ -562,7 +562,7 @@ describe('createPromptService', () => {
         store,
         sources: {
           native: createNativePromptAdapter(store),
-          langfuse: { resolvePrompt: jest.fn() },
+          langfuse: { resolvePrompt: jest.fn(), listRevisions: jest.fn() },
         },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer,
@@ -595,7 +595,7 @@ describe('createPromptService', () => {
         store,
         sources: {
           native: createNativePromptAdapter(store),
-          langfuse: { resolvePrompt: jest.fn() },
+          langfuse: { resolvePrompt: jest.fn(), listRevisions: jest.fn() },
         },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer,
@@ -939,7 +939,7 @@ describe('createPromptService', () => {
         store,
         sources: {
           native: createNativePromptAdapter(store),
-          langfuse: { resolvePrompt: jest.fn() },
+          langfuse: { resolvePrompt: jest.fn(), listRevisions: jest.fn() },
         },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer: jest.fn(),
@@ -968,6 +968,106 @@ describe('createPromptService', () => {
       expect(savePrompt).not.toHaveBeenCalled();
       expect(makePromptProduction).not.toHaveBeenCalled();
       expect(deletePrompt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listRevisions', () => {
+    function makeLangfuseGroup(overrides: Partial<PromptGroupRecord> = {}): PromptGroupRecord {
+      return {
+        _id: missingId(),
+        name: 'Langfuse group',
+        author,
+        authorName: 'Author',
+        source: 'langfuse',
+        sourcePromptName: 'langfuse-prompt',
+        ...overrides,
+      };
+    }
+
+    it('lists the native revisions for a loaded group', async () => {
+      await expect(
+        service.listRevisions({ groupId: group._id, loadedGroup: group }),
+      ).resolves.toEqual({
+        ok: true,
+        value: {
+          source: 'native',
+          groupId: group._id,
+          revisions: [
+            { source: 'native', promptId: production._id, version: 1, isProduction: true },
+          ],
+        },
+      });
+    });
+
+    it('reads the group once when none is loaded', async () => {
+      const read = jest.spyOn(db, 'getPromptGroup');
+
+      await expect(service.listRevisions({ groupId: group._id })).resolves.toMatchObject({
+        ok: true,
+        value: { source: 'native' },
+      });
+      expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns unavailable_selection reason revision for a missing group', async () => {
+      await expect(service.listRevisions({ groupId: missingId() })).resolves.toEqual({
+        ok: false,
+        error: { type: 'unavailable_selection', reason: 'revision' },
+      });
+    });
+
+    it('dispatches a Langfuse group to the Langfuse adapter', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const listed = {
+        source: 'langfuse' as const,
+        groupId: langfuseGroup._id,
+        revisions: [{ source: 'langfuse' as const, version: 2 }],
+      };
+      const listRevisions = jest.fn().mockResolvedValue({ ok: true, value: listed });
+      const store = createPromptStore(db);
+      const routed = createPromptServiceFromAdapters({
+        store,
+        sources: {
+          native: createNativePromptAdapter(store),
+          langfuse: { resolvePrompt: jest.fn(), listRevisions },
+        },
+        grantCreatorOwnership: jest.fn(),
+        grantPublicViewer: jest.fn(),
+        logger: { warn: jest.fn(), error: jest.fn() },
+      });
+
+      await expect(
+        routed.listRevisions({ groupId: langfuseGroup._id, loadedGroup: langfuseGroup }),
+      ).resolves.toEqual({ ok: true, value: listed });
+      expect(listRevisions).toHaveBeenCalledWith({ group: langfuseGroup });
+    });
+
+    it('rejects a disallowed source before calling the adapter', async () => {
+      const langfuseGroup = makeLangfuseGroup();
+      const listRevisions = jest.fn();
+      const store = createPromptStore(db);
+      const routed = createPromptServiceFromAdapters({
+        store,
+        sources: {
+          native: createNativePromptAdapter(store),
+          langfuse: { resolvePrompt: jest.fn(), listRevisions },
+        },
+        grantCreatorOwnership: jest.fn(),
+        grantPublicViewer: jest.fn(),
+        logger: { warn: jest.fn(), error: jest.fn() },
+      });
+
+      await expect(
+        routed.listRevisions({
+          groupId: langfuseGroup._id,
+          loadedGroup: langfuseGroup,
+          allowedSources: ['native'],
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: { type: 'unsupported_source', source: 'langfuse' },
+      });
+      expect(listRevisions).not.toHaveBeenCalled();
     });
   });
 
@@ -1031,7 +1131,10 @@ describe('createPromptService', () => {
       const store = createPromptStore(db);
       const routed = createPromptServiceFromAdapters({
         store,
-        sources: { native: createNativePromptAdapter(store), langfuse: { resolvePrompt } },
+        sources: {
+          native: createNativePromptAdapter(store),
+          langfuse: { resolvePrompt, listRevisions: jest.fn() },
+        },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer: jest.fn(),
         logger: { warn: jest.fn(), error: jest.fn() },
@@ -1057,7 +1160,10 @@ describe('createPromptService', () => {
       const store = createPromptStore(db);
       const routed = createPromptServiceFromAdapters({
         store,
-        sources: { native: createNativePromptAdapter(store), langfuse: { resolvePrompt } },
+        sources: {
+          native: createNativePromptAdapter(store),
+          langfuse: { resolvePrompt, listRevisions: jest.fn() },
+        },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer: jest.fn(),
         logger: { warn: jest.fn(), error: jest.fn() },
@@ -1087,7 +1193,10 @@ describe('createPromptService', () => {
       const store = createPromptStore(db);
       const routed = createPromptServiceFromAdapters({
         store,
-        sources: { native: createNativePromptAdapter(store), langfuse: { resolvePrompt } },
+        sources: {
+          native: createNativePromptAdapter(store),
+          langfuse: { resolvePrompt, listRevisions: jest.fn() },
+        },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer: jest.fn(),
         logger: { warn: jest.fn(), error: jest.fn() },
@@ -1252,7 +1361,10 @@ describe('createPromptService', () => {
       const resolvePrompt = jest.fn();
       const routed = createPromptServiceFromAdapters({
         store,
-        sources: { native: createNativePromptAdapter(store), langfuse: { resolvePrompt } },
+        sources: {
+          native: createNativePromptAdapter(store),
+          langfuse: { resolvePrompt, listRevisions: jest.fn() },
+        },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer: jest.fn(),
         logger: { warn: jest.fn(), error: jest.fn() },
@@ -1282,7 +1394,10 @@ describe('createPromptService', () => {
       });
       const routed = createPromptServiceFromAdapters({
         store,
-        sources: { native: createNativePromptAdapter(store), langfuse: { resolvePrompt } },
+        sources: {
+          native: createNativePromptAdapter(store),
+          langfuse: { resolvePrompt, listRevisions: jest.fn() },
+        },
         grantCreatorOwnership: jest.fn(),
         grantPublicViewer: jest.fn(),
         logger: { warn: jest.fn(), error: jest.fn() },

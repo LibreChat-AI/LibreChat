@@ -1,9 +1,10 @@
 import type { FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
+import type { PromptService, NativeResolvedPrompt, LangfuseResolvedPrompt } from '~/prompts';
 import type { LinkedInstructionsCache, LinkedInstructionsLogger } from './linked';
-import type { PromptService, NativeResolvedPrompt } from '~/prompts';
 import { createLinkedInstructionsResolver, invalidateLinkedPrompt } from './linked';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
+import { LangfusePromptRequestError } from '~/langfuse/prompts';
 
 jest.mock('~/middleware/modelBoundContent', () => ({
   ...jest.requireActual('~/middleware/modelBoundContent'),
@@ -88,6 +89,20 @@ const exactLink: AgentInstructionsPrompt = {
   selection: { type: 'exact', promptId },
 };
 
+const langfuseProductionLink: AgentInstructionsPrompt = {
+  source: 'langfuse',
+  groupId,
+  selection: { type: 'production' },
+};
+
+const langfuseExactLink: AgentInstructionsPrompt = {
+  source: 'langfuse',
+  groupId,
+  selection: { type: 'exact', version: 3 },
+};
+
+const langfuseEnabledConfig = { langfuse: { enabled: true } };
+
 function makeResolvedPrompt(overrides: Partial<NativeResolvedPrompt> = {}): NativeResolvedPrompt {
   return {
     source: 'native',
@@ -95,6 +110,20 @@ function makeResolvedPrompt(overrides: Partial<NativeResolvedPrompt> = {}): Nati
     promptId,
     prompt: 'You are a helpful assistant.',
     type: 'text',
+    ...overrides,
+  };
+}
+
+function makeLangfuseResolvedPrompt(
+  overrides: Partial<LangfuseResolvedPrompt> = {},
+): LangfuseResolvedPrompt {
+  return {
+    source: 'langfuse',
+    groupId,
+    prompt: 'You are a helpful Langfuse-linked assistant.',
+    type: 'text',
+    version: 3,
+    labels: ['production'],
     ...overrides,
   };
 }
@@ -508,6 +537,34 @@ describe('createLinkedInstructionsResolver', () => {
       status: 'unavailable',
       reason: 'blocked_content',
     });
+    // A `blocked_content` error carries `finding`, not `reason`; the warn must
+    // never surface the finding (which can echo matched prompt content).
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[linkedInstructions] resolvePrompt returned a failure result',
+      { groupId, source: 'native', type: 'blocked_content' },
+    );
+  });
+
+  it('logs a content-free warn before returning unavailable for a failed resolvePrompt result', async () => {
+    const cache = new FakeCache();
+    const promptService = makePromptService({
+      resolvePrompt: jest.fn().mockResolvedValue({
+        ok: false,
+        error: { type: 'unavailable_selection', reason: 'production' },
+      }),
+    });
+    const logger = makeLogger();
+    const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+    await expect(resolver({ link: productionLink })).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'unavailable_selection',
+    });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[linkedInstructions] resolvePrompt returned a failure result',
+      { groupId, source: 'native', type: 'unavailable_selection', reason: 'production' },
+    );
   });
 
   it('calls resolvePrompt with allowedSources native-only and maps a rejected non-native group (unsupported_source) to unavailable_selection', async () => {
@@ -538,7 +595,7 @@ describe('createLinkedInstructionsResolver', () => {
     ['source_unavailable', { type: 'source_unavailable', source: 'langfuse', reason: 'disabled' }],
     ['source_not_found', { type: 'source_not_found', source: 'langfuse' }],
     ['unsupported_content', { type: 'unsupported_content', reason: 'chat_prompt' }],
-  ] as const)('maps the service error "%s" to the generic "error" reason', async (_name, error) => {
+  ] as const)('maps the service error "%s" to "unavailable_selection"', async (_name, error) => {
     const cache = new FakeCache();
     const promptService = makePromptService({
       resolvePrompt: jest.fn().mockResolvedValue({ ok: false, error }),
@@ -548,7 +605,252 @@ describe('createLinkedInstructionsResolver', () => {
 
     await expect(resolver({ link: productionLink })).resolves.toEqual({
       status: 'unavailable',
-      reason: 'error',
+      reason: 'unavailable_selection',
+    });
+  });
+
+  describe('Langfuse links', () => {
+    it('returns unavailable "disabled" with no cache or service call when the switch is off', async () => {
+      const cache = new FakeCache();
+      const getSpy = jest.spyOn(cache, 'get');
+      const setSpy = jest.spyOn(cache, 'set');
+      const promptService = makePromptService();
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await expect(resolver({ link: langfuseProductionLink })).resolves.toEqual({
+        status: 'unavailable',
+        reason: 'disabled',
+      });
+      expect(getSpy).not.toHaveBeenCalled();
+      expect(setSpy).not.toHaveBeenCalled();
+      expect(promptService.resolvePrompt).not.toHaveBeenCalled();
+    });
+
+    it('returns unavailable "disabled" when the config omits the langfuse block entirely', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService();
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await expect(resolver({ link: langfuseProductionLink, config: {} })).resolves.toEqual({
+        status: 'unavailable',
+        reason: 'disabled',
+      });
+      expect(promptService.resolvePrompt).not.toHaveBeenCalled();
+    });
+
+    it('resolves a Langfuse link fresh when the switch is on, with facts shaped by version (not promptId)', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService({
+        resolvePrompt: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: makeLangfuseResolvedPrompt() }),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      const result = await resolver({
+        link: langfuseProductionLink,
+        config: langfuseEnabledConfig,
+      });
+
+      expect(result).toEqual({
+        status: 'resolved',
+        prompt: 'You are a helpful Langfuse-linked assistant.',
+        facts: { source: 'langfuse', groupId, version: 3 },
+      });
+      expect(promptService.resolvePrompt).toHaveBeenCalledWith({
+        groupId,
+        selection: { type: 'production' },
+        filters: undefined,
+        allowedSources: ['langfuse'],
+      });
+    });
+
+    it('maps a pinned Langfuse exact selection to the prompt-service version selection', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService({
+        resolvePrompt: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: makeLangfuseResolvedPrompt() }),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await resolver({ link: langfuseExactLink, config: langfuseEnabledConfig });
+
+      expect(promptService.resolvePrompt).toHaveBeenCalledWith({
+        groupId,
+        selection: { type: 'version', version: 3 },
+        filters: undefined,
+        allowedSources: ['langfuse'],
+      });
+    });
+
+    it('never reads or writes the cache for a Langfuse link, before or after resolving', async () => {
+      const cache = new FakeCache();
+      const getSpy = jest.spyOn(cache, 'get');
+      const setSpy = jest.spyOn(cache, 'set');
+      const promptService = makePromptService({
+        resolvePrompt: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: makeLangfuseResolvedPrompt() }),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      expect(getSpy).not.toHaveBeenCalled();
+      expect(setSpy).not.toHaveBeenCalled();
+
+      await resolver({ link: langfuseProductionLink, config: langfuseEnabledConfig });
+      await flush();
+
+      expect(getSpy).not.toHaveBeenCalled();
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('fetches again on a second call — no cache ever satisfies a Langfuse link', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService({
+        resolvePrompt: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: makeLangfuseResolvedPrompt() }),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await resolver({ link: langfuseProductionLink, config: langfuseEnabledConfig });
+      await resolver({ link: langfuseProductionLink, config: langfuseEnabledConfig });
+
+      expect(promptService.resolvePrompt).toHaveBeenCalledTimes(2);
+    });
+
+    it('maps every source-routing and selection error to "unavailable_selection"', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService({
+        resolvePrompt: jest.fn().mockResolvedValue({
+          ok: false,
+          error: { type: 'unsupported_content', reason: 'chat_prompt' },
+        }),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await expect(
+        resolver({ link: langfuseProductionLink, config: langfuseEnabledConfig }),
+      ).resolves.toEqual({ status: 'unavailable', reason: 'unavailable_selection' });
+      // Exact shape asserts the warn carries only `type`/`reason`/ids — never
+      // prompt text or any other field from the error.
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[linkedInstructions] resolvePrompt returned a failure result',
+        { groupId, source: 'langfuse', type: 'unsupported_content', reason: 'chat_prompt' },
+      );
+    });
+
+    it('maps a resolved source mismatch (service returned native for a Langfuse link) to "unavailable_selection"', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService({
+        resolvePrompt: jest.fn().mockResolvedValue({ ok: true, value: makeResolvedPrompt() }),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await expect(
+        resolver({ link: langfuseProductionLink, config: langfuseEnabledConfig }),
+      ).resolves.toEqual({ status: 'unavailable', reason: 'unavailable_selection' });
+    });
+
+    it('maps a thrown LangfusePromptRequestError to "error", logging its code and never its message text', async () => {
+      const cache = new FakeCache();
+      const requestError = new LangfusePromptRequestError(
+        'upstream',
+        'DO-NOT-LOG-THIS-UPSTREAM-BODY',
+        502,
+      );
+      const promptService = makePromptService({
+        resolvePrompt: jest.fn().mockRejectedValue(requestError),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      await expect(
+        resolver({ link: langfuseProductionLink, config: langfuseEnabledConfig }),
+      ).resolves.toEqual({ status: 'unavailable', reason: 'error' });
+      expect(logger.error).toHaveBeenCalledWith(
+        '[linkedInstructions] resolvePrompt failed',
+        expect.objectContaining({
+          groupId,
+          errorName: 'LangfusePromptRequestError',
+          code: 'upstream',
+        }),
+      );
+      const allLogCalls = [...logger.warn.mock.calls, ...logger.error.mock.calls];
+      for (const call of allLogCalls) {
+        expect(JSON.stringify(call)).not.toContain('DO-NOT-LOG-THIS-UPSTREAM-BODY');
+      }
+    });
+
+    it('returns unavailable "timeout" when the Langfuse resolution does not settle in time', async () => {
+      jest.useFakeTimers();
+      try {
+        const cache = new FakeCache();
+        const promptService = makePromptService({
+          resolvePrompt: jest.fn().mockImplementation(
+            () =>
+              new Promise((resolve) => {
+                setTimeout(() => resolve({ ok: true, value: makeLangfuseResolvedPrompt() }), 200);
+              }),
+          ),
+        });
+        const logger = makeLogger();
+        const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+        const pending = resolver({
+          link: langfuseProductionLink,
+          config: { ...langfuseEnabledConfig, timeoutMs: 10 },
+        });
+        await jest.advanceTimersByTimeAsync(11);
+
+        await expect(pending).resolves.toEqual({ status: 'unavailable', reason: 'timeout' });
+        await jest.advanceTimersByTimeAsync(200);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('throws the abort reason for a Langfuse link and records no usage', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService({
+        resolvePrompt: jest.fn().mockReturnValue(new Promise(() => {})),
+      });
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      const controller = new AbortController();
+      const pending = resolver({
+        link: langfuseProductionLink,
+        config: langfuseEnabledConfig,
+        signal: controller.signal,
+      });
+      controller.abort();
+
+      await expect(pending).rejects.toBe(controller.signal.reason);
+      await flush();
+      expect(promptService.incrementPromptGroupUsage).not.toHaveBeenCalled();
+    });
+
+    it('records usage for a resolved Langfuse link via recordUse, fire-and-forget', async () => {
+      const cache = new FakeCache();
+      const promptService = makePromptService();
+      const logger = makeLogger();
+      const resolver = createLinkedInstructionsResolver({ promptService, cache, logger });
+
+      resolver.recordUse({ source: 'langfuse', groupId, version: 3 });
+      await flush();
+
+      expect(promptService.incrementPromptGroupUsage).toHaveBeenCalledTimes(1);
+      expect(promptService.incrementPromptGroupUsage).toHaveBeenCalledWith(groupId);
     });
   });
 

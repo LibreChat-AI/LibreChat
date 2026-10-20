@@ -90,6 +90,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         statefulCodeSessions,
         maxSubagents,
         fileSharing,
+        linkedInstructions,
       } = appConfig.endpoints[EModelEndpoint.agents];
       const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
       /** Only advertise Accept edits when the endpoint fallback cannot force every
@@ -141,6 +142,11 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         statefulCodeSessions: clientStatefulCodeSessions,
         maxSubagents,
         fileSharing,
+        /** Only the switch itself reaches the client; `timeoutMs` and `native` stay
+         * server-side budget/cache configuration the Builder never needs. */
+        linkedInstructions: {
+          langfuse: { enabled: linkedInstructions?.langfuse?.enabled === true },
+        },
         toolApproval: {
           enabled: toolApproval?.enabled === true,
           agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,

@@ -930,9 +930,11 @@ export type InitializedAgent = Agent & {
   /** State for deferred file provisioning — actual uploads happen at tool invocation time */
   provisionState?: ProvisionState;
   /**
-   * Facts about a resolved `instructionsPrompt` link (source, groupId,
-   * resolved promptId), surfaced for AI-2158. Never persisted — omitted for
-   * an agent with no link, an unresolved link, or a missing resolver.
+   * Facts about a resolved `instructionsPrompt` link — native or Langfuse —
+   * surfaced for AI-2158. Shaped per source: a native link's facts carry the
+   * resolved `promptId`; a Langfuse link's carry the resolved `version`.
+   * Never persisted — omitted for an agent with no link, an unresolved or
+   * disabled link, or a missing resolver.
    */
   instructionsPromptFacts?: LinkedInstructionsFacts;
 };
@@ -1043,12 +1045,14 @@ export interface InitializeAgentParams {
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
   /**
-   * Resolves an agent's `instructionsPrompt` link (a linked native prompt
-   * group) into instruction text. Called only when `agent.instructionsPrompt`
-   * carries a resolvable `native` link. Absent, a linked agent falls back to
-   * empty instructions with a warning — there is no default DB-backed
-   * resolution path, unlike `resolveWebSearchGrant`, so every caller that
-   * wants linked instructions honored must supply one.
+   * Resolves an agent's `instructionsPrompt` link (a linked native or
+   * Langfuse prompt group) into instruction text. Called only when
+   * `agent.instructionsPrompt` carries a resolvable link of either source;
+   * the resolver itself reports a Langfuse link as unavailable while the
+   * `linkedInstructions.langfuse.enabled` switch is off. Absent, a linked
+   * agent falls back to empty instructions with a warning — there is no
+   * default DB-backed resolution path, unlike `resolveWebSearchGrant`, so
+   * every caller that wants linked instructions honored must supply one.
    */
   resolveLinkedInstructions?: ResolveLinkedInstructions;
   /**

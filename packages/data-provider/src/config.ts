@@ -1714,7 +1714,8 @@ export const agentsEndpointSchema = baseEndpointSchema
         })
         .optional(),
       /** Budget and cache configuration for resolving an agent's linked prompt-group
-       * instructions. Omitting the block applies the defaults below. */
+       * instructions. `timeoutMs` bounds a Langfuse link's resolution the same way it
+       * bounds a native one. Omitting the block applies the defaults below. */
       linkedInstructions: z
         .object({
           timeoutMs: z.number().int().min(100).max(30_000).optional().default(2000),
@@ -1731,6 +1732,15 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .max(30_000)
                 .optional()
                 .default(DEFAULT_CACHE_CLEAR_TIMEOUT_MS),
+            })
+            .optional()
+            .prefault({}),
+          /** Rollout switch for linking an agent's instructions to a Langfuse prompt
+           * group. Off by default: no new or changed Langfuse link can be saved, and an
+           * existing one stays saved but unused by new initializations. */
+          langfuse: z
+            .object({
+              enabled: z.boolean().optional().default(false),
             })
             .optional()
             .prefault({}),

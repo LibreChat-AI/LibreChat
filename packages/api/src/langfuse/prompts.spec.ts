@@ -165,6 +165,47 @@ describe('listLangfusePrompts', () => {
     ]);
   });
 
+  it('composes nameEquals into filter and also sends it as the plain name param', async () => {
+    const conn = makeConnection();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: [], meta: { page: 1, limit: 1, totalItems: 0, totalPages: 0 } }),
+    );
+
+    await listLangfusePrompts(
+      conn,
+      { nameEquals: 'greeting', page: 1, limit: 1 },
+      { timeoutMs: 5000 },
+    );
+
+    const [url] = fetchMock.mock.calls[0];
+    const parsedUrl = new URL(url as string);
+    expect(parsedUrl.searchParams.get('name')).toBe('greeting');
+    expect(JSON.parse(parsedUrl.searchParams.get('filter') as string)).toEqual([
+      { type: 'string', column: 'name', operator: '=', value: 'greeting' },
+    ]);
+  });
+
+  it('ANDs nameEquals and type into one filter array, in that order, keeping the name param', async () => {
+    const conn = makeConnection();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: [], meta: { page: 1, limit: 1, totalItems: 0, totalPages: 0 } }),
+    );
+
+    await listLangfusePrompts(
+      conn,
+      { nameEquals: 'greeting', type: 'text', page: 1, limit: 1 },
+      { timeoutMs: 5000 },
+    );
+
+    const [url] = fetchMock.mock.calls[0];
+    const parsedUrl = new URL(url as string);
+    expect(parsedUrl.searchParams.get('name')).toBe('greeting');
+    expect(JSON.parse(parsedUrl.searchParams.get('filter') as string)).toEqual([
+      { type: 'string', column: 'name', operator: '=', value: 'greeting' },
+      { type: 'string', column: 'type', operator: '=', value: 'text' },
+    ]);
+  });
+
   it('sends tag, fromUpdatedAt and toUpdatedAt as given', async () => {
     const conn = makeConnection();
     fetchMock.mockResolvedValue(
