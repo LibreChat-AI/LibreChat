@@ -660,6 +660,10 @@ describe('steps', () => {
 
     it('deduplicates replayed prompts and ignores completion of an older flow', () => {
       let response = createResponse([{ type: ContentTypes.TEXT, text: 'Existing answer' }]);
+      const oldStep = toolStep('oauth-one', 0, [
+        { id: 'flow-old', name: 'oauth_mcp_one', args: '' },
+      ]);
+      response = applyToolCallsStep(response, oldStep, 0).message;
       const step = toolStep('oauth-one', 0, [
         { id: 'flow-new', name: 'oauth_mcp_one', args: '', type: ToolCallTypes.TOOL_CALL },
       ]);

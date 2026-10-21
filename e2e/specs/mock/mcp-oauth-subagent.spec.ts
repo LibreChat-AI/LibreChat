@@ -10,7 +10,15 @@ test('keeps specialist sign-in visible beside its parent call and after reload',
   await page.goto('/c/new');
   const token = await getAccessToken(page);
   const ids: string[] = [];
+  const clearCredential = () =>
+    requestJson(page, {
+      path: '/api/user/plugins',
+      token,
+      method: 'POST',
+      body: { pluginKey: 'mcp_e2e-oauth', action: 'uninstall', auth: {} },
+    });
   try {
+    await clearCredential();
     const child = await requestJson<AgentDetail>(page, {
       path: '/api/agents',
       token,
@@ -71,6 +79,10 @@ test('keeps specialist sign-in visible beside its parent call and after reload',
   } finally {
     const stop = page.getByRole('button', { name: 'Stop generating' });
     if (await stop.isVisible().catch(() => false)) await stop.click();
-    for (const id of ids.reverse()) await cleanupAgent(page, id);
+    try {
+      await clearCredential();
+    } finally {
+      for (const id of ids.reverse()) await cleanupAgent(page, id);
+    }
   }
 });

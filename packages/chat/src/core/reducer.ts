@@ -44,8 +44,8 @@ export { syncStreamMessage } from './stream/subagent';
  * same event read the list back through `getMessages`. Everything else (live-status stores,
  * announcements, cache invalidation, coalesced flushes) is returned in order for the binding.
  *
- * Invariant: a part's position in `message.content` is its step index plus the retained edit
- * prefix. Nothing here splices content mid-stream.
+ * Model parts retain their absolute step indices plus the edit prefix. Synthetic OAuth
+ * prompts follow those model parts and are addressed separately by identity.
  */
 
 export function reduceStep(state: StreamState, event: StepEvent, ctx: StepContext): StepEffect[] {

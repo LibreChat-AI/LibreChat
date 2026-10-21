@@ -188,25 +188,44 @@ export function updateContent(
     isOAuthToolCallName(contentPart.tool_call?.name);
 
   // Synthetic OAuth rows share neither the model's index space nor each other's slot.
-  const modelContent: Array<Partial<TMessageContentParts> | undefined> = [];
+  const hasOAuth =
+    incomingOAuthToolCall ||
+    isOAuthToolCallContent(message.content?.[(message.content?.length ?? 0) - 1]);
+  const modelContent: Array<Partial<TMessageContentParts> | undefined> = hasOAuth
+    ? []
+    : [...(message.content ?? [])];
   const oauthContent: Array<Partial<TMessageContentParts> | undefined> = [];
-  for (const part of message.content ?? []) {
-    (isOAuthToolCallContent(part) ? oauthContent : modelContent).push(part);
+  if (hasOAuth) {
+    for (const part of message.content ?? []) {
+      (isOAuthToolCallContent(part) ? oauthContent : modelContent).push(part);
+    }
   }
   let updatedContent = incomingOAuthToolCall ? oauthContent : modelContent;
   if (incomingOAuthToolCall && 'tool_call' in contentPart) {
     const incomingId = contentPart.tool_call?.id;
-    const existingIndex = incomingId
-      ? oauthContent.findIndex(
-          (part) =>
-            part?.type === ContentTypes.TOOL_CALL &&
-            'tool_call' in part &&
-            part.tool_call?.id === incomingId,
-        )
-      : -1;
+    const incomingStepId = contentPart.tool_call?.stepId;
+    const existingIndex = oauthContent.findIndex((part) => {
+      if (part?.type !== ContentTypes.TOOL_CALL || !('tool_call' in part) || !part.tool_call)
+        return false;
+      return (
+        (incomingId && part.tool_call.id === incomingId) ||
+        (!finalUpdate &&
+          incomingStepId &&
+          'stepId' in part.tool_call &&
+          part.tool_call.stepId === incomingStepId)
+      );
+    });
     if (finalUpdate) {
       if (existingIndex >= 0) oauthContent.splice(existingIndex, 1);
       return { ...message, content: [...modelContent, ...oauthContent] as TMessageContentParts[] };
+    }
+    const existing = oauthContent[existingIndex];
+    if (
+      existing?.type === ContentTypes.TOOL_CALL &&
+      'tool_call' in existing &&
+      existing.tool_call?.id !== incomingId
+    ) {
+      oauthContent[existingIndex] = undefined;
     }
     index = existingIndex >= 0 ? existingIndex : oauthContent.length;
   }
@@ -380,16 +399,19 @@ export function updateContent(
     } as Partial<TMessageContentParts>;
   }
 
-  const content = incomingOAuthToolCall
-    ? [...modelContent, ...updatedContent]
-    : [
-        ...updatedContent,
-        ...oauthContent.filter(
-          (part) =>
-            part?.type === ContentTypes.TOOL_CALL &&
-            'tool_call' in part &&
-            part.tool_call?.auth != null,
-        ),
-      ];
+  let content = updatedContent;
+  if (incomingOAuthToolCall) {
+    content = [...modelContent, ...updatedContent];
+  } else if (oauthContent.length > 0) {
+    content = [
+      ...updatedContent,
+      ...oauthContent.filter(
+        (part) =>
+          part?.type === ContentTypes.TOOL_CALL &&
+          'tool_call' in part &&
+          part.tool_call?.auth != null,
+      ),
+    ];
+  }
   return { ...message, content: content as TMessageContentParts[] };
 }
