@@ -46,7 +46,7 @@ type AllContentTypes =
 export const isOAuthToolCallName = (name?: string): boolean =>
   typeof name === 'string' && name.startsWith(`oauth${Constants.mcp_delimiter}`);
 
-const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>) => {
+export const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>): boolean => {
   if (part?.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) {
     return false;
   }

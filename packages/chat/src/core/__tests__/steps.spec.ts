@@ -21,6 +21,8 @@ import {
   getEditPrefix,
   updateContent,
 } from '../steps';
+import { markAskUserQuestionAnswered } from '../ask';
+import { applyPendingAction } from '../pending';
 
 const RUN_ID = 'response-1';
 
@@ -601,6 +603,59 @@ describe('steps', () => {
         ),
       ).toBeUndefined();
     });
+
+    it.each(['oauth-first', 'question-first'])(
+      'streams after an answered question beside OAuth (%s)',
+      (order) => {
+        const ask = toolStep('ask', 0, [{ id: 'ask-call', name: 'ask_user_question', args: '' }]);
+        const oauth = toolStep('oauth-one', 0, [{ id: 'flow-1', name: 'oauth_mcp_one', args: '' }]);
+        const pending: Agents.PendingAction = {
+          actionId: `question-with-oauth-${order}`,
+          streamId: 'stream',
+          createdAt: 0,
+          payload: { type: 'ask_user_question', question: { question: 'Which environment?' } },
+        };
+        let response = applyToolCallsStep(createResponse(), ask, 0).message;
+        const addOAuth = () => {
+          response = applyToolCallsStep(response, oauth, 0).message;
+          response = applyToolCallDelta(
+            response,
+            oauth,
+            {
+              id: oauth.id,
+              delta: {
+                type: StepTypes.TOOL_CALLS,
+                tool_calls: [{ id: 'flow-1', name: 'oauth_mcp_one', args: '' }],
+                auth: 'https://one.example/authorize',
+              },
+            },
+            'flow-1',
+            0,
+          ) as TMessage;
+        };
+        if (order === 'oauth-first') addOAuth();
+        response = applyPendingAction(response, pending);
+        response = applyPendingAction(response, pending);
+        if (order === 'question-first') addOAuth();
+        expect(response.content).toHaveLength(3);
+        markAskUserQuestionAnswered(pending.actionId);
+        response = applyToolCallCompleted(
+          response,
+          ask,
+          toolEnd(ask.id, { id: 'ask-call', name: 'ask_user_question', output: 'staging' }),
+          0,
+        );
+        response = streamText(response, messageStep('resumed', 1), ['Resumed ', 'answer']);
+        expect(response.content).toMatchObject([
+          { type: ContentTypes.TOOL_CALL, tool_call: { id: 'ask-call', output: 'staging' } },
+          { type: ContentTypes.TEXT, text: 'Resumed answer' },
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: { id: 'flow-1', auth: 'https://one.example/authorize' },
+          },
+        ]);
+      },
+    );
 
     it('keeps OAuth prompts separate from reasoning and sibling tool output', () => {
       const thinking = { type: ContentTypes.THINK, think: 'Delegating' } as const;
