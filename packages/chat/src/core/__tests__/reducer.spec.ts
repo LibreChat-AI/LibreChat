@@ -100,6 +100,45 @@ describe('reduceStep', () => {
     expect(content?.[2]).toEqual({ type: ContentTypes.TEXT, text: 'later' });
   });
 
+  it('routes a preliminary OAuth prompt to the live model response', () => {
+    const state = createStreamState();
+    const { ctx, read } = createContext();
+    ctx.submission.initialResponse.messageId = 'placeholder';
+    reduceStep(state, textStep('text', 0), ctx);
+    reduceStep(state, text('text', 'Delegating'), ctx);
+    reduceStep(state, toolStep('parent', 1, 'child', 'subagent'), ctx);
+    const oauth = toolStep('oauth', 0, 'flow', 'oauth_mcp_one');
+    if (oauth.event !== StepEvents.ON_RUN_STEP) throw new Error('Expected run step');
+    oauth.data.runId = Constants.USE_PRELIM_RESPONSE_MESSAGE_ID;
+    reduceStep(state, oauth, ctx);
+    reduceStep(
+      state,
+      {
+        event: StepEvents.ON_RUN_STEP_DELTA,
+        data: {
+          id: 'oauth',
+          delta: {
+            type: StepTypes.TOOL_CALLS,
+            tool_calls: [{ id: 'flow', name: 'oauth_mcp_one', args: '' }],
+            auth: 'https://example.com/authorize',
+          },
+        },
+      },
+      ctx,
+    );
+    reduceStep(state, text('text', ' now'), ctx);
+    flushResponses(state, ctx, ['resp-1'], read());
+    expect(responseContent(read())).toMatchObject([
+      { type: ContentTypes.TEXT, text: 'Delegating now' },
+      { type: ContentTypes.TOOL_CALL, tool_call: { id: 'child', name: 'subagent' } },
+      {
+        type: ContentTypes.TOOL_CALL,
+        tool_call: { id: 'flow', auth: 'https://example.com/authorize' },
+      },
+    ]);
+    expect(state.messages.has('placeholder')).toBe(false);
+  });
+
   it('holds deltas for an unseen step and replays them, in order, when it opens', () => {
     const state = createStreamState();
     const { ctx, writes, read } = createContext();

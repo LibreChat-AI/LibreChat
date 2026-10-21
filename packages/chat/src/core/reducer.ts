@@ -2,6 +2,7 @@ import { Constants, StepTypes, StepEvents } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { StepEvent, StepEffect, StepContext, StreamState } from './stream/state';
 import {
+  isOAuthToolCallName,
   getEditPrefix,
   applyAgentUpdate,
   applySummaryStep,
@@ -62,7 +63,19 @@ export function reduceStep(state: StreamState, event: StepEvent, ctx: StepContex
   const { initialContent, editPrefixOffset } = getEditPrefix(submission);
 
   if (event.event === StepEvents.ON_RUN_STEP) {
-    const runStep = event.data;
+    let runStep = event.data;
+    if (runStep.runId !== Constants.USE_PRELIM_RESPONSE_MESSAGE_ID && runStep.runId) {
+      state.currentResponseId = runStep.runId;
+    } else if (
+      runStep.runId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID &&
+      state.currentResponseId &&
+      runStep.stepDetails.type === StepTypes.TOOL_CALLS &&
+      runStep.stepDetails.tool_calls?.some(
+        (call) => 'name' in call && isOAuthToolCallName(call.name),
+      )
+    ) {
+      runStep = { ...runStep, runId: state.currentResponseId };
+    }
     let parentMessageId =
       submission.isRegenerate && submission.initialResponse?.parentMessageId
         ? submission.initialResponse.parentMessageId
