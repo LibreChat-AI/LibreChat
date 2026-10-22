@@ -50,6 +50,8 @@ export interface LiveToolGroups {
   groups: Map<string, LiveToolGroup>;
   /** Groups the agent selected whose tools failed to load (server unreachable, sign-in pending). */
   unavailable: Set<string>;
+  /** Groups of the MCP servers hidden from the acting user: never bound, never instructed. */
+  hidden: Set<string>;
 }
 
 /** The fields of an initialized agent the tool plan reads and writes. */
@@ -159,13 +161,16 @@ function builtinInstructions(agent: ToolPlanAgent, definitions: LCTool[]): strin
  * by name.
  *
  * @param getInstructions - raw MCP server name to its instructions
+ * @param getHidden - raw names of the MCP servers hidden from the acting user
  */
 export async function collectToolGroups({
   agent,
   getInstructions,
+  getHidden,
 }: {
   agent: ToolPlanAgent;
   getInstructions?: (servers: string[]) => Promise<Record<string, string>>;
+  getHidden?: () => Promise<Iterable<string>>;
 }): Promise<LiveToolGroups> {
   const members = new Map<string, LCTool[]>();
   const rawServers = new Map<string, string>();
@@ -208,7 +213,13 @@ export async function collectToolGroups({
       (key) => !groups.has(key),
     ),
   );
-  return { groups, unavailable };
+  /** Raw names, as the registry keeps them, in the form the group keys use. */
+  const hidden = new Set(
+    [...((await getHidden?.()) ?? [])].map((name) =>
+      groupKey(GroupKinds.mcp, normalizeServerName(name)),
+    ),
+  );
+  return { groups, unavailable, hidden };
 }
 
 function readGroupValue(value: string | null | undefined): ToolGroupValue | undefined {
@@ -365,8 +376,9 @@ export interface ToolPlan {
 /**
  * Plans the tools of one turn. Anchored groups are bound from their stored
  * schemas in anchor order, after the tools that are not grouped; an anchored
- * group that is off now stays bound with `disabled`. Live groups the anchor
- * does not bind are deferred. Anchored MCP and built-in instructions are
+ * group that is off now stays bound with `disabled`, unless its server is hidden
+ * from the user: that one is left out, schemas and instructions. Live groups the
+ * anchor does not bind are deferred. Anchored MCP and built-in instructions are
  * returned for the system prompt.
  */
 export function planTools({
@@ -390,7 +402,7 @@ export function planTools({
   const toolContext: Record<string, string> = {};
   for (const { key, value } of anchor) {
     const group = isToolGroupKey(key) ? readGroupValue(value) : undefined;
-    if (group == null) {
+    if (group == null || (toolGroups?.hidden.has(key) === true && !live.has(key))) {
       continue;
     }
     if (group.instructions && key.startsWith(groupKey(GroupKinds.mcp, ''))) {

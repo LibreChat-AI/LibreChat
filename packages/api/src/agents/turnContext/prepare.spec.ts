@@ -51,6 +51,23 @@ describe('prepareTurnContext', () => {
     expect(req.turnContextUpdates).toBeUndefined();
   });
 
+  it('does not plan when the hidden servers cannot be read, which would bind hidden schemas', async () => {
+    const reader = jest.fn().mockRejectedValue(new Error('config unreadable'));
+    const req = request();
+    await expect(
+      prepareTurnContext({
+        req,
+        agent: agent(),
+        allAgents: [{ agent: agent() }],
+        orderedMessages: history(),
+        conversationId: 'c1',
+        anchorPromise: Promise.resolve(ANCHOR),
+        getHiddenServers: reader,
+      }),
+    ).rejects.toThrow('config unreadable');
+    expect(reader).toHaveBeenCalledWith(req.user);
+  });
+
   it('stores the net change on the sent user message', async () => {
     const req = request();
     const prepared = await run(req);
