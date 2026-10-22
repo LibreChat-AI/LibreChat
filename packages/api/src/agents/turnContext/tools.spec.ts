@@ -60,6 +60,8 @@ interface ToolState {
   subagents?: readonly string[];
   /** Builds the same setup with its object keys in the opposite order. */
   flipKeys?: boolean;
+  /** Raw names of the servers hidden from the acting user. */
+  hidden?: string[];
 }
 
 const flipped = <T extends Record<string, unknown>>(value: T, flip?: boolean): T =>
@@ -125,6 +127,7 @@ async function snapshotOf(state: ToolState): Promise<SendSnapshot> {
     agent,
     getInstructions: async (servers) =>
       Object.fromEntries(servers.filter((s) => INSTRUCTIONS[s]).map((s) => [s, INSTRUCTIONS[s]])),
+    getHidden: async () => state.hidden ?? [],
   });
   return {
     agent,
@@ -299,6 +302,18 @@ describe('tool groups', () => {
     );
   });
 
+  it('keys the hidden servers like the groups, by normalized name', async () => {
+    const agent = buildAgent({ mcp: ['my_server'] });
+    const { hidden } = await collectToolGroups({
+      agent,
+      getHidden: async () => new Set(['My Server', 'plain']),
+    });
+    expect([...hidden]).toEqual(['tool:mcp:My_Server', 'tool:mcp:plain']);
+    expect(getToolGroupKey({ name: 'x_mcp_My_Server', serverName: 'My Server' })).toBe(
+      'tool:mcp:My_Server',
+    );
+  });
+
   it('leaves deferred and code-only tools out of a group and reports unavailable selections', async () => {
     const agent = buildAgent({ mcp: ['alpha'], down: ['gamma'] });
     agent.toolDefinitions = [
@@ -372,6 +387,28 @@ describe('planning tools against the anchor', () => {
     expect(find(turns[2].agent, 'search_mcp_alpha')?.disabled).toBeUndefined();
     expect(turns[2].update).toContain('Tools of MCP server `alpha` are available again.');
     expect(turns[2].plan.tools?.mcpInstructions).toBe(turns[0].plan.tools?.mcpInstructions);
+  });
+
+  it('leaves a server hidden from the user out of the bound tools and the instructions', async () => {
+    const turns = await new Conversation().play([
+      { mcp: ['alpha', 'beta'] },
+      { mcp: ['beta'], hidden: ['alpha'] },
+    ]);
+    expect(boundNames(turns[0].agent)).toContain('search_mcp_alpha');
+    expect(boundNames(turns[1].agent).some((name) => name.endsWith('_mcp_alpha'))).toBe(false);
+    expect(boundNames(turns[1].agent)).toContain('search_mcp_beta');
+    expect(turns[1].plan.tools?.mcpInstructions).not.toContain('Alpha');
+    expect(turns[1].plan.tools?.mcpInstructions).toContain('Beta');
+  });
+
+  it('keeps an anchored server whose name is hidden but that is loaded, a user-sourced one', async () => {
+    const turns = await new Conversation().play([
+      { mcp: ['alpha', 'beta'] },
+      { mcp: ['alpha', 'beta'], hidden: ['alpha'] },
+    ]);
+    expect(boundTools(turns[1].agent)).toBe(boundTools(turns[0].agent));
+    expect(find(turns[1].agent, 'search_mcp_alpha')?.disabled).toBeUndefined();
+    expect(turns[1].plan.tools?.mcpInstructions).toContain('Alpha');
   });
 
   it('announces what changed while a server was switched off when it comes back', async () => {
