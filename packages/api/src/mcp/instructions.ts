@@ -29,3 +29,19 @@ export async function getMCPServerInstructions(
   }
   return instructions;
 }
+
+/**
+ * The librechat.yaml MCP servers hidden from `user`. Hiding is an access boundary, so a failed
+ * read propagates; only a process without an MCP registry has nothing to hide.
+ */
+export async function getHiddenMCPServerNames(
+  user?: MCPLookupUser | null,
+): Promise<ReadonlySet<string>> {
+  let registry: MCPServersRegistry;
+  try {
+    registry = MCPServersRegistry.getInstance();
+  } catch {
+    return new Set();
+  }
+  return registry.getUserHiddenServerNames(user ?? undefined);
+}
