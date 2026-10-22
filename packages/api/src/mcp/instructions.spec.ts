@@ -1,5 +1,5 @@
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
-import { getMCPServerInstructions } from './instructions';
+import { getHiddenMCPServerNames, getMCPServerInstructions } from './instructions';
 
 jest.mock('~/mcp/registry/MCPServersRegistry', () => ({
   MCPServersRegistry: { getInstance: jest.fn() },
@@ -47,5 +47,31 @@ describe('getMCPServerInstructions', () => {
       files: 'Files rule',
     });
     expect(getUserHiddenServerNames).toHaveBeenCalledWith(user);
+  });
+});
+
+describe('getHiddenMCPServerNames', () => {
+  const getInstance = MCPServersRegistry.getInstance as jest.Mock;
+
+  it('reads the servers hidden from the acting user', async () => {
+    const getUserHiddenServerNames = jest.fn().mockResolvedValue(new Set(['github']));
+    getInstance.mockReturnValue({ getUserHiddenServerNames });
+    const user = { id: 'u1', role: 'USER' };
+    expect(await getHiddenMCPServerNames(user)).toEqual(new Set(['github']));
+    expect(getUserHiddenServerNames).toHaveBeenCalledWith(user);
+  });
+
+  it('lets a failed read propagate instead of treating every server as visible', async () => {
+    getInstance.mockReturnValue({
+      getUserHiddenServerNames: jest.fn().mockRejectedValue(new Error('config unreadable')),
+    });
+    await expect(getHiddenMCPServerNames({ id: 'u1' })).rejects.toThrow('config unreadable');
+  });
+
+  it('hides nothing in a process without an MCP registry', async () => {
+    getInstance.mockImplementation(() => {
+      throw new Error('MCPServersRegistry has not been initialized.');
+    });
+    expect(await getHiddenMCPServerNames({ id: 'u1' })).toEqual(new Set());
   });
 });
