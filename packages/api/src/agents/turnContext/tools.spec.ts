@@ -671,6 +671,40 @@ describe('declared resets', () => {
     expect(turns[1].plan.reset).toEqual([reason]);
   });
 
+  it('re-anchors without an MCP server that became hidden from the user, schemas and instructions', async () => {
+    const convo = new Conversation();
+    const turns = await convo.play([
+      { mcp: ['alpha', 'beta'] },
+      { mcp: ['beta'], hidden: ['alpha'] },
+      { mcp: ['beta'], hidden: ['alpha'] },
+    ]);
+    expect(turns[0].plan.tools?.mcpInstructions).toContain('Alpha');
+    expect(turns[1].plan.reset).toEqual(['mcp_hidden']);
+    expect(turns[1].plan.anchorTarget).toEqual({ messageId: 'u2' });
+    expect(groupKeys(turns[1].plan)).toEqual(['tool:builtin:memory', 'tool:mcp:beta']);
+    expect(boundNames(turns[1].agent).some((name) => name.endsWith('_mcp_alpha'))).toBe(false);
+    expect(turns[1].plan.tools?.mcpInstructions).not.toContain('Alpha');
+    expect(turns[1].plan.tools?.mcpInstructions).toContain('Beta');
+    expect(turns[2].plan.reset).toBeUndefined();
+    expect(boundTools(turns[2].agent)).toBe(boundTools(turns[1].agent));
+  });
+
+  it('does not re-anchor for a server that is only switched off', async () => {
+    const turns = await new Conversation().play([{ mcp: ['alpha', 'beta'] }, { mcp: ['beta'] }]);
+    expect(turns[1].plan.reset).toBeUndefined();
+    expect(find(turns[1].agent, 'search_mcp_alpha')?.disabled).toEqual({ reason: 'switched off' });
+    expect(turns[1].plan.tools?.mcpInstructions).toContain('Alpha');
+  });
+
+  it('does not re-anchor for a loaded server with a hidden name, a user-sourced one', async () => {
+    const turns = await new Conversation().play([
+      { mcp: ['alpha', 'beta'] },
+      { mcp: ['alpha', 'beta'], hidden: ['alpha'] },
+    ]);
+    expect(turns[1].plan.reset).toBeUndefined();
+    expect(find(turns[1].agent, 'search_mcp_alpha')?.disabled).toBeUndefined();
+  });
+
   it('keeps an anchored question tool bound and refused once switched off, without a reset', async () => {
     const turns = await new Conversation().play([{ ask: true }, {}]);
     expect(turns[1].plan.reset).toBeUndefined();
