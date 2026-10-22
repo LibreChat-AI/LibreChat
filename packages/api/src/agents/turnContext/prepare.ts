@@ -9,7 +9,7 @@ import type { MCPLookupUser, ParsedServerConfig } from '~/mcp/types';
 import type { LiveToolGroups } from './tools';
 import type { TurnPlan } from './ledger';
 import { createHistoryContextUpdates } from '../contextUpdates';
-import { getMCPServerInstructions } from '~/mcp/instructions';
+import { getHiddenMCPServerNames, getMCPServerInstructions } from '~/mcp/instructions';
 import { createSendSnapshot } from './registry';
 import { isStableContextEnabled } from '../promptCache';
 import { prependContextText } from '../client';
@@ -49,6 +49,9 @@ export type ServerInstructionsReader = (
   user?: MCPLookupUser | null,
 ) => Promise<Record<string, string>>;
 
+/** Reads the names of the MCP servers hidden from a user. */
+export type HiddenServersReader = (user?: MCPLookupUser | null) => Promise<ReadonlySet<string>>;
+
 type MemoryContext = { withKeys?: string; withoutKeys?: string } | null | undefined;
 
 /** The database methods the turn context uses. */
@@ -78,10 +81,12 @@ async function sampleToolGroups(
   agent: TurnContextAgent,
   configServers: ConfigServers | Promise<ConfigServers>,
   getServerInstructions: ServerInstructionsReader,
+  getHiddenServers: HiddenServersReader,
   user?: MCPLookupUser | null,
 ): Promise<LiveToolGroups> {
   return collectToolGroups({
     agent,
+    getHidden: () => getHiddenServers(user),
     getInstructions: async (servers) => {
       try {
         return await getServerInstructions(servers, await configServers, user);
@@ -154,6 +159,7 @@ export async function prepareTurnContext({
   anchorPromise,
   configServers,
   getServerInstructions = getMCPServerInstructions,
+  getHiddenServers = getHiddenMCPServerNames,
 }: {
   req: TurnContextRequest;
   agent: TurnContextAgent | null | undefined;
@@ -166,6 +172,7 @@ export async function prepareTurnContext({
   anchorPromise?: Promise<readonly ContextEntry[] | null>;
   configServers?: ConfigServers | Promise<ConfigServers>;
   getServerInstructions?: ServerInstructionsReader;
+  getHiddenServers?: HiddenServersReader;
 }): Promise<PreparedTurnContext | null> {
   if (agent == null || anchorPromise == null || !isStableContextEnabled(req.config)) {
     return null;
@@ -195,7 +202,13 @@ export async function prepareTurnContext({
       req,
       memories,
       rag,
-      toolGroups: await sampleToolGroups(agent, configServers, getServerInstructions, req.user),
+      toolGroups: await sampleToolGroups(
+        agent,
+        configServers,
+        getServerInstructions,
+        getHiddenServers,
+        req.user,
+      ),
     }),
   });
   if (plan.currentEntries != null && plan.currentEntries.length > 0 && current?.messageId) {
@@ -220,6 +233,7 @@ export async function prepareResumedTurnContext({
   loadMemories,
   configServers,
   getServerInstructions = getMCPServerInstructions,
+  getHiddenServers = getHiddenMCPServerNames,
 }: {
   req: TurnContextRequest;
   agent: TurnContextAgent | null | undefined;
@@ -234,6 +248,7 @@ export async function prepareResumedTurnContext({
   loadMemories: () => Promise<MemoryContext>;
   configServers?: ConfigServers | Promise<ConfigServers>;
   getServerInstructions?: ServerInstructionsReader;
+  getHiddenServers?: HiddenServersReader;
 }): Promise<PreparedTurnContext | null> {
   const userId = req.user?.id;
   if (
@@ -253,7 +268,7 @@ export async function prepareResumedTurnContext({
       db.getMessages({ conversationId, user: userId }, '+contextUpdates +contextAnchor'),
       /** Unreadable memory is withheld, as it would be on a new turn. */
       loadMemories().catch(() => undefined),
-      sampleToolGroups(agent, configServers, getServerInstructions, req.user),
+      sampleToolGroups(agent, configServers, getServerInstructions, getHiddenServers, req.user),
     ]);
     const plan = planTurnContext({
       messages: getBranch({ messages: rows ?? [], parentMessageId: pausedMessageId }),
