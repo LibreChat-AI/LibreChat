@@ -104,6 +104,14 @@ jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn(),
 }));
 
+const mockSessionCheckCallback = jest.fn((_req, _res, next) => next());
+const mockPrepareLogin = jest.fn((_req, _res, next) => next());
+
+jest.mock('~/server/services/OpenIDSessionCheck', () => ({
+  callback: (...args) => mockSessionCheckCallback(...args),
+  prepareLogin: (...args) => mockPrepareLogin(...args),
+}));
+
 afterAll(() => {
   if (originalDomainClient === undefined) {
     delete process.env.DOMAIN_CLIENT;
@@ -145,6 +153,8 @@ describe('OAuth route failure logging', () => {
     mockRedirectToAuthFailure.mockClear();
     mockPassportAuthenticate.mockClear();
     mockMarkOAuthNavigation.mockClear();
+    mockSessionCheckCallback.mockClear();
+    mockPrepareLogin.mockClear();
     mockOpenIDCallbackAuthenticatorOptions = undefined;
     mockPassportAuthenticate.mockImplementation(() => (_req, _res, next) => next());
     mockOpenIDCallbackMiddleware.mockImplementation((_req, _res, next) => next());
@@ -177,6 +187,8 @@ describe('OAuth route failure logging', () => {
       expect.any(Object),
       expect.any(Function),
     );
+    expect(mockSessionCheckCallback).toHaveBeenCalled();
+    expect(mockPrepareLogin).toHaveBeenCalled();
     expect(mockOAuthHandler).toHaveBeenCalled();
   });
 

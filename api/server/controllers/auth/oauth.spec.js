@@ -1,3 +1,8 @@
+jest.mock('~/server/services/OpenIDSessionCheck', () => ({
+  finishLogin: jest.fn(async (_req, res, uri) => {
+    res.redirect(uri);
+  }),
+}));
 const mockIsEnabled = jest.fn();
 const mockGetAdminPanelUrl = jest.fn();
 const mockIsAdminPanelRedirect = jest.fn();

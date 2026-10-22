@@ -199,3 +199,4 @@ scripts/activity-labels/results/
 
 # Mutation testing sandboxes
 .stryker-tmp/
+/e2e/openid/.test-results/

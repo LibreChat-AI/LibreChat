@@ -29,6 +29,7 @@ const {
   clearCloudFrontCookies,
   normalizeExpiresIn,
   createOpenIDSessionIdentity,
+  applyOpenIDAuthGeneration,
   resolveAppConfigForUser,
   resolvePreAuthAppConfig,
   commitPasswordReset,
@@ -912,6 +913,7 @@ const setOpenIDAuthTokens = (
         lastRefreshedAt: Date.now(),
       };
       applyOpenIDSessionIdentity(sessionOpenidTokens, sessionIdentity);
+      applyOpenIDAuthGeneration(req, sessionOpenidTokens, process.env.JWT_REFRESH_SECRET);
       /**
        * Capture the access-token's own expiry (unix seconds) when the IdP
        * advertises one. Lets downstream consumers — notably the OBO inline-
@@ -946,6 +948,9 @@ const setOpenIDAuthTokens = (
     }
 
     setOpenIDMarkerCookies(res, {
+      authGenerationId: req.session?.openidTokens?.authGenerationId ?? req.openidLoginGeneration,
+      openidIssuer: sessionIdentity.openidIssuer,
+      openidSubject: sessionIdentity.openidSubject,
       userId,
       tenantId,
       expires: expirationDate,

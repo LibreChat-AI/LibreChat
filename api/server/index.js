@@ -15,6 +15,7 @@ const mongoSanitize = require('express-mongo-sanitize');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
   isEnabled,
+  validateOpenIDSessionCheck,
   issueCsp,
   apiNotFound,
   createMetrics,
@@ -422,6 +423,7 @@ const startServer = async () => {
     passport.use(ldapLogin);
   }
 
+  validateOpenIDSessionCheck(appConfig, process.env);
   if (isEnabled(ALLOW_SOCIAL_LOGIN)) {
     await configureSocialLogins(app, appConfig);
   }

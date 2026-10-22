@@ -13,6 +13,8 @@ const getLogStores = require('~/cache/getLogStores');
 const { checkBan } = require('~/server/middleware');
 const { generateToken } = require('~/models');
 
+const { finishLogin } = require('~/server/services/OpenIDSessionCheck');
+
 const domains = {
   client: process.env.DOMAIN_CLIENT,
   server: process.env.DOMAIN_SERVER,
@@ -96,7 +98,7 @@ function createOAuthHandler(redirectUri = domains.client) {
           req.session.openidLogoutIdToken = req.user.tokenset?.id_token;
         }
       }
-      res.redirect(redirectUri);
+      await finishLogin(req, res, redirectUri);
     } catch (err) {
       logger.error('Error in setting authentication tokens:', err);
       next(err);

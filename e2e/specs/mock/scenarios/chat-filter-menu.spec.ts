@@ -344,7 +344,8 @@ test.describe('chat list properties menu', () => {
   }) => {
     /* The harness serves one librechat.yaml to every spec, so the published limit is set
      * on the startup config this page reads; the route spec covers the server side. The
-     * response is held so the facet is seen before the limit is known. */
+     * post-login response is held so the facet is seen before the limit is known. The
+     * pre-login config is let through: auth does not restore the session until it arrives. */
     let releaseConfig = () => {};
     const configHeld = new Promise<void>((resolve) => {
       releaseConfig = resolve;
@@ -352,6 +353,9 @@ test.describe('chat list properties menu', () => {
     await page.route(
       (url) => url.pathname === '/api/config',
       async (route) => {
+        if (!route.request().headers().authorization) {
+          return route.continue();
+        }
         const response = await route.fetch();
         const body = await response.json();
         await configHeld;

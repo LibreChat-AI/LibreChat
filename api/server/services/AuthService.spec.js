@@ -25,6 +25,7 @@ jest.mock(
   () => {
     const shouldUseSecureCookie = jest.fn(() => false);
     return {
+      ...jest.requireActual('../../../packages/api/src/auth/openid/check/generation'),
       isEnabled: jest.fn((val) => val === 'true' || val === true),
       /** Real bcrypt on the test thread; the worker pool has its own spec in packages/api. */
       hashSecret: jest.fn((plain) => require('bcryptjs').hash(plain, 4)),
@@ -591,6 +592,38 @@ describe('setOpenIDAuthTokens', () => {
   });
 
   describe('OpenID cookie delegation', () => {
+    it('publishes the same recovery identity and generation in the session and marker', () => {
+      const req = mockRequest();
+      req.openidLoginGeneration = 'verified-generation';
+      const res = mockResponse();
+      setOpenIDAuthTokens({ access_token: 'at', id_token: 'it', refresh_token: 'rt' }, req, res, {
+        userId: 'user-A',
+        openidSubject: 'A',
+        openidIssuer: 'https://issuer.test',
+        tenantId: 'tenant-A',
+      });
+      expect(req.session.openidTokens).toEqual(
+        expect.objectContaining({
+          authGenerationId: 'verified-generation',
+          appUserId: 'user-A',
+          openidSubject: 'A',
+          openidIssuer: 'https://issuer.test',
+          tenantId: 'tenant-A',
+        }),
+      );
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(
+        res,
+        expect.objectContaining({
+          authGenerationId: 'verified-generation',
+          userId: 'user-A',
+          openidSubject: 'A',
+          openidIssuer: 'https://issuer.test',
+          tenantId: 'tenant-A',
+          refreshToken: 'rt',
+        }),
+      );
+    });
+
     it('delegates session-path refresh and marker cookies to shared cookie helpers', () => {
       const tokenset = {
         id_token: 'the-id-token',

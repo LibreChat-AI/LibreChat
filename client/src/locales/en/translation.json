@@ -1,4 +1,8 @@
 {
+  "com_auth_session_check_loading": "Checking your sign-in session…",
+  "com_auth_session_check_continue": "Continue to sign in",
+  "com_auth_session_check_required": "Sign in to continue. Your previous session will not be restored.",
+  "com_auth_session_check_unavailable": "We could not verify your sign-in session. Try again.",
   "com_ui_pr_account_checking": "Checking connection",
   "com_ui_pr_account_connect": "Connect",
   "com_ui_pr_account_connect_aria": "Connect {{0}}",

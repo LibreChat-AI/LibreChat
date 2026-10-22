@@ -8,6 +8,7 @@ import {
   TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
+import OpenIDSessionGate from '~/components/Auth/OpenIDSessionGate';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { importWithRecovery } from '~/lib/assets/lazy';
@@ -24,11 +25,13 @@ import Search from './Search';
 import Root from './Root';
 
 const AuthLayout = () => (
-  <AuthContextProvider>
-    <WithRum>
-      <Outlet />
-    </WithRum>
-  </AuthContextProvider>
+  <OpenIDSessionGate>
+    <AuthContextProvider>
+      <WithRum>
+        <Outlet />
+      </WithRum>
+    </AuthContextProvider>
+  </OpenIDSessionGate>
 );
 
 const loadInlinePromptsView = () =>
