@@ -475,7 +475,9 @@ export function applyToolPlan(agent: ToolPlanAgent, plan: ToolPlan): void {
 /**
  * Why the live tools cannot keep the anchored `tools` byte for byte, if they
  * cannot: an anchored tool gained or lost a schema-profile parameter (tool
- * intents, background runs), or a group the dispatcher cannot reach was enabled.
+ * intents, background runs), a group the dispatcher cannot reach was enabled, or an
+ * anchored MCP server became hidden from the user, so its schemas and instructions must
+ * leave the prompt. A loaded group with a hidden name is a user-sourced server: it stays.
  */
 export function findToolResets(
   anchor: readonly ContextEntry[],
@@ -490,6 +492,9 @@ export function findToolResets(
       continue;
     }
     anchored.add(key);
+    if (toolGroups.hidden.has(key) && !toolGroups.groups.has(key)) {
+      reasons.add('mcp_hidden');
+    }
     for (const tool of group.tools) {
       const liveTool = liveByName.get(tool.name);
       if (
