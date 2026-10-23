@@ -12,6 +12,7 @@ const {
   configuredRequestBudget,
   applyAxiosProxyConfig,
   resolveConfigSecret,
+  transcribeWithGoogle,
   applySSRFSafeAgentIfDirect,
   contentFilterBlockResponse,
   contentFilterUninspectableResponse,
@@ -305,6 +306,17 @@ class STTService {
     allowedAddresses,
     requestOptions,
   ) {
+    if (provider === STTProviders.GOOGLE) {
+      return transcribeWithGoogle({
+        config: sttSchema,
+        audio: audioBuffer,
+        mimeType: audioFile.mimetype,
+        language,
+        allowedAddresses,
+        requestOptions,
+      });
+    }
+
     const strategy = this.providerStrategies[provider];
     if (!strategy) {
       throw new Error('Invalid provider');
