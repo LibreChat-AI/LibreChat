@@ -23,11 +23,11 @@ export interface AgentManagementReadDeps {
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
   getAgentWithVersionCount: (search: {
     id: string;
-    tenantId: string;
+    tenantId: string | null;
   }) => Promise<AgentManagementRecord | null>;
   getAgentManagementListByAccess: (params: {
     accessibleIds: Types.ObjectId[] | null;
-    tenantId: string;
+    tenantId: string | null;
     limit: number;
     after?: string | null;
   }) => Promise<{
@@ -120,7 +120,7 @@ export function createAgentManagementReadHandlers(deps: AgentManagementReadDeps)
 
     try {
       const user = req.user as IUser | undefined;
-      if (!user?.id || !user.tenantId) {
+      if (!user?.id) {
         return sendError(res, 'permission_denied');
       }
 
@@ -143,7 +143,7 @@ export function createAgentManagementReadHandlers(deps: AgentManagementReadDeps)
           });
       const result = await deps.getAgentManagementListByAccess({
         accessibleIds,
-        tenantId: user.tenantId,
+        tenantId: user.tenantId ?? null,
         limit: parsedQuery.data.limit,
         after: parsedQuery.data.cursor,
       });
@@ -158,7 +158,7 @@ export function createAgentManagementReadHandlers(deps: AgentManagementReadDeps)
   async function get(req: Request, res: Response): Promise<Response> {
     try {
       const user = req.user as IUser | undefined;
-      if (!user?.id || !user.tenantId) {
+      if (!user?.id) {
         return sendError(res, 'permission_denied');
       }
 
@@ -167,7 +167,7 @@ export function createAgentManagementReadHandlers(deps: AgentManagementReadDeps)
         hasManageAgentsCapability(user, deps),
         deps.getAgentWithVersionCount({
           id: req.params.id,
-          tenantId: user.tenantId,
+          tenantId: user.tenantId ?? null,
         }),
       ]);
       if (!canUse) {

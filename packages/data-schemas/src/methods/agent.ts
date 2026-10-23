@@ -1182,7 +1182,8 @@ export function createAgentMethods(
   }: {
     /** `null` means the caller already passed the unrestricted management-capability check. */
     accessibleIds: Types.ObjectId[] | null;
-    tenantId: string;
+    /** `null` is the tenantless partition of a deployment that does not use tenants. */
+    tenantId: string | null;
     limit: number;
     after?: string | null;
   }) => Promise<{
@@ -2703,7 +2704,8 @@ export function createAgentMethods(
   }: {
     /** `null` means the caller already passed the unrestricted management-capability check. */
     accessibleIds: Types.ObjectId[] | null;
-    tenantId: string;
+    /** `null` is the tenantless partition of a deployment that does not use tenants. */
+    tenantId: string | null;
     limit: number;
     after?: string | null;
   }): Promise<{

@@ -267,7 +267,7 @@ export function createSkillManagementHandlers(
     return async (request: Request, res: Response): Promise<Response> => {
       const req = request as ManagementRequest;
       try {
-        if (!req.user?.id || !req.user.tenantId) return sendError(res, 'permission_denied');
+        if (!req.user?.id) return sendError(res, 'permission_denied');
         const mutation = options.mutation === true;
         const allowed = await checkAccessWithRequestCache({
           req,
@@ -285,7 +285,7 @@ export function createSkillManagementHandlers(
             canManageSkills(req),
           ]);
           const deployment = getDeploymentSkillById(req.params.id);
-          if (!skill || (!deployment && skill.tenantId !== req.user.tenantId))
+          if (!skill || (!deployment && (skill.tenantId || null) !== (req.user.tenantId || null)))
             return sendError(res, 'not_found');
           if (
             !deployment &&

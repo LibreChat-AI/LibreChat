@@ -1,11 +1,7 @@
 const path = require('path');
 const mongoose = require('mongoose');
-const {
-  createModels,
-  tenantStorage,
-  isValidTenantId,
-  SYSTEM_TENANT_ID,
-} = require('@librechat/data-schemas');
+const { createModels, tenantStorage } = require('@librechat/data-schemas');
+const { rejectTenantHeader } = require('@librechat/api');
 const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const { registerUser } = require('~/server/services/AuthService');
@@ -64,7 +60,7 @@ const connect = require('./connect');
     }
   }
 
-  if (tenantId !== undefined && (tenantId === SYSTEM_TENANT_ID || !isValidTenantId(tenantId))) {
+  if (tenantId !== undefined && rejectTenantHeader(tenantId) !== undefined) {
     console.red('Error: Invalid tenant ID!');
     silentExit(1);
   }
