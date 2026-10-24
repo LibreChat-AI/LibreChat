@@ -48,6 +48,8 @@ export class ReactQueryChatState implements ChatState {
   /** Data events the cache reported for the key, and how many `version` last accounted for. */
   private changes = 0;
   private countedChanges = 0;
+  /** The host store's list when `version` was last read, which a later subscription checks. */
+  private countedRead?: TMessage[];
 
   constructor(options: ReactQueryChatStateOptions) {
     this.options = options;
@@ -85,6 +87,7 @@ export class ReactQueryChatState implements ChatState {
     }
     this.counted = query;
     this.countedData = data;
+    this.countedRead = this.options.read?.();
     this.countedChanges = this.changes;
     this.reported = version;
     return version;
@@ -132,10 +135,16 @@ export class ReactQueryChatState implements ChatState {
         deliver();
       }
     });
-    const unsubscribeHost = this.options.subscribe?.(() => {
+    const { read, subscribe } = this.options;
+    const unsubscribeHost = subscribe?.(() => {
       this.revision += 1;
       deliver();
     });
+    if (unsubscribeHost && this.reported != null && read?.() !== this.countedRead) {
+      /** The host store changed after `version` was read and before this subscription heard it. */
+      this.revision += 1;
+      deliver();
+    }
     return () => {
       active = false;
       unsubscribe();

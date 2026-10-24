@@ -18,6 +18,7 @@ import type {
   ChatSendResult,
   ChatTransportError,
 } from './types';
+import { isRetryableNetworkError } from './resumable/start';
 import { SerialJobExecutor } from './executor';
 
 /**
@@ -158,8 +159,13 @@ type Generation = {
   responseless?: boolean;
 };
 
+/** The list before and after a turn's optimistic write: what undoing that write restores. */
+type OptimisticWrite = { before: TMessage[]; written: TMessage[] };
+
 type ActiveRequest = {
   controller: AbortController;
+  /** The optimistic write, undone when the server never got the turn or ran another in its place. */
+  optimistic?: OptimisticWrite;
   stream?: ChatStream;
   /** The generation this request runs or attaches to. */
   generation: Generation;
@@ -387,6 +393,28 @@ const defaultApplyEvent = (event: ChatEvent, context: ChatEventContext) => {
 };
 
 /**
+ * Where a removed row goes back: after the nearest earlier row of `before` still listed, else
+ * before the nearest later one, so rows written around it since then keep their place.
+ */
+const getRestoreIndex = (before: TMessage[], index: number, next: TMessage[]): number => {
+  const positionOf = (message: TMessage) =>
+    next.findIndex((listed) => listed.messageId === message.messageId);
+  for (let i = index - 1; i >= 0; i--) {
+    const position = positionOf(before[i]);
+    if (position !== -1) {
+      return position + 1;
+    }
+  }
+  for (let i = index + 1; i < before.length; i++) {
+    const position = positionOf(before[i]);
+    if (position !== -1) {
+      return position;
+    }
+  }
+  return next.length;
+};
+
+/**
  * Undoes an optimistic write on the list as it stands now: rows it added go, rows it changed or
  * removed come back as they were, and a row someone else wrote since then keeps that write.
  */
@@ -412,7 +440,7 @@ const undoOptimisticWrite = (
     if (kept.has(message.messageId) || wrote.has(message.messageId)) {
       return;
     }
-    next.splice(Math.min(index, next.length), 0, message);
+    next.splice(getRestoreIndex(before, index, next), 0, message);
   });
   return next;
 };
@@ -524,12 +552,19 @@ export class Chat {
     active?.stream?.close();
     const { state } = this.init;
     const unsent = active != null && !active.sent;
+    const rollback = unsent ? active.optimistic : undefined;
     const status = unsent && state.status === 'submitted' ? 'ready' : state.status;
-    if (status !== state.status || state.connection !== 'idle') {
+    if (rollback || status !== state.status || state.connection !== 'idle') {
       /**
-       * A turn that never reached the server ends here; a sent one keeps its status, since the
-       * server keeps running it. Either way the chat holds no stream.
+       * A turn that never reached the server ends here, its optimistic rows with it; a sent one
+       * keeps its status and rows, since the server keeps running it. Either way the chat holds
+       * no stream.
        */
+      if (rollback) {
+        state.replaceMessages(
+          undoOptimisticWrite(rollback.before, rollback.written, state.messages),
+        );
+      }
       state.status = status;
       state.connection = 'idle';
       this.notify();
@@ -568,15 +603,13 @@ export class Chat {
         active.controller.signal,
       );
       active.generation.responseId = prepared.responseMessageId;
-      /** The list before and after the optimistic write, which a replaced start rolls back. */
-      let optimisticWrite: { before: TMessage[]; written: TMessage[] } | undefined;
       if (prepared.messages) {
         const optimistic = prepared.messages;
         await this.executor.run(() => {
           if (!active.controller.signal.aborted) {
             const before = this.messages;
             const written = typeof optimistic === 'function' ? optimistic(before) : optimistic;
-            optimisticWrite = { before, written };
+            active.optimistic = { before, written };
             this.write(written);
           }
         });
@@ -622,7 +655,7 @@ export class Chat {
         /** A start the server attached to a generation already running is an attachment too. */
         active.attached = result.stream.resumed === true;
       } else if (result.status === 'replaced') {
-        const rollback = optimisticWrite;
+        const rollback = active.optimistic;
         if (rollback) {
           /** The server ran a newer generation instead, so this turn's optimistic write is undone. */
           await this.executor.run(() => {
@@ -635,6 +668,9 @@ export class Chat {
         active.generation.conversationId = result.conversationId;
         active.attaching = true;
         active.attached = true;
+        if (signal.aborted) {
+          throw signal.reason;
+        }
         this.setConnection('reconnecting');
         if (signal.aborted) {
           throw signal.reason;
@@ -773,7 +809,7 @@ export class Chat {
      * generation a failed attachment never reached, unless the server answered that it is gone.
      */
     const disconnect =
-      (failure as ChatTransportError).code === 'ERR_NETWORK' ||
+      isRetryableNetworkError(failure) ||
       (active.attaching === true && !isGone(failure as ChatTransportError));
     return { kind: 'error', error: failure, disconnect };
   }
@@ -869,6 +905,7 @@ export class Chat {
     active.finish();
   }
 
+  /** Every write below is the chat's own; a disposed chat owns none of the shared state. */
   private write(messages: TMessage[]): void {
     if (this.disposed) {
       return;
@@ -878,7 +915,7 @@ export class Chat {
   }
 
   private setStatus(status: ChatStatus): void {
-    if (this.init.state.status === status) {
+    if (this.disposed || this.init.state.status === status) {
       return;
     }
     this.init.state.status = status;
@@ -886,7 +923,7 @@ export class Chat {
   }
 
   private setConnection(connection: ChatConnection): void {
-    if (this.init.state.connection === connection) {
+    if (this.disposed || this.init.state.connection === connection) {
       return;
     }
     this.init.state.connection = connection;

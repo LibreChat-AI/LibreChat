@@ -270,6 +270,29 @@ describe('Chat', () => {
       expect(transport.sendMessages).not.toHaveBeenCalled();
     });
 
+    it('undoes the optimistic rows of a turn disposed before it was sent', async () => {
+      const earlier: TMessage = { ...placeholder, messageId: 'earlier-1', text: 'Earlier' };
+      const state = createState([earlier]);
+      const { chat, transport } = setup({
+        state,
+        prepareRequest: jest.fn(() => ({
+          payload,
+          messages: (current: TMessage[]) => [...current, userMessage, placeholder],
+        })),
+      });
+      chat.subscribe(() => {
+        if (chat.messages.length > 1) {
+          chat.dispose();
+        }
+      });
+
+      await chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+
+      expect(transport.sendMessages).not.toHaveBeenCalled();
+      expect(state.messages.map((message) => message.messageId)).toEqual(['earlier-1']);
+      expect(chat.status).toBe('ready');
+    });
+
     it('keeps a sent turn running on the server but releases its send', async () => {
       const { chat, transport } = setup();
       transport.sendMessages.mockImplementationOnce(() => new Promise<never>(() => undefined));
@@ -640,19 +663,22 @@ describe('Chat', () => {
     );
   });
 
-  it('reports a start that never got a response as a disconnect', async () => {
-    const failure = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' });
-    const { chat, onFinish } = setup(
-      {},
-      { sendMessages: jest.fn(async () => Promise.reject(failure)) },
-    );
+  it.each(['ERR_NETWORK', 'ERR_INTERNET_DISCONNECTED'])(
+    'reports a start that never got a response (%s) as a disconnect',
+    async (code) => {
+      const failure = Object.assign(new Error('Network Error'), { code });
+      const { chat, onFinish } = setup(
+        {},
+        { sendMessages: jest.fn(async () => Promise.reject(failure)) },
+      );
 
-    await chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
 
-    expect(onFinish).toHaveBeenCalledWith(
-      expect.objectContaining({ isError: true, isDisconnect: true }),
-    );
-  });
+      expect(onFinish).toHaveBeenCalledWith(
+        expect.objectContaining({ isError: true, isDisconnect: true }),
+      );
+    },
+  );
 
   it('reports a start the server settled before attaching for the host to reconcile', async () => {
     const { chat, onFinish } = setup(
@@ -831,6 +857,35 @@ describe('Chat', () => {
       expect(transport.reconnectToStream).not.toHaveBeenCalled();
     });
 
+    it('stays idle when a listener disposes the chat on the rollback of a replaced start', async () => {
+      const { chat, transport, state } = setup(
+        {
+          prepareRequest: jest.fn(() => ({ payload, messages: [userMessage, placeholder] })),
+        },
+        {
+          sendMessages: jest.fn(async () => ({
+            status: 'replaced' as const,
+            generationProtocolVersion: 2,
+            conversationId: 'convo-1',
+            streamId: 'stream-2',
+            generationCreatedAt: 200,
+          })),
+        },
+      );
+      let written = false;
+      chat.subscribe(() => {
+        written ||= chat.messages.length > 0;
+        if (written && chat.messages.length === 0) {
+          chat.dispose();
+        }
+      });
+
+      await chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+
+      expect(transport.reconnectToStream).not.toHaveBeenCalled();
+      expect(state.connection).toBe('idle');
+    });
+
     it('reports no response for a turn whose optimistic write failed', async () => {
       const earlier: TMessage = { ...placeholder, messageId: 'earlier-1', text: 'Earlier' };
       const { chat, onFinish, transport } = setup({
@@ -997,6 +1052,12 @@ describe('Chat attachments and reported conversations', () => {
       (current: TMessage[]) => current.filter((m) => m.messageId !== 'earlier-1'),
       undefined,
       ['earlier-1:Earlier', 'earlier-2:Answer'],
+    ],
+    [
+      'restores a row it removed after the row before it, past a later prepend',
+      (current: TMessage[]) => current.filter((m) => m.messageId !== 'earlier-2'),
+      (current: TMessage[]) => [{ ...placeholder, messageId: 'x', text: 'X' }, ...current],
+      ['x:X', 'earlier-1:Earlier', 'earlier-2:Answer'],
     ],
     [
       'keeps a later write to a row it overwrote',

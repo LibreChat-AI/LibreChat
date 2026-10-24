@@ -113,6 +113,29 @@ describe('ReactQueryChatState', () => {
     expect(hostListeners.size).toBe(0);
   });
 
+  it('reports a host store write made between reading the version and subscribing', async () => {
+    const queryClient = new QueryClient();
+    let stored = [message('a')];
+    const state = new ReactQueryChatState({
+      queryClient,
+      key: 'convo-1',
+      read: () => stored,
+      write: (next) => {
+        stored = next;
+      },
+      subscribe: () => () => undefined,
+    });
+    const rendered = state.version;
+    stored = [message('b')];
+    const listener = jest.fn();
+    const unsubscribe = state.subscribe(listener);
+    await flushMicrotasks();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(state.version).not.toBe(rendered);
+    unsubscribe();
+  });
+
   it('counts writes to a host store that bypass the cache, same array included', () => {
     const queryClient = new QueryClient();
     const stored = [message('a')];
