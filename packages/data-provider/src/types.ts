@@ -1253,6 +1253,18 @@ export type TGetRandomPromptsRequest = {
   skip: number;
 };
 
+/** Selects which revision of a native prompt group content comes from: the group's
+ *  Production label, or an exact stored revision by its ID. Source-neutral: the
+ *  agent-instructions link's native selection
+ *  (`AgentInstructionsPromptSelection`) is this same type. */
+export type NativePromptSelection = { type: 'production' } | { type: 'exact'; promptId: string };
+
+/** Selects which revision of a Langfuse prompt group content comes from: the group's
+ *  Production label, or a pinned exact version number. Source-neutral: the
+ *  agent-instructions link's Langfuse selection
+ *  (`LangfuseAgentInstructionsPromptSelection`) is this same type. */
+export type LangfusePromptSelection = { type: 'production' } | { type: 'exact'; version: number };
+
 /** `GET /api/prompts/groups/:groupId/resolve`. Native resolves the group's
  *  production; Langfuse fetches text content live, by label `production` or
  *  an exact `version`, with no cache. */

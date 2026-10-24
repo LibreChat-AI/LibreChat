@@ -6,11 +6,11 @@ import type {
   AgentToolOptions,
   ToolApprovalGrantBinding,
 } from './tools';
+import type { TPromptGroupSource, NativePromptSelection, LangfusePromptSelection } from '../types';
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
-import type { TPromptGroupSource } from '../types';
 import type { TFile } from './files';
 import { StepTypes, ContentTypes, ToolCallTypes } from './runs';
 import { ArtifactModes } from 'src/artifacts';
@@ -1064,10 +1064,9 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
   })
   .optional();
 
-/** Selects which revision of a linked native prompt group an agent's instructions follow. */
-export type AgentInstructionsPromptSelection =
-  | { type: 'production' }
-  | { type: 'exact'; promptId: string };
+/** Selects which revision of a linked native prompt group an agent's instructions
+ *  follow. The source-neutral prompt-service type (`NativePromptSelection`). */
+export type AgentInstructionsPromptSelection = NativePromptSelection;
 
 /** A link from an agent to a native LibreChat prompt group used as its instructions. */
 export type NativeAgentInstructionsPrompt = {
@@ -1077,10 +1076,9 @@ export type NativeAgentInstructionsPrompt = {
 };
 
 /** Selects which revision of a linked Langfuse prompt group an agent's instructions
- *  follow: the group's Production label, or a pinned exact version number. */
-export type LangfuseAgentInstructionsPromptSelection =
-  | { type: 'production' }
-  | { type: 'exact'; version: number };
+ *  follow: the group's Production label, or a pinned exact version number. The
+ *  source-neutral prompt-service type (`LangfusePromptSelection`). */
+export type LangfuseAgentInstructionsPromptSelection = LangfusePromptSelection;
 
 /** A link from an agent to a Langfuse prompt group used as its instructions. Reference
  *  only: the linked project, destination, and prompt name all come from the group. */

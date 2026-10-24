@@ -1,7 +1,7 @@
+import type { NativePromptSelection } from 'librechat-data-provider';
 import type {
   PromptStore,
   PromptRecord,
-  PromptSelection,
   PromptProjection,
   PromptGroupRecord,
   PromptSourceAdapter,
@@ -70,7 +70,9 @@ async function resolveProduction(
     : null;
 }
 
-export function selectionUnavailableReason(selection: PromptSelection): 'production' | 'revision' {
+export function selectionUnavailableReason(selection: {
+  readonly type: 'production' | 'exact';
+}): 'production' | 'revision' {
   return selection.type === 'production' ? 'production' : 'revision';
 }
 
@@ -78,12 +80,9 @@ export function selectionUnavailableReason(selection: PromptSelection): 'product
  *  store's `getPrompt` and lists revisions through its `getPrompts`. */
 export function createNativePromptAdapter(
   store: Pick<PromptStore, 'getPrompt' | 'getPrompts'>,
-): PromptSourceAdapter {
+): PromptSourceAdapter<NativePromptSelection> {
   return {
     resolvePrompt: async ({ group, selection, loadedRevision }) => {
-      if (selection.type === 'version') {
-        return { ok: false, error: { type: 'unsupported_selection', source: 'native' } };
-      }
       const resolved =
         selection.type === 'exact'
           ? await resolveExact(store, group._id, selection.promptId, loadedRevision)

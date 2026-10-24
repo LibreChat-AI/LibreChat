@@ -5,13 +5,17 @@ import type {
   AgentInstructionsPromptSelection,
   RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
-import type { ResolvedPrompt, NativeResolvedPrompt, PromptServiceError } from '~/prompts/types';
+import type {
+  ResolvedPrompt,
+  PromptReference,
+  NativeResolvedPrompt,
+  PromptServiceError,
+} from '~/prompts/types';
 import type { PromptService } from '~/prompts/service';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { isContentFilterError } from '~/middleware/contentFilter';
 import { LangfusePromptRequestError } from '~/langfuse/prompts';
 import { inspectPromptContent } from '~/prompts/protection';
-import { toPromptSelection } from './selection';
 
 /**
  * Narrows `link` to a resolvable link — native or Langfuse — the same test
@@ -178,17 +182,16 @@ function errorName(error: unknown): string {
 }
 
 /**
- * Maps every `resolvePrompt` error type this module's `allowedSources: [link.source]`
- * call can return to the resolver's few-reason surface. `blocked_content` and
- * `unavailable_selection` map directly. Every other source-routing or selection
- * failure a resolve can hit — `unsupported_source` (the link's group has since
- * switched source), `unsupported_selection` (a selection invalid for the resolved
- * source), `source_unavailable`, `source_not_found`, and `unsupported_content` (a
- * Langfuse group pointing at a chat prompt) — collapses to `unavailable_selection`:
- * each one means the configured selection cannot be served right now, not that the
- * resolution itself failed unexpectedly. Any other `PromptServiceError` type (the
- * write-only ones, never returned by a resolve) maps to the generic `'error'`
- * reason as a fallback.
+ * Maps every `resolvePrompt` error type this module's reference-scoped (`source:
+ * link.source`) call can return to the resolver's few-reason surface. `blocked_content`
+ * and `unavailable_selection` map directly. Every other source-routing failure a
+ * resolve can hit — `unsupported_source` (the link's group has since switched source),
+ * `source_unavailable`, `source_not_found`, and `unsupported_content` (a Langfuse
+ * group pointing at a chat prompt) — collapses to `unavailable_selection`: each one
+ * means the configured selection cannot be served right now, not that the resolution
+ * itself failed unexpectedly. Any other `PromptServiceError` type (the write-only
+ * ones, never returned by a resolve) maps to the generic `'error'` reason as a
+ * fallback.
  */
 function mapServiceErrorReason(
   type: PromptServiceError['type'],
@@ -198,7 +201,6 @@ function mapServiceErrorReason(
   }
   if (
     type === 'unsupported_source' ||
-    type === 'unsupported_selection' ||
     type === 'source_unavailable' ||
     type === 'source_not_found' ||
     type === 'unsupported_content'
@@ -447,14 +449,20 @@ export function createLinkedInstructionsResolver(
       };
     }
 
+    // Built from `link` itself, not a destructured copy, so narrowing on `source` also
+    // narrows `selection` to that source's own shape.
+    const reference: PromptReference =
+      link.source === 'native'
+        ? { source: 'native', selection: link.selection }
+        : { source: 'langfuse', selection: link.selection };
+
     let fetched: ResolvedPrompt;
     try {
       const result = await runBounded(
         promptService.resolvePrompt({
           groupId: link.groupId,
-          selection: toPromptSelection(link),
+          ...reference,
           filters,
-          allowedSources: [link.source],
         }),
         remainingMs(deadline),
         signal,
@@ -470,9 +478,9 @@ export function createLinkedInstructionsResolver(
         return { status: 'unavailable', reason: mapServiceErrorReason(result.error.type) };
       }
       if (result.value.source !== link.source) {
-        /* allowedSources: [link.source] above means the service only ever resolves
-         * a group of that same source here; a mismatch means the link's group has
-         * since switched source underneath it, not a request-handling bug. */
+        /* `reference.source` above means the service only ever resolves a group of
+         * that same source here; a mismatch means the link's group has since
+         * switched source underneath it, not a request-handling bug. */
         return { status: 'unavailable', reason: 'unavailable_selection' };
       }
       fetched = result.value;

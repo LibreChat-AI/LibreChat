@@ -6,11 +6,11 @@ import type {
   RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { LinkedInstructionsConfig } from './linked';
+import type { PromptReference } from '~/prompts/types';
 import type { PromptService } from '~/prompts';
 import { isContentFilterError } from '~/middleware/contentFilter';
 import { LangfusePromptRequestError } from '~/langfuse/prompts';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { toPromptSelection } from './selection';
 
 /** Matches the `logger` shape injected elsewhere in this module family
  *  (`createLinkedInstructionsResolver`). */
@@ -387,13 +387,18 @@ export function createInstructionsPromptAccess(deps: {
       // revealed through a new link.
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
     }
+    // Built from `next` itself, not a destructured copy, so narrowing on `source` also
+    // narrows `selection` to that source's own shape.
+    const reference: PromptReference =
+      next.source === 'native'
+        ? { source: 'native', selection: next.selection }
+        : { source: 'langfuse', selection: next.selection };
     let resolved;
     try {
       resolved = await promptService.resolvePrompt({
         groupId: next.groupId,
-        selection: toPromptSelection(next),
+        ...reference,
         filters,
-        allowedSources: [next.source],
       });
     } catch (error) {
       if (error instanceof LangfusePromptRequestError) {
@@ -409,9 +414,9 @@ export function createInstructionsPromptAccess(deps: {
       return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
     }
     if (resolved.value.source !== next.source) {
-      /* allowedSources: [next.source] above means the service only ever resolves a
-       * group of that source here; this check narrows the type for the compiler and
-       * cannot be reached at runtime. */
+      /* `reference.source` above means the service only ever resolves a group of
+       * that source here; this check narrows the type for the compiler and cannot
+       * be reached at runtime. */
       return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
     }
     try {

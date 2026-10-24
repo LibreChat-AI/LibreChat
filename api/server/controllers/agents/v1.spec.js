@@ -7733,12 +7733,12 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         const persisted = await Agent.findOne({ id: created.id }).lean();
         expect(persisted.instructionsPrompt).toEqual(link);
         expect(resolveSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ groupId, allowedSources: ['langfuse'] }),
+          expect.objectContaining({ groupId, source: 'langfuse' }),
         );
       });
 
       test('returns 400 instructions_prompt_unavailable for a native link to a real Langfuse group, with no Langfuse network call', async () => {
-        // Real group, real promptService.resolvePrompt: `allowedSources: ['native']`
+        // Real group, real promptService.resolvePrompt: a `source: 'native'` reference
         // rejects on the group's actual recorded source before the Langfuse adapter
         // (and therefore any network call) is ever reached.
         const { _id: groupId } = await db.createLangfusePromptGroup({
@@ -7770,7 +7770,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
 
       test('returns 400 instructions_prompt_unavailable for a Langfuse link to a real native group while the switch is on, with no Langfuse network call', async () => {
-        // Mirror of the above in the other direction: `allowedSources: ['langfuse']`
+        // Mirror of the above in the other direction: a `source: 'langfuse'` reference
         // rejects on the group's actual recorded (native) source, again before any
         // Langfuse adapter dispatch.
         const { groupId } = await createPromptGroupFixture('Native Group For Langfuse Mismatch');

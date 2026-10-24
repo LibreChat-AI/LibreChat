@@ -163,17 +163,6 @@ describe('createNativePromptAdapter', () => {
     });
   });
 
-  it('returns unsupported_selection for a version selection', async () => {
-    const adapter = createNativePromptAdapter(createPromptStore(db));
-
-    await expect(
-      adapter.resolvePrompt({ group, selection: { type: 'version', version: 1 } }),
-    ).resolves.toEqual({
-      ok: false,
-      error: { type: 'unsupported_selection', source: 'native' },
-    });
-  });
-
   it('resolves a stored revision without a type as text', async () => {
     const adapter = createNativePromptAdapter(createPromptStore(db));
     await mongoose.models.Prompt.collection.updateMany(

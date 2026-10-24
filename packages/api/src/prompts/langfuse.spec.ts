@@ -160,7 +160,7 @@ describe('createLangfusePromptAdapter', () => {
     });
   });
 
-  it('sends version=N and no label for a version selection', async () => {
+  it('sends version=N and no label for an exact selection', async () => {
     const resolveSource = jest.fn().mockResolvedValue(okResolution());
     const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
     fetchMock.mockResolvedValue(
@@ -169,7 +169,7 @@ describe('createLangfusePromptAdapter', () => {
 
     const result = await adapter.resolvePrompt({
       group: makeGroup(),
-      selection: { type: 'version', version: 3 },
+      selection: { type: 'exact', version: 3 },
     });
 
     const [url] = fetchMock.mock.calls[0];
@@ -224,23 +224,6 @@ describe('createLangfusePromptAdapter', () => {
     });
 
     expect(result).toEqual({ ok: false, error: { type: 'source_not_found', source: 'langfuse' } });
-  });
-
-  it('returns unsupported_selection for an exact selection without calling resolveSource or fetch', async () => {
-    const resolveSource = jest.fn();
-    const adapter = createLangfusePromptAdapter({ resolveSource, timeoutMs: () => 5000 });
-
-    const result = await adapter.resolvePrompt({
-      group: makeGroup(),
-      selection: { type: 'exact', promptId: 'prompt-1' },
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: { type: 'unsupported_selection', source: 'langfuse' },
-    });
-    expect(resolveSource).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns source_unavailable not_configured when the group has no sourcePromptName, without calling resolveSource or fetch', async () => {

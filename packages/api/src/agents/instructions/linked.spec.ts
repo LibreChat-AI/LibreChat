@@ -165,9 +165,9 @@ describe('createLinkedInstructionsResolver', () => {
     });
     expect(promptService.resolvePrompt).toHaveBeenCalledWith({
       groupId,
+      source: 'native',
       selection: { type: 'production' },
       filters: undefined,
-      allowedSources: ['native'],
     });
     await expect(cache.get(`native:${groupId}:production`)).resolves.toMatchObject({
       groupId,
@@ -187,9 +187,9 @@ describe('createLinkedInstructionsResolver', () => {
     expect(result.status).toBe('resolved');
     expect(promptService.resolvePrompt).toHaveBeenCalledWith({
       groupId,
+      source: 'native',
       selection: { type: 'exact', promptId },
       filters: undefined,
-      allowedSources: ['native'],
     });
     await expect(cache.get(`native:${groupId}:exact:${promptId}`)).resolves.toBeDefined();
   });
@@ -567,7 +567,7 @@ describe('createLinkedInstructionsResolver', () => {
     );
   });
 
-  it('calls resolvePrompt with allowedSources native-only and maps a rejected non-native group (unsupported_source) to unavailable_selection', async () => {
+  it('builds a native reference and maps a rejected non-native group (unsupported_source) to unavailable_selection', async () => {
     const cache = new FakeCache();
     const promptService = makePromptService({
       resolvePrompt: jest.fn().mockResolvedValue({
@@ -584,14 +584,13 @@ describe('createLinkedInstructionsResolver', () => {
     });
     expect(promptService.resolvePrompt).toHaveBeenCalledWith({
       groupId,
+      source: 'native',
       selection: { type: 'production' },
       filters: undefined,
-      allowedSources: ['native'],
     });
   });
 
   it.each([
-    ['unsupported_selection', { type: 'unsupported_selection', source: 'native' }],
     ['source_unavailable', { type: 'source_unavailable', source: 'langfuse', reason: 'disabled' }],
     ['source_not_found', { type: 'source_not_found', source: 'langfuse' }],
     ['unsupported_content', { type: 'unsupported_content', reason: 'chat_prompt' }],
@@ -662,13 +661,13 @@ describe('createLinkedInstructionsResolver', () => {
       });
       expect(promptService.resolvePrompt).toHaveBeenCalledWith({
         groupId,
+        source: 'langfuse',
         selection: { type: 'production' },
         filters: undefined,
-        allowedSources: ['langfuse'],
       });
     });
 
-    it('maps a pinned Langfuse exact selection to the prompt-service version selection', async () => {
+    it('passes a pinned Langfuse link through as a langfuse exact-version reference', async () => {
       const cache = new FakeCache();
       const promptService = makePromptService({
         resolvePrompt: jest
@@ -682,9 +681,9 @@ describe('createLinkedInstructionsResolver', () => {
 
       expect(promptService.resolvePrompt).toHaveBeenCalledWith({
         groupId,
-        selection: { type: 'version', version: 3 },
+        source: 'langfuse',
+        selection: { type: 'exact', version: 3 },
         filters: undefined,
-        allowedSources: ['langfuse'],
       });
     });
 

@@ -61,6 +61,14 @@ export interface PromptServiceListResult {
  */
 export interface PromptService {
   resolvePrompt(input: ResolvePromptInput): Promise<PromptServiceResult<ResolvedPrompt>>;
+  /**
+   * Reads a group by id with no filter projection and no cache — the same read
+   * `resolvePrompt` and every other method fall back to when not given a preloaded
+   * record. For a caller that must know a group's `source` before it can build the
+   * `PromptReference` a call needs, ahead of that call (`/resolve`'s capability-bypass
+   * path, where the access middleware's own read was skipped).
+   */
+  readPromptGroup(groupId: string): Promise<PromptGroupRecord | null>;
   /** Returns the group's revision choices, newest first, metadata only — no prompt
    *  content. Dispatches by `group.source` the same way `resolvePrompt` does. */
   listRevisions(
@@ -178,39 +186,49 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       : withPromptStage('read', () => store.getPromptGroup(groupId));
 
   return {
-    async resolvePrompt({
-      groupId,
-      selection,
-      loadedGroup,
-      loadedRevision,
-      filters,
-      allowedSources,
-    }) {
+    async resolvePrompt(input) {
+      const { groupId, loadedGroup, loadedRevision, filters } = input;
       const group = await readGroup(groupId, loadedGroup);
       if (group == null) {
         return {
           ok: false,
-          error: { type: 'unavailable_selection', reason: selectionUnavailableReason(selection) },
+          error: {
+            type: 'unavailable_selection',
+            reason: selectionUnavailableReason(input.selection),
+          },
         };
       }
-      if (allowedSources != null && !allowedSources.includes(group.source)) {
+      if (input.source !== group.source) {
         return { ok: false, error: { type: 'unsupported_source', source: group.source } };
       }
-      const adapter = sources[group.source];
-      const resolved = await adapter.resolvePrompt({ group, selection, loadedRevision });
+      // `input.source === group.source` is established above; the switch on
+      // `input.source` (rather than `group.source`) is what narrows `input.selection`
+      // to the adapter's own selection type — TypeScript cannot correlate a
+      // discriminated union's members once narrowed through a separately-read field.
+      const resolved =
+        input.source === 'native'
+          ? await sources.native.resolvePrompt({
+              group,
+              selection: input.selection,
+              loadedRevision,
+            })
+          : await sources.langfuse.resolvePrompt({
+              group,
+              selection: input.selection,
+              loadedRevision,
+            });
       if (!resolved.ok) {
         return resolved;
       }
       return inspect({ prompt: resolved.value.prompt }, filters) ?? resolved;
     },
 
-    async listRevisions({ groupId, loadedGroup, allowedSources }) {
+    readPromptGroup: (groupId) => readGroup(groupId),
+
+    async listRevisions({ groupId, loadedGroup }) {
       const group = await readGroup(groupId, loadedGroup);
       if (group == null) {
         return { ok: false, error: { type: 'unavailable_selection', reason: 'revision' } };
-      }
-      if (allowedSources != null && !allowedSources.includes(group.source)) {
-        return { ok: false, error: { type: 'unsupported_source', source: group.source } };
       }
       return sources[group.source].listRevisions({ group });
     },

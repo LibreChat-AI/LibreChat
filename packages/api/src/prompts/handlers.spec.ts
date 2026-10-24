@@ -50,6 +50,9 @@ function mockRes(): Response & MockRes {
 function makeService(overrides: Partial<PromptService> = {}): PromptService {
   return {
     resolvePrompt: jest.fn(),
+    // A capability bypass (no `resourceAccess`) falls back to this read; defaults to a
+    // native group so tests that don't care about it still reach `resolvePrompt`.
+    readPromptGroup: jest.fn().mockResolvedValue({ _id: groupId, source: 'native' }),
     listRevisions: jest.fn(),
     getListPromptGroupsByAccess: jest.fn(),
     getPrompts: jest.fn().mockResolvedValue([]),
@@ -584,28 +587,68 @@ describe('createPromptHandlers resolvePrompt', () => {
     jest.restoreAllMocks();
   });
 
-  function resolveReq(version?: string): PromptRequest {
-    return mockReq({ params: { groupId }, query: version == null ? {} : { version } });
+  function resolveReq(version?: string, group?: { source: 'native' | 'langfuse' }): PromptRequest {
+    return mockReq({
+      params: { groupId },
+      query: version == null ? {} : { version },
+      resourceAccess: group ? { resourceInfo: { _id: groupId, ...group } } : undefined,
+    });
   }
 
-  it('resolves production when no version is given', async () => {
+  it('resolves production when no version is given, for a preloaded native group', async () => {
     const resolvePrompt = jest.fn().mockResolvedValue({
       ok: true,
       value: { source: 'native', groupId, promptId, prompt: 'Hi', type: 'text' },
     });
-    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
+    const readPromptGroup = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ resolvePrompt, readPromptGroup }) }),
+    );
     const res = mockRes();
 
-    await handlers.resolvePrompt(resolveReq(), res);
+    await handlers.resolvePrompt(resolveReq(undefined, { source: 'native' }), res);
 
+    expect(readPromptGroup).not.toHaveBeenCalled();
     expect(resolvePrompt).toHaveBeenCalledWith({
       groupId,
+      source: 'native',
       selection: { type: 'production' },
-      loadedGroup: undefined,
+      loadedGroup: { _id: groupId, source: 'native' },
       filters: undefined,
     });
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ source: 'native', groupId, promptId, prompt: 'Hi', type: 'text' });
+  });
+
+  it('resolves production when no version is given, for a preloaded Langfuse group', async () => {
+    const resolvePrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        source: 'langfuse',
+        groupId,
+        prompt: 'Hi',
+        type: 'text',
+        version: 5,
+        labels: ['production'],
+      },
+    });
+    const readPromptGroup = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ resolvePrompt, readPromptGroup }) }),
+    );
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq(undefined, { source: 'langfuse' }), res);
+
+    expect(readPromptGroup).not.toHaveBeenCalled();
+    expect(resolvePrompt).toHaveBeenCalledWith({
+      groupId,
+      source: 'langfuse',
+      selection: { type: 'production' },
+      loadedGroup: { _id: groupId, source: 'langfuse' },
+      filters: undefined,
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it('resolves an exact version for a Langfuse group', async () => {
@@ -622,13 +665,15 @@ describe('createPromptHandlers resolvePrompt', () => {
     });
     const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
     const res = mockRes();
+    const loadedGroupRecord = { _id: groupId, source: 'langfuse' as const };
 
-    await handlers.resolvePrompt(resolveReq('3'), res);
+    await handlers.resolvePrompt(resolveReq('3', { source: 'langfuse' }), res);
 
     expect(resolvePrompt).toHaveBeenCalledWith({
       groupId,
-      selection: { type: 'version', version: 3 },
-      loadedGroup: undefined,
+      source: 'langfuse',
+      selection: { type: 'exact', version: 3 },
+      loadedGroup: loadedGroupRecord,
       filters: undefined,
     });
     expect(res.statusCode).toBe(200);
@@ -640,6 +685,76 @@ describe('createPromptHandlers resolvePrompt', () => {
       version: 3,
       labels: ['production'],
     });
+  });
+
+  it('reads the group once when a capability bypass left no loaded group, then resolves its production', async () => {
+    const readPromptGroup = jest.fn().mockResolvedValue({ _id: groupId, source: 'langfuse' });
+    const resolvePrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      value: { source: 'langfuse', groupId, prompt: 'Hi', type: 'text', version: 5, labels: [] },
+    });
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ readPromptGroup, resolvePrompt }) }),
+    );
+    const res = mockRes();
+
+    // No `resourceAccess`, as a `MANAGE_PROMPTS` capability bypass leaves it.
+    await handlers.resolvePrompt(resolveReq(), res);
+
+    expect(readPromptGroup).toHaveBeenCalledWith(groupId);
+    expect(resolvePrompt).toHaveBeenCalledTimes(1);
+    expect(resolvePrompt).toHaveBeenCalledWith({
+      groupId,
+      source: 'langfuse',
+      selection: { type: 'production' },
+      loadedGroup: { _id: groupId, source: 'langfuse' },
+      filters: undefined,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('rejects ?version=N with 400 once a capability-bypassed read confirms the group is native', async () => {
+    const readPromptGroup = jest.fn().mockResolvedValue({ _id: groupId, source: 'native' });
+    const resolvePrompt = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ readPromptGroup, resolvePrompt }) }),
+    );
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq('2'), res);
+
+    expect(readPromptGroup).toHaveBeenCalledWith(groupId);
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({ code: 'invalid_request' });
+    expect(resolvePrompt).not.toHaveBeenCalled();
+  });
+
+  it('maps a capability-bypassed read of a missing group to the same 404 as a missing selection', async () => {
+    const readPromptGroup = jest.fn().mockResolvedValue(null);
+    const resolvePrompt = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ readPromptGroup, resolvePrompt }) }),
+    );
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq(), res);
+
+    expect(readPromptGroup).toHaveBeenCalledWith(groupId);
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found' });
+    expect(resolvePrompt).not.toHaveBeenCalled();
+  });
+
+  it('rejects ?version=N on a native group with 400 invalid_request, without calling the service', async () => {
+    const resolvePrompt = jest.fn();
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq('2', { source: 'native' }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({ code: 'invalid_request' });
+    expect(resolvePrompt).not.toHaveBeenCalled();
   });
 
   it.each(['0', '-1', '1.5', 'abc'])(
@@ -681,20 +796,6 @@ describe('createPromptHandlers resolvePrompt', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ code: 'invalid_request' });
     expect(resolvePrompt).not.toHaveBeenCalled();
-  });
-
-  it('maps a native group rejecting ?version to 400 invalid_request', async () => {
-    const resolvePrompt = jest.fn().mockResolvedValue({
-      ok: false,
-      error: { type: 'unsupported_selection', source: 'native' },
-    });
-    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
-    const res = mockRes();
-
-    await handlers.resolvePrompt(resolveReq('2'), res);
-
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ code: 'invalid_request' });
   });
 
   it('maps blocked_content to the shared content filter response', async () => {

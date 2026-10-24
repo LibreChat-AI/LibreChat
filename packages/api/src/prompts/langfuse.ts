@@ -1,3 +1,4 @@
+import type { LangfusePromptSelection } from 'librechat-data-provider';
 import type { LangfuseSourceGroup, LangfuseSourceResolution } from '../langfuse/promptSync';
 import type { LangfuseTextPromptSelector } from '../langfuse/prompts';
 import type { PromptSourceAdapter } from './types';
@@ -38,12 +39,9 @@ export function createLangfusePromptAdapter({
   getTextPrompt = getLangfuseTextPrompt,
   listPrompts = listLangfusePrompts,
   timeoutMs = getLangfusePromptSyncTimeoutMs,
-}: CreateLangfusePromptAdapterDependencies): PromptSourceAdapter {
+}: CreateLangfusePromptAdapterDependencies): PromptSourceAdapter<LangfusePromptSelection> {
   return {
     async resolvePrompt({ group, selection }) {
-      if (selection.type !== 'production' && selection.type !== 'version') {
-        return { ok: false, error: { type: 'unsupported_selection', source: 'langfuse' } };
-      }
       if (!group.sourcePromptName) {
         return {
           ok: false,
@@ -60,7 +58,7 @@ export function createLangfusePromptAdapter({
       }
 
       const selector: LangfuseTextPromptSelector =
-        selection.type === 'version' ? { version: selection.version } : { label: 'production' };
+        selection.type === 'exact' ? { version: selection.version } : { label: 'production' };
       const result = await getTextPrompt(resolution.connection, group.sourcePromptName, selector, {
         timeoutMs: timeoutMs(),
       });

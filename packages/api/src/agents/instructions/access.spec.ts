@@ -356,9 +356,9 @@ describe('createInstructionsPromptAccess', () => {
       });
       expect(resolve).toHaveBeenCalledWith({
         groupId,
+        source: 'native',
         selection: exactLink.selection,
         filters: undefined,
-        allowedSources: ['native'],
       });
     });
 
@@ -368,9 +368,9 @@ describe('createInstructionsPromptAccess', () => {
       expect(result).toEqual({ ok: true });
       expect(resolve).toHaveBeenCalledWith({
         groupId,
+        source: 'native',
         selection: exactLink.selection,
         filters: undefined,
-        allowedSources: ['native'],
       });
     });
 
@@ -390,9 +390,9 @@ describe('createInstructionsPromptAccess', () => {
       await access.validateLinkWrite({ user, previous: null, next: productionLink, filters });
       expect(resolve).toHaveBeenCalledWith({
         groupId,
+        source: 'native',
         selection: productionLink.selection,
         filters,
-        allowedSources: ['native'],
       });
     });
 
@@ -781,9 +781,9 @@ describe('createInstructionsPromptAccess', () => {
         expect(result).toEqual({ ok: true });
         expect(resolvePrompt).toHaveBeenCalledWith({
           groupId: otherGroupId,
+          source: 'langfuse',
           selection: langfuseLink.selection,
           filters: undefined,
-          allowedSources: ['langfuse'],
         });
       });
 
@@ -798,7 +798,7 @@ describe('createInstructionsPromptAccess', () => {
         expect(canUse).toHaveBeenCalled();
       });
 
-      it('maps a pinned Langfuse exact selection to the prompt-service version selection', async () => {
+      it('passes a pinned Langfuse link through as a langfuse exact-version reference', async () => {
         const { access, resolve } = buildAccess({ visibleGroupIds: new Set([otherGroupId]) });
         await access.validateLinkWrite({
           user,
@@ -808,9 +808,9 @@ describe('createInstructionsPromptAccess', () => {
         });
         expect(resolve).toHaveBeenCalledWith({
           groupId: otherGroupId,
-          selection: { type: 'version', version: 3 },
+          source: 'langfuse',
+          selection: { type: 'exact', version: 3 },
           filters: undefined,
-          allowedSources: ['langfuse'],
         });
       });
     });
@@ -857,8 +857,8 @@ describe('createInstructionsPromptAccess', () => {
 
       it('rejects when the resolved value source does not match the requested link source', async () => {
         // The injected `resolve` mock's default answer is a native value; requesting
-        // a Langfuse link against it exercises the defensive check that
-        // `allowedSources: [next.source]` should otherwise make unreachable.
+        // a Langfuse link against it exercises the defensive check that building the
+        // reference from `next.source` should otherwise make unreachable.
         const { access } = buildAccess({ visibleGroupIds: new Set([otherGroupId]) });
         const result = await access.validateLinkWrite({
           user,
