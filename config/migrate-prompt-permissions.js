@@ -52,6 +52,7 @@ async function migrateToPromptGroupPermissions({ dryRun = true, batchSize = 100 
   const promptGroupsToMigrate = await PromptGroup.find({
     _id: { $nin: migratedGroupIds },
     author: { $exists: true, $ne: null },
+    source: { $in: [null, 'native'] },
   })
     .select('_id name author authorName category')
     .lean();

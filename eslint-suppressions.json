@@ -931,7 +931,7 @@
   },
   "client/src/components/Prompts/fields/PromptName.tsx": {
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 8
     }
   },
   "client/src/components/Prompts/forms/CreatePromptForm.tsx": {
@@ -1418,7 +1418,7 @@
   },
   "client/src/routes/Root.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/routes/RouteErrorBoundary.tsx": {

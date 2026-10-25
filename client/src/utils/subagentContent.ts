@@ -1,5 +1,9 @@
 import { ContentTypes, ToolCallTypes, getToolTimingDurations } from 'librechat-data-provider';
-import type { SubagentUpdateEvent, ToolTimingStamps } from 'librechat-data-provider';
+import type {
+  SubagentUpdateEvent,
+  ToolTimingStamps,
+  TSteerAppliedEvent,
+} from 'librechat-data-provider';
 import { strongDirection } from './direction';
 
 /**
@@ -114,7 +118,7 @@ type ToolCallPart = {
 
 /** Single content-part-shaped entry produced by the aggregator. The union
  *  matches the subset of `TMessageContentParts` a subagent run emits. */
-export type SubagentContentPart = TextPart | ThinkPart | ToolCallPart;
+export type SubagentContentPart = TextPart | ThinkPart | ToolCallPart | TSteerAppliedEvent['part'];
 
 const extractTextChunk = (
   data: MessageDeltaData | undefined,
@@ -217,6 +221,25 @@ export function foldSubagentEvent(
   state: SubagentAggregatorState,
   event: SubagentUpdateEvent,
 ): { parts: SubagentContentPart[]; state: SubagentAggregatorState } {
+  if (event.phase === 'steer_applied') {
+    const data = event.data as TSteerAppliedEvent | undefined;
+    if (
+      data?.part?.type !== ContentTypes.STEER ||
+      typeof data.part.steer !== 'string' ||
+      !Number.isSafeInteger(data.index) ||
+      data.index < 0
+    )
+      return { parts, state };
+    if (
+      parts.some((part) => part?.type === ContentTypes.STEER && part.steerId === data.part.steerId)
+    )
+      return { parts, state };
+    const next = [...parts, data.part];
+    return {
+      parts: next,
+      state: { ...state, openTextIdx: null, openThinkIdx: null, idlessTextPhase: undefined },
+    };
+  }
   if (event.phase === 'message_delta') {
     const data = event.data as MessageDeltaData | undefined;
     const extracted = extractTextChunk(data);

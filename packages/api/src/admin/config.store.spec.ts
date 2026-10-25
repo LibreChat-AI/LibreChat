@@ -56,7 +56,6 @@ function createHandlers(overrides: Partial<AdminConfigDeps> = {}): AdminConfigHa
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: methods.writeConfigDocument,
-    tombstoneConfigField: methods.tombstoneConfigField,
     unsetConfigField: methods.unsetConfigField,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
@@ -180,14 +179,21 @@ describe('admin config handlers on the portable store (real Config collection)',
       body: { entries: [{ fieldPath: 'webSearch.serperApiKey', value: 'sk-rotated-secret' }] },
     });
 
-    /** The stale admin's read happens before the rotation; its write lands after it. */
-    const findConfigByPrincipal = jest
-      .fn<
-        ReturnType<Methods['findConfigByPrincipal']>,
-        Parameters<Methods['findConfigByPrincipal']>
-      >()
-      .mockResolvedValueOnce(beforeRotation)
-      .mockImplementation(methods.findConfigByPrincipal);
+    /**
+     * The stale admin's read of the profile happens before the rotation; its write lands after
+     * it. Other reads (Base, the validation floor) go to the store.
+     */
+    let staleReads = 1;
+    const findConfigByPrincipal = jest.fn<
+      ReturnType<Methods['findConfigByPrincipal']>,
+      Parameters<Methods['findConfigByPrincipal']>
+    >(async (principalType, principalId, options) => {
+      if (principalId === params.principalId && staleReads > 0) {
+        staleReads -= 1;
+        return beforeRotation;
+      }
+      return methods.findConfigByPrincipal(principalType, principalId, options);
+    });
     const stale = createHandlers({ findConfigByPrincipal });
     const echoed = await call(stale.patchConfigField, {
       params,
@@ -199,7 +205,12 @@ describe('admin config handlers on the portable store (real Config collection)',
     });
 
     expect(echoed.statusCode).toBe(200);
-    expect(findConfigByPrincipal).toHaveBeenCalledTimes(2);
+    expect(staleReads).toBe(0);
+    expect(
+      findConfigByPrincipal.mock.calls.filter(
+        ([, principalId]) => principalId === params.principalId,
+      ),
+    ).toHaveLength(2);
     const stored = await raw().findOne({ principalId: params.principalId });
     expect(decryptV3(stored!.overrides.webSearch.serperApiKey)).toBe('sk-rotated-secret');
     expect(stored!.overrides.webSearch.scraperTimeout).toBe(9000);
@@ -640,7 +651,10 @@ describe('segment addressing on the field routes', () => {
 
     expect(both.statusCode).toBe(400);
     expect(duplicate.statusCode).toBe(400);
-    expect(duplicate.body).toEqual({ error: 'Duplicate field path segments' });
+    expect(duplicate.body).toEqual({
+      error: 'Duplicate field path segments',
+      code: 'DUPLICATE_FIELD_PATH',
+    });
     expect(await raw().countDocuments({ principalId: params.principalId })).toBe(0);
   });
 

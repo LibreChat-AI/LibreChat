@@ -10,7 +10,7 @@ function createDeps(overrides: Partial<ErasureResolverDeps> = {}) {
     getAppConfig: jest
       .fn()
       .mockResolvedValue({ endpoints: { agents: { checkpointer: { ttl: 5 } } } }),
-    processDeleteRequest: jest.fn().mockResolvedValue(undefined),
+    processDeleteRequest: jest.fn().mockResolvedValue({ deletedFileIds: [], failedFileIds: [] }),
     invalidateCachedTools: jest.fn().mockResolvedValue(undefined),
     getMCPManager: jest.fn(() => ({ disconnectUserConnection })),
     openCheckpointDeletion: jest.fn(),
@@ -164,6 +164,14 @@ describe('createErasureResolver', () => {
       }),
       files,
     });
+  });
+
+  it('preserves storage failure receipts for the account-erasure contract', async () => {
+    const { deps } = createDeps();
+    const outcome = { deletedFileIds: [], failedFileIds: ['file-1'] };
+    (deps.processDeleteRequest as jest.Mock).mockResolvedValue(outcome);
+    const { deps: erasure } = await createErasureResolver(deps)(target);
+    expect(await erasure.deleteStoredFiles([])).toBe(outcome);
   });
 
   it('carries the target profile fields for header templates', async () => {

@@ -182,6 +182,26 @@ describe('buildSharedLinkStartupPayload', () => {
     });
   });
 
+  it('never hands an anonymous share viewer a policy link that would run script', () => {
+    const payload = buildSharedLinkStartupPayload(
+      appConfig({
+        interfaceConfig: {
+          privacyPolicy: { externalUrl: 'javascript:alert(document.domain)' },
+          termsOfService: { externalUrl: 'https://example.com/tos', openNewTab: true },
+        },
+      }),
+      {},
+    );
+
+    expect(JSON.parse(JSON.stringify(payload))).toEqual({
+      appTitle: 'LibreChat',
+      interface: {
+        privacyPolicy: {},
+        termsOfService: { externalUrl: 'https://example.com/tos', openNewTab: true },
+      },
+    });
+  });
+
   it.each<[string, TThemeDefinitionConfig | string]>([
     ['a bundled name', 'clickhouse'],
     [

@@ -888,6 +888,57 @@ describe('S3 CRUD', () => {
       expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
     });
 
+    it('does not mark deletion when HeadObject times out', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      const failure = Object.assign(new Error('head response lost'), { code: 'ETIMEDOUT' });
+      s3Mock.on(HeadObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+      expect(deleteRagFile).not.toHaveBeenCalled();
+    });
+
+    it('marks a lost DeleteObject response without confirming deletion', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('delete response lost'), { code: 'ETIMEDOUT' });
+      s3Mock.on(DeleteObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete.mock.calls).toEqual([[]]);
+      expect(deleteRagFile).not.toHaveBeenCalled();
+    });
+
+    it('confirms DeleteObject before a later RAG cleanup denial', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('RAG denied'), { status: 403 });
+      jest.mocked(deleteRagFile).mockImplementationOnce(async () => {
+        expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+        throw failure;
+      });
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+    });
+
+    it('reports a definitive DeleteObject denial', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      const onDelete = jest.fn();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const failure = Object.assign(new Error('delete denied'), {
+        $metadata: { httpStatusCode: 403 },
+      });
+      s3Mock.on(DeleteObjectCommand).rejects(failure);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
+      expect(onDelete.mock.calls).toEqual([[], ['rejected']]);
+    });
+
     it('uses the file owner for RAG cleanup when a different authorized user deletes', async () => {
       const requesterReq = { user: { id: 'sharedUser' } } as ServerRequest;
       const mockFile = {

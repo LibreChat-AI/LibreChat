@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const { CacheKeys } = require('librechat-data-provider');
 const { AppService } = require('@librechat/data-schemas');
 const {
+  isEnabled,
+  expandCustomEndpoint,
   createAppConfigService,
   clearMcpConfigCache,
   createCodeEnvironmentRegistry,
@@ -45,7 +47,7 @@ const loadBaseConfig = async (mode) => {
     adminIncluded: config.includedTools,
     directory: paths.structuredTools,
   });
-  return AppService({ config, paths, systemTools });
+  return AppService({ config, paths, systemTools, expandCustomEndpoint });
 };
 
 const appConfigService = createAppConfigService({
@@ -55,6 +57,8 @@ const appConfigService = createAppConfigService({
   cacheKeys: CacheKeys,
   getApplicableConfigs: db.getApplicableConfigs,
   getUserPrincipals: db.getUserPrincipals,
+  overrideEnvAllowlist: process.env.CONFIG_OVERRIDE_ENV_ALLOWLIST,
+  rederiveEndpoints: isEnabled(process.env.CONFIG_REDERIVE_ENDPOINTS),
   augmentConfig: ({ appConfig, baseConfig, principals, options }) => {
     if (!options.userId) return appConfig;
     return mergeAccessibleCodeEnvironments({
@@ -70,8 +74,15 @@ const appConfigService = createAppConfigService({
     });
   },
 });
-const { getAppConfig, clearAppConfigCache, clearOverrideCache, overrideCacheTtl } =
-  appConfigService;
+const {
+  getAppConfig,
+  resolveConfigLayers,
+  clearAppConfigCache,
+  clearOverrideCache,
+  reloadBaseConfig,
+  overrideCacheTtl,
+  rederiveEndpoints,
+} = appConfigService;
 
 // Config owns the reader; models never import this module to obtain it.
 db.initializeMessageBudget(getAppConfig);
@@ -90,6 +101,7 @@ const configCacheInvalidation = createConfigCacheInvalidation({
     { label: 'clearOverrideCache', clear: clearOverrideCache },
     { label: 'clearMcpConfigCache', clear: () => clearMcpConfigCache() },
   ],
+  load: reloadBaseConfig,
   pubsub: createRedisConfigInvalidationPubSub({
     useRedis: cacheConfig.USE_REDIS,
     client: ioredisClient,
@@ -105,10 +117,23 @@ function invalidateConfigCaches(tenantId) {
   return configCacheInvalidation.invalidate(tenantId);
 }
 
+/**
+ * The same clear for the admin reload route, then librechat.yaml loaded again here and, when it
+ * loaded, the broadcast; resolves with what each step reached.
+ * @param {string} [tenantId] - Optional tenant ID to scope override cache clearing.
+ * @returns {Promise<import('@librechat/api').ConfigReloadReport>}
+ */
+function reloadConfigCaches(tenantId) {
+  return configCacheInvalidation.reload(tenantId);
+}
+
 module.exports = {
   getAppConfig,
+  resolveConfigLayers,
   overrideCacheTtl,
+  rederiveEndpoints,
   invalidateConfigCaches,
+  reloadConfigCaches,
   getCodeEnvironmentRegistry,
   invalidateCodeEnvironmentConfigCache,
 };

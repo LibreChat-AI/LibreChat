@@ -1,4 +1,5 @@
 import { EModelEndpoint, Providers } from './schemas';
+import { normalizeEndpointName } from './utils';
 
 /** Canonical provider identity used for branding across client and server. */
 export enum ProviderId {
@@ -81,11 +82,15 @@ export function resolveProviderId(input?: string | null): ProviderId | null {
   return providerByNormalizedId[key] ?? providerAliases[key] ?? null;
 }
 
-/** Resolves a runtime provider to its model catalog, using a native alias only when needed. */
+/**
+ * Resolves a runtime provider to its model catalog: its own catalog when one exists, else a
+ * native alias, else the name the runtime serves it under (`normalizeEndpointName`), so an
+ * agent saved as `Ollama` reads the `ollama` catalog.
+ */
 export function resolveModelCatalogKey<T>(
   provider?: string | null,
   catalogs?: Partial<Record<string, T>>,
 ): string {
   const key = provider ?? '';
-  return catalogs?.[key] != null ? key : (modelCatalogAliases[key] ?? key);
+  return catalogs?.[key] != null ? key : (modelCatalogAliases[key] ?? normalizeEndpointName(key));
 }

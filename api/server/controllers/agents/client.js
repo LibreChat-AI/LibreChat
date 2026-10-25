@@ -18,6 +18,7 @@ const {
   getBalanceConfig,
   omitTitleOptions,
   getProviderConfig,
+  resolveTitleConfig,
   formatMemoryContext,
   createCachedTokenCounter,
   applyContextToAgent,
@@ -1647,8 +1648,8 @@ class AgentClient extends BaseClient {
       return undefined;
     }
     /** Per-endpoint opt-in via `activityLabel: true` in librechat.yaml,
-     *  resolved the same way the title options are (endpoints.all > named
-     *  endpoint > custom endpoint config). Custom endpoints live in the
+     *  resolved per field the same way the title options are (endpoints.all >
+     *  named endpoint > custom endpoint config). Custom endpoints live in the
      *  `endpoints.custom` ARRAY, so their settings are only visible through
      *  the matched entry — without it every custom endpoint reads as
      *  disabled. */
@@ -6156,34 +6157,29 @@ class AgentClient extends BaseClient {
 
     let titleProviderConfig = getProviderConfig({ provider: endpoint, appConfig });
 
-    /** @type {TEndpoint | undefined} */
-    const endpointConfig =
-      appConfig.endpoints?.all ??
-      appConfig.endpoints?.[endpoint] ??
-      titleProviderConfig.customEndpointConfig;
-    if (!endpointConfig) {
-      logger.debug(
-        `[api/server/controllers/agents/client.js #titleConvo] No endpoint config for "${endpoint}"`,
-      );
-    }
+    const titleConfig = resolveTitleConfig({
+      appConfig,
+      endpoint,
+      customEndpointConfig: titleProviderConfig.customEndpointConfig,
+    });
 
-    if (endpointConfig?.titleConvo === false) {
+    if (titleConfig.titleConvo === false) {
       logger.debug(
         `[api/server/controllers/agents/client.js #titleConvo] Title generation disabled for endpoint "${endpoint}"`,
       );
       return;
     }
 
-    if (endpointConfig?.titleEndpoint && endpointConfig.titleEndpoint !== endpoint) {
+    if (titleConfig.titleEndpoint && titleConfig.titleEndpoint !== endpoint) {
       try {
         titleProviderConfig = getProviderConfig({
-          provider: endpointConfig.titleEndpoint,
+          provider: titleConfig.titleEndpoint,
           appConfig,
         });
-        endpoint = endpointConfig.titleEndpoint;
+        endpoint = titleConfig.titleEndpoint;
       } catch (error) {
         logger.warn(
-          `[api/server/controllers/agents/client.js #titleConvo] Error getting title endpoint config for "${endpointConfig.titleEndpoint}", falling back to default`,
+          `[api/server/controllers/agents/client.js #titleConvo] Error getting title endpoint config for "${titleConfig.titleEndpoint}", falling back to default`,
           getSafeErrorMetadata(error),
         );
         // Fall back to original provider config
@@ -6192,12 +6188,8 @@ class AgentClient extends BaseClient {
       }
     }
 
-    if (
-      endpointConfig &&
-      endpointConfig.titleModel &&
-      endpointConfig.titleModel !== Constants.CURRENT_MODEL
-    ) {
-      clientOptions.model = endpointConfig.titleModel;
+    if (titleConfig.titleModel && titleConfig.titleModel !== Constants.CURRENT_MODEL) {
+      clientOptions.model = titleConfig.titleModel;
     }
 
     const options = await titleProviderConfig.getOptions({
@@ -6261,8 +6253,8 @@ class AgentClient extends BaseClient {
 
     if (
       provider === Providers.GOOGLE &&
-      (endpointConfig?.titleMethod === TitleMethod.FUNCTIONS ||
-        endpointConfig?.titleMethod === TitleMethod.STRUCTURED)
+      (titleConfig.titleMethod === TitleMethod.FUNCTIONS ||
+        titleConfig.titleMethod === TitleMethod.STRUCTURED)
     ) {
       clientOptions.json = true;
     }
@@ -6291,9 +6283,9 @@ class AgentClient extends BaseClient {
         clientOptions,
         inputText: text,
         contentParts: immediate ? [] : this.contentParts,
-        titleMethod: endpointConfig?.titleMethod,
-        titlePrompt: endpointConfig?.titlePrompt,
-        titlePromptTemplate: endpointConfig?.titlePromptTemplate,
+        titleMethod: titleConfig.titleMethod,
+        titlePrompt: titleConfig.titlePrompt,
+        titlePromptTemplate: titleConfig.titlePromptTemplate,
         chainOptions: {
           runName: 'TitleRun',
           signal: abortController.signal,

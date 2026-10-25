@@ -938,3 +938,55 @@ it.each(['partial', 'complete'] as const)(
     expect(content).toHaveLength(1);
   },
 );
+
+it.each(['completed', 'failed', 'cancelled', 'interrupted'] as const)(
+  'keeps the %s outcome after ordered guidance with recovery disabled',
+  (status) => {
+    mockRecoveredQuery.mockReturnValue({ data: undefined });
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: 'Before guidance.' },
+      {
+        type: ContentTypes.STEER,
+        steer: 'Parent guidance.',
+        steerId: 'control',
+        clientSteerId: 'invocation',
+      },
+      { type: ContentTypes.TEXT, text: 'After guidance.' },
+    ];
+    const outcome = {
+      messageId: 'task-1:assistant',
+      parentMessageId: 'task-1:user',
+      role: 'assistant' as const,
+      text: `Durable ${status} result.`,
+      ...(status === 'failed' ? { error: true } : {}),
+    };
+    render(
+      <ChatSurfaceHarness>
+        <SubagentConversation
+          author={author}
+          parentAuthor={parentAuthor}
+          recovery={{
+            parentConversationId: 'parent',
+            threadId: 'child',
+            selectedTaskId: 'task-1',
+            ready: true,
+          }}
+          turns={[
+            {
+              ...turns[0],
+              contentRecoveryAvailable: false,
+              outcome,
+              activity: { ...turns[0].activity, status, content },
+            },
+          ]}
+        />
+      </ChatSurfaceHarness>,
+    );
+    expect(screen.getAllByText(outcome.text)).toHaveLength(1);
+    expect(mockCopyMessage.mock.calls.at(-1)?.[0].content).toEqual([
+      ...content,
+      { type: ContentTypes.TEXT, text: outcome.text, phase: 'final_answer' },
+    ]);
+    expect(content).toHaveLength(3);
+  },
+);

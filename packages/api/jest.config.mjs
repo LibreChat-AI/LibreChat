@@ -1,6 +1,7 @@
 import { maxWorkers, workerIdleMemoryLimit } from '../../config/jest.workers.cjs';
 
 const esModules = [
+  '@librechat/code',
   '@langchain/langgraph',
   '@langchain/langgraph-checkpoint',
   '@langchain/langgraph-sdk',
@@ -44,6 +45,7 @@ export default {
   transformIgnorePatterns: [`/node_modules/(?!(${esModules})/).*/`],
   moduleNameMapper: {
     '^@src/(.*)$': '<rootDir>/src/$1',
+    '^~/api/(.*)$': '<rootDir>/../../api/$1',
     '~/(.*)': '<rootDir>/src/$1',
   },
   // coverageThreshold: {

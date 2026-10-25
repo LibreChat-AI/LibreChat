@@ -87,6 +87,7 @@ const group = (overrides: Partial<TPromptGroup> = {}): TPromptGroup => ({
   author: 'user1',
   authorName: 'User One',
   _id: 'group1',
+  source: 'native',
   ...overrides,
 });
 

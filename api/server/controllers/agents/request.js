@@ -68,6 +68,7 @@ const {
   resolveDisconnectSnapshotMode,
   markAbortedCompactionContent,
   isTemporaryTurn,
+  getPreliminaryResponseMessageId,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -170,18 +171,6 @@ async function attachConversationCreatedAt(req, conversationId, conversationAnch
   if (resolved.conversation !== undefined) {
     req.resolvedConversation = resolved.conversation ?? null;
   }
-}
-
-function getPreliminaryResponseMessageId({ messageId, responseMessageId }) {
-  if (typeof responseMessageId === 'string' && responseMessageId.length > 0) {
-    return responseMessageId;
-  }
-
-  if (typeof messageId !== 'string' || messageId.length === 0) {
-    return null;
-  }
-
-  return `${messageId.replace(/_+$/, '')}_`;
 }
 
 /**
@@ -422,7 +411,11 @@ async function saveErrorTurn(
       if (liveUserMessage?.messageId == null) {
         return;
       }
-      errorMessageId = getPreliminaryResponseMessageId({ messageId: liveUserMessage.messageId });
+      errorMessageId = getPreliminaryResponseMessageId({
+        compact: true,
+        messageId: liveUserMessage.messageId,
+        liveResponseMessageId,
+      });
       errorParentMessageId = liveUserMessage.messageId;
     } else if (isRegenerate) {
       errorMessageId =

@@ -28,6 +28,7 @@ RUN npm config set fetch-retry-maxtimeout 600000 && \
 COPY package*.json ./
 COPY packages/data-provider/package*.json ./packages/data-provider/
 COPY packages/api/package*.json ./packages/api/
+COPY vendor/code ./vendor/code
 COPY packages/data-schemas/package*.json ./packages/data-schemas/
 COPY packages/client/package*.json ./packages/client/
 COPY packages/chat/package*.json ./packages/chat/

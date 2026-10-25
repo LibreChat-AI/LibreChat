@@ -2,6 +2,7 @@ import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { AdminErasureContext, AdminErasureTarget } from '~/admin/users';
 import type { UserErasureDeps, MCPOAuthErasureHooks } from './erasure';
+import type { FileDeletionOutcome } from '../files/deletion';
 import type { MCPServerLookupOptions } from '~/mcp/types';
 
 type ErasureBaseDeps = Omit<
@@ -54,7 +55,7 @@ export interface ErasureResolverDeps {
   processDeleteRequest: (params: {
     req: Record<string, unknown>;
     files: ErasureFile[];
-  }) => Promise<unknown>;
+  }) => Promise<Required<FileDeletionOutcome>>;
   invalidateCachedTools: (params: { userId: string; serverName: string }) => Promise<unknown>;
   getMCPManager: () =>
     | { disconnectUserConnection: (userId: string, serverName: string) => Promise<unknown> }

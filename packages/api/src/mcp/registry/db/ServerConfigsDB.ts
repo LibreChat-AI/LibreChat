@@ -10,8 +10,13 @@ import type { AllMethods, MCPServerDocument, IAgent } from '@librechat/data-sche
 import type { IServerConfigsRepositoryInterface } from '~/mcp/registry/ServerConfigsRepositoryInterface';
 import type { ParsedServerConfig, AddServerResult } from '~/mcp/types';
 import type { ResolvedPrincipal } from '~/types/principal';
-import { getUserApiKeyVariable, requireApiKeyReentryForRebinding } from '~/mcp/registry/binding';
+import {
+  getUserApiKeyVariable,
+  preserveOmittedOAuthBindingFields,
+  getChangedOAuthSecretBindingFields,
+} from '~/mcp/registry/binding';
 import { MCPCommittedWriteError, MCPOAuthSecretReentryRequiredError } from '~/mcp/errors';
+import { requireApiKeyReentryForRebinding } from '~/mcp/registry/reentry';
 import { normalizeLegacyHeaderMaps } from '~/mcp/registry/compat';
 import { AccessControlService } from '~/acl/accessControlService';
 import { isGeneratedUserApiKeyVariable } from '~/mcp/headers';
@@ -32,8 +37,6 @@ const DANGEROUS_CREDENTIAL_PATTERNS = [
 ];
 
 const BLOCKED_USER_OAUTH_ENDPOINT_PARAMS = ['audience', 'resource'] as const;
-
-type OAuthConfig = NonNullable<ParsedServerConfig['oauth']>;
 
 /**
  * Sanitizes headers by removing dangerous credential placeholders.
@@ -118,99 +121,6 @@ function sanitizeUserManagedOAuthConfig(config: ParsedServerConfig): ParsedServe
       }),
     },
   };
-}
-
-function normalizeOAuthUrl(value?: string): string | undefined {
-  if (!value) {
-    return value;
-  }
-
-  try {
-    return new URL(value).href;
-  } catch {
-    return value;
-  }
-}
-
-function normalizeOAuthMethods(values?: readonly string[]): string | undefined {
-  if (!values?.length) {
-    return undefined;
-  }
-  return JSON.stringify([...new Set(values)].sort());
-}
-
-function preserveOmittedOAuthBindingFields(
-  existingOAuth: OAuthConfig,
-  updatedOAuth: OAuthConfig,
-): OAuthConfig {
-  return {
-    ...updatedOAuth,
-    ...(updatedOAuth.token_endpoint_auth_methods_supported === undefined &&
-      existingOAuth.token_endpoint_auth_methods_supported !== undefined && {
-        token_endpoint_auth_methods_supported: existingOAuth.token_endpoint_auth_methods_supported,
-      }),
-    ...(updatedOAuth.revocation_endpoint === undefined &&
-      existingOAuth.revocation_endpoint !== undefined && {
-        revocation_endpoint: existingOAuth.revocation_endpoint,
-      }),
-    ...(updatedOAuth.revocation_endpoint_auth_methods_supported === undefined &&
-      existingOAuth.revocation_endpoint_auth_methods_supported !== undefined && {
-        revocation_endpoint_auth_methods_supported:
-          existingOAuth.revocation_endpoint_auth_methods_supported,
-      }),
-  };
-}
-
-function getChangedOAuthSecretBindingFields(
-  existingConfig: MCPServerDocument['config'],
-  updatedConfig: ParsedServerConfig,
-): string[] {
-  const existingOAuth = existingConfig.oauth;
-  const updatedOAuth = updatedConfig.oauth;
-  if (!existingOAuth || !updatedOAuth) {
-    return [];
-  }
-
-  const fields = [
-    [
-      'url',
-      normalizeOAuthUrl('url' in existingConfig ? existingConfig.url : undefined),
-      normalizeOAuthUrl(updatedConfig.url),
-    ],
-    [
-      'oauth.authorization_url',
-      normalizeOAuthUrl(existingOAuth.authorization_url),
-      normalizeOAuthUrl(updatedOAuth.authorization_url),
-    ],
-    [
-      'oauth.token_url',
-      normalizeOAuthUrl(existingOAuth.token_url),
-      normalizeOAuthUrl(updatedOAuth.token_url),
-    ],
-    ['oauth.client_id', existingOAuth.client_id, updatedOAuth.client_id],
-    [
-      'oauth.token_exchange_method',
-      existingOAuth.token_exchange_method,
-      updatedOAuth.token_exchange_method,
-    ],
-    [
-      'oauth.token_endpoint_auth_methods_supported',
-      normalizeOAuthMethods(existingOAuth.token_endpoint_auth_methods_supported),
-      normalizeOAuthMethods(updatedOAuth.token_endpoint_auth_methods_supported),
-    ],
-    [
-      'oauth.revocation_endpoint',
-      normalizeOAuthUrl(existingOAuth.revocation_endpoint),
-      normalizeOAuthUrl(updatedOAuth.revocation_endpoint),
-    ],
-    [
-      'oauth.revocation_endpoint_auth_methods_supported',
-      normalizeOAuthMethods(existingOAuth.revocation_endpoint_auth_methods_supported),
-      normalizeOAuthMethods(updatedOAuth.revocation_endpoint_auth_methods_supported),
-    ],
-  ] as const;
-
-  return fields.filter(([, existing, updated]) => existing !== updated).map(([field]) => field);
 }
 
 /** Unions `mcpServerNames` over the candidate agents the caller can access. */
