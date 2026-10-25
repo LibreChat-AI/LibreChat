@@ -9,12 +9,12 @@ import {
   getPreliminaryResponseMessageId,
   isValidMessageId,
   MAX_MESSAGE_ID_LENGTH,
-  attachProviderItems,
   stripProviderItems,
   omitProviderItemsFromEvent,
   omitReasoningReplayFromDelta,
 } from './message';
 import { thinkReplayHash } from '@librechat/data-schemas';
+import { attachProviderItems } from './providerItems';
 import { sendEvent } from './events';
 
 /** Cast to string for type compatibility with ThreadMessage */
@@ -905,5 +905,16 @@ describe('signed reasoning of think parts', () => {
       providerItems: items,
     });
     expect(JSON.stringify(moved.content)).not.toContain('SIG_1');
+  });
+});
+
+describe('message utilities in client code', () => {
+  it('load without @librechat/data-schemas, which would pull mongoose into the client bundle and its tests', () => {
+    jest.isolateModules(() => {
+      jest.doMock('@librechat/data-schemas', () => {
+        throw new Error('@librechat/data-schemas loaded with the message utilities');
+      });
+      expect(() => jest.requireActual('./message')).not.toThrow();
+    });
   });
 });

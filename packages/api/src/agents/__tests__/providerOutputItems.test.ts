@@ -49,11 +49,8 @@ import type { Captured } from './helpers/providerCapture';
 import type { Reply } from './helpers/providerReplies';
 import { OPENAI_RESPONSES, captureRun, serialize } from './helpers/providerCapture';
 import { splitProviderItems } from '@librechat/data-schemas';
-import {
-  attachProviderItems,
-  stripProviderItems,
-  omitProviderItemsFromEvent,
-} from '~/utils/message';
+import { stripProviderItems, omitProviderItemsFromEvent } from '~/utils/message';
+import { attachProviderItems } from '~/utils/providerItems';
 import { providerReply } from './helpers/providerReplies';
 import { createToolExecuteHandler } from '../handlers';
 
