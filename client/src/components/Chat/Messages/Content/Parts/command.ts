@@ -1,3 +1,5 @@
+import { COMMAND_RESULT_TRAILER } from 'librechat-data-provider';
+
 /**
  * Reads the verdict the attached-workspace `bash_tool` writes into its output
  * (`formatCommandResult` in `packages/api/src/code/command.ts`):
@@ -28,15 +30,13 @@ export interface CommandOutput {
 }
 
 const STARTING_DIRECTORY = /^\[starting directory: "workspace\/(?:[^"\\\r\n]|\\[^\r\n])*"\]\n/;
-const TRAILER =
-  /\n((?:\[(?:exit code: -?\d+|terminated by [\w+-]+|timed out|output truncated)\])+)((?:\nCommand reached timeoutMs: [^\n]*)?(?:\n\[directory hint: [^\n]*\])?)$/;
 const MARKER = /\[(exit code: (-?\d+)|terminated by ([\w+-]+)|timed out|output truncated)\]/g;
 const STDOUT = 'stdout:\n';
 const STDERR = 'stderr:\n';
 const EMPTY = 'Command completed with no output.\n';
 
 export function parseCommandOutput(output: string): CommandOutput | null {
-  const match = TRAILER.exec(output);
+  const match = COMMAND_RESULT_TRAILER.exec(output);
   if (match == null) {
     return null;
   }

@@ -177,7 +177,7 @@ describe('ActivityPhaseGroup', () => {
     for (const token of ROW_GLYPH_SLOT.split(' ')) {
       expect(trigger.firstElementChild).toHaveClass(token);
     }
-    expect(screen.getByText(LABEL).parentElement).toHaveClass('flex-1', 'text-left');
+    expect(screen.getByText(LABEL).parentElement).toHaveClass('flex-1', 'text-start');
   });
 
   test.each([
@@ -378,7 +378,7 @@ describe('ActivityPhaseGroup', () => {
     );
 
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
-    expect(screen.getByText(LABEL)).toHaveClass('text-left');
+    expect(screen.getByText(LABEL)).toHaveClass('text-start');
     expect(pendingFrames()).toBe(0);
   });
 
@@ -533,7 +533,7 @@ describe('ActivityPhaseGroup failure fast path', () => {
       </ActivityPhaseGroup>,
     );
 
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/3 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
     expect(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' })).toBeInTheDocument();
   });
 
@@ -601,7 +601,7 @@ describe('ActivityPhaseGroup failure fast path', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: LABEL }));
     const pill = screen.getByRole('button', { name: 'com_ui_show_failed_n_of_n' });
-    expect(pill).toHaveTextContent('2/2 failed');
+    expect(pill).toHaveTextContent('com_ui_n_actions_failed');
     fireEvent.click(pill);
     expect(onReveal).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
@@ -613,8 +613,32 @@ describe('ActivityPhaseGroup failure fast path', () => {
         <div />
       </ActivityPhaseGroup>,
     );
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
     expect(screen.getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
+  });
+
+  test('does not tint the title of a partially failed phase', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={{ ...labelPart, status: 'partial' }}
+        hasContent
+        spanParts={[okCall, failedCall]}
+      >
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByText(LABEL)).not.toHaveClass('text-text-warning');
+  });
+
+  test('keeps the pill quiet when the phase contains both successful and failed calls', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[okCall, failedCall]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByTestId('failed-reveal-pill').querySelector('span')).toHaveClass(
+      'text-text-secondary',
+    );
   });
 
   test('a card with no failure shows neither pill nor peek', () => {
@@ -699,7 +723,7 @@ describe('ActivityPhaseGroup open header', () => {
     fireEvent.click(header);
     expect(pinned).toHaveClass('sticky', 'top-0', 'bg-surface-primary-alt');
     expect(pinned).not.toHaveClass('bg-presentation');
-    expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('pl-6');
+    expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('ps-6');
   });
 
   test('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
@@ -837,6 +861,88 @@ describe('ActivityPhaseGroup open live header', () => {
   });
 });
 
+test('retains a warning when a partial phase has no child rows', () => {
+  render(
+    <ActivityPhaseGroup labelPart={{ ...labelPart, status: 'partial' }} hasContent={false}>
+      <div />
+    </ActivityPhaseGroup>,
+  );
+  expect(
+    screen.getByTestId('activity-phase-card').querySelector('.lucide-triangle-alert'),
+  ).not.toBeNull();
+});
+
+test.each([
+  { type: ContentTypes.THINK, think: 'Remaining reasoning' },
+  { type: ContentTypes.TEXT, text: 'Remaining text' },
+  makeLabelPart('Remaining child summary'),
+])('retains partial status with only a $type row remaining', (part) => {
+  render(
+    <ActivityPhaseGroup
+      labelPart={{ ...labelPart, status: 'partial' }}
+      hasContent
+      spanParts={[part as TMessageContentParts]}
+    >
+      <div />
+    </ActivityPhaseGroup>,
+  );
+  expect(
+    screen.getByRole('button', { name: LABEL }).querySelector('.lucide-triangle-alert'),
+  ).not.toBeNull();
+});
+
+test('honors the partial marker when only failed tool rows survive', () => {
+  const part: TMessageContentParts = {
+    type: ContentTypes.TOOL_CALL,
+    tool_call: {
+      id: 'remaining',
+      name: 'read_file',
+      args: '{}',
+      output: 'Error processing tool: unavailable',
+      progress: 1,
+      runStepStatus: 'failed',
+    },
+  } as TMessageContentParts;
+  render(
+    <ActivityPhaseGroup
+      labelPart={{ ...labelPart, status: 'partial' }}
+      hasContent
+      spanParts={[part]}
+    >
+      <div />
+    </ActivityPhaseGroup>,
+  );
+  expect(
+    screen.getByRole('button', { name: LABEL }).querySelector('.lucide-triangle-alert'),
+  ).not.toBeNull();
+});
+
+test('retains partial status when only successful tool rows survive', () => {
+  const part = {
+    type: ContentTypes.TOOL_CALL,
+    tool_call: {
+      id: 'success',
+      name: 'read_file',
+      args: '{}',
+      output: 'done',
+      progress: 1,
+      runStepStatus: 'completed',
+    },
+  } as TMessageContentParts;
+  render(
+    <ActivityPhaseGroup
+      labelPart={{ ...labelPart, status: 'partial' }}
+      hasContent
+      spanParts={[part]}
+    >
+      <div />
+    </ActivityPhaseGroup>,
+  );
+  expect(
+    screen.getByRole('button', { name: LABEL }).querySelector('.lucide-triangle-alert'),
+  ).not.toBeNull();
+});
+
 describe('ActivityPhaseGroup streaming thought peek', () => {
   const thought: TMessageContentParts = {
     type: ContentTypes.THINK,
@@ -853,19 +959,13 @@ describe('ActivityPhaseGroup streaming thought peek', () => {
     },
   } as unknown as TMessageContentParts;
 
-  test("shows the streaming thought under a collapsed live card, in the cursor's place", () => {
+  test('hides the streaming thought when its Thoughts header is inside a collapsed phase', () => {
     render(
       <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought]} showCursor>
         <div data-testid="phase-content" />
       </ActivityPhaseGroup>,
     );
-    const peek = screen.getByTestId('streaming-thought-peek');
-    expect(peek).toHaveTextContent('Next I check the ordering. Then the tags.');
-    /** Straight from the stream, the thought still carries its opening tag. */
-    expect(peek).not.toHaveTextContent('<think>');
-    expect(screen.queryByTestId('activity-phase-cursor')).toBeNull();
-    /** Under the header, not inside the fold that would unmount it. */
-    expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(peek);
+    expect(screen.queryByTestId('streaming-thought-peek')).not.toBeInTheDocument();
   });
 
   test('gives way to the rows once the card is open', () => {
@@ -884,6 +984,21 @@ describe('ActivityPhaseGroup streaming thought peek', () => {
         labelPart={makeLabelPart('')}
         hasContent
         liveParts={[thought, call]}
+        showCursor
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+    expect(screen.getByTestId('activity-phase-cursor')).toBeInTheDocument();
+  });
+
+  test('hides the thought when it streams after tool calls in the same card', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[call, thought]}
         showCursor
       >
         <div data-testid="phase-content" />

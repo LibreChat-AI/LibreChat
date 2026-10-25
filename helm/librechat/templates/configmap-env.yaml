@@ -5,20 +5,20 @@ metadata:
 data:
   {{- $configEnv := default dict .Values.librechat.configEnv }}
   {{- $adminPanelUrl := .Values.librechat.adminPanelUrl }}
-  {{- $configAdminPanelUrl := dig "configEnv" "ADMIN_PANEL_URL" "" .Values.librechat }}
+  {{- $configAdminPanelUrl := get $configEnv "ADMIN_PANEL_URL" }}
   {{- if (index .Values "librechat-rag-api" "enabled") }}
   RAG_API_URL: http://{{ include "rag.fullname" (index .Subcharts "librechat-rag-api") | lower }}.{{ .Release.Namespace | lower }}.svc.cluster.local:8000 
   {{- end }}
-  {{- if and (not (dig "configEnv" "MEILI_HOST" "" .Values.librechat)) .Values.meilisearch.enabled }}
+  {{- if and (not (get $configEnv "MEILI_HOST")) .Values.meilisearch.enabled }}
   MEILI_HOST: http://{{ include "meilisearch.fullname" .Subcharts.meilisearch }}.{{ .Release.Namespace | lower }}.svc.cluster.local:7700
   {{- end }}
-  {{- if and (not (dig "configEnv" "MONGO_URI" "" .Values.librechat)) .Values.mongodb.enabled }}
+  {{- if and (not (get $configEnv "MONGO_URI")) .Values.mongodb.enabled (not (include "librechat.bundledMongoAuth" .)) }}
   MONGO_URI: mongodb://{{ include "mongodb.service.nameOverride" .Subcharts.mongodb }}.{{ .Release.Namespace | lower }}.svc.cluster.local:27017/LibreChat
   {{- end }}
-  {{- if and (not (dig "configEnv" "USE_REDIS" "" .Values.librechat)) .Values.redis.enabled }}
+  {{- if and (not (get $configEnv "USE_REDIS")) .Values.redis.enabled }}
   USE_REDIS: "true"
   {{- end }}
-  {{- if and (not (dig "configEnv" "REDIS_URI" "" .Values.librechat)) .Values.redis.enabled }}
+  {{- if and (not (get $configEnv "REDIS_URI")) .Values.redis.enabled }}
   REDIS_URI: {{ include "librechat.bundledRedisURI" . }}
   {{- end }}
   {{- if and $adminPanelUrl (not $configAdminPanelUrl) }}

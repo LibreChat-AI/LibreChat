@@ -1,11 +1,11 @@
 import { memo, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
+import { useSetAtom } from 'jotai';
 import { createPortal } from 'react-dom';
 import { TextQuote } from 'lucide-react';
-import { useSetRecoilState } from 'recoil';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 import { cn, MAX_QUOTE_COUNT } from '~/utils';
 import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 /** Only selections fully inside a rendered chat message get the popup. */
 const MESSAGE_SELECTOR = '.message-render';
@@ -329,7 +329,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
   const pressedTextRef = useRef<string | null>(null);
   /** Set by the listener effect so the press handlers can dismiss the popup. */
   const hideRef = useRef<() => void>(() => undefined);
-  const setQuotes = useSetRecoilState(store.pendingQuotesByConvoId(conversationId));
+  const setQuotes = useSetAtom(pendingQuotesByConvoId(conversationId));
 
   /** Selection and scroll events must not enter React's commit/selection-restoration
    *  path. Keep the portal mounted and update only its transient presentation. */
@@ -632,7 +632,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
         display: 'none',
       }}
       className={cn(
-        'border-border-light bg-surface-secondary text-text-primary hover:bg-surface-tertiary fixed z-50 inline-flex items-center gap-1.5 rounded-full border text-sm font-medium shadow-lg transition-colors',
+        'border-border-chrome bg-surface-secondary text-text-primary hover:bg-surface-tertiary fixed z-50 inline-flex items-center gap-1.5 rounded-full border text-sm font-medium shadow-lg transition-colors',
         /** Comfortable tap target when the selection came from a finger. */
         'px-3 py-1.5 data-[touch=true]:min-h-11 data-[touch=true]:px-4 data-[touch=true]:py-2.5',
       )}

@@ -132,7 +132,7 @@ export async function generateAdminExchangeCode(
 
   await cache.set(exchangeCode, data);
 
-  logger.info(`[adminExchange] Generated exchange code for user: ${user.email}`);
+  logger.info(`[adminExchange] Generated exchange code for user: ${user._id}`);
 
   return exchangeCode;
 }
@@ -171,7 +171,7 @@ export async function exchangeAdminCode(
     }
   }
 
-  logger.info(`[adminExchange] Exchanged code for user: ${data.user?.email}`);
+  logger.info(`[adminExchange] Exchanged code for user: ${data.user?.id}`);
 
   return {
     token: data.token,

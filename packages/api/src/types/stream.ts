@@ -32,6 +32,9 @@ export interface GenerationJobMetadata {
   responseMessageId?: string;
   /** Whether this generation replaces an existing assistant branch. */
   isRegenerate?: boolean;
+  /** Whether this generation is a manual context compaction; the abort paths
+   * read it to stamp the stopped row with the compaction's identity. */
+  compact?: boolean;
   /** Exact normalized MCP placeholder identity for this turn. Persisted so HITL
    * resume does not reconstruct a different parent or overridden conversation. */
   mcpRequestBody?: MCPRuntimeRequestBody;

@@ -4630,6 +4630,46 @@ describe('createToolExecuteHandler', () => {
       );
     });
 
+    it('reports a safe error when Skill deletion wins the agent file-write race', async () => {
+      const saveSkillFileContent = jest.fn(async () => {
+        throw Object.assign(new Error('Skill is being deleted'), { code: 'SKILL_DELETING' });
+      });
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'edit-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          file_id: 'revision-1',
+          content: 'hello old\n',
+          isBinary: false,
+          mimeType: 'text/markdown',
+          bytes: 10,
+          filepath: '/tmp/a.md',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_deleting',
+          name: 'edit_file',
+          args: {
+            path: 'skills/edit-skill/references/a.md',
+            old_text: 'hello old',
+            new_text: 'hello new',
+          },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('Skill is being deleted');
+      expect(result.errorMessage).not.toContain('Internal');
+    });
+
     it.each(['github', 'notion'] as const)(
       'does not allow an agent to modify a %s-managed skill file',
       async (source) => {

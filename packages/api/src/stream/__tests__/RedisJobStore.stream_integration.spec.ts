@@ -2416,68 +2416,6 @@ describe('RedisJobStore Integration Tests', () => {
       await store.deleteConsumerGroup(streamId, groupName);
       await store.destroy();
     });
-
-    // TODO: Debug consumer group timing with Redis Streams
-    test.skip('should resume from where client left off', async () => {
-      if (!ioredisClient) {
-        return;
-      }
-
-      const { RedisJobStore } = await import('../implementations/RedisJobStore');
-      const store = new RedisJobStore(ioredisClient);
-      await store.initialize();
-
-      const streamId = `resume-test-${Date.now()}`;
-      await store.createJob(streamId, 'user-1', streamId);
-
-      // Create consumer group FIRST (before adding chunks) to track delivery
-      const groupName = `client-resume-${Date.now()}`;
-      await store.createConsumerGroup(streamId, groupName, '$'); // Start from end (only new messages)
-
-      // Add initial chunks (these will be "new" to the consumer group)
-      await store.appendChunk(streamId, {
-        event: 'on_message_delta',
-        data: { type: 'text', text: 'Part 1' },
-      });
-      await store.appendChunk(streamId, {
-        event: 'on_message_delta',
-        data: { type: 'text', text: 'Part 2' },
-      });
-
-      // Wait for Redis to sync
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Client reads first batch
-      const firstRead = await store.readChunksFromGroup(streamId, groupName, 'consumer-1');
-      expect(firstRead.length).toBe(2);
-
-      // ACK the chunks
-      await store.acknowledgeChunks(
-        streamId,
-        groupName,
-        firstRead.map((c) => c.id),
-      );
-
-      // More chunks arrive while client is away
-      await store.appendChunk(streamId, {
-        event: 'on_message_delta',
-        data: { type: 'text', text: 'Part 3' },
-      });
-      await store.appendChunk(streamId, {
-        event: 'on_message_delta',
-        data: { type: 'text', text: 'Part 4' },
-      });
-
-      // Wait for Redis to sync
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Client reconnects - should only get new chunks
-      const secondRead = await store.readChunksFromGroup(streamId, groupName, 'consumer-1');
-      expect(secondRead.length).toBe(2);
-
-      await store.deleteConsumerGroup(streamId, groupName);
-      await store.destroy();
-    });
   });
 
   describe('TTL and Cleanup', () => {

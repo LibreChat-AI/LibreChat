@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { cva } from 'class-variance-authority';
+import { focusOutlineRole } from './Focus';
 import { cn } from '~/utils';
 
 interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
@@ -86,6 +87,7 @@ const TableRow: React.ForwardRefExoticComponent<
         /** Rows are separated by their own padding and the hover fill, not by rules:
          *  a ruled table reads as a grid, and a list of records rarely needs one. */
         'hover:bg-surface-hover data-[state=selected]:bg-surface-hover transition-colors',
+        focusOutlineRole,
         className,
       )}
       {...props}
@@ -133,7 +135,7 @@ const TableHead: React.ForwardRefExoticComponent<
     ref={ref}
     className={cn(
       tableCellRule,
-      'text-table-header-text h-theme-table-head px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
+      'text-table-header-text h-theme-table-head px-4 text-start align-middle font-medium [&:has([role=checkbox])]:pe-0',
       tableHeadVariants({ size }),
       className,
     )}
@@ -171,7 +173,7 @@ const TableCell: React.ForwardRefExoticComponent<
     ref={ref}
     className={cn(
       tableCellRule,
-      'px-4 align-middle [&:has([role=checkbox])]:pr-0',
+      'px-4 align-middle [&:has([role=checkbox])]:pe-0',
       tableCellVariants({ size }),
       className,
     )}
@@ -192,7 +194,7 @@ const TableRowHeader: React.ForwardRefExoticComponent<
     scope="row"
     className={cn(
       tableCellRule,
-      'px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
+      'px-4 text-start align-middle font-medium [&:has([role=checkbox])]:pe-0',
       tableCellVariants({ size }),
       className,
     )}

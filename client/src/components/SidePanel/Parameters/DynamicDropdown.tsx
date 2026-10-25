@@ -76,7 +76,7 @@ function DynamicDropdown({
             <div className="flex w-full justify-between">
               <Label
                 htmlFor={`${settingKey}-dynamic-dropdown`}
-                className="text-left text-xs font-medium"
+                className="text-start text-xs font-medium"
               >
                 {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}
                 {showDefault && (

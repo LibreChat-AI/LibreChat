@@ -5,17 +5,20 @@ export * from './balance';
 export * from './config';
 export * from './footer';
 export * from './theme';
+export * from './themes';
 export * from './langchain';
 export * from './filters';
 export * from './file-config';
 export * from './resolve-llm-delivery-path';
 /* messages  */
 export * from './messages';
+export * from './previews';
 export * from './errors';
 /* run steps */
 export * from './runSteps';
 /* ui parts */
 export * from './parts';
+export * from './reasoning';
 export * from './toolTiming';
 /* artifacts  */
 export * from './artifacts';
@@ -63,6 +66,7 @@ export type {
 } from './types/protection';
 export * from './types/subagents';
 export * from './types/background';
+export * from './types/pullRequest';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';
@@ -105,3 +109,5 @@ export * from './code/workspace';
 export * from './types/scheduleConsent';
 
 export * from './approval';
+
+export * from './codeSetup';

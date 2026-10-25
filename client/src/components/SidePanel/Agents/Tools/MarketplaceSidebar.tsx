@@ -152,7 +152,7 @@ function SidebarItem({ icon, label, active, onClick, count }: SidebarEntry) {
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+        'flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-start text-sm transition-colors',
         active
           ? 'bg-surface-active text-text-primary font-medium'
           : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
@@ -161,7 +161,7 @@ function SidebarItem({ icon, label, active, onClick, count }: SidebarEntry) {
       <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
       <span className="flex-1 truncate">{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="text-text-secondary text-[11px] tabular-nums">{count}</span>
+        <span className="text-text-secondary text-2xs tabular-nums">{count}</span>
       )}
     </button>
   );
@@ -187,7 +187,7 @@ function SidebarChip({ icon, label, active, onClick, count }: SidebarEntry) {
       <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
       <span>{label}</span>
       {count !== undefined && count > 0 && (
-        <span className="text-text-secondary text-[10px] tabular-nums">{count}</span>
+        <span className="text-text-secondary text-3xs tabular-nums">{count}</span>
       )}
     </button>
   );
@@ -200,7 +200,7 @@ export default function MarketplaceSidebar(props: MarketplaceSidebarProps) {
   const createItems = useCreateItems(props.onCreateNew);
 
   return (
-    <aside className="border-border-light bg-surface-primary-alt flex w-[min(14rem,35%)] shrink-0 flex-col gap-0.5 border-r p-3">
+    <aside className="border-border-light bg-surface-primary-alt flex w-[min(14rem,35%)] shrink-0 flex-col gap-0.5 border-e p-3">
       <h2 className="text-text-primary px-2.5 pt-1 pb-1 text-base font-bold">
         {localize('com_ui_tools_marketplace')}
       </h2>
@@ -276,8 +276,8 @@ export function MarketplaceFilterBar(props: MarketplaceSidebarProps) {
               render={
                 <Button
                   variant="outline"
-                  size="sm"
-                  className="touch:size-theme-control-touch h-8 w-8 shrink-0 justify-center p-0"
+                  size="bare"
+                  className="touch:size-theme-control-touch h-8 w-8 shrink-0"
                   aria-label={localize('com_ui_tools_create_new')}
                 >
                   <Plus className="size-4" aria-hidden="true" />

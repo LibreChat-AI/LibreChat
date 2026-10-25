@@ -149,9 +149,9 @@ export const ThinkingButton = memo(
            *  row in the same list as tool calls, grouped thoughts and phase
            *  summaries, all set at that scale. Sized to the body it read as a
            *  second, larger kind of row beside them. */
-          className="group/button tool-status-text flex flex-1 items-center justify-start rounded-lg pr-10"
+          className="group/button tool-status-text flex flex-1 items-center justify-start rounded-lg pe-10"
         >
-          <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
+          <span className={cn(ROW_GLYPH_SLOT, 'relative me-2')}>
             <Lightbulb
               className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
               aria-hidden="true"
@@ -186,7 +186,7 @@ export const ThinkingButton = memo(
           <span
             key={animateLabel ? label : undefined}
             className={cn(
-              'min-w-0 truncate text-left font-medium',
+              'min-w-0 truncate text-start font-medium',
               shimmerLabel && !animateLabel && 'shimmer',
               animateLabel &&
                 'animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out motion-reduce:animate-none',
@@ -207,7 +207,7 @@ export const ThinkingButton = memo(
             label={localize('com_ui_copy_thoughts_to_clipboard')}
             copiedLabel={localize('com_ui_copied_to_clipboard')}
             className={cn(
-              'absolute top-1/2 right-0 -translate-y-1/2 opacity-0 transition-opacity',
+              'absolute inset-e-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity',
               'group-focus-within/thinking-container:opacity-100 group-hover/thinking-container:opacity-100',
               'focus-visible:opacity-100',
             )}
@@ -228,10 +228,10 @@ export const ThinkingLabel = memo(({ label, title }: { label: string; title?: st
   return (
     <div className="mb-2 pt-2 pb-2">
       <div className="tool-status-text flex w-full items-center justify-start" title={title}>
-        <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
+        <span className={cn(ROW_GLYPH_SLOT, 'relative me-2')}>
           <Lightbulb className="icon-sm text-text-secondary" aria-hidden="true" />
         </span>
-        <span className="text-text-secondary min-w-0 truncate text-left font-medium">{label}</span>
+        <span className="text-text-secondary min-w-0 truncate text-start font-medium">{label}</span>
       </div>
     </div>
   );
@@ -276,7 +276,7 @@ export const FloatingThinkingBar = memo(
         className={cn(
           /* Laid over the text rather than reserved below it, so the box keeps
              even padding; the fill keeps the controls legible over a line. */
-          'bg-surface-secondary absolute right-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
+          'bg-surface-secondary absolute inset-e-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >

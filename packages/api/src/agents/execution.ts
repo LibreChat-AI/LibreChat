@@ -73,40 +73,41 @@ export interface CodeExecutionContext {
   };
 }
 
-/** Removes live capability data before a workspace binding is persisted. */
-export function getCodeWorkspaceSelections(
-  contexts: Array<
-    | Pick<CodeExecutionContext, 'environmentId' | 'environmentType' | 'codeWorkspace'>
-    | null
-    | undefined
-  >,
-): CodeWorkspaceSelection[] | undefined {
-  const selections = new Map<string, CodeWorkspaceSelection>();
-  for (const context of contexts) {
-    const workspace = context?.codeWorkspace;
-    if (
-      context?.environmentType !== 'attached' ||
-      context.environmentId == null ||
-      workspace == null ||
-      workspace.environmentId !== context.environmentId
-    ) {
-      continue;
-    }
-    selections.set(workspace.environmentId, {
-      environmentId: workspace.environmentId,
-      workspaceId: workspace.workspaceId,
-      ...(workspace.checkout == null ? {} : { checkout: workspace.checkout }),
-      ...(workspace.agentIds == null ? {} : { agentIds: [...workspace.agentIds] }),
-    });
-  }
-  if (selections.size === 0) return undefined;
-  return [...selections.values()].sort((a, b) => a.environmentId.localeCompare(b.environmentId));
-}
-
 type CodeExecutionApprovalAgent = {
   id?: string | null;
   codeExecutionContext?: CodeExecutionContext | null;
+  /** Alternate machines a parent may route this subagent to per call. */
+  codeExecutionChoices?: readonly CodeExecutionContext[] | null;
 };
+
+function hashCodeExecutionTarget(agentId: string | null, context: CodeExecutionContext): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        agentId,
+        context.executionProfile,
+        context.baseUrl,
+        context.codeSessionKey,
+        context.executionRouteKey ?? null,
+        context.runtimeSessionHint ?? null,
+        context.environmentId ?? null,
+        context.environmentType ?? null,
+        context.bridgeWorkerId ?? null,
+        context.codeWorkspace == null
+          ? null
+          : {
+              environmentId: context.codeWorkspace.environmentId,
+              workspaceId: context.codeWorkspace.workspaceId,
+              workspaceInstanceId: context.codeWorkspace.workspaceInstanceId ?? null,
+              operations: [...new Set(context.codeWorkspace.operations)].sort(),
+              ...(context.codeWorkspace.environment
+                ? { definitionFingerprint: context.codeWorkspace.environment.fingerprint }
+                : {}),
+            },
+      ]),
+    )
+    .digest('hex');
+}
 
 const CODE_EXECUTION_TARGET_HASH = /^[a-f0-9]{64}$/;
 const MAX_CODE_EXECUTION_APPROVAL_TARGETS = 128;
@@ -120,39 +121,28 @@ export function captureCodeExecutionApprovalBinding(
   agents: readonly (CodeExecutionApprovalAgent | null | undefined)[],
 ): Agents.CodeExecutionApprovalBinding | undefined {
   const targetsByIdentity = new Map<string, Agents.CodeExecutionApprovalTargetBinding>();
+  const addTarget = (target: Agents.CodeExecutionApprovalTargetBinding): void => {
+    targetsByIdentity.set(`${target.agentId ?? ''}\u0000${target.targetHash}`, target);
+  };
   for (const agent of agents) {
-    const context = agent?.codeExecutionContext;
-    if (context?.statefulSessions !== true) {
+    const agentId = agent?.id ?? null;
+    const routeHashes = [agent?.codeExecutionContext, ...(agent?.codeExecutionChoices ?? [])]
+      .filter((context): context is CodeExecutionContext => context?.statefulSessions === true)
+      .map((context) => hashCodeExecutionTarget(agentId, context));
+    if (routeHashes.length === 0) {
       continue;
     }
-    const targetHash = createHash('sha256')
-      .update(
-        JSON.stringify([
-          agent?.id ?? null,
-          context.executionProfile,
-          context.baseUrl,
-          context.codeSessionKey,
-          context.executionRouteKey ?? null,
-          context.runtimeSessionHint ?? null,
-          context.environmentId ?? null,
-          context.environmentType ?? null,
-          context.bridgeWorkerId ?? null,
-          context.codeWorkspace == null
-            ? null
-            : {
-                environmentId: context.codeWorkspace.environmentId,
-                workspaceId: context.codeWorkspace.workspaceId,
-                workspaceInstanceId: context.codeWorkspace.workspaceInstanceId ?? null,
-                operations: [...new Set(context.codeWorkspace.operations)].sort(),
-                ...(context.codeWorkspace.environment
-                  ? { definitionFingerprint: context.codeWorkspace.environment.fingerprint }
-                  : {}),
-              },
-        ]),
-      )
-      .digest('hex');
-    const target = { agentId: agent?.id ?? null, targetHash };
-    targetsByIdentity.set(`${target.agentId ?? ''}\u0000${target.targetHash}`, target);
+    /** An agent with per-call choices folds its default and every choice into one
+     * target, so each agent contributes at most one entry to the bounded binding. */
+    addTarget({
+      agentId,
+      targetHash:
+        (agent?.codeExecutionChoices?.length ?? 0) === 0
+          ? routeHashes[0]
+          : createHash('sha256')
+              .update(JSON.stringify(['choices', [...new Set(routeHashes)].sort()]))
+              .digest('hex'),
+    });
   }
   const targets = [...targetsByIdentity.values()];
   if (targets.length === 0) {

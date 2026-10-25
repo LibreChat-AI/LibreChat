@@ -188,7 +188,7 @@ const ImagePreview = ({
               onClick={() => handleOpenChange(false)}
               variant="media"
               size="icon"
-              className="absolute top-4 right-4 z-20"
+              className="absolute inset-e-4 top-4 z-20"
               aria-label={localize('com_ui_close')}
             >
               <X className="size-5" aria-hidden="true" />

@@ -20,6 +20,7 @@ type ProvisionCallback = (
   names: string[],
   agentId?: string,
   signal?: AbortSignal,
+  context?: SubagentExecutionContext,
 ) => Promise<CodeEnvFile[] | void>;
 
 export interface ChatRunFileBindings extends RunFileHost {
@@ -174,7 +175,7 @@ export function createChatRunFileBindings({
         signal?: AbortSignal,
         context?: Parameters<typeof host.getContext>[1],
       ) => {
-        if (!host.session.isActive()) return fallback(names, agentId, signal);
+        if (!host.session.isActive()) return fallback(names, agentId, signal, context);
         if (!agentId || !signal)
           throw new Error('Shared-file provisioning requires an execution identity.');
         return host.provisionPrepared(names, agentId, signal, context);

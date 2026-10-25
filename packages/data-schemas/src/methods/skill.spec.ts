@@ -22,6 +22,7 @@ import {
   filterExistingSkillIds,
   deriveStructuredFrontmatterFields,
 } from './skill';
+import { createSkillLifecycleMethods } from './skillLifecycle';
 import { createAclEntryMethods } from './aclEntry';
 import { createMethods } from './index';
 
@@ -111,6 +112,7 @@ afterAll(async () => {
 afterEach(async () => {
   await Skill.deleteMany({});
   await SkillFile.deleteMany({});
+  await mongoose.models.SkillUploadIntent.deleteMany({});
   await AclEntry.deleteMany({});
   await mongoose.models.Agent.deleteMany({});
 });
@@ -744,6 +746,46 @@ describe('Skill CRUD methods', () => {
     await expect(methods.createSkill(makeSkillInput())).rejects.toBeDefined();
   });
 
+  it.each(['abcdef0123456789abcdef01', 'ABCDEF0123456789ABCDEF01'])(
+    'accepts hex string author %s and stores it as an ObjectId',
+    async (hexAuthor) => {
+      const { skill } = await methods.createSkill(
+        makeSkillInput({ name: 'hex-author-skill', author: hexAuthor }),
+      );
+      expect(skill.author).toBeInstanceOf(mongoose.Types.ObjectId);
+      expect(skill.author.toHexString()).toBe(hexAuthor.toLowerCase());
+    },
+  );
+
+  it.each(['', 'not-an-id', 'a'.repeat(23), 'a'.repeat(25), 'g'.repeat(24)])(
+    'rejects malformed string author %p with a validation error before querying',
+    async (author) => {
+      const findOne = jest.spyOn(Skill, 'findOne');
+
+      await expect(methods.createSkill(makeSkillInput({ author }))).rejects.toMatchObject({
+        message: 'Skill validation failed',
+        code: 'SKILL_VALIDATION_FAILED',
+        issues: [{ field: 'author', code: 'INVALID_FORMAT' }],
+      });
+      expect(findOne).not.toHaveBeenCalled();
+    },
+  );
+
+  it('enforces name uniqueness per author across ObjectId and string forms', async () => {
+    const hexAuthor = new mongoose.Types.ObjectId().toHexString();
+    await methods.createSkill(
+      makeSkillInput({ name: 'mixed-author-form-skill', author: hexAuthor }),
+    );
+    await expect(
+      methods.createSkill(
+        makeSkillInput({
+          name: 'mixed-author-form-skill',
+          author: new mongoose.Types.ObjectId(hexAuthor),
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it('throws with validation issues on bad input', async () => {
     await expect(methods.createSkill(makeSkillInput({ name: 'BAD NAME' }))).rejects.toMatchObject({
       code: 'SKILL_VALIDATION_FAILED',
@@ -775,7 +817,20 @@ describe('Skill CRUD methods', () => {
     }
   });
 
-  it('deleteSkill cascades ACL entries and skill files', async () => {
+  it('does not expose a deleting Skill as the current version after a missed update', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    await mongoose.models.Skill.updateOne({ _id: skill._id }, { $set: { deletingAt: new Date() } });
+
+    await expect(
+      methods.updateSkill({
+        id: skill._id.toString(),
+        expectedVersion: skill.version,
+        update: { description: 'Updated description (long enough).' },
+      }),
+    ).resolves.toEqual({ status: 'not_found' });
+  });
+
+  it('queues blob cleanup before finalizing ACL and file rows', async () => {
     const { skill } = await methods.createSkill(makeSkillInput());
     await grantOwner(skill._id);
     await methods.upsertSkillFile({
@@ -794,7 +849,12 @@ describe('Skill CRUD methods', () => {
     expect(await SkillFile.countDocuments({ skillId: skill._id })).toBe(1);
 
     const res = await methods.deleteSkill(skill._id.toString());
-    expect(res.deleted).toBe(true);
+    expect(res.cleanupComplete).toBe(false);
+    expect(await AclEntry.countDocuments({ resourceId: skill._id })).toBe(1);
+    expect(await SkillFile.countDocuments({ skillId: skill._id })).toBe(1);
+    expect((await methods.finalizeSkillDeletion(skill._id.toString())).cleanupComplete).toBe(false);
+    await methods.deleteSkillFileAfterBlob(skill._id.toString(), 'file-123');
+    expect((await methods.finalizeSkillDeletion(skill._id.toString())).cleanupComplete).toBe(true);
     expect(await AclEntry.countDocuments({ resourceId: skill._id })).toBe(0);
     expect(await SkillFile.countDocuments({ skillId: skill._id })).toBe(0);
   });
@@ -807,40 +867,30 @@ describe('Skill CRUD methods', () => {
     expect(filtered).toEqual([canonical]);
   });
 
-  it('deleteSkill remains retryable after skill file cleanup fails', async () => {
+  it('does not admit a Skill already fenced for deletion into a new agent allowlist', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput({ name: 'deleting-allowlist' }));
+    await Skill.updateOne({ _id: skill._id }, { $set: { deletingAt: new Date() } });
+    expect(await filterExistingSkillIds(mongoose, [skill._id.toString()])).toEqual([]);
+  });
+
+  it('deleteSkill retains its retry journal instead of removing file rows', async () => {
     const { skill } = await methods.createSkill(makeSkillInput({ name: 'flaky-files' }));
     const Agent = mongoose.models.Agent;
     const agent = await Agent.create(makeAgentDoc([skill._id.toString()]));
 
-    const deleteManySpy = jest
-      .spyOn(SkillFile, 'deleteMany')
-      .mockRejectedValueOnce(new Error('transient storage failure'));
-    try {
-      const first = await methods.deleteSkill(skill._id.toString());
-      expect(first).toEqual({
-        deleted: true,
-        skillAbsent: true,
-        cleanupComplete: false,
-        failedCleanupSteps: ['skill_files'],
-      });
-
-      const retry = await methods.deleteSkill(skill._id.toString());
-      expect(retry).toEqual({
-        deleted: false,
-        skillAbsent: true,
-        cleanupComplete: true,
-        failedCleanupSteps: [],
-      });
-    } finally {
-      deleteManySpy.mockRestore();
-    }
+    const first = await methods.deleteSkill(skill._id.toString());
+    expect(first).toMatchObject({ cleanupComplete: false, failedCleanupSteps: ['skill_files'] });
+    const retry = await methods.deleteSkill(skill._id.toString());
+    expect(retry).toMatchObject({ cleanupComplete: false, failedCleanupSteps: ['skill_files'] });
+    expect(await Skill.countDocuments({ _id: skill._id })).toBe(1);
+    expect(await mongoose.models.SkillDeletion.countDocuments({ skillId: skill._id })).toBe(1);
 
     const agentAfter = (await Agent.findById(agent._id).lean()) as {
       skills?: string[];
       skills_enabled?: boolean;
     } | null;
-    expect(agentAfter?.skills).toEqual([]);
-    expect(agentAfter?.skills_enabled).toBe(false);
+    expect(agentAfter?.skills).toEqual([skill._id.toString()]);
+    expect(agentAfter?.skills_enabled).toBe(true);
   });
 
   it('deleteSkill disables skills when the deleted id was the entire allowlist', async () => {
@@ -849,7 +899,8 @@ describe('Skill CRUD methods', () => {
     const agent = await Agent.create(makeAgentDoc([skill._id.toString()]));
 
     const res = await methods.deleteSkill(skill._id.toString().toUpperCase());
-    expect(res.deleted).toBe(true);
+    expect(res.cleanupComplete).toBe(false);
+    expect((await methods.finalizeSkillDeletion(skill._id.toString())).cleanupComplete).toBe(true);
 
     const agentAfter = (await Agent.findById(agent._id).lean()) as {
       skills?: string[];
@@ -865,7 +916,8 @@ describe('Skill CRUD methods', () => {
     const agent = await Agent.create(makeAgentDoc([skill._id.toString()], { skills_scope: 'all' }));
 
     const res = await methods.deleteSkill(skill._id.toString());
-    expect(res.deleted).toBe(true);
+    expect(res.cleanupComplete).toBe(false);
+    expect((await methods.finalizeSkillDeletion(skill._id.toString())).cleanupComplete).toBe(true);
 
     const agentAfter = (await Agent.findById(agent._id).lean()) as {
       skills?: string[];
@@ -887,7 +939,8 @@ describe('Skill CRUD methods', () => {
     );
 
     const res = await methods.deleteSkill(skill._id.toString());
-    expect(res.deleted).toBe(true);
+    expect(res.cleanupComplete).toBe(false);
+    expect((await methods.finalizeSkillDeletion(skill._id.toString())).cleanupComplete).toBe(true);
 
     const agentAfter = (await Agent.findById(agent._id).lean()) as {
       skills?: string[];
@@ -911,7 +964,8 @@ describe('Skill CRUD methods', () => {
     );
 
     const res = await methods.deleteSkill(skill._id.toString());
-    expect(res.deleted).toBe(true);
+    expect(res.cleanupComplete).toBe(false);
+    expect((await methods.finalizeSkillDeletion(skill._id.toString())).cleanupComplete).toBe(true);
 
     const agentAfter = (await Agent.findById(agent._id).lean()) as {
       skills?: string[];
@@ -933,7 +987,8 @@ describe('Skill CRUD methods', () => {
     );
 
     const res = await methods.deleteSkill(doomed._id.toString());
-    expect(res.deleted).toBe(true);
+    expect(res.cleanupComplete).toBe(false);
+    expect((await methods.finalizeSkillDeletion(doomed._id.toString())).cleanupComplete).toBe(true);
 
     const scopedAfter = (await Agent.findById(scoped._id).lean()) as {
       skills?: string[];
@@ -1862,6 +1917,7 @@ describe('Skill CRUD methods', () => {
 
 describe('SkillFile methods', () => {
   it('allows exactly one conditional writer and rejects a stale or deleted revision', async () => {
+    await mongoose.models.SkillUploadIntent.init();
     const { skill } = await methods.createSkill(makeSkillInput());
     const input = {
       skillId: skill._id,
@@ -1886,6 +1942,18 @@ describe('SkillFile methods', () => {
     });
     const current = await methods.getSkillFileByPath(skill._id, input.relativePath);
     expect(['a', 'b']).toContain(current?.file_id);
+    expect(
+      await mongoose.models.SkillUploadIntent.findOne({ fileId: 'original' }).lean(),
+    ).toMatchObject({
+      state: 'committed',
+      storageKey: '/tmp/original',
+      cleanupRequestedAt: expect.any(Date),
+    });
+    expect(
+      (await createSkillLifecycleMethods(mongoose).listAbandonedSkillUploadIntents()).filter(
+        (intent) => intent.fileId === 'original',
+      ),
+    ).toHaveLength(1);
     expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 3, fileCount: 1 });
 
     // An unconditional authoring/agent write also invalidates a captured editor revision.
@@ -1906,6 +1974,145 @@ describe('SkillFile methods', () => {
       }),
     ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
     expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).toBeNull();
+  });
+
+  it('keeps a queued blob safe when replacement CAS fails, then retries it after replacement', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const input = {
+      skillId: skill._id,
+      relativePath: 'references/queued.md',
+      file_id: 'legacy-original',
+      filename: 'queued.md',
+      filepath: '/tmp/legacy-original',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 10,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(input);
+    const spy = jest.spyOn(SkillFile, 'findOneAndUpdate').mockImplementationOnce(
+      () =>
+        ({
+          lean: async () => {
+            throw new Error('CAS unavailable');
+          },
+        }) as never,
+    );
+    try {
+      await expect(
+        methods.upsertSkillFile({
+          ...input,
+          expectedFileId: input.file_id,
+          file_id: 'replacement',
+        }),
+      ).rejects.toThrow('CAS unavailable');
+    } finally {
+      spy.mockRestore();
+    }
+    const lifecycle = createSkillLifecycleMethods(mongoose);
+    expect(await lifecycle.skillFileExistsForIntent(skill._id.toString(), input.file_id)).toBe(
+      true,
+    );
+    const queued = await lifecycle.listAbandonedSkillUploadIntents();
+    expect(queued).toEqual([expect.objectContaining({ fileId: input.file_id })]);
+    const ownerId = 'cleanup-worker';
+    expect(await lifecycle.claimAbandonedSkillUploadIntent(input.file_id, ownerId, 120_000)).toBe(
+      true,
+    );
+    await expect(
+      methods.upsertSkillFile({
+        ...input,
+        expectedFileId: input.file_id,
+        file_id: 'held-replacement',
+        cleanupHoldOwner: 'sync-hold',
+      }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    expect((await methods.getSkillFileByPath(skill._id, input.relativePath))?.file_id).toBe(
+      input.file_id,
+    );
+    expect(
+      await lifecycle.scheduleAbandonedSkillUploadIntentRecheck(input.file_id, ownerId, 3_600_000),
+    ).toBe(true);
+    await lifecycle.releaseAbandonedSkillUploadIntentClaim(input.file_id, ownerId);
+    expect(await lifecycle.listAbandonedSkillUploadIntents()).toHaveLength(0);
+    await methods.upsertSkillFile({
+      ...input,
+      expectedFileId: input.file_id,
+      file_id: 'replacement',
+    });
+    expect(await lifecycle.skillFileExistsForIntent(skill._id.toString(), input.file_id)).toBe(
+      false,
+    );
+    expect(await lifecycle.listAbandonedSkillUploadIntents()).toEqual([
+      expect.objectContaining({ fileId: input.file_id }),
+    ]);
+    expect(
+      await mongoose.models.SkillUploadIntent.findOne({ fileId: input.file_id }).lean(),
+    ).toMatchObject({
+      storageKey: input.filepath,
+      cleanupRequestedAt: expect.any(Date),
+    });
+    await lifecycle.beginSkillDeletion(skill._id.toString());
+    await lifecycle.beginSkillDeletion(skill._id.toString());
+    expect(await mongoose.models.SkillUploadIntent.countDocuments({ skillId: skill._id })).toBe(2);
+    expect(
+      await mongoose.models.SkillUploadIntent.findOne({ fileId: input.file_id }).lean(),
+    ).toMatchObject({
+      cleanupRequestedAt: expect.any(Date),
+    });
+  });
+
+  it('records the storage key rather than a legacy URL for replacement cleanup', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const input = {
+      skillId: skill._id,
+      relativePath: 'references/legacy-cloud.md',
+      file_id: 'legacy-cloud-original',
+      filename: 'legacy-cloud.md',
+      filepath: 'https://stale.example.invalid/legacy-cloud.md',
+      storageKey: 'eu-west-1/skills/legacy-cloud-original.md',
+      storageRegion: 'eu-west-1',
+      source: 's3',
+      mimeType: 'text/markdown',
+      bytes: 10,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(input);
+    await methods.upsertSkillFile({
+      ...input,
+      file_id: 'legacy-cloud-replacement',
+      filepath: 'https://current.example.invalid/legacy-cloud.md',
+      storageKey: 'eu-west-1/skills/legacy-cloud-replacement.md',
+    });
+    expect(
+      await mongoose.models.SkillUploadIntent.findOne({ fileId: input.file_id }).lean(),
+    ).toMatchObject({ storageKey: input.storageKey });
+  });
+
+  it('rejects moving a blob while reusing its file id', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const input = {
+      skillId: skill._id,
+      relativePath: 'references/stable.md',
+      file_id: 'stable-id',
+      filename: 'stable.md',
+      filepath: '/tmp/stable-id',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 10,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(input);
+    await expect(
+      methods.upsertSkillFile({ ...input, filepath: '/tmp/other-object' }),
+    ).rejects.toMatchObject({
+      code: 'SKILL_FILE_CONFLICT',
+    });
+    expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).toMatchObject({
+      file_id: 'stable-id',
+      filepath: '/tmp/stable-id',
+    });
+    expect(await mongoose.models.SkillUploadIntent.countDocuments({ fileId: 'stable-id' })).toBe(0);
   });
 
   it('creates only absent skill files and leaves the winner intact when creation races', async () => {
@@ -2198,6 +2405,29 @@ describe('SkillFile methods', () => {
     expect(after?.version).toBe(4);
   });
 
+  it('deleteSkillFile preserves a concurrently replaced file when its revision changed', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    await methods.upsertSkillFile({
+      skillId: skill._id,
+      relativePath: 'references/guide.md',
+      file_id: 'current-revision',
+      filename: 'guide.md',
+      filepath: '/guide',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 1,
+      author: owner._id,
+    });
+
+    await expect(
+      methods.deleteSkillFile(skill._id, 'references/guide.md', 'stale-revision'),
+    ).resolves.toEqual({ deleted: false });
+    expect(await methods.getSkillFileByPath(skill._id, 'references/guide.md')).toMatchObject({
+      file_id: 'current-revision',
+    });
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ fileCount: 1, version: 2 });
+  });
+
   it('rejects invalid paths via upsertSkillFile', async () => {
     const { skill } = await methods.createSkill(makeSkillInput());
     await expect(
@@ -2434,11 +2664,24 @@ describe('deleteUserSkills', () => {
 
     const deleted = await methods.deleteUserSkills(owner._id as mongoose.Types.ObjectId);
     expect(deleted).toBe(1);
-    expect(await Skill.countDocuments()).toBe(1);
+    // Account deletion queues storage-aware cleanup; it must not remove the
+    // Skill row before its blobs have been reconciled.
+    expect(await Skill.countDocuments()).toBe(2);
+    expect(await Skill.countDocuments({ deletingAt: { $exists: true } })).toBe(1);
+    expect(await Skill.countDocuments({ deletionNeedsJournal: true })).toBe(1);
+    expect(((await Skill.findById(mine._id).lean()) as { name: string } | null)?.name).toBe(
+      `__deleted__${mine._id}`,
+    );
     expect(await Skill.countDocuments({ _id: sharedId })).toBe(1);
+    const { skill: replacement } = await methods.createSkill(makeSkillInput({ name: 'mine' }));
+    expect(replacement._id.toString()).not.toBe(mine._id.toString());
+    expect(await mongoose.models.SkillDeletion.countDocuments({ skillId: mine._id })).toBe(0);
+    await createSkillLifecycleMethods(mongoose).discoverUnjournaledDeletions();
+    expect(await mongoose.models.SkillDeletion.countDocuments({ skillId: mine._id })).toBe(1);
+    expect(await Skill.countDocuments({ deletionNeedsJournal: true })).toBe(0);
   });
 
-  it('prunes deleted sole-owned skill ids from agent allowlists', async () => {
+  it('defers allowlist pruning until storage-aware deletion finishes', async () => {
     const { skill: mine } = await methods.createSkill(makeSkillInput({ name: 'mine' }));
     await grantOwner(mine._id);
     const Agent = mongoose.models.Agent;
@@ -2451,7 +2694,44 @@ describe('deleteUserSkills', () => {
       skills?: string[];
       skills_enabled?: boolean;
     } | null;
-    expect(agentAfter?.skills).toEqual([]);
-    expect(agentAfter?.skills_enabled).toBe(false);
+    expect(agentAfter?.skills).toEqual([mine._id.toString()]);
+    expect(agentAfter?.skills_enabled).toBe(true);
+  });
+
+  it('retains the durable retry anchor when account-deletion allowlist cleanup fails', async () => {
+    const { skill: mine } = await methods.createSkill(makeSkillInput({ name: 'mine' }));
+    await grantOwner(mine._id);
+    const Agent = mongoose.models.Agent;
+    const agent = await Agent.create(makeAgentDoc([mine._id.toString(), 'keep-me']));
+
+    expect(await methods.deleteUserSkills(owner._id as mongoose.Types.ObjectId)).toBe(1);
+    expect(await Skill.findById(mine._id).lean()).toMatchObject({
+      deletionNeedsJournal: true,
+    });
+    // Account erasure removes principal ACLs before the background reconciler runs.
+    await AclEntry.deleteMany({ principalId: owner._id });
+    const lifecycle = createSkillLifecycleMethods(mongoose);
+    await lifecycle.discoverUnjournaledDeletions();
+
+    const failure = jest
+      .spyOn(Agent, 'updateMany')
+      .mockRejectedValueOnce(new Error('transient outage'));
+    try {
+      expect(await methods.finalizeSkillDeletion(mine._id.toString())).toMatchObject({
+        cleanupComplete: false,
+        failedCleanupSteps: ['agent_allowlists'],
+      });
+    } finally {
+      failure.mockRestore();
+    }
+    expect(await Skill.findById(mine._id).lean()).not.toBeNull();
+    expect(await lifecycle.getSkillDeletion(mine._id.toString())).not.toBeNull();
+
+    expect(await methods.finalizeSkillDeletion(mine._id.toString())).toMatchObject({
+      cleanupComplete: true,
+    });
+    expect(await Skill.findById(mine._id).lean()).toBeNull();
+    const agentAfter = (await Agent.findById(agent._id).lean()) as { skills?: string[] } | null;
+    expect(agentAfter?.skills).toEqual(['keep-me']);
   });
 });

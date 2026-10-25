@@ -1,12 +1,15 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, createStore } from 'jotai';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { activeGenerationCreatedAtByConvoId } from '@librechat/chat/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
+import type { ShortcutBinding } from '~/utils/shortcuts';
 import {
   approvalPanelOpenFamily,
   pendingApprovalActionFamily,
 } from '~/components/Chat/approval/state';
+import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
 import ApprovalProvider, { useApprovalContext } from '../ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import ToolApproval from '../ToolApproval';
@@ -34,8 +37,18 @@ jest.mock('~/hooks', () => ({
   },
 }));
 
+const mockMutate = jest.fn();
+const mockInsertTextAtCursor = jest.fn();
+
+/** jsdom has no execCommand, so the newline path is observed through the mock. */
+jest.mock('~/utils/textarea', () => ({
+  ...jest.requireActual('~/utils/textarea'),
+  forceResize: jest.fn(),
+  insertTextAtCursor: (...args: unknown[]) => mockInsertTextAtCursor(...args),
+}));
+
 jest.mock('~/data-provider', () => ({
-  useSubmitToolApprovalMutation: () => ({ mutate: jest.fn() }),
+  useSubmitToolApprovalMutation: () => ({ mutate: mockMutate }),
   useSubmitAskAnswerMutation: () => ({ mutate: jest.fn() }),
 }));
 
@@ -330,6 +343,175 @@ describe('ToolApproval', () => {
       expect(other).not.toHaveTextContent('Review in composer');
       expect(within(other).getByRole('button', { name: 'Approve' })).toBeInTheDocument();
       expect(screen.getByTestId('thread')).toHaveTextContent('Review in composer');
+    });
+  });
+
+  describe('submitting from a decision field', () => {
+    const conversationId = 'conversation-1';
+
+    beforeEach(() => {
+      mockMutate.mockClear();
+      mockInsertTextAtCursor.mockClear();
+    });
+
+    const renderLive = (
+      allowed: Agents.ToolApprovalDecisionType[],
+      {
+        enterToSend = true,
+        shortcutsEnabled = true,
+        submitOverride,
+      }: {
+        enterToSend?: boolean;
+        shortcutsEnabled?: boolean;
+        submitOverride?: ShortcutBinding | null;
+      } = {},
+    ) => {
+      const store = createStore();
+      store.set(activeGenerationCreatedAtByConvoId(conversationId), 1000);
+      render(
+        <RecoilRoot>
+          <Provider store={store}>
+            <ChatContext.Provider value={{ conversation: { conversationId } } as never}>
+              <ChatSurfaceProvider
+                value={{
+                  enterToSend,
+                  maximizeChatSpace: false,
+                  showScrollButton: false,
+                  composerBindings: {
+                    shortcutsEnabled,
+                    submitOverride,
+                    yieldedChords: new Set(),
+                  },
+                  claimForeground: jest.fn(),
+                  handOffComposerText: jest.fn(),
+                }}
+              >
+                <ApprovalProvider>
+                  <ToolApproval approval={approval(allowed)} toolCallId="call-1" args={{ a: 1 }} />
+                </ApprovalProvider>
+              </ChatSurfaceProvider>
+            </ChatContext.Provider>
+          </Provider>
+        </RecoilRoot>,
+      );
+    };
+
+    const submittedDecisions = () =>
+      mockMutate.mock.calls.map(([payload]) => (payload as { decisions: unknown }).decisions);
+
+    test('Enter in the reject reason submits with Enter-to-send on; Shift, IME and held Enter do not', () => {
+      renderLive(['approve', 'reject']);
+      fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+      const reason = screen.getByRole('textbox', { name: 'Reject' });
+      fireEvent.change(reason, { target: { value: 'not now' } });
+
+      fireEvent.keyDown(reason, { key: 'Enter', shiftKey: true });
+      fireEvent.keyDown(reason, { key: 'Enter', isComposing: true });
+      fireEvent.keyDown(reason, { key: 'Enter', keyCode: 229 });
+      fireEvent.keyDown(reason, { key: 'Enter', repeat: true });
+      expect(mockMutate).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(reason, { key: 'Enter' });
+      expect(submittedDecisions()).toEqual([
+        [{ tool_call_id: 'call-1', decision: 'reject', reason: 'not now' }],
+      ]);
+    });
+
+    test('with Enter-to-send off, Enter writes a newline and Ctrl/Cmd+Enter submits', () => {
+      renderLive(['reject'], { enterToSend: false });
+      fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+      const reason = screen.getByRole('textbox', { name: 'Reject' });
+
+      fireEvent.keyDown(reason, { key: 'Enter' });
+      expect(mockInsertTextAtCursor).toHaveBeenCalledWith(reason, '\n');
+      expect(mockMutate).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(reason, { key: 'Enter', metaKey: true });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+
+    test('Enter in an empty response does not submit', () => {
+      renderLive(['approve', 'respond']);
+      fireEvent.click(screen.getByRole('button', { name: 'Respond' }));
+      const response = screen.getByRole('textbox', { name: 'Respond' });
+
+      fireEvent.keyDown(response, { key: 'Enter' });
+      expect(mockMutate).not.toHaveBeenCalled();
+
+      fireEvent.change(response, { target: { value: 'use the cache' } });
+      fireEvent.keyDown(response, { key: 'Enter' });
+      expect(submittedDecisions()).toEqual([
+        [{ tool_call_id: 'call-1', decision: 'respond', responseText: 'use the cache' }],
+      ]);
+    });
+
+    test('Enter in the JSON edit field never submits; Ctrl+Enter submits valid JSON only', () => {
+      renderLive(['approve', 'edit']);
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const editor = screen.getByRole('textbox', { name: 'Edit' });
+
+      const enter = fireEvent.keyDown(editor, { key: 'Enter' });
+      expect(enter).toBe(true);
+      expect(mockMutate).not.toHaveBeenCalled();
+
+      fireEvent.change(editor, { target: { value: '{ "a": ' } });
+      fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true });
+      expect(mockMutate).not.toHaveBeenCalled();
+
+      fireEvent.change(editor, { target: { value: '{ "a": 2 }' } });
+      fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true, repeat: true });
+      expect(mockMutate).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true });
+      expect(submittedDecisions()).toEqual([
+        [{ tool_call_id: 'call-1', decision: 'edit', editedArguments: { a: 2 } }],
+      ]);
+    });
+
+    test('a submit shortcut rebound off Enter submits from either field', () => {
+      const ctrlJ: ShortcutBinding = {
+        key: 'J',
+        ctrl: true,
+        meta: false,
+        alt: false,
+        shift: false,
+      };
+      renderLive(['reject', 'edit'], { submitOverride: ctrlJ });
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Edit' }), { key: 'j', ctrlKey: true });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+
+    test('Ctrl+Enter in the JSON edit field follows the composer submit chord', () => {
+      const altEnter: ShortcutBinding = {
+        key: 'Enter',
+        ctrl: false,
+        meta: false,
+        alt: true,
+        shift: false,
+      };
+      const cases: Array<{ shortcutsEnabled?: boolean; submitOverride: ShortcutBinding | null }> = [
+        { shortcutsEnabled: false, submitOverride: null },
+        { submitOverride: null },
+        { submitOverride: altEnter },
+      ];
+      for (const options of cases) {
+        cleanup();
+        renderLive(['approve', 'edit'], options);
+        fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+        const editor = screen.getByRole('textbox', { name: 'Edit' });
+        fireEvent.change(editor, { target: { value: '{ "a": 2 }' } });
+        expect(fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true })).toBe(true);
+        expect(fireEvent.keyDown(editor, { key: 'Enter', metaKey: true })).toBe(true);
+      }
+      expect(mockMutate).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Edit' }), {
+        key: 'Enter',
+        altKey: true,
+      });
+      expect(mockMutate).toHaveBeenCalledTimes(1);
     });
   });
 });

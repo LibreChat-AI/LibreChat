@@ -30,6 +30,7 @@ const contract: ChatContract = {
   setSiblingIdx: noop,
   latestMessageId: undefined,
   latestMessageDepth: undefined,
+  useLiveAttachments: () => ({}),
   ask: jest.fn(),
   regenerate: jest.fn(),
   isSubmitting: false,
@@ -44,8 +45,6 @@ const contract: ChatContract = {
   setFiles: noop,
   filesLoading: false,
   setFilesLoading: noop,
-  showPopover: false,
-  setShowPopover: noop,
   feedbackEnabled: false,
 };
 

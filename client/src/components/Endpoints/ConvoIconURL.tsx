@@ -51,7 +51,7 @@ const ConvoIconURL: React.FC<ConvoIconURLProps> = ({
   }
 
   return (
-    <div className="shadow-stroke bg-surface-primary text-text-primary relative flex h-full items-center justify-center rounded-full">
+    <div className="avatar-stroke bg-surface-primary text-text-primary relative flex h-full items-center justify-center rounded-full">
       <ProviderIcon provider={provider} size={41} className="h-2/3 w-2/3" />
     </div>
   );

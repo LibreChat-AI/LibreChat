@@ -58,21 +58,7 @@ const localStorageAtoms = {
 
   // Chat settings
   enterToSend: atomWithLocalStorage('enterToSend', true),
-  /** The action Enter uses while a reply is generating. */
-  duringRunDefaultAction: atomWithLocalStorage<'steer' | 'queue'>(
-    'duringRunDefaultAction',
-    'steer',
-  ),
-  /**
-   * Whether a steer interrupts generation at the next safe boundary instead of
-   * waiting for the run's next tool step. Orthogonal to
-   * `duringRunDefaultAction`: that chooses steer-vs-queue, this chooses how
-   * soon a steer lands. The composer's interrupt button always interrupts
-   * regardless — this only governs the default Enter/steer route.
-   */
-  steerInterruptsByDefault: atomWithLocalStorage('steerInterruptsByDefault', false),
   maximizeChatSpace: atomWithLocalStorage('maximizeChatSpace', false),
-  chatDirection: atomWithLocalStorage('chatDirection', 'LTR'),
   autoExpandTools: atomWithLocalStorage(LocalStorageKeys.AUTO_EXPAND_TOOLS, false),
   saveDrafts: atomWithLocalStorage('saveDrafts', true),
   /**
@@ -80,7 +66,7 @@ const localStorageAtoms = {
    * "Show more" toggle. The clamp is visual only; the full text stays in
    * the DOM, copyable and searchable.
    */
-  collapseLongUserMessages: atomWithLocalStorage('collapseLongUserMessages', false),
+  collapseLongUserMessages: atomWithLocalStorage('collapseLongUserMessages', true),
   /**
    * Whether pasting a large block of text attaches it as a `.txt` file instead of
    * flooding the composer. The text still reaches the model in full.
@@ -92,7 +78,7 @@ const localStorageAtoms = {
   rememberDefaultFork: atomWithLocalStorage(LocalStorageKeys.REMEMBER_FORK_OPTION, false),
   saveBadgesState: atomWithLocalStorage('saveBadgesState', false),
   /** User preference for downscaling images before upload; ignored when the admin config sets it */
-  clientImageResize: atomWithLocalStorage('clientImageResize', false),
+  clientImageResize: atomWithLocalStorage('clientImageResize', true),
   /**
    * Whether copying a message also puts a rendered HTML version on the
    * clipboard, so apps that ignore Markdown (Teams, Outlook, Word) paste the

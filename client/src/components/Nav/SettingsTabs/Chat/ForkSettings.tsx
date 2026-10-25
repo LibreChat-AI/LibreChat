@@ -25,7 +25,7 @@ export const ForkSettings = () => {
             id="rememberDefaultFork"
             checked={remember}
             onCheckedChange={setRemember}
-            className="ml-4"
+            className="ms-4"
             data-testid="rememberDefaultFork"
             aria-labelledby="remember-default-fork-label"
           />
@@ -66,7 +66,7 @@ export const ForkSettings = () => {
             id="splitAtTarget"
             checked={splitAtTarget}
             onCheckedChange={setSplitAtTarget}
-            className="ml-4"
+            className="ms-4"
             data-testid="splitAtTarget"
             aria-labelledby="split-at-target-label"
           />

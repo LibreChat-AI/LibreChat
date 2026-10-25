@@ -59,11 +59,12 @@ const VIEWPORT_PADDING = 12;
 const LIFT_MS = 200;
 /** Ariakit portals to document.body by default, which puts the palette outside every landmark. */
 const getMainLandmark = () => document.querySelector<HTMLElement>('main');
-/** Hidden on hover-capable pointers until the row is hovered or focused.
- *  Touch keeps them visible. `transition-none` overrides IconButton's color
- *  fade so the reveal is an appear, not a tint. */
+/** Hidden until the row is hovered or focused, wherever no pointer is coarse.
+ *  Any touchscreen keeps them visible, including a 2-in-1's beside its hovering
+ *  trackpad. `transition-none` overrides IconButton's color fade so the reveal
+ *  is an appear, not a tint. */
 const ROW_ACTION_REVEAL =
-  'transition-none opacity-100 group-focus-within/row:opacity-100 group-hover/row:opacity-100 [@media(hover:hover)]:opacity-0';
+  'transition-none opacity-100 group-focus-within/row:opacity-100 group-hover/row:opacity-100 no-touch:opacity-0';
 /** How long the folded destinations take to fade before they give up their
  *  space; matches `.animate-composer-palette-row-out` in `style.css`. */
 const ROW_FADE_MS = 110;
@@ -410,6 +411,7 @@ function Palette({
   );
   const isUnifiedMode = isUnifiedUploadMode(endpointFileConfig, canAttach);
   const attach = useAttachItems({
+    index,
     agentId,
     endpoint,
     endpointType,
@@ -924,17 +926,13 @@ function Palette({
               aria-selected={isActive}
               className="min-w-0 flex-1"
             >
-              <button
-                type="button"
-                tabIndex={-1}
-                className="flex h-full w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
-              >
+              <Button variant="row-content" tabIndex={-1} className="h-full w-full">
                 <ChevronDown
                   aria-hidden="true"
                   className={cn('animate-composer-icon size-4 shrink-0', expanded && '-rotate-180')}
                 />
                 <span className="truncate">{row.label}</span>
-              </button>
+              </Button>
             </div>
           </div>
         );
@@ -966,11 +964,7 @@ function Palette({
               aria-selected={isActive}
               className="min-w-0 flex-1"
             >
-              <button
-                type="button"
-                tabIndex={-1}
-                className="flex h-full w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
-              >
+              <Button variant="row-content" tabIndex={-1} className="h-full w-full">
                 {/* The wrapper carries the fallback tile color; the image itself
                     hides on error so an unreachable thumbnail (remote storage,
                     expired links) degrades to an empty tile instead of a broken
@@ -1002,11 +996,11 @@ function Palette({
                 )}
                 <span className="flex min-w-0 flex-1 flex-col justify-center">
                   <span className="truncate">{file.filename}</span>
-                  <span className="text-text-secondary truncate text-xs opacity-80">
+                  <span className="text-text-secondary truncate text-xs">
                     {formatFileDate(file)}
                   </span>
                 </span>
-              </button>
+              </Button>
             </div>
           </div>
         );
@@ -1056,17 +1050,17 @@ function Palette({
             {checked && (
               <span
                 aria-hidden="true"
-                className="bg-text-primary absolute inset-y-1 left-0 w-0.5 rounded-full"
+                className="bg-text-primary absolute inset-y-1 inset-s-0 w-0.5 rounded-full"
               />
             )}
-            <button
-              type="button"
+            <Button
+              variant="row-content"
               tabIndex={-1}
               aria-pressed={isEntry ? checked : undefined}
               aria-label={
                 favorited ? `${label}, ${localize('com_ui_tools_view_favorites')}` : undefined
               }
-              className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
+              className="h-full min-w-0 flex-1"
             >
               <span className="relative flex shrink-0" aria-hidden="true">
                 {icon}
@@ -1087,12 +1081,10 @@ function Palette({
                 {/* The dot is color only, so the status is still said aloud. */}
                 {status != null && <span className="sr-only">{status.label}</span>}
                 {description != null && description !== '' && (
-                  <span className="text-text-secondary truncate text-xs opacity-80">
-                    {description}
-                  </span>
+                  <span className="text-text-secondary truncate text-xs">{description}</span>
                 )}
               </span>
-            </button>
+            </Button>
           </div>
           {modes != null && modes.length > 0 && (
             <div role="gridcell" className="flex shrink-0 items-center gap-1">
@@ -1119,29 +1111,23 @@ function Palette({
                     </IconButton>
                   </span>
                 ) : (
-                  <button
+                  <Button
                     key={mode.id}
-                    type="button"
+                    variant="chip-toggle"
                     aria-pressed={mode.active}
                     onClick={(event) => {
                       event.stopPropagation();
                       mode.onSelect();
                     }}
-                    className={cn(
-                      'focus-visible:ring-text-primary min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden',
-                      mode.active
-                        ? 'bg-surface-active-alt text-text-primary border-transparent'
-                        : 'border-border-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-                    )}
                   >
                     {mode.label}
-                  </button>
+                  </Button>
                 ),
               )}
             </div>
           )}
           {canFavorite && (
-            <div role="gridcell" className="flex shrink-0 items-center pr-1">
+            <div role="gridcell" className="flex shrink-0 items-center pe-1">
               <span className={ROW_ACTION_REVEAL}>
                 <IconButton
                   size="xs"
@@ -1305,7 +1291,7 @@ function Palette({
             getAnchorRect={() => anchorRef.current?.getBoundingClientRect() ?? null}
             aria-label={localize('com_ui_composer_palette')}
             style={{ width: 'var(--popover-anchor-width)' }}
-            className="animate-composer-popover border-border-light bg-presentation z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border shadow-lg outline-hidden"
+            className="animate-composer-popover border-border-menu bg-surface-menu rounded-theme-popover z-50 flex max-w-[95vw] flex-col overflow-hidden border shadow-lg outline-hidden"
           >
             {/* The whole row is the search target, not just the input: the icon
                 and the padding around it read as part of the field, so clicking
@@ -1345,7 +1331,7 @@ function Palette({
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={handleKeyDown}
                 data-testid="composer-palette-search"
-                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-text-primary w-full rounded-md border-0 bg-transparent text-sm shadow-none ring-0 focus:border-0 focus:ring-0 focus:outline-hidden focus-visible:ring-2 focus-visible:outline-hidden"
+                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-focus-control w-full rounded-md border-0 bg-transparent text-sm shadow-none ring-0 focus:border-0 focus:ring-0 focus:outline-hidden focus-visible:ring-2 focus-visible:outline-hidden"
               />
               <span id={helpId} className="sr-only">
                 {localize('com_ui_composer_palette_help', { 0: FAVORITE_MODIFIER })}

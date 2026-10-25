@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
 import { Types } from 'mongoose';
-import { GraphEvents, Constants, ToolEndHandler } from '@librechat/agents';
+import { Constants, ToolEndHandler } from '@librechat/agents';
 import {
   logger,
   normalizeSkillFrontmatterKeys,
@@ -55,6 +55,7 @@ import type {
 } from './backgroundCompletion';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
+import type { InterruptibleToolBatchRequest } from './steering/tools';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
 import type { SandboxTextReader } from '~/files/code/text';
@@ -149,6 +150,7 @@ import {
 import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
+import { SteerToolInterrupt, interruptedToolResult } from './steering/tools';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -3835,6 +3837,9 @@ async function writeBundledSkillFile({
           : `Skill file changed while editing. Re-read ${displayPath} and retry.`,
       );
     }
+    if (error instanceof Error && 'code' in error && error.code === 'SKILL_DELETING') {
+      return errorResult(tc, `Skill is being deleted. Re-read ${displayPath} before retrying.`);
+    }
     throw error;
   }
   const action = created ? 'Created' : 'Updated';
@@ -5672,6 +5677,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
         resolve,
         reject,
       } = data;
+      const onResultAdmissionStart = (data as InterruptibleToolBatchRequest).onResultAdmissionStart;
       const executionContext = (
         data as ToolExecuteBatchRequest & { executionContext?: SubagentExecutionContext }
       ).executionContext;
@@ -6969,6 +6975,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                   if (filteredArguments != null) {
                     return reportResult(filteredArguments);
                   }
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return reportResult(interruptedToolResult(tc.id));
+                  }
+                  onResultAdmissionStart?.(tc.id);
                   const pollContent = await runCheckBackgroundTask({
                     userId: backgroundUserId,
                     conversationId: backgroundConversationId,
@@ -7041,6 +7051,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                      *  ORIGINAL tool-call identity by the completion harvest. */
                     if (toolEndCallback && !(isCodeTask && pending.harvestStarted === true)) {
                       try {
+                        onResultAdmissionStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7226,6 +7237,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     persistBackgroundCodeResult == null
                   )
                 ) {
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return reportResult(interruptedToolResult(tc.id));
+                  }
+                  onResultAdmissionStart?.(tc.id);
                   return reportResult(await dispatchBackgroundToolCall(tc));
                 }
 
@@ -7240,6 +7255,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     isFileAuthoringCall &&
                     typeof (tc.args as { path?: unknown }).path === 'string' &&
                     !(tc.args as { path: string }).path.startsWith(SKILL_FILE_PREFIX);
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return interruptedToolResult(tc.id);
+                  }
                   let sandboxReadSucceeded = false;
                   if (
                     tc.name === Constants.SKILL_TOOL ||
@@ -7359,6 +7377,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       };
                     }
 
+                    if (runSignal?.reason instanceof SteerToolInterrupt) {
+                      return interruptedToolResult(tc.id);
+                    }
                     const filteredOutput = filteredToolOutputResult(tc, req, {
                       content: handlerResult.content,
                       artifact: handlerResult.artifact,
@@ -7371,6 +7392,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback && handlerResult.errorMessage == null) {
                         try {
+                          onResultAdmissionStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7394,6 +7416,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
 
                     if (toolEndCallback && handlerResult.artifact) {
                       try {
+                        onResultAdmissionStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7583,7 +7606,11 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                                 eligiblePtcToolMap.keys(),
                                 ptcReq,
                               ),
-                              emit: emitPtcProgress,
+                              emit: (event) => {
+                                if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
+                                  emitPtcProgress(event);
+                                }
+                              },
                             })
                           : eligiblePtcToolMap;
                       }
@@ -7625,6 +7652,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       ...(runSignal != null && { signal: runSignal }),
                     } as Record<string, unknown>);
 
+                    if (runSignal?.reason instanceof SteerToolInterrupt) {
+                      return interruptedToolResult(tc.id);
+                    }
+
                     /* Only sandbox-bound calls carry a runtime session hint, so
                      * this refreshes the prewarm module's warm window without
                      * inspecting tool names. */
@@ -7659,6 +7690,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback) {
                         try {
+                          onResultAdmissionStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7681,6 +7713,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     }
 
                     if (toolEndCallback) {
+                      onResultAdmissionStart?.(tc.id);
                       await toolEndCallback(
                         {
                           input: tc.args,
@@ -7828,17 +7861,5 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
         reject(outerError as Error);
       }
     },
-  };
-}
-
-/**
- * Creates a handlers object that includes ON_TOOL_EXECUTE.
- * Can be merged with other handler objects.
- */
-export function createToolExecuteHandlers(
-  options: ToolExecuteOptions,
-): Record<string, EventHandler> {
-  return {
-    [GraphEvents.ON_TOOL_EXECUTE]: createToolExecuteHandler(options),
   };
 }

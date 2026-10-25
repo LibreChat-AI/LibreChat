@@ -4,6 +4,7 @@ import { Button } from '@librechat/client';
 import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type { UIEvent } from 'react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
+import { useToolContentPending } from '../disclosure';
 import { PANE_COPY_REVEAL } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -102,6 +103,12 @@ function extractText(raw: string, verbatim = false): ExtractedText {
   return { text: trimmed, rawError: '', error: false, isJson: false };
 }
 
+/** Whether the default renderer would draw anything for this output. Callers
+ *  that decide a panel is worth showing use it, so the two cannot disagree. */
+export function hasRenderableOutput(raw?: string | null): boolean {
+  return extractText(raw ?? '').text.length > 0;
+}
+
 export interface OutputSegment {
   text: string;
   className?: string;
@@ -151,11 +158,15 @@ export default function OutputRenderer({
     followRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 8;
   }, []);
 
+  const contentPending = useToolContentPending();
   const handleCopy = useCallback(() => {
+    if (contentPending) {
+      return;
+    }
     setIsCopied(true);
     copy(copyText ?? displayText, { format: 'text/plain' });
     setTimeout(() => setIsCopied(false), 3000);
-  }, [copyText, displayText]);
+  }, [contentPending, copyText, displayText]);
 
   if (!displayText) {
     return null;
@@ -168,13 +179,14 @@ export default function OutputRenderer({
     <div>
       <div className="group/copy relative">
         {isJson ? (
-          <pre className="max-h-[18.75rem] overflow-auto rounded text-xs">
+          <pre dir="ltr" className="max-h-[18.75rem] overflow-auto rounded text-xs">
             <code className="hljs language-json !break-words !whitespace-pre-wrap">
               {displayText}
             </code>
           </pre>
         ) : (
           <pre
+            dir="ltr"
             ref={outputRef}
             onScroll={terminal ? handleOutputScroll : undefined}
             className={cn(
@@ -199,23 +211,27 @@ export default function OutputRenderer({
         <CopyButton
           isCopied={isCopied}
           onClick={handleCopy}
+          disabled={contentPending}
           iconOnly
           label={localize('com_ui_copy')}
-          className={cn('bg-presentation absolute right-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
+          className={cn('bg-presentation absolute inset-e-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
         />
       </div>
       {error && rawError && rawError !== displayText && (
         <Button
           variant="link"
-          size="sm"
-          className="text-text-secondary focus-visible:ring-border-heavy mt-1 block h-auto p-0 text-xs underline focus-visible:ring-2"
+          size="bare"
+          className="text-text-secondary mt-1 block text-xs underline"
           onClick={() => setShowErrorDetails((prev) => !prev)}
         >
           {localize('com_ui_details')}
         </Button>
       )}
       {showErrorDetails && rawError && (
-        <pre className="text-status-error mt-2 max-h-[12.5rem] overflow-auto font-mono text-xs break-words whitespace-pre-wrap">
+        <pre
+          dir="ltr"
+          className="text-status-error mt-2 max-h-[12.5rem] overflow-auto font-mono text-xs break-words whitespace-pre-wrap"
+        >
           {rawError}
         </pre>
       )}

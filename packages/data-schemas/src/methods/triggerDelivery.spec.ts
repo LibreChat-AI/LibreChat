@@ -2811,6 +2811,45 @@ describe('agent trigger delivery methods', () => {
     expect(rows.find((row) => row.status === 'batched')?.batchRootRequeueCount).toBe(1);
   });
 
+  it('expires dead letters at their retention deadline and clears it on requeue', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const now = new Date(Date.now() - 1_000);
+    const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60_000);
+    const queued = await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({ user, orderingKey: 'dead-retention-lane', availableAt: now }),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now,
+      leaseUntil: new Date(now.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: now,
+      expiresAt,
+    });
+
+    const dead = await Delivery.findById(queued.delivery.id).lean();
+    expect(dead?.status).toBe('dead');
+    expect(dead?.expiresAt?.getTime()).toBe(expiresAt.getTime());
+
+    await methods.requeueAgentTriggerDelivery(queued.delivery.id, now);
+    const requeued = await Delivery.findById(queued.delivery.id).lean();
+    expect(requeued?.status).toBe('pending');
+    expect(requeued?.expiresAt).toBeUndefined();
+  });
+
   it('does not let stale batch operations overwrite a receipt from a newer generation', async () => {
     const user = new mongoose.Types.ObjectId();
     const coalesceUntil = new Date(Date.now() + 60_000);
@@ -2876,6 +2915,158 @@ describe('agent trigger delivery methods', () => {
       batchRootRequeueCount: 1,
     });
     expect((await Delivery.findById(root!._id).lean())?.batchMembersSettledAt).toBeUndefined();
+  });
+
+  it('carries the dead-letter deadline to every coalesced batch member', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const expiresAt = new Date(coalesceUntil.getTime() + 7 * 24 * 60 * 60_000);
+    const shared = {
+      user,
+      orderingKey: 'batch-dead-retention-lane',
+      coalesceKey: 'trigger_batch_dead_retention',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    await Promise.all(
+      Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+      expiresAt,
+    });
+
+    const rows = await Delivery.find({ orderingKey: shared.orderingKey }).lean();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.status).toBe('dead');
+      expect(row.expiresAt?.getTime()).toBe(expiresAt.getTime());
+    }
+  });
+
+  it('arms a dead batch root deadline only after its members are settled', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const expiresAt = new Date(coalesceUntil.getTime() + 7 * 24 * 60 * 60_000);
+    const shared = {
+      user,
+      orderingKey: 'batch-dead-deferred-lane',
+      coalesceKey: 'trigger_batch_dead_deferred',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    await Promise.all(
+      Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    const interrupted = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('process interrupted before member settlement');
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+      expiresAt,
+    });
+    interrupted.mockRestore();
+
+    const root = await Delivery.findById(claim!.id).lean();
+    expect(root?.status).toBe('dead');
+    expect(root?.expiresAt).toBeUndefined();
+    expect(root?.deadLetterExpiresAt?.getTime()).toBe(expiresAt.getTime());
+
+    await expect(methods.recoverAgentTriggerBatchReceipts()).resolves.toBeGreaterThan(0);
+    const settled = await Delivery.find({ orderingKey: shared.orderingKey }).lean();
+    for (const row of settled) {
+      expect(row.status).toBe('dead');
+      expect(row.expiresAt?.getTime()).toBe(expiresAt.getTime());
+      expect(row.deadLetterExpiresAt).toBeUndefined();
+    }
+  });
+
+  it('settles a dead batch root whose members the TTL index already removed', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const expiresAt = new Date(Date.now() - 1_000);
+    const shared = {
+      user,
+      orderingKey: 'batch-dead-expired-members-lane',
+      coalesceKey: 'trigger_batch_dead_expired_members',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    await Promise.all(
+      Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    const interrupted = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('process interrupted before member settlement');
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+      expiresAt,
+    });
+    interrupted.mockRestore();
+    await Delivery.deleteMany({ orderingKey: shared.orderingKey, _id: { $ne: claim!.id } });
+
+    await expect(methods.recoverAgentTriggerBatchReceipts()).resolves.toBeGreaterThan(0);
+    const root = await Delivery.findById(claim!.id).lean();
+    expect(root?.batchMembersSettledAt).toBeDefined();
+    expect(root?.expiresAt?.getTime()).toBe(expiresAt.getTime());
+    expect(root?.deadLetterExpiresAt).toBeUndefined();
   });
 
   it('recovers batch requeue after claiming the root before member preparation', async () => {

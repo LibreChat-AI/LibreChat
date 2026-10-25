@@ -6,7 +6,7 @@ import { bindToolApproval, bindToolApprovalIdentity, getToolApprovalIdentity } f
  * @module packages/api/src/tools/definitions
  */
 
-import { Providers } from '@librechat/agents';
+import { Providers, GitHubCompareToolName } from '@librechat/agents';
 import {
   Constants,
   isActionTool,
@@ -44,6 +44,8 @@ export interface LoadToolDefinitionsParams {
   agentId: string;
   /** Agent's tool list (tool names/identifiers) */
   tools: string[];
+  /** Explicit deployment opt-in for read-only GitHub comparisons. */
+  githubCompareEnabled?: boolean;
   /** Agent-specific tool options */
   toolOptions?: AgentToolOptions;
   /** Whether deferred tools feature is enabled */
@@ -185,6 +187,9 @@ export async function loadToolDefinitions(
   let resolvedMCPToolCount = 0;
 
   for (const toolName of tools) {
+    if (toolName === GitHubCompareToolName && params.githubCompareEnabled !== true) {
+      continue;
+    }
     if (isActionTool(toolName)) {
       actionToolNames.push(toolName);
       continue;

@@ -335,6 +335,7 @@ describe('RedisJobStore', () => {
       iconURL: 'https://example.com/icon.png',
       model: 'test-model',
       agent_id: 'agent-1',
+      compact: true,
       isTemporary: false,
       retentionExpiresAt: '2030-01-01T00:00:00.000Z',
       agentEventDeliveryKey: 'completion-delivery-1',
@@ -408,6 +409,9 @@ describe('RedisJobStore', () => {
      * degrading to ordinary steering in every Redis deployment.
      */
     expect(job.preemptCapable).toBe(true);
+    /** The abort paths read this flag from a reloaded job, so it has to
+     *  survive the Redis round trip for a stopped compaction to be stamped. */
+    expect(job.compact).toBe(true);
     expect(job.steerQuotesExecutionId).toBe('exec-1');
     expect(job.generationProtocolVersion).toBe(2);
     expect(job.checkpointNamespace).toEqual(expect.any(String));

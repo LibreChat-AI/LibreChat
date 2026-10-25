@@ -345,7 +345,7 @@ async function addQuote(page: Page, needle: string, expectedCount: number) {
 }
 
 test.describe('quote references', () => {
-  test('merges a quoted excerpt into the model turn, pins it to the message, and persists across reload', async ({
+  test('merges a quoted excerpt into the model turn, pins it to the message, and persists across reload @scenario:quoted-excerpt-reaches-the-model-and-persists', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -582,7 +582,9 @@ test.describe('quote references', () => {
     await expect(addToChat(page)).toBeHidden({ timeout: 5000 });
   });
 
-  test('stages each selection as its own chip in the tray, and removes one', async ({ page }) => {
+  test('stages each selection as its own chip in the tray, and removes one @scenario:staged-quotes-show-as-chips-and-remove-one', async ({
+    page,
+  }) => {
     test.setTimeout(120000);
     const firstMessage = 'quote target alpha';
 

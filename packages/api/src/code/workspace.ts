@@ -35,6 +35,7 @@ export const WORKSPACE_COMMAND_MAX_TIMEOUT_MS: number = 5 * 60_000;
 const DEFAULT_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const MAX_COMMAND_SIGNAL_LENGTH = 32;
+const MAX_LANE_BRANCH_LENGTH = 256;
 const WORKSPACE_COMMAND_TRANSPORT_GRACE_MS = 5_000;
 /** Legacy per-request admission window, independent of the retry horizon. */
 const WORKSPACE_QUEUE_TIMEOUT_MS = 30_000;
@@ -100,7 +101,9 @@ const COMMAND_RESULT_KEYS = new Set([
   'stderr',
   'truncated',
   'timedOut',
+  'laneGit',
 ]);
+const LANE_GIT_KEYS = new Set(['branch', 'head']);
 const WRITE_RESULT_KEYS = new Set([
   'protocolVersion',
   'operation',
@@ -130,6 +133,19 @@ const PREVIEW_EDIT_RESULT_KEYS = new Set([
   'bytesWritten',
   'matches',
 ]);
+const IMPORT_RESULT_KEYS = new Set([
+  'protocolVersion',
+  'operation',
+  'workspaceId',
+  'path',
+  'created',
+  'unchanged',
+  'bytesWritten',
+  'sha256',
+]);
+/** Raw Code API storage identifiers are URL-safe nanoids. */
+const STORAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const TEXT_EDIT_KEYS = new Set(['oldText', 'newText', 'replaceAll']);
 const EDIT_MATCH_KEYS = new Set(['strategy', 'occurrences']);
 
@@ -186,6 +202,26 @@ export interface WorkspaceWriteRequest {
   overwrite?: boolean;
 }
 
+/**
+ * Copies an object the Code API already stores for this user into the workspace. Additive to
+ * protocol v1: sent only to workspaces that advertise `import_file`. The Code API mints the
+ * read grant and checks ownership; LibreChat names only refs it already holds.
+ */
+export interface WorkspaceImportRequest {
+  protocolVersion: 1;
+  operation: 'import_file';
+  workspaceId: string;
+  workspaceInstanceId?: string;
+  /** Linked worktree (`.worktrees/<name>`) the path is relative to. */
+  worktree?: string;
+  path: string;
+  source: { storage_session_id: string; id: string };
+  bytes: number;
+  /** Lowercase hex digest of the object; an existing file with the same digest is left as is. */
+  sha256: string;
+  overwrite?: boolean;
+}
+
 export interface WorkspaceTextEdit {
   oldText: string;
   newText: string;
@@ -223,7 +259,8 @@ export type WorkspaceToolRequest =
   | WorkspaceWriteRequest
   | WorkspacePreviewEditRequest
   | WorkspaceEditRequest
-  | WorkspaceExecuteCommandRequest;
+  | WorkspaceExecuteCommandRequest
+  | WorkspaceImportRequest;
 
 export interface WorkspaceReadResult {
   protocolVersion: 1;
@@ -264,6 +301,14 @@ export interface WorkspaceExecuteCommandResult {
   stderr: string;
   truncated: boolean;
   timedOut: boolean;
+  /** Branch and head of the lane the command ran in. Absent means unknown, null means the lane
+   *  has no branch (detached) or no commit yet. */
+  laneGit?: WorkspaceLaneGit;
+}
+
+export interface WorkspaceLaneGit {
+  branch: string | null;
+  head: string | null;
 }
 
 export interface WorkspaceWriteResult {
@@ -273,6 +318,18 @@ export interface WorkspaceWriteResult {
   path: string;
   created: boolean;
   bytesWritten: number;
+}
+
+export interface WorkspaceImportResult {
+  protocolVersion: 1;
+  operation: 'import_file';
+  workspaceId: string;
+  path: string;
+  created: boolean;
+  /** The file already held these exact bytes, so nothing was written. */
+  unchanged?: boolean;
+  bytesWritten: number;
+  sha256: string;
 }
 
 export interface WorkspaceEditResult {
@@ -305,7 +362,8 @@ export type WorkspaceToolResult =
   | WorkspaceWriteResult
   | WorkspacePreviewEditResult
   | WorkspaceEditResult
-  | WorkspaceExecuteCommandResult;
+  | WorkspaceExecuteCommandResult
+  | WorkspaceImportResult;
 
 export class WorkspaceToolHttpError extends Error {
   /**
@@ -661,6 +719,27 @@ function areValidEditMatches(
   );
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function isLaneGit(value: unknown): value is WorkspaceLaneGit {
+  if (!isRecord(value) || !hasOnlyKeys(value, LANE_GIT_KEYS)) return false;
+  const { branch, head } = value;
+  return (
+    (branch === null ||
+      (typeof branch === 'string' &&
+        branch.length >= 1 &&
+        branch.length <= MAX_LANE_BRANCH_LENGTH &&
+        !hasControlCharacter(branch))) &&
+    (head === null || (typeof head === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)))
+  );
+}
+
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
 }
@@ -800,6 +879,24 @@ function isValidRequest(request: WorkspaceToolRequest): boolean {
       (request.overwrite === undefined || typeof request.overwrite === 'boolean')
     );
   }
+  if (request.operation === 'import_file') {
+    return (
+      isSafePath(request.path) &&
+      (request.worktree === undefined ||
+        (LINKED_WORKTREE_NAME_PATTERN.test(request.worktree) &&
+          !request.worktree.endsWith('.lock'))) &&
+      isRecord(request.source) &&
+      Object.keys(request.source).length === 2 &&
+      typeof request.source.storage_session_id === 'string' &&
+      STORAGE_ID_PATTERN.test(request.source.storage_session_id) &&
+      typeof request.source.id === 'string' &&
+      STORAGE_ID_PATTERN.test(request.source.id) &&
+      Number.isSafeInteger(request.bytes) &&
+      request.bytes >= 0 &&
+      SHA256_PATTERN.test(request.sha256) &&
+      (request.overwrite === undefined || typeof request.overwrite === 'boolean')
+    );
+  }
   if (request.operation === 'preview_edit') {
     return (
       isSafePath(request.path) &&
@@ -916,6 +1013,7 @@ function isValidResult(
     const outputLimit = request.maxOutputBytes ?? DEFAULT_COMMAND_OUTPUT_BYTES;
     return (
       hasOnlyKeys(value, COMMAND_RESULT_KEYS) &&
+      (!('laneGit' in value) || isLaneGit(value.laneGit)) &&
       typeof value.truncated === 'boolean' &&
       stdout != null &&
       stderr != null &&
@@ -945,6 +1043,19 @@ function isValidResult(
       (request.overwrite !== false || value.created === true) &&
       Number.isSafeInteger(value.bytesWritten) &&
       Number(value.bytesWritten) === new TextEncoder().encode(request.content).byteLength
+    );
+  }
+  if (request.operation === 'import_file') {
+    return (
+      hasOnlyKeys(value, IMPORT_RESULT_KEYS) &&
+      value.path === request.path &&
+      typeof value.created === 'boolean' &&
+      (value.unchanged === undefined || typeof value.unchanged === 'boolean') &&
+      !(value.created === true && value.unchanged === true) &&
+      value.sha256 === request.sha256 &&
+      Number.isSafeInteger(value.bytesWritten) &&
+      (Number(value.bytesWritten) === request.bytes ||
+        (value.unchanged === true && Number(value.bytesWritten) === 0))
     );
   }
   if (request.operation === 'edit_file') {
@@ -1131,6 +1242,8 @@ export function toLinkedWorktreeRequest(
         },
       };
     }
+    case 'import_file':
+      return undefined;
     case 'execute_command': {
       if (request.environmentAction != null) return undefined;
       const target = splitLinkedWorktreePath(request.cwd);
@@ -1158,6 +1271,7 @@ export function fromLinkedWorktreeResult(
     case 'write_file':
     case 'edit_file':
     case 'preview_edit':
+    case 'import_file':
       return { ...result, path: prefixed(worktree, result.path) };
     case 'search_text':
       return {

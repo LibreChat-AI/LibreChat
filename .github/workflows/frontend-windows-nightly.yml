@@ -32,10 +32,10 @@ jobs:
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -45,8 +45,9 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -74,6 +75,9 @@ jobs:
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
 
+      - name: Build chat package
+        run: npm run build:chat
+
       - name: Upload data-provider build
         uses: actions/upload-artifact@v6
         with:
@@ -86,6 +90,13 @@ jobs:
         with:
           name: build-client-package
           path: packages/client/dist
+          retention-days: 2
+
+      - name: Upload chat-package build
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-chat-package
+          path: packages/chat/dist
           retention-days: 2
 
   test-windows:
@@ -102,10 +113,10 @@ jobs:
         with:
           ref: ${{ needs.build.outputs.source-sha }}
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -115,8 +126,9 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
-          key: node-modules-frontend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-frontend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -133,6 +145,12 @@ jobs:
         with:
           name: build-client-package
           path: packages/client/dist
+
+      - name: Download chat-package build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-chat-package
+          path: packages/chat/dist
 
       - name: Run unit tests (shard ${{ matrix.shard }}/4)
         run: npm run test:ci -- --shard=${{ matrix.shard }}/4

@@ -10,7 +10,7 @@ export const QuestionMark = ({
     <span>
       <div
         className={cn(
-          'border-border-medium text-text-tertiary ml-2 flex h-3.5 w-3.5 cursor-default items-center justify-center rounded-full border text-[0.5rem] leading-none font-medium',
+          'border-border-medium text-text-tertiary ms-2 flex h-3.5 w-3.5 cursor-default items-center justify-center rounded-full border text-[0.5rem] leading-none font-medium',
           className,
         )}
       >

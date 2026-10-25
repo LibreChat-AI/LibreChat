@@ -1,10 +1,10 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { IThemeRGB } from '../../../../packages/client/src/theme/types';
+import type { IThemeRGB } from '../../../../packages/data-provider/src/themes/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { defaultTheme } from '../../../../packages/client/src/theme/themes/default';
-import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { defaultTheme } from '../../../../packages/data-provider/src/themes/default';
+import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import { deleteConversations, seedConversations, seedMessages, withMongo } from '../db';
 import { getE2EUser } from '../../../setup/user';
 import { themeValue } from './style.helpers';
@@ -221,9 +221,10 @@ test.describe('clickhouse reference theme', () => {
           return { color: style.color, background: style.backgroundColor };
         });
         expect(painted.background).toBe(rgbCss(colors['rgb-status-error-subtle']));
+        /** Light holds Click UI's text.muted, 4.05:1 on feedback.danger.background, by owner decision. */
         expect(
           contrast(parseRgb(painted.color), parseRgb(painted.background)),
-        ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+        ).toBeGreaterThanOrEqual(mode === 'light' ? 4 : WCAG_AA_NORMAL);
       }
     } finally {
       await deleteConversations([conversationId]);
@@ -269,7 +270,7 @@ test.describe('clickhouse reference theme', () => {
     try {
       for (const [mode, placeholder, ink] of [
         ['light', defaultTheme['rgb-surface-secondary'], 'rgb(33, 33, 33)'],
-        ['dark', darkTheme['rgb-surface-tertiary'], 'rgb(236, 236, 236)'],
+        ['dark', darkTheme['rgb-surface-tertiary'], 'rgb(255, 255, 255)'],
       ] as const) {
         await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
         await expect(page.getByText(REPLY_TEXT, { exact: true }).first()).toBeVisible({

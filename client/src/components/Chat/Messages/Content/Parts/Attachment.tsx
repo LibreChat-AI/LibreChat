@@ -14,11 +14,11 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
+import { ARTIFACT_ROW_NAV_SPACING, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
 import Image from '~/components/Chat/Messages/Content/Image';
-import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import ToolMermaidArtifact from './ToolMermaidArtifact';
 import ToolArtifactCard from './ToolArtifactCard';
 import { useAttachmentLink } from './LogLink';
@@ -64,7 +64,9 @@ const PreviewPlaceholderRow = memo(
         ? localize('com_ui_preview_preparing')
         : localize('com_ui_preview_failed');
     return (
-      <div className={cn(TOOL_ROW_CLASSES, 'text-text-secondary text-sm')}>
+      <div
+        className={cn(TOOL_ROW_CLASSES, ARTIFACT_ROW_NAV_SPACING, 'text-text-secondary text-sm')}
+      >
         <span className={ROW_GLYPH_SLOT} aria-hidden="true">
           {status === 'pending' ? (
             <Loader2 className="size-4 shrink-0 animate-spin" />
@@ -82,11 +84,11 @@ const PreviewPlaceholderRow = memo(
         <span className="min-w-0 shrink-[100] truncate text-xs font-normal">{subtitleText}</span>
         <Button
           type="button"
-          variant="ghost"
+          variant="quiet"
           size="icon"
           onClick={handleDownload}
           aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary size-5 shrink-0 rounded focus-visible:ring-offset-0"
+          className="size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>
@@ -132,14 +134,12 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     return (
       <div
         className={cn(
-          'file-attachment-container',
-          'transition-all duration-300 ease-out',
+          'w-full min-w-0 subpixel-antialiased transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
         style={{
           transformOrigin: 'center top',
           willChange: 'opacity, transform',
-          WebkitFontSmoothing: 'subpixel-antialiased',
         }}
       >
         <PreviewPlaceholderRow
@@ -153,14 +153,12 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   return (
     <div
       className={cn(
-        'file-attachment-container',
-        'transition-all duration-300 ease-out',
+        'subpixel-antialiased transition-all duration-300 ease-out',
         isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
       )}
       style={{
         transformOrigin: 'center top',
         willChange: 'opacity, transform',
-        WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
       <FileContainer
@@ -237,22 +235,22 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         aria-label={buttonLabel}
         onClick={() => setIsExpanded((prev) => !prev)}
         className={cn(
-          'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pr-2 text-sm',
+          'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pe-2 text-sm',
           'text-text-secondary hover:text-text-primary transition-colors',
-          'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+          'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
         )}
       >
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
         <span className="shrink-0 font-medium">{fileCount}</span>
         {summary.length > 0 && (
-          <span className="min-w-0 truncate text-left text-xs font-normal" title={summary}>
+          <span className="min-w-0 truncate text-start text-xs font-normal" title={summary}>
             {'— '}
             {summary}
           </span>
         )}
         <ChevronDown
           className={cn(
-            'ml-auto size-4 shrink-0 transition-transform duration-200 ease-out',
+            'ms-auto size-4 shrink-0 transition-transform duration-200 ease-out',
             isExpanded && 'rotate-180',
           )}
           aria-hidden="true"
@@ -333,14 +331,13 @@ const TextAttachment = memo(
     return (
       <div
         className={cn(
-          'text-attachment-container flex w-full flex-col gap-1.5',
-          'transition-all duration-300 ease-out',
+          'flex w-full flex-col gap-1.5',
+          'subpixel-antialiased transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
         style={{
           transformOrigin: 'center top',
           willChange: 'opacity, transform',
-          WebkitFontSmoothing: 'subpixel-antialiased',
         }}
       >
         {attachment.filepath && showFileChip && (
@@ -355,7 +352,7 @@ const TextAttachment = memo(
         )}
         <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="border-border-light flex items-center justify-between gap-2 border-b px-3 py-2">
+            <div className="border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2">
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>
@@ -365,7 +362,7 @@ const TextAttachment = memo(
                   onClick={handleDownload}
                   aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
                   title={localize('com_ui_download')}
-                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-focus-subtle flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 >
                   <Download className="size-4" aria-hidden="true" />
                 </button>
@@ -390,7 +387,7 @@ const TextAttachment = memo(
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-expanded={expanded}
                 aria-controls={preId}
-                className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+                className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
               >
                 {expanded ? localize('com_ui_collapse') : localize('com_ui_show_all')}
               </button>
@@ -415,14 +412,12 @@ const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
   return (
     <div
       className={cn(
-        'image-attachment-container',
-        'transition-all duration-500 ease-out',
+        'subpixel-antialiased transition-all duration-500 ease-out',
         isLoaded ? 'scale-100 opacity-100' : 'scale-[0.98] opacity-0',
       )}
       style={{
         transformOrigin: 'center top',
         willChange: 'opacity, transform',
-        WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
       <Image

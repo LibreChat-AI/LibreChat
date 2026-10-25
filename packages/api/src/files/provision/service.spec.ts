@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 import { AxiosError, AxiosHeaders } from 'axios';
-import { generateKeyPairSync } from 'node:crypto';
+import { FileSources } from 'librechat-data-provider';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 
@@ -304,6 +305,45 @@ describe('createProvisionService', () => {
 
       expect(result.referenceSet.codeEnvRefs?.['stateful:abc']).toEqual(statefulRef);
       expect(result.referenceSet.codeEnvRefs?.default?.file_id).toBe('remote-1');
+    });
+  });
+
+  describe('digestFile', () => {
+    it('hashes the stored bytes a code-environment upload would send', async () => {
+      const getDownloadStream = jest
+        .fn()
+        .mockResolvedValue(Readable.from([Buffer.from('hello '), Buffer.from('world')]));
+      const { service } = buildService({
+        getStrategyFunctions: () => ({ getDownloadStream }),
+      });
+
+      await expect(service.digestFile({ req, file: makeFile() })).resolves.toEqual({
+        sha256: createHash('sha256').update('hello world').digest('hex'),
+        bytes: 11,
+      });
+      expect(getDownloadStream).toHaveBeenCalledWith(req, '/x/data.csv', { signal: undefined });
+    });
+
+    it('returns null for a source without a storage stream', async () => {
+      const { service } = buildService();
+      await expect(
+        service.digestFile({ req, file: makeFile({ source: FileSources.openai }) }),
+      ).resolves.toBeNull();
+    });
+
+    it('stops reading when the signal aborts', async () => {
+      const controller = new AbortController();
+      const stream = new Readable({ read() {} });
+      stream.push('partial');
+      const { service } = buildService({
+        getStrategyFunctions: () => ({ getDownloadStream: jest.fn().mockResolvedValue(stream) }),
+      });
+
+      const digest = service.digestFile({ req, file: makeFile(), signal: controller.signal });
+      setImmediate(() => controller.abort(new Error('deadline')));
+
+      await expect(digest).rejects.toThrow('deadline');
+      expect(stream.destroyed).toBe(true);
     });
   });
 

@@ -58,7 +58,7 @@ export default function SystemEventHeader({
       {expanded != null && (
         <ChevronDown
           className={cn(
-            'text-text-secondary ml-auto size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
+            'text-text-secondary ms-auto size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
             expanded && 'rotate-180',
           )}
           aria-hidden="true"
@@ -69,4 +69,4 @@ export default function SystemEventHeader({
 }
 
 export const systemEventHeaderClasses =
-  'inline-flex h-auto w-full items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-sm text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-0';
+  'inline-flex h-auto w-full items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 text-sm text-text-secondary hover:bg-transparent hover:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-subtle focus-visible:ring-offset-0';

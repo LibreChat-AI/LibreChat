@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useAtomValue } from 'jotai';
-import { useRecoilValue } from 'recoil';
 import { Constants } from 'librechat-data-provider';
+import { useIsSubmitting } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import {
   useLocalize,
@@ -24,7 +24,6 @@ import ScrollButton from './ScrollButton';
 import PendingTurn from './PendingTurn';
 import MessageNav from './MessageNav';
 import { cn } from '~/utils';
-import store from '~/store';
 
 function MessagesViewContent({
   messagesTree: _messagesTree,
@@ -51,10 +50,16 @@ function MessagesViewContent({
   useScrollbarGutter(scrollableRef);
 
   const { conversationId } = conversation ?? {};
-  const fileMap = useFileMapContext();
-  const threadRows = useThreadRows(FLAT_THREAD ? messages : null, conversationId, fileMap);
   const { index, latestMessageId, latestMessageDepth, messagesKey } = useChatContext();
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
+  /** Re-arm from the conversation that owns the RENDERED tree: the Recoil
+   *  conversation id lags the route during warm-cache navigation, and keying
+   *  off it would first mount the new tree unwindowed, then narrow it after
+   *  the fact, visibly unmounting rows the user is already reading. An empty
+   *  tree has no message to name its owner, so the route's key stands in. */
+  const treeConversationId = _messagesTree?.[0]?.conversationId ?? (messagesKey || conversationId);
+  const fileMap = useFileMapContext();
+  const threadRows = useThreadRows(FLAT_THREAD ? messages : null, treeConversationId, fileMap);
+  const isSubmitting = useIsSubmitting(index);
   const { showScrollButton, maximizeChatSpace } = useChatSurface();
   const autoScroll = useAtomValue(autoScrollAtom);
 
@@ -105,12 +110,6 @@ function MessagesViewContent({
     [handleNearBottomChange, reportNearBottom],
   );
 
-  /** Re-arm from the conversation that owns the RENDERED tree: the Recoil
-   *  conversation id lags the route during warm-cache navigation, and keying
-   *  off it would first mount the new tree unwindowed, then narrow it after
-   *  the fact, visibly unmounting rows the user is already reading. An empty
-   *  tree has no message to name its owner, so the route's key stands in. */
-  const treeConversationId = _messagesTree?.[0]?.conversationId ?? (messagesKey || conversationId);
   const mountWindow = useProgressiveRowMount({
     tailDepth: latestMessageDepth,
     anchorBottom: autoScroll || isSubmitting,
@@ -136,12 +135,11 @@ function MessagesViewContent({
       <div className="relative flex-1 overflow-hidden overflow-y-auto">
         <div className="relative h-full">
           <div
-            className="scrollbar-gutter-stable"
+            className="scrollbar-gutter-stable overflow-y-auto"
             onScroll={debouncedHandleScroll}
             ref={scrollableRef}
             style={{
               height: '100%',
-              overflowY: 'auto',
               width: '100%',
               /** The mount hook pins the anchor row itself (document-space
                *  measurement); native scroll anchoring reacting to the same
@@ -177,7 +175,7 @@ function MessagesViewContent({
                       ) : (
                         <MultiMessage
                           messagesTree={_messagesTree}
-                          messageId={conversationId ?? null}
+                          messageId={treeConversationId ?? null}
                           setCurrentEditId={setCurrentEditId}
                           currentEditId={currentEditId ?? null}
                         />
@@ -222,7 +220,11 @@ function MessagesViewContent({
             onNearBottomChange={handleNearBottom}
           />
 
-          <MessageNav scrollableRef={scrollableRef} />
+          <MessageNav
+            key={treeConversationId}
+            conversationId={treeConversationId}
+            scrollableRef={scrollableRef}
+          />
         </div>
       </div>
     </>

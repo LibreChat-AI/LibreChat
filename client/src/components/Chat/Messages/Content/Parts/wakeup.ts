@@ -1,3 +1,5 @@
+import type { TMessage } from 'librechat-data-provider';
+
 export type WakeupTaskStatus = 'completed' | 'error' | 'cancelled';
 
 export type WakeupTask = {
@@ -122,4 +124,13 @@ export function parseWakeupText(text?: string | null): WakeupDisplay | null {
     return null;
   }
   return { kind: 'background_tool', tasks: tasks as WakeupTask[] };
+}
+
+/** User-submitted lookalikes are ordinary prompts. Older host wake-ups may omit
+ *  provenance, so retain their existing strict header/payload compatibility. */
+export function parseWakeupMessage(
+  message: Pick<TMessage, 'text' | 'isCreatedByUser' | 'isUserSubmitted'> | undefined,
+): WakeupDisplay | null {
+  if (message?.isCreatedByUser !== true || message.isUserSubmitted === true) return null;
+  return parseWakeupText(message.text);
 }

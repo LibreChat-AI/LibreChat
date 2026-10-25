@@ -84,6 +84,31 @@ describe('composeHint', () => {
       expect(hint(state, false)).toContain('Alt+⏎');
     });
 
+    it.each([
+      ['tool approval', true, true],
+      ['staged reasoning', true, false],
+      ['tool approval with Enter inserting a newline', false, false],
+      ['staged reasoning with Enter inserting a newline', false, true],
+    ])('omits unavailable Interrupt during %s', (_reason, enterToSend, isMac) => {
+      const result = hint(
+        {
+          duringRunActive: true,
+          hasText: true,
+          isSubmitting: true,
+          canSteer: false,
+          duringRunAction: 'queue',
+          enterToSend,
+        },
+        isMac,
+      );
+      expect(result).not.toContain('com_ui_composer_hint_interrupt');
+      expect(result).not.toContain('com_ui_composer_hint_send_now');
+      expect(result).not.toContain(isMac ? '⌥⏎' : 'Alt+⏎');
+      expect(result).toContain(
+        enterToSend ? 'com_ui_composer_hint_queue_default' : 'com_ui_composer_hint_queue_verb',
+      );
+    });
+
     it('falls back to the running copy when the modifiers have no text to act on', () => {
       expect(hint({ duringRunActive: true, hasText: false, isSubmitting: true })).toBe(
         'com_ui_composer_hint_running',
@@ -210,4 +235,11 @@ describe('composeHint', () => {
       expect(hint({ uploadingCount: 0, hasText: true })).toBe('com_ui_composer_hint_typing');
     });
   });
+});
+
+it('names Interrupt as the default while leaving Queue as the alternate', () => {
+  const result = hint({ duringRunActive: true, hasText: true, duringRunAction: 'interrupt' });
+  expect(result).toContain('com_ui_interrupt_steer');
+  expect(result).toContain('com_ui_composer_hint_queue');
+  expect(result).not.toContain('com_ui_composer_hint_steer');
 });

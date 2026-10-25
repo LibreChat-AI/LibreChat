@@ -329,33 +329,6 @@ export function emitResponseCompleted(config: StreamHandlerConfig, usage?: Usage
 }
 
 /**
- * Emit response.failed event
- */
-export function emitResponseFailed(
-  config: StreamHandlerConfig,
-  error: { type: string; message: string; code?: string },
-): void {
-  const { res, context, tracker } = config;
-  tracker.status = 'failed';
-  const response = buildResponse(context, tracker, 'failed');
-  response.error = {
-    type: error.type as
-      | 'server_error'
-      | 'invalid_request'
-      | 'not_found'
-      | 'model_error'
-      | 'too_many_requests',
-    message: error.message,
-    code: error.code,
-  };
-  writeEvent(res, {
-    type: 'response.failed',
-    sequence_number: tracker.nextSequence(),
-    response,
-  });
-}
-
-/**
  * Emit response.output_item.added event for a message
  */
 export function emitMessageItemAdded(config: StreamHandlerConfig): MessageItem {
@@ -899,44 +872,4 @@ export function writeAttachmentEvent(
     message_id: options?.messageId,
     conversation_id: options?.conversationId,
   });
-}
-
-/* =============================================================================
- * NON-STREAMING RESPONSE BUILDER
- * ============================================================================= */
-
-/**
- * Build a complete non-streaming response
- */
-export function buildResponsesNonStreamingResponse(
-  context: ResponseContext,
-  tracker: ResponseTracker,
-): Response {
-  return buildResponse(context, tracker, 'completed');
-}
-
-/**
- * Update tracker usage from collected data
- */
-export function updateTrackerUsage(
-  tracker: ResponseTracker,
-  usage: {
-    promptTokens?: number;
-    completionTokens?: number;
-    reasoningTokens?: number;
-    cachedTokens?: number;
-  },
-): void {
-  if (usage.promptTokens != null) {
-    tracker.usage.inputTokens = usage.promptTokens;
-  }
-  if (usage.completionTokens != null) {
-    tracker.usage.outputTokens = usage.completionTokens;
-  }
-  if (usage.reasoningTokens != null) {
-    tracker.usage.reasoningTokens = usage.reasoningTokens;
-  }
-  if (usage.cachedTokens != null) {
-    tracker.usage.cachedTokens = usage.cachedTokens;
-  }
 }

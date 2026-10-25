@@ -9,6 +9,7 @@ const {
 const {
   sendEvent,
   getToolkitKey,
+  createGitHubCompareRegistry,
   getUserMCPAuthMap,
   createAuthIdentityContext,
   selectMCPUpstreamTokenProvider,
@@ -26,6 +27,7 @@ const {
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
   getMCPServerNamesFromTools,
+  createMCPOAuthDeferral,
   buildMCPAuthToolCall,
   buildMCPAuthStepId,
   buildMCPAuthRunStepEvent,
@@ -49,6 +51,8 @@ const {
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isFatalAgentInitializationError,
   codeExecutionAuthHeaders,
+  createLaneGitRecorder,
+  resolvePullRequestRecording,
   createAttachedWorkspaceBashTool,
   createRepositoryInstructionSource,
   createRepositoryInstructionLoader,
@@ -57,8 +61,8 @@ const {
   resolveAttachedWorkspaceAdmissionOptions,
   resolveAttachedWorkspaceRequestTimeoutMs,
   createContextProgrammaticBashTool,
-  resolveCodeExecutionContext,
-  resolveCodeExecutionWorkspaceSelections,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
   resolveCodeExecutionWorkspaceContext,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
@@ -72,6 +76,7 @@ const {
   splitAssistantMCPToolResult,
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
+  getOutboundTimeoutMs,
 } = require('@librechat/api');
 const {
   Time,
@@ -129,7 +134,13 @@ const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSe
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
-const { findPluginAuthsByKeys, getRoleByName } = require('~/models');
+const {
+  findPluginAuthsByKeys,
+  getRoleByName,
+  setConvoLaneGit,
+  getConvoLaneContext,
+  reserveConvoLaneGitSeq,
+} = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 
@@ -461,7 +472,6 @@ async function processRequiredActions(client, requiredActions) {
     user: client.req.user.id,
     model: client.req.body.model ?? 'gpt-4o-mini',
     tools,
-    functions: true,
     endpoint: client.req.body.endpoint,
     options: {
       processFileURL,
@@ -691,6 +701,7 @@ async function processRequiredActions(client, requiredActions) {
         encrypted, // Pass the encrypted values for OAuth flow
         useSSRFProtection: !Array.isArray(_allowedDomains) || _allowedDomains.length === 0,
         allowedAddresses: _allowedAddresses,
+        timeoutMs: getOutboundTimeoutMs(appConfig, 'actionsMs'),
       });
       if (!tool) {
         logger.warn(
@@ -776,8 +787,6 @@ const isExpectedMCPTool = (toolName) =>
   toolName?.includes(Constants.mcp_delimiter) &&
   !toolName.startsWith(mcpServerPinPrefix) &&
   !isActionTool(toolName);
-const isExpectedMCPToolsUnavailableError = (error) =>
-  error?.code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE;
 const createExpectedMCPToolsUnavailableError = (agentName, cause) => {
   const subject = agentName ? `Agent "${agentName}"` : 'The agent';
   const error = new Error(
@@ -834,6 +843,7 @@ async function loadToolDefinitionsWrapper({
   jobCreatedAt,
   tool_resources,
   codeExecutionContext,
+  attachedEnvironmentOptOut,
   accessibleMcpServerNames,
   signal,
   upstreamTokenProvider: suppliedUpstreamTokenProvider,
@@ -875,32 +885,22 @@ async function loadToolDefinitionsWrapper({
   /** Gates the sandbox everywhere it is reachable, not just the `execute_code`
    *  entry in `filteredTools`: this flag also drives tool classification and the
    *  programmatic bash tool, which would otherwise run code for a denied role. */
-  const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
-    enabledCapabilities.has(AgentCapabilities.execute_code) &&
-    canUseTool(Tools.execute_code);
-  const baseCodeExecutionContext =
-    codeExecutionContext ??
-    resolveCodeExecutionContext({
-      statefulSessions:
-        codeExecutionEnabled &&
-        enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
-        agent.stateful_code_sessions === true,
-      environment: agent.stateful_code_environment,
-      environmentId: agent.code_environment_id,
-      environmentIds: agent.code_environment_ids,
-      allowEnvironmentSelection:
-        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-        conversation: req.resolvedConversation,
-        request: runtimeRequestBody,
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable:
+          enabledCapabilities.has(AgentCapabilities.execute_code) && canUseTool(Tools.execute_code),
+        statefulSessionsAvailable: enabledCapabilities.has(
+          AgentCapabilities.stateful_code_sessions,
+        ),
+        conversationId: runtimeRequestBody?.conversationId,
+        resolvedContext: codeExecutionContext,
+        attachedEnvironmentOptOut,
       }),
-      inheritedEnvironments: req.codeWorkspaceInheritance,
-      environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-      userId: req.user.id,
-      agentId: agent.id,
-      conversationId: runtimeRequestBody?.conversationId,
-    });
+    );
   const resolvedCodeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
@@ -1169,6 +1169,16 @@ async function loadToolDefinitionsWrapper({
    *  spellings itself (direct identity first, alias fallback), so this
    *  closure must look up EXACTLY the name it is given. */
   const approvalMetadata = createMCPToolApprovalMetadata();
+  const oauthDeferral = createMCPOAuthDeferral({
+    tools: defsFilteredTools,
+    toolOptions: agent.tool_options,
+    deferredToolsEnabled,
+    backgroundToolsEnabled: checkCapability(AgentCapabilities.run_in_background),
+    knownServerNames: [...(mcpServerNames ?? []), ...mcpRawServerNames],
+    pendingOAuthServers,
+    pendingOAuthStarts,
+    rememberAvailableTools: rememberMCPAvailableTools,
+  });
   const getOrFetchMCPServerTools = async (userId, serverName) => {
     const addPendingOAuthServer = async () => {
       const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
@@ -1191,6 +1201,8 @@ async function loadToolDefinitionsWrapper({
         serverName,
         userId,
         configServers,
+        req.user?.role,
+        { idOnTheSource: req.user?.idOnTheSource },
       );
     } catch {
       logger.warn(
@@ -1229,12 +1241,17 @@ async function loadToolDefinitionsWrapper({
     const cached = await getMCPServerTools(userId, serverName, serverConfig, capabilityProfile);
     if (cached) {
       rememberMCPAvailableTools(serverName, cached);
-      await addPendingOAuthServer();
+      await oauthDeferral.promptUnlessDeferred(
+        serverName,
+        serverConfig,
+        cached,
+        addPendingOAuthServer,
+      );
       return cached;
     }
 
     if (await addPendingOAuthServer()) {
-      return null;
+      return oauthDeferral.deferSignIn(serverName, serverConfig);
     }
 
     const oauthStart = async (authURL, options) => {
@@ -1264,11 +1281,11 @@ async function loadToolDefinitionsWrapper({
     });
 
     rememberMCPAvailableTools(serverName, result?.availableTools);
-    return result?.availableTools || null;
+    return oauthDeferral.resolveReconnectTools(serverName, serverConfig, result?.availableTools);
   };
 
   const refreshMCPServerTools = async (_userId, serverName) => {
-    if (pendingOAuthServers.has(serverName)) {
+    if (oauthDeferral.hasSignInDecision(serverName)) {
       return null;
     }
 
@@ -1381,6 +1398,7 @@ async function loadToolDefinitionsWrapper({
       userId: req.user.id,
       agentId: agent.id,
       tools: defsFilteredTools,
+      githubCompareEnabled: appConfig?.githubCompare?.enabled,
       toolOptions: agent.tool_options,
       deferredToolsEnabled,
       programmaticToolsEnabled,
@@ -1404,7 +1422,7 @@ async function loadToolDefinitionsWrapper({
   /** OAuth discovery must not reconnect (or prompt for) a server whose
    *  definitions the collision filter deliberately rejected. */
   for (const serverName of getMCPServerNamesFromTools(defsFilteredTools, mcpServerNames)) {
-    if (pendingOAuthServers.has(serverName)) {
+    if (oauthDeferral.hasSignInDecision(serverName)) {
       continue;
     }
 
@@ -1483,6 +1501,7 @@ async function loadToolDefinitionsWrapper({
           userId: req.user.id,
           agentId: agent.id,
           tools: defsFilteredTools,
+          githubCompareEnabled: appConfig?.githubCompare?.enabled,
           toolOptions: agent.tool_options,
           deferredToolsEnabled,
           programmaticToolsEnabled,
@@ -1536,9 +1555,10 @@ async function loadToolDefinitionsWrapper({
    * sandbox can't see the prior turn's generated artifacts on first read.
    */
   let primedCodeFiles;
+  let codeContextEntries;
   if (hasExecuteCode && tool_resources) {
     try {
-      const { toolContext, files } = await primeCodeFiles({
+      const { toolContext, files, contextFiles } = await primeCodeFiles({
         req,
         tool_resources,
         agentId: agent.id,
@@ -1558,6 +1578,7 @@ async function loadToolDefinitionsWrapper({
       if (files?.length) {
         primedCodeFiles = files;
       }
+      codeContextEntries = contextFiles;
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal })) {
         throw error;
@@ -1629,6 +1650,7 @@ async function loadToolDefinitionsWrapper({
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,
+    codeContextEntries,
     oauthActionToolNames,
     codeExecutionContext: resolvedCodeExecutionContext,
     repositoryInstructionSource: createRepositoryInstructionSource({
@@ -1674,6 +1696,7 @@ async function loadAgentTools({
   jobCreatedAt,
   definitionsOnly = true,
   codeExecutionContext: providedCodeExecutionContext,
+  attachedEnvironmentOptOut,
   accessibleMcpServerNames,
   upstreamTokenProvider,
   upstreamTokenProviderResolver,
@@ -1690,6 +1713,7 @@ async function loadAgentTools({
         jobCreatedAt,
         tool_resources,
         codeExecutionContext: providedCodeExecutionContext,
+        attachedEnvironmentOptOut,
         accessibleMcpServerNames,
         signal,
         upstreamTokenProvider,
@@ -1807,34 +1831,23 @@ async function loadAgentTools({
     });
   }
 
-  const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
-    enabledCapabilities.has(AgentCapabilities.execute_code) &&
-    canUseTool(Tools.execute_code);
   const runtimeRequestBody = requestBody ?? req.body;
-  const statefulCodeSessions =
-    codeExecutionEnabled &&
-    enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
-    agent.stateful_code_sessions === true;
-  const baseCodeExecutionContext =
-    providedCodeExecutionContext ??
-    resolveCodeExecutionContext({
-      statefulSessions: statefulCodeSessions,
-      environment: agent.stateful_code_environment,
-      environmentId: agent.code_environment_id,
-      environmentIds: agent.code_environment_ids,
-      allowEnvironmentSelection:
-        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-        conversation: req.resolvedConversation,
-        request: runtimeRequestBody,
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable:
+          enabledCapabilities.has(AgentCapabilities.execute_code) && canUseTool(Tools.execute_code),
+        statefulSessionsAvailable: enabledCapabilities.has(
+          AgentCapabilities.stateful_code_sessions,
+        ),
+        conversationId: runtimeRequestBody?.conversationId,
+        resolvedContext: providedCodeExecutionContext,
+        attachedEnvironmentOptOut,
       }),
-      inheritedEnvironments: req.codeWorkspaceInheritance,
-      environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-      userId: req.user.id,
-      agentId: agent.id,
-      conversationId: runtimeRequestBody?.conversationId,
-    });
+    );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
@@ -1855,7 +1868,6 @@ async function loadAgentTools({
     agent,
     signal,
     userMCPAuthMap,
-    functions: true,
     user: req.user.id,
     tools: _agentTools,
     options: {
@@ -1875,6 +1887,7 @@ async function loadAgentTools({
       upstreamTokenProvider,
       upstreamTokenProviderResolver,
       codeExecutionContext,
+      toolRegistry: createGitHubCompareRegistry(_agentTools, appConfig?.githubCompare),
       [Tools.web_search]: webSearchCallbacks,
     },
     webSearch: appConfig.webSearch,
@@ -2087,6 +2100,7 @@ async function loadAgentTools({
       jobCreatedAt,
       useSSRFProtection: !Array.isArray(_allowedDomains) || _allowedDomains.length === 0,
       allowedAddresses: _allowedAddresses,
+      timeoutMs: getOutboundTimeoutMs(appConfig, 'actionsMs'),
     });
 
     if (!tool) {
@@ -2241,7 +2255,7 @@ async function loadToolsForExecution({
   }
   /** Short-circuits before the role read, so an agent without `execute_code` or a
    *  deployment with the capability off pays nothing for the check. */
-  const codeExecutionEnabled =
+  const codeExecutionAllowed =
     enabledCapabilities?.has(AgentCapabilities.execute_code) === true &&
     agent?.tools?.includes(Tools.execute_code) === true &&
     (await checkToolRolePermission({
@@ -2252,30 +2266,22 @@ async function loadToolsForExecution({
       context: 'loadToolsForExecution',
     }));
 
-  /** Resolve the trusted endpoint/profile from the actually executing agent.
-   * This stays per-agent across handoffs and subagents; no graph-global stateful
-   * flag or model-supplied value is consulted. */
-  const statefulCodeSessions =
-    codeExecutionEnabled &&
-    enabledCapabilities?.has(AgentCapabilities.stateful_code_sessions) === true &&
-    agent?.stateful_code_sessions === true;
-  const baseCodeExecutionContext = resolveCodeExecutionContext({
-    statefulSessions: statefulCodeSessions,
-    environment: agent?.stateful_code_environment,
-    environmentId: agent?.code_environment_id,
-    environmentIds: agent?.code_environment_ids,
-    allowEnvironmentSelection:
-      req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-    workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-      conversation: req.resolvedConversation,
-      request: runtimeRequestBody,
-    }),
-    inheritedEnvironments: req.codeWorkspaceInheritance,
-    environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-    userId: req.user.id,
-    agentId: agent?.id,
-    conversationId: conversationId ?? runtimeRequestBody?.conversationId,
-  });
+  /** Resolve the trusted endpoint/profile from the actually executing agent under the
+   * same per-agent rule as initialization, including the conversation's "No workspace"
+   * decision. This stays per-agent across handoffs and subagents; no graph-global
+   * stateful flag or model-supplied value is consulted. */
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable: codeExecutionAllowed,
+        statefulSessionsAvailable:
+          enabledCapabilities?.has(AgentCapabilities.stateful_code_sessions) === true,
+        conversationId: conversationId ?? runtimeRequestBody?.conversationId,
+      }),
+    );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
@@ -2383,6 +2389,23 @@ async function loadToolsForExecution({
               baseUrl: codeExecutionContext.baseUrl,
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
+              onLaneGit: await createLaneGitRecorder({
+                ...resolvePullRequestRecording(
+                  req.config?.endpoints?.agents?.pullRequests,
+                  process.env,
+                ),
+                user: req.user.id,
+                conversationId: conversationId ?? runtimeRequestBody?.conversationId,
+                repo: codeExecutionContext.codeWorkspace.environment?.repo,
+                workspace: {
+                  environmentId: codeExecutionContext.codeWorkspace.environmentId,
+                  workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
+                },
+                admittedEpoch: req.resolvedConversation?.codeAttachmentEpoch,
+                getConvoLaneContext,
+                reserveConvoLaneGitSeq,
+                setConvoLaneGit,
+              }),
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,
               nativeSandbox: codeExecutionContext.codeWorkspace.nativeSandbox,
               environment: codeExecutionContext.codeWorkspace.environment,
@@ -2482,7 +2505,6 @@ async function loadToolsForExecution({
       agent,
       signal,
       userMCPAuthMap,
-      functions: true,
       tools: regularToolNames,
       user: req.user.id,
       options: {
@@ -2500,6 +2522,7 @@ async function loadToolsForExecution({
          *  registry failure at execution can't fail-closed a tool the same
          *  turn already advertised. */
         accessibleMcpServerNames,
+        toolRegistry,
         requestScopedConnections: mcpRequestScopedConnections,
         upstreamTokenProvider,
         upstreamTokenProviderResolver,
@@ -2680,6 +2703,7 @@ async function loadActionToolsForExecution({
       description: functionSignature.description,
       useSSRFProtection: !Array.isArray(allowedDomains) || allowedDomains.length === 0,
       allowedAddresses,
+      timeoutMs: getOutboundTimeoutMs(appConfig, 'actionsMs'),
     });
 
     if (!tool) {
@@ -2702,7 +2726,6 @@ module.exports = {
   processRequiredActions,
   resolveAgentCapabilities,
   isFatalAgentInitializationError,
-  isExpectedMCPToolsUnavailableError,
   /** Re-exported for controllers that already depend on (and mock) this
    *  module, avoiding a fresh heavy `services/MCP` require chain there. */
   getAccessibleMcpServerNames,

@@ -6,6 +6,7 @@ import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
 import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { initializeAnthropic } from '../anthropic/initialize';
 import { initializeBedrock } from '../bedrock/initialize';
+import { getReasoningCapabilityDeps } from '../reasoning';
 import { initializeCustom } from '../custom/initialize';
 import { initializeGoogle } from '../google/initialize';
 import { initializeOpenAI } from '../openai/initialize';
@@ -28,6 +29,16 @@ export function isKnownCustomProvider(provider?: string): boolean {
 }
 
 /**
+ * Production wiring for custom endpoints: the initializer takes its reasoning catalog client
+ * and cache from the caller, and this registry is where the real ones are supplied.
+ */
+const initializeCustomWithReasoning: InitializeFn = (params) =>
+  initializeCustom({
+    ...params,
+    reasoningCapabilityDeps: params.reasoningCapabilityDeps ?? getReasoningCapabilityDeps(),
+  });
+
+/**
  * Provider configuration map mapping providers to their initialization functions.
  *
  * `Providers.VERTEXAI` shares `initializeGoogle` because the runtime distinction
@@ -38,10 +49,10 @@ export function isKnownCustomProvider(provider?: string): boolean {
  * summarization falls back to the raw provider, dropping client overrides.
  */
 export const providerConfigMap: Record<string, InitializeFn> = {
-  [Providers.XAI]: initializeCustom,
-  [Providers.DEEPSEEK]: initializeCustom,
-  [Providers.MOONSHOT]: initializeCustom,
-  [Providers.OPENROUTER]: initializeCustom,
+  [Providers.XAI]: initializeCustomWithReasoning,
+  [Providers.DEEPSEEK]: initializeCustomWithReasoning,
+  [Providers.MOONSHOT]: initializeCustomWithReasoning,
+  [Providers.OPENROUTER]: initializeCustomWithReasoning,
   [Providers.VERTEXAI]: initializeGoogle,
   [EModelEndpoint.openAI]: initializeOpenAI,
   [EModelEndpoint.google]: initializeGoogle,
@@ -113,6 +124,53 @@ export function resolveTitleTiming({
   return 'immediate';
 }
 
+/** The settings conversation title generation reads for one endpoint. */
+export type TitleConfig = Pick<
+  Partial<TEndpoint>,
+  | 'titleConvo'
+  | 'titleEndpoint'
+  | 'titleModel'
+  | 'titleMethod'
+  | 'titlePrompt'
+  | 'titlePromptTemplate'
+>;
+
+/**
+ * Resolves an endpoint's title settings field by field: `endpoints.all` wins, then the named
+ * endpoint block, then the custom endpoint's own config. An `all` block that sets only other
+ * keys (`headers`, `streamRate`, activity labels) therefore leaves the endpoint's title
+ * settings in effect. `titleEndpoint` and `titleModel` are one choice: both come from the
+ * first layer that sets either, so a model named for one endpoint never runs on another.
+ */
+export function resolveTitleConfig({
+  appConfig,
+  endpoint,
+  customEndpointConfig,
+}: {
+  appConfig?: AppConfig;
+  endpoint: string;
+  customEndpointConfig?: Partial<TEndpoint>;
+}): TitleConfig {
+  const endpoints = appConfig?.endpoints;
+  const named = endpoints?.[endpoint as keyof NonNullable<typeof endpoints>] as
+    | Partial<TEndpoint>
+    | undefined;
+  const layers = [endpoints?.all, named, customEndpointConfig].filter(
+    (layer): layer is Partial<TEndpoint> => layer != null,
+  );
+  const pick = <K extends keyof TitleConfig>(field: K): TitleConfig[K] =>
+    layers.find((layer) => layer[field] != null)?.[field];
+  const routing = layers.find((layer) => layer.titleEndpoint != null || layer.titleModel != null);
+  return {
+    titleConvo: pick('titleConvo'),
+    titleEndpoint: routing?.titleEndpoint,
+    titleModel: routing?.titleModel,
+    titleMethod: pick('titleMethod'),
+    titlePrompt: pick('titlePrompt'),
+    titlePromptTemplate: pick('titlePromptTemplate'),
+  };
+}
+
 /**
  * Result from getProviderConfig
  */
@@ -153,7 +211,7 @@ export function getProviderConfig({
     if (!customEndpointConfig) {
       throw new Error(`Provider ${provider} not supported`);
     }
-    getOptions = initializeCustom;
+    getOptions = initializeCustomWithReasoning;
     overrideProvider = Providers.OPENAI;
   }
 

@@ -15,13 +15,7 @@ export default function MessagesView({
   return (
     <div className="min-h-0 flex-1 overflow-hidden" data-testid="messages-view">
       <div className="relative h-full">
-        <div
-          style={{
-            height: '100%',
-            overflowY: 'auto',
-            width: '100%',
-          }}
-        >
+        <div className="h-full w-full overflow-y-auto">
           <div className="flex flex-col pb-16 text-sm">
             {(_messagesTree && _messagesTree.length === 0) || _messagesTree === null ? (
               <div className="bg-surface-secondary text-text-tertiary flex w-full items-center justify-center gap-1 p-3 text-sm">

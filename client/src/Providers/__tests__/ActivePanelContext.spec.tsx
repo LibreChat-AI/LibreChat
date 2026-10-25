@@ -1,13 +1,16 @@
 import React from 'react';
-import { render, fireEvent, screen } from '@testing-library/react';
+import { getDefaultStore } from 'jotai';
+import { act, render, fireEvent, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/extend-expect';
 import {
-  ActivePanelProvider,
-  resolveActivePanel,
+  DEFAULT_PANEL,
+  activePanelAtom,
   useActivePanel,
+  resolveActivePanel,
+  ActivePanelProvider,
 } from '~/Providers/ActivePanelContext';
 
-const STORAGE_KEY = 'side:active-panel';
+const LEGACY_KEY = 'side:active-panel';
 
 function TestConsumer() {
   const { active, setActive } = useActivePanel();
@@ -19,39 +22,64 @@ function TestConsumer() {
   );
 }
 
+const dispatchPageShow = (persisted: boolean) =>
+  act(() => {
+    window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted }));
+  });
+
 describe('ActivePanelContext', () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
+    getDefaultStore().set(activePanelAtom, DEFAULT_PANEL);
   });
 
-  it('defaults to conversations when no localStorage value exists', () => {
+  const renderProvider = () =>
     render(
       <ActivePanelProvider>
         <TestConsumer />
       </ActivePanelProvider>,
     );
+
+  it('lands a first visit on conversations', () => {
+    renderProvider();
     expect(screen.getByTestId('active')).toHaveTextContent('conversations');
   });
 
-  it('reads initial value from localStorage', () => {
-    localStorage.setItem(STORAGE_KEY, 'memories');
-    render(
-      <ActivePanelProvider>
-        <TestConsumer />
-      </ActivePanelProvider>,
-    );
-    expect(screen.getByTestId('active')).toHaveTextContent('memories');
+  it('ignores a panel persisted by an earlier version and leaves it for older tabs', () => {
+    localStorage.setItem(LEGACY_KEY, 'skills');
+    sessionStorage.setItem(LEGACY_KEY, 'skills');
+    renderProvider();
+    expect(screen.getByTestId('active')).toHaveTextContent('conversations');
+    expect(localStorage.getItem(LEGACY_KEY)).toBe('skills');
   });
 
-  it('setActive updates state and writes to localStorage', () => {
-    render(
-      <ActivePanelProvider>
-        <TestConsumer />
-      </ActivePanelProvider>,
-    );
+  it('keeps the chosen panel when the provider remounts in the same document', () => {
+    const { unmount } = renderProvider();
+    fireEvent.click(screen.getByTestId('switch-btn'));
+    unmount();
+
+    renderProvider();
+    expect(screen.getByTestId('active')).toHaveTextContent('bookmarks');
+  });
+
+  it('returns to conversations when the page is restored from the back-forward cache', () => {
+    renderProvider();
+    fireEvent.click(screen.getByTestId('switch-btn'));
+
+    dispatchPageShow(false);
+    expect(screen.getByTestId('active')).toHaveTextContent('bookmarks');
+
+    dispatchPageShow(true);
+    expect(screen.getByTestId('active')).toHaveTextContent('conversations');
+  });
+
+  it('setActive updates state without writing to Web Storage', () => {
+    renderProvider();
     fireEvent.click(screen.getByTestId('switch-btn'));
     expect(screen.getByTestId('active')).toHaveTextContent('bookmarks');
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('bookmarks');
+    expect(localStorage.getItem(LEGACY_KEY)).toBeNull();
+    expect(sessionStorage.getItem(LEGACY_KEY)).toBeNull();
   });
 
   it('throws when useActivePanel is called outside provider', () => {

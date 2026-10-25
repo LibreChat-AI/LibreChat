@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback } from 'react';
 import { Import } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { TStartupConfig } from 'librechat-data-provider';
 import { Spinner, useToastContext, Label, Button } from '@librechat/client';
+import type { TStartupConfig } from 'librechat-data-provider';
 import { startupConfigKey, useUploadConversationsMutation } from '~/data-provider';
 import { NotificationSeverity } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -119,12 +119,12 @@ function ImportConversations() {
       >
         {isUploading ? (
           <>
-            <Spinner className="mr-1 w-4" />
+            <Spinner className="me-1 w-4" />
             <span>{localize('com_ui_importing')}</span>
           </>
         ) : (
           <>
-            <Import className="mr-1 flex h-4 w-4 items-center stroke-1" aria-hidden="true" />
+            <Import className="me-1 flex h-4 w-4 items-center stroke-1" aria-hidden="true" />
             <span>{localize('com_ui_import')}</span>
           </>
         )}

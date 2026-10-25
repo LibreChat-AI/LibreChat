@@ -150,7 +150,7 @@ export default function Settings({ conversation, setOption, models, readonly }: 
       </div>
       <div className="col-span-6 flex flex-col items-center justify-start gap-6">
         <div className="grid w-full items-center gap-2">
-          <Label htmlFor="promptPrefix" className="text-left text-sm font-medium">
+          <Label htmlFor="promptPrefix" className="text-start text-sm font-medium">
             {localize('com_endpoint_prompt_prefix_assistants')}{' '}
             <small className="high-contrast:opacity-100 opacity-40">
               ({localize('com_endpoint_default_blank')})
@@ -169,7 +169,7 @@ export default function Settings({ conversation, setOption, models, readonly }: 
           />
         </div>
         <div className="grid w-full items-center gap-2">
-          <Label htmlFor="instructions" className="text-left text-sm font-medium">
+          <Label htmlFor="instructions" className="text-start text-sm font-medium">
             {localize('com_endpoint_instructions_assistants')}{' '}
             <small className="high-contrast:opacity-100 opacity-40">
               ({localize('com_endpoint_default_blank')})

@@ -17,7 +17,7 @@ export const groupHeadingClass = 'text-sm font-semibold text-text-primary';
 /** Small count chip, e.g. "2 / 10". */
 export function CountPill({ children }: { children: ReactNode }) {
   return (
-    <span className="bg-surface-tertiary text-text-secondary inline-flex h-4 items-center justify-center rounded-full px-1.5 text-[10px] font-medium whitespace-nowrap tabular-nums">
+    <span className="bg-surface-tertiary text-text-secondary text-3xs inline-flex h-4 items-center justify-center rounded-full px-1.5 font-medium whitespace-nowrap tabular-nums">
       {children}
     </span>
   );
@@ -34,7 +34,7 @@ export function CountPill({ children }: { children: ReactNode }) {
 export function BetaPill() {
   const localize = useLocalize();
   return (
-    <span className="border-brand-purple/40 bg-brand-purple/10 text-brand-purple rounded-full border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
+    <span className="border-brand-purple/40 bg-brand-purple/10 text-brand-purple text-3xs rounded-full border px-1.5 py-0.5 font-medium tracking-wide uppercase">
       {localize('com_ui_beta')}
     </span>
   );
@@ -50,8 +50,9 @@ export function InfoTrigger() {
     <HoverCardTrigger asChild>
       <Button
         variant="ghost"
+        size="bare"
         aria-label={localize('com_ui_more_info')}
-        className="text-text-tertiary hover:text-text-secondary focus-visible:ring-text-primary flex h-4 w-4 shrink-0 items-center justify-center rounded p-0 transition-colors hover:bg-transparent focus-visible:ring-2"
+        className="text-text-tertiary hover:text-text-secondary flex h-4 w-4 shrink-0 rounded hover:bg-transparent"
       >
         <CircleHelpIcon className="h-3.5 w-3.5" aria-hidden={true} />
       </Button>
@@ -77,7 +78,7 @@ export function ToggleSetting({ id, label, checked, onCheckedChange, info }: Tog
   const row = (
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <label htmlFor={id} className="text-text-primary truncate text-[13px] font-medium">
+        <label htmlFor={id} className="text-text-primary text-1xs truncate font-medium">
           {label}
         </label>
         {info != null && <InfoTrigger />}

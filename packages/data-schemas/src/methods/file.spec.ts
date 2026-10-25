@@ -1,11 +1,12 @@
 import mongoose from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { EToolResources, FileContext } from 'librechat-data-provider';
+import { EToolResources, FileContext, FileSources } from 'librechat-data-provider';
+import type { CodeEnvRef } from 'librechat-data-provider';
 import type { IChatProject, IMongoFile } from '~/types';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
+import { createFileMethods, FileStorageConflictError } from './file';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
-import { createFileMethods } from './file';
 import { createModels } from '~/models';
 
 let File: mongoose.Model<unknown>;
@@ -45,6 +46,1278 @@ describe('File Methods', () => {
 
   beforeEach(async () => {
     await File.deleteMany({});
+  });
+
+  describe('clearFileCodeEnvRefs', () => {
+    const user = new mongoose.Types.ObjectId();
+    const updatedAt = new Date('2026-10-20T00:00:00Z');
+    const defaultRef: CodeEnvRef = {
+      kind: 'user',
+      id: user.toString(),
+      storage_session_id: 'default-session',
+      file_id: 'remote-default',
+      executionProfile: 'default',
+      executionRouteKey: 'default',
+      provisionedAt: 123,
+      sandboxFilename: '$notes.csv',
+    };
+    const statefulRef: CodeEnvRef = {
+      ...defaultRef,
+      storage_session_id: 'stateful-session',
+      file_id: 'remote-stateful',
+      executionProfile: 'stateful',
+      executionRouteKey: 'stateful:a',
+    };
+    const snapshot = {
+      file_id: 'retained-code-file',
+      userId: user.toString(),
+      tenantId: 'tenant-a',
+      refs: [{ routeKey: 'default', ref: defaultRef }],
+    };
+    const metadata = {
+      codeEnvRef: defaultRef,
+      codeEnvRefs: { default: defaultRef, 'stateful:a': statefulRef },
+      embeddedEntities: ['agent-a'],
+      searchDestination: true,
+      destinationChosen: true,
+      routingMimeType: 'text/csv',
+      sourceDispatchedAt: 42,
+      toolResource: EToolResources.execute_code,
+    };
+    const seed = (overrides = {}) =>
+      File.collection.insertOne({
+        file_id: snapshot.file_id,
+        user,
+        tenantId: snapshot.tenantId,
+        context: FileContext.message_attachment,
+        conversationId: 'conversation-a',
+        filename: 'notes.csv',
+        filepath: '/uploads/notes.csv',
+        type: 'text/csv',
+        bytes: 100,
+        source: 'local',
+        llmDeliveryPath: 'none',
+        embedded: true,
+        updatedAt,
+        metadata,
+        ...overrides,
+      });
+    const read = () => File.collection.findOne({ file_id: snapshot.file_id, user });
+
+    it('removes matching pointers without changing content, intent or bookkeeping', async () => {
+      await seed({
+        createdAt: updatedAt,
+        expiresAt: new Date('2030-01-01'),
+        expiredAt: new Date('2026-10-19'),
+        deletionAttempts: 3,
+        deletionRetryAt: new Date('2026-10-23'),
+        text: 'canonical source',
+      });
+      const before = await read();
+      const update = jest.spyOn(mongoose.models.File, 'updateOne');
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
+      expect(update).toHaveBeenCalledTimes(2);
+      const paths = ['metadata.codeEnvRefs.default', 'metadata.codeEnvRef'];
+      for (const [index, path] of paths.entries()) {
+        expect(update).toHaveBeenNthCalledWith(
+          index + 1,
+          {
+            file_id: snapshot.file_id,
+            user: snapshot.userId,
+            $and: [{ tenantId: snapshot.tenantId }],
+            $or: [expect.any(Object)],
+          },
+          { $unset: { [path]: '' }, $set: { 'metadata.codeDestination': true } },
+          { timestamps: false },
+        );
+      }
+      expect(JSON.stringify(update.mock.calls)).not.toMatch(/\$expr|\$\$REMOVE/);
+      const after = await read();
+      const { codeEnvRef: _alias, codeEnvRefs: _routes, ...intent } = metadata;
+      expect(after).toEqual({
+        ...before,
+        metadata: {
+          ...intent,
+          codeDestination: true,
+          codeEnvRefs: { 'stateful:a': statefulRef },
+        },
+      });
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
+      expect(await read()).toEqual(after);
+    });
+
+    it.each([
+      ['kind', 'agent'],
+      ['id', 'other-owner'],
+      ['storage_session_id', 'new-session'],
+      ['file_id', 'new-remote-id'],
+      ['executionProfile', 'stateful'],
+      ['executionRouteKey', 'stateful:b'],
+      ['provisionedAt', 124],
+      ['sandboxFilename', 'new-name.csv'],
+      ['version', 2],
+    ])('preserves reprovisioned pointers when %s differs', async (field, value) => {
+      const replacement = { ...defaultRef, [field]: value };
+      await seed({
+        metadata: {
+          ...metadata,
+          codeEnvRef: replacement,
+          codeEnvRefs: { default: replacement, 'stateful:a': statefulRef },
+        },
+      });
+      const before = await read();
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(false);
+      expect(await read()).toEqual(before);
+    });
+
+    it.each([
+      [true, undefined],
+      [true, false],
+      [true, true],
+      [false, undefined],
+      [false, false],
+      [false, true],
+    ] as const)(
+      'retains code intent only for a matching snapshot: %s, %s',
+      async (matches, prior) => {
+        const ref = matches ? defaultRef : { ...defaultRef, provisionedAt: 124 };
+        await seed({
+          metadata: {
+            ...metadata,
+            codeEnvRef: ref,
+            codeEnvRefs: { default: ref },
+            ...(prior === undefined ? {} : { codeDestination: prior }),
+          },
+        });
+        expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(matches);
+        expect((await read())?.metadata?.codeDestination).toBe(matches ? true : prior);
+      },
+    );
+
+    it('compares absent optional fields as part of the full snapshot', async () => {
+      const replacement = { ...defaultRef };
+      delete replacement.provisionedAt;
+      await seed({
+        metadata: { codeEnvRef: replacement, codeEnvRefs: { default: replacement } },
+      });
+      const before = await read();
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(false);
+      expect(await read()).toEqual(before);
+    });
+
+    it.each([
+      'executionProfile',
+      'executionRouteKey',
+      'provisionedAt',
+      'sandboxFilename',
+      'version',
+    ])('distinguishes null from absent optional snapshot fields: %s', async (field) => {
+      const absent = { ...defaultRef };
+      Reflect.deleteProperty(absent, field);
+      const explicitNull = { ...absent, [field]: null };
+      await seed({
+        metadata: { codeEnvRef: explicitNull, codeEnvRefs: { default: explicitNull } },
+      });
+      const before = await read();
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({
+          ...snapshot,
+          refs: [{ routeKey: 'default', ref: absent }],
+        }),
+      ).toBe(false);
+      expect(await read()).toEqual(before);
+      await File.collection.updateOne(
+        { file_id: snapshot.file_id },
+        { $set: { metadata: { codeEnvRef: absent, codeEnvRefs: { default: absent } } } },
+      );
+      const withoutField = await read();
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({
+          ...snapshot,
+          refs: [{ routeKey: 'default', ref: explicitNull }],
+        }),
+      ).toBe(false);
+      expect(await read()).toEqual(withoutField);
+      await File.collection.updateOne(
+        { file_id: snapshot.file_id },
+        {
+          $set: { metadata: { codeEnvRef: explicitNull, codeEnvRefs: { default: explicitNull } } },
+        },
+      );
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({
+          ...snapshot,
+          refs: [{ routeKey: 'default', ref: explicitNull }],
+        }),
+      ).toBe(true);
+      expect((await read())?.metadata?.codeEnvRefs?.default).toBeUndefined();
+      expect((await read())?.metadata?.codeEnvRef).toBeUndefined();
+    });
+
+    it('matches every field regardless of BSON property order', async () => {
+      await seed();
+      const { file_id, ...rest } = defaultRef;
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({
+          ...snapshot,
+          refs: [{ routeKey: 'default', ref: { file_id, ...rest } }],
+        }),
+      ).toBe(true);
+      const stored = await read();
+      expect(stored?.metadata?.codeEnvRef).toBeUndefined();
+      expect(stored?.metadata?.codeEnvRefs).toEqual({ 'stateful:a': statefulRef });
+    });
+
+    it('clears matching sibling routes even when another snapshot was replaced', async () => {
+      const replacement = { ...defaultRef, provisionedAt: 124 };
+      await seed({
+        metadata: {
+          ...metadata,
+          codeEnvRef: replacement,
+          codeEnvRefs: { default: replacement, 'stateful:a': statefulRef },
+        },
+      });
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({
+          ...snapshot,
+          refs: [...snapshot.refs, { routeKey: 'stateful:a', ref: statefulRef }],
+        }),
+      ).toBe(false);
+      const stored = await read();
+      expect(stored?.metadata?.codeEnvRef).toEqual(replacement);
+      expect(stored?.metadata?.codeEnvRefs).toEqual({ default: replacement });
+    });
+
+    it.each([statefulRef, { ...defaultRef, provisionedAt: 124 }])(
+      'preserves an unrelated or replaced legacy alias: %p',
+      async (alias) => {
+        await seed({ metadata: { ...metadata, codeEnvRef: alias } });
+        expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(alias === statefulRef);
+        const stored = await read();
+        expect(stored?.metadata?.codeEnvRef).toEqual(alias);
+        expect(stored?.metadata?.codeEnvRefs?.default).toBeUndefined();
+      },
+    );
+
+    it('preserves routes and aliases replaced between the independent conditional writes', async () => {
+      await seed();
+      const replacement = { ...defaultRef, provisionedAt: 124 };
+      const sibling = { ...statefulRef, provisionedAt: 125 };
+      const updateOne = File.collection.updateOne.bind(File.collection);
+      jest.spyOn(File.collection, 'updateOne').mockImplementation(async (...args) => {
+        const operation = args[1];
+        if (
+          operation != null &&
+          !Array.isArray(operation) &&
+          operation.$unset?.['metadata.codeEnvRef'] !== undefined
+        ) {
+          await updateOne(
+            { file_id: snapshot.file_id },
+            {
+              $set: {
+                'metadata.codeEnvRef': replacement,
+                'metadata.codeEnvRefs.stateful:a': sibling,
+              },
+            },
+          );
+        }
+        return updateOne(...args);
+      });
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(false);
+      const stored = await read();
+      expect(stored?.metadata?.codeEnvRef).toEqual(replacement);
+      expect(stored?.metadata?.codeEnvRefs).toEqual({ 'stateful:a': sibling });
+      expect(stored?.updatedAt).toEqual(updatedAt);
+    });
+
+    it.each(['metadata.codeEnvRefs.default', 'metadata.codeEnvRef'])(
+      'confirms route absence with a narrow owned read when only %s matches',
+      async (path) => {
+        await seed({ metadata: {} });
+        await File.collection.updateOne(
+          { file_id: snapshot.file_id },
+          { $set: { [path]: defaultRef } },
+        );
+        const find = jest.spyOn(mongoose.models.File, 'findOne');
+        expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
+        expect(find).toHaveBeenCalledTimes(1);
+        expect(find).toHaveBeenCalledWith(
+          {
+            file_id: snapshot.file_id,
+            user: snapshot.userId,
+            $and: [{ tenantId: snapshot.tenantId }],
+          },
+          { _id: 0, 'metadata.codeEnvRef': 1, 'metadata.codeEnvRefs': 1 },
+        );
+        expect((await read())?.metadata?.codeDestination).toBe(true);
+      },
+    );
+
+    it('confirms route absence when every conditional write misses', async () => {
+      await seed({ metadata: {} });
+      const find = jest.spyOn(mongoose.models.File, 'findOne');
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
+      expect(find).toHaveBeenCalledTimes(1);
+      expect(find).toHaveBeenCalledWith(
+        {
+          file_id: snapshot.file_id,
+          user: snapshot.userId,
+          $and: [{ tenantId: snapshot.tenantId }],
+        },
+        { _id: 0, 'metadata.codeEnvRef': 1, 'metadata.codeEnvRefs': 1 },
+      );
+      expect((await read())?.metadata).toEqual({});
+    });
+
+    it.each([false, true])(
+      'keeps generated files hydratable with legacy-only refs: %s',
+      async (legacyOnly) => {
+        await seed({
+          context: FileContext.execute_code,
+          metadata: {
+            codeEnvRef: defaultRef,
+            ...(legacyOnly ? {} : { codeEnvRefs: { default: defaultRef } }),
+          },
+        });
+        expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
+        const stored = await read();
+        expect(stored?.metadata?.codeEnvRef).toBeUndefined();
+        expect(stored?.metadata?.codeEnvRefs).toEqual(legacyOnly ? undefined : {});
+        const generated = await fileMethods.getCodeGeneratedFiles(
+          'conversation-a',
+          [snapshot.file_id],
+          snapshot,
+        );
+        expect(generated.map((file) => file.file_id)).toEqual([snapshot.file_id]);
+      },
+    );
+
+    it.each([FileContext.execute_code, FileContext.message_attachment])(
+      'hydrates marker-only code intent without crossing owner, tenant, conversation or thread: %s',
+      async (context) => {
+        await runAsSystem(() =>
+          File.create({
+            file_id: snapshot.file_id,
+            user,
+            tenantId: snapshot.tenantId,
+            conversationId: 'conversation-a',
+            context,
+            filename: 'notes.csv',
+            filepath: '/uploads/notes.csv',
+            type: 'text/csv',
+            bytes: 100,
+            llmDeliveryPath: 'none',
+            metadata: { codeDestination: true, destinationChosen: true },
+          }),
+        );
+        const hydrate = (ids: string[], scope = snapshot, conversationId = 'conversation-a') =>
+          context === FileContext.execute_code
+            ? fileMethods.getCodeGeneratedFiles(conversationId, ids, scope)
+            : fileMethods.getUserCodeFiles(ids, scope);
+        const files = await hydrate([snapshot.file_id]);
+        expect(files.map((file) => file.file_id)).toEqual([snapshot.file_id]);
+        expect(files[0].metadata?.codeDestination).toBe(true);
+        expect(files[0].metadata?.codeEnvRef).toBeUndefined();
+        expect(files[0].metadata?.codeEnvRefs).toBeUndefined();
+        expect(await hydrate(['not-in-thread'])).toEqual([]);
+        expect(
+          await hydrate([snapshot.file_id], {
+            ...snapshot,
+            userId: new mongoose.Types.ObjectId().toString(),
+          }),
+        ).toEqual([]);
+        expect(await hydrate([snapshot.file_id], { ...snapshot, tenantId: 'tenant-b' })).toEqual(
+          [],
+        );
+        if (context === FileContext.execute_code) {
+          expect(await hydrate([snapshot.file_id], snapshot, 'other-conversation')).toEqual([]);
+        } else {
+          const deferred = await fileMethods.getDeferredProvisionFiles(
+            [snapshot.file_id],
+            snapshot,
+            { code: true },
+          );
+          expect(deferred.map((file) => file.file_id)).toEqual([snapshot.file_id]);
+        }
+        await File.updateOne(
+          { file_id: snapshot.file_id },
+          { $set: { 'metadata.codeDestination': false } },
+        );
+        expect(await hydrate([snapshot.file_id])).toEqual([]);
+        await File.updateOne(
+          { file_id: snapshot.file_id },
+          { $unset: { 'metadata.codeDestination': '' } },
+        );
+        expect(await hydrate([snapshot.file_id])).toEqual([]);
+      },
+    );
+
+    it.each([
+      {},
+      { executionProfile: 'default' as const },
+      { executionProfile: 'stateful' as const },
+    ])('clears legacy-only refs and queues the missing route: %p', async (routeFields) => {
+      const ref: CodeEnvRef = {
+        kind: 'user',
+        id: user.toString(),
+        storage_session_id: 'legacy-session',
+        file_id: 'legacy-remote',
+        ...routeFields,
+      };
+      await seed({ metadata: { ...metadata, codeEnvRef: ref, codeEnvRefs: undefined } });
+      const routeKey = ref.executionProfile ?? 'default';
+      expect(
+        await fileMethods.getDeferredProvisionFiles([snapshot.file_id], snapshot, {
+          code: true,
+          codeRouteKey: routeKey,
+        }),
+      ).toEqual([]);
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({ ...snapshot, refs: [{ routeKey, ref }] }),
+      ).toBe(true);
+      const deferred = await fileMethods.getDeferredProvisionFiles([snapshot.file_id], snapshot, {
+        code: true,
+        codeRouteKey: routeKey,
+      });
+      expect(deferred.map((file) => file.file_id)).toEqual([snapshot.file_id]);
+      expect(deferred[0].llmDeliveryPath).toBe('none');
+      expect(deferred[0].metadata?.destinationChosen).toBe(true);
+    });
+
+    it('persists each copy without mutating input or invalidating the embedding snapshot', async () => {
+      await seed();
+      const input = structuredClone(snapshot);
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({
+          ...snapshot,
+          refs: [{ routeKey: 'stateful:a', ref: statefulRef }],
+        }),
+      ).toBe(true);
+      expect(snapshot).toEqual(input);
+      expect(
+        await fileMethods.clearFileEmbeddings({
+          ...snapshot,
+          updatedAt,
+          embeddedEntities: metadata.embeddedEntities,
+        }),
+      ).toBe(true);
+      const stored = await read();
+      expect(stored?.updatedAt).toEqual(updatedAt);
+      expect(stored?.embedded).toBe(false);
+      expect(stored?.metadata?.codeEnvRefs).toEqual({});
+    });
+
+    it.each([
+      { userId: new mongoose.Types.ObjectId().toString() },
+      { tenantId: 'tenant-b' },
+      { tenantId: undefined },
+    ])('returns false without changing an unauthorized file: %p', async (scope) => {
+      await seed();
+      const before = await read();
+      expect(await fileMethods.clearFileCodeEnvRefs({ ...snapshot, ...scope })).toBe(false);
+      expect(await read()).toEqual(before);
+    });
+
+    it.each([false, true])('scopes legacy missing/null tenants explicitly: %s', async (missing) => {
+      const foreign = await seed();
+      const local = await seed({ tenantId: null });
+      if (missing) {
+        await File.collection.updateOne({ _id: local.insertedId }, { $unset: { tenantId: '' } });
+      }
+      expect(await fileMethods.clearFileCodeEnvRefs({ ...snapshot, tenantId: undefined })).toBe(
+        true,
+      );
+      const records = await File.collection.find({ file_id: snapshot.file_id }).toArray();
+      expect(records.find((record) => record._id.equals(foreign.insertedId))?.metadata).toEqual(
+        metadata,
+      );
+      expect(
+        records.find((record) => record._id.equals(local.insertedId))?.metadata?.codeEnvRefs,
+      ).toEqual({ 'stateful:a': statefulRef });
+    });
+
+    it.each([{ tenantId: 'tenant-b' }, { tenantId: undefined }])(
+      'does not let tenant middleware replace the caller scope: %p',
+      async (scope) => {
+        await seed();
+        const before = await read();
+        const cleared = await tenantStorage.run({ tenantId: snapshot.tenantId }, () =>
+          fileMethods.clearFileCodeEnvRefs({ ...snapshot, ...scope }),
+        );
+        expect(cleared).toBe(false);
+        expect(await read()).toEqual(before);
+      },
+    );
+
+    it('confirms no code refs remain for empty or already-cleared snapshots', async () => {
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(false);
+      await seed({ metadata: {} });
+      expect(await fileMethods.clearFileCodeEnvRefs({ ...snapshot, refs: [] })).toBe(true);
+      expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(true);
+      expect(
+        await fileMethods.clearFileCodeEnvRefs({ ...snapshot, file_id: 'missing', refs: [] }),
+      ).toBe(false);
+    });
+
+    it.each(['metadata.codeEnvRef', 'metadata.codeEnvRefs.default'])(
+      'rejects a primary-code-only replacement at %s',
+      async (path) => {
+        await seed({
+          source: 'execute_code',
+          context: FileContext.execute_code,
+          embedded: false,
+          metadata: {},
+        });
+        const replacement = { ...defaultRef, provisionedAt: 124 };
+        await File.collection.updateOne(
+          { file_id: snapshot.file_id },
+          { $set: { [path]: replacement } },
+        );
+        const before = await read();
+        expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(false);
+        expect(await read()).toEqual(before);
+      },
+    );
+
+    it.each([false, true])(
+      'returns false when only one route or alias snapshot matches: %s',
+      async (aliasMatches) => {
+        const replacement = { ...defaultRef, provisionedAt: 124 };
+        await seed({
+          metadata: {
+            codeEnvRef: aliasMatches ? defaultRef : replacement,
+            codeEnvRefs: { default: aliasMatches ? replacement : defaultRef },
+          },
+        });
+        expect(await fileMethods.clearFileCodeEnvRefs(snapshot)).toBe(false);
+        const stored = await read();
+        expect(stored?.metadata?.codeEnvRef).toEqual(aliasMatches ? undefined : replacement);
+        expect(stored?.metadata?.codeEnvRefs).toEqual(aliasMatches ? { default: replacement } : {});
+        expect(stored?.updatedAt).toEqual(updatedAt);
+      },
+    );
+
+    it.each([defaultRef, statefulRef])(
+      'rejects an empty snapshot while any canonical or legacy code ref remains: %p',
+      async (ref) => {
+        await seed({ metadata: { codeEnvRef: ref } });
+        expect(await fileMethods.clearFileCodeEnvRefs({ ...snapshot, refs: [] })).toBe(false);
+        await File.collection.updateOne(
+          { file_id: snapshot.file_id },
+          { $set: { metadata: { codeEnvRefs: { unknown: ref } } } },
+        );
+        expect(await fileMethods.clearFileCodeEnvRefs({ ...snapshot, refs: [] })).toBe(false);
+      },
+    );
+
+    it('propagates the final metadata read failure after writes settle', async () => {
+      await seed();
+      jest.spyOn(mongoose.models.File, 'findOne').mockImplementationOnce(() => {
+        throw new Error('metadata read unavailable');
+      });
+      await expect(fileMethods.clearFileCodeEnvRefs(snapshot)).rejects.toThrow(
+        'metadata read unavailable',
+      );
+      expect((await read())?.metadata?.codeEnvRef).toBeUndefined();
+      expect((await read())?.metadata?.codeEnvRefs).toEqual({ 'stateful:a': statefulRef });
+    });
+
+    it.each(['', 'stateful.invalid', '$stateful'])(
+      'rejects invalid route keys: %s',
+      async (routeKey) => {
+        await seed();
+        const before = await read();
+        await expect(
+          fileMethods.clearFileCodeEnvRefs({
+            ...snapshot,
+            refs: [...snapshot.refs, { routeKey, ref: statefulRef }],
+          }),
+        ).rejects.toThrow('Invalid code environment route key');
+        expect(await read()).toEqual(before);
+      },
+    );
+
+    it('settles sibling writes before propagating a persistence failure', async () => {
+      await seed();
+      let finishWrite: () => void = () => undefined;
+      const pendingWrite = new Promise<void>((resolve) => {
+        finishWrite = resolve;
+      });
+      const failure = new Error('mongo unavailable');
+      const updateOne = File.collection.updateOne.bind(File.collection);
+      jest.spyOn(File.collection, 'updateOne').mockImplementation(async (...args) => {
+        const operation = args[1];
+        if (
+          operation != null &&
+          !Array.isArray(operation) &&
+          operation.$unset?.['metadata.codeEnvRefs.default'] !== undefined
+        ) {
+          throw failure;
+        }
+        await pendingWrite;
+        return updateOne(...args);
+      });
+      const find = jest.spyOn(mongoose.models.File, 'findOne');
+      let returned = false;
+      const clearing = fileMethods.clearFileCodeEnvRefs(snapshot).catch((error: Error) => {
+        returned = true;
+        return error;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      try {
+        expect(returned).toBe(false);
+      } finally {
+        finishWrite();
+      }
+      expect(await clearing).toBe(failure);
+      expect(find).not.toHaveBeenCalled();
+      const stored = await read();
+      expect(stored?.metadata?.codeEnvRef).toBeUndefined();
+      expect(stored?.metadata?.codeEnvRefs?.default).toEqual(defaultRef);
+      expect(stored?.metadata?.codeDestination).toBe(true);
+    });
+
+    it('propagates persistence failures', async () => {
+      await seed();
+      const before = await read();
+      jest.spyOn(mongoose.models.File, 'updateOne').mockImplementation(() => {
+        throw new Error('mongo unavailable');
+      });
+      await expect(fileMethods.clearFileCodeEnvRefs(snapshot)).rejects.toThrow('mongo unavailable');
+      expect(await read()).toEqual(before);
+    });
+  });
+
+  describe('clearFileEmbeddings', () => {
+    const user = new mongoose.Types.ObjectId();
+    const updatedAt = new Date('2026-10-20T00:00:00Z');
+    const snapshot = {
+      file_id: 'retained-file',
+      userId: user.toString(),
+      tenantId: 'tenant-a',
+      updatedAt,
+      embeddedEntities: ['agent-a', 'agent-b'],
+    };
+    const seed = (overrides = {}) =>
+      File.collection.insertOne({
+        file_id: snapshot.file_id,
+        user,
+        tenantId: snapshot.tenantId,
+        updatedAt,
+        embedded: true,
+        metadata: {
+          embeddedEntities: snapshot.embeddedEntities,
+          codeEnvRef: { file_id: 'still-needed' },
+          destinationChosen: true,
+        },
+        ...overrides,
+      });
+
+    it('preserves code references, TTL and retry bookkeeping', async () => {
+      const expiredAt = new Date('2026-10-19');
+      await seed({ expiredAt, deletionAttempts: 3 });
+      expect(await fileMethods.clearFileEmbeddings(snapshot)).toBe(true);
+      expect(await fileMethods.clearFileEmbeddings(snapshot)).toBe(true);
+      const stored = await File.collection.findOne({ file_id: snapshot.file_id });
+      expect(stored?.embedded).toBe(false);
+      expect(stored?.metadata).toEqual({
+        codeEnvRef: { file_id: 'still-needed' },
+        destinationChosen: true,
+        searchDestination: true,
+      });
+      expect(stored?.updatedAt).toEqual(updatedAt);
+      expect(stored?.expiredAt).toEqual(expiredAt);
+      expect(stored?.deletionAttempts).toBe(3);
+    });
+
+    it.each([true, false, undefined])(
+      'retains search intent independently of the chooser marker %s',
+      async (destinationChosen) => {
+        await seed({
+          metadata: {
+            embeddedEntities: snapshot.embeddedEntities,
+            ...(destinationChosen !== undefined ? { destinationChosen } : {}),
+          },
+        });
+        expect(await fileMethods.clearFileEmbeddings(snapshot)).toBe(true);
+        const files = await fileMethods.getFiles({ file_id: snapshot.file_id });
+        expect(files?.[0]?.embedded).toBe(false);
+        expect(files?.[0]?.metadata?.searchDestination).toBe(true);
+        expect(files?.[0]?.metadata?.embeddedEntities).toBeUndefined();
+        expect(files?.[0]?.metadata?.destinationChosen).toBe(destinationChosen);
+      },
+    );
+
+    it('persists the optional intent through the file schema and ordinary reads', async () => {
+      await File.create({
+        file_id: snapshot.file_id,
+        user,
+        filename: 'notes.pdf',
+        filepath: '/uploads/notes.pdf',
+        type: 'application/pdf',
+        bytes: 1024,
+        embedded: false,
+        metadata: { searchDestination: true },
+      });
+      const files = await fileMethods.getFiles({ file_id: snapshot.file_id });
+      expect(files?.[0]?.metadata?.searchDestination).toBe(true);
+      expect(files?.[0]?.metadata?.destinationChosen).toBeUndefined();
+    });
+
+    it('does not change a concurrent embedding or a reused file record', async () => {
+      await seed({ updatedAt: new Date(updatedAt.getTime() + 1) });
+      expect(await fileMethods.clearFileEmbeddings(snapshot)).toBe(false);
+      const stored = await File.collection.findOne({ file_id: snapshot.file_id });
+      expect(stored?.embedded).toBe(true);
+      expect(stored?.metadata?.embeddedEntities).toEqual(snapshot.embeddedEntities);
+    });
+
+    it('does not discard a newly recorded namespace even when its timestamp matches', async () => {
+      await seed({ metadata: { embeddedEntities: ['agent-a', 'agent-b', 'agent-c'] } });
+      expect(await fileMethods.clearFileEmbeddings(snapshot)).toBe(false);
+      const stored = await File.collection.findOne({ file_id: snapshot.file_id });
+      expect(stored?.metadata?.embeddedEntities).toHaveLength(3);
+    });
+
+    it('matches the owner and tenant rather than a bare file id', async () => {
+      const first = await seed();
+      await seed({ user: new mongoose.Types.ObjectId() });
+      await seed({ tenantId: 'tenant-b' });
+      await seed({ tenantId: undefined });
+      expect(await fileMethods.clearFileEmbeddings(snapshot)).toBe(true);
+      const records = await File.collection.find({ file_id: snapshot.file_id }).toArray();
+      const clearedIds = records
+        .filter((record) => record.embedded === false)
+        .map((record) => record._id);
+      expect(clearedIds).toEqual([first.insertedId]);
+    });
+
+    it.each([null, undefined])(
+      'clears only the untenanted row during system reconciliation: %p',
+      async (tenantId) => {
+        const foreign = await seed();
+        const local = await seed({ tenantId });
+        const before = await File.collection.findOne({ _id: foreign.insertedId });
+        expect(
+          await runAsSystem(() => fileMethods.clearFileEmbeddings({ ...snapshot, tenantId })),
+        ).toBe(true);
+        expect(await File.collection.findOne({ _id: foreign.insertedId })).toEqual(before);
+        const stored = await File.collection.findOne({ _id: local.insertedId });
+        expect(stored?.embedded).toBe(false);
+        expect(stored?.metadata?.embeddedEntities).toBeUndefined();
+        expect(stored?.metadata?.searchDestination).toBe(true);
+        expect(stored?.updatedAt).toEqual(updatedAt);
+      },
+    );
+
+    it.each([null, undefined, 'tenant-b'])(
+      'does not clear a tenant row for a mismatched system scope: %p',
+      async (tenantId) => {
+        const seeded = await seed();
+        const before = await File.collection.findOne({ _id: seeded.insertedId });
+        expect(
+          await runAsSystem(() => fileMethods.clearFileEmbeddings({ ...snapshot, tenantId })),
+        ).toBe(false);
+        expect(await File.collection.findOne({ _id: seeded.insertedId })).toEqual(before);
+      },
+    );
+
+    it.each([null, undefined, 'tenant-b'])(
+      'does not let embedding tenant middleware replace the caller scope: %p',
+      async (tenantId) => {
+        const seeded = await seed();
+        const before = await File.collection.findOne({ _id: seeded.insertedId });
+        expect(
+          await tenantStorage.run({ tenantId: snapshot.tenantId }, () =>
+            fileMethods.clearFileEmbeddings({ ...snapshot, tenantId }),
+          ),
+        ).toBe(false);
+        expect(await File.collection.findOne({ _id: seeded.insertedId })).toEqual(before);
+      },
+    );
+
+    it('clears legacy vector flags without an entity list', async () => {
+      await seed({ metadata: { destinationChosen: true } });
+      const legacy = { ...snapshot, embeddedEntities: undefined };
+      expect(await fileMethods.clearFileEmbeddings(legacy)).toBe(true);
+    });
+
+    it('retains search intent on markerless legacy records without metadata', async () => {
+      await File.collection.insertOne({
+        file_id: snapshot.file_id,
+        user,
+        tenantId: snapshot.tenantId,
+        updatedAt,
+        embedded: true,
+      });
+      expect(
+        await fileMethods.clearFileEmbeddings({ ...snapshot, embeddedEntities: undefined }),
+      ).toBe(true);
+      const stored = await File.collection.findOne({ file_id: snapshot.file_id });
+      expect(stored?.embedded).toBe(false);
+      expect(stored?.metadata).toEqual({ searchDestination: true });
+    });
+
+    it('propagates persistence failures instead of claiming reconciliation', async () => {
+      await seed();
+      const update = jest.spyOn(mongoose.models.File, 'updateOne').mockImplementationOnce(() => {
+        throw new Error('mongo unavailable');
+      });
+      try {
+        await expect(fileMethods.clearFileEmbeddings(snapshot)).rejects.toThrow(
+          'mongo unavailable',
+        );
+      } finally {
+        update.mockRestore();
+      }
+      expect((await File.collection.findOne({ file_id: snapshot.file_id }))?.embedded).toBe(true);
+    });
+  });
+
+  describe('final file storage snapshot', () => {
+    const user = new mongoose.Types.ObjectId();
+    const updatedAt = new Date('2026-10-20');
+    const snapshot = {
+      file_id: 'cleanup-race',
+      user,
+      tenantId: 'tenant-a',
+      updatedAt,
+      source: 'local',
+    };
+    const options = { files: [snapshot], userId: user.toString() };
+    const check = { ...snapshot, userId: user.toString() };
+    const seed = (overrides = {}) => File.collection.insertOne({ ...snapshot, ...overrides });
+
+    it('confirms a cleared snapshot and removes only its matching owned row', async () => {
+      await seed({ embedded: false, metadata: { codeEnvRefs: {}, codeDestination: true } });
+      await seed({ tenantId: 'tenant-b' });
+      expect(await fileMethods.isFileStorageClean(check)).toBe(true);
+      expect(await fileMethods.deleteFiles([snapshot.file_id], undefined, options)).toEqual({
+        deletedCount: 1,
+        deletedFileIds: [snapshot.file_id],
+        failedFileIds: [],
+      });
+      expect(await File.collection.countDocuments({ file_id: snapshot.file_id })).toBe(1);
+      expect(await fileMethods.isFileStorageClean(check)).toBe(false);
+      expect(await fileMethods.deleteFiles([snapshot.file_id], undefined, options)).toEqual({
+        deletedCount: 0,
+        deletedFileIds: [snapshot.file_id],
+        failedFileIds: [],
+      });
+    });
+
+    it.each([
+      { metadata: { codeEnvRefs: { default: { file_id: 'replacement' } } } },
+      { metadata: { codeEnvRef: { file_id: 'replacement' } } },
+      { embedded: true, metadata: { embeddedEntities: ['new-namespace'] } },
+      { updatedAt: new Date(updatedAt.getTime() + 1) },
+    ])(
+      'retains a reprovisioned row and reports incomplete metadata deletion: %p',
+      async (change) => {
+        await seed();
+        expect(await fileMethods.isFileStorageClean(check)).toBe(true);
+        await File.collection.updateOne({ file_id: snapshot.file_id }, { $set: change });
+        const before = await File.collection.findOne({ file_id: snapshot.file_id });
+        expect(await fileMethods.isFileStorageClean(check)).toBe(false);
+        await expect(
+          fileMethods.deleteFiles([snapshot.file_id], undefined, options),
+        ).resolves.toEqual({
+          deletedCount: 0,
+          deletedFileIds: [],
+          failedFileIds: [snapshot.file_id],
+        });
+        expect(await File.collection.findOne({ file_id: snapshot.file_id })).toEqual(before);
+      },
+    );
+
+    it('does not delete a copy attached between the metadata read and conditional delete', async () => {
+      await seed();
+      const deleteMany = File.collection.deleteMany.bind(File.collection);
+      jest
+        .spyOn(File.collection, 'deleteMany')
+        .mockImplementationOnce(async (filter, deleteOptions) => {
+          await File.collection.updateOne(
+            { file_id: snapshot.file_id },
+            { $set: { 'metadata.codeEnvRefs.default': { file_id: 'late-copy' } } },
+          );
+          return deleteMany(filter, deleteOptions);
+        });
+      await expect(
+        fileMethods.deleteFiles([snapshot.file_id], undefined, options),
+      ).resolves.toEqual({
+        deletedCount: 0,
+        deletedFileIds: [],
+        failedFileIds: [snapshot.file_id],
+      });
+      const stored = await File.collection.findOne({ file_id: snapshot.file_id });
+      expect(stored?.metadata?.codeEnvRefs?.default?.file_id).toBe('late-copy');
+    });
+
+    it('returns both receipt arrays without touching the database for an empty guarded batch', async () => {
+      const find = jest.spyOn(mongoose.models.File, 'find');
+      const remove = jest.spyOn(mongoose.models.File, 'deleteMany');
+      expect(await fileMethods.deleteFiles([], undefined, options)).toEqual({
+        deletedCount: 0,
+        deletedFileIds: [],
+        failedFileIds: [],
+      });
+      expect(find).not.toHaveBeenCalled();
+      expect(remove).not.toHaveBeenCalled();
+    });
+
+    it('detaches only confirmed successes after a mixed conditional delete in system scope', async () => {
+      const successful = { ...snapshot, file_id: 'cleanup-success' };
+      await seed();
+      await seed(successful);
+      const ChatProject = mongoose.models.ChatProject as mongoose.Model<IChatProject>;
+      const ids = [snapshot.file_id, successful.file_id];
+      const project = await ChatProject.collection.insertOne({
+        user: user.toString(),
+        tenantId: snapshot.tenantId,
+        file_ids: ids,
+        contextRevision: 4,
+      });
+      const otherTenant = await ChatProject.collection.insertOne({
+        user: user.toString(),
+        tenantId: 'tenant-b',
+        file_ids: ids,
+        contextRevision: 4,
+      });
+      const deleteMany = File.collection.deleteMany.bind(File.collection);
+      jest
+        .spyOn(File.collection, 'deleteMany')
+        .mockImplementationOnce(async (filter, deleteOptions) => {
+          await File.collection.updateOne(
+            { file_id: snapshot.file_id },
+            { $set: { 'metadata.codeEnvRefs.default': { file_id: 'late-copy' } } },
+          );
+          return deleteMany(filter, deleteOptions);
+        });
+      expect(
+        await runAsSystem(() =>
+          fileMethods.deleteFiles(ids, undefined, { ...options, files: [snapshot, successful] }),
+        ),
+      ).toEqual({
+        deletedCount: 1,
+        deletedFileIds: [successful.file_id],
+        failedFileIds: [snapshot.file_id],
+      });
+      expect(await File.collection.findOne({ file_id: successful.file_id })).toBeNull();
+      expect(
+        (await File.collection.findOne({ file_id: snapshot.file_id }))?.metadata?.codeEnvRefs,
+      ).toEqual({ default: { file_id: 'late-copy' } });
+      expect(await ChatProject.collection.findOne({ _id: project.insertedId })).toMatchObject({
+        file_ids: [snapshot.file_id],
+        contextRevision: 5,
+      });
+      expect(await ChatProject.collection.findOne({ _id: otherTenant.insertedId })).toMatchObject({
+        file_ids: ids,
+        contextRevision: 4,
+      });
+    });
+
+    it.each([undefined, null, 'tenant-a'])(
+      'detaches already-absent input only from its snapshot owner and tenant: %s',
+      async (tenantId) => {
+        const ChatProject = mongoose.models.ChatProject as mongoose.Model<IChatProject>;
+        const project = await ChatProject.collection.insertOne({
+          user: user.toString(),
+          ...(tenantId === undefined ? {} : { tenantId }),
+          file_ids: [snapshot.file_id],
+          contextRevision: 1,
+        });
+        const otherTenant = await ChatProject.collection.insertOne({
+          user: user.toString(),
+          tenantId: 'tenant-b',
+          file_ids: [snapshot.file_id],
+          contextRevision: 1,
+        });
+        const otherOwner = await ChatProject.collection.insertOne({
+          user: new mongoose.Types.ObjectId().toString(),
+          tenantId,
+          file_ids: [snapshot.file_id],
+          contextRevision: 1,
+        });
+        expect(
+          await runAsSystem(() =>
+            fileMethods.deleteFiles([snapshot.file_id], undefined, {
+              userId: new mongoose.Types.ObjectId().toString(),
+              files: [{ ...snapshot, tenantId }],
+            }),
+          ),
+        ).toEqual({ deletedCount: 0, deletedFileIds: [snapshot.file_id], failedFileIds: [] });
+        expect(await ChatProject.collection.findOne({ _id: project.insertedId })).toMatchObject({
+          file_ids: [],
+          contextRevision: 2,
+        });
+        for (const inserted of [otherTenant, otherOwner]) {
+          expect(await ChatProject.collection.findOne({ _id: inserted.insertedId })).toMatchObject({
+            file_ids: [snapshot.file_id],
+            contextRevision: 1,
+          });
+        }
+      },
+    );
+
+    it('does not delete a replacement row that was absent from the candidate read', async () => {
+      await seed();
+      const deleteMany = File.collection.deleteMany.bind(File.collection);
+      jest
+        .spyOn(File.collection, 'deleteMany')
+        .mockImplementationOnce(async (filter, deleteOptions) => {
+          await deleteMany({ file_id: snapshot.file_id });
+          await seed();
+          return deleteMany(filter, deleteOptions);
+        });
+      expect(await fileMethods.deleteFiles([snapshot.file_id], undefined, options)).toEqual({
+        deletedCount: 0,
+        deletedFileIds: [],
+        failedFileIds: [snapshot.file_id],
+      });
+      expect(await File.collection.countDocuments({ file_id: snapshot.file_id })).toBe(1);
+    });
+
+    it('propagates operational database failures rather than issuing a receipt', async () => {
+      jest
+        .spyOn(File.collection, 'deleteMany')
+        .mockRejectedValueOnce(new Error('mongo unavailable'));
+      await expect(fileMethods.deleteFiles([snapshot.file_id], undefined, options)).rejects.toThrow(
+        'mongo unavailable',
+      );
+    });
+
+    it('returns the successful receipt when best-effort project cleanup fails', async () => {
+      await seed();
+      jest.spyOn(mongoose.models.ChatProject, 'updateMany').mockImplementationOnce(() => {
+        throw new Error('cleanup failed');
+      });
+      expect(await fileMethods.deleteFiles([snapshot.file_id], undefined, options)).toEqual({
+        deletedCount: 1,
+        deletedFileIds: [snapshot.file_id],
+        failedFileIds: [],
+      });
+      expect(await File.collection.findOne({ file_id: snapshot.file_id })).toBeNull();
+    });
+
+    it('rejects an unknown id before attempting deletion', async () => {
+      const remove = jest.spyOn(mongoose.models.File, 'deleteMany');
+      await expect(fileMethods.deleteFiles(['unknown'], undefined, options)).rejects.toThrow(
+        'Missing file deletion snapshot',
+      );
+      expect(remove).not.toHaveBeenCalled();
+    });
+
+    it.each([FileSources.openai, FileSources.azure])(
+      'permits an authorized missing %s record but never a changed local snapshot',
+      async (source) => {
+        const providerOnly = { ...check, source, allowMissingFileRecord: true };
+        expect(await fileMethods.isFileStorageClean({ ...check, source })).toBe(false);
+        expect(await fileMethods.isFileStorageClean(providerOnly)).toBe(true);
+        await seed({ source, metadata: { codeEnvRefs: { default: { file_id: 'new-copy' } } } });
+        expect(await fileMethods.isFileStorageClean(providerOnly)).toBe(false);
+        await File.collection.updateOne(
+          { file_id: snapshot.file_id },
+          { $unset: { metadata: '' }, $set: { updatedAt: new Date(updatedAt.getTime() + 1) } },
+        );
+        expect(await fileMethods.isFileStorageClean(providerOnly)).toBe(false);
+      },
+    );
+
+    it('does not allow missing local records through the provider-only exception', async () => {
+      expect(await fileMethods.isFileStorageClean({ ...check, allowMissingFileRecord: true })).toBe(
+        false,
+      );
+    });
+
+    it('accepts primary vector cleanup only for its original namespace snapshot', async () => {
+      const vector = {
+        ...snapshot,
+        source: 'vectordb',
+        embedded: true,
+        metadata: { embeddedEntities: ['original'] },
+      };
+      await seed(vector);
+      const primary = {
+        ...check,
+        source: vector.source,
+        embedded: true,
+        embeddedEntities: ['original'],
+      };
+      expect(await fileMethods.isFileStorageClean(primary)).toBe(true);
+      await File.collection.updateOne(
+        { file_id: snapshot.file_id },
+        { $set: { 'metadata.embeddedEntities': ['replacement'] } },
+      );
+      expect(await fileMethods.isFileStorageClean(primary)).toBe(false);
+      await expect(
+        fileMethods.deleteFiles([snapshot.file_id], undefined, { ...options, files: [vector] }),
+      ).resolves.toEqual({
+        deletedCount: 0,
+        deletedFileIds: [],
+        failedFileIds: [snapshot.file_id],
+      });
+    });
+  });
+
+  describe('adoptLegacySearchEmbeddings', () => {
+    const Agent = () => mongoose.models.Agent as mongoose.Model<unknown>;
+    const author = new mongoose.Types.ObjectId();
+
+    const createAgent = (id: string, searchFileIds: string[]) =>
+      Agent().create({
+        id,
+        name: id,
+        provider: 'openai',
+        model: 'gpt-4o',
+        author,
+        tool_resources: { [EToolResources.file_search]: { file_ids: searchFileIds } },
+      });
+
+    const createLegacyFile = (
+      fileId: string,
+      metadata?: Record<string, unknown>,
+      owner: mongoose.Types.ObjectId = author,
+    ) =>
+      File.create({
+        file_id: fileId,
+        user: owner,
+        filename: `${fileId}.pdf`,
+        filepath: `/uploads/${fileId}.pdf`,
+        type: 'application/pdf',
+        bytes: 1024,
+        embedded: true,
+        context: FileContext.agents,
+        ...(metadata ? { metadata } : {}),
+      });
+
+    afterEach(async () => {
+      await Agent().deleteMany({});
+    });
+
+    it('records the namespace of a verified legacy file', async () => {
+      const fileId = uuidv4();
+      await createAgent('agent_owner', [fileId]);
+      await createLegacyFile(fileId);
+
+      const adopted = await fileMethods.adoptLegacySearchEmbeddings({
+        files: [{ file_id: fileId, user: author.toString() }],
+        agentId: 'agent_owner',
+      });
+
+      expect(adopted).toEqual([fileId]);
+      const stored = (await File.findOne({ file_id: fileId }).lean()) as IMongoFile | null;
+      expect(stored?.metadata?.embeddedEntities).toEqual(['agent_owner']);
+    });
+
+    it('does not touch a tenant record that shares an untenanted file_id', async () => {
+      const fileId = uuidv4();
+      await File.collection.insertOne({
+        file_id: fileId,
+        user: author,
+        tenantId: 'tenant-b',
+        filename: `${fileId}.pdf`,
+        filepath: `/uploads/${fileId}.pdf`,
+        type: 'application/pdf',
+        bytes: 1024,
+        embedded: true,
+        context: FileContext.agents,
+        object: 'file',
+        usage: 0,
+      });
+      /* Inserted second, so an unscoped match would land on the tenant record first. */
+      await createLegacyFile(fileId);
+
+      const adopted = await fileMethods.adoptLegacySearchEmbeddings({
+        files: [{ file_id: fileId, user: author.toString() }],
+        agentId: 'agent_owner',
+      });
+
+      expect(adopted).toEqual([fileId]);
+      const tenantRecord = await File.collection.findOne({ file_id: fileId, tenantId: 'tenant-b' });
+      expect(tenantRecord?.metadata?.embeddedEntities).toBeUndefined();
+      const untenanted = (await File.findOne({
+        file_id: fileId,
+        tenantId: { $exists: false },
+      }).lean()) as IMongoFile | null;
+      expect(untenanted?.metadata?.embeddedEntities).toEqual(['agent_owner']);
+    });
+
+    it("does not touch another owner's record that shares the file_id", async () => {
+      const fileId = uuidv4();
+      const otherOwner = new mongoose.Types.ObjectId();
+      await createAgent('agent_owner', [fileId]);
+      await createLegacyFile(fileId);
+      await createLegacyFile(fileId, undefined, otherOwner);
+
+      const adopted = await fileMethods.adoptLegacySearchEmbeddings({
+        files: [{ file_id: fileId, user: author.toString() }],
+        agentId: 'agent_owner',
+      });
+
+      expect(adopted).toEqual([fileId]);
+      const foreign = (await File.findOne({
+        file_id: fileId,
+        user: otherOwner,
+      }).lean()) as IMongoFile | null;
+      expect(foreign?.metadata?.embeddedEntities).toBeUndefined();
+    });
+
+    it('reports a file a concurrent turn already adopted for the same agent', async () => {
+      const fileId = uuidv4();
+      await createAgent('agent_owner', [fileId]);
+      await createLegacyFile(fileId, { embeddedEntities: ['agent_owner'] });
+
+      const adopted = await fileMethods.adoptLegacySearchEmbeddings({
+        files: [{ file_id: fileId, user: author.toString() }],
+        agentId: 'agent_owner',
+      });
+
+      expect(adopted).toEqual([fileId]);
+    });
+
+    it('reports a committed adoption when a sibling write fails', async () => {
+      const adoptedId = uuidv4();
+      const failingId = uuidv4();
+      await createAgent('agent_owner', [adoptedId, failingId]);
+      await createLegacyFile(adoptedId);
+      await createLegacyFile(failingId);
+      const original = File.findOneAndUpdate.bind(File);
+      const spy = jest
+        .spyOn(File, 'findOneAndUpdate')
+        .mockImplementation(((filter: { file_id?: string }, ...rest: unknown[]) =>
+          filter.file_id === failingId
+            ? { lean: () => Promise.reject(new Error('write failed')) }
+            : (original as (...args: unknown[]) => unknown)(filter, ...rest)) as never);
+
+      try {
+        const adopted = await fileMethods.adoptLegacySearchEmbeddings({
+          files: [
+            { file_id: adoptedId, user: author.toString() },
+            { file_id: failingId, user: author.toString() },
+          ],
+          agentId: 'agent_owner',
+        });
+
+        expect(adopted).toEqual([adoptedId]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('keeps the namespaces already recorded', async () => {
+      const fileId = uuidv4();
+      await createLegacyFile(fileId, { embeddedEntities: ['agent_source'] });
+
+      const adopted = await fileMethods.adoptLegacySearchEmbeddings({
+        files: [{ file_id: fileId, user: author.toString() }],
+        agentId: 'agent_owner',
+      });
+
+      expect(adopted).toEqual([fileId]);
+      const stored = (await File.findOne({ file_id: fileId }).lean()) as IMongoFile | null;
+      expect(stored?.metadata?.embeddedEntities).toEqual(['agent_source', 'agent_owner']);
+    });
   });
 
   describe('createFile', () => {
@@ -176,6 +1449,28 @@ describe('File Methods', () => {
   });
 
   describe('getAvailableProjectFiles', () => {
+    it('retains the embedded picker index and adds a distinct search-intent partial index', () => {
+      const keys = { user: 1, tenantId: 1, context: 1, _id: -1 };
+      expect(File.schema.indexes()).toEqual(
+        expect.arrayContaining([
+          [
+            keys,
+            expect.objectContaining({
+              name: 'project_file_picker',
+              partialFilterExpression: { embedded: true },
+            }),
+          ],
+          [
+            keys,
+            expect.objectContaining({
+              name: 'project_file_picker_search_destination',
+              partialFilterExpression: { 'metadata.searchDestination': true },
+            }),
+          ],
+        ]),
+      );
+    });
+
     it('treats an empty tenant id as no tenant, matching project file reads', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       await File.create({
@@ -284,6 +1579,87 @@ describe('File Methods', () => {
   });
 
   describe('getProjectFiles', () => {
+    it.each([
+      { searchDestination: true, routingMimeType: 'image/heic' },
+      { routingMimeType: 'image/heic' },
+      { searchDestination: false },
+      undefined,
+    ])('preserves only routing metadata across project reads: %p', async (metadata) => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      await File.create({
+        file_id: 'converted-project-file',
+        user: userId,
+        tenantId: 'tenant-a',
+        embedded: true,
+        context: FileContext.message_attachment,
+        filename: 'converted.jpeg',
+        filepath: '/uploads/converted.jpeg',
+        type: 'image/jpeg',
+        bytes: 1,
+        text: 'private extracted content',
+        metadata: { ...metadata, destinationChosen: true, embeddedEntities: ['private-agent'] },
+      });
+      const options = { fileIds: ['converted-project-file'], userId, tenantId: 'tenant-a' };
+      const [projectFile] = await fileMethods.getProjectFiles(options);
+      const [withContent] = await fileMethods.getProjectFiles({ ...options, includeContent: true });
+      const available = await fileMethods.getAvailableProjectFiles(options);
+      for (const record of [projectFile, withContent, available.files[0]]) {
+        expect(record.type).toBe('image/jpeg');
+        expect(record.metadata).toEqual(metadata);
+        if (metadata === undefined) {
+          expect(record).not.toHaveProperty('metadata');
+        }
+      }
+      expect(projectFile).not.toHaveProperty('text');
+      expect(available.files[0]).not.toHaveProperty('text');
+      expect(withContent.text).toBe('private extracted content');
+    });
+
+    it('hydrates and lists retained search intent without widening owner, tenant or context scope', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const base = {
+        user: userId,
+        tenantId: 'tenant-a',
+        embedded: false,
+        metadata: { searchDestination: true },
+        context: FileContext.message_attachment,
+        filename: 'repair.txt',
+        filepath: '/uploads/repair.txt',
+        type: 'text/plain',
+        bytes: 1,
+        source: 's3',
+        storageKey: 'owner/repair',
+        storageRegion: 'region',
+      };
+      await File.create([
+        { ...base, file_id: 'repair' },
+        { ...base, file_id: 'foreign', user: new mongoose.Types.ObjectId().toString() },
+        { ...base, file_id: 'other-tenant', tenantId: 'tenant-b' },
+        { ...base, file_id: 'agent', context: FileContext.agents },
+        { ...base, file_id: 'declined', metadata: { destinationChosen: true } },
+      ]);
+      const files = await fileMethods.getProjectFiles({
+        fileIds: ['repair', 'foreign', 'other-tenant', 'agent', 'declined'],
+        userId,
+        tenantId: 'tenant-a',
+      });
+      expect(files).toEqual([
+        expect.objectContaining({
+          file_id: 'repair',
+          embedded: false,
+          metadata: { searchDestination: true },
+          source: 's3',
+          storageKey: 'owner/repair',
+          storageRegion: 'region',
+        }),
+      ]);
+      const available = await fileMethods.getAvailableProjectFiles({
+        userId,
+        tenantId: 'tenant-a',
+      });
+      expect(available.files.map((file) => file.file_id)).toEqual(['repair']);
+    });
+
     it('enforces owner scope and only includes content when requested', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       await File.create([
@@ -339,6 +1715,110 @@ describe('File Methods', () => {
   });
 
   describe('claimCodeFile', () => {
+    const fencedStates = [
+      { deletionPending: true },
+      { deleting: 'deletion-owner' },
+      { provisioning: ['provision-owner'] },
+    ];
+
+    it.each(fencedStates)('rejects a fenced filename claim: %j', async (storageOperations) => {
+      await File.init();
+      const input = {
+        filename: 'fenced.csv',
+        conversationId: 'fenced-conversation',
+        file_id: 'fenced-file',
+        user: new mongoose.Types.ObjectId().toString(),
+        tenantId: 'tenant-a',
+        sourceDispatchedAt: 100,
+      };
+      await fileMethods.claimCodeFile(input);
+      await File.updateOne({ file_id: input.file_id }, { $set: { storageOperations } });
+      const before = await File.findOne({ file_id: input.file_id }).lean();
+
+      await expect(
+        fileMethods.claimCodeFile({
+          ...input,
+          file_id: 'replacement-file',
+          sourceDispatchedAt: 200,
+        }),
+      ).rejects.toMatchObject({
+        name: 'FileStorageConflictError',
+        code: 'FILE_STORAGE_CONFLICT',
+      });
+      expect(await File.findOne({ file_id: input.file_id }).lean()).toEqual(before);
+      expect(await File.countDocuments()).toBe(1);
+
+      const independent = await fileMethods.claimCodeFile({
+        ...input,
+        filename: 'independent.csv',
+        file_id: 'independent-file',
+      });
+      expect(independent.file_id).toBe('independent-file');
+    });
+
+    it.each(fencedStates)(
+      'rejects commits after a storage fence is acquired: %j',
+      async (storageOperations) => {
+        await File.init();
+        const input = {
+          filename: 'late-fence.csv',
+          conversationId: 'late-fence-conversation',
+          file_id: 'late-fence-file',
+          user: new mongoose.Types.ObjectId().toString(),
+          tenantId: 'tenant-a',
+          sourceDispatchedAt: 100,
+        };
+        await fileMethods.claimCodeFile(input);
+        await File.updateOne({ file_id: input.file_id }, { $set: { storageOperations } });
+        const before = await File.findOne({ file_id: input.file_id }).lean();
+        const output = {
+          ...input,
+          context: FileContext.execute_code,
+          filepath: '/uploads/new.csv',
+          type: 'text/csv',
+          bytes: 20,
+          source: FileSources.local,
+          metadata: { sourceDispatchedAt: 200 },
+        };
+
+        await expect(fileMethods.commitCodeFile(output)).rejects.toBeInstanceOf(
+          FileStorageConflictError,
+        );
+        expect(await fileMethods.commitCodeFile(output, 200)).toBe(false);
+        await expect(
+          fileMethods.createFile(
+            { ...output, user: new mongoose.Types.ObjectId(input.user) },
+            true,
+          ),
+        ).rejects.toBeInstanceOf(FileStorageConflictError);
+        expect(await File.findOne({ file_id: input.file_id }).lean()).toEqual(before);
+        expect(await File.countDocuments()).toBe(1);
+      },
+    );
+
+    it('reuses active rows with empty provisioning without changing their metadata', async () => {
+      const input = {
+        filename: 'active.csv',
+        conversationId: 'active-conversation',
+        file_id: 'active-file',
+        user: new mongoose.Types.ObjectId().toString(),
+        sourceDispatchedAt: 100,
+      };
+      await fileMethods.claimCodeFile(input);
+      await File.updateOne(
+        { file_id: input.file_id },
+        { $set: { storageOperations: { provisioning: [], deletionPending: false } } },
+      );
+      const before = await File.findOne({ file_id: input.file_id }).lean();
+      const claimed = await fileMethods.claimCodeFile({
+        ...input,
+        file_id: 'unused-file',
+        sourceDispatchedAt: 200,
+      });
+      expect(claimed.file_id).toBe(input.file_id);
+      expect(await File.findOne({ file_id: input.file_id }).lean()).toEqual(before);
+    });
+
     it('claims code output files independently per tenant', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
 
@@ -1602,6 +3082,118 @@ describe('File Methods', () => {
           }),
         ),
       ).rejects.toThrow(/Invalid code environment route key/);
+    });
+  });
+
+  describe('recordFileWorkspaceImport', () => {
+    const makeFile = (fileId: string, ownerId: mongoose.Types.ObjectId, tenantId = 'tenant-a') =>
+      runAsSystem(() =>
+        fileMethods.createFile({
+          file_id: fileId,
+          user: ownerId,
+          tenantId,
+          filename: 'report.pdf',
+          filepath: '/uploads/report.pdf',
+          source: 'local',
+          type: 'application/pdf',
+          bytes: 3,
+          context: FileContext.message_attachment,
+          metadata: { routingMimeType: 'application/pdf' },
+        }),
+      );
+    const keyA = 'a'.repeat(32);
+    const keyB = 'b'.repeat(32);
+    const copy = (path: string) => ({ sha256: 'c'.repeat(64), path });
+
+    it('records copies and the digest without replacing sibling targets or metadata', async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const fileId = uuidv4();
+      await makeFile(fileId, ownerId);
+
+      await Promise.all([
+        runAsSystem(() =>
+          fileMethods.recordFileWorkspaceImport({
+            file_id: fileId,
+            user: ownerId.toString(),
+            tenantId: 'tenant-a',
+            copy: { key: keyA, target: copy('.librechat/attachments/report.pdf') },
+          }),
+        ),
+        runAsSystem(() =>
+          fileMethods.recordFileWorkspaceImport({
+            file_id: fileId,
+            user: ownerId.toString(),
+            tenantId: 'tenant-a',
+            copy: { key: keyB, target: copy('.librechat/attachments/report (2).pdf') },
+          }),
+        ),
+        runAsSystem(() =>
+          fileMethods.recordFileWorkspaceImport({
+            file_id: fileId,
+            user: ownerId.toString(),
+            tenantId: 'tenant-a',
+            digest: { source: 's/o', sha256: 'c'.repeat(64), bytes: 3 },
+          }),
+        ),
+      ]);
+
+      const stored = await runAsSystem(() => fileMethods.findFileById(fileId));
+      expect(stored?.metadata?.workspaceImports).toEqual({
+        digest: { source: 's/o', sha256: 'c'.repeat(64), bytes: 3 },
+        targets: {
+          [keyA]: copy('.librechat/attachments/report.pdf'),
+          [keyB]: copy('.librechat/attachments/report (2).pdf'),
+        },
+      });
+      expect(stored?.metadata?.routingMimeType).toBe('application/pdf');
+    });
+
+    it("never marks another user's file", async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const fileId = uuidv4();
+      await makeFile(fileId, ownerId);
+
+      const matched = await runAsSystem(() =>
+        fileMethods.recordFileWorkspaceImport({
+          file_id: fileId,
+          user: new mongoose.Types.ObjectId().toString(),
+          tenantId: 'tenant-a',
+          copy: { key: keyA, target: copy('.librechat/attachments/report.pdf') },
+        }),
+      );
+
+      expect(matched).toBe(false);
+      const stored = await runAsSystem(() => fileMethods.findFileById(fileId));
+      expect(stored?.metadata?.workspaceImports).toBeUndefined();
+    });
+
+    it("never marks the same user's record in another tenant", async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const fileId = uuidv4();
+      await makeFile(fileId, ownerId, 'tenant-b');
+
+      const matched = await runAsSystem(() =>
+        fileMethods.recordFileWorkspaceImport({
+          file_id: fileId,
+          user: ownerId.toString(),
+          tenantId: 'tenant-a',
+          copy: { key: keyA, target: copy('.librechat/attachments/report.pdf') },
+        }),
+      );
+
+      expect(matched).toBe(false);
+      const stored = await runAsSystem(() => fileMethods.findFileById(fileId));
+      expect(stored?.metadata?.workspaceImports).toBeUndefined();
+    });
+
+    it('rejects a key that would address another metadata path', async () => {
+      await expect(
+        fileMethods.recordFileWorkspaceImport({
+          file_id: uuidv4(),
+          user: new mongoose.Types.ObjectId().toString(),
+          copy: { key: 'targets.$where', target: copy('.librechat/attachments/report.pdf') },
+        }),
+      ).rejects.toThrow('hex digests');
     });
   });
 

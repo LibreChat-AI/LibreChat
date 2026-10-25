@@ -1,11 +1,9 @@
 import {
-  genAzureChatCompletion,
   getAzureCredentials,
   constructAzureURL,
   sanitizeModelName,
   genAzureEndpoint,
 } from './azure';
-import type { GenericClient } from '~/types';
 
 describe('sanitizeModelName', () => {
   test('removes periods from the model name', () => {
@@ -26,154 +24,6 @@ describe('genAzureEndpoint', () => {
       azureOpenAIApiDeploymentName: 'deploymentName',
     });
     expect(url).toBe('https://instanceName.openai.azure.com/openai/deployments/deploymentName');
-  });
-});
-
-describe('genAzureChatCompletion', () => {
-  // Test with both deployment name and model name provided
-  test('prefers model name over deployment name when both are provided and feature enabled', () => {
-    process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME = 'true';
-    const url = genAzureChatCompletion(
-      {
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiDeploymentName: 'deploymentName',
-        azureOpenAIApiVersion: 'v1',
-      },
-      'modelName',
-    );
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/modelName/chat/completions?api-version=v1',
-    );
-  });
-
-  // Test with only deployment name provided
-  test('uses deployment name when model name is not provided', () => {
-    const url = genAzureChatCompletion({
-      azureOpenAIApiInstanceName: 'instanceName',
-      azureOpenAIApiDeploymentName: 'deploymentName',
-      azureOpenAIApiVersion: 'v1',
-    });
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/deploymentName/chat/completions?api-version=v1',
-    );
-  });
-
-  // Test with only model name provided
-  test('uses model name when deployment name is not provided and feature enabled', () => {
-    process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME = 'true';
-    const url = genAzureChatCompletion(
-      {
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiVersion: 'v1',
-      },
-      'modelName',
-    );
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/modelName/chat/completions?api-version=v1',
-    );
-  });
-
-  // Test with neither deployment name nor model name provided
-  test('throws error if neither deployment name nor model name is provided', () => {
-    expect(() => {
-      genAzureChatCompletion({
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiVersion: 'v1',
-      });
-    }).toThrow(
-      'Either a model name with the `AZURE_USE_MODEL_AS_DEPLOYMENT_NAME` setting or a deployment name must be provided if `AZURE_OPENAI_BASEURL` is omitted.',
-    );
-  });
-
-  // Test with feature disabled but model name provided
-  test('ignores model name and uses deployment name when feature is disabled', () => {
-    process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME = 'false';
-    const url = genAzureChatCompletion(
-      {
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiDeploymentName: 'deploymentName',
-        azureOpenAIApiVersion: 'v1',
-      },
-      'modelName',
-    );
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/deploymentName/chat/completions?api-version=v1',
-    );
-  });
-
-  // Test with sanitized model name
-  test('sanitizes model name when used in URL', () => {
-    process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME = 'true';
-    const url = genAzureChatCompletion(
-      {
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiVersion: 'v1',
-      },
-      'model.name',
-    );
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/modelname/chat/completions?api-version=v1',
-    );
-  });
-
-  // Test with client parameter and model name
-  test('updates client with sanitized model name when provided and feature enabled', () => {
-    process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME = 'true';
-    const clientMock = { azure: {} } as GenericClient;
-    const url = genAzureChatCompletion(
-      {
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiVersion: 'v1',
-      },
-      'model.name',
-      clientMock,
-    );
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/modelname/chat/completions?api-version=v1',
-    );
-    expect(clientMock.azure.azureOpenAIApiDeploymentName).toBe('modelname');
-  });
-
-  // Test with client parameter but without model name
-  test('does not update client when model name is not provided', () => {
-    const clientMock = { azure: {} } as GenericClient;
-    const url = genAzureChatCompletion(
-      {
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiDeploymentName: 'deploymentName',
-        azureOpenAIApiVersion: 'v1',
-      },
-      undefined,
-      clientMock,
-    );
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/deploymentName/chat/completions?api-version=v1',
-    );
-    expect(clientMock.azure.azureOpenAIApiDeploymentName).toBeUndefined();
-  });
-
-  // Test with client parameter and deployment name when feature is disabled
-  test('does not update client when feature is disabled', () => {
-    process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME = 'false';
-    const clientMock = { azure: {} } as GenericClient;
-    const url = genAzureChatCompletion(
-      {
-        azureOpenAIApiInstanceName: 'instanceName',
-        azureOpenAIApiDeploymentName: 'deploymentName',
-        azureOpenAIApiVersion: 'v1',
-      },
-      'modelName',
-      clientMock,
-    );
-    expect(url).toBe(
-      'https://instanceName.openai.azure.com/openai/deployments/deploymentName/chat/completions?api-version=v1',
-    );
-    expect(clientMock.azure.azureOpenAIApiDeploymentName).toBeUndefined();
-  });
-
-  // Reset environment variable after tests
-  afterEach(() => {
-    delete process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME;
   });
 });
 

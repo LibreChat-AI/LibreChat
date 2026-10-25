@@ -82,9 +82,8 @@ const Avatar: React.FC<AvatarProps> = ({
           style={{
             width: pxToRem(size),
             height: pxToRem(size),
-            display: imageLoaded ? 'block' : 'none',
           }}
-          className={`rounded-full ${className}`}
+          className={`rounded-full ${imageLoaded ? 'block' : 'hidden'} ${className}`}
           src={imageSrc}
           alt={altText}
           onLoad={handleImageLoad}

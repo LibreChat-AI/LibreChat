@@ -1,11 +1,13 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
+import { useIsSubmitting } from '@librechat/chat/react';
 import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import { useDeleteFilesMutation, useGetStartupConfig } from '~/data-provider';
+import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
@@ -43,7 +45,7 @@ export default function Presentation({
   const conversationId = useRecoilValue(store.conversationIdByIndex(0));
   const conversationEndpoint = useRecoilValue(store.effectiveEndpointByIndex(0));
   const conversationAgentId = useRecoilValue(store.conversationAgentIdByIndex(0));
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
+  const isSubmitting = useIsSubmitting(0);
   const isUndocked = useAtomValue(artifactsUndocked);
   const selectedSubagent = useAtomValue(activeSubagentPanel);
   const setSelectedSubagent = useSetAtom(activeSubagentPanel);
@@ -52,12 +54,20 @@ export default function Presentation({
 
   useArtifactsRegistryLifetime(conversationId);
 
+  useEffect(
+    () => () =>
+      setSelectedSubagent((current) => (current?.host === 'conversation' ? null : current)),
+    [setSelectedSubagent],
+  );
+
   useEffect(() => {
     const previous = previousConversationIdRef.current;
     const next = conversationId ?? null;
     previousConversationIdRef.current = next;
-    if (previous != null && previous !== next) resetSelectedSubagent();
-  }, [conversationId, resetSelectedSubagent]);
+    if (previous != null && previous !== next) {
+      setSelectedSubagent((current) => (current?.durable == null ? null : current));
+    }
+  }, [conversationId, setSelectedSubagent]);
 
   const setFilesToDelete = useSetFilesToDelete();
 
@@ -151,14 +161,16 @@ export default function Presentation({
     if (
       selectedSubagent == null ||
       selectedSubagent.host !== 'conversation' ||
-      selectedSubagent.parentConversationId !== conversationId
+      (selectedSubagent.durable == null && selectedSubagent.parentConversationId !== conversationId)
     ) {
       return null;
     }
     return (
-      <Suspense fallback={null}>
-        <SubagentThreadPanel selection={selectedSubagent} />
-      </Suspense>
+      <ParentSubagentsProvider conversationId={selectedSubagent.parentConversationId} enabled>
+        <Suspense fallback={null}>
+          <SubagentThreadPanel selection={selectedSubagent} />
+        </Suspense>
+      </ParentSubagentsProvider>
     );
   }, [conversationId, selectedSubagent]);
 
@@ -167,7 +179,7 @@ export default function Presentation({
   const panelElement = (isUndocked ? null : artifactsElement) ?? subagentElement;
 
   return (
-    <DragDropWrapper className="bg-surface-primary-alt relative flex w-full grow overflow-hidden">
+    <DragDropWrapper className="bg-surface-canvas relative flex w-full grow overflow-hidden">
       <AppChatSurface>
         {/* The editor buffer belongs to the pane's session, not to the window
             it happens to be in: hoisted, an undock keeps unsaved edits. */}
@@ -179,7 +191,9 @@ export default function Presentation({
           >
             <SidePanelGroup panel={panelElement}>
               <main className="flex h-full flex-col overflow-y-auto" role="main">
-                {children}
+                <MessageSurfaceContext.Provider value="bg-surface-canvas">
+                  {children}
+                </MessageSurfaceContext.Provider>
               </main>
             </SidePanelGroup>
           </ParentSubagentsProvider>

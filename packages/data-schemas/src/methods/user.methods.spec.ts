@@ -424,6 +424,127 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('createUserIfAbsent', () => {
+    const newUser = {
+      name: 'First Login',
+      email: 'first@example.com',
+      provider: 'openid',
+      openidId: 'first-sub',
+      openidIssuer: 'https://issuer.example.com',
+    };
+
+    beforeEach(async () => {
+      await User.syncIndexes();
+    });
+
+    test('creates the user, credits the start balance, and returns it', async () => {
+      const result = await methods.createUserIfAbsent(newUser, {
+        enabled: true,
+        startBalance: 500,
+      });
+
+      expect(result.ok).toBe(true);
+      const created = result.ok ? result.value : null;
+      expect(created).toEqual(expect.objectContaining({ email: 'first@example.com' }));
+      const balance = await Balance.findOne({ user: created?._id });
+      expect(balance?.tokenCredits).toBe(500);
+    });
+
+    test('reports user_exists for one of two concurrent inserts and credits the balance once', async () => {
+      const balanceConfig = { enabled: true, startBalance: 500 };
+
+      const results = await Promise.all([
+        methods.createUserIfAbsent(newUser, balanceConfig),
+        methods.createUserIfAbsent(newUser, balanceConfig),
+      ]);
+
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.find((result) => !result.ok)).toEqual({
+        ok: false,
+        error: { code: 'user_exists' },
+      });
+      expect(await User.countDocuments()).toBe(1);
+      const balances = await Balance.find({}).lean();
+      expect(balances.map((balance) => balance.tokenCredits)).toEqual([500]);
+    });
+
+    test('reports user_exists when another account holds the provider identity', async () => {
+      await methods.createUserIfAbsent(newUser);
+
+      const result = await methods.createUserIfAbsent({ ...newUser, email: 'renamed@example.com' });
+
+      expect(result).toEqual({ ok: false, error: { code: 'user_exists' } });
+    });
+
+    test('initializes the start balance before the user exists', async () => {
+      const balanceWrite = jest.spyOn(Balance, 'findOneAndUpdate');
+      const userSave = jest.spyOn(User.prototype, 'save');
+
+      await methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 });
+
+      expect(balanceWrite.mock.invocationCallOrder[0]).toBeLessThan(
+        userSave.mock.invocationCallOrder[0],
+      );
+      balanceWrite.mockRestore();
+      userSave.mockRestore();
+    });
+
+    test('removes the start balance it initialized when the account already exists', async () => {
+      const balanceConfig = { enabled: true, startBalance: 500 };
+      const created = await methods.createUserIfAbsent(newUser, balanceConfig);
+
+      const result = await methods.createUserIfAbsent(newUser, balanceConfig);
+
+      expect(result).toEqual({ ok: false, error: { code: 'user_exists' } });
+      const balances = await Balance.find({}).lean();
+      expect(balances.map((balance) => balance.user.toString())).toEqual([
+        created.ok ? created.value._id.toString() : '',
+      ]);
+    });
+
+    test('removes the start balance when its write commits but reports a failure', async () => {
+      const realWrite = Balance.findOneAndUpdate.bind(Balance);
+      const balanceWrite = jest.spyOn(Balance, 'findOneAndUpdate').mockImplementationOnce(
+        (...args: Parameters<typeof Balance.findOneAndUpdate>) =>
+          ({
+            lean: async () => {
+              await realWrite(...args).lean();
+              throw new Error('connection closed before acknowledgement');
+            },
+          }) as never,
+      );
+
+      await expect(
+        methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 }),
+      ).rejects.toThrow('connection closed before acknowledgement');
+      expect(await Balance.countDocuments()).toBe(0);
+      expect(await User.countDocuments()).toBe(0);
+      balanceWrite.mockRestore();
+    });
+
+    test('keeps the start balance when the insert fails without a unique-index rejection', async () => {
+      const userSave = jest
+        .spyOn(User.prototype, 'save')
+        .mockRejectedValueOnce(new Error('connection closed before acknowledgement'));
+
+      await expect(
+        methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 }),
+      ).rejects.toThrow('connection closed before acknowledgement');
+      expect(await Balance.countDocuments()).toBe(1);
+      userSave.mockRestore();
+    });
+
+    test('throws failures other than an existing account without writing a balance', async () => {
+      await expect(
+        methods.createUserIfAbsent(
+          { ...newUser, email: 'not-an-email' },
+          { enabled: true, startBalance: 500 },
+        ),
+      ).rejects.toMatchObject({ name: 'ValidationError' });
+      expect(await Balance.countDocuments()).toBe(0);
+    });
+  });
+
   describe('updateUser', () => {
     test('should update user fields', async () => {
       const user = await User.create({
@@ -1168,6 +1289,58 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('resetTermsAcceptance', () => {
+    it('withdraws every acceptance, clears the source, and evicts cached auth documents', async () => {
+      enableAuthUserDocCache();
+      const accepted = await User.create({
+        name: 'Accepted',
+        email: 'accepted-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+        termsAcceptedSource: 'migration',
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-accepted']),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const cached = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      const { modifiedCount } = await cached.resetTermsAcceptance();
+
+      const stored = await User.findById(accepted._id).lean();
+      expect(modifiedCount).toBeGreaterThanOrEqual(1);
+      expect(stored?.termsAccepted).toBe(false);
+      expect(stored?.termsAcceptedAt).toBeNull();
+      expect(stored?.termsAcceptedSource).toBeUndefined();
+      expect(cache.delete).toHaveBeenCalledWith('cached-accepted');
+      expect(delay).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not wait when the auth user cache is off', async () => {
+      await User.create({
+        name: 'Cache Off',
+        email: 'cache-off-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const off = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      await off.resetTermsAcceptance();
+
+      expect(delay).not.toHaveBeenCalled();
+    });
+  });
+
   describe('acceptTerms', () => {
     test('sets termsAccepted and stamps termsAcceptedAt on first acceptance', async () => {
       const user = await User.create({
@@ -1244,6 +1417,33 @@ describe('User Methods - Database Tests', () => {
       expect((reaccepted?.termsAcceptedAt as Date).getTime()).toBeGreaterThanOrEqual(
         (first?.termsAcceptedAt as Date).getTime(),
       );
+    });
+
+    test('keeps the backfill marker only while the backfilled timestamp stands', async () => {
+      const backfilledAt = new Date('2023-01-01T00:00:00.000Z');
+      const user = await User.create({
+        name: 'Backfilled User',
+        email: 'backfilled-terms@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: backfilledAt,
+        termsAcceptedSource: 'migration',
+      });
+      const userId = user._id?.toString() ?? '';
+
+      const repeat = await methods.acceptTerms(userId);
+      expect((repeat?.termsAcceptedAt as Date).getTime()).toBe(backfilledAt.getTime());
+      expect(repeat?.termsAcceptedSource).toBe('migration');
+
+      await User.updateOne(
+        { _id: userId },
+        { $set: { termsAccepted: false, termsAcceptedAt: null } },
+      );
+      const reaccepted = await methods.acceptTerms(userId);
+
+      expect(reaccepted?.termsAcceptedAt).toBeInstanceOf(Date);
+      expect((reaccepted?.termsAcceptedAt as Date).getTime()).not.toBe(backfilledAt.getTime());
+      expect(reaccepted?.termsAcceptedSource).toBeUndefined();
     });
 
     test('stamps termsAcceptedAt for a legacy document missing the field entirely', async () => {
@@ -1642,6 +1842,35 @@ describe('User Methods - Database Tests', () => {
       expect(results.length).toBeGreaterThan(0);
     });
 
+    test('should rank an accent-folded exact match above a prefix match', async () => {
+      await User.create([
+        { name: 'Zoe Adams', email: 'zadams@test.com', username: 'zadams', provider: 'local' },
+        { name: 'Zoë', email: 'zoe-umlaut@test.com', username: 'zumlaut', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'zoe', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('Zoë');
+    });
+
+    test('should rank a reordered full-name match above a longer prefix match', async () => {
+      await User.create([
+        {
+          name: 'Smith Johnson',
+          email: 'sjohnson@test.com',
+          username: 'sjohnson',
+          provider: 'local',
+        },
+        { name: 'John Smith', email: 'jsmith@test.com', username: 'jsmith', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'smith john', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('John Smith');
+    });
+
     test('should respect limit', async () => {
       const results = await methods.searchUsers({ searchPattern: 'example', limit: 2 });
 
@@ -1669,9 +1898,11 @@ describe('User Methods - Database Tests', () => {
       });
 
       const results = await methods.searchUsers({ searchPattern: '.*' });
+      expect(results).toEqual([]);
 
-      expect(results).toHaveLength(1);
-      expect((results[0] as unknown as t.IUser).name).toBe('Literal .* User');
+      const literal = await methods.searchUsers({ searchPattern: 'literal' });
+      expect(literal).toHaveLength(1);
+      expect((literal[0] as unknown as t.IUser).name).toBe('Literal .* User');
     });
 
     test('should handle invalid regex syntax as literal search text', async () => {

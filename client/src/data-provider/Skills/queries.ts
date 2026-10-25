@@ -15,32 +15,6 @@ import type {
 } from '@tanstack/react-query';
 
 /**
- * Paginated skill list (single page) — use this for small lists or when you want to
- * control pagination manually.
- */
-export const useListSkillsQuery = (
-  params?: TSkillListRequest,
-  config?: UseQueryOptions<TSkillListResponse>,
-): QueryObserverResult<TSkillListResponse> => {
-  return useQuery<TSkillListResponse>(
-    [
-      QueryKeys.skills,
-      params?.category ?? '',
-      params?.search ?? '',
-      params?.limit ?? 20,
-      params?.cursor ?? '',
-    ],
-    () => dataService.listSkills(params),
-    {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
-      ...config,
-    },
-  );
-};
-
-/**
  * Cursor-paginated infinite query for skills. Use this for the main skills listing UI.
  */
 export const useSkillsInfiniteQuery = (

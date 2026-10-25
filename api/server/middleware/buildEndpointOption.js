@@ -1,11 +1,13 @@
 const {
   handleError,
   applyModelSpecPreset,
+  restoreAgentTriggerModelSpec,
   resolveModelSpecForEndpoint,
   resolveModelSpecPromptPrefixVariables,
   inspectContent,
   extractChatContent,
   contentFilterBlockResponse,
+  getReasoningCapabilities,
   applyRequestReasoningOverride,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -57,6 +59,7 @@ function inspectResolvedCurrentUser(req, promptPrefixTemplate) {
 }
 
 async function buildEndpointOption(req, res, next) {
+  restoreAgentTriggerModelSpec(req);
   const { endpoint, endpointType } = req.body;
   const isAgents =
     isAgentsEndpoint(endpoint) || req.baseUrl.startsWith(EndpointURLs[EModelEndpoint.agents]);
@@ -193,6 +196,8 @@ async function buildEndpointOption(req, res, next) {
       defaultParamsEndpoint,
       appliedModelSpecPrivateFields,
       enforcedModelSpecFields,
+      loadReasoningCapabilities: (endpointName) =>
+        getReasoningCapabilities(appConfig, endpointName),
     });
     if (!reasoningApplied) {
       return handleError(res, { text: 'Invalid reasoning override' });

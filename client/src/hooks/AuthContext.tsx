@@ -25,7 +25,9 @@ import {
 import type * as t from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
+  clearTTSCache,
   isSafeRedirect,
+  setTTSCacheOwner,
   getPostLoginRedirect,
   clearPostLoginRedirect,
   persistRedirectToSession,
@@ -37,7 +39,9 @@ import {
 import {
   useGetRole,
   useGetUserQuery,
+  endPullRequestSession,
   useLoginUserMutation,
+  setPullRequestSessionOwner,
   useLogoutUserMutation,
   useRefreshTokenMutation,
 } from '~/data-provider';
@@ -64,7 +68,12 @@ const endSessionClientState = (): void => {
   getDefaultStore().set(resetFacetsAtom);
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
+  endPullRequestSession();
+  void clearTTSCache();
 };
+/** `document.prerendering` is not yet part of TypeScript's DOM types. */
+const isPrerendering = (): boolean =>
+  (document as Document & { prerendering?: boolean }).prerendering === true;
 /**
  * Only recognized codes override the HTTP status used by the login error translation.
  */
@@ -83,6 +92,7 @@ const AuthContextProvider = ({
   children: ReactNode;
 }) => {
   const isExternalRedirectRef = useRef(false);
+  const prerenderRefreshDeferredRef = useRef(false);
   const [user, setUser] = useRecoilState(store.user);
   const logoutRedirectRef = useRef<string | undefined>(undefined);
   const [token, setToken] = useState<string | undefined>(undefined);
@@ -117,6 +127,9 @@ const AuthContextProvider = ({
         setIsAuthReady(true);
         if (isAuthenticated) {
           setQueriesEnabled(true);
+          /** A different account signing in without a logout must not inherit cached audio. */
+          setTTSCacheOwner(user?.id);
+          setPullRequestSessionOwner(user?.id);
           /**
            * Any accepted full-auth response supersedes a staged enrollment, whichever path minted
            * it. The setup endpoints trust the stored bearer independently of the session, so a
@@ -166,11 +179,13 @@ const AuthContextProvider = ({
        * setup route finish the previous user's enrollment and take the tab as them.
        */
       clearTwoFactorSetupToken();
-      if (twoFASetupRequired) {
+      if (twoFASetupRequired || twoFAPending) {
         const redirectTo = new URLSearchParams(window.location.search).get('redirect_to');
         if (redirectTo) {
           persistRedirectToSession(redirectTo);
         }
+      }
+      if (twoFASetupRequired) {
         persistTwoFactorSetupToken(tempToken ?? '');
         navigate('/login/2fa/setup', { replace: true });
         return;
@@ -257,6 +272,8 @@ const AuthContextProvider = ({
       setIsAuthReady(true);
       setQueriesEnabled(true);
       openFileDeletionRetention();
+      setTTSCacheOwner(authenticatedUser.id);
+      setPullRequestSessionOwner(authenticatedUser.id);
       navigate(redirect, { replace: true });
     },
     [navigate, setQueriesEnabled, setUser],
@@ -291,6 +308,15 @@ const AuthContextProvider = ({
       return;
     }
     if (isExternalRedirectRef.current) {
+      return;
+    }
+    /** A prerendered page can be discarded without ever being shown. Refreshing from it rotates
+     * the session for a page the user never sees, and the browser aborts the request mid-flight. */
+    if (isPrerendering()) {
+      if (!prerenderRefreshDeferredRef.current) {
+        prerenderRefreshDeferredRef.current = true;
+        document.addEventListener('prerenderingchange', () => silentRefresh(), { once: true });
+      }
       return;
     }
     refreshToken.mutate(undefined, {

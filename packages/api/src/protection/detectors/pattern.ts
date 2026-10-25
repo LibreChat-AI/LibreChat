@@ -51,10 +51,6 @@ export class PatternConfigurationError extends Error {
   }
 }
 
-export function isPatternConfigurationError(error: unknown): error is PatternConfigurationError {
-  return error instanceof PatternConfigurationError;
-}
-
 export interface PatternContentInspectorResourceCost {
   readonly customPatterns: number;
   readonly validCustomPatterns: number;
@@ -111,7 +107,7 @@ const STARTER_PATTERNS: readonly CompiledPattern[] = [
   {
     id: 'api_key_header',
     label: 'api-key header',
-    pattern: /\b(api-key:?\s+)[^\s"']+/i,
+    pattern: /\b(api-key:\s+)[^\s"']+/i,
     category: 'credential',
   },
 ];
@@ -360,12 +356,6 @@ export function getPatternContentInspectorPreflightCost(
     regexCharacters: snapshot.regexCharacters,
     regexes: snapshot.regexes,
   };
-}
-
-export function getPatternContentInspectorResourceCost(
-  config: PatternContentInspectorConfig | MessageFilterPiiConfig,
-): PatternContentInspectorResourceCost {
-  return prepareConfig(config).cost;
 }
 
 function findingFor(

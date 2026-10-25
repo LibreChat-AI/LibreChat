@@ -1,9 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { useRecoilValue } from 'recoil';
-import { useAtom, useStore } from 'jotai';
 import * as Popover from '@radix-ui/react-popover';
+import { useAtom, useStore, useAtomValue } from 'jotai';
+import { submissionByIndex } from '@librechat/chat/react';
 import { Button, Input, Slider } from '@librechat/client';
 import { BrainCircuit, ChevronDown, X } from 'lucide-react';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
   Constants,
   ReasoningParameterFormat,
@@ -22,12 +23,11 @@ import type {
   TReasoningOverride,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from './Composer/state';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { formatTokens, resolveAgentTarget } from '~/utils';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 type ReasoningControlProps = {
   index: number;
@@ -113,19 +113,16 @@ export function ReasoningControl({
   return (
     <Popover.Root modal>
       <Popover.Trigger asChild>
-        {/* Styled as the composer control it sits beside (the Thinking pill in
-            `Composer/Thinking.tsx`) rather than as a restyled `Button`: the
-            open state keeps it lit while its popover is up, which no `Button`
-            variant expresses. */}
-        <button
-          type="button"
+        {/* `composer-trigger` keeps it lit while its popover is up, through the
+            `aria-expanded` the trigger carries. */}
+        <Button
+          variant="composer-trigger"
           disabled={disabled}
           aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary inline-flex h-8 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
           <ChevronDown className="size-3" aria-hidden="true" />
-        </button>
+        </Button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
@@ -134,7 +131,7 @@ export function ReasoningControl({
           aria-label={label}
           align="end"
           sideOffset={6}
-          className="border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 z-50 w-72 max-w-[calc(100vw-2rem)] origin-[--radix-popover-content-transform-origin] overflow-hidden rounded-2xl border shadow-xl motion-reduce:animate-none"
+          className="border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 rounded-theme-popover z-50 w-72 max-w-[calc(100vw-2rem)] origin-[--radix-popover-content-transform-origin] overflow-hidden border shadow-xl motion-reduce:animate-none"
         >
           <div className="flex items-center gap-2 px-4 py-3">
             <BrainCircuit className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
@@ -151,7 +148,7 @@ export function ReasoningControl({
                 variant="ghost"
                 size="icon-xs"
                 aria-label={localize('com_ui_close')}
-                className="group -mr-1 shrink-0"
+                className="group -me-1 shrink-0"
               >
                 <X
                   className="text-text-secondary group-hover:text-text-primary size-4"
@@ -179,7 +176,7 @@ export function ReasoningControl({
                   <span className="truncate">
                     {translated(setting.enumMappings?.[options[0]] ?? options[0], localize)}
                   </span>
-                  <span className="truncate text-right">
+                  <span className="truncate text-end">
                     {translated(
                       setting.enumMappings?.[options[options.length - 1]] ??
                         options[options.length - 1],
@@ -203,7 +200,7 @@ export function ReasoningControl({
                         step={range.step ?? 1}
                         onChange={(event) => setNumericValue(event.target.value)}
                         onBlur={commitNumericValue}
-                        className="h-8 w-24 text-right"
+                        className="h-8 w-24 text-end"
                       />
                     </div>
                     <span className="text-text-secondary truncate text-xs">
@@ -281,7 +278,7 @@ export function useComposerReasoning({
   const [value, setValue] = useAtom(pendingReasoningOverrideFamily(reasoningStateKey));
   const reasoningStore = useStore();
   const placeholderStateKey = getReasoningStateKey(null, index);
-  const submission = useRecoilValue(store.submissionByIndex(index));
+  const submission = useAtomValue(submissionByIndex(index));
   const submissionConversationId =
     submission?.conversation?.conversationId ?? submission?.userMessage?.conversationId;
   const submittedConversationRef = useRef<string | null>(null);
@@ -336,6 +333,11 @@ export function useComposerReasoning({
   const provider = isAgent ? (agentTarget?.provider ?? '') : (conversation?.endpoint ?? '');
   const model = isAgent ? (agentTarget?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
+  const { modelReasoning, pending: capabilitiesPending } = useModelReasoning(
+    endpointsConfig,
+    provider,
+    model,
+  );
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     return resolveReasoningSettingForTarget({
@@ -346,18 +348,28 @@ export function useComposerReasoning({
       reasoningFormat: customParams.reasoningFormat,
       paramDefinitions: customParams.paramDefinitions,
       blockedReasoningKeys,
+      modelReasoning,
     });
-  }, [blockedReasoningKeys, endpointType, endpointsConfig, isAgent, model, provider]);
-  const settingFingerprint =
-    setting == null
-      ? ''
-      : `${setting.key}:${setting.type}:${setting.options?.join(',') ?? ''}:${setting.range?.min ?? ''}:${setting.range?.positiveMin ?? ''}:${setting.range?.max ?? ''}:${setting.range?.step ?? ''}`;
+  }, [
+    blockedReasoningKeys,
+    endpointType,
+    endpointsConfig,
+    isAgent,
+    model,
+    modelReasoning,
+    provider,
+  ]);
   const targetResolved =
     endpoint !== '' &&
     (!isAgent || agentTarget != null) &&
     (setting != null || endpointsQuery.data != null);
+  /* The target is the endpoint or agent and the model. The efforts a catalog advertises for it
+     are not part of the identity: a refresh that changes them is not the user switching targets,
+     and a value the refreshed setting no longer allows is cleared as `mismatchedSetting` below. It
+     is recorded even while the capabilities load, so a switch made then is not mistaken for the
+     first target once they arrive. */
   const targetFingerprint = targetResolved
-    ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
+    ? `${isAgent ? conversation?.agent_id : provider}:${model}`
     : null;
   const previousTarget = useRef({ key: reasoningStateKey, fingerprint: targetFingerprint });
   const explicitlyUnavailable =
@@ -386,13 +398,19 @@ export function useComposerReasoning({
        key may survive while its enum value or number no longer does. */
     const mismatchedSetting =
       setting != null && value != null && !isReasoningOverrideSupported(value, setting);
+    /* While the capabilities are unknown the setting is hidden, which says nothing about the
+       staged choice: keep it until the catalog confirms or refutes it. A switch of target is
+       different, because the choice belonged to the old one, so it clears at once. */
     if (
-      (explicitlyUnavailable || unsupportedResolved || targetChanged || mismatchedSetting) &&
-      value != null
+      value != null &&
+      (targetChanged ||
+        (!capabilitiesPending &&
+          (explicitlyUnavailable || unsupportedResolved || mismatchedSetting)))
     ) {
       setValue(undefined);
     }
   }, [
+    capabilitiesPending,
     explicitlyUnavailable,
     reasoningStateKey,
     setValue,

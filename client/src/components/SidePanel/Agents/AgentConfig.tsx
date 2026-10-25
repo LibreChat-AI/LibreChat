@@ -107,7 +107,8 @@ export default function AgentConfig({
       <div className="mb-3 grid grid-cols-2 gap-2">
         <div className="flex min-w-0 flex-col">
           <Label
-            className="text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase"
+            variant="secondary"
+            className="text-2xs mb-1 block font-medium tracking-wide uppercase"
             htmlFor="provider"
           >
             {localize('com_ui_model')} <span className="text-text-destructive">*</span>
@@ -118,13 +119,13 @@ export default function AgentConfig({
             onClick={() => setActivePanel(Panel.model)}
             title={model || undefined}
             className={cn(
-              'border-border-light bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
+              'border-border-control bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
               model != null && model ? 'px-1' : 'px-3',
             )}
           >
             <div className="flex w-full min-w-0 items-center gap-2">
               {providerValue !== undefined && (
-                <div className="shadow-stroke bg-surface-primary text-text-primary relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
+                <div className="avatar-stroke bg-surface-primary text-text-primary relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
                   <ResolvedProviderIcon
                     provider={providerId}
                     imageURL={imageURL}
@@ -141,7 +142,8 @@ export default function AgentConfig({
         </div>
         <div className="flex flex-col">
           <Label
-            className="text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase"
+            variant="secondary"
+            className="text-2xs mb-1 block font-medium tracking-wide uppercase"
             htmlFor="category-selector"
           >
             {localize('com_ui_category')} <span className="text-text-destructive">*</span>
@@ -171,7 +173,10 @@ export default function AgentConfig({
 
       {/* SUPPORT CONTACT */}
       <div className="mb-3 flex flex-col">
-        <Label className="text-text-secondary mb-1 block text-[11px] font-medium tracking-wide uppercase">
+        <Label
+          variant="secondary"
+          className="text-2xs mb-1 block font-medium tracking-wide uppercase"
+        >
           {localize('com_ui_support_contact')}
         </Label>
         <div className="space-y-2">

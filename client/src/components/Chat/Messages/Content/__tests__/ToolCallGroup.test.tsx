@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import { SoleToolContext, useToolAutoExpand } from '../disclosure';
+import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '../disclosure';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
@@ -119,8 +119,8 @@ jest.mock('~/components/MCPUIResource', () => ({
 }));
 
 jest.mock('../ToolOutput', () => ({
-  StackedToolIcons: ({ toolNames }: { toolNames: string[] }) => (
-    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} />
+  StackedToolIcons: ({ toolNames, status }: { toolNames: string[]; status?: string }) => (
+    <span data-testid="stacked-icons" data-tool-names={toolNames.join(',')} data-status={status} />
   ),
   getMCPServerName: () => '',
   isError: (output: string) => output.startsWith('Error processing tool'),
@@ -136,6 +136,7 @@ jest.mock('lucide-react', () => ({
   MessageCircleQuestion: () => <span data-testid="question-icon">{'question'}</span>,
   ListChecks: () => <span data-testid="task-check-icon">{'checks'}</span>,
   TriangleAlert: () => <span>{'warning'}</span>,
+  CircleX: () => <span>{'failed'}</span>,
   CircleMinus: () => <span>{'collapse'}</span>,
 }));
 
@@ -204,6 +205,15 @@ const makePart = (
       name,
       args,
       output,
+    },
+  }) as unknown as TMessageContentParts;
+
+const completed = (part: TMessageContentParts): TMessageContentParts =>
+  ({
+    ...part,
+    [ContentTypes.TOOL_CALL]: {
+      ...(part as unknown as Record<string, object>)[ContentTypes.TOOL_CALL],
+      runStepStatus: 'completed',
     },
   }) as unknown as TMessageContentParts;
 
@@ -591,6 +601,28 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
   });
 
+  it('delegates an encrypted-reasoning part to the standalone renderer', () => {
+    const encryptedPart = {
+      type: ContentTypes.THINK,
+      [ContentTypes.THINK]: Buffer.from(
+        Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256),
+      ).toString('base64'),
+    } as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [
+        { part: makePart('t1'), idx: 0 },
+        { part: encryptedPart, idx: 1 },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
+
+    expect(screen.getByTestId('inner-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
+  });
+
   it('unmounts tool bodies after a collapsed group finishes transitioning', () => {
     renderGroup(baseProps);
 
@@ -939,6 +971,359 @@ describe('ToolCallGroup image hoisting', () => {
 
     expect(screen.getByTestId('stacked-icons')).toHaveAttribute('data-tool-names', 'edit_file');
     expect(screen.getByRole('button', { name: 'Create File' })).toBeInTheDocument();
+  });
+
+  it('names a lone code call by what it did, not by the bare tool name', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: completed(makePart('code-1', 'done', 'execute_code')), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('names a lone running code call by what it is doing', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: true,
+      parts: [{ part: makePart('code-1', '', 'execute_code'), idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
+  it('keeps a multi-call group in the running tense while one detached task runs', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [
+        { part: completed(makePart('plain-1', 'ok', 'fetch_image')), idx: 0 },
+        {
+          part: completed(
+            makePart(
+              'code-bg-2',
+              JSON.stringify({
+                background_task_id: 'task-2',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 1,
+        },
+      ],
+      lastContentIdx: 1,
+    });
+
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ran 2 actions/ })).not.toBeInTheDocument();
+  });
+
+  it('does not hold a group in the running tense for a detached MCP call its row reports as ran', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [
+        { part: completed(makePart('plain-1', 'ok', 'fetch_image')), idx: 0 },
+        {
+          part: completed(
+            makePart(
+              'mcp-bg',
+              JSON.stringify({
+                background_task_id: 'task-3',
+                tool: 'search',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'search_mcp_github',
+            ),
+          ),
+          idx: 1,
+        },
+      ],
+      lastContentIdx: 1,
+    });
+
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+  });
+
+  it('keeps the group open while a lone detached task is still running', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: completed(
+            makePart(
+              'code-bg',
+              JSON.stringify({
+                background_task_id: 'task-1',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('keeps a lone code call in the running tense while its detached task runs', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: completed(
+            makePart(
+              'code-1',
+              JSON.stringify({
+                background_task_id: 'task-1',
+                tool: 'bash_tool',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'bash_tool',
+            ),
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
+  });
+
+  const handleOutput = JSON.stringify({
+    background_task_id: 'task-1',
+    tool: 'bash_tool',
+    status: 'running',
+    message: 'Use check_background_task to follow it',
+  });
+  const detachedProps = (attachments: TAttachment[] = []) => ({
+    ...baseProps,
+    parts: [{ part: completed(makePart('code-1', handleOutput, 'bash_tool')), idx: 0 }],
+    lastContentIdx: 0,
+    groupAttachments: attachments,
+  });
+
+  it('does not keep a cancelled detached task open or live', () => {
+    const cancelled = completed(makePart('code-1', handleOutput, 'bash_tool'));
+    (cancelled as unknown as Record<string, Record<string, unknown>>)[
+      ContentTypes.TOOL_CALL
+    ].backgroundTask = { cancelled: true };
+    renderGroup({ ...baseProps, parts: [{ part: cancelled, idx: 0 }], lastContentIdx: 0 });
+
+    expect(screen.getByRole('button', { name: /^com_ui_cancelled/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('moves focus to the header when a focused detached task settles and the group collapses', () => {
+    const renderPart = (_p: TMessageContentParts, idx: number) => (
+      <button type="button" data-testid="row" key={idx}>
+        {'row'}
+      </button>
+    );
+    const settled = {
+      type: 'background_task_status',
+      status: 'finished',
+      toolCallId: 'code-1',
+      messageId: 'm1',
+    } as unknown as TAttachment;
+    const tree = (attachments: TAttachment[]) => (
+      <RecoilRoot>
+        <ToolCallGroup {...detachedProps(attachments)} renderPart={renderPart} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(tree([]));
+    screen.getByTestId('row').focus();
+    expect(screen.getByTestId('row')).toHaveFocus();
+
+    rerender(tree([settled]));
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toHaveFocus();
+  });
+
+  it('does not call a failed lone code call "ran"', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-f',
+        name: 'execute_code',
+        args: '{}',
+        output: 'boom',
+        runStepStatus: 'failed',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: failed, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not call a failed lone code call "running"', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-f2',
+        name: 'execute_code',
+        args: '{}',
+        output: 'boom',
+        runStepStatus: 'failed',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: failed, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_running_var/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when an interrupted legacy record has no success signal', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when an interrupted legacy record kept partial output', () => {
+    const interrupted = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-partial',
+        name: 'execute_code',
+        args: '{}',
+        output: 'partial',
+        progress: 0.5,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: interrupted, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not claim a lone code call ran when a legacy record has output but no progress field', () => {
+    const noProgress = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-no-progress',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: noProgress, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('calls a lone legacy code call ran once its progress reaches 1', () => {
+    const finished = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-legacy-ok',
+        name: 'execute_code',
+        args: '{}',
+        output: 'done',
+        progress: 1,
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [{ part: finished, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not call a stopped lone code call "ran"', () => {
+    const cancelled = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'code-c',
+        name: 'execute_code',
+        args: '{}',
+        output: '',
+        runStepStatus: 'cancelled',
+      },
+    } as unknown as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [{ part: cancelled, idx: 0 }],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.queryByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).not.toBeInTheDocument();
   });
 
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
@@ -1392,11 +1777,91 @@ describe('ToolCallGroup failure fast path', () => {
     expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
   });
 
+  it('keeps the count quiet when the group contains both successful and failed calls', () => {
+    renderGroup(props(jest.fn()));
+    expect(
+      screen
+        .getByTestId('failed-reveal-pill')
+        .querySelector('span.text-text-secondary, span.text-status-error'),
+    ).toHaveClass('text-text-secondary');
+  });
+
+  it('keeps the count in the error tone when every call failed', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [
+        failedParts[1],
+        { part: makePart('c3', 'Error processing tool: gone', 'create_file'), idx: 1 },
+      ],
+    });
+    expect(
+      screen
+        .getByTestId('failed-reveal-pill')
+        .querySelector('span.text-text-secondary, span.text-status-error'),
+    ).toHaveClass('text-status-error');
+  });
+
+  it.each(['created', 'Error processing tool: unavailable'])(
+    'preserves a sparse partial batch with output %s',
+    (output) => {
+      renderGroup({
+        ...props(jest.fn()),
+        parts: [{ part: makePart('remaining', output, 'create_file'), idx: 0 }],
+        labelPart: {
+          part: {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Created the config files',
+            pending: false,
+            status: 'partial',
+          } as TMessageContentParts,
+          idx: 1,
+        },
+      });
+      expect(screen.getByText('warning')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    { type: ContentTypes.THINK, think: 'Remaining thought' },
+    { type: ContentTypes.TEXT, text: 'Remaining commentary' },
+  ])('preserves a failed batch marker with only a $type row', (part) => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [{ part: part as TMessageContentParts, idx: 0 }],
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          activity_label: 'Could not finish',
+          pending: false,
+          status: 'failed',
+        } as TMessageContentParts,
+        idx: 1,
+      },
+    });
+    expect(screen.getByTestId('stacked-icons')).toHaveAttribute('data-status', 'failed');
+  });
+
+  it('does not tint the title of a partially failed labeled group', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          [ContentTypes.ACTIVITY_LABEL]: 'Created the config files',
+          pending: false,
+          status: 'partial',
+        } as unknown as TMessageContentParts,
+        idx: 2,
+      },
+    });
+    expect(screen.getByText('Created the config files')).not.toHaveClass('text-text-warning');
+  });
+
   it('shows the failure count once, on the pill, when it stands alone', () => {
     renderGroup(props(jest.fn()));
     const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).not.toHaveTextContent('1/2 failed');
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
   });
 
   it("keeps the count in text inside a phase, where the pill is the phase's", () => {
@@ -1451,7 +1916,7 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
-    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
   });
 
   it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
@@ -1589,6 +2054,36 @@ describe('ToolCallGroup sole tool', () => {
     renderGroup(props(['only']));
     fireEvent.click(screen.getByRole('button', { expanded: false }));
     expect(screen.getByTestId('probe-0')).toHaveTextContent('true');
+  });
+
+  it('marks a one-call group as lone even when its phase holds several calls', () => {
+    function LoneProbe() {
+      return <div data-testid="lone">{String(useContext(LoneGroupContext))}</div>;
+    }
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup
+            {...props(['only'])}
+            renderPart={(_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} />}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone')).toHaveTextContent('true');
+  });
+
+  it('does not mark a two-call group as lone', () => {
+    function LoneProbe({ idx }: { idx: number }) {
+      return <div data-testid={`lone-${idx}`}>{String(useContext(LoneGroupContext))}</div>;
+    }
+    renderGroup({
+      ...props(['a', 'b']),
+      renderPart: (_p: TMessageContentParts, idx: number) => <LoneProbe key={idx} idx={idx} />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-0')).toHaveTextContent('false');
   });
 
   it('keeps a one-call group collapsed when its phase holds several calls', () => {

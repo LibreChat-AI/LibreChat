@@ -1,14 +1,15 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
+import { hasLiveRunPause } from '@librechat/chat';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { pendingSteersByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
-import type { PendingSteer } from '~/hooks/Chat/queue';
+import type { PendingSteer } from '@librechat/chat';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
 import { applyPendingAction } from '~/utils/approval';
 import PendingSteers from '../PendingSteers';
 import store from '~/store';
@@ -29,21 +30,13 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/useSteerEscalate', () => ({
-  __esModule: true,
-  default: () => mockEscalate,
-}));
-
-jest.mock('~/hooks/Chat/useSteerRecovery', () => ({
-  __esModule: true,
-  default: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
-}));
-
-jest.mock('~/hooks/Chat/useSteerCancel', () => ({
-  __esModule: true,
-  default: () => jest.fn(),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerEscalate: () => mockEscalate,
+  useSteerCancel: () => jest.fn(),
   useSteerMoveToQueue: () => mockMoveToQueue,
   useSteerRehome: () => mockRehome,
+  useSteerRecovery: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -86,6 +79,7 @@ function renderPending(
   });
   queryClient.setQueryData([QueryKeys.messages, CONVO_ID], messages ?? []);
   const jotaiStore = createStore();
+  jotaiStore.set(pendingSteersByConvoId(CONVO_ID), steers);
   if (activeSiblingIndex != null) {
     jotaiStore.set(
       siblingIdxFamily(
@@ -110,7 +104,6 @@ function renderPending(
                   conversationId: CONVO_ID,
                 } as TConversation);
               }
-              set(store.pendingSteersByConvoId(CONVO_ID), steers);
             }}
           >
             <PendingSteers conversationId={CONVO_ID} index={pane?.index} fullWidth={fullWidth} />
@@ -153,6 +146,24 @@ describe('PendingSteers', () => {
     }
   });
 
+  it('renders queue as an icon-only message action', () => {
+    renderPending([pending({ status: 'pending' })]);
+
+    expect(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }).textContent).toBe('');
+  });
+
+  it('renders cancel as an icon-only message action', () => {
+    renderPending([pending({ status: 'pending' })]);
+
+    expect(screen.getByRole('button', { name: 'com_ui_cancel' }).textContent).toBe('');
+  });
+
+  it('uses the message-action treatment for interrupting a pending steer', () => {
+    renderPending([pending({ status: 'pending' })]);
+
+    expect(screen.getByTestId('steer-escalate-now')).toHaveClass('text-text-secondary-alt');
+  });
+
   it('keeps delivered controls available and aligned with the bubble', () => {
     renderPending([pending({ status: 'pending' })]);
 
@@ -161,7 +172,7 @@ describe('PendingSteers', () => {
     const cancel = screen.getByRole('button', { name: 'com_ui_cancel' });
     expect(cancel).toBeEnabled();
     expect(cancel.parentElement).toHaveClass('flex-wrap', 'justify-end');
-    expect(cancel.parentElement).not.toHaveClass('pl-9');
+    expect(cancel.parentElement).not.toHaveClass('ps-9');
   });
 
   it('aligns failed-steer recovery actions with the bubble and allows wrapping', () => {
@@ -169,7 +180,7 @@ describe('PendingSteers', () => {
 
     const retry = screen.getByRole('button', { name: 'com_ui_retry' });
     expect(retry.parentElement).toHaveClass('flex-wrap', 'justify-end');
-    expect(retry.parentElement).not.toHaveClass('pl-9');
+    expect(retry.parentElement).not.toHaveClass('ps-9');
   });
 
   it.each(['sending', 'pending', 'failed'] as const)(
@@ -242,7 +253,7 @@ describe('PendingSteers', () => {
     const steer = pending({ status: 'pending', steerId: 's-ack' });
     renderPending([steer]);
 
-    fireEvent.click(screen.getByText('com_ui_convert_to_queue'));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
 
     await waitFor(() => expect(mockMoveToQueue).toHaveBeenCalledWith(steer));
   });
@@ -251,7 +262,7 @@ describe('PendingSteers', () => {
     mockMoveToQueue.mockResolvedValue('applied');
     renderPending([pending({ status: 'pending' })]);
 
-    fireEvent.click(screen.getByText('com_ui_convert_to_queue'));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_convert_to_queue' }));
 
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith({

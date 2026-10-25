@@ -28,6 +28,7 @@ import EnableTwoFactorItem from '../SettingsTabs/Account/TwoFactorAuthentication
 import LangfuseConnection from '../SettingsTabs/Integrations/LangfuseConnection';
 import ClockFormatSelector from '../SettingsTabs/General/ClockFormatSelector';
 import ImportConversations from '../SettingsTabs/Data/ImportConversations';
+import AnalyticsConsentToggle from '../SettingsTabs/Data/AnalyticsConsent';
 import WeekStartSelector from '../SettingsTabs/General/WeekStartSelector';
 import { ArchiveAllChats } from '../SettingsTabs/Data/ArchiveAllChats';
 import { toggleControl, ThemeSetting, LangSetting } from './controls';
@@ -55,8 +56,10 @@ import ImageResize from '../SettingsTabs/Chat/ImageResize';
 import Passkeys from '../SettingsTabs/Account/Passkeys';
 import { showThinkingAtom } from '~/store/showThinking';
 import ProviderKeys from '../SettingsTabs/ProviderKeys';
+import { showLiaAtom } from '~/components/Lia/store';
 import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
+import ConnectedAccounts from './ConnectedAccounts';
 import CodeEnvironments from './CodeEnvironments';
 import About from '../SettingsTabs/About/About';
 import ApiKeys from '../SettingsTabs/ApiKeys';
@@ -153,6 +156,21 @@ export const registry: SettingEntry[] = [
       stateAtom: store.centerFormOnLanding,
       localizationKey: 'com_nav_center_chat_input',
       switchId: 'centerFormOnLanding',
+    }),
+  },
+  {
+    id: 'showLia',
+    tab: GENERAL,
+    section: 'layout',
+    labelKey: 'com_nav_show_lia',
+    keywords: ['mascot', 'lia', 'fun', 'animation', 'welcome'],
+    show: (ctx) => ctx.mascotAllowed,
+    Component: toggleControl({
+      stateAtom: showLiaAtom,
+      localizationKey: 'com_nav_show_lia',
+      switchId: 'showLia',
+      hoverCardText: 'com_nav_info_show_lia',
+      beta: true,
     }),
   },
   {
@@ -285,19 +303,6 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_nav_during_run_action',
     keywords: ['steer', 'queue', 'interrupt', 'generating'],
     Component: DuringRunAction,
-  },
-  {
-    id: 'steerInterruptsByDefault',
-    tab: CHAT,
-    section: 'sending',
-    labelKey: 'com_ui_steer_interrupts_default',
-    keywords: ['steer', 'interrupt', 'preempt', 'generating', 'stop'],
-    Component: toggleControl({
-      stateAtom: store.steerInterruptsByDefault,
-      localizationKey: 'com_ui_steer_interrupts_default',
-      switchId: 'steerInterruptsByDefault',
-      hoverCardText: 'com_ui_steer_interrupts_default_info',
-    }),
   },
   {
     id: 'saveDrafts',
@@ -722,6 +727,15 @@ export const registry: SettingEntry[] = [
     keywords: ['archive', 'chats', 'conversations', 'bulk'],
     Component: ArchiveAllChats,
   },
+  {
+    id: 'analyticsConsent',
+    tab: DATA,
+    section: 'data',
+    labelKey: 'com_ui_analytics_consent_setting',
+    keywords: ['analytics', 'cookies', 'consent', 'tracking', 'privacy', 'google', 'gtm'],
+    show: (ctx) => ctx.analyticsConfigured,
+    Component: AnalyticsConsentToggle,
+  },
   // Data controls · API keys
   {
     id: 'providerApiKeys',
@@ -754,7 +768,7 @@ export const registry: SettingEntry[] = [
     section: 'langfuse',
     labelKey: 'com_ui_langfuse_title',
     keywords: ['langfuse', 'observability', 'tracing', 'telemetry', 'traces'],
-    show: (ctx) => ctx.langfuseConnectionAccess,
+    show: (ctx) => ctx.langfuseConnectionAccess || ctx.langfusePromptSyncAccess === true,
     Component: LangfuseConnection,
   },
   // Data controls · Danger zone
@@ -815,6 +829,16 @@ export const registry: SettingEntry[] = [
     keywords: ['passkey', 'webauthn', 'fido', 'security key', 'passwordless'],
     show: (ctx) => ctx.passkeyLoginEnabled,
     Component: Passkeys,
+  },
+  // Account · Connected accounts
+  {
+    id: 'pullRequestAccount',
+    tab: ACCOUNT,
+    section: 'connections',
+    labelKey: 'com_ui_settings_label_pull_request_account',
+    keywords: ['github', 'gitlab', 'bitbucket', 'pull request', 'oauth', 'connect'],
+    show: (ctx) => ctx.hasPullRequestConnect,
+    Component: ConnectedAccounts,
   },
   // Account · Billing
   {

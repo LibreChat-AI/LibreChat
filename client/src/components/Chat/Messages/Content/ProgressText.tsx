@@ -46,9 +46,7 @@ const Wrapper = ({
     return (
       <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
         <Popover.Trigger asChild>
-          <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
-            {children}
-          </div>
+          <div className={contentClass}>{children}</div>
         </Popover.Trigger>
       </div>
     );
@@ -56,9 +54,7 @@ const Wrapper = ({
 
   return (
     <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
-      <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
-        {children}
-      </div>
+      <div className={contentClass}>{children}</div>
     </div>
   );
 };
@@ -104,7 +100,7 @@ export default function ProgressText({
   hasInput?: boolean;
   popover?: boolean;
   isExpanded?: boolean;
-  /** Why a failed card failed ("exit code 2"), shown after the failure
+  /** Why a failed card failed ("exit code 2"), shown in place of the generic failure
    *  suffix. Plain text inside the button, so it is part of its name. */
   verdict?: string;
 }) {
@@ -240,11 +236,10 @@ export default function ProgressText({
             </span>
           )}
         </span>
+        {/* A reason ("timed out", "exit code 2") already says the call failed,
+            so it replaces the generic word instead of following it. */}
         {errorSuffix && (
-          <span className="text-status-error shrink-0 font-normal">· {errorSuffix}</span>
-        )}
-        {errorSuffix && verdict && (
-          <span className="text-text-secondary shrink-0 font-normal">· {verdict}</span>
+          <span className="text-status-error shrink-0 font-normal">· {verdict || errorSuffix}</span>
         )}
         {isRunning && phaseStartAt != null && localPhaseStart != null && (
           <ElapsedTimer start={localPhaseStart} />

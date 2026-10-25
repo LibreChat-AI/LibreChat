@@ -74,7 +74,9 @@ export default function CodeAnalyze({
             <div className="bg-surface-tertiary p-4 text-xs">
               <div className="text-text-secondary mb-1">{localize('com_ui_result')}</div>
               <div className="prose flex flex-col-reverse">
-                <pre className="text-text-primary! shrink-0">{logs}</pre>
+                <pre dir="ltr" className="text-text-primary! shrink-0">
+                  {logs}
+                </pre>
               </div>
             </div>
           )}

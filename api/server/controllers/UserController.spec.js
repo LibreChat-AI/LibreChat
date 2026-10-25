@@ -53,9 +53,16 @@ jest.mock('~/models', () => {
     deleteSchedulesByUser: jest.fn().mockResolvedValue(undefined),
     deleteTransactions: jest.fn().mockResolvedValue(undefined),
     deleteAclEntries: jest.fn().mockResolvedValue(undefined),
+    deleteUserChatProjects: jest.fn().mockResolvedValue(0),
+    deleteUserToolFavorites: jest.fn().mockResolvedValue(0),
+    deleteRefreshTokenBridges: jest.fn().mockResolvedValue(undefined),
+    deleteAllAgentQueuedTurnsForUser: jest.fn().mockResolvedValue(0),
+    findUserErasableMCPServers: jest.fn().mockResolvedValue([]),
+    deleteMCPServersWithAcl: jest.fn().mockResolvedValue(0),
     updateUserPlugins: jest.fn(),
     deleteAssistants: jest.fn().mockResolvedValue(undefined),
     deleteUserById: jest.fn().mockResolvedValue({ deletedCount: 1 }),
+    deleteAllUserPluginAuths: jest.fn().mockResolvedValue(undefined),
     beginAgentTriggerUserDeletion: jest.fn().mockResolvedValue('acquired'),
     cancelAgentTriggerUserDeletion: jest.fn().mockResolvedValue(true),
     deleteUserPrompts: jest.fn().mockResolvedValue(undefined),
@@ -226,6 +233,7 @@ describe('updateUserPluginsController', () => {
     await updateUserPluginsController(
       {
         config: {
+          credentials: { writeFormat: 'legacy' },
           webSearch: {
             keenableApiKey: '${KEENABLE_API_KEY}',
             keenableApiUrl: '${KEENABLE_API_URL}',
@@ -253,12 +261,14 @@ describe('updateUserPluginsController', () => {
       'KEENABLE_API_KEY',
       'web_search',
       'new-key',
+      'legacy',
     );
     for (const selectionField of Object.values(webSearchSelectionFields)) {
       expect(updateUserPluginAuth).not.toHaveBeenCalledWith(
         'user-id',
         selectionField,
         'web_search',
+        expect.anything(),
         expect.anything(),
       );
     }
@@ -565,6 +575,7 @@ describe('deleteUserController', () => {
     status: jest.fn().mockReturnThis(),
     send: jest.fn().mockReturnThis(),
     json: jest.fn().mockReturnThis(),
+    clearCookie: jest.fn(),
   };
 
   beforeEach(() => {
@@ -581,6 +592,7 @@ describe('deleteUserController', () => {
 
     expect(mockRes.status).toHaveBeenCalledWith(200);
     expect(mockRes.send).toHaveBeenCalledWith({ message: 'User deleted' });
+    expect(mockRes.clearCookie).toHaveBeenCalledWith('session_hint');
     expect(deletePasskeysByUser).toHaveBeenCalledWith(userIdStr);
     expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(userId.toString(), expect.any(Date));
     expect(mockPrepareAgentTriggerUserPurge).toHaveBeenCalledWith(

@@ -12,35 +12,6 @@ interface IPreset {
 }
 
 export function createPresetMethods(mongoose: typeof import('mongoose')): {
-  getPreset: (
-    user: string,
-    presetId: string,
-  ) => Promise<
-    | (import('mongoose').FlattenMaps<{
-        [x: string]: unknown;
-        user?: string | undefined;
-        presetId?: string | undefined;
-        order?: number | undefined;
-        defaultPreset?: boolean | undefined;
-        tools?:
-          | (
-              | string
-              | {
-                  pluginKey?: string | undefined;
-                }
-            )[]
-          | undefined;
-        updatedAt?: Date | undefined;
-      }> & {
-        _id: import('mongoose').Types.ObjectId;
-      } & {
-        __v: number;
-      })
-    | {
-        message: string;
-      }
-    | null
-  >;
   getPresets: (
     user: string,
     filter?: Record<string, unknown>,
@@ -93,47 +64,6 @@ export function createPresetMethods(mongoose: typeof import('mongoose')): {
     filter?: Record<string, unknown>,
   ) => Promise<import('mongodb').DeleteResult>;
 } {
-  /**
-   * Retrieves a single preset by user and presetId.
-   */
-  async function getPreset(
-    user: string,
-    presetId: string,
-  ): Promise<
-    | (import('mongoose').FlattenMaps<{
-        [x: string]: unknown;
-        user?: string | undefined;
-        presetId?: string | undefined;
-        order?: number | undefined;
-        defaultPreset?: boolean | undefined;
-        tools?:
-          | (
-              | string
-              | {
-                  pluginKey?: string | undefined;
-                }
-            )[]
-          | undefined;
-        updatedAt?: Date | undefined;
-      }> & {
-        _id: import('mongoose').Types.ObjectId;
-      } & {
-        __v: number;
-      })
-    | {
-        message: string;
-      }
-    | null
-  > {
-    try {
-      const Preset = mongoose.models.Preset as Model<IPreset>;
-      return await Preset.findOne({ user, presetId }).lean();
-    } catch (error) {
-      logger.error('[getPreset] Error getting single preset', error);
-      return { message: 'Error getting single preset' };
-    }
-  }
-
   /**
    * Retrieves all presets for a user, sorted by order then updatedAt.
    */
@@ -266,7 +196,6 @@ export function createPresetMethods(mongoose: typeof import('mongoose')): {
   }
 
   return {
-    getPreset,
     getPresets,
     savePreset,
     deletePresets,

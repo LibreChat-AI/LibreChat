@@ -56,9 +56,9 @@ export async function generateBackupCodes(
   return { plainCodes, codeObjects };
 }
 
-/** Keep issuance compatible until the operator completes the backend/client rollout. */
+/** Strong issuance is the default; `legacy` is the explicit opt-out for mixed-version rollouts. */
 export function createBackupCodeGenerator(format?: string): typeof generateBackupCodes {
-  return (count = 10) => generateBackupCodes(count, format !== 'strong');
+  return (count = 10) => generateBackupCodes(count, format === 'legacy');
 }
 
 /** Accept legacy digests until the user regenerates their recovery codes. */

@@ -216,7 +216,7 @@ export function RecorderInfo({
     return (
       <div
         id={`${ownerId}-recorder-hint`}
-        className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 pl-1 text-[11.5px]"
+        className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 ps-1 text-[11.5px]"
       >
         <span className="text-text-secondary">
           {localize('com_shortcut_recorder_conflict_prefix')}{' '}
@@ -243,7 +243,7 @@ export function RecorderInfo({
   }
 
   return (
-    <div id={`${ownerId}-recorder-hint`} className="flex items-center justify-end gap-2 pl-1">
+    <div id={`${ownerId}-recorder-hint`} className="flex items-center justify-end gap-2 ps-1">
       <span
         className={cn(
           'text-[11.5px]',

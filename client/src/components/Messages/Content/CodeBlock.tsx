@@ -101,7 +101,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
   return (
     <div
       ref={containerRef}
-      className="border-border-light relative w-full overflow-hidden rounded-xl border text-xs"
+      className="border-border-inset relative w-full overflow-hidden rounded-xl border text-xs"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onFocus={handleFocus}
@@ -117,7 +117,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
           allowExecution={allowExecution}
         />
       </div>
-      <div className={cn(classProp, 'bg-surface-code-body overflow-y-auto p-4')}>
+      <div dir="ltr" className={cn(classProp, 'bg-surface-code-body overflow-y-auto p-4')}>
         <code
           ref={codeRef}
           className={cn(
@@ -138,8 +138,8 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
       />
       {allowExecution === true && toolCalls && toolCalls.length > 0 && (
         <>
-          <div className="border-border-light bg-surface-code border-t p-4 text-xs">
-            <div className="text-text-secondary mb-1 text-[10px] font-medium tracking-wide uppercase">
+          <div dir="ltr" className="border-border-inset bg-surface-code border-t p-4 text-xs">
+            <div className="text-text-secondary text-3xs mb-1 font-medium tracking-wide uppercase">
               {localize('com_ui_output')}
             </div>
             <div className="text-text-primary flex flex-col-reverse">

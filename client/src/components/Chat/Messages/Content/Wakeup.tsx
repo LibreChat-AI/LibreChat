@@ -1,6 +1,4 @@
 import { memo, useCallback, useMemo, useState } from 'react';
-import { Users } from 'lucide-react';
-import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
 import type { TranslationKeys } from '~/hooks';
@@ -10,13 +8,13 @@ import SystemEventHeader, {
 } from '~/components/Chat/Messages/ui/SystemEvent';
 import { subagentStatusIcon, subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import BackgroundTaskCard from './BackgroundTaskCard';
 import { cn, getToolDisplayLabel } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
 import MarkdownLite from './MarkdownLite';
-import store from '~/store';
 
 const SUBAGENT_HEADER_KEYS = {
   completed: 'com_ui_wakeup_subagent_completed',
@@ -26,6 +24,17 @@ const SUBAGENT_HEADER_KEYS = {
 
 const threadStatus = (status: WakeupTask['status']) =>
   status === 'error' ? ('failed' as const) : status;
+
+/** The outcome glyph, colored for success only: a failure already paints the
+ *  header label with the warning role. */
+function SubagentOutcomeIcon({ status }: { status: ReturnType<typeof threadStatus> }) {
+  const StatusIcon = subagentStatusIcon(status);
+  return (
+    <SystemEventIcon>
+      <StatusIcon size={14} className={cn(status === 'completed' && 'text-status-success')} />
+    </SystemEventIcon>
+  );
+}
 
 function WakeupTaskCard({
   task,
@@ -47,18 +56,16 @@ function WakeupTaskCard({
   const { selection, open: openActivity } = useSubagentTaskPanel(durableTask, conversationId);
   const status = threadStatus(task.status);
   const StatusIcon = subagentStatusIcon(status);
-  const title = task.subagentType ?? '';
   const hasResult = task.result.trim() !== '';
 
   return (
-    <div className="border-border-light bg-surface-secondary/40 my-1.5 rounded-lg border p-3">
+    <div className="my-1.5 min-w-0">
       <div className="text-text-secondary flex min-h-6 items-center gap-1.5 text-xs">
         <StatusIcon
           size={13}
           aria-hidden
           className={cn('shrink-0', status === 'failed' && 'text-status-error')}
         />
-        {title !== '' && <span className="min-w-0 truncate font-medium">{title}</span>}
         <span className="shrink-0">{localize(subagentStatusLabelKey(status))}</span>
         {selection != null && openActivity != null && (
           /** The trigger identity attributes let the panel's close handler
@@ -71,14 +78,14 @@ function WakeupTaskCard({
             data-subagent-tool-call={selection.toolCallId}
             data-subagent-parent-message={selection.parentMessageId}
             data-subagent-part-index={selection.partIndex}
-            className="ml-auto h-6 shrink-0 px-2 text-xs"
+            className="ms-auto h-6 shrink-0 px-2 text-xs"
           >
             {localize('com_ui_wakeup_view_activity')}
           </Button>
         )}
       </div>
       {hasResult && (
-        <div className="markdown prose prose-sm message-content light dark:prose-invert text-text-primary mt-2 max-h-96 w-full max-w-none overflow-y-auto pr-1 break-words">
+        <div className="markdown prose prose-sm message-content light text-text-primary mt-2 max-h-96 w-full max-w-none overflow-y-auto pe-1 break-words">
           <MarkdownLite content={task.result} codeExecution={false} />
         </div>
       )}
@@ -101,7 +108,7 @@ const Wakeup = memo(function Wakeup({
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useMessagePartsHost().useAutoExpandTools();
   const [isExpanded, setIsExpanded] = useState(autoExpand);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
@@ -129,9 +136,11 @@ const Wakeup = memo(function Wakeup({
     return localize('com_ui_wakeup_task_finished');
   }, [display.kind, display.tasks, localize]);
 
+  /** A subagent's report is headed by the agent's own name and face on its row,
+   *  so its header line carries only the outcome. */
   const nameSummary = useMemo(() => {
     if (display.kind === 'subagent') {
-      return display.tasks[0]?.subagentType ?? '';
+      return '';
     }
     const seen = new Set<string>();
     const labels: string[] = [];
@@ -154,9 +163,9 @@ const Wakeup = memo(function Wakeup({
   );
 
   return (
-    <div className={cn('max-w-full', isExpanded && 'w-[36rem]')}>
+    <div className={cn('max-w-full', shouldRenderBody && 'w-[36rem]')}>
       <Button
-        variant="ghost"
+        variant="disclosure"
         type="button"
         className={systemEventHeaderClasses}
         onClick={handleToggle}
@@ -167,9 +176,7 @@ const Wakeup = memo(function Wakeup({
           live
           icon={
             display.kind === 'subagent' ? (
-              <SystemEventIcon>
-                <Users size={14} />
-              </SystemEventIcon>
+              <SubagentOutcomeIcon status={threadStatus(display.tasks[0]?.status ?? 'completed')} />
             ) : (
               <StackedToolIcons toolNames={toolIconNames} mcpIconMap={mcpIconMap} maxIcons={4} />
             )
@@ -196,7 +203,7 @@ const Wakeup = memo(function Wakeup({
               )}
               {display.tasks.map((task) =>
                 display.kind === 'background_tool' ? (
-                  <div key={task.taskId} className="my-2">
+                  <div key={task.taskId} className="my-2 ps-7">
                     <BackgroundTaskCard
                       task={{
                         taskId: task.taskId,

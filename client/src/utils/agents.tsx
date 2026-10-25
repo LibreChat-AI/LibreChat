@@ -95,8 +95,7 @@ export const renderAgentAvatar = (
     xl: 'h-10 w-10',
   };
 
-  // Tailwind v3 never generated border-1, so avatars have never painted a border; deliberate width belongs in a follow-up.
-  const borderClasses = showBorder ? 'border-border-medium' : '';
+  const borderClasses = showBorder ? 'border border-border-medium' : '';
 
   if (avatarUrl) {
     return (
@@ -119,19 +118,6 @@ export const renderAgentAvatar = (
       <Feather className={`text-text-primary ${iconSizeClasses[size]}`} strokeWidth={1.5} />
     </div>
   );
-};
-
-/**
- * Gets the display name for a contact (prioritizes name over email)
- */
-export const getContactDisplayName = (agent: t.Agent | null | undefined): string | null => {
-  if (!agent) return null;
-
-  const supportName = (agent as any).support_contact?.name;
-  const supportEmail = (agent as any).support_contact?.email;
-  const authorName = (agent as any).authorName;
-
-  return supportName || authorName || supportEmail || null;
 };
 
 // All hardcoded category constants removed - now using database-driven categories

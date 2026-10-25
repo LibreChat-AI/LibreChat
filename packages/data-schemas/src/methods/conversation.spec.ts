@@ -105,9 +105,6 @@ const getConvosByCursor = (...args: Parameters<ConversationMethods['getConvosByC
   methods.getConvosByCursor(...args);
 const getConvosQueried = (...args: Parameters<ConversationMethods['getConvosQueried']>) =>
   methods.getConvosQueried(...args);
-const deleteNullOrEmptyConversations = (
-  ...args: Parameters<ConversationMethods['deleteNullOrEmptyConversations']>
-) => methods.deleteNullOrEmptyConversations(...args);
 const searchConversation = (...args: Parameters<ConversationMethods['searchConversation']>) =>
   methods.searchConversation(...args);
 
@@ -1493,6 +1490,25 @@ describe('Conversation Operations', () => {
       },
     );
 
+    it('lists the code decision, so a row can tell a code conversation from an ordinary one', async () => {
+      const conversationId = uuidv4();
+      const plainId = uuidv4();
+      const codeWorkspaces = [mac];
+      await saveConvo(
+        { userId },
+        { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces },
+      );
+      await saveConvo({ userId }, { conversationId: plainId });
+      const { conversations } = await getConvosByCursor(userId);
+      expect(conversations.find((row) => row.conversationId === conversationId)).toEqual(
+        expect.objectContaining({ codeEnvironmentMode: 'attached', codeWorkspaces }),
+      );
+      expect(conversations.find((row) => row.conversationId === plainId)).not.toHaveProperty(
+        'codeEnvironmentMode',
+      );
+      expect(conversations.every((row) => row.codeDecisionListed === true)).toBe(true);
+    });
+
     it('preserves explicit agent ownership through save, reload and a stale ordinary save', async () => {
       const conversationId = uuidv4();
       const codeWorkspaces = [{ ...mac, agentIds: ['primary', 'reviewer'] }];
@@ -1678,6 +1694,63 @@ describe('Conversation Operations', () => {
         codeWorkspaces,
       });
     };
+
+    describe('stale lane state', () => {
+      const lane = { branch: 'feat/old', head: 'a'.repeat(40), repo: 'o/old' };
+      const stored = (conversationId: string) =>
+        methods.getConvoCodeEnvironmentDecision('user123', conversationId);
+
+      it('is cleared when the chat moves to another workspace', async () => {
+        const conversationId = await seedDecision({
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [mac],
+          laneGit: lane,
+        });
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toEqual(lane);
+        await moveFromStored(conversationId, [team]);
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toBeNull();
+      });
+
+      it('is cleared when the chat leaves attached execution', async () => {
+        const conversationId = await seedDecision({
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [mac],
+          laneGit: lane,
+        });
+        const decision = await stored(conversationId);
+        await methods.replaceConvoCodeEnvironmentDecision({
+          user: 'user123',
+          conversationId,
+          expected: {
+            codeEnvironmentMode: decision?.codeEnvironmentMode,
+            codeWorkspaces: decision?.codeWorkspaces,
+            codeEnvironmentRevision: decision?.codeEnvironmentRevision,
+          },
+          codeEnvironmentMode: 'without_attached',
+        });
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toBeNull();
+      });
+
+      it('is kept when the move is refused', async () => {
+        const conversationId = await seedDecision({
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [mac],
+          laneGit: lane,
+        });
+        await methods.replaceConvoCodeEnvironmentDecision({
+          user: 'user123',
+          conversationId,
+          expected: {
+            codeEnvironmentMode: 'attached',
+            codeWorkspaces: [team],
+            codeEnvironmentRevision: 99,
+          },
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [vm],
+        });
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toEqual(lane);
+      });
+    });
 
     it('replaces the decision it read without disturbing timestamps', async () => {
       const conversationId = await seedDecision({
@@ -4935,32 +5008,6 @@ describe('Conversation Operations', () => {
     it('returns zero when the user has no conversations', async () => {
       const result = await archiveAllConvos('user123');
       expect(result.archivedCount).toBe(0);
-    });
-  });
-
-  describe('deleteNullOrEmptyConversations', () => {
-    it('should delete conversations with null, empty, or missing conversationIds', async () => {
-      // Since conversationId is required by the schema, we can't create documents with null/missing IDs
-      // This test should verify the function works when such documents exist (e.g., from data corruption)
-
-      // For this test, let's create a valid conversation and verify the function doesn't delete it
-      await Conversation.create({
-        conversationId: mockConversationData.conversationId,
-        user: 'user4',
-        endpoint: EModelEndpoint.openAI,
-      });
-
-      deleteMessages.mockResolvedValue({ deletedCount: 0 });
-
-      const result = await deleteNullOrEmptyConversations();
-
-      expect(result?.conversations.deletedCount).toBe(0); // No invalid conversations to delete
-      expect(result?.messages.deletedCount).toBe(0);
-
-      // Verify valid conversation remains
-      const remainingConvos = await Conversation.find({});
-      expect(remainingConvos).toHaveLength(1);
-      expect(remainingConvos[0].conversationId).toBe(mockConversationData.conversationId);
     });
   });
 
@@ -9359,6 +9406,436 @@ describe('Conversation Operations', () => {
   });
 });
 
+describe('laneGit', () => {
+  const seed = async (user = 'lane-user') => {
+    const conversationId = uuidv4();
+    await Conversation.create({ conversationId, user, title: 'Lane test', endpoint: 'agents' });
+    return conversationId;
+  };
+  const head = 'a'.repeat(40);
+  /** A write with a sequence number drawn from the database, as the recorder draws one. */
+  const record = async (
+    input: Omit<Parameters<typeof methods.setConvoLaneGit>[0], 'seq'> & { seq?: number },
+  ) => {
+    const seq =
+      input.seq ?? (await methods.reserveConvoLaneGitSeq(input.user, input.conversationId));
+    if (seq == null) return false;
+    return methods.setConvoLaneGit({ ...input, seq });
+  };
+
+  it('stores the reported branch and head for the owner and reads them back', async () => {
+    const conversationId = await seed();
+    const laneGit = { branch: 'feat/pr-chip', head };
+    await expect(record({ user: 'lane-user', conversationId, laneGit })).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
+  });
+
+  describe('linked pull request', () => {
+    const user = 'lane-user';
+    const lane = { branch: 'feat/x', head };
+    const read = (conversationId: string) => methods.getConvoLaneGit(user, conversationId);
+
+    it('stores the link and keeps it through later reports on the same branch', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      const moved = { branch: 'feat/x', head: 'b'.repeat(40) };
+      await expect(record({ user, conversationId, laneGit: moved, repo: 'o/r' })).resolves.toBe(
+        true,
+      );
+      await expect(read(conversationId)).resolves.toEqual({
+        ...moved,
+        repo: 'o/r',
+        pullRequest: 7,
+      });
+    });
+
+    it('returns the link from the batch read too', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await expect(methods.getConvosLaneGit(user, [conversationId])).resolves.toEqual([
+        { conversationId, laneGit: { ...lane, repo: 'o/r', pullRequest: 7 } },
+      ]);
+    });
+
+    it('drops the link when the branch changes', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: { branch: 'dev', head }, repo: 'o/r' });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('drops the link when the repository changes or is no longer known', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: 'o/other' });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane });
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('treats an empty repository like an unknown one when keeping the link', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: '' });
+      await expect(read(conversationId)).resolves.toEqual({ ...lane, pullRequest: 7 });
+    });
+
+    it('replaces the link with a newer one', async () => {
+      const conversationId = await seed();
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 9 });
+      await expect(read(conversationId)).resolves.toMatchObject({ pullRequest: 9 });
+    });
+
+    it('ignores a link carried by a report with a lower sequence number', async () => {
+      const conversationId = await seed();
+      const first = (await methods.reserveConvoLaneGitSeq(user, conversationId)) as number;
+      const second = (await methods.reserveConvoLaneGitSeq(user, conversationId)) as number;
+      await record({ user, conversationId, laneGit: lane, repo: 'o/r', seq: second });
+      await expect(
+        record({ user, conversationId, laneGit: lane, repo: 'o/r', pullRequest: 7, seq: first }),
+      ).resolves.toBe(false);
+      await expect(read(conversationId)).resolves.not.toHaveProperty('pullRequest');
+    });
+
+    it('stores a branch or repository that looks like a field path as plain text', async () => {
+      const conversationId = await seed();
+      const dollar = { branch: '$laneGit.head', head };
+      await record({ user, conversationId, laneGit: dollar, repo: 'o/r', pullRequest: 7 });
+      await record({ user, conversationId, laneGit: dollar, repo: 'o/r' });
+      await expect(read(conversationId)).resolves.toEqual({
+        ...dollar,
+        repo: 'o/r',
+        pullRequest: 7,
+      });
+    });
+  });
+
+  it('does not write for another owner or an unknown conversation', async () => {
+    const conversationId = await seed();
+    const laneGit = { branch: 'main', head };
+    await expect(record({ user: 'intruder', conversationId, laneGit })).resolves.toBe(false);
+    await expect(record({ user: 'lane-user', conversationId: uuidv4(), laneGit })).resolves.toBe(
+      false,
+    );
+    await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    await expect(methods.getConvoLaneGit('intruder', conversationId)).resolves.toBeNull();
+  });
+
+  it('ignores a report with a lower sequence number, so a delayed write cannot win', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    const first = await methods.reserveConvoLaneGitSeq(user, conversationId);
+    const second = await methods.reserveConvoLaneGitSeq(user, conversationId);
+    const newer = { branch: 'newer', head };
+    const older = { branch: 'older', head: 'b'.repeat(40) };
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit: newer, seq: second as number }),
+    ).resolves.toBe(true);
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit: older, seq: first as number }),
+    ).resolves.toBe(false);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(newer);
+  });
+
+  it('issues increasing numbers per conversation and none for an unknown one', async () => {
+    const conversationId = await seed();
+    const other = await seed();
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(1);
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(2);
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', other)).toBe(1);
+    expect(await methods.reserveConvoLaneGitSeq('intruder', conversationId)).toBeNull();
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', uuidv4())).toBeNull();
+  });
+
+  it('issues distinct numbers to reservations made at the same time', async () => {
+    const conversationId = await seed();
+    const numbers = await Promise.all(
+      Array.from({ length: 12 }, () => methods.reserveConvoLaneGitSeq('lane-user', conversationId)),
+    );
+    expect(new Set(numbers).size).toBe(12);
+    expect(Math.min(...(numbers as number[]))).toBe(1);
+    expect(Math.max(...(numbers as number[]))).toBe(12);
+  });
+
+  it('is not skewed by the clocks of the processes that report', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    const early = await methods.reserveConvoLaneGitSeq(user, conversationId);
+    const later = await methods.reserveConvoLaneGitSeq(user, conversationId);
+    /** An older report from a replica whose clock runs far ahead still carries the lower number. */
+    await expect(
+      methods.setConvoLaneGit({
+        user,
+        conversationId,
+        laneGit: { branch: 'later', head },
+        seq: later as number,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      methods.setConvoLaneGit({
+        user,
+        conversationId,
+        laneGit: { branch: 'early-but-future-clock', head },
+        seq: early as number,
+      }),
+    ).resolves.toBe(false);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
+      branch: 'later',
+      head,
+    });
+  });
+
+  it('does not expose the sequence number or the counter through the read', async () => {
+    const conversationId = await seed();
+    await record({ user: 'lane-user', conversationId, laneGit: { branch: 'main', head } });
+    const stored = await methods.getConvoLaneGit('lane-user', conversationId);
+    expect(stored).not.toHaveProperty('seq');
+    const read = await Conversation.findOne({ conversationId }).lean();
+    expect(read).not.toHaveProperty('laneGitSeq');
+  });
+
+  it('replaces the stored state when the branch or head changes', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    await record({ user, conversationId, laneGit: { branch: 'main', head } });
+    const next = { branch: 'feat/x', head: 'b'.repeat(40) };
+    await expect(record({ user, conversationId, laneGit: next })).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(next);
+  });
+
+  it('stores the repository with the lane and replaces it when the repository changes', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    const laneGit = { branch: 'main', head };
+    await expect(record({ user, conversationId, laneGit, repo: 'o/r' })).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
+      ...laneGit,
+      repo: 'o/r',
+    });
+    await expect(record({ user, conversationId, laneGit, repo: 'o/other' })).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
+      ...laneGit,
+      repo: 'o/other',
+    });
+  });
+
+  describe('workspace fence', () => {
+    const mac = { environmentId: 'code-mac', workspaceId: 'primary' };
+    const team = { environmentId: 'code-team', workspaceId: 'shared' };
+    const seedRaw = async (decision: Record<string, unknown>) => {
+      const conversationId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId,
+        user: 'lane-user',
+        title: 'Fence',
+        endpoint: 'agents',
+        messages: [],
+        ...decision,
+      });
+      return conversationId;
+    };
+    const write = (conversationId: string, workspace: Record<string, unknown>) =>
+      record({
+        user: 'lane-user',
+        conversationId,
+        laneGit: { branch: 'feat/x', head },
+        workspace: workspace as never,
+      });
+
+    it('records for the workspace the conversation is attached to', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+      });
+      await expect(write(conversationId, mac)).resolves.toBe(true);
+    });
+
+    it('refuses a report from a workspace the conversation moved away from', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [team],
+      });
+      await expect(write(conversationId, mac)).resolves.toBe(false);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    });
+
+    it('refuses a report once the conversation has left attached execution', async () => {
+      const conversationId = await seedRaw({ codeEnvironmentMode: 'without_attached' });
+      await expect(write(conversationId, mac)).resolves.toBe(false);
+    });
+
+    it('does not let a write queued before a move repopulate the cleared lane', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+        laneGit: { branch: 'old', head, repo: 'o/old', seq: 1 },
+      });
+      const stored = await methods.getConvoCodeEnvironmentDecision('lane-user', conversationId);
+      await methods.replaceConvoCodeEnvironmentDecision({
+        user: 'lane-user',
+        conversationId,
+        expected: {
+          codeEnvironmentMode: stored?.codeEnvironmentMode,
+          codeWorkspaces: stored?.codeWorkspaces,
+          codeEnvironmentRevision: stored?.codeEnvironmentRevision,
+        },
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [team],
+      });
+      await expect(write(conversationId, mac)).resolves.toBe(false);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    });
+
+    it('records when no workspace is stored yet, as for an agent default workspace', async () => {
+      const conversationId = await seedRaw({});
+      await expect(write(conversationId, mac)).resolves.toBe(true);
+    });
+
+    it('refuses an unrecorded workspace when the caller requires a recorded one', async () => {
+      const conversationId = await seedRaw({});
+      await expect(write(conversationId, { ...mac, required: true })).resolves.toBe(false);
+    });
+
+    it('accepts a required workspace that matches the recorded one', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac, team],
+      });
+      await expect(write(conversationId, { ...team, required: true })).resolves.toBe(true);
+    });
+  });
+
+  describe('retention', () => {
+    const lane = { branch: 'feat/x', head, seq: 1 };
+    const seedExpiry = async (expiredAt: Date | null) => {
+      const conversationId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId,
+        user: 'lane-user',
+        title: 'Retention',
+        endpoint: 'agents',
+        messages: [],
+        laneGit: lane,
+        laneGitSeq: 1,
+        expiredAt,
+      });
+      return conversationId;
+    };
+    const past = () => new Date(Date.now() - 60_000);
+    const future = () => new Date(Date.now() + 3_600_000);
+
+    it('does not serve the lane of an expired temporary chat', async () => {
+      const conversationId = await seedExpiry(past());
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    });
+
+    it('does not reserve a number for, or write to, an expired temporary chat', async () => {
+      const conversationId = await seedExpiry(past());
+      await expect(methods.reserveConvoLaneGitSeq('lane-user', conversationId)).resolves.toBeNull();
+      await expect(
+        methods.setConvoLaneGit({
+          user: 'lane-user',
+          conversationId,
+          laneGit: { branch: 'later', head },
+          seq: 99,
+        }),
+      ).resolves.toBe(false);
+    });
+
+    it.each([
+      ['no expiry', null],
+      ['an expiry in the future', future()],
+    ])('still serves, reserves for and writes to a chat with %s', async (_label, expiredAt) => {
+      const conversationId = await seedExpiry(expiredAt);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toMatchObject({
+        branch: 'feat/x',
+      });
+      const seq = await methods.reserveConvoLaneGitSeq('lane-user', conversationId);
+      expect(seq).toBe(2);
+      await expect(
+        methods.setConvoLaneGit({
+          user: 'lane-user',
+          conversationId,
+          laneGit: { branch: 'later', head },
+          seq: seq as number,
+        }),
+      ).resolves.toBe(true);
+    });
+  });
+
+  it('keeps a detached or empty lane distinct from an unknown one', async () => {
+    const conversationId = await seed();
+    const laneGit = { branch: null, head: null };
+    await expect(record({ user: 'lane-user', conversationId, laneGit })).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
+  });
+
+  describe('server-written only', () => {
+    const kept = { branch: 'kept', head };
+    const seedWithLane = async () => {
+      const conversationId = await seed();
+      await record({ user: 'lane-user', conversationId, laneGit: kept });
+      return conversationId;
+    };
+
+    it('is not overwritten by a generic save', async () => {
+      const conversationId = await seedWithLane();
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId, laneGit: { branch: 'forged', head: null } },
+      );
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(kept);
+    });
+
+    it('is not cleared by a generic save', async () => {
+      const conversationId = await seedWithLane();
+      await saveConvo({ userId: 'lane-user' }, { conversationId }, { unsetFields: { laneGit: 1 } });
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(kept);
+    });
+
+    it('is not accepted from a bulk import', async () => {
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        {
+          conversationId: imported,
+          user: 'lane-user',
+          title: 'Imported',
+          laneGit: { branch: 'x', head: null },
+        },
+      ]);
+      await expect(methods.getConvoLaneGit('lane-user', imported)).resolves.toBeNull();
+    });
+
+    it('keeps the sequence counter out of generic saves, unset fields and imports', async () => {
+      const conversationId = await seedWithLane();
+      const before = await methods.reserveConvoLaneGitSeq('lane-user', conversationId);
+      await saveConvo({ userId: 'lane-user' }, { conversationId, laneGitSeq: 0 });
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId },
+        { unsetFields: { laneGitSeq: 1 } },
+      );
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        { conversationId: imported, user: 'lane-user', title: 'Imported', laneGitSeq: 99 },
+      ]);
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(
+        (before as number) + 1,
+      );
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', imported)).toBe(1);
+    });
+
+    it('is excluded from ordinary conversation reads', async () => {
+      const conversationId = await seedWithLane();
+      const read = await Conversation.findOne({ conversationId }).lean();
+      expect(read).not.toHaveProperty('laneGit');
+    });
+  });
+});
+
 describe('stampForcedRetention', () => {
   const ephemeral = { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 };
   let userId: string;
@@ -9508,4 +9985,374 @@ describe('stampForcedRetention', () => {
       expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(1);
     },
   );
+});
+
+describe('laneGit review hardening', () => {
+  const head = 'a'.repeat(40);
+  const mac = { environmentId: 'code-mac', workspaceId: 'primary' };
+  const team = { environmentId: 'code-team', workspaceId: 'shared' };
+  const seedAttached = async (
+    workspaces: Array<{ environmentId: string; workspaceId: string }>,
+  ) => {
+    const conversationId = uuidv4();
+    await Conversation.collection.insertOne({
+      conversationId,
+      user: 'lane-user',
+      title: 'Hardening',
+      endpoint: 'agents',
+      messages: [],
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: workspaces,
+    });
+    return conversationId;
+  };
+  const move = async (
+    conversationId: string,
+    codeWorkspaces: Array<{ environmentId: string; workspaceId: string }>,
+  ) => {
+    const stored = await methods.getConvoCodeEnvironmentDecision('lane-user', conversationId);
+    return methods.replaceConvoCodeEnvironmentDecision({
+      user: 'lane-user',
+      conversationId,
+      expected: {
+        codeEnvironmentMode: stored?.codeEnvironmentMode,
+        codeWorkspaces: stored?.codeWorkspaces,
+        codeEnvironmentRevision: stored?.codeEnvironmentRevision,
+      },
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: codeWorkspaces as never,
+    });
+  };
+
+  describe('dotted import and save keys', () => {
+    it('does not let an import set a lane through dotted keys', async () => {
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        {
+          conversationId: imported,
+          user: 'lane-user',
+          title: 'Imported',
+          'laneGit.branch': 'forged',
+          'laneGit.repo': 'o/forged',
+          'laneGit.seq': 999,
+          'laneGitSeq.x': 1,
+          'codeAttachmentEpoch.x': 5,
+        },
+      ]);
+      await expect(methods.getConvoLaneGit('lane-user', imported)).resolves.toBeNull();
+      const raw = await Conversation.collection.findOne({ conversationId: imported });
+      expect(raw).not.toHaveProperty('laneGit');
+      expect(raw).not.toHaveProperty('codeAttachmentEpoch');
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', imported)).toBe(1);
+    });
+
+    it('does not let a save set a lane through dotted keys or unset keys', async () => {
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user: 'lane-user', endpoint: 'agents' });
+      const seq = (await methods.reserveConvoLaneGitSeq('lane-user', conversationId)) as number;
+      await methods.setConvoLaneGit({
+        user: 'lane-user',
+        conversationId,
+        laneGit: { branch: 'kept', head },
+        seq,
+      });
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId, 'laneGit.branch': 'forged', 'laneGit.seq': 999 },
+        { unsetFields: { 'laneGit.repo': 1, 'laneGit.head': 1 } },
+      );
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual({
+        branch: 'kept',
+        head,
+      });
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(seq + 1);
+    });
+  });
+
+  describe('attachment epoch', () => {
+    const write = (
+      conversationId: string,
+      epoch: number | undefined,
+      workspace: { environmentId: string; workspaceId: string },
+    ) =>
+      methods.reserveConvoLaneGitSeq('lane-user', conversationId).then((seq) =>
+        methods.setConvoLaneGit({
+          user: 'lane-user',
+          conversationId,
+          laneGit: { branch: 'feat/x', head },
+          seq: seq as number,
+          workspace: { ...workspace, ...(epoch == null ? {} : { epoch }) },
+        }),
+      );
+
+    it('reads as zero until the conversation is moved, then advances on every move', async () => {
+      const conversationId = await seedAttached([mac]);
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch ?? 0,
+      ).toBe(0);
+      await move(conversationId, [team]);
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch,
+      ).toBe(1);
+      await move(conversationId, [mac]);
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch,
+      ).toBe(2);
+    });
+
+    it('applies a report from the epoch it was captured in', async () => {
+      const conversationId = await seedAttached([mac]);
+      await expect(write(conversationId, 0, mac)).resolves.toBe(true);
+    });
+
+    it('refuses a report from before a move away and back to the same workspace', async () => {
+      const conversationId = await seedAttached([mac]);
+      await move(conversationId, [team]);
+      await move(conversationId, [mac]);
+      await expect(write(conversationId, 0, mac)).resolves.toBe(false);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+      await expect(write(conversationId, 2, mac)).resolves.toBe(true);
+    });
+
+    it('returns the epoch with the admitted decision, from the same document read', async () => {
+      const conversationId = await seedAttached([mac]);
+      await expect(
+        methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId),
+      ).resolves.toMatchObject({ codeWorkspaces: [mac], codeAttachmentEpoch: 0 });
+      await move(conversationId, [team]);
+      await expect(
+        methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId),
+      ).resolves.toMatchObject({ codeWorkspaces: [team], codeAttachmentEpoch: 1 });
+      await move(conversationId, [mac]);
+      const admitted = await methods.readAdmittedConvoCodeEnvironmentDecision(
+        'lane-user',
+        conversationId,
+      );
+      expect(admitted).toMatchObject({ codeWorkspaces: [mac], codeAttachmentEpoch: 2 });
+    });
+
+    it('is not advanced by admitting a generation', async () => {
+      const conversationId = await seedAttached([mac]);
+      await methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId);
+      await methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId);
+      await expect(write(conversationId, 0, mac)).resolves.toBe(true);
+    });
+
+    it('keeps the epoch out of generic saves, unset fields and ordinary reads', async () => {
+      const conversationId = await seedAttached([mac]);
+      await move(conversationId, [team]);
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId, codeAttachmentEpoch: 0 },
+        { unsetFields: { codeAttachmentEpoch: 1 } },
+      );
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch,
+      ).toBe(1);
+      const read = await Conversation.findOne({ conversationId }).lean();
+      expect(read).not.toHaveProperty('codeAttachmentEpoch');
+    });
+  });
+
+  describe('subagent thread epoch', () => {
+    const seedThread = async (rootId: string) => {
+      const conversationId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      return conversationId;
+    };
+
+    it("reads the epoch of the visible root the report is written to, not the thread's own", async () => {
+      const rootId = await seedAttached([mac]);
+      await move(rootId, [team]);
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 1,
+        subagentThread: { rootConversationId: rootId },
+      });
+    });
+
+    it("does not read another user's conversation as the root", async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'someone-else',
+        title: 'Not yours',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 9,
+      });
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+
+    it('does not read an expired root, which the write path treats as gone', async () => {
+      const rootId = await seedAttached([mac]);
+      await move(rootId, [team]);
+      await Conversation.collection.updateOne(
+        { conversationId: rootId },
+        { $set: { expiredAt: new Date(Date.now() - 60_000) } },
+      );
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+
+    it("does not read another tenant's conversation as the root", async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'lane-user',
+        title: 'Other tenant',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 7,
+        tenantId: 'tenant-b',
+      });
+      const threadId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: threadId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        tenantId: 'tenant-a',
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      const context = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.getConvoLaneContext('lane-user', threadId),
+      );
+      expect(context).toMatchObject({ codeAttachmentEpoch: 0 });
+    });
+
+    it('reads a root in the same tenant', async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'lane-user',
+        title: 'Same tenant',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 4,
+        tenantId: 'tenant-a',
+      });
+      const threadId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: threadId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        tenantId: 'tenant-a',
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      const context = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.getConvoLaneContext('lane-user', threadId),
+      );
+      expect(context).toMatchObject({ codeAttachmentEpoch: 4 });
+    });
+
+    it('reads the thread and its root in one database operation', async () => {
+      const rootId = await seedAttached([mac]);
+      const threadId = await seedThread(rootId);
+      const spy = jest.spyOn(Conversation, 'findOne');
+      const aggregate = jest.spyOn(Conversation, 'aggregate');
+      await methods.getConvoLaneContext('lane-user', threadId);
+      expect(spy).not.toHaveBeenCalled();
+      expect(aggregate).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+      aggregate.mockRestore();
+    });
+
+    it('reads zero when the root is gone, so the write is refused rather than guessed', async () => {
+      const threadId = await seedThread(uuidv4());
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+  });
+
+  describe('lane context', () => {
+    it('returns the subagent route and the epoch in one read, owner-scoped', async () => {
+      const conversationId = await seedAttached([mac]);
+      await move(conversationId, [team]);
+      await expect(methods.getConvoLaneContext('lane-user', conversationId)).resolves.toMatchObject(
+        {
+          codeAttachmentEpoch: 1,
+        },
+      );
+      await expect(methods.getConvoLaneContext('intruder', conversationId)).resolves.toBeNull();
+    });
+  });
+});
+
+describe('getConvosLaneGit', () => {
+  const head = 'a'.repeat(40);
+  const seedLane = async (
+    user: string,
+    laneGit?: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) => {
+    const conversationId = uuidv4();
+    await Conversation.collection.insertOne({
+      conversationId,
+      user,
+      title: 'Lane',
+      endpoint: 'agents',
+      messages: [],
+      ...(laneGit ? { laneGit: { seq: 3, ...laneGit } } : {}),
+      ...extra,
+    });
+    return conversationId;
+  };
+
+  it("returns the lanes of the owner's conversations in one query, without the sequence number", async () => {
+    const a = await seedLane('bulk-user', { branch: 'feat/a', head, repo: 'o/r' });
+    const b = await seedLane('bulk-user', { branch: 'feat/b', head: null });
+    const found = await methods.getConvosLaneGit('bulk-user', [a, b]);
+    expect(found).toHaveLength(2);
+    expect(found).toEqual(
+      expect.arrayContaining([
+        { conversationId: a, laneGit: { branch: 'feat/a', head, repo: 'o/r' } },
+        { conversationId: b, laneGit: { branch: 'feat/b', head: null } },
+      ]),
+    );
+    expect(JSON.stringify(found)).not.toContain('seq');
+  });
+
+  it("leaves out a conversation with no lane, an unknown id and another owner's conversation alike", async () => {
+    const mine = await seedLane('bulk-user', { branch: 'feat/a', head });
+    const noLane = await seedLane('bulk-user');
+    const theirs = await seedLane('someone-else', { branch: 'secret', head });
+    const found = await methods.getConvosLaneGit('bulk-user', [mine, noLane, theirs, uuidv4()]);
+    expect(found.map((row) => row.conversationId)).toEqual([mine]);
+  });
+
+  it('leaves out an expired temporary chat', async () => {
+    const expired = await seedLane(
+      'bulk-user',
+      { branch: 'feat/x', head },
+      { expiredAt: new Date(Date.now() - 60_000) },
+    );
+    const live = await seedLane(
+      'bulk-user',
+      { branch: 'feat/y', head },
+      { expiredAt: new Date(Date.now() + 3_600_000) },
+    );
+    const found = await methods.getConvosLaneGit('bulk-user', [expired, live]);
+    expect(found.map((row) => row.conversationId)).toEqual([live]);
+  });
+
+  it('asks nothing for an empty list', async () => {
+    await expect(methods.getConvosLaneGit('bulk-user', [])).resolves.toEqual([]);
+  });
 });

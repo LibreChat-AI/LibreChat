@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
-import { useStore } from 'jotai';
-import { useSetRecoilState } from 'recoil';
+import { useStore, useSetAtom } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
+import { abortScrollFamily, showStopButtonByIndex } from '@librechat/chat/react';
+import { startedAsNewConversation, buildCreatedInitialResponse } from '@librechat/chat';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
 import type {
   Agents,
@@ -17,14 +19,15 @@ import type {
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
 import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
-import { startedAsNewConversation, buildCreatedInitialResponse } from './useEventHandlers';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
-import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
-import { useAuthContext } from '~/hooks/AuthContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import { reopenTermsOnRefusal } from '~/utils/terms';
+import { useGetUserBalance } from '~/data-provider';
 import useEventHandlers from './useEventHandlers';
 import useUsageHandler from './useUsageHandler';
-import store from '~/store';
+import useLocalize from '~/hooks/useLocalize';
+import { activeRunFamily } from './atoms';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -44,13 +47,14 @@ export default function useSSE(
   runIndex = 0,
 ) {
   const jotaiStore = useStore();
-  const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
+  const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
 
-  const { token, isAuthenticated } = useAuthContext();
+  const { auth, config } = useChatSettings();
+  const { token, isAuthenticated = false } = auth;
   const transport = useChatTransport();
   const [completed, setCompleted] = useState(new Set());
-  const setAbortScroll = useSetRecoilState(store.abortScrollFamily(runIndex));
-  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(runIndex));
+  const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
+  const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
 
   const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } =
     chatHelpers;
@@ -81,10 +85,10 @@ export default function useSSE(
     setShowStopButton,
   });
 
-  const { data: startupConfig } = useGetStartupConfig();
-  const balanceQuery = useGetUserBalance({
-    enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
-  });
+  const queryClient = useQueryClient();
+  const localize = useLocalize();
+  const { balanceEnabled = false } = config;
+  const balanceQuery = useGetUserBalance({ enabled: isAuthenticated && balanceEnabled });
   const {
     bindResponse,
     contextHandler,
@@ -139,7 +143,7 @@ export default function useSSE(
         setIsSubmitting(false);
         setShowStopButton(false);
       }
-      (startupConfig?.balance?.enabled ?? false) && balanceQuery.refetch();
+      balanceEnabled && balanceQuery.refetch();
       console.log('final', data);
     };
 
@@ -206,7 +210,8 @@ export default function useSSE(
 
     const handleError = (data: ChatErrorData | null | undefined) => {
       console.log('error in server stream.');
-      (startupConfig?.balance?.enabled ?? false) && balanceQuery.refetch();
+      const termsRefused = reopenTermsOnRefusal(queryClient, data);
+      balanceEnabled && balanceQuery.refetch();
       resetLive(currentSubmission);
       if (data === undefined) {
         setIsSubmitting(false);
@@ -216,7 +221,9 @@ export default function useSSE(
        * the last queued tokens must land before it is synthesized. */
       flushPendingDeltas();
       errorHandler({
-        data: data as TResData | undefined,
+        data: termsRefused
+          ? ({ text: localize('com_error_terms_not_accepted') } as unknown as TResData)
+          : (data as TResData | undefined),
         submission: currentSubmission,
       });
     };

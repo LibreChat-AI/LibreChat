@@ -53,7 +53,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
   );
 
   return (
-    <div className="flex items-center gap-0.5 px-2.5 pt-2">
+    <div className="flex items-center gap-0.5">
       <ControlCombobox
         selectId="project-landing-select"
         selectedValue={project._id}
@@ -83,7 +83,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
             type="button"
             aria-label={localize('com_ui_remove_from_project')}
             onClick={() => applyProject(null)}
-            className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary flex h-8 w-8 shrink-0 items-center justify-center rounded-full outline-hidden transition-colors focus-visible:ring-2 focus-visible:ring-inset"
+            className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary flex size-8 shrink-0 items-center justify-center rounded-full outline-hidden transition-colors focus-visible:ring-2 focus-visible:ring-inset"
           >
             <X className="h-3.5 w-3.5" aria-hidden="true" />
           </button>

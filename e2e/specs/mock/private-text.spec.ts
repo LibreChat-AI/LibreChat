@@ -50,9 +50,7 @@ test('owner sees original after reload while provider, sharing, and canonical re
     ).toBeVisible();
     const ownerText = messagesView(page).getByText(original, { exact: true });
     await expect(ownerText).toBeVisible();
-    const standardContainer = ownerText.locator(
-      'xpath=ancestor::div[contains(@class,"text-message")][1]',
-    );
+    const standardContainer = ownerText.locator('xpath=ancestor::div[@data-message-text][1]');
     await expect(standardContainer).toHaveAttribute('dir', 'auto');
     await expect(
       messagesView(page).getByText('Private details hidden from the model', { exact: true }),
@@ -82,9 +80,10 @@ test('owner sees original after reload while provider, sharing, and canonical re
 
     await page.reload();
     await expect(messagesView(page).getByText(original, { exact: true })).toBeVisible();
-    await expect(
-      ownerText.locator('xpath=ancestor::div[contains(@class,"text-message")][1]'),
-    ).toHaveAttribute('dir', 'auto');
+    await expect(ownerText.locator('xpath=ancestor::div[@data-message-text][1]')).toHaveAttribute(
+      'dir',
+      'auto',
+    );
     for (const theme of ['light', 'dark']) {
       await page.evaluate(
         (dark) => document.documentElement.classList.toggle('dark', dark),
@@ -112,7 +111,7 @@ test('owner sees original after reload while provider, sharing, and canonical re
     expect(shared.text).toContain('EMAIL_1_');
 
     const openExport = async () => {
-      await page.getByRole('button', { name: 'Export/Share' }).click();
+      await page.getByRole('button', { name: 'Chat options' }).click();
       await page.getByRole('menuitem', { name: 'Export' }).click();
       return page.getByRole('dialog', { name: 'Export conversation' });
     };
@@ -283,7 +282,7 @@ test('an unchanged unprotected transcript still downloads a PNG screenshot', asy
       'data-conversation-id',
       conversationId!,
     );
-    await page.getByRole('button', { name: 'Export/Share' }).click();
+    await page.getByRole('button', { name: 'Chat options' }).click();
     await page.getByRole('menuitem', { name: 'Export' }).click();
     const dialog = page.getByRole('dialog', { name: 'Export conversation' });
     await dialog.getByTestId('dropdown-menu').click();

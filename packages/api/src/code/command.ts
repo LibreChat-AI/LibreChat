@@ -14,7 +14,11 @@ import type {
 import type { createBashProgrammaticToolCallingSchema } from '@librechat/agents';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { LCTool } from '@librechat/agents';
-import type { WorkspaceAdmissionOptions, WorkspaceExecuteCommandResult } from './workspace';
+import type {
+  WorkspaceAdmissionOptions,
+  WorkspaceExecuteCommandResult,
+  WorkspaceLaneGit,
+} from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
@@ -468,11 +472,15 @@ export function createAttachedWorkspaceBashTool({
   minCommandAdmissionMs,
   linkedWorktrees = false,
   nativeSandbox = false,
+  onLaneGit,
   fetchImpl,
 }: {
   baseUrl: string;
   authHeaders: () => Promise<Record<string, string>> | Record<string, string>;
   workspaceId: string;
+  /** Receives the lane's branch and head when a finished command reports them, with the command's
+   *  output. It is not awaited and must not throw: a failure here never changes the result. */
+  onLaneGit?: (laneGit: WorkspaceLaneGit, output: string) => void;
   workspaceInstanceId?: string;
   /** The worker runs each `.worktrees/<name>` in its own lane; a matching `cwd` is routed there. */
   linkedWorktrees?: boolean;
@@ -609,6 +617,9 @@ export function createAttachedWorkspaceBashTool({
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
+        if (result.laneGit != null) {
+          onLaneGit?.(result.laneGit, `${result.stdout}\n${result.stderr}`);
+        }
         let content = formatCommandResult(
           result,
           selectedTimeoutMs,

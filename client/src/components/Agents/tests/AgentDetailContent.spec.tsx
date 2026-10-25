@@ -471,6 +471,35 @@ describe('AgentDetailContent', () => {
     expect(document.body).not.toHaveFocus();
   });
 
+  it('moves focus to the title when a refreshed agent drops the focused starter', () => {
+    const agent = {
+      ...baseAgent,
+      conversation_starters: ['Ask about the latest changes', 'Keep this one'],
+    };
+    const rendered = renderDetail(agent);
+    screen.getByRole('button', { name: /Ask about the latest changes/ }).focus();
+
+    rendered.setAgent({ ...agent, conversation_starters: ['Keep this one'] });
+
+    expect(screen.queryByRole('button', { name: /Ask about the latest changes/ })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Agent One' })).toHaveFocus();
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it('keeps focus on a starter that survives the refresh', () => {
+    const agent = {
+      ...baseAgent,
+      conversation_starters: ['Ask about the latest changes', 'Keep this one'],
+    };
+    const rendered = renderDetail(agent);
+    const kept = screen.getByRole('button', { name: /Keep this one/ });
+    kept.focus();
+
+    rendered.setAgent({ ...agent, conversation_starters: ['Keep this one'] });
+
+    expect(screen.getByRole('button', { name: /Keep this one/ })).toHaveFocus();
+  });
+
   it('leaves focus elsewhere when revalidation removes unavailable actions', () => {
     const rendered = renderDetail();
     const title = screen.getByRole('heading', { name: 'Agent One' });

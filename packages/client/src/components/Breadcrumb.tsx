@@ -24,7 +24,7 @@ const BreadcrumbList: React.ForwardRefExoticComponent<
     <ol
       ref={ref}
       className={cn(
-        'flex flex-wrap items-center gap-1.5 break-words text-sm text-text-secondary sm:gap-2.5',
+        'text-text-secondary flex flex-wrap items-center gap-1.5 text-sm break-words sm:gap-2.5',
         className,
       )}
       {...props}
@@ -61,7 +61,7 @@ const BreadcrumbLink: React.ForwardRefExoticComponent<
   return (
     <Comp
       ref={ref}
-      className={cn('transition-colors hover:text-text-primary', className)}
+      className={cn('hover:text-text-primary transition-colors', className)}
       {...props}
     />
   );
@@ -78,7 +78,7 @@ const BreadcrumbPage: React.ForwardRefExoticComponent<
       role="link"
       aria-disabled="true"
       aria-current="page"
-      className={cn('font-normal text-text-primary', className)}
+      className={cn('text-text-primary font-normal', className)}
       {...props}
     />
   ),
@@ -95,7 +95,7 @@ const BreadcrumbSeparator: {
     className={cn('[&>svg]:size-3.5', className)}
     {...props}
   >
-    {children ?? <ChevronRight />}
+    {children ?? <ChevronRight className="dir-rtl:-scale-x-100" />}
   </li>
 );
 BreadcrumbSeparator.displayName = 'BreadcrumbSeparator';

@@ -32,7 +32,7 @@ export default function MultiSearch({
   return (
     <div
       className={cn(
-        'focus:to-surface-primary/50 group from-surface-tertiary-alt text-text-primary focus:from-surface-primary sticky top-0 left-0 z-10 flex h-12 items-center gap-2 bg-gradient-to-b from-65% to-transparent px-3 py-2 transition-colors duration-300 focus:bg-gradient-to-b',
+        'focus:to-surface-primary/50 group from-surface-tertiary-alt text-text-primary focus:from-surface-primary sticky inset-s-0 top-0 z-10 flex h-12 items-center gap-2 bg-gradient-to-b from-65% to-transparent px-3 py-2 transition-colors duration-300 focus:bg-gradient-to-b',
         className,
       )}
     >

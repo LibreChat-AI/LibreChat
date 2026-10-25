@@ -91,6 +91,9 @@ export namespace Agents {
   /**
    * A call to a tool.
    */
+  /** A tool call inside a subagent transcript, with the scope its saved files may carry. */
+  export type SubagentAttachmentCall = { id: string; agentId?: string; stepId?: string };
+
   export type ToolCall = {
     /** Type ("tool_call") according to Assistants Tool Call Structure; optional literal
      *  form included to mirror langchain's ToolCall, whose `type` is optional. */
@@ -129,6 +132,25 @@ export namespace Agents {
         generationId?: string;
       };
     };
+    /** The server sent a bounded preview of `output`; the full value loads on demand. */
+    outputTruncated?: true;
+    /** Length of the full `output` in UTF-16 code units, present with `outputTruncated`. */
+    outputLength?: number;
+    /** The server sent a bounded preview of `args`; the full value loads on demand. */
+    argsTruncated?: true;
+    /** Length of the full serialized `args`, present with `argsTruncated`. */
+    argsLength?: number;
+    /** The server left out `subagent_content`; the full value loads on demand. */
+    subagentContentOmitted?: true;
+    /** Number of top-level parts in the omitted `subagent_content`. */
+    subagentContentParts?: number;
+    /** Tool calls inside the omitted `subagent_content` that the message's attachments were
+     *  saved under, with their scope, so those files still route to this call before the
+     *  transcript loads. */
+    subagentAttachmentCalls?: SubagentAttachmentCall[];
+    /** When the stored message last changed, set on previews so a client cache of the full part
+     *  is keyed to the stored version it came from. */
+    previewRevision?: string;
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
     /** Server-stamped provenance; see `PartMetadata.executor`. */
@@ -150,6 +172,10 @@ export namespace Agents {
       remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
       /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
       allow_always?: boolean;
+      /** The reviewer's decision once submitted; absent while the call still awaits review. */
+      decision?: ToolApprovalDecisionType;
+      /** The reason the reviewer gave with the decision. */
+      reason?: string;
     };
   };
 
@@ -1020,7 +1046,7 @@ export type AgentGitIdentity = {
 
 // GitHub App bot noreply addresses contain `[bot]`, which Zod's email validator rejects.
 const githubAppBotEmail =
-  /^\d+\+[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
+  /^\d+\+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
 const standardGitEmail = z.string().email();
 
 export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
@@ -1037,6 +1063,8 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
       .max(254)
       .refine(
         (value) =>
+          // Zod still runs refinements after .max() fails.
+          value.length <= 254 &&
           !/[\0\r\n]/.test(value) &&
           (standardGitEmail.safeParse(value).success || githubAppBotEmail.test(value)),
       ),

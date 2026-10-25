@@ -1,5 +1,6 @@
 import type { InfiniteData } from '@tanstack/react-query';
 import type { RerankerTypes, SearchProviders, ScraperProviders } from '../config';
+import type { FullToolCall } from '../previews';
 import type * as p from '../accessPermissions';
 import type * as a from '../types/agents';
 import type * as s from '../schemas';
@@ -56,6 +57,10 @@ export type MinimalConversation = Pick<
   | 'lastResponseIsManual'
   | 'isMarkedUnread'
   | 'lastSeenAt'
+  /** Lets a row tell a code conversation, the only kind that can have a pull request. */
+  | 'codeEnvironmentMode'
+  | 'codeWorkspaces'
+  | 'codeDecisionListed'
 >;
 
 export type ConversationListResponse = {
@@ -108,6 +113,45 @@ export type MessagesListParams = {
 export type MessagesListResponse = {
   messages: s.TMessage[];
   nextCursor: string | null;
+};
+
+/** Locates one tool-call part. `toolCallId` disambiguates when the part moved. */
+export type ToolCallPartParams = {
+  conversationId: string;
+  messageId: string;
+  partIndex: number;
+  toolCallId?: string;
+  /** Host run-step id; provider tool-call ids can repeat within one response. */
+  stepId?: string;
+  /** Agent that produced the part, when parallel agents share a response. */
+  agentId?: string;
+};
+
+export type ToolCallPartResponse = {
+  conversationId: string;
+  messageId: string;
+  /** Index of the part in the stored message, which may differ from the requested one. */
+  partIndex: number;
+  tool_call: FullToolCall;
+};
+
+/** A file whose owner a client resolves: the tool call it was saved under, with its scope. */
+export type SubagentAttachmentFile = { toolCallId: string; agentId?: string; stepId?: string };
+
+export type SubagentAttachmentCallsParams = {
+  conversationId: string;
+  messageId: string;
+  files: SubagentAttachmentFile[];
+};
+
+export type SubagentAttachmentCallsResponse = {
+  /** Each subagent call of the stored message whose transcript holds a call the files name. */
+  parts: Array<{
+    toolCallId: string;
+    stepId?: string;
+    agentId?: string;
+    calls: a.Agents.SubagentAttachmentCall[];
+  }>;
 };
 
 /* Shared Links */
@@ -285,17 +329,6 @@ export interface MCPConnectionStatusResponse {
   connectionStatus: Record<string, MCPServerStatus>;
   /** Server-configured OAuth completion window in ms (`MCP_OAUTH_HANDLING_TIMEOUT`) */
   oauthTimeout?: number;
-}
-
-export interface MCPServerConnectionStatusResponse {
-  success: boolean;
-  serverName: string;
-  requiresOAuth: boolean;
-  requestScoped?: boolean;
-  configurationState?: MCPServerStatus['configurationState'];
-  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
-  authorizationState?: MCPServerStatus['authorizationState'];
-  authorizationGeneration?: string;
 }
 
 export interface MCPAuthValuesResponse {

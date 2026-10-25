@@ -1,10 +1,82 @@
 import path from 'path';
 import crypto from 'node:crypto';
+import { EModelEndpoint } from 'librechat-data-provider';
 import { mkdir, copyFile, rename, unlink, writeFile } from 'fs/promises';
+import { stripCacheBust } from './path';
 
 export interface LocalStoragePaths {
   publicPath: string;
   uploads: string;
+}
+
+interface LocalFile {
+  file_id: string;
+  filepath: string;
+  user?: { toString(): string };
+}
+
+interface LocalDeleteRequest {
+  user: { id: string };
+  config: { paths: LocalStoragePaths };
+}
+
+interface LocalFileDeleteDependencies {
+  deleteRagFile: (args: { userId: string; file: LocalFile }) => Promise<unknown>;
+  logger: { warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
+}
+
+/** Deletes only within the request owner's namespace, and reports storage failures to callers. */
+export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDeleteDependencies) {
+  const unlinkStoredFile = async (filepath: string) => {
+    try {
+      await unlink(filepath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        logger.warn('Local file was already missing during delete:', error);
+        return;
+      }
+      logger.error('Error deleting file:', error);
+      throw error;
+    }
+  };
+
+  return async (req: LocalDeleteRequest, file: LocalFile): Promise<void> => {
+    const { publicPath, uploads } = req.config.paths;
+    const ownerId = req.user.id;
+    if (!ownerId) throw new Error('Invalid file owner');
+    const cleanFilepath = stripCacheBust(file.filepath);
+    const uploadPrefix = `/uploads/${ownerId}/`;
+
+    if (cleanFilepath.startsWith(uploadPrefix)) {
+      const userUploadDir = path.join(uploads, ownerId);
+      const filePath = path.join(userUploadDir, cleanFilepath.slice(uploadPrefix.length));
+      if (!isStrictlyWithin(userUploadDir, filePath)) {
+        throw new Error(`Invalid file path: ${cleanFilepath}`);
+      }
+      await deleteRagFile({ userId: ownerId, file });
+      await unlinkStoredFile(filePath);
+      return;
+    }
+
+    const parts = cleanFilepath.split(path.sep);
+    const subfolder = parts[1];
+    if (!subfolder && parts[0] === EModelEndpoint.agents) {
+      await deleteRagFile({ userId: ownerId, file });
+      logger.warn(`Agent File ${file.file_id} is missing filepath, may have been deleted already`);
+      return;
+    }
+    const filePath = path.join(publicPath, cleanFilepath);
+    if (!subfolder || !isStrictlyWithin(path.join(publicPath, subfolder, ownerId), filePath)) {
+      throw new Error('Invalid file path');
+    }
+    await deleteRagFile({ userId: ownerId, file });
+    await unlinkStoredFile(filePath);
+  };
+}
+
+function isStrictlyWithin(directory: string, filePath: string): boolean {
+  const rel = path.relative(path.resolve(directory), path.resolve(filePath));
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(`..${path.sep}`);
 }
 
 /**

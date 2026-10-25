@@ -1,6 +1,12 @@
-import { createContext, useCallback, useContext, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
+import { setDefaultMessagePartsHost, pendingSteersByConvoId } from '@librechat/chat/react';
+import {
+  liveAppliedSteerFamily,
+  liveAppliedSteerIdsAtom,
+  escalatingSteerFamily,
+} from '@librechat/chat/react';
 import {
   useRecoilCallback,
   useRecoilState,
@@ -8,27 +14,50 @@ import {
   useResetRecoilState,
   useSetRecoilState,
 } from 'recoil';
-import type { ReactNode } from 'react';
+import type { Agent } from 'librechat-data-provider';
 import type {
   MessagePartArtifactPanel,
   MessagePartsUserTextPreferences,
   MessagePartMessage,
   MessagePartsHost,
 } from '~/hooks/Chat/contract';
+import type { MessagesEditing } from './MessagesViewContext';
 import type { Artifact } from '~/common';
 import {
-  liveAppliedSteerFamily,
-  liveAppliedSteerIdsAtom,
-  escalatingSteerFamily,
-} from '~/store/steer';
-import store, { ptcTraceByToolCallId, ptcTraceKey, sandboxStartingByToolCallId } from '~/store';
-import { useMessageContext, useFileMapContext } from '~/Providers';
+  useMessageContext,
+  useFileMapContext,
+  useAgentsMapContext,
+  useMessagesOperations,
+  useMessagesConversation,
+  useOptionalMessagesOperations,
+} from '~/Providers';
+import { getAppPartRenderers } from '~/components/Chat/Messages/Content/Parts/slots';
+import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
+import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
+import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
 import { fontSizeAtom } from '~/store/fontSize';
+import store from '~/store';
 
 function useAppMessage(): MessagePartMessage {
-  const { messageId, isSubmitting, isLatestMessage, nextType } = useMessageContext();
-  return { messageId, isSubmitting, isLatestMessage, nextType };
+  const { messageId, isSubmitting, isLatestMessage, nextType, conversationId, partIndex } =
+    useMessageContext();
+  return { messageId, isSubmitting, isLatestMessage, nextType, conversationId, partIndex };
+}
+
+function useAppMessagesEditing(): MessagesEditing {
+  const { conversation } = useMessagesConversation();
+  const { ask, getMessages, setMessages } = useMessagesOperations();
+  return useMemo(
+    () => ({ conversation, ask, getMessages, setMessages }),
+    [conversation, ask, getMessages, setMessages],
+  );
+}
+
+function useAppAgent(agentId: string): Agent | undefined {
+  const agentsMap = useAgentsMapContext();
+  return useMemo(() => agentsMap?.[agentId], [agentsMap, agentId]);
 }
 
 function useAppUserTextPreferences(): MessagePartsUserTextPreferences {
@@ -90,11 +119,21 @@ function useAppLiveAppliedSteer(steerId: string): [boolean, (steerId: string) =>
   return [isLiveApplied, consume];
 }
 
-/** The host the app's own views supply: the Recoil and Jotai stores and the app providers. */
+/**
+ * The host the app's own views supply: the Recoil and Jotai stores and the app providers. It is
+ * registered as the default, so parts rendered outside a provider read the app's stores.
+ */
 export const appMessagePartsHost: MessagePartsHost = {
   useMessage: useAppMessage,
+  renderMarkdown: (props) => getAppPartRenderers().renderMarkdown(props),
+  useSmoothStreaming,
+  useAgent: useAppAgent,
+  renderAgentIcon: (agent) => getAppPartRenderers().renderAgentIcon(agent),
   useFontSize: () => useAtomValue(fontSizeAtom),
   useShowThinking: () => useAtomValue(showThinkingAtom),
+  useAutoExpandTools: () => useRecoilValue<boolean>(store.autoExpandTools),
+  useLaTeXParsing: () => useRecoilValue<boolean>(store.LaTeXParsing),
+  useChatDirection: () => useAtomValue(chatDirectionAtom),
   useUserTextPreferences: useAppUserTextPreferences,
   /* The atom rather than the auth context: AuthContextProvider mirrors the user into it, and the
    * public share route mounts outside that provider. */
@@ -103,31 +142,19 @@ export const appMessagePartsHost: MessagePartsHost = {
   useToast: () => useToastContext().showToast,
   useSandboxStarting: (toolCallId) => useAtomValue(sandboxStartingByToolCallId(toolCallId)),
   usePtcTrace: (messageId, toolCallId) =>
-    useRecoilValue(
+    useAtomValue(
       ptcTraceByToolCallId(toolCallId && messageId ? ptcTraceKey(messageId, toolCallId) : ''),
     ),
   useToolArtifactClaim: (artifactId) => useRecoilState(store.toolArtifactClaim(artifactId)),
   useArtifactPanel: useAppArtifactPanel,
-  usePendingSteers: (conversationId) =>
-    useRecoilValue(store.pendingSteersByConvoId(conversationId)),
+  usePendingSteers: (conversationId) => useAtomValue(pendingSteersByConvoId(conversationId)),
   useSteerEscalating: (conversationId) => useAtomValue(escalatingSteerFamily(conversationId)),
   usePaneConversationId: (index) => useRecoilValue(store.conversationIdByIndex(index)),
   useLiveAppliedSteer: useAppLiveAppliedSteer,
+  useMessagesEditing: useAppMessagesEditing,
+  useMessagesAsk: () => useOptionalMessagesOperations().ask,
 };
 
-const MessagePartsHostContext = createContext<MessagePartsHost>(appMessagePartsHost);
+setDefaultMessagePartsHost(appMessagePartsHost);
 
-/** Supplies the host the message parts read from. Without one, parts read the app's stores. */
-export function MessagePartsHostProvider({
-  host,
-  children,
-}: {
-  host: MessagePartsHost;
-  children: ReactNode;
-}) {
-  return (
-    <MessagePartsHostContext.Provider value={host}>{children}</MessagePartsHostContext.Provider>
-  );
-}
-
-export const useMessagePartsHost = () => useContext(MessagePartsHostContext);
+export { MessagePartsHostProvider, useMessagePartsHost } from '@librechat/chat/react';

@@ -25,7 +25,7 @@ interface CleanupConfig {
   mcpServers?: Record<string, MCPOptions>;
 }
 
-interface OAuthAclSubject {
+export interface OAuthAclSubject {
   principalType: string;
   principalId?: { toString(): string } | string | null;
 }
@@ -51,7 +51,7 @@ export async function prepareMCPServerOAuthDeletion({
 interface CleanupDeletedUsersParams {
   ownerUserId: string;
   serverName: string;
-  serverConfig: MCPOptions;
+  serverConfig?: MCPOptions;
   snapshot: MCPServerOAuthDeletionSnapshot;
   getTokenUserIds: () => Promise<Array<{ toString(): string } | string>>;
   getUserPrincipals: (userId: string) => Promise<OAuthAclSubject[]>;
@@ -63,7 +63,7 @@ interface CleanupDeletedUsersParams {
     userId: string,
     pluginKey: string,
     appConfig: CleanupConfig,
-    serverConfig: MCPOptions,
+    serverConfig?: MCPOptions,
   ) => Promise<void>;
 }
 

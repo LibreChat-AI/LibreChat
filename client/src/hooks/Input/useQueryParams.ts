@@ -1,10 +1,11 @@
 import { useEffect, useCallback, useRef, useState, useMemo } from 'react';
 import isEqual from 'lodash/isEqual';
 import { useRecoilValue } from 'recoil';
-import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   QueryKeys,
+  Constants,
   parseConvo,
   EModelEndpoint,
   PermissionBits,
@@ -14,6 +15,7 @@ import {
 import type {
   AgentListResponse,
   TEndpointsConfig,
+  TMessage,
   TConversation,
   TStartupConfig,
   TPreset,
@@ -32,6 +34,8 @@ import {
 import { useAuthContext, useAgentsMap, useDefaultConvo, useSubmitMessage } from '~/hooks';
 import { startupConfigKey, useGetAgentByIdQuery } from '~/data-provider';
 import { useChatContext, useChatFormContext } from '~/Providers';
+import { isHistoryRevalidating } from '~/hooks/Chat/ask/guards';
+import { consumeComposerQuery } from '~/utils/drafts';
 import store from '~/store';
 
 const PROJECT_ID_SEARCH_PARAM = 'projectId';
@@ -76,6 +80,7 @@ export default function useQueryParams({
   const promptTextRef = useRef<string | null>(null);
   const validSettingsRef = useRef<TPreset | null>(null);
   const settingsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const awaitingHistoryRef = useRef(false);
   const requestIdRef = useRef(0);
   const [submissionStatus, setSubmissionStatus] = useState<'idle' | 'preparing' | 'failed'>('idle');
 
@@ -123,7 +128,7 @@ export default function useQueryParams({
   submitMessageRef.current = submitMessage;
 
   const queryClient = useQueryClient();
-  const { conversation, newConversation } = useChatContext();
+  const { conversation, newConversation, index = 0 } = useChatContext();
 
   const urlAgentId = searchParams.get('agent_id') || '';
   const { data: urlAgent } = useGetAgentByIdQuery(urlAgentId);
@@ -139,6 +144,18 @@ export default function useQueryParams({
 
   const conversationRef = useRef(conversation);
   conversationRef.current = conversation;
+
+  const clearConsumedSearchParams = useCallback(() => {
+    const params = getPreservedSearchParams();
+    consumeComposerQuery(
+      index,
+      conversationRef.current?.conversationId ?? Constants.NEW_CONVO,
+      routeRef.current.pathname,
+      routeRef.current.search,
+      params.toString(),
+    );
+    setSearchParamsRef.current(params, { replace: true });
+  }, [index, getPreservedSearchParams]);
 
   const ownsComposer = useCallback(() => {
     const currentId = conversationRef.current?.conversationId;
@@ -189,6 +206,19 @@ export default function useQueryParams({
     };
   }, []);
 
+  /** Existing chats refuse sends until their history has loaded and settled. */
+  const isHistoryPending = useCallback(() => {
+    const conversationId = conversationRef.current?.conversationId;
+    if (conversationId == null || conversationId === Constants.NEW_CONVO) {
+      return false;
+    }
+    const state = queryClient.getQueryState([QueryKeys.messages, conversationId]);
+    if (state?.status === 'error') {
+      return false;
+    }
+    return state?.data == null || isHistoryRevalidating(queryClient, conversationId);
+  }, [queryClient]);
+
   const cancelRequest = useCallback(() => {
     requestIdRef.current += 1;
     cancelledRef.current = true;
@@ -215,6 +245,7 @@ export default function useQueryParams({
       }
       requestIdRef.current += 1;
       attemptsRef.current = 0;
+      awaitingHistoryRef.current = false;
       processedRef.current = false;
       submissionHandledRef.current = false;
       pendingSubmitRef.current = false;
@@ -432,14 +463,19 @@ export default function useQueryParams({
       return;
     }
 
-    submissionHandledRef.current = true;
-    pendingSubmitRef.current = false;
-
     setSubmissionStatus('preparing');
     if (settingsTimeoutRef.current) {
       clearTimeout(settingsTimeoutRef.current);
       settingsTimeoutRef.current = null;
     }
+
+    awaitingHistoryRef.current = isHistoryPending();
+    if (awaitingHistoryRef.current) {
+      return;
+    }
+
+    submissionHandledRef.current = true;
+    pendingSubmitRef.current = false;
 
     restoreUrlPrompt();
     const requestId = requestIdRef.current;
@@ -450,7 +486,7 @@ export default function useQueryParams({
       }
       validatingRef.current = false;
       if (ownsRequest(requestId)) {
-        setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
+        clearConsumedSearchParams();
       }
     };
     methods.handleSubmit(
@@ -483,10 +519,31 @@ export default function useQueryParams({
   }, [
     methods,
     ownsRequest,
+    isHistoryPending,
     areSettingsApplied,
-    getPreservedSearchParams,
+    clearConsumedSearchParams,
     restoreUrlPrompt,
     settlePrompt,
+  ]);
+
+  /** Observes the history the composer sends from, so a retry runs after the
+   * render that derives the latest message from it, not during the cache write. */
+  const historyKey = [QueryKeys.messages, conversation?.conversationId ?? ''];
+  const history = useQuery<TMessage[]>(
+    historyKey,
+    async () => queryClient.getQueryData<TMessage[]>(historyKey) ?? [],
+    { enabled: false },
+  );
+  useEffect(() => {
+    if (awaitingHistoryRef.current && !isHistoryPending()) {
+      processSubmission();
+    }
+  }, [
+    history.status,
+    history.fetchStatus,
+    history.dataUpdatedAt,
+    isHistoryPending,
+    processSubmission,
   ]);
 
   useEffect(() => {
@@ -572,7 +629,7 @@ export default function useQueryParams({
         // Defer URL cleanup until after submission completes (processSubmission handles it)
         if ((!willAutoSubmit || !decodedPrompt.trim()) && ownsRequest()) {
           settlePrompt();
-          setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
+          clearConsumedSearchParams();
         }
       };
 
@@ -604,7 +661,7 @@ export default function useQueryParams({
               setSubmissionStatus('failed');
               logger.log('conversation', 'Settings application timeout, retaining prompt');
               settlePrompt();
-              setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
+              clearConsumedSearchParams();
             }
           }, MAX_SETTINGS_WAIT_MS);
         }
@@ -629,7 +686,7 @@ export default function useQueryParams({
     newQueryConvo,
     newConversation,
     submitMessage,
-    getPreservedSearchParams,
+    clearConsumedSearchParams,
     queryClient,
     processSubmission,
     areSettingsApplied,

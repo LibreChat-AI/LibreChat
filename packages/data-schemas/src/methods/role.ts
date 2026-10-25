@@ -6,9 +6,10 @@ import {
   permissionsSchema,
   removeNullishValues,
 } from 'librechat-data-provider';
-import type { Model } from 'mongoose';
+import type { FilterQuery, Model } from 'mongoose';
 import type { CacheStore, IRole, IUser } from '~/types';
 import { scopedCacheKey, getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { escapeRegExp } from '~/utils/string';
 import logger from '~/config/winston';
 
@@ -46,28 +47,62 @@ export function createRoleMethods(
   countRoles: () => Promise<number>;
   initializeRoles: () => Promise<void>;
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[] | null) => Promise<IRole>;
+  getPartitionRole: (roleName: string) => Promise<IRole | null>;
   findRolesByNames: (
     roleNames: string[],
     fieldsToSelect?: string | string[] | null,
   ) => Promise<IRole[]>;
-  updateRoleByName: (roleName: string, updates: Partial<IRole>) => Promise<IRole>;
+  updateRoleByName: (
+    roleName: string,
+    updates: Partial<IRole>,
+    options?: { id?: string },
+  ) => Promise<IRole>;
   updateAccessPermissions: (
     roleName: string,
     permissionsUpdate: Record<string, Record<string, boolean>>,
     roleData?: IRole,
   ) => Promise<void>;
-  migrateRoleSchema: (roleName?: string) => Promise<number>;
   createRoleByName: (roleData: Partial<IRole>) => Promise<IRole>;
-  deleteRoleByName: (roleName: string) => Promise<IRole | null>;
+  deleteRoleByName: (roleName: string, options?: { id?: string }) => Promise<IRole | null>;
   updateUsersByRole: (oldRole: string, newRole: string) => Promise<void>;
   findUserIdsByRole: (roleName: string) => Promise<string[]>;
-  updateUsersRoleByIds: (userIds: string[], newRole: string) => Promise<void>;
+  updateUsersRoleByIds: (
+    userIds: string[],
+    newRole: string,
+    options?: { fromRole?: string },
+  ) => Promise<void>;
   listUsersByRole: (
     roleName: string,
     options?: { limit?: number; offset?: number },
   ) => Promise<IUser[]>;
   countUsersByRole: (roleName: string) => Promise<number>;
 } {
+  /**
+   * The users holding `roleName` in the caller's tenant partition (`tenantPartitionFilter`): the
+   * active tenant's, or outside a tenant only platform-level ones. Role names are reused across
+   * tenants (the role index is unique on name plus `tenantId`), and outside a tenant the tenant
+   * plugin scopes nothing, so a filter on the name alone would reach the members of each
+   * tenant's own role of that name; the role reads and writes by name below keep to the same
+   * partition for the same reason.
+   */
+  function roleMembersFilter(roleName: string, operation: string): FilterQuery<IUser> {
+    return { role: roleName, ...tenantPartitionFilter(operation) };
+  }
+
+  /**
+   * The role named `roleName` in the caller's tenant partition, or with `id` exactly that role
+   * document (which a caller read in its own partition) as long as it still has the name.
+   */
+  function roleDocumentFilter(
+    roleName: string,
+    operation: string,
+    id?: string,
+  ): FilterQuery<IRole> {
+    return id
+      ? { name: roleName, _id: id }
+      : { name: roleName, ...tenantPartitionFilter(operation) };
+  }
+
   /**
    * Initialize default roles in the system.
    * Creates the default roles (ADMIN, USER) if they don't exist in the database.
@@ -136,7 +171,8 @@ export function createRoleMethods(
   }
 
   /**
-   * List all roles in the system. Returns only name and description (projected).
+   * List the roles of the caller's tenant partition (`tenantPartitionFilter`), the ones a role
+   * name addresses. Returns only name and description (projected).
    */
   async function listRoles(options?: {
     limit?: number;
@@ -145,7 +181,7 @@ export function createRoleMethods(
     const Role = mongoose.models.Role as Model<IRole>;
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
-    return await Role.find({})
+    return await Role.find(tenantPartitionFilter('listRoles'))
       .select('name description')
       .sort({ name: 1 })
       .skip(offset)
@@ -153,15 +189,18 @@ export function createRoleMethods(
       .lean();
   }
 
+  /** Counts the roles {@link listRoles} lists. */
   async function countRoles(): Promise<number> {
     const Role = mongoose.models.Role;
-    return await Role.countDocuments({});
+    return await Role.countDocuments(tenantPartitionFilter('countRoles'));
   }
 
   /**
-   * Retrieve a role by name and convert the found role document to a plain object.
-   * If the role with the given name doesn't exist and the name is a system defined role,
-   * create it and return the lean version.
+   * Retrieve the role named `roleName` in the caller's tenant partition (`tenantPartitionFilter`)
+   * as a plain object: the active tenant's, or outside a tenant (and under the system context)
+   * the platform-level one, never a tenant's role of the same name, which the tenant plugin
+   * would not filter out there. The cache key carries the same partition (`scopedCacheKey`).
+   * If the role doesn't exist there and the name is a system defined role, it is created there.
    */
   async function getRoleByName(
     roleName: string,
@@ -176,7 +215,7 @@ export function createRoleMethods(
         }
       }
       const Role = mongoose.models.Role;
-      let query = Role.findOne({ name: roleName });
+      let query = Role.findOne(roleDocumentFilter(roleName, 'getRoleByName'));
       if (fieldsToSelect) {
         query = query.select(fieldsToSelect);
       }
@@ -195,6 +234,34 @@ export function createRoleMethods(
       return role as unknown as IRole;
     } catch (error) {
       throw new Error(`Failed to retrieve or create role: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * The role named exactly `roleName` in the caller's tenant partition (`tenantPartitionFilter`),
+   * as the admin roles API addresses it: never a tenant's role of the same name outside that
+   * tenant. A system role with no document there is created there, as {@link getRoleByName}
+   * creates it. Reads no cache, so an admin read never returns another partition's cached role.
+   */
+  async function getPartitionRole(roleName: string): Promise<IRole | null> {
+    const Role = mongoose.models.Role as Model<IRole>;
+    const read = () =>
+      Role.findOne(roleDocumentFilter(roleName, 'getPartitionRole'))
+        .select('-__v')
+        .lean<IRole>()
+        .exec();
+    const role = await read();
+    if (role || !systemRoleValues.has(roleName)) {
+      return role;
+    }
+    try {
+      const created = await new Role(roleDefaults[roleName as keyof typeof roleDefaults]).save();
+      return created.toObject() as IRole;
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 11000) {
+        return read();
+      }
+      throw error;
     }
   }
 
@@ -249,13 +316,24 @@ export function createRoleMethods(
   }
 
   /**
-   * Update role values by name.
+   * Update the values of the role named `roleName` in the caller's tenant partition, as
+   * {@link getRoleByName} reads it. With `options.id`, only the role document with that `_id`
+   * changes (`null` when it no longer has the name), so a caller that read one role writes that
+   * role and never another tenant's role of the same name.
    */
-  async function updateRoleByName(roleName: string, updates: Partial<IRole>): Promise<IRole> {
+  async function updateRoleByName(
+    roleName: string,
+    updates: Partial<IRole>,
+    options?: { id?: string },
+  ): Promise<IRole> {
     const cache = deps.getCache?.(CacheKeys.ROLES);
     try {
       const Role = mongoose.models.Role;
-      const role = await Role.findOneAndUpdate({ name: roleName }, { $set: updates }, { new: true })
+      const role = await Role.findOneAndUpdate(
+        roleDocumentFilter(roleName, 'updateRoleByName', options?.id),
+        { $set: updates },
+        { new: true },
+      )
         .select('-__v')
         .lean()
         .exec();
@@ -311,6 +389,9 @@ export function createRoleMethods(
       if (!role) {
         return;
       }
+      /** The role read is the one written, whichever tenant partition it was read in. */
+      const id = role._id != null ? String(role._id) : undefined;
+      const target = roleDocumentFilter(roleName, 'updateAccessPermissions', id);
 
       const currentPermissions =
         ((role as unknown as Record<string, unknown>).permissions as Record<
@@ -414,16 +495,13 @@ export function createRoleMethods(
           );
 
           try {
-            await Role.updateOne(
-              { name: roleName },
-              {
-                $set: updateObj,
-                $unset: unsetFields,
-              },
-            );
+            await Role.updateOne(target, {
+              $set: updateObj,
+              $unset: unsetFields,
+            });
 
             const cache = deps.getCache?.(CacheKeys.ROLES);
-            const updatedRole = await Role.findOne({ name: roleName }).select('-__v').lean().exec();
+            const updatedRole = await Role.findOne(target).select('-__v').lean().exec();
             if (cache) {
               await cache.set(scopedCacheKey(roleName), updatedRole);
             }
@@ -434,7 +512,7 @@ export function createRoleMethods(
             throw updateError;
           }
         } else {
-          await updateRoleByName(roleName, updateObj as unknown as Partial<IRole>);
+          await updateRoleByName(roleName, updateObj as unknown as Partial<IRole>, { id });
         }
 
         logger.info(`Updated '${roleName}' role permissions`);
@@ -447,74 +525,9 @@ export function createRoleMethods(
   }
 
   /**
-   * Migrates roles from old schema to new schema structure.
+   * Rejects names that match system roles, and a name the caller's tenant partition already holds
+   * (`tenantPartitionFilter`); another tenant's role of that name is a different role.
    */
-  async function migrateRoleSchema(roleName?: string): Promise<number> {
-    try {
-      const Role = mongoose.models.Role;
-      let roles;
-      if (roleName) {
-        const role = await Role.findOne({ name: roleName });
-        roles = role ? [role] : [];
-      } else {
-        roles = await Role.find({});
-      }
-
-      logger.info(`Migrating ${roles.length} roles to new schema structure`);
-      let migratedCount = 0;
-
-      for (const role of roles) {
-        const permissionTypes = Object.keys(permissionsSchema.shape || {});
-        const unsetFields: Record<string, number> = {};
-        let hasOldSchema = false;
-
-        for (const permType of permissionTypes) {
-          if (role[permType] && typeof role[permType] === 'object') {
-            hasOldSchema = true;
-            role.permissions = role.permissions || {};
-            role.permissions[permType] = {
-              ...role.permissions[permType],
-              ...role[permType],
-            };
-            unsetFields[permType] = 1;
-          }
-        }
-
-        if (hasOldSchema) {
-          try {
-            logger.info(`Migrating role '${role.name}' from old schema structure`);
-
-            await Role.updateOne(
-              { _id: role._id },
-              {
-                $set: { permissions: role.permissions },
-                $unset: unsetFields,
-              },
-            );
-
-            const cache = deps.getCache?.(CacheKeys.ROLES);
-            if (cache) {
-              const updatedRole = await Role.findById(role._id).lean().exec();
-              await cache.set(scopedCacheKey(role.name), updatedRole);
-            }
-
-            migratedCount++;
-            logger.info(`Migrated role '${role.name}'`);
-          } catch (error) {
-            logger.error(`Failed to migrate role '${role.name}': ${(error as Error).message}`);
-          }
-        }
-      }
-
-      logger.info(`Migration complete: ${migratedCount} roles migrated`);
-      return migratedCount;
-    } catch (error) {
-      logger.error(`Role schema migration failed: ${(error as Error).message}`);
-      throw error;
-    }
-  }
-
-  /** Rejects names that match system roles. */
   async function createRoleByName(roleData: Partial<IRole>): Promise<IRole> {
     const { name } = roleData;
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -525,7 +538,7 @@ export function createRoleMethods(
       throw new RoleConflictError(`Cannot create role with reserved system name: ${name}`);
     }
     const Role = mongoose.models.Role;
-    const existing = await Role.findOne({ name: trimmed }).lean();
+    const existing = await Role.findOne(roleDocumentFilter(trimmed, 'createRoleByName')).lean();
     if (existing) {
       throw new RoleConflictError(`Role "${trimmed}" already exists`);
     }
@@ -556,7 +569,9 @@ export function createRoleMethods(
   }
 
   /**
-   * Guards against deleting system roles. Reassigns affected users back to USER.
+   * Guards against deleting system roles. Reassigns affected users back to USER. Only the role
+   * of the caller's tenant partition and its members there are touched
+   * (`tenantPartitionFilter`).
    *
    * No existence pre-check is performed: for a nonexistent role the `updateMany`
    * is a harmless no-op and `findOneAndDelete` returns null. This makes the
@@ -569,16 +584,29 @@ export function createRoleMethods(
    * the delete call, which will succeed since the `updateMany` is a no-op on
    * the second pass.
    */
-  async function deleteRoleByName(roleName: string): Promise<IRole | null> {
+  async function deleteRoleByName(
+    roleName: string,
+    options?: { id?: string },
+  ): Promise<IRole | null> {
     if (isSystemRoleName(roleName)) {
       throw new Error(`Cannot delete system role: ${roleName}`);
     }
     const Role = mongoose.models.Role;
+    const role = { name: roleName, ...tenantPartitionFilter('deleteRoleByName') };
+    /** A role recreated under this name has another `_id`: leave it and its members alone. */
+    if (options?.id && !(await Role.exists({ ...role, _id: options.id }))) {
+      return null;
+    }
     const User = mongoose.models.User as Model<IUser>;
     const affectedUserIds = await findUserIdsByRole(roleName);
-    await User.updateMany({ role: roleName }, { $set: { role: SystemRoles.USER } });
+    await User.updateMany(roleMembersFilter(roleName, 'deleteRoleByName'), {
+      $set: { role: SystemRoles.USER },
+    });
     await invalidateAuthUserDocCache(affectedUserIds);
-    const deleted = await Role.findOneAndDelete({ name: roleName }).lean();
+    const deleted = await Role.findOneAndDelete({
+      ...role,
+      ...(options?.id ? { _id: options.id } : {}),
+    }).lean();
     try {
       const cache = deps.getCache?.(CacheKeys.ROLES);
       if (cache) {
@@ -593,25 +621,45 @@ export function createRoleMethods(
     return deleted as IRole | null;
   }
 
+  /** Moves the members of `oldRole` in the caller's tenant partition to `newRole` (a rename). */
   async function updateUsersByRole(oldRole: string, newRole: string): Promise<void> {
     const User = mongoose.models.User as Model<IUser>;
     const affectedUserIds = await findUserIdsByRole(oldRole);
-    await User.updateMany({ role: oldRole }, { $set: { role: newRole } });
+    await User.updateMany(roleMembersFilter(oldRole, 'updateUsersByRole'), {
+      $set: { role: newRole },
+    });
     await invalidateAuthUserDocCache(affectedUserIds);
   }
 
+  /** The ids of the users holding `roleName` in the caller's tenant partition. */
   async function findUserIdsByRole(roleName: string): Promise<string[]> {
     const User = mongoose.models.User as Model<IUser>;
-    const users = await User.find({ role: roleName }).select('_id').lean();
+    const users = await User.find(roleMembersFilter(roleName, 'findUserIdsByRole'))
+      .select('_id')
+      .lean();
     return users.map((u) => u._id.toString());
   }
 
-  async function updateUsersRoleByIds(userIds: string[], newRole: string): Promise<void> {
+  /**
+   * Sets the role of the given users. With `fromRole`, only users whose role is still that one
+   * change, so undoing a migration never overwrites a reassignment made since.
+   */
+  async function updateUsersRoleByIds(
+    userIds: string[],
+    newRole: string,
+    options?: { fromRole?: string },
+  ): Promise<void> {
     if (userIds.length === 0) {
       return;
     }
     const User = mongoose.models.User as Model<IUser>;
-    await User.updateMany({ _id: { $in: userIds } }, { $set: { role: newRole } });
+    await User.updateMany(
+      {
+        _id: { $in: userIds },
+        ...(options?.fromRole !== undefined ? { role: options.fromRole } : {}),
+      },
+      { $set: { role: newRole } },
+    );
     await invalidateAuthUserDocCache(userIds);
   }
 
@@ -642,6 +690,7 @@ export function createRoleMethods(
     }
   }
 
+  /** The users holding `roleName` in the caller's tenant partition, a page at a time. */
   async function listUsersByRole(
     roleName: string,
     options?: { limit?: number; offset?: number },
@@ -649,7 +698,7 @@ export function createRoleMethods(
     const User = mongoose.models.User as Model<IUser>;
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
-    return await User.find({ role: roleName })
+    return await User.find(roleMembersFilter(roleName, 'listUsersByRole'))
       .select('_id name email avatar')
       .sort({ _id: 1 })
       .skip(offset)
@@ -657,9 +706,10 @@ export function createRoleMethods(
       .lean<IUser[]>();
   }
 
+  /** Counts the users {@link listUsersByRole} lists. */
   async function countUsersByRole(roleName: string): Promise<number> {
     const User = mongoose.models.User as Model<IUser>;
-    return await User.countDocuments({ role: roleName });
+    return await User.countDocuments(roleMembersFilter(roleName, 'countUsersByRole'));
   }
 
   return {
@@ -667,10 +717,10 @@ export function createRoleMethods(
     countRoles,
     initializeRoles,
     getRoleByName,
+    getPartitionRole,
     findRolesByNames,
     updateRoleByName,
     updateAccessPermissions,
-    migrateRoleSchema,
     createRoleByName,
     deleteRoleByName,
     updateUsersByRole,

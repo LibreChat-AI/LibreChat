@@ -1,6 +1,5 @@
 import {
   updatePromptGroupSchema,
-  validatePromptGroupUpdate,
   safeValidatePromptPayload,
   safeValidatePromptGroupUpdate,
 } from './schemas';
@@ -150,6 +149,22 @@ describe('updatePromptGroupSchema', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should reject source field', () => {
+      const result = updatePromptGroupSchema.safeParse({
+        name: 'Test',
+        source: 'langfuse',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject a source identity field', () => {
+      const result = updatePromptGroupSchema.safeParse({
+        name: 'Test',
+        sourcePromptName: 'langfuse-prompt',
+      });
+      expect(result.success).toBe(false);
+    });
+
     it('should reject multiple sensitive fields in a single request', () => {
       const result = updatePromptGroupSchema.safeParse({
         name: 'Legit Name',
@@ -199,18 +214,6 @@ describe('updatePromptGroupSchema', () => {
       const result = updatePromptGroupSchema.safeParse({ command: 'my_command!' });
       expect(result.success).toBe(false);
     });
-  });
-});
-
-describe('validatePromptGroupUpdate', () => {
-  it('should return validated data for valid input', () => {
-    const input = { name: 'Test', category: 'testing' };
-    const result = validatePromptGroupUpdate(input);
-    expect(result).toEqual(input);
-  });
-
-  it('should throw ZodError for invalid input', () => {
-    expect(() => validatePromptGroupUpdate({ author: 'malicious-id' })).toThrow();
   });
 });
 

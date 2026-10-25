@@ -1,7 +1,7 @@
 import { HatGlasses } from 'lucide-react';
 import { Chip, TooltipAnchor } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
-import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
+import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -29,7 +29,7 @@ export function TemporaryChat() {
             aria-disabled={isEnforced}
             aria-keyshortcuts={isEnforced ? undefined : ariaKey}
             className={cn(
-              'border-border-light text-text-primary inline-flex size-9 shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out',
+              'border-border-chrome text-text-primary inline-flex size-9 shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out',
               isTemporary
                 ? 'bg-surface-active'
                 : 'bg-presentation hover:bg-surface-active-alt shadow-xs',

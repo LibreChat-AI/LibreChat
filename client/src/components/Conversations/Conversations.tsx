@@ -149,7 +149,7 @@ const ChatsHeader: FC<ChatsHeaderProps> = memo(({ isExpanded, onToggle, trailing
     <div
       className={cn(
         'flex h-8 w-full items-center pr-1',
-        highlight && 'bg-surface-active-alt rounded-lg',
+        highlight && 'bg-surface-nav-selected rounded-lg',
       )}
     >
       <button

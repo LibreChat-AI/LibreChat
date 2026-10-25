@@ -1,10 +1,16 @@
 import { memo, useId, useRef, useMemo, useState, useCallback } from 'react';
 import { useAtomValue } from 'jotai';
-import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
 import * as Ariakit from '@ariakit/react';
 import { useDrag, useDrop } from 'react-dnd';
+import { queuedMessagesByConvoId } from '@librechat/chat/react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { claimQueuedIntent, releaseQueuedIntent, hasQueuedIntent } from '@librechat/chat';
+import {
+  escalatingSteerFamily,
+  revealedQueuedTurnFamily,
+  pendingSteersByConvoId,
+} from '@librechat/chat/react';
 import {
   Button,
   IconButton,
@@ -25,18 +31,14 @@ import {
   TriangleAlert,
   MessageSquarePlus,
 } from 'lucide-react';
+import type { RestoreToComposer } from '@librechat/chat/react';
+import type { SteeringControls } from '@librechat/chat/react';
 import type { MenuItemProps } from '@librechat/client';
-import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
-import type { SteeringControls } from '~/hooks/Chat/useSteering';
-import type { QueuedMessage } from '~/hooks/Chat/queue';
-import { claimQueuedIntent, releaseQueuedIntent, hasQueuedIntent } from '~/utils/queueIntent';
+import type { QueuedMessage } from '@librechat/chat';
 import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
-import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
-import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 const DRAG_TYPE = 'queued-message';
 
@@ -498,7 +500,7 @@ function QueueRow({
           render={
             <IconButton
               label={localize('com_ui_more_options')}
-              size="lg"
+              size="sm"
               shape="control"
               data-testid="queued-message-options"
               disabled={actionPending}
@@ -526,7 +528,7 @@ function QueueRow({
           ? 'com_ui_dismiss_unconfirmed_delivery'
           : 'com_ui_remove_queued',
       )}
-      size="lg"
+      size="sm"
       shape="control"
       disabled={removeDisabled}
       onClick={
@@ -567,7 +569,7 @@ function QueueRow({
       transition={reduceMotion ? { duration: 0 } : ROW_TRANSITION}
       className="border-border-light overflow-hidden border-b text-sm last:border-b-0"
     >
-      <div className="flex min-h-14 items-center gap-2 px-3 py-2">
+      <div className="flex min-h-11 items-center gap-1.5 px-2.5 py-1.5">
         <IconButton
           ref={gripRef}
           label={localize('com_ui_queue_reorder', {
@@ -658,6 +660,7 @@ function QueueRow({
           <>
             <Button
               variant="outline"
+              size="xs"
               shape="theme"
               disabled={sendDisabled}
               aria-disabled={sendDisabled}
@@ -674,7 +677,7 @@ function QueueRow({
             {showEscalate && (
               <EscalateNowButton
                 surface="queued"
-                size="lg"
+                size="sm"
                 shape="control"
                 messageText={message.text}
                 disabled={
@@ -732,7 +735,7 @@ function Queue({
      `aria-describedby` at whichever copy the document happened to keep. */
   const reorderHintId = useId();
   const queued = useAtomValue(queuedMessagesByConvoId(steering.queueKey));
-  const pendingSteers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
+  const pendingSteers = useAtomValue(pendingSteersByConvoId(conversationId));
   const escalating = useAtomValue(escalatingSteerFamily(conversationId));
   /* Only one interrupt can be unresolved at a time: a second arm would seal the
      same run twice. The escalating flag covers an arm's round trip, before its
