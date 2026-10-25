@@ -1455,11 +1455,6 @@
       "count": 1
     }
   },
-  "packages/client/src/components/Combobox.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "packages/client/src/components/DataTable.tsx": {
     "shadcn/no-inline-styles": {
       "count": 4
