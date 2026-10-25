@@ -395,8 +395,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   its trigger, and `listMaxHeight`, 8 to 40rem or `none`) bound a field `Dropdown`'s list, which never
   grows past the room the popper leaves between its trigger and the viewport's edge, so `none`
   drops the fixed cap and keeps only that one. Every default is the size the primitive drew before. The icon and checkbox roles
-  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
-  exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
+  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (read by
+  `size-theme-icon-md`; no shared primitive uses it today) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
   1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is
   a fixed 24px, WCAG 2.5.8's minimum, not a role, so a theme cannot lower it. The Button's
   `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg` reject a value under 24px;
