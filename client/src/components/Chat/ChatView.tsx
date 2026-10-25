@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
 import { Constants, buildTree } from 'librechat-data-provider';
-import { submissionByIndex, useIsSubmitting, ComposerRestoreProvider } from '@librechat/chat/react';
+import { submissionByIndex, ComposerRestoreProvider } from '@librechat/chat/react';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
@@ -20,7 +20,6 @@ import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { composerLiftFamily } from './Input/Composer/state';
 import { ChatSessionProvider } from '~/hooks/Chat/provider';
 import { OwnerTextProvider } from './Messages/PrivateText';
-import { useGetMessagesByConvoId } from '~/data-provider';
 import { AskAnswerHostProvider } from './ask/state';
 import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
@@ -260,40 +259,17 @@ function ChatPane({
 function ChatView(props: ChatViewProps) {
   const { index = 0 } = props;
   const { conversationId } = useParams();
-  const isSubmitting = useIsSubmitting(index);
-
-  const {
-    data: messages = null,
-    isLoading,
-    isFetching,
-  } = useGetMessagesByConvoId(
-    conversationId ?? '',
-    {
-      enabled: !!conversationId && conversationId !== Constants.SEARCH,
-      /** Refetch stale caches on mount: navigation invalidates (not removes)
-       * messages now, so a warm conversation renders instantly from cache and
-       * reconciles in the background instead of unmounting into a spinner. */
-      refetchOnMount: true,
-    },
-    { isStreaming: isSubmitting },
-  );
 
   return (
-    /* Auto-resume waits for messages to load AND the warm-cache background
-     * revalidation to settle: a stale invalidated cache mounts with isLoading
-     * false while the refetch is in flight, and resume must not build from (or
-     * race) it. */
-    <ChatSessionProvider
-      index={index}
-      conversationId={conversationId}
-      resumeReady={!isLoading && !isFetching}
-    >
-      <ChatPane
-        {...props}
-        conversationId={conversationId}
-        messages={messages}
-        isLoading={isLoading}
-      />
+    <ChatSessionProvider index={index} conversationId={conversationId}>
+      {({ messages, isLoading }) => (
+        <ChatPane
+          {...props}
+          conversationId={conversationId}
+          messages={messages}
+          isLoading={isLoading}
+        />
+      )}
     </ChatSessionProvider>
   );
 }

@@ -90,7 +90,7 @@ test.describe('reload during a reply', () => {
       timeout: 30_000,
     });
     await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15_000 });
-    const conversationUrl = page.url();
+    const conversationPath = new URL(page.url()).pathname;
 
     const response = await sendMessage(page, `${LONG_REPLY_MARKER}:${label}`);
     expect(response.ok()).toBeTruthy();
@@ -106,7 +106,7 @@ test.describe('reload during a reply', () => {
       .click();
     await expect(page).toHaveURL(/\/c\/new$/);
     await page.goBack();
-    await expect(page).toHaveURL(conversationUrl);
+    await expect(page).toHaveURL((url) => url.pathname === conversationPath);
 
     const assistantMessage = messagesView(page).locator('.message-render').last();
     await expect(assistantMessage).toContainText(LONG_REPLY_LAST_CHUNK, { timeout: 90_000 });

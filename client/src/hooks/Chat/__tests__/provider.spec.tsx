@@ -1,4 +1,5 @@
 import React from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
@@ -107,11 +108,13 @@ describe('ChatSessionProvider', () => {
     const queryClient = new QueryClient();
     const { result } = renderHook(() => useChatActions(), {
       wrapper: ({ children }) => (
-        <QueryClientProvider client={queryClient}>
-          <ChatSessionProvider index={1} conversationId="convo-1" resumeReady={false}>
-            {children}
-          </ChatSessionProvider>
-        </QueryClientProvider>
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <ChatSessionProvider index={1} conversationId="convo-1">
+              {() => children}
+            </ChatSessionProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
       ),
     });
 
