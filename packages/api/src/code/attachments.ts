@@ -1060,7 +1060,13 @@ async function primeAgentAttachments({
     await provisionQueued({ agent, toolContext, provisionFiles, turnSignal, deadline });
   }
   const routeKey = getCodeExecutionRouteKey(context);
-  const candidates = [...primed, ...queued.map((item) => withProvisionedSource(item, routeKey))];
+  /* Priming lists files by last update, which moves whenever a file is used. The note is runtime
+   * context the model keeps, so it must read the same on every turn the files stay the same:
+   * upload order, never the order priming returned them in. */
+  const candidates = [
+    ...primed,
+    ...queued.map((item) => withProvisionedSource(item, routeKey)),
+  ].sort(compareCandidates);
   const outcomes = new Map<string, WorkspaceAttachmentOutcome>();
   const importable: WorkspaceAttachmentCandidate[] = [];
   for (const candidate of candidates) {
