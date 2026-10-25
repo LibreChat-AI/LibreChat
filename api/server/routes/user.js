@@ -1,5 +1,9 @@
 const express = require('express');
-const { createUserPreferencesHandler } = require('@librechat/api');
+const {
+  createUserPreferencesHandler,
+  preAuthTenantMiddleware,
+  requirePreAuthTenantContext,
+} = require('@librechat/api');
 const {
   updateUserPluginsController,
   resendVerificationController,
@@ -52,7 +56,19 @@ router.post(
   emailChangeSubmissionLimiter,
   confirmEmailChangeController,
 );
-router.post('/verify', verifyEmailSubmissionLimiter, verifyEmailController);
-router.post('/verify/resend', verifyEmailLimiter, resendVerificationController);
+router.post(
+  '/verify',
+  preAuthTenantMiddleware,
+  requirePreAuthTenantContext,
+  verifyEmailSubmissionLimiter,
+  verifyEmailController,
+);
+router.post(
+  '/verify/resend',
+  preAuthTenantMiddleware,
+  requirePreAuthTenantContext,
+  verifyEmailLimiter,
+  resendVerificationController,
+);
 
 module.exports = router;

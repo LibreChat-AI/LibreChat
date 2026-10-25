@@ -104,70 +104,76 @@ export function createRoleMethods(
   }
 
   /**
-   * Initialize default roles in the system.
+   * Initialize platform default roles, never tenant copies, regardless of caller context.
    * Creates the default roles (ADMIN, USER) if they don't exist in the database.
    * Updates existing roles with new permission types if they're missing.
    */
   async function initializeRoles(): Promise<void> {
-    const Role = mongoose.models.Role;
+    return runAsSystem(async () => {
+      const Role = mongoose.models.Role;
 
-    for (const roleName of [SystemRoles.ADMIN, SystemRoles.USER]) {
-      // Strict mode hides off-schema SHARED_GLOBAL and won't $unset it on save; migrate it via the raw driver.
-      // eslint-disable-next-line no-restricted-syntax -- Role is a global (non-tenant) collection; raw read is required to see the off-schema field.
-      const legacyDoc = await Role.collection.findOne({ name: roleName });
-      if (legacyDoc?.permissions) {
-        const set: Record<string, unknown> = {};
-        const unset: Record<string, ''> = {};
-        for (const permType of ['PROMPTS', 'AGENTS']) {
-          const block = legacyDoc.permissions[permType];
-          if (block && 'SHARED_GLOBAL' in block) {
-            if (!('SHARE' in block)) {
-              set[`permissions.${permType}.SHARE`] = block.SHARED_GLOBAL;
-            }
-            unset[`permissions.${permType}.SHARED_GLOBAL`] = '';
-          }
-        }
-        if (Object.keys(unset).length) {
-          const update: Record<string, unknown> = { $unset: unset };
-          if (Object.keys(set).length) {
-            update.$set = set;
-          }
-          // eslint-disable-next-line no-restricted-syntax -- Role is a global (non-tenant) collection; raw $unset is required to drop the off-schema field.
-          await Role.collection.updateOne({ name: roleName }, update);
-        }
-      }
-      let role = await Role.findOne({ name: roleName });
-      const defaultPerms = roleDefaults[roleName].permissions;
-
-      if (!role) {
-        role = new Role({ ...roleDefaults[roleName], description: '' });
-      } else {
-        if (role.description == null) {
-          role.description = '';
-        }
-        const permissions = role.toObject()?.permissions ?? {};
-        role.permissions = role.permissions || {};
-        for (const permType of Object.keys(defaultPerms)) {
-          const defaultBlock = defaultPerms[permType as keyof typeof defaultPerms] as Record<
-            string,
-            unknown
-          >;
-          const existingBlock = permissions[permType] as Record<string, unknown> | null | undefined;
-          if (existingBlock == null) {
-            role.permissions[permType] = defaultBlock;
-            continue;
-          }
-          const mergedBlock: Record<string, unknown> = { ...existingBlock };
-          for (const field of Object.keys(defaultBlock)) {
-            if (mergedBlock[field] == null) {
-              mergedBlock[field] = defaultBlock[field];
+      for (const roleName of [SystemRoles.ADMIN, SystemRoles.USER]) {
+        // Strict mode hides off-schema SHARED_GLOBAL and won't $unset it on save; migrate it via the raw driver.
+        const filter = roleDocumentFilter(roleName, 'initializeRoles');
+        // eslint-disable-next-line no-restricted-syntax -- Platform-only filter; raw read exposes the off-schema field.
+        const legacyDoc = await Role.collection.findOne(filter);
+        if (legacyDoc?.permissions) {
+          const set: Record<string, unknown> = {};
+          const unset: Record<string, ''> = {};
+          for (const permType of ['PROMPTS', 'AGENTS']) {
+            const block = legacyDoc.permissions[permType];
+            if (block && 'SHARED_GLOBAL' in block) {
+              if (!('SHARE' in block)) {
+                set[`permissions.${permType}.SHARE`] = block.SHARED_GLOBAL;
+              }
+              unset[`permissions.${permType}.SHARED_GLOBAL`] = '';
             }
           }
-          role.permissions[permType] = mergedBlock;
+          if (Object.keys(unset).length) {
+            const update: Record<string, unknown> = { $unset: unset };
+            if (Object.keys(set).length) {
+              update.$set = set;
+            }
+            // eslint-disable-next-line no-restricted-syntax -- Platform-only filter; raw $unset drops the off-schema field.
+            await Role.collection.updateOne({ ...filter, _id: legacyDoc._id }, update);
+          }
         }
+        let role = await Role.findOne(filter);
+        const defaultPerms = roleDefaults[roleName].permissions;
+
+        if (!role) {
+          role = new Role({ ...roleDefaults[roleName], description: '' });
+        } else {
+          if (role.description == null) {
+            role.description = '';
+          }
+          const permissions = role.toObject()?.permissions ?? {};
+          role.permissions = role.permissions || {};
+          for (const permType of Object.keys(defaultPerms)) {
+            const defaultBlock = defaultPerms[permType as keyof typeof defaultPerms] as Record<
+              string,
+              unknown
+            >;
+            const existingBlock = permissions[permType] as
+              | Record<string, unknown>
+              | null
+              | undefined;
+            if (existingBlock == null) {
+              role.permissions[permType] = defaultBlock;
+              continue;
+            }
+            const mergedBlock: Record<string, unknown> = { ...existingBlock };
+            for (const field of Object.keys(defaultBlock)) {
+              if (mergedBlock[field] == null) {
+                mergedBlock[field] = defaultBlock[field];
+              }
+            }
+            role.permissions[permType] = mergedBlock;
+          }
+        }
+        await role.save();
       }
-      await role.save();
-    }
+    });
   }
 
   /**
