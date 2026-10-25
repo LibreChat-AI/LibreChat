@@ -91,7 +91,7 @@ test.describe('assistant delete confirmation', () => {
 
       await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
       await expect(dialog).toBeHidden();
-      await expect(page.getByText('Successfully deleted assistant')).toBeVisible();
+      await expect(page.getByText('Successfully deleted assistant', { exact: true })).toBeVisible();
       await expect.poll(() => assistantExists(page, assistant.id)).toBe(false);
     } finally {
       await deleteAssistant(page, assistant.id);
@@ -100,6 +100,7 @@ test.describe('assistant delete confirmation', () => {
 
   test('Cancel and Escape keep the assistant and return focus @scenario:assistant-delete-dialog-dismiss', async ({
     page,
+    isMobile,
   }) => {
     test.setTimeout(60000);
     const assistant = await createAssistant(page);
@@ -118,7 +119,11 @@ test.describe('assistant delete confirmation', () => {
       dialog = await expectConfirmDialog(page);
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden();
-      await expect(trigger).toBeFocused();
+      /** The mobile drawer also collapses on that Escape, for every dialog opened from it
+       *  (berry-13/LibreChat#428), which takes the trigger with it. */
+      if (!isMobile) {
+        await expect(trigger).toBeFocused();
+      }
 
       expect(await assistantExists(page, assistant.id)).toBe(true);
     } finally {
@@ -131,11 +136,11 @@ test.describe('assistant delete confirmation', () => {
   }) => {
     test.setTimeout(60000);
     const assistant = await createAssistant(page);
+    const deleteUrl = (url: URL) =>
+      url.pathname.startsWith('/api/assistants/') && url.pathname.endsWith(assistant.id);
 
     try {
       const trigger = await openDeleteTrigger(page);
-      const deleteUrl = (url: URL) =>
-        url.pathname.startsWith('/api/assistants/') && url.pathname.endsWith(assistant.id);
       await page.route(deleteUrl, (route) =>
         route.request().method() === 'DELETE'
           ? route.fulfill({ status: 500, json: { message: 'delete failed' } })
@@ -145,11 +150,14 @@ test.describe('assistant delete confirmation', () => {
       await trigger.click();
       const dialog = await expectConfirmDialog(page);
       await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
-      await expect(page.getByText('There was an error deleting the assistant')).toBeVisible();
+      await expect(
+        page.getByText('There was an error deleting the assistant', { exact: true }),
+      ).toBeVisible();
 
       await page.unroute(deleteUrl);
       expect(await assistantExists(page, assistant.id)).toBe(true);
     } finally {
+      await page.unroute(deleteUrl);
       await deleteAssistant(page, assistant.id);
     }
   });
