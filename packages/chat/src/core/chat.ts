@@ -611,6 +611,8 @@ export class Chat {
             const written = typeof optimistic === 'function' ? optimistic(before) : optimistic;
             active.optimistic = { before, written };
             this.write(written);
+            /** The rows as the state committed them, which a store may copy on the way in. */
+            active.optimistic.written = this.messages;
           }
         });
       }

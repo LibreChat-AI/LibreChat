@@ -275,4 +275,36 @@ describe('ReactQueryChatState', () => {
     expect(chat.status).toBe('ready');
     unsubscribe();
   });
+
+  it('restores a row the cache committed as a copy when a replaced start rolls back', async () => {
+    const queryClient = new QueryClient();
+    const response: TMessage = { ...message('response-1'), isCreatedByUser: false, text: 'old' };
+    queryClient.setQueryData([QueryKeys.messages, 'convo-1'], [message('a'), response]);
+    const state = new ReactQueryChatState({ queryClient, key: 'convo-1' });
+    const chat = new Chat({
+      id: 'convo-1',
+      state,
+      transport: {
+        sendMessages: jest.fn(async () => ({
+          status: 'replaced' as const,
+          generationProtocolVersion: 2 as const,
+          conversationId: 'convo-1',
+          streamId: 'stream-2',
+          generationCreatedAt: 200,
+        })),
+        reconnectToStream: jest.fn(async () => null),
+        abort: jest.fn(),
+      },
+      prepareRequest: jest.fn(() => ({
+        payload: {} as never,
+        responseMessageId: response.messageId,
+        messages: (list: TMessage[]) =>
+          list.map((row) => (row.messageId === response.messageId ? { ...row, text: '' } : row)),
+      })),
+    });
+
+    await chat.regenerate({ messageId: response.messageId });
+
+    expect(chat.messages).toEqual([message('a'), response]);
+  });
 });
