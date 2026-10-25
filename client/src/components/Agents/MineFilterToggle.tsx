@@ -3,11 +3,16 @@ import { Button, TooltipAnchor } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
 interface MineFilterToggleProps {
+  iconOnly?: boolean;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
 }
 
-const MineFilterToggle: React.FC<MineFilterToggleProps> = ({ checked, onCheckedChange }) => {
+const MineFilterToggle: React.FC<MineFilterToggleProps> = ({
+  checked,
+  onCheckedChange,
+  iconOnly = false,
+}) => {
   const localize = useLocalize();
 
   return (
@@ -15,14 +20,14 @@ const MineFilterToggle: React.FC<MineFilterToggleProps> = ({ checked, onCheckedC
       description={localize('com_agents_filter_mine')}
       render={
         <Button
-          variant="outline-toggle"
+          variant={iconOnly ? 'ghost' : 'outline-toggle'}
           aria-label={localize('com_agents_my_agents')}
-          size="compact"
+          size={iconOnly ? 'icon-sm' : 'compact'}
           aria-pressed={checked}
           onClick={() => onCheckedChange(!checked)}
         >
           <UserRound className="size-3.5" aria-hidden="true" />
-          {localize('com_agents_my_agents')}
+          {!iconOnly && localize('com_agents_my_agents')}
         </Button>
       }
     />

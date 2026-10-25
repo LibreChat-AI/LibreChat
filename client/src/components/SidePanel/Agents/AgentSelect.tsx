@@ -329,7 +329,7 @@ function AgentSelect({
           selectPlaceholder={field?.value?.value ?? createAgent}
           iconSide="right"
           searchPlaceholder={localize('com_agents_search_name')}
-          searchActions={<MineFilterToggle checked={mine} onCheckedChange={setMine} />}
+          searchActions={<MineFilterToggle iconOnly checked={mine} onCheckedChange={setMine} />}
           popoverMaxHeight={SELECTOR_MAX_HEIGHT}
           unsearchedLimit={selectorLimit}
           SelectIcon={field?.value?.icon}

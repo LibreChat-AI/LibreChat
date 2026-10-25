@@ -170,6 +170,13 @@ describe('AgentSelect resetAgentForm', () => {
 });
 
 describe('AgentSelect ownership filter', () => {
+  it('renders an icon-only ghost filter with an accessible name', () => {
+    render(<Harness agent={createAgent()} onMethods={() => undefined} />);
+    const toggle = screen.getByRole('button', { name: 'com_agents_my_agents' });
+    expect(toggle.textContent).toBe('');
+    expect(toggle).toHaveAttribute('variant', 'ghost');
+  });
+
   it('defaults to the original query and an unpressed filter', () => {
     render(<Harness agent={createAgent()} onMethods={() => undefined} />);
     expect(mockListAgents).toHaveBeenLastCalledWith({ requiredPermission: 1 }, expect.any(Object));
