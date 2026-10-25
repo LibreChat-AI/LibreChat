@@ -392,7 +392,7 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
   input, and `h-theme-target` the switch's hit area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
   trigger. `min-w-theme-list` and `max-h-theme-list` (`listMinWidth`, `0` to size the list by
-  its trigger, and `listMaxHeight`, 8 to 40rem or `none`) bound the Select's list, which never
+  its trigger, and `listMaxHeight`, 8 to 40rem or `none`) bound a field `Dropdown`'s list, which never
   grows past the room the popper leaves between its trigger and the viewport's edge, so `none`
   drops the fixed cap and keeps only that one. Every default is the size the primitive drew before. The icon and checkbox roles
   are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
