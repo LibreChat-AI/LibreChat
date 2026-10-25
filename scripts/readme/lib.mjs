@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import GithubSlugger from 'github-slugger';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
@@ -285,6 +286,64 @@ export function validate(source, translated, code, context = '') {
     }
   }
   return problems;
+}
+
+/** Anchor of every Markdown heading in document order, as GitHub derives it from the heading text. */
+function headingSlugs(markdown) {
+  const slugger = new GithubSlugger();
+  const slugs = [];
+  walk(parse(markdown), (node) => {
+    if (node.type !== 'heading') return;
+    let text = '';
+    walk(node, (child) => {
+      if (child.type === 'text' || child.type === 'inlineCode') text += child.value;
+    });
+    slugs.push(slugger.slug(text));
+  });
+  return slugs;
+}
+
+const HTML_FRAGMENT = /(href\s*=\s*)(["'])#([^"']*)\2/gi;
+
+/**
+ * Points `#fragment` links of a translated README at the anchors of its translated headings, which
+ * GitHub derives from the heading text. Headings pair up by position: `validate` keeps them equal.
+ */
+export function localizeAnchors(source, translated) {
+  const from = headingSlugs(source);
+  const to = headingSlugs(translated);
+  if (from.length !== to.length) return translated;
+  const anchors = new Map(from.map((slug, index) => [slug, to[index]]));
+  const edits = [];
+  walk(parse(translated), (node) => {
+    if (!node.position) return;
+    const start = node.position.start.offset;
+    const end = node.position.end.offset;
+    if (node.type === 'html') {
+      const value = translated.slice(start, end);
+      const next = value.replace(HTML_FRAGMENT, (match, prefix, quote, fragment) =>
+        anchors.has(fragment) ? `${prefix}${quote}#${anchors.get(fragment)}${quote}` : match,
+      );
+      if (next !== value) edits.push({ start, end, value: next });
+      return;
+    }
+    if (node.type !== 'link' && node.type !== 'definition') return;
+    const fragment = node.url?.startsWith('#') ? node.url.slice(1) : null;
+    if (fragment === null || !anchors.has(fragment)) return;
+    const after =
+      node.type === 'link'
+        ? (node.children.at(-1)?.position.end.offset ?? start)
+        : translated.indexOf(']:', start);
+    const at = translated.indexOf(node.url, after);
+    if (at === -1 || at >= end) return;
+    edits.push({ start: at, end: at + node.url.length, value: `#${anchors.get(fragment)}` });
+  });
+  return edits
+    .sort((a, b) => b.start - a.start)
+    .reduce(
+      (text, edit) => text.slice(0, edit.start) + edit.value + text.slice(edit.end),
+      translated,
+    );
 }
 
 /** A cached translation that still passes the current `validate`, else undefined to retranslate. */

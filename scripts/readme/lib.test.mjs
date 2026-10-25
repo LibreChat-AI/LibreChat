@@ -4,6 +4,7 @@ import {
   cleanOutput,
   definitions,
   isSwitcher,
+  localizeAnchors,
   needsTranslation,
   renderSwitcher,
   reusable,
@@ -278,4 +279,21 @@ test('validate resolves footnote references against the document footnotes', () 
   const source = 'Read this[^note] before you start.';
   assert.deepEqual(validate(source, 'Прочитайте это[^note] перед началом.', 'ru', context), []);
   assert.ok(validate(source, 'Прочитайте это[^другое] перед началом.', 'ru', context).length > 0);
+});
+
+test('localizeAnchors points fragment links at the translated heading anchors', () => {
+  const source =
+    '# ✨ Features\n\nSee [Features](#-features), [setup][s] and <a href="#setup">setup</a>.\n\n## Setup\n\n## Setup\n\n[s]: #setup-1';
+  const translated =
+    '# ✨ 功能\n\n参见 [功能](#-features)、[设置][s] 和 <a href="#setup">设置</a>。\n\n## 设置\n\n## 设置\n\n[s]: #setup-1';
+  assert.equal(
+    localizeAnchors(source, translated),
+    '# ✨ 功能\n\n参见 [功能](#-功能)、[设置][s] 和 <a href="#设置">设置</a>。\n\n## 设置\n\n## 设置\n\n[s]: #设置-1',
+  );
+});
+
+test('localizeAnchors leaves external links and unknown fragments alone', () => {
+  const source = '## Setup\n\n[Docs](https://example.com/#setup) and [Top](#top)';
+  const translated = '## 设置\n\n[文档](https://example.com/#setup) 和 [顶部](#top)';
+  assert.equal(localizeAnchors(source, translated), translated);
 });

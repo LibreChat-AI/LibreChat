@@ -8,6 +8,7 @@ import {
   definitions,
   hash,
   isSwitcher,
+  localizeAnchors,
   needsTranslation,
   renderSwitcher,
   reusable,
@@ -124,13 +125,14 @@ for (const code of langs) {
   await pool(pending, async ({ key, chunk }) => {
     next[key] = await translate(code, chunk, context);
   });
-  const body = units
+  const assembled = units
     .map(({ text, joiner }, index) => {
       const part = isSwitcher(text) ? renderSwitcher(code, available) : text;
       const out = !isSwitcher(text) && needsTranslation(text, context) ? next[hash(text)] : part;
       return index === 0 ? out : joiner + out;
     })
     .join('');
+  const body = localizeAnchors(source.replace(/\r\n/g, '\n'), assembled);
   const notice =
     '<!-- Generated from README.md by .github/workflows/readme-translate.yml. Do not edit by hand. -->';
   outputs[file] = `${notice}\n\n${body}\n`;
