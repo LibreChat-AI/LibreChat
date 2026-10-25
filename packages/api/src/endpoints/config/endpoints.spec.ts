@@ -486,7 +486,8 @@ describe('createEndpointsConfigService', () => {
       });
     });
 
-    it('exposes custom endpoints from group-scoped overrides for grouped users', async () => {
+    /** Endpoints a grouped user gets from a group override that references `${FOO_KEY}`/`${FOO_URL}`. */
+    async function getGroupScopedEndpoints(overrideEnvAllowlist?: string) {
       const groupId = new Types.ObjectId('6a0aea2172e2d59d4658c9d2');
       const getUserPrincipals = jest.fn().mockResolvedValue([
         { principalType: PrincipalType.ROLE, principalId: 'USER' },
@@ -530,6 +531,7 @@ describe('createEndpointsConfigService', () => {
         cacheKeys: { APP_CONFIG: 'app_config' },
         getApplicableConfigs,
         getUserPrincipals,
+        overrideEnvAllowlist,
       });
       const { getEndpointsConfig } = createEndpointsConfigService({
         getAppConfig,
@@ -547,7 +549,17 @@ describe('createEndpointsConfigService', () => {
           expect.objectContaining({ principalType: PrincipalType.GROUP, principalId: groupId }),
         ]),
       );
+      return result;
+    }
+
+    it('exposes custom endpoints from group-scoped overrides for grouped users', async () => {
+      const result = await getGroupScopedEndpoints('FOO_KEY,FOO_URL');
       expect(result?.FOO).toEqual(expect.objectContaining({ type: EModelEndpoint.custom }));
+    });
+
+    it('treats env references outside the override allowlist as missing', async () => {
+      const result = await getGroupScopedEndpoints();
+      expect(result?.FOO).toBeUndefined();
     });
   });
 

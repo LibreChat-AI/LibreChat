@@ -25,7 +25,7 @@ const handlers = createAdminGrantsHandlers({
   hasCapabilityForPrincipals: db.hasCapabilityForPrincipals,
   getHeldCapabilities: db.getHeldCapabilities,
   getCachedPrincipals,
-  checkRoleExists: async (name) => (await db.getRoleByName(name)) != null,
+  checkRoleExists: async (name) => (await db.getPartitionRole(name)) != null,
   recordAuditEntry: db.recordAuditEntry,
   auditFailClosed: isAuditFailClosed(),
   lease: {

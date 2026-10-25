@@ -4,16 +4,30 @@ import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { loadWebSearchConfig } from '@librechat/data-schemas';
-import { RerankerTypes, SearchProviders, ScraperProviders } from 'librechat-data-provider';
+import {
+  PrincipalType,
+  RerankerTypes,
+  SearchProviders,
+  ScraperProviders,
+  mapModelToAzureConfig,
+} from 'librechat-data-provider';
 import type {
   AppConfig,
   TWebSearchKeys,
+  ConfigOverrideLayer,
   AdminConfigArraySecretFieldRule,
 } from '@librechat/data-schemas';
 import type { TWebSearchConfigInput } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
-import { encryptConfigSecretFields, getConfigSecretRules } from './secrets';
+import {
+  resolveConfigSecret,
+  isOpaqueSecretInput,
+  getConfigSecretRules,
+  encryptConfigSecretFields,
+} from './secrets';
+import { createEnvReferencePolicy, neutralizeEnvReferences } from '~/app/allowlist';
 import { resolveTenantCredentials } from '~/langfuse/utils';
+import { resolveConfigOverrides } from '~/app/overrides';
 import { uploadMistralOCR } from '~/files/mistral/crud';
 import { getCustomEndpointConfig } from '~/app/config';
 import { loadWebSearchAuth } from '~/web';
@@ -26,7 +40,7 @@ jest.mock('@librechat/data-schemas', () => {
 
 const REPO_ROOT = join(__dirname, '../../../..');
 const DECRYPTING_CALL =
-  /\b(?:resolveConfigSecret|resolveStoredConfigSecret|decryptConfigSecret|resolveCustomEndpointSecrets)\(/;
+  /\b(?:resolveConfigSecret|resolveStoredConfigSecret|decryptConfigSecret|resolveCustomEndpointSecrets|resolveRuntimeConfigSecrets)\(/;
 
 interface RuntimeReader {
   /** Repo-relative module that reads the merged config value when the feature runs. */
@@ -112,8 +126,150 @@ async function sendOCRUpload(stored: string): Promise<string | undefined> {
 }
 
 const CUSTOM_ENDPOINT_NAME = 'runtime-reader';
+/** The entry a record secret is stored on: an MCP server, or an Azure group. */
+const RECORD_ENTRY_NAME = 'runtime-reader';
+const ENTRY = '*';
 
-const { secretFields, arraySecretFields } = getConfigSecretRules();
+const { secretFields, arraySecretFields, recordSecretFields } = getConfigSecretRules();
+
+/** Record secrets are listed as `<recordPath>.*.<secretPath>`, `*` standing for the entry name. */
+const RECORD_SECRET_PATHS = recordSecretFields.map(
+  ({ recordPath, secretPath }) => `${recordPath}.${ENTRY}.${secretPath}`,
+);
+
+/**
+ * Merges a role profile that stores one credential of an MCP server, as the admin config API
+ * stores it, through the same override pipeline `getAppConfig` runs, and returns what the
+ * resolved `mcpConfig` hands MCP connections.
+ */
+function mcpServerReader(secretPath: string): RuntimeReader {
+  const [parent, key] = secretPath.split('.') as ['apiKey' | 'oauth', string];
+  const server = {
+    type: 'streamable-http',
+    url: 'https://mcp.example.com/mcp',
+    apiKey: { source: 'admin', authorization_type: 'bearer' },
+    oauth: {
+      client_id: 'runtime-reader',
+      authorization_url: 'https://auth.example.com/authorize',
+      token_url: 'https://auth.example.com/token',
+    },
+  } as const;
+  return {
+    module: 'packages/api/src/app/service.ts',
+    probe: async (stored) => {
+      const overrides = {
+        mcpServers: {
+          [RECORD_ENTRY_NAME]: { ...server, [parent]: { ...server[parent], [key]: stored } },
+        },
+      };
+      const layer = {
+        principalType: PrincipalType.ROLE,
+        principalId: 'runtime-reader',
+        priority: 10,
+        overrides,
+      };
+      const resolved = resolveConfigOverrides({} as AppConfig, [layer], {
+        envPolicy: createEnvReferencePolicy({}),
+      });
+      const credentials = resolved.mcpConfig?.[RECORD_ENTRY_NAME]?.[parent];
+      return (credentials as Record<string, string | undefined> | undefined)?.[key];
+    },
+  };
+}
+
+/**
+ * Merges a role profile that stores an Azure group's key in `groupMap`, as the admin config API
+ * stores it, through the same override pipeline `getAppConfig` runs, and returns the key the
+ * Azure client options are built with (`mapModelToAzureConfig`, as `endpoints/openai` calls it).
+ */
+const azureGroupMapReader: RuntimeReader = {
+  module: 'packages/api/src/app/service.ts',
+  probe: async (stored) => {
+    const model = 'gpt-4o';
+    /** `groupMap` is not a librechat.yaml key; an override writes it as an unknown one. */
+    const overrides: Record<string, unknown> = {
+      endpoints: {
+        azureOpenAI: {
+          groupMap: {
+            [RECORD_ENTRY_NAME]: {
+              apiKey: stored,
+              instanceName: 'runtime-reader',
+              version: '2024-10-21',
+              models: { [model]: { deploymentName: model } },
+            },
+          },
+          modelGroupMap: { [model]: { group: RECORD_ENTRY_NAME } },
+        },
+      },
+    };
+    const layer = {
+      principalType: PrincipalType.ROLE,
+      principalId: 'runtime-reader',
+      priority: 10,
+      overrides,
+    } as ConfigOverrideLayer;
+    const resolved = resolveConfigOverrides({} as AppConfig, [layer], {
+      envPolicy: createEnvReferencePolicy({}),
+    });
+    const azure = resolved.endpoints?.azureOpenAI;
+    if (!azure) {
+      return undefined;
+    }
+    const { groupMap, modelGroupMap } = azure;
+    return mapModelToAzureConfig({ modelName: model, modelGroupMap, groupMap }).azureOptions
+      .azureOpenAIApiKey;
+  },
+};
+
+/**
+ * Merges a role profile that stores an Azure group in `groups`, as the admin config API stores it,
+ * through the same override pipeline `getAppConfig` runs, and returns the key the Azure client
+ * options are built with: the merge resolves the profile's groups into the `groupMap` it reads,
+ * where the deployment sets `CONFIG_REDERIVE_ENDPOINTS`.
+ */
+const azureGroupsReader: RuntimeReader = {
+  module: 'packages/api/src/app/service.ts',
+  probe: async (stored) => {
+    const model = 'gpt-4o';
+    const layer = {
+      principalType: PrincipalType.ROLE,
+      principalId: 'runtime-reader',
+      priority: 10,
+      overrides: {
+        endpoints: {
+          azureOpenAI: {
+            groups: [
+              {
+                group: CUSTOM_ENDPOINT_NAME,
+                apiKey: stored,
+                instanceName: 'runtime-reader',
+                version: '2024-10-21',
+                models: { [model]: { deploymentName: model } },
+              },
+            ],
+          },
+        },
+      },
+    } as ConfigOverrideLayer;
+    const resolved = resolveConfigOverrides({} as AppConfig, [layer], {
+      envPolicy: createEnvReferencePolicy({}),
+      rederiveEndpoints: true,
+    });
+    const azure = resolved.endpoints?.azureOpenAI;
+    if (!azure?.groupMap || !azure.modelGroupMap) {
+      return undefined;
+    }
+    const { groupMap, modelGroupMap } = azure;
+    return mapModelToAzureConfig({ modelName: model, modelGroupMap, groupMap }).azureOptions
+      .azureOpenAIApiKey;
+  },
+};
+
+/** The runtime reader of each record a record secret is registered on. */
+const RECORD_READERS: Readonly<Record<string, (secretPath: string) => RuntimeReader>> = {
+  mcpServers: mcpServerReader,
+  'endpoints.azureOpenAI.groupMap': () => azureGroupMapReader,
+};
 
 /** Array-item secrets are listed as `<arrayPath>[].<secretKey>`. */
 const ARRAY_SECRET_FIELDS = new Map<string, AdminConfigArraySecretFieldRule>(
@@ -124,7 +280,11 @@ const ARRAY_SECRET_FIELDS = new Map<string, AdminConfigArraySecretFieldRule>(
 function storeSecret(path: string, secret: string): unknown {
   const arrayField = ARRAY_SECRET_FIELDS.get(path);
   if (!arrayField) {
-    return encryptConfigSecretFields({ [path]: secret })[path];
+    const fieldPath = path
+      .split('.')
+      .map((segment) => (segment === ENTRY ? RECORD_ENTRY_NAME : segment))
+      .join('.');
+    return encryptConfigSecretFields({ [fieldPath]: secret })[fieldPath];
   }
   const { arrayPath, identityKey, secretKey } = arrayField;
   const item = { [identityKey]: CUSTOM_ENDPOINT_NAME, [secretKey]: secret };
@@ -173,6 +333,7 @@ const RUNTIME_READERS: Readonly<Record<string, RuntimeReader>> = {
   'webSearch.cohereApiKey': webSearchReader('cohereApiKey', {
     rerankerType: RerankerTypes.COHERE,
   }),
+  'endpoints.azureOpenAI.groups[].apiKey': azureGroupsReader,
   'endpoints.custom[].apiKey': {
     module: 'packages/api/src/app/config.ts',
     probe: async (stored) => {
@@ -188,6 +349,12 @@ const RUNTIME_READERS: Readonly<Record<string, RuntimeReader>> = {
       return getCustomEndpointConfig({ endpoint: CUSTOM_ENDPOINT_NAME, appConfig })?.apiKey;
     },
   },
+  ...Object.fromEntries(
+    recordSecretFields.flatMap(({ recordPath, secretPath }, index) => {
+      const reader = RECORD_READERS[recordPath];
+      return reader ? [[RECORD_SECRET_PATHS[index], reader(secretPath)]] : [];
+    }),
+  ),
 };
 
 /**
@@ -214,7 +381,11 @@ describe('config secret registry runtime readers', () => {
     await new Promise<void>((resolve) => ocrProvider.server.close(() => resolve()));
   });
 
-  const registered = [...secretFields.map(({ path }) => path), ...ARRAY_SECRET_FIELDS.keys()];
+  const registered = [
+    ...secretFields.map(({ path }) => path),
+    ...ARRAY_SECRET_FIELDS.keys(),
+    ...RECORD_SECRET_PATHS,
+  ];
 
   it('pairs every registered secret path with a runtime reader or a documented gap', () => {
     const listed = [...Object.keys(RUNTIME_READERS), ...Object.keys(UNREAD_SECRET_FIELDS)];
@@ -237,5 +408,51 @@ describe('config secret registry runtime readers', () => {
 
     expect(stored).toMatch(/^v3:/);
     await expect(probe(stored as string)).resolves.toBe(secret);
+  });
+
+  describe('opaque keys, which the env allowlist leaves alone', () => {
+    const VARIABLE = 'LC8_RUNTIME_OPAQUE_VARIABLE';
+    /** A credential that contains a reference to a variable the environment sets. */
+    const credential = (path: string) => `${path}-pa\${${VARIABLE}}ss`;
+    const isOpaque = (path: string) => isOpaqueSecretInput(path.split('.'), 'credential');
+
+    beforeEach(() => {
+      process.env[VARIABLE] = 'expanded';
+    });
+    afterEach(() => {
+      delete process.env[VARIABLE];
+    });
+
+    it.each(
+      Object.entries(RUNTIME_READERS).flatMap(([path, { probe }]) =>
+        probe && isOpaque(path) ? [[path, probe]] : [],
+      ),
+    )('%s reaches its reader as entered through the runtime env pass', async (path, probe) => {
+      const segments = path.split('.');
+      const layer = segments.reduceRight<unknown>(
+        (value, key) => ({ [key]: value }),
+        storeSecret(path, credential(path)),
+      );
+      const neutralized = neutralizeEnvReferences(layer, createEnvReferencePolicy({}));
+      const stored = segments.reduce<unknown>(
+        (value, key) => (value as Record<string, unknown>)[key],
+        neutralized,
+      );
+
+      await expect(probe(stored as string)).resolves.toBe(credential(path));
+    });
+
+    it.each(
+      Object.entries(RUNTIME_READERS).flatMap(([path, { module, probe }]) =>
+        !probe && isOpaque(path) ? [[path, module]] : [],
+      ),
+    )('%s reaches %s through resolveConfigSecret, which reads ciphertext as is', (path, module) => {
+      const source = readFileSync(join(REPO_ROOT, module), 'utf8');
+
+      expect(source).not.toMatch(/extractEnvVariable\([^)]*apiKey/);
+      expect(resolveConfigSecret(storeSecret(path, credential(path)) as string)).toBe(
+        credential(path),
+      );
+    });
   });
 });

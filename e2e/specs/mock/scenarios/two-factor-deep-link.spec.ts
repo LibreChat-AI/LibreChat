@@ -1,12 +1,10 @@
 import { expect, test } from '@playwright/test';
+import type { CodeSetupAttempt } from 'librechat-data-provider';
 import type { Page, Route } from '@playwright/test';
 
 /**
- * An ordinary (already enrolled) 2FA sign-in parks its destination in session storage when the
- * login screen mounts, swaps the document to `/` once the challenge is verified, and rebuilds
- * the session through the silent refresh. The destination has to survive that document swap and
- * be consumed by the sign-in that carried it, and the sign-in itself must never depend on the
- * store being writable at all.
+ * Ordinary 2FA completes in the auth context. Safe destinations survive an unavailable store
+ * and are consumed once, without a document reload or an implicit machine approval.
  */
 
 /** A non-default destination: reaching it proves the deep link outlived the whole challenge.
@@ -219,10 +217,7 @@ test.describe('ordinary 2FA challenge · deep links', () => {
     await mockChallengeAuth(page);
     await page.addInitScript(() => {
       Object.defineProperty(window, 'sessionStorage', {
-        /** Configurable because the CI-mode build's storage polyfill replaces a broken
-         *  sessionStorage with its own in-memory shim rather than crashing on a frozen
-         *  property. The shim is per-document, so the challenge's document swap still
-         *  empties it and the landing contract is identical either way. */
+        /** The app may replace unavailable storage with its in-document fallback. */
         configurable: true,
         get() {
           throw new DOMException('Storage is blocked in this context', 'SecurityError');
@@ -231,13 +226,90 @@ test.describe('ordinary 2FA challenge · deep links', () => {
     });
 
     await page.goto(`/login?redirect_to=${encodeURIComponent(DEEP_LINK)}`);
-    /** The store being unwritable must cost the destination, never the sign-in itself. */
+    /** Neither the destination nor sign-in depends on writable session storage. */
     await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible({ timeout: 15000 });
     await signInThroughChallenge(page);
 
     await expectAuthenticatedShell(page);
+    await expect(page).toHaveURL(DEEP_LINK_PATTERN);
+  });
+
+  test('an unsafe destination falls back locally @scenario:2fa-unsafe-destination-stays-local', async ({
+    page,
+  }) => {
+    await mockChallengeAuth(page);
+    await page.goto(`/login?redirect_to=${encodeURIComponent('//attacker.invalid')}`);
+    await signInThroughChallenge(page);
+    await expectAuthenticatedShell(page);
     await expect(page).toHaveURL(DEFAULT_PATTERN);
   });
+
+  for (const blockedStorage of [false, true]) {
+    test(`machine confirmation requires an explicit decision after 2FA, blocked storage=${blockedStorage} @scenario:2fa-machine-confirmation-${blockedStorage}`, async ({
+      page,
+    }) => {
+      test.setTimeout(90000);
+      await mockChallengeAuth(page);
+      if (blockedStorage) {
+        await page.addInitScript(() => {
+          Object.defineProperty(window, 'sessionStorage', {
+            configurable: true,
+            get() {
+              throw new DOMException('Storage blocked', 'SecurityError');
+            },
+          });
+        });
+      }
+      const attemptId = 'A'.repeat(43);
+      const destination = `/code/setup/${attemptId}`;
+      const attempt: CodeSetupAttempt = {
+        version: 1,
+        attemptId,
+        status: 'pending',
+        expiresAt: new Date(Date.now() + 600000).toISOString(),
+        verificationCode: 'A1B2C3-D4E5F6',
+        machineName: '2FA test workstation',
+        workspace: { type: 'private' },
+        allowWorkspaceWrites: false,
+        allowWorkspaceCommands: false,
+        keyFingerprint: 'a'.repeat(64),
+        controlPlanes: [{ id: 'personal', name: 'Test personal plane' }],
+      };
+      let decisions = 0;
+      page.on('request', (request) => {
+        if (
+          request.method() === 'POST' &&
+          new URL(request.url()).pathname.startsWith('/api/code-environments/setup/')
+        )
+          decisions++;
+      });
+      await page.route(`**/api/code-environments/setup/${attemptId}`, (route) =>
+        json(route, attempt),
+      );
+      await page.route(`**/api/code-environments/setup/${attemptId}/approve`, async (route) => {
+        expect(route.request().postDataJSON()).toEqual({ controlPlaneId: 'personal' });
+        attempt.status = 'approved';
+        attempt.controlPlaneId = 'personal';
+        await json(route, attempt);
+      });
+      await page.goto(destination);
+      await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible({ timeout: 15000 });
+      await signInThroughChallenge(page);
+      await expect(page).toHaveURL(new RegExp(`${destination}$`));
+      await expect(page.getByRole('heading', { name: 'Approve Machine Setup' })).toBeVisible();
+      await expect(page.getByText(attempt.machineName, { exact: true })).toBeVisible();
+      await expect(page.getByText(ENROLLED_USER.email, { exact: false })).toBeVisible();
+      await expect(page.getByText(attempt.verificationCode, { exact: true })).toBeVisible();
+      expect(decisions).toBe(0);
+      await page.getByRole('radio', { name: 'Test personal plane', exact: true }).check();
+      expect(decisions).toBe(0);
+      await page.getByRole('button', { name: 'Approve setup', exact: true }).click();
+      await expect(
+        page.getByText('Setup approved. Waiting for your machine to finish.', { exact: true }),
+      ).toBeVisible();
+      expect(decisions).toBe(1);
+    });
+  }
 
   test('a consumed destination does not misdirect the next sign-in in the tab @scenario:2fa-destination-consumed-once-across-signins', async ({
     page,

@@ -566,6 +566,7 @@ const assistantsFileConfig = {
 };
 
 export const fileConfig = {
+  retainedFileCleanup: false,
   endpoints: {
     [EModelEndpoint.assistants]: assistantsFileConfig,
     [EModelEndpoint.azureAssistants]: assistantsFileConfig,
@@ -659,6 +660,8 @@ const skillFileConfigSchema = z.object({
 });
 
 export const fileConfigSchema = z.object({
+  /** Enable only after every replica and rollback target reads retained file destinations. */
+  retainedFileCleanup: z.boolean().optional(),
   endpoints: z.record(endpointFileConfigSchema).optional(),
   skills: skillFileConfigSchema.optional(),
   serverFileSizeLimit: z.number().min(0).optional(),
@@ -1269,6 +1272,10 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
   };
   if (!dynamic) {
     return mergedConfig;
+  }
+
+  if (dynamic.retainedFileCleanup !== undefined) {
+    mergedConfig.retainedFileCleanup = dynamic.retainedFileCleanup;
   }
 
   if (dynamic.defaultLLMDeliveryPath !== undefined) {

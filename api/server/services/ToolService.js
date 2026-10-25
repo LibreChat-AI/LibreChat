@@ -1562,9 +1562,10 @@ async function loadToolDefinitionsWrapper({
    * sandbox can't see the prior turn's generated artifacts on first read.
    */
   let primedCodeFiles;
+  let codeContextEntries;
   if (hasExecuteCode && tool_resources) {
     try {
-      const { toolContext, files } = await primeCodeFiles({
+      const { toolContext, files, contextFiles } = await primeCodeFiles({
         req,
         tool_resources,
         agentId: agent.id,
@@ -1584,6 +1585,7 @@ async function loadToolDefinitionsWrapper({
       if (files?.length) {
         primedCodeFiles = files;
       }
+      codeContextEntries = contextFiles;
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal })) {
         throw error;
@@ -1655,6 +1657,7 @@ async function loadToolDefinitionsWrapper({
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,
+    codeContextEntries,
     oauthActionToolNames,
     codeExecutionContext: resolvedCodeExecutionContext,
     repositoryInstructionSource: createRepositoryInstructionSource({
