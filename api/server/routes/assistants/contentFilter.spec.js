@@ -7,6 +7,7 @@ const mockCreateAssistantV1 = jest.fn((_req, res) => res.status(201).json({ vers
 const mockPatchAssistantV1 = jest.fn((_req, res) => res.status(200).json({ version: 1 }));
 const mockCreateAssistantV2 = jest.fn((_req, res) => res.status(201).json({ version: 2 }));
 const mockPatchAssistantV2 = jest.fn((_req, res) => res.status(200).json({ version: 2 }));
+const mockDeleteAssistant = jest.fn((_req, res) => res.status(204).end());
 
 jest.mock('~/server/controllers/assistants/chatV1', () => mockChatV1);
 jest.mock('~/server/controllers/assistants/chatV2', () => mockChatV2);
@@ -14,7 +15,7 @@ jest.mock('~/server/controllers/assistants/v1', () => ({
   createAssistant: mockCreateAssistantV1,
   patchAssistant: mockPatchAssistantV1,
   retrieveAssistant: jest.fn(),
-  deleteAssistant: jest.fn(),
+  deleteAssistant: mockDeleteAssistant,
   listAssistants: jest.fn(),
   uploadAssistantAvatar: jest.fn(),
 }));
@@ -53,6 +54,49 @@ function createApp(router, config) {
 }
 
 describe('assistant route content filters', () => {
+  it.each([
+    ['./v1', 'patch', mockPatchAssistantV1],
+    ['./v2', 'patch', mockPatchAssistantV2],
+    ['./v1', 'delete', mockDeleteAssistant],
+    ['./v2', 'delete', mockDeleteAssistant],
+  ])(
+    'rejects conflicting selectors on %s %s before the controller',
+    async (route, method, controller) => {
+      const module = require(route);
+      const app = createApp(module.v1 ?? module, {});
+      const response = await request(app)
+        [method]('/asst-target?assistant_id=private-submitted-id')
+        .send({});
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({
+        error: 'invalid_assistant_id',
+        message: 'Conflicting Assistant IDs',
+      });
+      expect(JSON.stringify(response.body)).not.toContain('private-submitted-id');
+      expect(controller).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['./chatV1', mockChatV1],
+    ['./chatV2', mockChatV2],
+  ])(
+    'rejects missing and malformed chat selectors on %s before streaming',
+    async (route, controller) => {
+      const app = createApp(require(route), {});
+      for (const body of [{}, { assistant_id: ['private-submitted-id'] }, { assistant_id: '' }]) {
+        const response = await request(app).post('/').send(body);
+        expect(response.status).toBe(400);
+        expect(response.body.error).toBe('invalid_assistant_id');
+        expect(JSON.stringify(response.body)).not.toContain('private-submitted-id');
+      }
+      expect(controller).not.toHaveBeenCalled();
+      const accepted = await request(app).post('/').send({ assistant_id: 'asst-valid' });
+      expect(accepted.status).toBe(204);
+      expect(controller).toHaveBeenCalledTimes(1);
+    },
+  );
+
   beforeEach(() => {
     jest.clearAllMocks();
   });

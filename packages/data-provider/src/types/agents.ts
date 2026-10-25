@@ -1041,7 +1041,7 @@ export type AgentGitIdentity = {
 
 // GitHub App bot noreply addresses contain `[bot]`, which Zod's email validator rejects.
 const githubAppBotEmail =
-  /^\d+\+[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
+  /^\d+\+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
 const standardGitEmail = z.string().email();
 
 export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
@@ -1058,6 +1058,8 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
       .max(254)
       .refine(
         (value) =>
+          // Zod still runs refinements after .max() fails.
+          value.length <= 254 &&
           !/[\0\r\n]/.test(value) &&
           (standardGitEmail.safeParse(value).success || githubAppBotEmail.test(value)),
       ),

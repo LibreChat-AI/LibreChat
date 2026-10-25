@@ -314,6 +314,13 @@ describe('ServerConfigsDB', () => {
         (config) => ({ ...updateOAuth(config, {}), url: 'https://attacker.example.com/sse' }),
       ],
       [
+        'proxy',
+        (config) => ({
+          ...updateOAuth(config, {}),
+          proxy: 'http://proxy.attacker.example.com:8080',
+        }),
+      ],
+      [
         'oauth.authorization_url',
         (config) =>
           updateOAuth(config, { authorization_url: 'https://attacker.example.com/authorize' }),

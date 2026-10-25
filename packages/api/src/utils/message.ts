@@ -1,6 +1,57 @@
-import { thinkReplayHash, THINK_REPLAY_KEY_PREFIX } from '@librechat/data-schemas';
 import { Constants } from 'librechat-data-provider';
 import type { TFile, TMessage } from 'librechat-data-provider';
+
+/** Shared wire bounds, not deployment settings. */
+export const MAX_MESSAGE_ID_LENGTH: number = Constants.MAX_MESSAGE_ID_LENGTH;
+export const MAX_RESPONSE_MESSAGE_ID_LENGTH: number = Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH;
+
+export function isValidMessageId(
+  messageId: unknown,
+  maxLength: number = MAX_MESSAGE_ID_LENGTH,
+): messageId is string {
+  return (
+    typeof messageId === 'string' &&
+    messageId.length > 0 &&
+    messageId.length <= maxLength &&
+    !/[^A-Za-z0-9_:.-]/.test(messageId)
+  );
+}
+
+export function getPreliminaryResponseMessageId({
+  compact,
+  messageId,
+  responseMessageId,
+  liveResponseMessageId,
+}: {
+  messageId?: unknown;
+  responseMessageId?: unknown;
+  compact?: boolean;
+  liveResponseMessageId?: unknown;
+}): string | null {
+  if (responseMessageId != null) {
+    return isValidMessageId(responseMessageId, MAX_RESPONSE_MESSAGE_ID_LENGTH)
+      ? responseMessageId
+      : null;
+  }
+  /** Compaction uses a persisted response, not a fresh user identity. */
+  const maxLength = compact === true ? MAX_RESPONSE_MESSAGE_ID_LENGTH : MAX_MESSAGE_ID_LENGTH;
+  if (!isValidMessageId(messageId, maxLength)) {
+    return null;
+  }
+
+  let end = messageId.length;
+  while (end > 0 && messageId.charCodeAt(end - 1) === 95) {
+    end--;
+  }
+  /** A full-length compaction anchor leaves no room for the suffix. */
+  if (end >= MAX_RESPONSE_MESSAGE_ID_LENGTH) {
+    return isValidMessageId(liveResponseMessageId, MAX_RESPONSE_MESSAGE_ID_LENGTH) &&
+      liveResponseMessageId !== messageId
+      ? liveResponseMessageId
+      : null;
+  }
+  return `${messageId.slice(0, end)}_`;
+}
 
 /** Minimal shape for request file entries (from `req.body.files`) */
 type RequestFile = { file_id?: string };
@@ -113,9 +164,9 @@ export function sanitizeMessageForTransmit<T extends Partial<TMessage>>(
  * server state: never sent to a client, never accepted from one.
  */
 const PROVIDER_ITEMS_FIELD = 'providerItems';
-const THINK_REPLAY_FIELD = 'provider_replay';
+export const THINK_REPLAY_FIELD = 'provider_replay';
 
-type ReplayCarrierPart = {
+export type ReplayCarrierPart = {
   type?: string;
   think?: unknown;
   tool_call?: Record<string, unknown>;
@@ -225,35 +276,6 @@ export function omitProviderItemsFromEvent<T>(event: T): T {
     ...(responseMessage != null && { responseMessage }),
     ...(resumeState != null && { resumeState }),
   } as T;
-}
-
-/**
- * A stored message with its provider items put back on the tool call parts they belong to, for
- * formatting the history. Same object when it has none; never changes the input.
- */
-export function attachProviderItems<
-  T extends { content?: unknown; providerItems?: Record<string, unknown> | null },
->(message: T): T {
-  const { providerItems, content } = message;
-  if (providerItems == null || !Array.isArray(content)) {
-    return message;
-  }
-  const attached = content.map((part: ReplayCarrierPart, index) => {
-    if (part?.type === 'think') {
-      const item = providerItems[`${THINK_REPLAY_KEY_PREFIX}${index}`] as
-        | { hash?: unknown; replay?: unknown }
-        | undefined;
-      /** A reasoning text edited after the response was saved no longer matches its blocks. */
-      return item?.replay != null && item.hash === thinkReplayHash(part.think)
-        ? { ...part, [THINK_REPLAY_FIELD]: item.replay }
-        : part;
-    }
-    const id = part?.tool_call?.id as string | undefined;
-    return id != null && providerItems[id] != null
-      ? { ...part, tool_call: { ...part?.tool_call, providerItems: providerItems[id] } }
-      : part;
-  });
-  return { ...message, content: attached };
 }
 
 export function isPreliminaryMessageId(messageId: unknown): messageId is string {

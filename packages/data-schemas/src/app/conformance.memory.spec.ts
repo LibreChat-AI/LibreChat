@@ -16,9 +16,13 @@ import { describeConfigStoreConformance } from './conformance';
  * new engine implements. Each operation finishes its compare-and-swap without yielding, which
  * is the atomicity a real engine gets from a conditional update.
  */
-function createMemoryConfigStore(): ConfigStore & { clear(): void } {
+function createMemoryConfigStore(): ConfigStore & {
+  clear(): void;
+  loseNextCreateAcknowledgement(): void;
+} {
   const documents = new Map<string, string>();
   let sequence = 0;
+  let acknowledgementLost = false;
 
   const keyOf = ({ principalType, principalId }: ConfigPrincipal): string =>
     `${principalType}\u0000${principalId}`;
@@ -32,9 +36,24 @@ function createMemoryConfigStore(): ConfigStore & { clear(): void } {
   };
   const all = (): ConfigRecord[] =>
     [...documents.keys()].map((key) => load(key) as ConfigRecord).sort(compareConfigRecords);
+  /**
+   * A create whose acknowledgement was lost, settled by the identity it was given: still there
+   * at version 1, it committed. A real engine reaches this through its driver's error.
+   */
+  const settleCreate = (principal: ConfigPrincipal, identity: string): ConfigRecord => {
+    const stored = load(keyOf(principal));
+    if (stored?._id !== identity || stored.configVersion !== 1) {
+      throw new Error('The create was not acknowledged');
+    }
+    return stored;
+  };
 
   return {
     clear: () => documents.clear(),
+
+    loseNextCreateAcknowledgement: () => {
+      acknowledgementLost = true;
+    },
 
     async read(principal) {
       return load(keyOf(principal));
@@ -57,13 +76,18 @@ function createMemoryConfigStore(): ConfigStore & { clear(): void } {
         throw new ConfigRevisionConflictError();
       }
       sequence += 1;
-      return save({
+      const written = save({
         ...draft,
         principalType: principal.principalType,
         principalId: principal.principalId,
         _id: current?._id ?? sequence.toString(16).padStart(24, '0'),
         configVersion: (current?.configVersion ?? 0) + 1,
       });
+      if (current || !acknowledgementLost) {
+        return written;
+      }
+      acknowledgementLost = false;
+      return settleCreate(principal, written._id);
     },
 
     async remove(principal, expected) {
@@ -95,6 +119,7 @@ const harness: ConfigStoreHarness = {
   setup: async () => store,
   teardown: async () => undefined,
   reset: async () => store.clear(),
+  loseNextCreateAcknowledgement: () => store.loseNextCreateAcknowledgement(),
 };
 
 describeConfigStoreConformance(harness);

@@ -20,7 +20,7 @@ jest.mock('axios', () => ({
 }));
 
 import axios from 'axios';
-import { deleteRagFile, hasEntityEmbeddings } from './rag';
+import { deleteRagFile, hasEntityEmbeddings, createVectorFileDeleter } from './rag';
 import { logger } from '@librechat/data-schemas';
 import { generateShortLivedToken } from '~/crypto/jwt';
 
@@ -229,5 +229,50 @@ describe('hasEntityEmbeddings', () => {
 
     await expect(hasEntityEmbeddings(params)).resolves.toBe(false);
     expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+});
+
+describe('createVectorFileDeleter receipts', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const file = { file_id: 'retained-file', embedded: true };
+  const req = { user: { id: 'owner' } };
+  const setup = (baseUrl: string | undefined = 'https://rag.example') => {
+    const remove = createVectorFileDeleter({
+      baseUrl,
+      httpClient: axios,
+      generateToken: () => 'test-token',
+    });
+    return remove;
+  };
+
+  it('returns a receipt only after a confirmed delete', async () => {
+    mockedAxios.delete.mockResolvedValueOnce({ status: 200 });
+    expect(await setup()(req, file)).toEqual({ deleted: true });
+    expect(mockedAxios.delete).toHaveBeenCalledWith(
+      'https://rag.example/documents',
+      expect.objectContaining({ data: ['retained-file'] }),
+    );
+  });
+
+  it('confirms an already absent vector copy', async () => {
+    mockedAxios.delete.mockRejectedValueOnce({
+      code: 'ERR_BAD_REQUEST',
+      response: { status: 404 },
+    });
+    expect(await setup()(req, file)).toEqual({ deleted: true });
+  });
+
+  it('does not issue a receipt for an unconfigured store or a non-embedded file', async () => {
+    expect(await setup('')(req, file)).toBeUndefined();
+    expect(await setup()(req, { ...file, embedded: false })).toBeUndefined();
+  });
+
+  it.each([
+    new Error('network down'),
+    { response: { status: 403 } },
+    { response: { status: 500 } },
+  ])('propagates failed requests without a deletion receipt', async (error) => {
+    mockedAxios.delete.mockRejectedValueOnce(error);
+    await expect(setup()(req, file)).rejects.toBe(error);
   });
 });

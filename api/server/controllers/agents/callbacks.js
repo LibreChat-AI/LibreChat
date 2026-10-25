@@ -34,6 +34,7 @@ const {
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
   captureSubagentIdentity,
+  feedSubagentAggregator,
   getAttachmentOwnership,
   collectToolCallIds,
   createToolTimingAdapter,
@@ -303,66 +304,6 @@ async function maybeEmitSandboxStarting(emitForJob, data, metadata) {
       event: StepEvents.ON_SANDBOX_STARTING,
       data: { tool_call_id: toolCall.id, runId: metadata?.run_id },
     });
-  }
-}
-
-/**
- * Maps a {@link SubagentUpdateEvent} phase to the corresponding
- * {@link GraphEvents} name that the SDK's `createContentAggregator`
- * knows how to consume. Phases that don't carry content (`start`, `stop`,
- * `error`) or whose payload doesn't match a handled event (`run_step`
- * with an `ON_TOOL_EXECUTE`-shaped batch request rather than a RunStep)
- * return `null` so the caller skips them.
- * @param {SubagentUpdateEvent} event
- * @returns {string | null}
- */
-function subagentPhaseToGraphEvent(event) {
-  switch (event?.phase) {
-    case 'run_step':
-      /** `ON_RUN_STEP` and `ON_TOOL_EXECUTE` both forward with phase
-       *  `run_step`; only the former matches the aggregator's RunStep
-       *  schema. Detect by presence of `stepDetails`. */
-      return event.data?.stepDetails ? GraphEvents.ON_RUN_STEP : null;
-    case 'run_step_delta':
-      return GraphEvents.ON_RUN_STEP_DELTA;
-    case 'run_step_completed':
-      return GraphEvents.ON_RUN_STEP_COMPLETED;
-    case 'message_delta':
-      return GraphEvents.ON_MESSAGE_DELTA;
-    case 'reasoning_delta':
-      return GraphEvents.ON_REASONING_DELTA;
-    default:
-      return null;
-  }
-}
-
-/**
- * Folds a single {@link SubagentUpdateEvent} into the given content
- * aggregator. Silent no-op for phases outside the aggregator's domain.
- * @param {{ aggregateContent: Function, contentParts?: Array, stepMap?: Map }} aggregator
- * @param {SubagentUpdateEvent} event
- */
-function feedSubagentAggregator(aggregator, event, applyChildTiming) {
-  const graphEvent = subagentPhaseToGraphEvent(event);
-  if (graphEvent) aggregator.aggregateContent({ event: graphEvent, data: event.data });
-  applyChildTiming(aggregator, event);
-  if (!graphEvent) return;
-
-  /** The SDK aggregator intentionally projects run-step tool calls onto its
-   * public content shape, so host-only routing metadata is not copied. Restore
-   * the server-owned identity by call id after that projection; otherwise the
-   * persistence fallback has to parse an ambiguous delimiter-bearing name. */
-  const toolCalls = event.data?.stepDetails?.tool_calls ?? [];
-  const stepIndex = aggregator.stepMap?.get(event.data?.id)?.index;
-  if (!Number.isInteger(stepIndex) || !Array.isArray(aggregator.contentParts)) {
-    return;
-  }
-  for (let index = 0; index < toolCalls.length; index++) {
-    const source = toolCalls[index];
-    const target = aggregator.contentParts[stepIndex + index]?.tool_call;
-    if (target?.id === source?.id && typeof source?.mcpServerName === 'string') {
-      target.mcpServerName = source.mcpServerName;
-    }
   }
 }
 

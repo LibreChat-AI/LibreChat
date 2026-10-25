@@ -3,6 +3,11 @@ import { mbToBytes } from 'librechat-data-provider';
 import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { BedrockDocumentBlock, ServerRequest } from '~/types';
 import type { PayloadContentPart } from './document';
+import {
+  CONTENT_TRAVERSAL_MAX_DEPTH,
+  CONTENT_TRAVERSAL_MAX_NODES,
+  ContentTraversalLimitError,
+} from '~/protection/adapters/nested';
 import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 
 /** Mock the validation module */
@@ -1280,6 +1285,104 @@ describe('dedupeDocumentNames', () => {
     expect(second[0]).toBe('notes (3)');
     expect(second[2]).toBe(`${'a'.repeat(196)} (2)`);
     expect(second[2].length).toBeLessThanOrEqual(200);
+  });
+
+  it.each([1000, 2000])('bounds collision lookups for %i shared-prefix documents', (count) => {
+    const content = Array.from({ length: count / 2 }, (_, index) => {
+      const name = 'a'.repeat(196) + index.toString(36).padStart(4, '0');
+      return [bedrock(name), bedrock(name)];
+    }).flat();
+    const messages: Message[] = [{ content }];
+    const has = jest.spyOn(Set.prototype, 'has');
+
+    dedupeDocumentNames(messages);
+
+    const lookups = has.mock.calls.length;
+    has.mockRestore();
+    const result = names(contentOf(messages[0]));
+    expect(lookups).toBeLessThan(count * 6);
+    expect(new Set(result.map((name) => name.toLowerCase())).size).toBe(count);
+    expect(result.every((name) => name.length <= 200)).toBe(true);
+    expect(names(content)).toEqual(content.map((part) => part.document.name));
+  });
+
+  it('shares progress after suffix digit widths change and skips occupied suffixes', () => {
+    const prefix = 'A'.repeat(196);
+    const occupied = Array.from({ length: 1000 }, (_, index) => {
+      const suffix = ` (${index + 2})`;
+      return bedrock(prefix.slice(0, 200 - suffix.length) + suffix);
+    });
+    const originals = [prefix + '0000', prefix.toLowerCase() + '0001', prefix + '    '];
+    const content = [...occupied, ...originals.flatMap((name) => [bedrock(name), bedrock(name)])];
+    const messages: Message[] = [{ content }];
+
+    dedupeDocumentNames(messages);
+
+    const result = names(contentOf(messages[0]));
+    expect(result.slice(-6)).toEqual([
+      originals[0],
+      `${prefix.slice(0, 193)} (1002)`,
+      originals[1],
+      `${prefix.toLowerCase().slice(0, 193)} (1003)`,
+      originals[2],
+      `${prefix.slice(0, 193)} (1004)`,
+    ]);
+    expect(new Set(result.map((name) => name.toLowerCase())).size).toBe(content.length);
+  });
+
+  it('bounds imported names before case folding and resolves truncation collisions', () => {
+    const prefix = 'a'.repeat(200);
+    const messages: Message[] = [
+      { content: [bedrock(prefix + 'x'.repeat(100000)), bedrock(prefix)] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[0]))).toEqual([prefix, `${prefix.slice(0, 196)} (2)`]);
+  });
+
+  it('rejects oversized replay arrays before copying or naming their parts', () => {
+    const content = [bedrock('notes'), bedrock('notes')];
+    content.length = CONTENT_TRAVERSAL_MAX_NODES;
+    const messages: Message[] = [{ content }];
+
+    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    expect(messages[0].content).toBe(content);
+    expect(content[1].document.name).toBe('notes');
+  });
+
+  it('shares the part budget across messages and nested steer media', () => {
+    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 3);
+    const messages: Message[] = [
+      { content: [{ type: 'steer', media }] },
+      { content: [bedrock('x')] },
+    ];
+
+    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+  });
+
+  it('accepts a replay exactly at the node budget and bounds the message array', () => {
+    const messages: Message[] = [{ content: new Array(CONTENT_TRAVERSAL_MAX_NODES - 1) }];
+
+    expect(() => dedupeDocumentNames(messages)).not.toThrow();
+    expect(() => dedupeDocumentNames(new Array(CONTENT_TRAVERSAL_MAX_NODES + 1))).toThrow(
+      ContentTraversalLimitError,
+    );
+  });
+
+  it('bounds recursive media and cycles without overflowing the stack', () => {
+    const root: PayloadContentPart = { type: 'steer', media: [] };
+    let part = root;
+    for (let depth = 0; depth < CONTENT_TRAVERSAL_MAX_DEPTH; depth++) {
+      const child: PayloadContentPart = { type: 'steer', media: [] };
+      part.media = [child];
+      part = child;
+    }
+    const messages: Message[] = [{ content: [root] }];
+
+    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    root.media = [root];
+    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
   });
 
   it('leaves blocks without a Bedrock document name alone', () => {

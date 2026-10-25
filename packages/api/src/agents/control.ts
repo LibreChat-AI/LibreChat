@@ -37,6 +37,8 @@ type Dependencies = Pick<ConversationMethods, 'getConvoOwnership' | 'getSubagent
 type Params = {
   parentConversationId?: string;
   threadId?: string;
+  taskId?: string;
+  invocationId?: string;
 };
 
 const validId = (value: unknown, byteLimit = MAX_THREAD_ID_BYTES): value is string =>
@@ -274,6 +276,68 @@ export function createSubagentControlHandler(deps: Dependencies) {
         return;
       }
       res.status(500).json({ error: 'Failed to control subagent task' });
+    }
+  };
+}
+
+/** Reads one retained body through its parent without mutating or replaying the control. */
+export function createSubagentControlReceiptHandler(
+  deps: Pick<
+    Dependencies,
+    'getConvoOwnership' | 'getSubagentThreadForParent' | 'getSubagentTaskControlReceipt'
+  >,
+) {
+  return async (req: ServerRequest, res: Response): Promise<void> => {
+    const userId = req.user?.id;
+    const tenantId = req.user?.tenantId || undefined;
+    const { parentConversationId, threadId, taskId, invocationId } = req.params as Params;
+    if (
+      !userId ||
+      !validId(parentConversationId) ||
+      !validId(threadId) ||
+      parentConversationId === threadId ||
+      !validId(taskId, MAX_TASK_ID_BYTES) ||
+      !validId(invocationId, MAX_INVOCATION_ID_BYTES)
+    ) {
+      res.status(400).json({ error: 'Invalid subagent control request' });
+      return;
+    }
+    try {
+      const [parent, child] = await Promise.all([
+        deps.getConvoOwnership(userId, parentConversationId, tenantId ?? null),
+        deps.getSubagentThreadForParent({
+          user: userId,
+          parentConversationId,
+          conversationId: threadId,
+          tenantId,
+        }),
+      ]);
+      if (
+        parent == null ||
+        child?.subagentThread?.parentConversationId !== parentConversationId ||
+        parent.tenantId !== tenantId ||
+        child.tenantId !== tenantId
+      ) {
+        res.status(404).json({ error: 'Conversation not found' });
+        return;
+      }
+      const receipt = await deps.getSubagentTaskControlReceipt({
+        userId,
+        conversationId: threadId,
+        taskId,
+        invocationId,
+        tenantId,
+        activeOnly: true,
+      });
+      if (receipt == null || receipt.status === 'reserved') {
+        res.status(404).json({ error: 'Control not found' });
+        return;
+      }
+      res
+        .status(200)
+        .json({ receipt: publicStoredReceipt(receipt) } satisfies SubagentControlResponse);
+    } catch {
+      res.status(503).json({ error: 'Subagent content unavailable' });
     }
   };
 }

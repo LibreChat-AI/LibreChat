@@ -14,6 +14,7 @@ export const defaultChatSettings: ChatSettings = {
   config: { feedbackEnabled: false, canRenameRunningChat: false },
   auth: {},
   getPaneConversations: () => [],
+  usePaneConversation: () => null,
 };
 
 export const ChatSettingsContext = createContext<ChatSettings>(defaultChatSettings);

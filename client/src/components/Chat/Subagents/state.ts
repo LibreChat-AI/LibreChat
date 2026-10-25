@@ -171,6 +171,13 @@ const boundSingletonPart = (part: SubagentContentPart): SubagentContentPart => {
     );
   }
 
+  if (part.type === ContentTypes.STEER) {
+    return fitStringField(
+      truncateUtf8(part.steer, MAX_SINGLE_ACTIVITY_TEXT_BYTES),
+      (steer) => ({ ...part, steer }),
+      MAX_SINGLE_ACTIVITY_ENCODED_BYTES,
+    );
+  }
   let bounded: SubagentContentPart = {
     ...part,
     tool_call: {
@@ -1046,6 +1053,9 @@ function prependSubagentReplay(
     } else if (part.type === ContentTypes.THINK) {
       event.phase = 'reasoning_delta';
       event.data = { delta: { content: [part] } };
+    } else if (part.type === ContentTypes.STEER) {
+      event.phase = 'steer_applied';
+      event.data = { index: parts.length, part };
     } else {
       event.phase = 'run_step';
       event.data = {

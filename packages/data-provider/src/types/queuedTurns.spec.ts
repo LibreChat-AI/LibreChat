@@ -20,6 +20,18 @@ const request = {
 };
 
 describe('agent queued turn schemas', () => {
+  it('accepts maximum-length response parents and rejects larger ones', () => {
+    for (const parentMessageId of ['a'.repeat(257), 'a'.repeat(256) + '_']) {
+      expect(
+        enqueueAgentQueuedTurnSchema.parse({ ...request, parentMessageId }).parentMessageId,
+      ).toBe(parentMessageId);
+    }
+    expect(
+      enqueueAgentQueuedTurnSchema.safeParse({ ...request, parentMessageId: 'a'.repeat(258) })
+        .success,
+    ).toBe(false);
+  });
+
   it('accepts the complete enqueue contract', () => {
     expect(enqueueAgentQueuedTurnSchema.parse(request)).toEqual(request);
   });

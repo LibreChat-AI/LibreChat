@@ -91,4 +91,16 @@ describe('resolveModelCatalogKey', () => {
     expect(resolveModelCatalogKey(EModelEndpoint.google)).toBe(EModelEndpoint.google);
     expect(resolveModelCatalogKey('custom-provider')).toBe('custom-provider');
   });
+
+  it.each(['Ollama', 'OLLAMA'])(
+    'reads the served ollama catalog for a provider saved as %s',
+    (provider) => {
+      expect(resolveModelCatalogKey(provider, { ollama: ['llama3.2'] })).toBe('ollama');
+    },
+  );
+
+  it('keeps an exact catalog and other names case-sensitive', () => {
+    expect(resolveModelCatalogKey('Ollama', { Ollama: ['a'], ollama: ['b'] })).toBe('Ollama');
+    expect(resolveModelCatalogKey('OpenRouter', { openrouter: ['a'] })).toBe('OpenRouter');
+  });
 });

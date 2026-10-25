@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
+import type { AxiosInstance } from 'axios';
 import { generateShortLivedToken } from '~/crypto/jwt';
+import { isMissingStorageError } from './storage';
 
 interface DeleteRagFileParams {
   /** The user ID. Required for authentication. If not provided, the function returns false and logs an error. */
@@ -107,4 +109,35 @@ export async function hasEntityEmbeddings({
     },
   );
   return Array.isArray(data) && data.some(([chunk]) => chunk?.metadata?.user_id === entity_id);
+}
+
+/** A skipped or failed request must never be reported as a removed vector copy. */
+export function createVectorFileDeleter({
+  baseUrl,
+  httpClient,
+  generateToken,
+}: {
+  baseUrl?: string;
+  httpClient: Pick<AxiosInstance, 'delete'>;
+  generateToken: (userId: string) => string;
+}): (
+  req: { user: { id: string } },
+  file: { file_id: string; embedded?: boolean },
+) => Promise<{ deleted: true } | undefined> {
+  return async (req, file) => {
+    if (!file.embedded || !baseUrl) return undefined;
+    try {
+      await httpClient.delete(`${baseUrl}/documents`, {
+        headers: {
+          Authorization: `Bearer ${generateToken(req.user.id)}`,
+          'Content-Type': 'application/json',
+          accept: 'application/json',
+        },
+        data: [file.file_id],
+      });
+    } catch (error) {
+      if (!isMissingStorageError(error)) throw error;
+    }
+    return { deleted: true };
+  };
 }

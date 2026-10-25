@@ -77,6 +77,7 @@ export * from './stepBudget';
 export * from './startup';
 export * from './subagentThreads';
 export * from './subagentActivity';
+export * from './aggregation';
 export * from './subagentContent';
 export * from './subagentIdentity';
 export * from './subagentCompletionWakeup';

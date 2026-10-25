@@ -10,6 +10,7 @@ import {
 import type { AgentToolOptions, MCPOptions } from 'librechat-data-provider';
 import type { ParsedServerConfig } from '~/mcp/types';
 import type { RequestBody } from '~/types';
+import { capturePersistedToolOptions, retainToolOptionsLimits } from '~/agents/options';
 import { isApiKeyHeaderOverridden, isGeneratedUserApiKeyVariable } from './headers';
 import { isDirectOpenIDBearerRecoveryEnabled } from '~/mcp/openid';
 import { ALLOWED_BODY_FIELDS, isPluginSourced } from '~/utils/env';
@@ -193,6 +194,7 @@ export function normalizeAgentToolKeys(params: {
   let optionsChanged = false;
   let nextOptions: AgentToolOptions | undefined;
   if (toolOptions) {
+    capturePersistedToolOptions(toolOptions);
     nextOptions = {};
     for (const [key, options] of Object.entries(toolOptions)) {
       const rewritten = rewriteKey(key);
@@ -209,6 +211,7 @@ export function normalizeAgentToolKeys(params: {
     }
   }
 
+  if (optionsChanged && nextOptions) retainToolOptionsLimits(nextOptions, toolOptions);
   return {
     tools: toolsChanged ? nextTools : tools,
     toolOptions: optionsChanged ? nextOptions : toolOptions,
@@ -799,7 +802,11 @@ export function redactServerSecrets(
   }
 
   if (config.oauth) {
-    const { client_secret: _secret, ...safeOAuth } = config.oauth;
+    const {
+      client_secret: _secret,
+      client_secretPreview: _secretPreview,
+      ...safeOAuth
+    } = config.oauth;
     safe.oauth = safeOAuth;
   }
 

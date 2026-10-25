@@ -30,6 +30,7 @@ const {
   normalizeExpiresIn,
   createOpenIDSessionIdentity,
   resolveAppConfigForUser,
+  resolvePreAuthAppConfig,
   commitPasswordReset,
   getSafeErrorMetadata,
   hashSecret,
@@ -68,6 +69,10 @@ const AuthTokenTypes = Object.freeze({
 
 const latestAuthTokenOptions = Object.freeze({ sort: { createdAt: -1 } });
 const genericVerificationMessage = 'Please check your email to verify your email address.';
+const genericResetMessage =
+  'If an account with that email exists, a password reset link has been sent to it.';
+const domainNotAllowedMessage =
+  'The email address provided cannot be used. Please use a different email address.';
 const invalidEmailVerificationMessage = 'Invalid or expired email verification token';
 const OPENID_SESSION_ID_TOKEN_EXPIRY_BUFFER_SECONDS = 30;
 
@@ -375,6 +380,12 @@ const verifyEmail = async (req) => {
 
 /**
  * Register a new user.
+ *
+ * The email domain is checked against the pre-auth config (librechat.yaml plus the
+ * `__base__` override), then against the config of the role the account would be
+ * created with (ADMIN for the deployment's first user, otherwise USER), both before
+ * the email-in-use answer so neither reveals whether an account exists.
+ *
  * @param {IUser} user <email, password, name, username>
  * @param {Partial<IUser>} [additionalData={}] Trusted server-provided fields, such as CLI overrides.
  * @returns {Promise<{status: number, message: string, user?: IUser}>}
@@ -397,15 +408,27 @@ const registerUser = async (user, additionalData = {}) => {
   let newUserId;
   try {
     const tenantId = getTenantId();
-    const appConfig = await getAppConfig(tenantId ? { tenantId } : {});
-    if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
-      const errorMessage =
-        'The email address provided cannot be used. Please use a different email address.';
+    const preAuthConfig = await resolvePreAuthAppConfig(getAppConfig);
+    if (!isEmailDomainAllowed(email, preAuthConfig?.registration?.allowedDomains)) {
       logger.error('[registerUser] [Registration not allowed]');
-      return { status: 403, message: errorMessage };
+      return { status: 403, message: domainNotAllowedMessage };
     }
 
-    const existingUser = await findUser({ email }, 'email _id');
+    // Only the first user in the unscoped, single-tenant deployment bootstraps ADMIN.
+    // Tenant administrators must be provisioned through a trusted administrative flow.
+    const [existingUser, userCount] = await Promise.all([
+      findUser({ email }, 'email _id'),
+      tenantId ? null : countUsers(),
+    ]);
+    const role =
+      trustedAdditionalData.role ?? (userCount === 0 ? SystemRoles.ADMIN : SystemRoles.USER);
+
+    /** Checked before the email-in-use answer, which it must not depend on. */
+    const appConfig = await resolveAppConfigForUser(getAppConfig, { role });
+    if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
+      logger.error(`[registerUser] [Registration not allowed for a new ${role} account]`);
+      return { status: 403, message: domainNotAllowedMessage };
+    }
 
     if (existingUser) {
       logger.info(`[registerUser] Email in use [User ID: ${existingUser._id}]`);
@@ -415,17 +438,13 @@ const registerUser = async (user, additionalData = {}) => {
       return { status: 200, message: genericVerificationMessage };
     }
 
-    // Only the first user in the unscoped, single-tenant deployment bootstraps ADMIN.
-    // Tenant administrators must be provisioned through a trusted administrative flow.
-    const isFirstRegisteredUser = !tenantId && (await countUsers()) === 0;
-
     const newUserData = {
       provider: provider ?? 'local',
       email,
       username,
       name,
       avatar: null,
-      role: isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER,
+      role,
       password: await hashSecret(password),
       ...trustedAdditionalData,
     };
@@ -471,22 +490,25 @@ const registerUser = async (user, additionalData = {}) => {
 /**
  * Request password reset.
  *
- * Uses a two-phase domain check: fast-fail with the memory-cached base config
- * (zero DB queries) to block globally denied domains before user lookup, then
- * re-check with tenant-scoped config after user lookup so tenant-specific
- * restrictions are enforced.
+ * Uses a two-phase domain check: fast-fail with the pre-auth config (librechat.yaml
+ * plus the `__base__` override, cached) to block globally denied domains before user
+ * lookup, then re-check with the account's config (its role's overrides, in its
+ * tenant if any) after user lookup so role- and tenant-specific restrictions are
+ * enforced.
  *
  * Phase 1 (base check) returns an Error (HTTP 400) — this intentionally reveals
- * that the domain is globally blocked, but fires before any DB lookup so it
- * cannot confirm user existence. Phase 2 (tenant check) returns the generic
- * success message (HTTP 200) to prevent user-enumeration via status codes.
+ * that the domain is globally blocked, but fires before the user lookup so it
+ * cannot confirm user existence. Phase 2 (account check) returns the generic
+ * success message (HTTP 200) to prevent user-enumeration via status codes. It
+ * also does so without issuing a link when the account's config cannot be read,
+ * so a broader policy never decides the reset.
  *
  * @param {ServerRequest} req
  */
 const requestPasswordReset = async (req) => {
   const { email } = req.body;
 
-  const baseConfig = await getAppConfig({ baseOnly: true });
+  const baseConfig = await resolvePreAuthAppConfig(getAppConfig);
   if (!isEmailDomainAllowed(email, baseConfig?.registration?.allowedDomains)) {
     logger.warn('[requestPasswordReset] Blocked - email domain not allowed');
     const error = new Error(ErrorTypes.AUTH_FAILED);
@@ -497,22 +519,21 @@ const requestPasswordReset = async (req) => {
 
   const user = await findUser({ email }, 'email _id role tenantId');
   let appConfig = baseConfig;
-  if (user?.tenantId) {
+  if (user) {
     try {
       appConfig = await resolveAppConfigForUser(getAppConfig, user);
     } catch (err) {
       logger.error(
-        '[requestPasswordReset] Failed to resolve tenant config, using base:',
+        "[requestPasswordReset] Failed to resolve the account's config; no link issued:",
         getSafeErrorMetadata(err),
       );
+      return { message: genericResetMessage };
     }
   }
 
   if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
-    logger.warn('[requestPasswordReset] Tenant config blocked domain');
-    return {
-      message: 'If an account with that email exists, a password reset link has been sent to it.',
-    };
+    logger.warn("[requestPasswordReset] The account's config blocked the domain");
+    return { message: genericResetMessage };
   }
   const emailEnabled = checkEmailConfig();
 
@@ -520,9 +541,7 @@ const requestPasswordReset = async (req) => {
 
   if (!user) {
     logger.warn('[requestPasswordReset] [No user found]');
-    return {
-      message: 'If an account with that email exists, a password reset link has been sent to it.',
-    };
+    return { message: genericResetMessage };
   }
 
   await Promise.all([
@@ -561,9 +580,7 @@ const requestPasswordReset = async (req) => {
     return { link };
   }
 
-  return {
-    message: 'If an account with that email exists, a password reset link has been sent to it.',
-  };
+  return { message: genericResetMessage };
 };
 
 /**

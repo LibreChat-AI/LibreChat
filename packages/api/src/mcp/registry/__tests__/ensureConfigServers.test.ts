@@ -1,3 +1,5 @@
+import { PrincipalType } from 'librechat-data-provider';
+import type { AppConfig, ConfigOverrideLayer } from '@librechat/data-schemas';
 import type * as t from '~/mcp/types';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
@@ -697,6 +699,75 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
       const config = await registry.getServerConfig('stub_srv');
       expect(config?.source).toBe('yaml');
       expect(config?.inspectionFailed).toBe(true);
+    });
+  });
+
+  describe('credentials an admin config override stores', () => {
+    const CREDS_KEY = 'ab'.repeat(32);
+    let previousKey: string | undefined;
+
+    beforeAll(() => {
+      previousKey = process.env.CREDS_KEY;
+      process.env.CREDS_KEY = CREDS_KEY;
+    });
+
+    afterAll(() => {
+      if (previousKey === undefined) {
+        delete process.env.CREDS_KEY;
+      } else {
+        process.env.CREDS_KEY = previousKey;
+      }
+    });
+
+    it('initializes the server with the decrypted key, never the ciphertext', async () => {
+      /** Loaded under `CREDS_KEY`: the encryption key is read when data-schemas loads. */
+      let encryptV3!: typeof import('@librechat/data-schemas').encryptV3;
+      let resolveConfigOverrides!: typeof import('~/app/overrides').resolveConfigOverrides;
+      let createEnvReferencePolicy!: typeof import('~/app/allowlist').createEnvReferencePolicy;
+      await jest.isolateModulesAsync(async () => {
+        ({ encryptV3 } = await import('@librechat/data-schemas'));
+        ({ resolveConfigOverrides } = await import('~/app/overrides'));
+        ({ createEnvReferencePolicy } = await import('~/app/allowlist'));
+      });
+
+      const ciphertext = encryptV3('sk-admin-stored-key');
+      const layer = {
+        principalType: PrincipalType.ROLE,
+        principalId: 'USER',
+        priority: 10,
+        overrides: {
+          mcpServers: {
+            remote: {
+              type: 'streamable-http',
+              url: 'https://mcp.example.com/mcp',
+              apiKey: {
+                source: 'admin',
+                authorization_type: 'bearer',
+                key: ciphertext,
+                keyPreview: '...-key',
+              },
+            },
+          },
+        },
+      } as unknown as ConfigOverrideLayer;
+      const appConfig = resolveConfigOverrides({ config: {} } as AppConfig, [layer], {
+        envPolicy: createEnvReferencePolicy({}),
+      });
+
+      const result = await registry.ensureConfigServers(
+        appConfig.mcpConfig as Record<string, t.MCPOptions>,
+      );
+
+      expect(result).toHaveProperty('remote');
+      expect(inspectSpy).toHaveBeenCalledTimes(1);
+      const [name, rawConfig] = inspectSpy.mock.calls[0] as [string, t.MCPOptions];
+      expect(name).toBe('remote');
+      expect(rawConfig.apiKey).toMatchObject({
+        source: 'admin',
+        authorization_type: 'bearer',
+        key: 'sk-admin-stored-key',
+      });
+      expect(JSON.stringify(inspectSpy.mock.calls)).not.toContain(ciphertext);
     });
   });
 });
