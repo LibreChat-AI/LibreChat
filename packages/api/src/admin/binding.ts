@@ -1,6 +1,15 @@
 import isPlainObject from 'lodash/isPlainObject';
-import { webSearchPairedFields, getRebindingWebSearchKeys } from '@librechat/data-schemas';
-import type { Config, ConfigFieldWrite, ConfigOverrideIssue } from '@librechat/data-schemas';
+import {
+  getAtPath,
+  setAtPath,
+  isPlainRecord,
+  webSearchPairedFields,
+  getRebindingWebSearchKeys,
+} from '@librechat/data-schemas';
+import type { Config, ConfigOverrideIssue, ConfigOverrideState } from '@librechat/data-schemas';
+import { getSecretBindingKey, getBoundSecretLocations } from '~/app/rebinding';
+import { isEncryptedConfigSecret, isUserVariableTemplate } from './secrets';
+import { isUserProvided } from '~/utils/common';
 
 /** Issue code for a URL a write changed while the secret stored beside it stays. */
 export const SECRET_REENTRY_REQUIRED = 'secret_reentry_required';
@@ -82,105 +91,150 @@ export function isWebSearchBindingPath(fieldPath: string): boolean {
 }
 
 /**
- * Re-entry issues for a write that replaces a document's overrides. Its
- * tombstones stay as stored.
+ * Re-entry issues for a write (a replace, a field patch, a batch of changes
+ * or a field removal), judged on the document it would store: each stored
+ * key the planned document keeps beside a paired URL the write set, changed,
+ * blanked or removed.
+ *
+ * A key counts as entered again only when the planned document holds a value
+ * the request itself entered (`getEnteredConfigSecrets`). Writes apply in
+ * order, so a later write can put the stored key back over one an earlier
+ * write supplied (a whole `webSearch` after one of its keys); judging by the
+ * value the document ends up with, not by the paths the request wrote, keeps
+ * that order from hiding a kept key.
  * @param stored - The document before the write.
- * @param input - The overrides the request supplied.
- * @param next - The overrides the write would store, omitted secrets preserved.
- */
-export function getReplaceReentryIssues(
-  stored: StoredConfigState,
-  input: unknown,
-  next: unknown,
-): SecretReentryIssue[] {
-  const tombstones = stored?.tombstones;
-  const written = new Set(Object.keys(getWebSearch(input) ?? {}));
-  return toReentryIssues(
-    getWebSearchView(getWebSearch(stored?.overrides), tombstones),
-    getWebSearchView(getWebSearch(next), tombstones),
-    written,
-  );
-}
-
-/**
- * Re-entry issues for a field patch, judged on the document the patch would
- * store. Writes apply in request order, so a later write can replace what an
- * earlier one set (a whole `webSearch` after one of its fields); only the
- * planned document says which URL a stored key ends up beside.
- * @param stored - The document before the write.
- * @param writes - The field writes the request supplied, in order.
  * @param next - The overrides and tombstones the write would store, omitted secrets preserved.
+ * @param entered - The secret values the request itself entered, encrypted; none for a removal.
  */
-export function getPatchReentryIssues(
+export function getWebSearchReentryIssues(
   stored: StoredConfigState,
-  writes: readonly ConfigFieldWrite[],
   next: StoredConfigState,
+  entered: ReadonlySet<string>,
 ): SecretReentryIssue[] {
-  if (!writes.some(({ segments }) => segments[0] === WEB_SEARCH)) {
-    return [];
-  }
-  return getBatchReentryIssues(stored, writes, next);
-}
-
-/**
- * Re-entry issues for a batch of changes, judged on the document the batch
- * would store. Its sets, unsets and tombstones apply in order, so only the
- * planned document says which URL a stored key ends up beside; a key the batch
- * sets counts as entered again.
- * @param stored - The document before the batch.
- * @param writes - The values the batch sets, in order.
- * @param next - The overrides and tombstones the batch would store.
- */
-export function getBatchReentryIssues(
-  stored: StoredConfigState,
-  writes: readonly ConfigFieldWrite[],
-  next: StoredConfigState,
-): SecretReentryIssue[] {
+  const nextWebSearch = getWebSearch(next?.overrides);
   const written = new Set<string>();
-  for (const { segments, value } of writes) {
-    if (segments[0] !== WEB_SEARCH) {
-      continue;
-    }
-    if (segments.length === 1) {
-      Object.keys(getRecord(value) ?? {}).forEach((field) => written.add(field));
-    } else if (segments.length === 2) {
-      written.add(segments[1]);
+  for (const [field, value] of Object.entries(nextWebSearch ?? {})) {
+    if (typeof value === 'string' && entered.has(value)) {
+      written.add(field);
     }
   }
   return toReentryIssues(
     getWebSearchView(getWebSearch(stored?.overrides), stored?.tombstones),
-    getWebSearchView(getWebSearch(next?.overrides), next?.tombstones),
+    getWebSearchView(nextWebSearch, next?.tombstones),
     written,
   );
 }
 
-/**
- * Re-entry issues for removing one field path from a document: a field delete
- * unsets the value and clears tombstones at and below the path, and a
- * tombstone unsets the value and suppresses the inherited one.
- * @param stored - The document before the write.
- * @param fieldPath - The dot-path the write removes.
- * @param tombstone - Whether the write tombstones the path rather than deleting it.
- */
-export function getRemovalReentryIssues(
-  stored: StoredConfigState,
-  fieldPath: string,
-  tombstone: boolean,
-): SecretReentryIssue[] {
-  const field = getPairedField(fieldPath);
-  if (field == null) {
-    return [];
+/** A key the rebinding guard binds to a destination: set, and not a value each user enters. */
+function isBindableKey(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
   }
-  const storedWebSearch = getWebSearch(stored?.overrides);
-  const nextWebSearch = { ...storedWebSearch };
-  delete nextWebSearch[field];
-  const tombstones = stored?.tombstones ?? [];
-  const nextTombstones = tombstone
-    ? [...tombstones, fieldPath]
-    : tombstones.filter((path) => path !== fieldPath && !path.startsWith(`${fieldPath}.`));
-  return toReentryIssues(
-    getWebSearchView(storedWebSearch, tombstones),
-    getWebSearchView(nextWebSearch, nextTombstones),
-    new Set(),
-  );
+  const trimmed = value.trim();
+  return trimmed !== '' && !isUserProvided(trimmed) && !isUserVariableTemplate(trimmed);
+}
+
+/** A destination fingerprint a stored document holds beside one of its keys. */
+interface StoredBinding {
+  identity: string;
+  value: string;
+  fingerprint: string;
+}
+
+function getStoredBindings(overrides: unknown): StoredBinding[] {
+  return getBoundSecretLocations(overrides).flatMap(({ owner, key, identity }) => {
+    const record = getAtPath(overrides, owner);
+    if (!isPlainRecord(record)) {
+      return [];
+    }
+    const value = record[key];
+    const fingerprint = record[getSecretBindingKey(key)];
+    return typeof value === 'string' && typeof fingerprint === 'string'
+      ? [{ identity, value, fingerprint }]
+      : [];
+  });
+}
+
+/**
+ * The fingerprint a kept key brings from the stored document: the one beside the same value at
+ * the same secret, or, for a ciphertext (which only the stored key it was carried from holds),
+ * beside the same value anywhere, so a rename or copy keeps the destination it was entered for.
+ */
+function getKeptFingerprint(
+  stored: readonly StoredBinding[],
+  identity: string,
+  value: string,
+): string | undefined {
+  const same = stored.find((binding) => binding.identity === identity && binding.value === value);
+  if (same != null || !isEncryptedConfigSecret(value)) {
+    return same?.fingerprint;
+  }
+  return stored.find((binding) => binding.value === value)?.fingerprint;
+}
+
+/**
+ * Sets the destination fingerprint (`<key>Binding`) beside each bound key a planned document
+ * holds, so the merge's rebinding guard keeps a key only where it was entered:
+ * - a key the request entered gets the fingerprint of where the merge sends it over the floor
+ *   (`destinations`, from the guard's report), when that is not where librechat.yaml and the
+ *   document alone send it; otherwise none, since the guard then needs none;
+ * - a key the request kept brings the fingerprint stored beside it;
+ * - anything else, a fingerprint a client sent included, is removed.
+ *
+ * Only this server writes the fingerprints: whatever the request held there is replaced.
+ * @param destinations - Fingerprints by secret identity (`getRebindingIdentity`); none for a
+ *   write that enters nothing, or that binds nothing new.
+ */
+export function bindSecretDestinations(params: {
+  stored: StoredConfigState;
+  candidate: ConfigOverrideState;
+  entered: ReadonlySet<string>;
+  destinations?: ReadonlyMap<string, string>;
+}): ConfigOverrideState {
+  const { stored, candidate, entered, destinations } = params;
+  const storedBindings = getStoredBindings(stored?.overrides);
+  let overrides = candidate.overrides as ConfigFields;
+  for (const { owner, key, identity } of getBoundSecretLocations(candidate.overrides)) {
+    const record = getAtPath(overrides, owner);
+    if (!isPlainRecord(record)) {
+      continue;
+    }
+    const value = record[key];
+    const companion = getSecretBindingKey(key);
+    let fingerprint: string | undefined;
+    if (isBindableKey(value)) {
+      fingerprint = entered.has(value)
+        ? destinations?.get(identity)
+        : getKeptFingerprint(storedBindings, identity, value);
+    }
+    if (record[companion] === fingerprint) {
+      continue;
+    }
+    const { [companion]: _previous, ...rest } = record;
+    overrides = setAtPath(
+      overrides,
+      owner,
+      fingerprint === undefined ? rest : { ...rest, [companion]: fingerprint },
+    );
+  }
+  return overrides === candidate.overrides
+    ? candidate
+    : { ...candidate, overrides: overrides as ConfigOverrideState['overrides'] };
+}
+
+/**
+ * Whether a planned document holds a key the request entered at a place the merge binds to a
+ * destination, so its fingerprint must be worked out over the floor.
+ */
+export function entersBoundSecret(
+  candidate: ConfigOverrideState,
+  entered: ReadonlySet<string>,
+): boolean {
+  if (entered.size === 0) {
+    return false;
+  }
+  return getBoundSecretLocations(candidate.overrides).some(({ owner, key }) => {
+    const value = getAtPath(getAtPath(candidate.overrides, owner), [key]);
+    return isBindableKey(value) && entered.has(value);
+  });
 }

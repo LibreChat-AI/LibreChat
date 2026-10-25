@@ -2,7 +2,6 @@ import type { TMessage, EventSubmission } from 'librechat-data-provider';
 import type { Location, NavigateFunction } from 'react-router-dom';
 import type { QueryClient } from '@tanstack/react-query';
 import type { MutableRefObject } from 'react';
-import type { SetterOrUpdater } from 'recoil';
 import type useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import type useAttachmentHandler from './useAttachmentHandler';
 import type { EventHandlerParams } from './useEventHandlers';
@@ -23,7 +22,6 @@ export type EventHandlerContext = Required<
     | 'setShowStopButton'
   > & {
     queryClient: QueryClient;
-    setAbortScroll: SetterOrUpdater<boolean>;
     /** Clears the elapsed anchor on every terminal path. */
     setSubmissionStart: (start: number | null) => void;
     announcePolite: ReturnType<typeof useLiveAnnouncer>['announcePolite'];

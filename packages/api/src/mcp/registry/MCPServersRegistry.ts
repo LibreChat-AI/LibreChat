@@ -23,7 +23,7 @@ import { normalizeLegacyHeaderMaps, normalizeLegacyHeaderMapsIn } from './compat
 import { canBackfillSharedServerInstructions, isUserSourced } from '~/mcp/utils';
 import { ReadThroughAllCache } from './cache/ReadThroughAllCache';
 import { isPluginSourced, MCP_PLUGIN_SOURCE } from '~/utils/env';
-import { requireApiKeyReentryForRebinding } from './binding';
+import { requireApiKeyReentryForRebinding } from './reentry';
 import { ReadThroughCache } from './cache/ReadThroughCache';
 import { MCPServerInspector } from './MCPServerInspector';
 import { ServerConfigsDB } from './db/ServerConfigsDB';

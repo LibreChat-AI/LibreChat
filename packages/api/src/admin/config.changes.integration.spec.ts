@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { isDeepStrictEqual } from 'node:util';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
 import type { AppConfig, ConfigDraft } from '@librechat/data-schemas';
@@ -94,7 +95,6 @@ function createDeps(overrides: Partial<AdminConfigDeps> = {}): AdminConfigDeps {
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: jest.fn(methods.writeConfigDocument),
-    tombstoneConfigField: methods.tombstoneConfigField,
     unsetConfigField: methods.unsetConfigField,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
@@ -129,6 +129,17 @@ async function send(
 
 async function storedDocument(principalId: string) {
   return raw().findOne({ principalId });
+}
+
+/** The value at `segments`, `undefined` when anything on the way is missing. */
+function valueAt(root: unknown, segments: readonly string[]): unknown {
+  return segments.reduce<unknown>(
+    (value, key) =>
+      value != null && typeof value === 'object'
+        ? (value as Record<string, unknown>)[key]
+        : undefined,
+    root,
+  );
 }
 
 /** Stores a role document as is, past every API guard, as an older server or another writer might. */
@@ -274,6 +285,7 @@ describe('POST …/changes: one atomic write', () => {
         path: 'mcpServers.new.title',
         segments: ['mcpServers', 'new', 'title'],
         code: 'invalid_type',
+        params: { expected: 'string', received: 'number' },
       },
     ]);
     expect(deps.writeConfigDocument).not.toHaveBeenCalled();
@@ -403,7 +415,7 @@ describe('POST …/changes: secrets', () => {
     expect(JSON.stringify(body)).not.toContain(ciphertext);
   });
 
-  it('encrypts an entry key, keeps it through a rename and an edit, and never needs it again', async () => {
+  it('encrypts an entry key and keeps it through a rename and an edit that leave its destination', async () => {
     const params = nextParams();
     const created = await send(
       {
@@ -423,15 +435,15 @@ describe('POST …/changes: secrets', () => {
     expect(storedEntry.apiKey.startsWith('v3:')).toBe(true);
     expect(storedEntry.apiKeyPreview).toBe('...0001');
 
+    const edited = endpoint('new', {
+      baseURL: 'https://old.example.com/v1',
+      models: { default: ['m', 'n'] },
+    });
     const { status, body } = await send(
       {
         ops: [
           { op: 'rename', fieldPath: 'endpoints.custom', from: 'old', to: 'new' },
-          {
-            op: 'upsertEntry',
-            fieldPath: 'endpoints.custom',
-            entry: endpoint('new', { baseURL: 'https://new.example.com/v2' }),
-          },
+          { op: 'upsertEntry', fieldPath: 'endpoints.custom', entry: edited },
         ],
       },
       params,
@@ -440,7 +452,7 @@ describe('POST …/changes: secrets', () => {
     expect(status).toBe(200);
     const [entry] = (await storedDocument(params.principalId))!.overrides.endpoints.custom;
     expect(entry).toEqual({
-      ...endpoint('new', { baseURL: 'https://new.example.com/v2' }),
+      ...edited,
       apiKey: storedEntry.apiKey,
       apiKeyPreview: '...0001',
     });
@@ -448,6 +460,89 @@ describe('POST …/changes: secrets', () => {
     const returned = (body.config?.overrides.endpoints as { custom: object[] }).custom[0];
     expect(returned).not.toHaveProperty('apiKey');
     expect(returned).toHaveProperty('apiKeyPreview', '...0001');
+  });
+
+  it('needs an entry key again when a batch moves its destination, renamed or not', async () => {
+    const params = nextParams();
+    const created = await send(
+      {
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('old', { apiKey: 'sk-endpoint-secret-0002' }),
+          },
+        ],
+      },
+      params,
+    );
+    expect(created.status).toBe(200);
+    const before = await storedDocument(params.principalId);
+
+    const moves: Array<[string, Array<Record<string, unknown>>]> = [
+      [
+        'an upsert of the entry with another base URL',
+        [
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('old', { baseURL: 'https://attacker.example.com/v1' }),
+          },
+        ],
+      ],
+      [
+        'a rename, then an upsert under the new name with another base URL',
+        [
+          { op: 'rename', fieldPath: 'endpoints.custom', from: 'old', to: 'new' },
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('new', { baseURL: 'https://new.example.com/v2' }),
+          },
+        ],
+      ],
+      [
+        'an upsert that sets a native client destination',
+        [
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('old', { addParams: { anthropicApiUrl: 'https://attacker.example' } }),
+          },
+        ],
+      ],
+    ];
+    for (const [, ops] of moves) {
+      for (const dryRun of [true, false]) {
+        const { status, body } = await send({ ops, dryRun }, params);
+        expect(status).toBe(400);
+        expect(body).toMatchObject({ code: 'CONFIG_SECRET_REENTRY_REQUIRED' });
+        expect(body.issues).toEqual([
+          expect.objectContaining({
+            code: 'secret_reentry_required',
+            secretPath: 'endpoints.custom.0.apiKey',
+          }),
+        ]);
+      }
+    }
+    expect(await storedDocument(params.principalId)).toEqual(before);
+
+    const reentered = await send(
+      {
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('old', {
+              baseURL: 'https://attacker.example.com/v1',
+              apiKey: 'sk-endpoint-secret-0003',
+            }),
+          },
+        ],
+      },
+      params,
+    );
+    expect(reentered.status).toBe(200);
   });
 
   it('refuses submitted ciphertext and writes under a secret, naming the change', async () => {
@@ -576,6 +671,497 @@ describe('POST …/changes: a stored web search key and the URL it is sent to', 
   });
 });
 
+describe('POST …/changes: a stored MCP credential and where it is sent', () => {
+  const GOOD = 'https://good.example.com/mcp';
+  const EVIL = 'https://evil.example.com/mcp';
+  const server = (url: string, key?: string) => ({
+    type: 'streamable-http',
+    url,
+    apiKey: { source: 'admin', authorization_type: 'bearer', ...(key != null && { key }) },
+  });
+  const REENTRY = (name: string) => ({
+    error: expect.stringContaining('Re-enter apiKey.key'),
+    code: 'MCP_API_KEY_REENTRY_REQUIRED',
+    server: name,
+    fields: ['url'],
+  });
+
+  /** Stores each named server with its own key, as an admin who can enter them would. */
+  async function storeServers(servers: Record<string, ReturnType<typeof server>>) {
+    const params = nextParams();
+    const { status } = await send(
+      {
+        ops: Object.entries(servers).map(([name, value]) => ({
+          op: 'set',
+          fieldPath: `mcpServers.${name}`,
+          value,
+        })),
+      },
+      params,
+    );
+    expect(status).toBe(200);
+    return { params, before: await storedDocument(params.principalId) };
+  }
+
+  /** Sends the batch as a dry run and for real; what each answered, and whether it wrote. */
+  async function attempt(
+    params: { principalType: string; principalId: string },
+    ops: Array<Record<string, unknown>>,
+  ) {
+    const before = await storedDocument(params.principalId);
+    const answers = [];
+    for (const dryRun of [true, false]) {
+      const { status, body } = await send({ ops, dryRun }, params);
+      answers.push({ status, body });
+    }
+    const unchanged = isDeepStrictEqual(await storedDocument(params.principalId), before);
+    return { answers, unchanged };
+  }
+
+  /** Both the dry run and the write refused, naming the server, and nothing stored. */
+  const refused = (name: string) => ({
+    answers: [
+      { status: 400, body: REENTRY(name) },
+      { status: 400, body: REENTRY(name) },
+    ],
+    unchanged: true,
+  });
+
+  it('encrypts a key set on a server, returns only its preview, and keeps it when a set omits it', async () => {
+    const { params, before } = await storeServers({ probe: server(GOOD, 'sk-probe-secret-1111') });
+    const key = before!.overrides.mcpServers.probe.apiKey.key as string;
+    expect(key.startsWith('v3:')).toBe(true);
+    expect(decryptV3(key)).toBe('sk-probe-secret-1111');
+    expect(before!.overrides.mcpServers.probe.apiKey.keyPreview).toBe('...1111');
+
+    const { status, body } = await send(
+      {
+        ops: [{ op: 'set', fieldPath: 'mcpServers.probe', value: { ...server(GOOD), title: 'P' } }],
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    const after = await storedDocument(params.principalId);
+    expect(after!.overrides.mcpServers.probe.apiKey.key).toBe(key);
+    expect(after!.overrides.mcpServers.probe.title).toBe('P');
+    const payload = JSON.stringify(body);
+    expect(payload).not.toContain('sk-probe-secret-1111');
+    expect(payload).not.toContain(key);
+    expect(payload).toContain('...1111');
+  });
+
+  it('refuses a URL change that keeps the stored key', async () => {
+    const { params } = await storeServers({ probe: server(GOOD, 'sk-probe-secret-1111') });
+
+    expect(
+      await attempt(params, [{ op: 'set', fieldPath: 'mcpServers.probe.url', value: EVIL }]),
+    ).toEqual(refused('probe'));
+  });
+
+  it('refuses a batch that renames the server away and back around a decoy key', async () => {
+    const { params } = await storeServers({ probe: server(GOOD, 'sk-probe-secret-1111') });
+
+    expect(
+      await attempt(params, [
+        { op: 'rename', fieldPath: 'mcpServers', from: 'probe', to: 'tmp' },
+        { op: 'set', fieldPath: 'mcpServers.probe.apiKey.key', value: 'sk-decoy-key-0000' },
+        { op: 'unset', fieldPath: 'mcpServers.probe' },
+        { op: 'rename', fieldPath: 'mcpServers', from: 'tmp', to: 'probe' },
+        { op: 'set', fieldPath: 'mcpServers.probe.url', value: EVIL },
+      ]),
+    ).toEqual(refused('probe'));
+  });
+
+  it('follows a key through a rename, or a chain of them, to the server it came from', async () => {
+    const { params } = await storeServers({ a: server(GOOD, 'sk-a-secret-key-1111') });
+
+    expect(
+      await attempt(params, [
+        { op: 'rename', fieldPath: 'mcpServers', from: 'a', to: 'b' },
+        { op: 'set', fieldPath: 'mcpServers.b.url', value: EVIL },
+      ]),
+    ).toEqual(refused('b'));
+    expect(
+      await attempt(params, [
+        { op: 'rename', fieldPath: 'mcpServers', from: 'a', to: 'b' },
+        { op: 'rename', fieldPath: 'mcpServers', from: 'b', to: 'c' },
+        { op: 'set', fieldPath: 'mcpServers.c.url', value: EVIL },
+      ]),
+    ).toEqual(refused('c'));
+  });
+
+  it('accepts a rename that keeps where the key goes, or a move that enters the key again', async () => {
+    const { params, before } = await storeServers({ a: server(GOOD, 'sk-a-secret-key-1111') });
+    const key = before!.overrides.mcpServers.a.apiKey.key as string;
+
+    const renamed = await send(
+      { ops: [{ op: 'rename', fieldPath: 'mcpServers', from: 'a', to: 'b' }] },
+      params,
+    );
+    expect(renamed.status).toBe(200);
+    expect((await storedDocument(params.principalId))!.overrides.mcpServers.b.apiKey.key).toBe(key);
+
+    const moved = await send(
+      {
+        ops: [
+          { op: 'rename', fieldPath: 'mcpServers', from: 'b', to: 'c' },
+          { op: 'set', fieldPath: 'mcpServers.c.url', value: EVIL },
+          { op: 'set', fieldPath: 'mcpServers.c.apiKey.key', value: 'sk-entered-again-2222' },
+        ],
+      },
+      params,
+    );
+    expect(moved.status).toBe(200);
+    const stored = (await storedDocument(params.principalId))!.overrides.mcpServers.c;
+    expect(stored.url).toBe(EVIL);
+    expect(decryptV3(stored.apiKey.key)).toBe('sk-entered-again-2222');
+  });
+
+  it('accepts a name swap that moves each key with its own server', async () => {
+    const { params, before } = await storeServers({
+      a: server(GOOD, 'sk-a-secret-key-1111'),
+      b: server(EVIL, 'sk-b-secret-key-2222'),
+    });
+    const { a, b } = before!.overrides.mcpServers;
+
+    const { status } = await send(
+      {
+        ops: [
+          { op: 'rename', fieldPath: 'mcpServers', from: 'a', to: 'tmp' },
+          { op: 'rename', fieldPath: 'mcpServers', from: 'b', to: 'a' },
+          { op: 'rename', fieldPath: 'mcpServers', from: 'tmp', to: 'b' },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect((await storedDocument(params.principalId))!.overrides.mcpServers).toEqual({
+      a: b,
+      b: a,
+    });
+  });
+});
+
+describe('POST …/changes: env references and the credentials a write leaves elsewhere', () => {
+  const UNLISTED_URL = 'https://h.example/${LC8_UNLISTED_NAME}';
+
+  it('names an upserted entry by its position once the batch has moved it', async () => {
+    const params = nextParams();
+    await seedDocument(
+      params.principalId,
+      { endpoints: { custom: [endpoint('first'), endpoint('second')] } },
+      [],
+    );
+
+    const { status, body } = await send(
+      {
+        ops: [
+          { op: 'removeEntry', fieldPath: 'endpoints.custom', key: 'first' },
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('second', { baseURL: 'https://h.example/${LC8_UNLISTED_NAME}' }),
+          },
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('third', { headers: { 'X-Key': '${LC8_UNLISTED_NAME}' } }),
+          },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body).toMatchObject({
+      code: 'CONFIG_OVERRIDE_INVALID',
+      issues: [
+        {
+          path: 'endpoints.custom.0.baseURL',
+          segments: ['endpoints', 'custom', '0', 'baseURL'],
+          code: 'env_reference_not_allowed',
+        },
+        {
+          path: 'endpoints.custom.1.headers.X-Key',
+          segments: ['endpoints', 'custom', '1', 'headers', 'X-Key'],
+          code: 'env_reference_not_allowed',
+        },
+      ],
+    });
+    expect((await storedDocument(params.principalId))!.overrides.endpoints.custom).toEqual([
+      endpoint('first'),
+      endpoint('second'),
+    ]);
+  });
+
+  it('names an upserted entry where the batch leaves it, after a later removal', async () => {
+    const params = nextParams();
+    await seedDocument(
+      params.principalId,
+      { endpoints: { custom: [endpoint('first'), endpoint('second')] } },
+      [],
+    );
+
+    const { status, body } = await send(
+      {
+        dryRun: true,
+        ops: [
+          { op: 'upsertEntry', entry: endpoint('bad', { baseURL: UNLISTED_URL }) },
+          { op: 'removeEntry', key: 'first' },
+        ].map((op) => ({ ...op, fieldPath: 'endpoints.custom' })),
+      },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body).toMatchObject({
+      code: 'CONFIG_OVERRIDE_INVALID',
+      issues: [
+        {
+          path: 'endpoints.custom.1.baseURL',
+          segments: ['endpoints', 'custom', '1', 'baseURL'],
+          code: 'env_reference_not_allowed',
+        },
+      ],
+    });
+    expect(body.issues).toHaveLength(1);
+  });
+
+  it('judges references on the document the batch leaves, not on values a later change removed', async () => {
+    const cases = [
+      {
+        stored: { endpoints: { custom: [endpoint('first')] } },
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('bad', { baseURL: UNLISTED_URL }),
+          },
+          { op: 'set', fieldPath: 'endpoints.custom', value: [endpoint('c')] },
+        ],
+        path: ['endpoints', 'custom'],
+        left: [endpoint('c')],
+      },
+      {
+        stored: { ocr: { mistralModel: 'mistral-ocr-latest' } },
+        ops: [
+          { op: 'set', fieldPath: 'ocr.baseURL', value: UNLISTED_URL },
+          { op: 'unset', fieldPath: 'ocr' },
+        ],
+        path: ['ocr'],
+        left: undefined,
+      },
+      {
+        stored: { ocr: { mistralModel: 'mistral-ocr-latest' } },
+        ops: [
+          { op: 'set', fieldPath: 'ocr.baseURL', value: UNLISTED_URL },
+          {
+            op: 'set',
+            fieldPath: 'ocr',
+            value: { baseURL: 'https://ocr.example.com/v1', mistralModel: 'mistral-ocr-latest' },
+          },
+        ],
+        path: ['ocr', 'baseURL'],
+        left: 'https://ocr.example.com/v1',
+      },
+    ];
+
+    for (const { stored, ops, path, left } of cases) {
+      for (const dryRun of [true, false]) {
+        const params = nextParams();
+        await seedDocument(params.principalId, stored, []);
+
+        const { status, body } = await send({ dryRun, ops }, params);
+
+        expect({ status, issues: body.issues }).toEqual({ status: 200, issues: undefined });
+        const document = (await storedDocument(params.principalId))?.overrides;
+        expect(valueAt(document, path)).toEqual(dryRun ? valueAt(stored, path) : left);
+      }
+    }
+  });
+
+  it('still refuses a reference the batch leaves, held encrypted or written with spaces', async () => {
+    const params = nextParams();
+
+    const { status, body } = await send(
+      {
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: 'endpoints.custom',
+            entry: endpoint('gateway', { apiKey: 'pa${LC8_UNLISTED_NAME}ss' }),
+          },
+          { op: 'set', fieldPath: 'ocr.apiKey', value: ' ${LC8_UNLISTED_NAME} ' },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body.issues).toEqual([
+      {
+        path: 'endpoints.custom.0.apiKey',
+        segments: ['endpoints', 'custom', '0', 'apiKey'],
+        code: 'env_reference_not_allowed',
+      },
+      { path: 'ocr.apiKey', segments: ['ocr', 'apiKey'], code: 'env_reference_not_allowed' },
+    ]);
+    expect(await storedDocument(params.principalId)).toBeNull();
+  });
+
+  it('leaves a stored reference a batch puts back where it was to merge time', async () => {
+    const params = nextParams();
+    const ocr = { baseURL: UNLISTED_URL, mistralModel: 'mistral-ocr-latest' };
+    await seedDocument(params.principalId, { ocr }, []);
+
+    const { status } = await send(
+      {
+        ops: [
+          { op: 'set', fieldPath: 'ocr.baseURL', value: 'https://ocr.example.com/v1' },
+          { op: 'set', fieldPath: 'ocr', value: { ...ocr } },
+          { op: 'set', fieldPath: 'interface.customWelcome', value: 'Welcome' },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    const { overrides } = (await storedDocument(params.principalId))!;
+    expect(overrides.ocr).toEqual(ocr);
+    expect(overrides.interface).toEqual({ customWelcome: 'Welcome' });
+  });
+
+  it('follows each entry of a collection a change sets by its key, through later changes', async () => {
+    const bad = (name: string) => endpoint(name, { headers: { 'X-Key': '${LC8_UNLISTED_NAME}' } });
+    const cases = [
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'endpoints.custom',
+            value: [endpoint('good'), bad('bad')],
+          },
+          { op: 'removeEntry', fieldPath: 'endpoints.custom', key: 'good' },
+        ],
+        path: ['endpoints', 'custom', '0', 'headers', 'X-Key'],
+      },
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'endpoints',
+            value: { custom: [endpoint('good'), bad('bad')] },
+          },
+          { op: 'removeEntry', fieldPath: 'endpoints.custom', key: 'good' },
+          { op: 'rename', fieldPath: 'endpoints.custom', from: 'bad', to: 'renamed' },
+          { op: 'upsertEntry', fieldPath: 'endpoints.custom', entry: endpoint('first') },
+        ],
+        path: ['endpoints', 'custom', '0', 'headers', 'X-Key'],
+      },
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'mcpServers',
+            value: {
+              draft: { type: 'streamable-http', url: 'https://h.example/${LC8_UNLISTED_NAME}' },
+            },
+          },
+          { op: 'rename', fieldPath: 'mcpServers', from: 'draft', to: 'tools' },
+        ],
+        path: ['mcpServers', 'tools', 'url'],
+      },
+    ];
+
+    for (const { ops, path } of cases) {
+      for (const dryRun of [true, false]) {
+        const params = nextParams();
+
+        const { status, body } = await send({ dryRun, ops }, params);
+
+        expect({ status, issues: body.issues }).toEqual({
+          status: 400,
+          issues: [{ path: path.join('.'), segments: path, code: 'env_reference_not_allowed' }],
+        });
+        expect(await storedDocument(params.principalId)).toBeNull();
+      }
+    }
+  });
+
+  it('names a value under a key a later rename moved by the new key', async () => {
+    const params = nextParams();
+
+    const { status, body } = await send(
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'mcpServers.draft',
+            value: { type: 'streamable-http', url: 'https://h.example/${LC8_UNLISTED_NAME}' },
+          },
+          { op: 'rename', fieldPath: 'mcpServers', from: 'draft', to: 'tools' },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body).toMatchObject({
+      code: 'CONFIG_OVERRIDE_INVALID',
+      issues: [
+        {
+          path: 'mcpServers.tools.url',
+          segments: ['mcpServers', 'tools', 'url'],
+          code: 'env_reference_not_allowed',
+        },
+      ],
+    });
+    expect(await storedDocument(params.principalId)).toBeNull();
+  });
+
+  it('reports the librechat.yaml key a batch leaves on a new URL, written or planned', async () => {
+    const yaml = {
+      ...YAML,
+      mcpServers: {
+        ...YAML.mcpServers,
+        tools: {
+          type: 'streamable-http',
+          url: 'https://tools.example.com/mcp',
+          apiKey: { source: 'admin', authorization_type: 'bearer', key: '${TOOLS_KEY}' },
+        },
+      },
+    };
+    const deps = createDeps({
+      getAppConfig: async () =>
+        ({ config: yaml, mcpConfig: structuredClone(yaml.mcpServers) }) as unknown as AppConfig,
+    });
+    const ops = [
+      { op: 'set', fieldPath: 'mcpServers.tools.url', value: 'https://evil.example.com/mcp' },
+    ];
+    const rebinding = {
+      path: 'mcpServers.tools.apiKey.key',
+      segments: ['mcpServers', 'tools', 'apiKey', 'key'],
+      reason: 'secret_rebinding',
+    };
+
+    const planned = await send({ ops, dryRun: true }, nextParams(), deps);
+    expect(planned.status).toBe(200);
+    expect(planned.body).toMatchObject({ dryRun: true, written: false });
+    expect(planned.body.ignored).toEqual([rebinding]);
+
+    const params = nextParams();
+    const written = await send({ ops }, params, deps);
+    expect(written.status).toBe(200);
+    expect(written.body.written).toBe(true);
+    expect(written.body.ignored).toEqual([rebinding]);
+    expect((await storedDocument(params.principalId))!.overrides.mcpServers.tools.url).toBe(
+      'https://evil.example.com/mcp',
+    );
+  });
+});
+
 describe('POST …/changes: entries librechat.yaml owns', () => {
   it('refuses to rename a YAML entry or to take its name', async () => {
     const params = nextParams();
@@ -694,32 +1280,52 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
         path: 'endpoints.custom.2.baseURL',
         segments: ['endpoints', 'custom', '2', 'baseURL'],
         code: 'invalid_type',
+        params: { expected: 'string', received: 'number' },
       },
     ]);
   });
 
-  it('reports writes to a YAML stdio server as applied but ignored at runtime', async () => {
+  it('refuses a write inside a YAML stdio server, and leaves one out of a whole-section value', async () => {
     const params = nextParams();
-    const { status, body } = await send(
+    const refused = await send(
       {
         ops: [
-          { op: 'set', fieldPath: 'mcpServers.yaml-stdio.title', value: 'Local' },
           { op: 'set', fieldPath: 'mcpServers.yaml-http.title', value: 'Remote' },
+          { op: 'set', fieldPath: 'mcpServers.yaml-stdio.title', value: 'Local' },
         ],
       },
       params,
     );
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ code: 'PROCESS_MCP_SERVER_OVERRIDE', opIndex: 1 });
+    expect(await storedDocument(params.principalId)).toBeNull();
 
+    const { status, body } = await send(
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'mcpServers',
+            value: { 'yaml-stdio': { title: 'Local' }, 'yaml-http': { title: 'Remote' } },
+          },
+        ],
+      },
+      params,
+    );
     expect(status).toBe(200);
-    expect(body.applied).toHaveLength(2);
-    expect(body.ignored).toEqual([
+    expect(body.applied).toEqual([{ opIndex: 0, op: 'set', segments: ['mcpServers'] }]);
+    expect(body.skipped).toEqual([
       {
         opIndex: 0,
         op: 'set',
-        segments: ['mcpServers', 'yaml-stdio', 'title'],
+        segments: ['mcpServers', 'yaml-stdio'],
         reason: 'process_mcp_server',
       },
     ]);
+    expect(body.ignored).toEqual([]);
+    expect((await storedDocument(params.principalId))!.overrides).toEqual({
+      mcpServers: { 'yaml-http': { title: 'Remote' } },
+    });
   });
 
   it('reports the YAML stdio servers a whole-section tombstone leaves in place as ignored', async () => {
@@ -779,7 +1385,83 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
     expect((await storedDocument(params.principalId))!.tombstones).toEqual(['endpoints.agents']);
   });
 
-  it('reports a rename under a YAML stdio server as ignored, but not an unset there', async () => {
+  it('skips a set or tombstone of a derived field and strips one a set above it carries', async () => {
+    const params = nextParams();
+    const stale = { projectId: 'x', serviceKeyFile: 'http://169.254.169.254/latest' };
+    const skippedOnly = [
+      { op: 'set', fieldPath: 'endpoints.anthropic.vertexConfig', value: stale },
+      { op: 'tombstone', fieldPath: 'endpoints.anthropic.vertexConfig' },
+      { op: 'set', fieldPath: 'endpoints.anthropic.vertexConfig.projectId', value: 'y' },
+    ];
+    for (const op of skippedOnly) {
+      const { status, body } = await send({ ops: [op] }, params);
+      expect(status).toBe(200);
+      expect(body.skipped).toEqual([
+        {
+          opIndex: 0,
+          op: op.op,
+          segments: op.fieldPath.split('.'),
+          reason: 'derived_path',
+        },
+      ]);
+      expect(body.applied).toEqual([]);
+    }
+    expect(await storedDocument(params.principalId)).toBeNull();
+
+    const { status, body } = await send(
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'endpoints.anthropic',
+            value: { titleModel: 'claude-haiku-4-5', vertexConfig: stale },
+          },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(body.skipped).toEqual([
+      {
+        opIndex: 0,
+        op: 'set',
+        segments: ['endpoints', 'anthropic', 'vertexConfig'],
+        reason: 'derived_path',
+      },
+    ]);
+    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0]);
+    const stored = await storedDocument(params.principalId);
+    expect(stored!.overrides).toEqual({
+      endpoints: { anthropic: { titleModel: 'claude-haiku-4-5' } },
+    });
+    expect(stored!.tombstones).toEqual([]);
+  });
+
+  it('lets an unset clear a derived field an older server stored', async () => {
+    const params = nextParams();
+    await seedDocument(
+      params.principalId,
+      {
+        endpoints: { anthropic: { titleModel: 'claude-haiku-4-5', vertexConfig: { region: 'x' } } },
+      },
+      [],
+    );
+
+    const { status, body } = await send(
+      { ops: [{ op: 'unset', fieldPath: 'endpoints.anthropic.vertexConfig' }] },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(body.skipped).toEqual([]);
+    expect(body.applied.map(({ opIndex, op }) => [opIndex, op])).toEqual([[0, 'unset']]);
+    expect((await storedDocument(params.principalId))!.overrides).toEqual({
+      endpoints: { anthropic: { titleModel: 'claude-haiku-4-5' } },
+    });
+  });
+
+  it('refuses a rename under a YAML stdio server, but not an unset there', async () => {
     const params = nextParams();
     await seedDocument(
       params.principalId,
@@ -794,7 +1476,7 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
       [],
     );
 
-    const { status, body } = await send(
+    const rename = await send(
       {
         ops: [
           {
@@ -803,24 +1485,22 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
             from: 'OLD',
             to: 'NEW',
           },
-          { op: 'unset', fieldPath: 'mcpServers.yaml-stdio.title' },
         ],
       },
       params,
     );
+    expect(rename.status).toBe(400);
+    expect(rename.body).toMatchObject({ code: 'PROCESS_MCP_SERVER_OVERRIDE', opIndex: 0 });
 
+    const { status, body } = await send(
+      { ops: [{ op: 'unset', fieldPath: 'mcpServers.yaml-stdio.title' }] },
+      params,
+    );
     expect(status).toBe(200);
-    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0, 1]);
-    expect(body.ignored).toEqual([
-      {
-        opIndex: 0,
-        op: 'rename',
-        segments: ['mcpServers', 'yaml-stdio', 'customUserVars'],
-        reason: 'process_mcp_server',
-      },
-    ]);
+    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0]);
+    expect(body.ignored).toEqual([]);
     expect((await storedDocument(params.principalId))!.overrides).toEqual({
-      mcpServers: { 'yaml-stdio': { customUserVars: { NEW: { title: 'T', description: 'D' } } } },
+      mcpServers: { 'yaml-stdio': { customUserVars: { OLD: { title: 'T', description: 'D' } } } },
     });
   });
 
@@ -831,6 +1511,273 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
     );
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: 'PROCESS_MCP_CONFIG', opIndex: 0 });
+  });
+});
+
+describe("POST …/changes: hiding or removing the endpoint a profile's model spec selects", () => {
+  const spec = (name: string, endpointName: string) => ({
+    name,
+    label: name,
+    preset: { endpoint: endpointName, model: 'm' },
+  });
+
+  it.each([
+    ['a keyed tombstone', { op: 'tombstone', fieldPath: 'endpoints.custom["yaml-endpoint"]' }],
+    ['a tombstone of the list', { op: 'tombstone', fieldPath: 'endpoints.custom' }],
+  ])("takes the spec with %s of librechat.yaml's endpoint", async (_case, op) => {
+    const params = nextParams();
+    const specs = [spec('yaml', 'yaml-endpoint'), spec('openai', 'openAI')];
+    expect(
+      (await patchFields([{ fieldPath: 'modelSpecs.list', value: specs }], params)).status,
+    ).toBe(200);
+
+    const { status, body } = await send({ ops: [op] }, params);
+
+    expect(status).toBe(200);
+    expect(body.applied.map(({ opIndex }) => opIndex)).toEqual([0]);
+    expect((await storedDocument(params.principalId))!.tombstones).toEqual([op.fieldPath]);
+  });
+
+  it.each([
+    ['removeEntry', { op: 'removeEntry', fieldPath: 'endpoints.custom', key: 'Router' }],
+    ['a keyed unset', { op: 'unset', fieldPath: 'endpoints.custom["Router"]' }],
+    ['a keyed tombstone', { op: 'tombstone', fieldPath: 'endpoints.custom["Router"]' }],
+    ['an unset of the list', { op: 'unset', fieldPath: 'endpoints.custom' }],
+  ])("takes the spec with %s of the profile's own endpoint", async (_case, op) => {
+    const params = nextParams();
+    const written = await patchFields(
+      [
+        { fieldPath: 'endpoints.custom', value: [endpoint('Router')] },
+        { fieldPath: 'modelSpecs.list', value: [spec('router', 'Router')] },
+      ],
+      params,
+    );
+    expect(written.status).toBe(200);
+
+    const { status, body } = await send({ ops: [op] }, params);
+
+    expect(status).toBe(200);
+    expect(body.applied.map(({ opIndex }) => opIndex)).toEqual([0]);
+    const { overrides } = (await storedDocument(params.principalId))!;
+    expect(valueAt(overrides, ['endpoints', 'custom']) ?? []).toEqual([]);
+    expect(valueAt(overrides, ['modelSpecs', 'list'])).toEqual([spec('router', 'Router')]);
+  });
+
+  it('still refuses a spec the batch writes for the endpoint it hides', async () => {
+    const params = nextParams();
+
+    const { status, body } = await send(
+      {
+        ops: [
+          { op: 'tombstone', fieldPath: 'endpoints.custom["yaml-endpoint"]' },
+          { op: 'set', fieldPath: 'modelSpecs.list', value: [spec('yaml', 'yaml-endpoint')] },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body.issues).toEqual([
+      expect.objectContaining({
+        path: 'modelSpecs.list.0.preset.endpoint',
+        code: 'unknown_spec_endpoint',
+      }),
+    ]);
+    expect(await storedDocument(params.principalId)).toBeNull();
+  });
+});
+
+describe('POST …/changes: entry names the runtime folds together', () => {
+  const CUSTOM = 'endpoints.custom';
+  const ollama = (name: string, extra: Record<string, unknown> = {}) =>
+    endpoint(name, { baseURL: 'https://ollama.example.com/v1', ...extra });
+
+  /** Stores `Ollama` with a key through the API, returning the stored entry. */
+  async function storeOllama(params: { principalType: string; principalId: string }) {
+    const created = await send(
+      {
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: CUSTOM,
+            entry: ollama('Ollama', { apiKey: 'sk-ollama-secret-0001' }),
+          },
+          { op: 'upsertEntry', fieldPath: CUSTOM, entry: endpoint('foo') },
+        ],
+      },
+      params,
+    );
+    expect(created.status).toBe(200);
+    const [entry] = (await storedDocument(params.principalId))!.overrides.endpoints.custom;
+    expect(entry.apiKey.startsWith('v3:')).toBe(true);
+    expect(entry.apiKeyPreview).toBe('...0001');
+    return entry as { apiKey: string; apiKeyPreview: string };
+  }
+
+  it('upserts `ollama` onto a stored `Ollama`, keeping its key, instead of adding a duplicate', async () => {
+    const params = nextParams();
+    const stored = await storeOllama(params);
+
+    const { status, body } = await send(
+      {
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: CUSTOM,
+            entry: ollama('ollama', { modelDisplayLabel: 'Local' }),
+          },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(body.applied.map((ref) => ref.key)).toEqual(['ollama']);
+    const custom = (await storedDocument(params.principalId))!.overrides.endpoints.custom;
+    expect(custom).toEqual([
+      {
+        ...ollama('ollama', { modelDisplayLabel: 'Local' }),
+        apiKey: stored.apiKey,
+        apiKeyPreview: '...0001',
+      },
+      endpoint('foo'),
+    ]);
+    expect(secrets.resolveCustomEndpointSecrets(custom[0]).apiKey).toBe('sk-ollama-secret-0001');
+  });
+
+  it('collapses a stored two-spelling entry on upsert, keeping the key the runtime used', async () => {
+    const stored = await storeOllama(nextParams());
+    const params = nextParams();
+    await seedDocument(
+      params.principalId,
+      {
+        endpoints: {
+          custom: [
+            ollama('Ollama', { apiKey: stored.apiKey, apiKeyPreview: stored.apiKeyPreview }),
+            endpoint('foo'),
+            { name: 'ollama', modelDisplayLabel: 'Old' },
+          ],
+        },
+      },
+      [],
+    );
+
+    const { status } = await send(
+      {
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: CUSTOM,
+            entry: ollama('ollama', { modelDisplayLabel: 'New' }),
+          },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect((await storedDocument(params.principalId))!.overrides.endpoints.custom).toEqual([
+      {
+        ...ollama('ollama', { modelDisplayLabel: 'New' }),
+        apiKey: stored.apiKey,
+        apiKeyPreview: '...0001',
+      },
+      endpoint('foo'),
+    ]);
+  });
+
+  it('removes a stored `Ollama` by removeEntry `ollama`', async () => {
+    const params = nextParams();
+    await storeOllama(params);
+
+    const { status, body } = await send(
+      { ops: [{ op: 'removeEntry', fieldPath: CUSTOM, key: 'ollama' }] },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(body.written).toBe(true);
+    expect(body.applied.map((ref) => ref.key)).toEqual(['ollama']);
+    expect((await storedDocument(params.principalId))!.overrides).toEqual({
+      endpoints: { custom: [endpoint('foo')] },
+    });
+  });
+
+  it('refuses a rename onto another spelling of a stored entry as entry_exists', async () => {
+    const params = nextParams();
+    await storeOllama(params);
+    const before = await storedDocument(params.principalId);
+
+    const { status, body } = await send(
+      { ops: [{ op: 'rename', fieldPath: CUSTOM, from: 'foo', to: 'ollama' }] },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body).toMatchObject({
+      code: 'CONFIG_ENTRY_INVALID',
+      reason: 'entry_exists',
+      opIndex: 0,
+    });
+    expect(await storedDocument(params.principalId)).toEqual(before);
+  });
+
+  it('treats every spelling of a YAML entry as that entry', async () => {
+    const deps = createDeps({
+      getAppConfig: async () =>
+        ({
+          config: {
+            ...YAML,
+            endpoints: { custom: [...YAML.endpoints.custom, ollama('Ollama')] },
+          },
+        }) as unknown as AppConfig,
+    });
+    const params = nextParams();
+    const created = await send(
+      {
+        ops: [
+          {
+            op: 'upsertEntry',
+            fieldPath: CUSTOM,
+            entry: { name: 'ollama', modelDisplayLabel: 'L' },
+          },
+          { op: 'upsertEntry', fieldPath: CUSTOM, entry: endpoint('own') },
+        ],
+      },
+      params,
+      deps,
+    );
+    expect(created.status).toBe(200);
+    const before = await storedDocument(params.principalId);
+
+    for (const op of [
+      { op: 'rename', fieldPath: CUSTOM, from: 'ollama', to: 'other' },
+      { op: 'rename', fieldPath: CUSTOM, from: 'own', to: 'OLLAMA' },
+    ]) {
+      const { status, body } = await send({ ops: [op] }, params, deps);
+      expect(status).toBe(400);
+      expect(body).toMatchObject({
+        code: 'CONFIG_ENTRY_INVALID',
+        reason: 'inherited_entry',
+        opIndex: 0,
+      });
+    }
+    expect(await storedDocument(params.principalId)).toEqual(before);
+  });
+
+  it('refuses two changes of a batch that name one entry in two spellings', async () => {
+    const { status, body } = await send(
+      {
+        ops: [
+          { op: 'upsertEntry', fieldPath: CUSTOM, entry: ollama('Ollama') },
+          { op: 'removeEntry', fieldPath: CUSTOM, key: 'ollama' },
+        ],
+      },
+      nextParams(),
+    );
+
+    expect(status).toBe(400);
+    expect(body).toMatchObject({ code: 'DUPLICATE_FIELD_PATH', opIndex: 1 });
   });
 });
 
@@ -946,6 +1893,71 @@ describe('POST …/changes: skipped, not refused (owner decision #2)', () => {
   });
 });
 
+describe('POST …/changes: Turnstile and policy links', () => {
+  it('skips Turnstile, which stays on librechat.yaml, and stores a mailto: policy link', async () => {
+    const params = nextParams();
+
+    const set = await send(
+      {
+        ops: [
+          { op: 'set', fieldPath: 'turnstile.siteKey', value: 'stored-key' },
+          {
+            op: 'set',
+            fieldPath: 'interface.privacyPolicy.externalUrl',
+            value: 'mailto:privacy@example.com',
+          },
+        ],
+      },
+      params,
+    );
+    const tombstone = await send({ ops: [{ op: 'tombstone', fieldPath: 'turnstile' }] }, params);
+
+    expect(set.status).toBe(200);
+    expect(set.body.skipped.map(({ opIndex, reason }) => [opIndex, reason])).toEqual([
+      [0, 'base_only_section'],
+    ]);
+    expect(tombstone.status).toBe(200);
+    expect(tombstone.body.skipped.map(({ opIndex, reason }) => [opIndex, reason])).toEqual([
+      [0, 'base_only_section'],
+    ]);
+    const stored = await storedDocument(params.principalId);
+    expect(stored!.overrides).toEqual({
+      interface: { privacyPolicy: { externalUrl: 'mailto:privacy@example.com' } },
+    });
+    expect(stored!.tombstones).toEqual([]);
+  });
+
+  it('refuses a policy link that would run script, writing nothing', async () => {
+    const params = nextParams();
+
+    const { status, body, deps } = await send(
+      {
+        ops: [
+          { op: 'set', fieldPath: 'interface.customWelcome', value: 'hi' },
+          {
+            op: 'set',
+            fieldPath: 'interface.termsOfService',
+            value: { externalUrl: '\u00a0JavaScript:alert(document.domain)' },
+          },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body.code).toBe('CONFIG_OVERRIDE_INVALID');
+    expect(body.issues).toEqual([
+      {
+        path: 'interface.termsOfService.externalUrl',
+        segments: ['interface', 'termsOfService', 'externalUrl'],
+        code: 'custom',
+      },
+    ]);
+    expect(deps.writeConfigDocument).not.toHaveBeenCalled();
+    expect(await storedDocument(params.principalId)).toBeNull();
+  });
+});
+
 describe('POST …/changes: no-ops, dry runs and preconditions', () => {
   it('writes nothing for a batch that changes nothing, keeping the revision', async () => {
     const params = nextParams();
@@ -1053,7 +2065,12 @@ describe('POST …/changes: no-ops, dry runs and preconditions', () => {
     );
     expect(rewritten.status).toBe(400);
     expect(rewritten.body.issues).toEqual([
-      { path: 'balance.startBalance', segments: ['balance', 'startBalance'], code: 'invalid_type' },
+      {
+        path: 'balance.startBalance',
+        segments: ['balance', 'startBalance'],
+        code: 'invalid_type',
+        params: { expected: 'number', received: 'string' },
+      },
     ]);
   });
 
@@ -1361,6 +2378,66 @@ describe('POST …/changes: request checks', () => {
     const stored = await storedDocument(params.principalId);
     expect(stored!.overrides).toEqual({ interface: { customWelcome: 'hi' } });
     expect(stored!.tombstones).toEqual([]);
+  });
+
+  it('lets unset remove part of what an older server stored outside configSchema, and still refuses writes there', async () => {
+    const params = nextParams();
+    await seedDocument(
+      params.principalId,
+      {
+        paths: { uploads: '/tmp/x', imageOutput: '/tmp/y' },
+        interfaceConfig: { agents: false, prompts: false },
+        interface: { customWelcome: 'hi' },
+      },
+      ['config.version', 'config.cache', 'interfaceConfig.bookmarks'],
+    );
+
+    const { status, body } = await send(
+      {
+        ops: [
+          { op: 'unset', fieldPath: 'paths.uploads' },
+          { op: 'unset', fieldPath: 'config.version' },
+          { op: 'unset', fieldPath: 'interfaceConfig.agents' },
+          { op: 'set', fieldPath: 'interface.customWelcome', value: 'hello' },
+        ],
+      },
+      params,
+    );
+
+    expect({ status, code: body.code, issues: body.issues }).toEqual({
+      status: 200,
+      code: undefined,
+      issues: undefined,
+    });
+    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0, 1, 2, 3]);
+    const stored = await storedDocument(params.principalId);
+    expect(stored!.overrides).toEqual({
+      paths: { imageOutput: '/tmp/y' },
+      interfaceConfig: { prompts: false },
+      interface: { customWelcome: 'hello' },
+    });
+    expect(stored!.tombstones).toEqual(['config.cache', 'interfaceConfig.bookmarks']);
+
+    for (const op of [
+      { op: 'set', fieldPath: 'paths.imageOutput', value: '/tmp/z' },
+      { op: 'tombstone', fieldPath: 'interfaceConfig.prompts' },
+      { op: 'rename', fieldPath: 'paths', from: 'imageOutput', to: 'uploads' },
+    ]) {
+      const refused = await send(
+        { ops: [{ op: 'unset', fieldPath: 'paths.uploads' }, op] },
+        params,
+      );
+      expect({
+        status: refused.status,
+        code: refused.body.code,
+        opIndex: refused.body.opIndex,
+      }).toEqual({
+        status: 400,
+        code: 'UNKNOWN_SECTION',
+        opIndex: 1,
+      });
+    }
+    expect((await storedDocument(params.principalId))!.overrides).toEqual(stored!.overrides);
   });
 
   it('hides a whole inherited array but refuses a tombstone inside one', async () => {

@@ -2,9 +2,10 @@ import mongoose, { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
 import type { ConfigRecord } from '~/app/store';
-import type { IConfig } from '~/types';
-import { createConfigMethods } from './config';
-import configSchema from '~/schema/config';
+import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createConfigMethods, createConfigStore } from './config';
+import { resetTenantStrictCache } from '~/tenant/policy';
+import { createConfigModel } from '~/models/config';
 
 let mongoServer: MongoMemoryServer;
 let methods: ReturnType<typeof createConfigMethods>;
@@ -12,10 +13,7 @@ let methods: ReturnType<typeof createConfigMethods>;
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
-  if (!mongoose.models.Config) {
-    mongoose.model<IConfig>('Config', configSchema);
-  }
-  await mongoose.models.Config.init();
+  await createConfigModel(mongoose).init();
   methods = createConfigMethods(mongoose);
 });
 
@@ -305,6 +303,38 @@ describe('getApplicableConfigs', () => {
     expect(configs[1].principalId).toBe('admin');
   });
 
+  it('returns Base first and a stable order for equal priorities, whatever the stored ones', async () => {
+    const groups = Array.from({ length: 5 }, () => new Types.ObjectId().toString());
+    for (const groupId of groups) {
+      await methods.upsertConfig(PrincipalType.GROUP, groupId, PrincipalModel.GROUP, {}, 20);
+    }
+    await methods.upsertConfig(PrincipalType.USER, 'u1', PrincipalModel.USER, {}, 20);
+    await methods.upsertConfig(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {}, 20);
+    await methods.upsertConfig(PrincipalType.ROLE, '__base__', PrincipalModel.ROLE, {}, 90);
+    const principals = [
+      { principalType: PrincipalType.USER, principalId: 'u1' },
+      { principalType: PrincipalType.ROLE, principalId: 'admin' },
+      ...groups.map((principalId) => ({ principalType: PrincipalType.GROUP, principalId })),
+    ];
+    const order = async () =>
+      (await methods.getApplicableConfigs(principals)).map(
+        (config) => `${config.principalType}:${config.principalId}`,
+      );
+
+    const first = await order();
+    expect(first[0]).toBe('role:__base__');
+    expect(first[1]).toBe('role:admin');
+    expect(first[first.length - 1]).toBe('user:u1');
+    for (let round = 0; round < 5; round++) {
+      expect(await order()).toEqual(first);
+    }
+    expect(
+      (await methods.listAllConfigs()).map(
+        (config) => `${config.principalType}:${config.principalId}`,
+      ),
+    ).toEqual(first);
+  });
+
   it('skips principals with undefined principalId', async () => {
     await methods.upsertConfig(PrincipalType.ROLE, '__base__', PrincipalModel.ROLE, {}, 0);
 
@@ -313,6 +343,96 @@ describe('getApplicableConfigs', () => {
     ]);
 
     expect(configs).toHaveLength(1);
+  });
+
+  describe('tenant partition', () => {
+    const USER_ROLE = [{ principalType: PrincipalType.ROLE, principalId: 'USER' }];
+
+    /** Inserts documents directly so each one keeps exactly the `tenantId` form it is given. */
+    async function seed(
+      docs: Array<{ principalId: string; label: string; tenantId?: string | null }>,
+    ): Promise<void> {
+      await mongoose.connection.db!.collection('configs').insertMany(
+        docs.map(({ principalId, label, tenantId }, index) => ({
+          principalType: PrincipalType.ROLE,
+          principalId,
+          principalModel: PrincipalModel.ROLE,
+          priority: principalId === '__base__' ? 0 : 10 + index,
+          overrides: { registration: { allowedDomains: [label] } },
+          tombstones: [],
+          isActive: true,
+          configVersion: 1,
+          ...(tenantId !== undefined && { tenantId }),
+        })),
+      );
+    }
+
+    const labels = (configs: ConfigRecord[]): string[] =>
+      configs.map((config) => config.overrides.registration?.allowedDomains?.[0] ?? '');
+
+    beforeEach(async () => {
+      await seed([
+        { principalId: '__base__', label: 'deployment-base' },
+        { principalId: '__base__', label: 'a-base', tenantId: 'tenant-a' },
+        { principalId: '__base__', label: 'b-base', tenantId: 'tenant-b' },
+        { principalId: 'USER', label: 'deployment-user' },
+        { principalId: 'USER', label: 'a-user', tenantId: 'tenant-a' },
+        { principalId: 'USER', label: 'b-user', tenantId: 'tenant-b' },
+      ]);
+    });
+
+    afterEach(() => {
+      delete process.env.TENANT_ISOLATION_STRICT;
+      resetTenantStrictCache();
+    });
+
+    it('reads only tenantless documents outside a tenant', async () => {
+      expect(labels(await methods.getApplicableConfigs(USER_ROLE))).toEqual([
+        'deployment-base',
+        'deployment-user',
+      ]);
+    });
+
+    it('reads only tenantless documents under the system sentinel', async () => {
+      const configs = await runAsSystem(() => methods.getApplicableConfigs(USER_ROLE));
+      expect(labels(configs)).toEqual(['deployment-base', 'deployment-user']);
+    });
+
+    it("reads only the active tenant's documents", async () => {
+      const configs = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.getApplicableConfigs(USER_ROLE),
+      );
+      expect(labels(configs)).toEqual(['a-base', 'a-user']);
+    });
+
+    it("never falls back to the deployment's documents inside a tenant", async () => {
+      const configs = await tenantStorage.run({ tenantId: 'tenant-c' }, () =>
+        methods.getApplicableConfigs(USER_ROLE),
+      );
+      expect(configs).toEqual([]);
+    });
+
+    it('treats a stored null or empty tenantId as tenantless', async () => {
+      await mongoose.models.Config.deleteMany({});
+      await seed([
+        { principalId: '__base__', label: 'null-base', tenantId: null },
+        { principalId: 'USER', label: 'empty-user', tenantId: '' },
+        { principalId: 'ADMIN', label: 'a-admin', tenantId: 'tenant-a' },
+      ]);
+
+      const configs = await methods.getApplicableConfigs([
+        ...USER_ROLE,
+        { principalType: PrincipalType.ROLE, principalId: 'ADMIN' },
+      ]);
+      expect(labels(configs)).toEqual(['null-base', 'empty-user']);
+    });
+
+    it('refuses a read with no tenant context in strict mode', async () => {
+      process.env.TENANT_ISOLATION_STRICT = 'true';
+      resetTenantStrictCache();
+
+      await expect(methods.getApplicableConfigs(USER_ROLE)).rejects.toThrow('[TenantIsolation]');
+    });
   });
 });
 
@@ -485,6 +605,302 @@ describe('upsertConfig', () => {
   });
 });
 
+describe('upsertConfig priority', () => {
+  it('keeps the stored priority when none is given, and defaults by principal type on create', async () => {
+    const groupId = new Types.ObjectId().toString();
+    const created = await methods.upsertConfig(PrincipalType.GROUP, groupId, PrincipalModel.GROUP, {
+      interface: { modelSelect: false },
+    });
+    expect(created!.priority).toBe(20);
+
+    await methods.setConfigPriority(PrincipalType.GROUP, groupId, 35);
+    const replaced = await methods.upsertConfig(
+      PrincipalType.GROUP,
+      groupId,
+      PrincipalModel.GROUP,
+      { interface: { modelSelect: true } },
+    );
+    expect(replaced!.priority).toBe(35);
+  });
+});
+
+describe('setConfigPriority', () => {
+  it('changes only the priority of a stored document', async () => {
+    await methods.patchConfigFields(PrincipalType.ROLE, 'prio', PrincipalModel.ROLE, {
+      'interface.customWelcome': 'hi',
+    });
+    await methods.tombstoneConfigField(PrincipalType.ROLE, 'prio', PrincipalModel.ROLE, 'memory');
+    await methods.toggleConfigActive(PrincipalType.ROLE, 'prio', false);
+
+    const result = await methods.setConfigPriority(PrincipalType.ROLE, 'prio', 3);
+
+    expect(result!.changed).toBe(true);
+    const stored = await methods.findConfigByPrincipal(PrincipalType.ROLE, 'prio', {
+      includeInactive: true,
+    });
+    expect(stored).toMatchObject({
+      priority: 3,
+      overrides: { interface: { customWelcome: 'hi' } },
+      tombstones: ['memory'],
+      isActive: false,
+      configVersion: 4,
+    });
+    expect(await methods.setConfigPriority(PrincipalType.ROLE, 'missing', 3)).toBeNull();
+  });
+});
+
+describe('renameConfigPrincipal', () => {
+  it('moves a profile with dotted keys, storing them as the engine accepts them', async () => {
+    const profiles = { 'us.anthropic.claude-sonnet-4-5': 'arn:aws:x' };
+    await methods.patchConfigFields(PrincipalType.ROLE, 'editor', PrincipalModel.ROLE, {
+      'endpoints.bedrock.inferenceProfiles': profiles,
+    });
+
+    const moved = await methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+
+    expect(moved!.principalId).toBe('writer');
+    expect(moved!.overrides).toEqual({ endpoints: { bedrock: { inferenceProfiles: profiles } } });
+    expect(await raw().findOne({ principalId: 'editor' })).toBeNull();
+    const stored = await raw().findOne({ principalId: 'writer' });
+    expect(stored!.overrides.endpoints.bedrock.inferenceProfiles).toEqual(profiles);
+    expect(stored!.keyEncoding).toBeUndefined();
+  });
+
+  it('refuses to move onto a principal that has a profile, changing nothing', async () => {
+    await methods.patchConfigFields(PrincipalType.ROLE, 'a', PrincipalModel.ROLE, { x: 1 });
+    await methods.patchConfigFields(PrincipalType.ROLE, 'b', PrincipalModel.ROLE, { y: 1 });
+
+    await expect(methods.renameConfigPrincipal(PrincipalType.ROLE, 'a', 'b')).rejects.toMatchObject(
+      { code: 'CONFIG_PRINCIPAL_EXISTS' },
+    );
+    expect((await methods.findConfigByPrincipal(PrincipalType.ROLE, 'a'))!.overrides).toEqual({
+      x: 1,
+    });
+    expect((await methods.findConfigByPrincipal(PrincipalType.ROLE, 'b'))!.overrides).toEqual({
+      y: 1,
+    });
+  });
+});
+
+const inTenant = <T>(tenantId: string, run: () => Promise<T>): Promise<T> =>
+  tenantStorage.run({ tenantId }, run);
+const seedTenant = (tenantId: string, principalId: string, overrides: Record<string, unknown>) =>
+  inTenant(tenantId, () =>
+    methods.patchConfigFields(PrincipalType.ROLE, principalId, PrincipalModel.ROLE, overrides),
+  );
+/**
+ * A platform-level document, inserted directly so it keeps exactly the tenantless form it is
+ * given: no `tenantId`, or an unclaimed `null` or `''`.
+ */
+const seedPlatform = (
+  principalId: string,
+  overrides: Record<string, unknown>,
+  tenant: { tenantId?: string | null } = {},
+) =>
+  raw().insertOne({
+    principalType: PrincipalType.ROLE,
+    principalId,
+    principalModel: PrincipalModel.ROLE,
+    priority: 10,
+    overrides,
+    tombstones: [],
+    isActive: true,
+    configVersion: 1,
+    ...tenant,
+  });
+/** Every stored role document as `tenant/principalId`, platform-level ones as `-/…`. */
+const layout = async () =>
+  (
+    await raw()
+      .find({ principalType: PrincipalType.ROLE })
+      .project<{ principalId: string; tenantId?: string | null }>({ principalId: 1, tenantId: 1 })
+      .toArray()
+  )
+    .map((document) => `${document.tenantId || '-'}/${document.principalId}`)
+    .sort();
+/** Every stored role document as `tenant/principalId:priority`, platform-level ones as `-/…`. */
+const priorities = async () =>
+  (
+    await raw()
+      .find({ principalType: PrincipalType.ROLE })
+      .project<{ principalId: string; priority: number; tenantId?: string | null }>({
+        principalId: 1,
+        priority: 1,
+        tenantId: 1,
+      })
+      .toArray()
+  )
+    .map((document) => `${document.tenantId || '-'}/${document.principalId}:${document.priority}`)
+    .sort();
+
+describe('renameConfigPrincipal in the caller tenant partition', () => {
+  it('moves only the platform-level profile for a caller without a tenant', async () => {
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+    await seedPlatform('editor', { x: 'platform' });
+
+    const moved = await methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+
+    expect(moved!.overrides).toEqual({ x: 'platform' });
+    expect(moved!.tenantId).toBeUndefined();
+    expect(await layout()).toEqual(['-/writer', 'tenant-a/editor']);
+  });
+
+  it("never moves a tenant's profile to the platform when the platform role has none", async () => {
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+
+    expect(await methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer')).toBeNull();
+    expect(await layout()).toEqual(['tenant-a/editor']);
+  });
+
+  it('is refused only by a profile at the new name in the same partition', async () => {
+    await seedTenant('tenant-a', 'writer', { x: 'tenant-a' });
+    await seedPlatform('editor', { x: 'platform' });
+
+    const moved = await methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+
+    expect(moved!.overrides).toEqual({ x: 'platform' });
+    expect(await layout()).toEqual(['-/writer', 'tenant-a/writer']);
+    await seedPlatform('editor', { x: 'again' });
+    await expect(
+      methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer'),
+    ).rejects.toMatchObject({ code: 'CONFIG_PRINCIPAL_EXISTS' });
+    expect(await layout()).toEqual(['-/editor', '-/writer', 'tenant-a/writer']);
+  });
+
+  it("moves only the active tenant's profile inside a tenant", async () => {
+    await seedPlatform('editor', { x: 'platform' });
+    await seedTenant('tenant-b', 'editor', { x: 'tenant-b' });
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+
+    const moved = await inTenant('tenant-a', () =>
+      methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer'),
+    );
+
+    expect(moved!.overrides).toEqual({ x: 'tenant-a' });
+    expect(moved!.tenantId).toBe('tenant-a');
+    expect(await layout()).toEqual(['-/editor', 'tenant-a/writer', 'tenant-b/editor']);
+  });
+
+  it('treats an unclaimed profile (null or empty tenant) as platform-level', async () => {
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+    await seedPlatform('editor', { x: 'unclaimed' }, { tenantId: '' });
+    await seedPlatform('author', { x: 'unclaimed' }, { tenantId: null });
+
+    const moved = await Promise.all([
+      methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer'),
+      methods.renameConfigPrincipal(PrincipalType.ROLE, 'author', 'reader'),
+    ]);
+
+    expect(moved.map((record) => record!.overrides)).toEqual([
+      { x: 'unclaimed' },
+      { x: 'unclaimed' },
+    ]);
+    expect(await layout()).toEqual(['-/reader', '-/writer', 'tenant-a/editor']);
+  });
+
+  it("reads a role's profile only in the caller partition, as a rename's target check does", async () => {
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+
+    const platformRead = await methods.findConfigByPrincipal(PrincipalType.ROLE, 'editor', {
+      includeInactive: true,
+    });
+    const tenantRead = await inTenant('tenant-a', () =>
+      methods.findConfigByPrincipal(PrincipalType.ROLE, 'editor'),
+    );
+
+    expect(platformRead).toBeNull();
+    expect(tenantRead!.overrides).toEqual({ x: 'tenant-a' });
+  });
+
+  /**
+   * The driver applies the next insert and reports a dropped connection instead of its reply;
+   * with `unsettled`, the lookup that would settle it fails as well.
+   */
+  function loseNextCreateAcknowledgement(options: { unsettled?: boolean } = {}): Error {
+    const collection = mongoose.models.Config.collection;
+    const findOneAndUpdate = collection.findOneAndUpdate.bind(collection);
+    const lost = new mongoose.mongo.MongoNetworkError('connection reset after the write applied');
+    jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce((async (
+      ...args: Parameters<typeof findOneAndUpdate>
+    ) => {
+      await findOneAndUpdate(...args);
+      if (options.unsettled) {
+        jest
+          .spyOn(collection, 'findOne')
+          .mockRejectedValueOnce(new mongoose.mongo.MongoNetworkError('still disconnected'));
+      }
+      throw lost;
+    }) as unknown as typeof collection.findOneAndUpdate);
+    return lost;
+  }
+
+  it("settles a copy whose acknowledgement was lost and finishes the move in the caller's tenant", async () => {
+    await seedTenant('tenant-b', 'writer', { x: 'tenant-b' });
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+    loseNextCreateAcknowledgement();
+
+    const moved = await inTenant('tenant-a', () =>
+      methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer'),
+    );
+
+    expect(moved!.overrides).toEqual({ x: 'tenant-a' });
+    expect(moved!.tenantId).toBe('tenant-a');
+    expect(await layout()).toEqual(['tenant-a/writer', 'tenant-b/writer']);
+  });
+
+  it('keeps both documents and rethrows when a lost acknowledgement cannot be settled', async () => {
+    await seedPlatform('editor', { x: 'platform' });
+    const lost = loseNextCreateAcknowledgement({ unsettled: true });
+
+    await expect(
+      methods.renameConfigPrincipal(PrincipalType.ROLE, 'editor', 'writer'),
+    ).rejects.toBe(lost);
+    expect(await layout()).toEqual(['-/editor', '-/writer']);
+  });
+});
+
+describe('setConfigPriority in the caller tenant partition', () => {
+  it('changes only the platform-level profile for a caller without a tenant', async () => {
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+    await seedPlatform('editor', { x: 'platform' });
+    await seedPlatform('author', { x: 'unclaimed' }, { tenantId: '' });
+
+    const result = await methods.setConfigPriority(PrincipalType.ROLE, 'editor', 40);
+    const unclaimed = await methods.setConfigPriority(PrincipalType.ROLE, 'author', 30);
+
+    expect(result).toMatchObject({ changed: true, config: { priority: 40 } });
+    expect(result!.config.overrides).toEqual({ x: 'platform' });
+    expect(result!.config.tenantId).toBeUndefined();
+    expect(unclaimed).toMatchObject({ changed: true, config: { overrides: { x: 'unclaimed' } } });
+    expect(await priorities()).toEqual(['-/author:30', '-/editor:40', 'tenant-a/editor:10']);
+  });
+
+  it("never changes or returns a tenant's profile when the platform role has none", async () => {
+    const tenantProfile = await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+
+    expect(await methods.setConfigPriority(PrincipalType.ROLE, 'editor', 40)).toBeNull();
+    await expect(
+      methods.setConfigPriority(PrincipalType.ROLE, 'editor', 40, {
+        expectedRevision: `${tenantProfile!._id}:${tenantProfile!.configVersion}`,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFIG_VERSION_CONFLICT', currentRevision: null });
+    expect(await priorities()).toEqual(['tenant-a/editor:10']);
+  });
+
+  it("changes only the active tenant's profile inside a tenant", async () => {
+    await seedPlatform('editor', { x: 'platform' });
+    await seedTenant('tenant-b', 'editor', { x: 'tenant-b' });
+    await seedTenant('tenant-a', 'editor', { x: 'tenant-a' });
+
+    const result = await inTenant('tenant-a', () =>
+      methods.setConfigPriority(PrincipalType.ROLE, 'editor', 40),
+    );
+
+    expect(result!.config).toMatchObject({ tenantId: 'tenant-a', overrides: { x: 'tenant-a' } });
+    expect(await priorities()).toEqual(['-/editor:10', 'tenant-a/editor:40', 'tenant-b/editor:10']);
+  });
+});
+
 describe('unsetConfigField', () => {
   it('removes a field from overrides via $unset', async () => {
     await methods.upsertConfig(
@@ -595,6 +1011,122 @@ describe('MCP record-key tombstones', () => {
 
     expect(result!.tombstones).toEqual([]);
     expect(result!.overrides).toEqual({});
+  });
+});
+
+describe('keyed tombstones of custom endpoints', () => {
+  const HIDE = 'endpoints.custom["My \\"Gateway\\" v1.2"]';
+  const own = { name: 'gw', baseURL: 'https://gw.example.com', headers: { A: 'a', B: 'b' } };
+
+  async function stored(): Promise<ConfigRecord | null> {
+    return methods.findConfigByPrincipal(PrincipalType.ROLE, 'admin');
+  }
+
+  it('hides an entry on a document with no array, storing the canonical keyed path as is', async () => {
+    const result = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'endpoints.custom["My \\u0022Gateway\\u0022 v1.2"]',
+      10,
+    );
+
+    expect(result.tombstones).toEqual([HIDE]);
+    expect(result.overrides).toEqual({});
+    const raw = await mongoose.models.Config.collection.findOne({ principalId: 'admin' });
+    expect(raw?.tombstones).toEqual([HIDE]);
+  });
+
+  it('removes a path inside an entry an earlier write created, and keeps the rest of it', async () => {
+    await methods.patchConfigFields(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {
+      'endpoints.custom': [own],
+    });
+
+    const result = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'endpoints.custom["gw"].headers.A',
+    );
+
+    expect(result.overrides).toEqual({
+      endpoints: { custom: [{ ...own, headers: { B: 'b' } }] },
+    });
+    expect(result.tombstones).toEqual(['endpoints.custom["gw"].headers.A']);
+  });
+
+  it('clears the hide of an entry the profile writes again, keeping the tombstones inside it', async () => {
+    await methods.tombstoneConfigField(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, [
+      'endpoints.custom["gw"]',
+      'endpoints.custom["gw"].headers.A',
+      'endpoints.custom["other"]',
+    ]);
+
+    const result = await methods.patchConfigFields(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { 'endpoints.custom': [{ name: 'gw', titleModel: 'x' }] },
+    );
+
+    expect(result.tombstones).toEqual([
+      'endpoints.custom["gw"].headers.A',
+      'endpoints.custom["other"]',
+    ]);
+  });
+
+  it('unsets an entry by key, and the collection with every keyed tombstone under it', async () => {
+    await methods.patchConfigFields(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {
+      'endpoints.custom': [own, { name: 'kept', baseURL: 'https://kept' }],
+    });
+    await methods.tombstoneConfigField(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, [
+      'endpoints.custom["gw"].headers.A',
+      'endpoints.custom["yaml"]',
+      'memory.agent',
+    ]);
+
+    const entry = await methods.unsetConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      'endpoints.custom["gw"]',
+    );
+    expect(entry!.overrides).toEqual({
+      endpoints: { custom: [{ name: 'kept', baseURL: 'https://kept' }] },
+    });
+    expect(entry!.tombstones).toEqual(['endpoints.custom["yaml"]', 'memory.agent']);
+
+    const collection = await methods.unsetConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      'endpoints.custom',
+    );
+    expect(collection!.overrides).toEqual({});
+    expect(collection!.tombstones).toEqual(['memory.agent']);
+  });
+
+  it('counts a document holding only keyed tombstones as not empty', async () => {
+    await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'endpoints.custom["gw"]',
+    );
+
+    const deleted = await methods.deleteConfig(PrincipalType.ROLE, 'admin', undefined, {
+      expectEmpty: true,
+    });
+
+    expect(deleted).toBeNull();
+    expect((await stored())?.tombstones).toEqual(['endpoints.custom["gw"]']);
+  });
+
+  it('refuses a malformed keyed path, or one after an array not merged by key', async () => {
+    for (const path of ['endpoints.custom["gw"', 'modelSpecs.list["a"]']) {
+      await expect(
+        methods.tombstoneConfigField(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, path),
+      ).rejects.toMatchObject({ code: 'CONFIG_PATH_INVALID', reason: 'keyed_path' });
+    }
+    expect(await stored()).toBeNull();
   });
 });
 
@@ -816,6 +1348,392 @@ describe('toggleConfigActiveTracked', () => {
 
 const raw = () => mongoose.connection.db!.collection('configs');
 
+describe('role-addressed operations stay in one tenant partition', () => {
+  const BASE = '__base__';
+  const inTenantA = <T>(fn: () => Promise<T>): Promise<T> =>
+    tenantStorage.run({ tenantId: 'tenant-a' }, fn);
+  const revisionOf = (config: { _id: unknown; configVersion: number }) =>
+    `${String(config._id)}:${config.configVersion}`;
+
+  /** Inserts directly, so the document keeps exactly the `tenantId` form it is given. */
+  async function seedBase(label: string, tenantId?: string | null): Promise<void> {
+    await mongoose.connection.db!.collection('configs').insertOne({
+      principalType: PrincipalType.ROLE,
+      principalId: BASE,
+      principalModel: PrincipalModel.ROLE,
+      priority: 0,
+      overrides: { registration: { allowedDomains: [label] } },
+      tombstones: [],
+      isActive: true,
+      configVersion: 1,
+      ...(tenantId !== undefined && { tenantId }),
+    });
+  }
+
+  const stored = () =>
+    mongoose.connection
+      .db!.collection('configs')
+      .find({}, { projection: { _id: 0, tenantId: 1, overrides: 1, isActive: 1, tombstones: 1 } })
+      .sort({ tenantId: 1 })
+      .toArray();
+
+  afterEach(() => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    resetTenantStrictCache();
+  });
+
+  it("does not read a tenant's document as the deployment's", async () => {
+    await seedBase('a-base', 'tenant-a');
+
+    expect(await methods.findConfigByPrincipal(PrincipalType.ROLE, BASE)).toBeNull();
+    expect(await methods.listAllConfigs()).toEqual([]);
+  });
+
+  it('reads the tenantless document outside a tenant and the tenant document inside it', async () => {
+    await seedBase('a-base', 'tenant-a');
+    await seedBase('deployment-base');
+
+    const deployment = await methods.findConfigByPrincipal(PrincipalType.ROLE, BASE);
+    const tenant = await inTenantA(() => methods.findConfigByPrincipal(PrincipalType.ROLE, BASE));
+
+    expect(deployment?.overrides).toEqual({
+      registration: { allowedDomains: ['deployment-base'] },
+    });
+    expect(tenant?.overrides).toEqual({ registration: { allowedDomains: ['a-base'] } });
+    expect((await methods.listAllConfigs()).map((config) => config.tenantId)).toEqual([undefined]);
+  });
+
+  it("writes the deployment's own document instead of a tenant's", async () => {
+    await seedBase('a-base', 'tenant-a');
+
+    await methods.patchConfigFields(
+      PrincipalType.ROLE,
+      BASE,
+      PrincipalModel.ROLE,
+      { 'registration.socialLogins': ['google'] },
+      0,
+    );
+
+    expect(await stored()).toEqual([
+      expect.objectContaining({
+        overrides: { registration: { socialLogins: ['google'] } },
+      }),
+      expect.objectContaining({
+        tenantId: 'tenant-a',
+        overrides: { registration: { allowedDomains: ['a-base'] } },
+      }),
+    ]);
+    expect((await stored())[0]).not.toHaveProperty('tenantId');
+  });
+
+  it("writes a tenant's document inside the tenant, leaving the deployment's alone", async () => {
+    await seedBase('deployment-base');
+
+    await inTenantA(() =>
+      methods.upsertConfig(
+        PrincipalType.ROLE,
+        BASE,
+        PrincipalModel.ROLE,
+        { registration: { allowedDomains: ['a-only'] } },
+        0,
+      ),
+    );
+
+    expect(await stored()).toEqual([
+      expect.objectContaining({
+        overrides: { registration: { allowedDomains: ['deployment-base'] } },
+      }),
+      expect.objectContaining({
+        tenantId: 'tenant-a',
+        overrides: { registration: { allowedDomains: ['a-only'] } },
+      }),
+    ]);
+  });
+
+  it("replaces, tombstones, unsets, toggles and deletes only the deployment's document", async () => {
+    await seedBase('a-base', 'tenant-a');
+    await seedBase('deployment-base', null);
+
+    await methods.upsertConfig(
+      PrincipalType.ROLE,
+      BASE,
+      PrincipalModel.ROLE,
+      { registration: { allowedDomains: ['replaced'] }, interface: { customWelcome: 'hi' } },
+      0,
+    );
+    await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      BASE,
+      PrincipalModel.ROLE,
+      'interface.theme',
+      0,
+    );
+    await methods.unsetConfigField(PrincipalType.ROLE, BASE, 'registration.allowedDomains');
+    await methods.toggleConfigActive(PrincipalType.ROLE, BASE, false);
+    await methods.toggleConfigActiveTracked(PrincipalType.ROLE, BASE, false);
+
+    const [deployment, tenant] = await stored();
+    expect(deployment).toEqual({
+      tenantId: null,
+      overrides: { interface: { customWelcome: 'hi' } },
+      tombstones: ['interface.theme'],
+      isActive: false,
+    });
+    expect(tenant).toEqual({
+      tenantId: 'tenant-a',
+      overrides: { registration: { allowedDomains: ['a-base'] } },
+      tombstones: [],
+      isActive: true,
+    });
+
+    const deleted = await methods.deleteConfig(PrincipalType.ROLE, BASE);
+    expect(deleted?.overrides).toEqual({ interface: { customWelcome: 'hi' } });
+    expect(deleted).not.toHaveProperty('tenantId');
+    expect(await stored()).toEqual([expect.objectContaining({ tenantId: 'tenant-a' })]);
+  });
+
+  it("deletes nothing outside a tenant when only a tenant's document exists", async () => {
+    await seedBase('a-base', 'tenant-a');
+
+    expect(await methods.deleteConfig(PrincipalType.ROLE, BASE)).toBeNull();
+    expect(await stored()).toEqual([expect.objectContaining({ tenantId: 'tenant-a' })]);
+  });
+
+  it("refuses a store write or delete pinned to a tenant document's revision outside the tenant", async () => {
+    await seedBase('a-base', 'tenant-a');
+    const tenantDocument = await raw().findOne({ tenantId: 'tenant-a' });
+    const store = createConfigStore(mongoose);
+    const principal = { principalType: PrincipalType.ROLE, principalId: BASE };
+    const revision = revisionOf({ _id: tenantDocument!._id, configVersion: 1 });
+
+    await expect(
+      store.write(
+        principal,
+        {
+          principalModel: PrincipalModel.ROLE,
+          priority: 0,
+          overrides: { registration: { allowedDomains: ['stale'] } },
+          tombstones: [],
+          isActive: true,
+        },
+        revision,
+      ),
+    ).rejects.toMatchObject({ code: 'CONFIG_VERSION_CONFLICT' });
+    await expect(store.remove(principal, revision)).rejects.toMatchObject({
+      code: 'CONFIG_VERSION_CONFLICT',
+    });
+    expect(await stored()).toEqual([
+      {
+        tenantId: 'tenant-a',
+        overrides: { registration: { allowedDomains: ['a-base'] } },
+        tombstones: [],
+        isActive: true,
+      },
+    ]);
+  });
+
+  it('lists every tenant role document only when a listing asks for all tenants', async () => {
+    await seedBase('a-base', 'tenant-a');
+    await seedBase('deployment-base');
+    const store = createConfigStore(mongoose);
+    const tenants = (records: ConfigRecord[]) => records.map((record) => record.tenantId);
+
+    expect(tenants(await store.list())).toEqual([undefined]);
+    expect(tenants(await store.list({ acrossTenants: true })).sort()).toEqual([
+      'tenant-a',
+      undefined,
+    ]);
+    expect(tenants(await inTenantA(() => store.list({ acrossTenants: true })))).toEqual([
+      'tenant-a',
+    ]);
+  });
+
+  it("restores the deployment's document while a tenant's document exists", async () => {
+    await seedBase('a-base', 'tenant-a');
+    await seedBase('deployment-base');
+    const deleted = await methods.deleteConfig(PrincipalType.ROLE, BASE);
+
+    const restored = await methods.restoreConfig(deleted!);
+
+    expect(restored).toBe(true);
+    expect((await stored()).map((config) => config.overrides)).toEqual([
+      { registration: { allowedDomains: ['deployment-base'] } },
+      { registration: { allowedDomains: ['a-base'] } },
+    ]);
+  });
+
+  it("applies revision-conditioned writes to the deployment's document, never a tenant's", async () => {
+    await seedBase('a-base', 'tenant-a');
+    const tenantDocument = await raw().findOne({ tenantId: 'tenant-a' });
+
+    const created = await methods.patchConfigFields(
+      PrincipalType.ROLE,
+      BASE,
+      PrincipalModel.ROLE,
+      { 'interface.customWelcome': 'deployment' },
+      0,
+      undefined,
+      { expectedRevision: 'absent' },
+    );
+    const tombstoned = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      BASE,
+      PrincipalModel.ROLE,
+      'interface.theme',
+      0,
+      undefined,
+      { expectedRevision: revisionOf(created) },
+    );
+    const unset = await methods.unsetConfigField(
+      PrincipalType.ROLE,
+      BASE,
+      'interface.theme',
+      undefined,
+      { expectedRevision: revisionOf(tombstoned) },
+    );
+    const stale = methods.upsertConfig(
+      PrincipalType.ROLE,
+      BASE,
+      PrincipalModel.ROLE,
+      { registration: { allowedDomains: ['stale'] } },
+      0,
+      undefined,
+      { expectedRevision: revisionOf({ _id: tenantDocument!._id, configVersion: 1 }) },
+    );
+
+    expect([created, tombstoned, unset].map((config) => config?.configVersion)).toEqual([1, 2, 3]);
+    await expect(stale).rejects.toMatchObject({ code: 'CONFIG_VERSION_CONFLICT' });
+    const [deployment, tenant] = await stored();
+    expect(deployment).toEqual({
+      overrides: { interface: { customWelcome: 'deployment' } },
+      tombstones: [],
+      isActive: true,
+    });
+    expect(tenant).toEqual({
+      tenantId: 'tenant-a',
+      overrides: { registration: { allowedDomains: ['a-base'] } },
+      tombstones: [],
+      isActive: true,
+    });
+  });
+
+  it('refuses an unscoped write in strict mode', async () => {
+    process.env.TENANT_ISOLATION_STRICT = 'true';
+    resetTenantStrictCache();
+
+    await expect(
+      methods.patchConfigFields(
+        PrincipalType.ROLE,
+        BASE,
+        PrincipalModel.ROLE,
+        { 'registration.socialLogins': ['google'] },
+        0,
+      ),
+    ).rejects.toThrow('[TenantIsolation]');
+  });
+});
+
+describe('group and user documents are addressed by id in any tenant', () => {
+  const groupId = new Types.ObjectId().toString();
+  const userId = new Types.ObjectId().toString();
+  const inTenant = <T>(tenantId: string, fn: () => Promise<T>): Promise<T> =>
+    tenantStorage.run({ tenantId }, fn);
+
+  async function seed(
+    principalType: PrincipalType,
+    principalId: string,
+    label: string,
+    tenantId?: string,
+  ): Promise<void> {
+    await mongoose.connection.db!.collection('configs').insertOne({
+      principalType,
+      principalId,
+      principalModel:
+        principalType === PrincipalType.GROUP ? PrincipalModel.GROUP : PrincipalModel.USER,
+      priority: 10,
+      overrides: { registration: { allowedDomains: [label] } },
+      tombstones: [],
+      isActive: true,
+      configVersion: 1,
+      ...(tenantId !== undefined && { tenantId }),
+    });
+  }
+
+  beforeEach(async () => {
+    await seed(PrincipalType.GROUP, groupId, 'a-group', 'tenant-a');
+    await seed(PrincipalType.USER, userId, 'a-user', 'tenant-a');
+    await seed(PrincipalType.ROLE, '__base__', 'a-base', 'tenant-a');
+  });
+
+  afterEach(() => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    resetTenantStrictCache();
+  });
+
+  it("reads and lists a tenant's group and user documents outside a tenant", async () => {
+    const group = await methods.findConfigByPrincipal(PrincipalType.GROUP, groupId);
+    const user = await methods.findConfigByPrincipal(PrincipalType.USER, userId);
+
+    expect(group?.tenantId).toBe('tenant-a');
+    expect(user?.tenantId).toBe('tenant-a');
+    expect((await methods.listAllConfigs()).map((config) => config.principalId).sort()).toEqual(
+      [groupId, userId].sort(),
+    );
+  });
+
+  it("updates and deletes a tenant's group document outside a tenant, as a group cascade does", async () => {
+    await methods.patchConfigFields(
+      PrincipalType.GROUP,
+      groupId,
+      PrincipalModel.GROUP,
+      { 'registration.socialLogins': ['google'] },
+      10,
+    );
+    const deleted = await methods.deleteConfig(PrincipalType.GROUP, groupId);
+
+    expect(deleted?.tenantId).toBe('tenant-a');
+    expect(deleted?.overrides).toEqual({
+      registration: { allowedDomains: ['a-group'], socialLogins: ['google'] },
+    });
+    expect(await methods.deleteConfig(PrincipalType.USER, userId)).toEqual(
+      expect.objectContaining({ tenantId: 'tenant-a' }),
+    );
+    expect(await raw().countDocuments()).toBe(1);
+  });
+
+  it("does not reach another tenant's group or user document inside a tenant", async () => {
+    expect(
+      await inTenant('tenant-b', () => methods.findConfigByPrincipal(PrincipalType.GROUP, groupId)),
+    ).toBeNull();
+    expect(
+      await inTenant('tenant-b', () => methods.deleteConfig(PrincipalType.USER, userId)),
+    ).toBeNull();
+    expect(await inTenant('tenant-b', () => methods.listAllConfigs())).toEqual([]);
+    expect(await inTenant('tenant-a', () => methods.listAllConfigs())).toHaveLength(3);
+  });
+
+  it('keeps resolution in one partition for group and user principals', async () => {
+    const principals = [
+      { principalType: PrincipalType.GROUP, principalId: groupId },
+      { principalType: PrincipalType.USER, principalId: userId },
+    ];
+
+    expect(await methods.getApplicableConfigs(principals)).toEqual([]);
+    expect(await inTenant('tenant-a', () => methods.getApplicableConfigs(principals))).toHaveLength(
+      3,
+    );
+  });
+
+  it('refuses an unscoped group read in strict mode', async () => {
+    process.env.TENANT_ISOLATION_STRICT = 'true';
+    resetTenantStrictCache();
+
+    await expect(methods.findConfigByPrincipal(PrincipalType.GROUP, groupId)).rejects.toThrow(
+      '[TenantIsolation]',
+    );
+  });
+});
+
 function collectKeys(value: unknown, keys: string[] = []): string[] {
   if (Array.isArray(value)) {
     value.forEach((item) => collectKeys(item, keys));
@@ -910,6 +1828,21 @@ describe('key encoding at rest', () => {
     expect(patched.overrides.endpoints).toMatchObject({
       bedrock: { inferenceProfiles: { 'eu.meta.llama': 'arn:eu' } },
     });
+  });
+
+  it('moves a profile on an engine that refuses raw key names, keeping its keys encoded', async () => {
+    const refusing = createConfigMethods(mongoose);
+    const findOneAndUpdate = refuseRawKeyNames();
+    await refusing.upsertConfig(PrincipalType.ROLE, 'from', PrincipalModel.ROLE, dotted as never);
+
+    const moved = await refusing.renameConfigPrincipal(PrincipalType.ROLE, 'from', 'to');
+
+    expect(moved!.overrides).toEqual(dotted);
+    expect(await raw().findOne({ principalId: 'from' })).toBeNull();
+    const stored = await raw().findOne({ principalId: 'to' });
+    expect(stored!.keyEncoding).toBe(1);
+    expect(stored!.overrides['%24top']).toEqual({ 'a%2Eb': '$value.stays' });
+    expect(findOneAndUpdate).toHaveBeenCalled();
   });
 
   it('restores a deleted document with dotted keys in the form the engine accepts', async () => {

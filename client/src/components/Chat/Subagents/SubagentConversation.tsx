@@ -228,10 +228,8 @@ function ChildMessage({
   onLoadDetails,
   toolContentQuery,
   notice,
-  outcomeContent,
 }: {
   notice?: ReactNode;
-  outcomeContent?: TMessageContentParts[];
   toolContentQuery?: ToolContentQuery;
   turn: ChildConversationTurn;
   state: 'ready' | 'loading' | 'error';
@@ -245,6 +243,16 @@ function ChildMessage({
   const localize = useLocalize();
   const activity = turn.activity;
   const content = useMemo(() => getActivityContent(activity), [activity]);
+  const outcomeContent = useMemo<TMessageContentParts[] | undefined>(() => {
+    const outcome = turn.outcome;
+    if (
+      isLiveSubagentStatus(activity.status) ||
+      !outcome?.text ||
+      hasTerminalOutcome(content, outcome, activity.status)
+    )
+      return undefined;
+    return [{ type: ContentTypes.TEXT, text: outcome.text, phase: 'final_answer' }];
+  }, [content, turn.outcome, activity.status]);
   const message = useMemo<TMessage>(
     () => ({
       messageId: activity.messageId ?? `${turn.taskId}:assistant`,
@@ -394,19 +402,6 @@ function RecoveredChildMessage({
       },
     };
   }, [recovered.data, props.turn]);
-  const outcomeContent = useMemo<TMessageContentParts[] | undefined>(() => {
-    const snapshot = recovered.data;
-    const outcome = props.turn.outcome;
-    if (
-      snapshot == null ||
-      props.turn.contentRecoveryAvailable === false ||
-      isLiveSubagentStatus(snapshot.status) ||
-      !outcome?.text ||
-      hasTerminalOutcome(getActivityContent(turn.activity), outcome, snapshot.status)
-    )
-      return undefined;
-    return [{ type: ContentTypes.TEXT, text: outcome.text, phase: 'final_answer' }];
-  }, [recovered.data, props.turn.contentRecoveryAvailable, props.turn.outcome, turn.activity]);
   const notice =
     props.turn.contentRecoveryAvailable !== false &&
     recovered.isError &&
@@ -431,7 +426,6 @@ function RecoveredChildMessage({
             : 'ready'
         }
         toolContentQuery={useSubagentToolContentQuery}
-        outcomeContent={outcomeContent}
         notice={notice}
       />
     </TaskContentScopeContext.Provider>

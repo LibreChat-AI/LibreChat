@@ -36,7 +36,7 @@ function writeYaml(config) {
 
 writeYaml({});
 
-const { getAppConfig, invalidateConfigCaches } = require('../app');
+const { getAppConfig, reloadConfigCaches, invalidateConfigCaches } = require('../app');
 
 afterAll(() => {
   if (previousConfigPath === undefined) {
@@ -75,5 +75,50 @@ describe('admin config writes and librechat.yaml', () => {
 
     expect((await getAppConfig({ baseOnly: true })).filters).toBeUndefined();
     expect((await getAppConfig({ role: 'USER' })).filters).toBeUndefined();
+  });
+
+  it('reload the file for the reload route, reporting a local clear and no broadcast without Redis', async () => {
+    writeYaml({});
+    await invalidateConfigCaches();
+    expect((await getAppConfig({ baseOnly: true })).filters).toBeUndefined();
+
+    writeYaml({ filters });
+    const report = await reloadConfigCaches();
+
+    expect(report).toEqual({ cleared: true, loaded: { ok: true }, broadcast: 'none' });
+    expect((await getAppConfig({ baseOnly: true })).filters?.prompts?.pii).toEqual(
+      expect.objectContaining(filters.prompts.pii),
+    );
+  });
+
+  it('report a librechat.yaml the loader refuses on the reload route, keeping the last good config', async () => {
+    writeYaml({ filters });
+    await expect(reloadConfigCaches()).resolves.toMatchObject({ loaded: { ok: true } });
+    const lastGood = await getAppConfig({ baseOnly: true });
+    expect(lastGood.filters).toBeDefined();
+
+    writeYaml({ bogusTopLevelKey: true, interface: { customWelcome: 42 } });
+    const report = await reloadConfigCaches();
+
+    expect(report).toEqual({
+      cleared: true,
+      loaded: {
+        ok: false,
+        error: {
+          code: 'CONFIG_INVALID',
+          issues: expect.arrayContaining([
+            { path: 'bogusTopLevelKey', segments: ['bogusTopLevelKey'], code: 'unrecognized_keys' },
+            {
+              path: 'interface.customWelcome',
+              segments: ['interface', 'customWelcome'],
+              code: 'invalid_type',
+            },
+          ]),
+        },
+      },
+      broadcast: 'skipped',
+    });
+    expect(JSON.stringify(report)).not.toContain('42');
+    expect((await getAppConfig({ baseOnly: true })).filters).toEqual(lastGood.filters);
   });
 });

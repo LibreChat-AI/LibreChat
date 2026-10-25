@@ -224,3 +224,15 @@ test('does not demand old full model context after a tool batch was already veri
   assert.equal(third.toolCalls[0].id, history.callId(label, 2 * history.BATCH_SIZE));
   assert.equal(await gates.has('ready'), false);
 });
+
+test('keeps a steered child on its original fixture branch instead of dispatching another child', async (t) => {
+  const { label, script } = scenario(t, 'self');
+  const messages = [
+    human(`E2E_SUBAGENT_HISTORY_CHILD:${label}`),
+    human('Additional parent guidance.'),
+  ];
+  const invocation = await script.resolveInvocation(messages);
+  assert.equal(invocation.toolCalls.length, history.BATCH_SIZE);
+  assert.equal(invocation.toolCalls[0].name, history.TOOL_NAME);
+  assert.equal(invocation.toolCalls[0].id, history.callId(label, 0));
+});

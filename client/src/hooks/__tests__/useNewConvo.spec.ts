@@ -502,7 +502,6 @@ describe('useNewConvo reset cleanup', () => {
             setCompleted: jest.fn(),
             setIsSubmitting: jest.fn(),
             setShowStopButton: jest.fn(),
-            setAbortScroll: jest.fn(),
             setSubmissionStart: jest.fn(),
             announcePolite: jest.fn(),
             lastAnnouncementTimeRef: { current: 0 },

@@ -29,6 +29,11 @@ export function usePaneConversations(): ChatSettings['getPaneConversations'] {
   );
 }
 
+/** Subscribes to the conversation a pane shows in the app's pane store. */
+export function usePaneConversation(index: string | number) {
+  return useRecoilValue(store.conversationByIndex(index));
+}
+
 /** Supplies the chat's app-global preferences from the app's own settings store, the deployment
  *  config and signed-in account from the app's queries, and the transport its turns run over. */
 export default function ChatSettingsProvider({ children }: { children: ReactNode }) {
@@ -74,6 +79,7 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       config,
       auth,
       getPaneConversations,
+      usePaneConversation,
     }),
     [
       duringRunDefaultAction,

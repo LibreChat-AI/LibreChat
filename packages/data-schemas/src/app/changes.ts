@@ -1,19 +1,31 @@
 import type { TCustomConfig } from 'librechat-data-provider';
+import type { ConfigEntryStep, ConfigPathSegments } from './paths';
 import type { ConfigOverrideState } from './mutations';
-import type { ConfigPathSegments } from './paths';
+import {
+  setConfigFields,
+  unsetConfigPaths,
+  tombstoneConfigPaths,
+  getPathClearedTombstones,
+  getWriteClearedTombstones,
+  renameConfigEntryTombstones,
+} from './mutations';
 import {
   getAtPath,
   setAtPath,
   unsetAtPath,
   isPlainRecord,
-  parseFieldPath,
   ConfigPathError,
   isSegmentPrefix,
+  isConfigEntryKey,
   pruneEmptyAncestors,
-  getClearedTombstones,
 } from './paths';
-import { setConfigFields, unsetConfigPaths, tombstoneConfigPaths } from './mutations';
-import { getConfigArrayMergeKey } from './resolution';
+import {
+  getConfigEntryIdentity,
+  getConfigArrayMergeKey,
+  isConfigEntryTombstone,
+  getConfigTombstoneSegments,
+} from './collections';
+import { combineFoldedConfigEntries } from './resolution';
 
 /**
  * Atomic batches of override changes.
@@ -38,21 +50,34 @@ export const MAX_CONFIG_CHANGE_OPS = 1000;
 export type ConfigChange =
   /** Writes `value` at the path and clears the tombstones the write covers. */
   | { op: 'set'; segments: ConfigPathSegments; value: unknown }
-  /** Removes the override at the path, its emptied parents, and tombstones at or below it. */
-  | { op: 'unset'; segments: ConfigPathSegments }
-  /** Removes the override at the path and records a tombstone that hides inherited values. */
-  | { op: 'tombstone'; segments: ConfigPathSegments }
+  /**
+   * Removes the override at the path, its emptied parents, and tombstones at or below it. With
+   * `entry`, `segments` is an array merged by key, and the change resets the principal's own
+   * entry with that key (by identity), or the path inside it, and the keyed tombstones of that
+   * entry at or below it.
+   */
+  | { op: 'unset'; segments: ConfigPathSegments; entry?: ConfigEntryStep }
+  /**
+   * Removes the override at the path and records a tombstone that hides inherited values. With
+   * `entry`, it hides the inherited entry with that key of the merged-by-key array at
+   * `segments`, or the path inside it, and removes the principal's own entry or that path.
+   */
+  | { op: 'tombstone'; segments: ConfigPathSegments; entry?: ConfigEntryStep }
   /**
    * Replaces the principal's own entry of a merged-by-key array whose key matches the entry's
-   * (every own entry with that key), or appends it. The array is created when missing.
+   * (every own entry with that key), or appends it. The array is created when missing, and a
+   * tombstone hiding that whole entry is cleared. Entry keys of every entry change match by
+   * identity (`getConfigEntryMatcher`): `ollama` addresses a stored `Ollama`.
    */
   | { op: 'upsertEntry'; segments: ConfigPathSegments; entry: Record<string, unknown> }
   /** Removes the principal's own entries of a merged-by-key array that have this key. */
   | { op: 'removeEntry'; segments: ConfigPathSegments; key: string }
   /**
    * Renames one of the principal's own entries, moving everything stored on it (encrypted
-   * secrets included): an entry of a merged-by-key array gets a new key value in place, and a
-   * record key is moved with its value, keeping the record's key order.
+   * secrets included): an entry of a merged-by-key array gets a new key value in place (one
+   * stored in two spellings of its key is combined first, as the runtime merge combines it),
+   * with the keyed tombstones of the old key moved to the new one, and a record key is moved
+   * with its value, keeping the record's key order.
    */
   | { op: 'rename'; segments: ConfigPathSegments; from: string; to: string };
 
@@ -150,11 +175,10 @@ function applySet(
   segments: ConfigPathSegments,
   value: unknown,
 ): ConfigOverrideState {
-  const cleared = new Set(getClearedTombstones(segments));
   const unchanged =
     hasPath(state.overrides, segments) &&
     isSameConfigValue(getAtPath(state.overrides, segments), value) &&
-    !state.tombstones.some((path) => cleared.has(path));
+    getWriteClearedTombstones(state.tombstones, segments, value).length === 0;
   return unchanged ? state : setConfigFields(state, [{ segments, value }]);
 }
 
@@ -182,8 +206,21 @@ function requireKeyField(segments: ConfigPathSegments): string {
   return keyField;
 }
 
-function hasKey(item: unknown, keyField: string, key: string): boolean {
-  return isPlainRecord(item) && item[keyField] === key;
+/**
+ * A test for the entries of the merged-by-key array at `segments` that key `key` names. Keys
+ * compare by identity (`getConfigEntryIdentity`), so `Ollama` and `ollama` address the one
+ * custom endpoint the runtime merge makes of them.
+ */
+export function getConfigEntryMatcher(
+  segments: ConfigPathSegments,
+  keyField: string,
+  key: string,
+): (item: unknown) => boolean {
+  const identity = getConfigEntryIdentity(segments, key);
+  return (item) => {
+    const itemKey = isPlainRecord(item) ? item[keyField] : undefined;
+    return typeof itemKey === 'string' && getConfigEntryIdentity(segments, itemKey) === identity;
+  };
 }
 
 /** The key of an entry written into a merged-by-key array. */
@@ -219,7 +256,8 @@ function applyUpsertEntry(
     throw new ConfigEntryError([...segments], 'invalid_entry');
   }
   const items = readKeyedArray(state, segments);
-  const index = items.findIndex((item) => hasKey(item, keyField, key));
+  const isEntry = getConfigEntryMatcher(segments, keyField, key);
+  const index = items.findIndex(isEntry);
   const next =
     index === -1
       ? [...items, entry]
@@ -227,9 +265,15 @@ function applyUpsertEntry(
           if (position === index) {
             return [entry];
           }
-          return hasKey(item, keyField, key) ? [] : [item];
+          return isEntry(item) ? [] : [item];
         });
-  return isSameConfigValue(items, next) ? state : writeKeyedArray(state, segments, next);
+  const tombstones = state.tombstones.filter(
+    (tombstone) => !isConfigEntryTombstone(tombstone, segments, key),
+  );
+  if (isSameConfigValue(items, next) && tombstones.length === state.tombstones.length) {
+    return state;
+  }
+  return writeKeyedArray({ overrides: state.overrides, tombstones }, segments, next);
 }
 
 function applyRemoveEntry(
@@ -239,7 +283,8 @@ function applyRemoveEntry(
 ): ConfigOverrideState {
   const keyField = requireKeyField(segments);
   const items = readKeyedArray(state, segments);
-  const next = items.filter((item) => !hasKey(item, keyField, key));
+  const isEntry = getConfigEntryMatcher(segments, keyField, key);
+  const next = items.filter((item) => !isEntry(item));
   return next.length === items.length ? state : writeKeyedArray(state, segments, next);
 }
 
@@ -251,17 +296,28 @@ function renameKeyedEntry(
   to: string,
 ): ConfigOverrideState {
   const items = readKeyedArray(state, segments);
-  const index = items.findIndex((item) => hasKey(item, keyField, from));
+  const isFrom = getConfigEntryMatcher(segments, keyField, from);
+  const index = items.findIndex(isFrom);
   if (index === -1) {
     throw new ConfigEntryError([...segments], 'entry_not_found');
   }
-  if (items.some((item) => hasKey(item, keyField, to))) {
+  const isTo = getConfigEntryMatcher(segments, keyField, to);
+  if (items.some((item) => isTo(item) && !isFrom(item))) {
     throw new ConfigEntryError([...segments], 'entry_exists');
   }
-  const next = items.map((item) =>
-    hasKey(item, keyField, from) ? { ...(item as JsonRecord), [keyField]: to } : item,
-  );
-  return writeKeyedArray(state, segments, next);
+  const renamed = (item: unknown): JsonRecord => ({ ...(item as JsonRecord), [keyField]: to });
+  /** One entry stored in two spellings moves as the single entry the runtime merge combines. */
+  const combined = combineFoldedConfigEntries(segments, items.filter(isFrom));
+  const next = items.flatMap((item, position) => {
+    if (!isFrom(item)) {
+      return [item];
+    }
+    if (combined.length > 1) {
+      return [renamed(item)];
+    }
+    return position === index ? [renamed(combined[0])] : [];
+  });
+  return renameConfigEntryTombstones(writeKeyedArray(state, segments, next), segments, from, to);
 }
 
 /** Moves record key `from` to `to`, keeping the key order. */
@@ -291,7 +347,7 @@ function renameRecordKey(
       configurable: true,
     });
   }
-  const cleared = new Set(getClearedTombstones([...segments, to]));
+  const cleared = new Set(getPathClearedTombstones([...segments, to]));
   return {
     overrides: setAtPath(asRecord(state), segments, renamed) as Partial<TCustomConfig>,
     tombstones: state.tombstones.filter((path) => !cleared.has(path)),
@@ -311,9 +367,13 @@ function applyRename(
     throw new ConfigEntryError([...segments], 'invalid_entry');
   }
   const keyField = getConfigArrayMergeKey(segments);
-  return keyField
-    ? renameKeyedEntry(state, segments, keyField, from, to)
-    : renameRecordKey(state, segments, from, to);
+  if (!keyField) {
+    return renameRecordKey(state, segments, from, to);
+  }
+  if (!isConfigEntryKey(to)) {
+    throw new ConfigEntryError([...segments], 'invalid_entry');
+  }
+  return renameKeyedEntry(state, segments, keyField, from, to);
 }
 
 /**
@@ -332,9 +392,15 @@ export function applyConfigChange(
     case 'set':
       return applySet(state, change.segments, change.value);
     case 'unset':
-      return keepIfSame(state, unsetConfigPaths(state, [change.segments]));
+      return keepIfSame(
+        state,
+        unsetConfigPaths(state, [{ segments: change.segments, entry: change.entry }]),
+      );
     case 'tombstone':
-      return keepIfSame(state, tombstoneConfigPaths(state, [change.segments]));
+      return keepIfSame(
+        state,
+        tombstoneConfigPaths(state, [{ segments: change.segments, entry: change.entry }]),
+      );
     case 'upsertEntry':
       return applyUpsertEntry(state, change.segments, change.entry);
     case 'removeEntry':
@@ -375,6 +441,107 @@ export function applyConfigChanges(
 }
 
 /**
+ * A step of a location named by identity rather than position: a key (or a position in an array
+ * that is not merged by key), or an entry of a merged-by-key array by its merge key.
+ */
+export type ConfigIdentityStep = string | { readonly entry: string };
+
+/**
+ * `segments` as `root` holds them, by identity: a position in a merged-by-key array becomes the
+ * key of the entry there, so the location still names that entry once other entries come and go.
+ * A position whose item has no key stays a position.
+ */
+export function toConfigIdentityPath(
+  root: unknown,
+  segments: ConfigPathSegments,
+): ConfigIdentityStep[] {
+  return segments.map((segment, index): ConfigIdentityStep => {
+    const parent = segments.slice(0, index);
+    const keyField = getConfigArrayMergeKey(parent);
+    const items = keyField ? getAtPath(root, parent) : undefined;
+    const key =
+      keyField && Array.isArray(items)
+        ? getConfigEntryKey(items[Number(segment)], keyField)
+        : undefined;
+    return key !== undefined ? { entry: key } : segment;
+  });
+}
+
+/**
+ * Where an identity path ({@link toConfigIdentityPath}) is in `root`: each entry of a
+ * merged-by-key array by its position there. `null` when an entry it passes through is gone.
+ */
+export function resolveConfigIdentityPath(
+  root: unknown,
+  path: readonly ConfigIdentityStep[],
+): string[] | null {
+  const segments: string[] = [];
+  for (const step of path) {
+    if (typeof step === 'string') {
+      segments.push(step);
+      continue;
+    }
+    const keyField = getConfigArrayMergeKey(segments);
+    const items = getAtPath(root, segments);
+    const index =
+      keyField && Array.isArray(items)
+        ? items.findIndex(getConfigEntryMatcher(segments, keyField, step.entry))
+        : -1;
+    if (index === -1) {
+      return null;
+    }
+    segments.push(String(index));
+  }
+  return segments;
+}
+
+/**
+ * An identity path once a `rename` of the collection at `collection` has moved the record key, or
+ * renamed the merged-by-key entry, the path passes through from `from` to `to`.
+ */
+export function renameConfigIdentityPath(
+  path: readonly ConfigIdentityStep[],
+  collection: ConfigPathSegments,
+  from: string,
+  to: string,
+): ConfigIdentityStep[] {
+  const step = path[collection.length];
+  if (step === undefined || !collection.every((segment, index) => path[index] === segment)) {
+    return [...path];
+  }
+  const keyed = getConfigArrayMergeKey(collection) !== undefined;
+  const renamed = keyed
+    ? typeof step !== 'string' &&
+      getConfigEntryIdentity(collection, step.entry) === getConfigEntryIdentity(collection, from)
+    : step === from;
+  if (!renamed) {
+    return [...path];
+  }
+  const next = [...path];
+  next[collection.length] = keyed ? { entry: to } : to;
+  return next;
+}
+
+/**
+ * Where a keyed change leaves the principal's own entry with key `key`: the entry by its index
+ * in `result`, or nothing once the change removed it (hiding or resetting it whole, or emptying
+ * it down to its key).
+ */
+function getEntryWrittenPaths(
+  segments: ConfigPathSegments,
+  key: string,
+  result: ConfigOverrideState,
+): string[][] {
+  const keyField = getConfigArrayMergeKey(segments);
+  const items = getAtPath(result.overrides, segments);
+  const index =
+    keyField && Array.isArray(items)
+      ? items.findIndex(getConfigEntryMatcher(segments, keyField, key))
+      : -1;
+  return index === -1 ? [] : [[...segments, String(index)]];
+}
+
+/**
  * The paths a change writes, for attributing validation issues to it: the path itself, or for
  * an entry change, the entry by its index in `result`'s own array. A removed entry is gone, so
  * `removeEntry` writes nothing an issue could sit on: the entries it leaves are unchanged, and
@@ -386,6 +553,9 @@ export function getConfigChangeWrittenPaths(
   result: ConfigOverrideState,
 ): string[][] {
   const segments = [...change.segments];
+  if ((change.op === 'unset' || change.op === 'tombstone') && change.entry) {
+    return getEntryWrittenPaths(change.segments, change.entry.key, result);
+  }
   if (change.op === 'set' || change.op === 'unset' || change.op === 'tombstone') {
     return [segments];
   }
@@ -404,7 +574,7 @@ export function getConfigChangeWrittenPaths(
   const items = getAtPath(result.overrides, segments);
   const index =
     Array.isArray(items) && keyField && key
-      ? items.findIndex((item) => hasKey(item, keyField, key))
+      ? items.findIndex(getConfigEntryMatcher(change.segments, keyField, key))
       : -1;
   return index === -1 ? [] : [[...segments, String(index)]];
 }
@@ -429,7 +599,7 @@ function getStoredCounterpart(
     const key = keyField ? getConfigEntryKey(next, keyField) : undefined;
     if (keyField && key !== undefined) {
       counterpart = Array.isArray(counterpart)
-        ? counterpart.find((item) => hasKey(item, keyField, key))
+        ? counterpart.find(getConfigEntryMatcher(segments.slice(0, index), keyField, key))
         : undefined;
     } else {
       counterpart = getAtPath(counterpart, [segment]);
@@ -439,14 +609,17 @@ function getStoredCounterpart(
   return counterpart;
 }
 
-/** The tombstones at, above or below `segments`: the ones that decide what it inherits. */
+/**
+ * The tombstones at, above or below `segments`: the ones that decide what it inherits. A keyed
+ * tombstone counts by its array, so any change to the entries it hides relates to the array.
+ */
 function getRelatedTombstones(
   tombstones: readonly string[],
   segments: ConfigPathSegments,
 ): Set<string> {
   return new Set(
     tombstones.filter((path) => {
-      const tombstone = parseFieldPath(path);
+      const tombstone = getConfigTombstoneSegments(path);
       return isSegmentPrefix(tombstone, segments) || isSegmentPrefix(segments, tombstone);
     }),
   );

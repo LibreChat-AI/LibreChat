@@ -4,6 +4,7 @@ import type { TSharedLinkStartupConfig } from 'librechat-data-provider';
 import type { Request, Response, NextFunction } from 'express';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { GetAppConfigOptions } from '../app/service';
+import { withSafePolicyLinks } from '~/app/interface';
 import { isEnabled } from '~/utils';
 
 type SharedLinkStartupEnv = NodeJS.ProcessEnv;
@@ -104,7 +105,7 @@ export function buildSharedLinkStartupPayload(
   }
 
   const { privacyPolicy, termsOfService, codeHighlightThrottleMs, artifactUndocking } =
-    appConfig?.interfaceConfig ?? {};
+    withSafePolicyLinks(appConfig?.interfaceConfig) ?? {};
   const parsedTheme = deploymentThemeSchema.safeParse(appConfig?.interfaceConfig?.theme);
   const theme = parsedTheme.success ? parsedTheme.data : undefined;
   /* A shared conversation shows the same artifacts pane, so it needs the same

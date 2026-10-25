@@ -182,3 +182,59 @@ describe('createCustomConfigLoader interface.theme', () => {
     });
   });
 });
+
+describe('createCustomConfigLoader policy links', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+  let warn: jest.SpyInstance;
+  let exit: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(logger, 'warn');
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+    exit = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`process.exit(${code})`);
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  const load = async (name: string, mode: 'startup' | 'reload' = 'startup') => {
+    process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'links', `${name}.yaml`);
+    return createLoader()(false, { mode });
+  };
+
+  it.each(['startup', 'reload'] as const)(
+    'drops a link that is not http(s), mailto:, tel: or relative and still loads on %s',
+    async (mode) => {
+      const config = await load('unsafe', mode);
+
+      expect(exit).not.toHaveBeenCalled();
+      expect(config?.interface).toEqual({
+        modelSelect: true,
+        privacyPolicy: { openNewTab: true },
+        termsOfService: { modalAcceptance: true },
+      });
+      expect(warnings(warn)).toContain('- interface.privacyPolicy.externalUrl');
+      expect(warnings(warn)).toContain('- interface.termsOfService.externalUrl');
+      expect(warnings(warn)).not.toContain('javascript');
+    },
+  );
+
+  it('keeps mailto: and http(s) links as written, without warnings', async () => {
+    const config = await load('contact');
+
+    expect(config?.interface).toEqual({
+      privacyPolicy: { externalUrl: 'mailto:privacy@example.com' },
+      termsOfService: { externalUrl: 'https://example.com/terms' },
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+});

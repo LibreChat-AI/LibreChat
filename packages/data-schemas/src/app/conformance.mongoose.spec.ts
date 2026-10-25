@@ -31,6 +31,18 @@ const harness: ConfigStoreHarness = {
   async reset() {
     await mongoose.models.Config.deleteMany({});
   },
+
+  /** The driver applies the insert, then reports the error a dropped connection gives. */
+  loseNextCreateAcknowledgement() {
+    const collection = mongoose.models.Config.collection;
+    const findOneAndUpdate = collection.findOneAndUpdate.bind(collection);
+    jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce((async (
+      ...args: Parameters<typeof findOneAndUpdate>
+    ) => {
+      await findOneAndUpdate(...args);
+      throw new mongoose.mongo.MongoNetworkError('connection reset after the write was applied');
+    }) as unknown as typeof collection.findOneAndUpdate);
+  },
 };
 
 describeConfigStoreConformance(harness);
