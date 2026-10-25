@@ -1,4 +1,4 @@
-import { UserRound } from 'lucide-react';
+import { UserRound, UserRoundCheck } from 'lucide-react';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
@@ -14,6 +14,7 @@ const MineFilterToggle: React.FC<MineFilterToggleProps> = ({
   iconOnly = false,
 }) => {
   const localize = useLocalize();
+  const Icon = iconOnly && checked ? UserRoundCheck : UserRound;
 
   return (
     <TooltipAnchor
@@ -26,7 +27,7 @@ const MineFilterToggle: React.FC<MineFilterToggleProps> = ({
           aria-pressed={checked}
           onClick={() => onCheckedChange(!checked)}
         >
-          <UserRound className="size-3.5" aria-hidden="true" />
+          <Icon className="size-3.5" aria-hidden="true" />
           {!iconOnly && localize('com_agents_my_agents')}
         </Button>
       }

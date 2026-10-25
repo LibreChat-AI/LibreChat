@@ -177,6 +177,13 @@ describe('AgentSelect ownership filter', () => {
     expect(toggle).toHaveAttribute('variant', 'ghost');
   });
 
+  it('changes the icon when ownership filtering is active', () => {
+    render(<Harness agent={createAgent()} onMethods={() => undefined} />);
+    const toggle = screen.getByRole('button', { name: 'com_agents_my_agents' });
+    fireEvent.click(toggle);
+    expect(toggle.querySelector('.lucide-user-round-check')).toBeInTheDocument();
+  });
+
   it('defaults to the original query and an unpressed filter', () => {
     render(<Harness agent={createAgent()} onMethods={() => undefined} />);
     expect(mockListAgents).toHaveBeenLastCalledWith({ requiredPermission: 1 }, expect.any(Object));

@@ -9,6 +9,8 @@ import type * as t from 'librechat-data-provider';
 export const allAgentViewAndEditQueryKeys: t.AgentListParams[] = [
   { requiredPermission: PermissionBits.VIEW },
   { requiredPermission: PermissionBits.EDIT },
+  { requiredPermission: PermissionBits.VIEW, mine: 1 },
+  { requiredPermission: PermissionBits.EDIT, mine: 1 },
 ];
 
 const edgeEndpointIncludesAgent = (endpoint: string | string[], agentId: string): boolean =>

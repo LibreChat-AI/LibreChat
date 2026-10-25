@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { memo, useCallback, useEffect, useRef, useMemo } from 'react';
+import { atom, useAtom } from 'jotai';
 import { EarthIcon } from 'lucide-react';
 import { ControlCombobox } from '@librechat/client';
 import { useFormContext, Controller } from 'react-hook-form';
@@ -43,7 +44,8 @@ function AgentSelect({
   instructionsPromptReady?: boolean;
 }) {
   const localize = useLocalize();
-  const [mine, setMine] = useState(false);
+  const mineAtom = useMemo(() => atom(false), []);
+  const [mine, setMine] = useAtom(mineAtom);
   const lastSelectedAgent = useRef<string | null>(null);
   const {
     control,

@@ -258,3 +258,45 @@ describe('useDuplicateAgentMutation', () => {
     expect(listRes?.data[1]).toMatchObject({ id: sourceId, isEditable: false });
   });
 });
+
+describe('authored agent selector caches', () => {
+  const listKey = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT, mine: 1 }];
+  const seed = (client: QueryClient) =>
+    client.setQueryData(listKey, {
+      object: 'list',
+      data: [createAgent('agent_owned')],
+      first_id: 'agent_owned',
+      last_id: 'agent_owned',
+      has_more: false,
+    } satisfies AgentListResponse);
+
+  it('updates the filtered option after a rename', async () => {
+    const client = new QueryClient();
+    seed(client);
+    jest
+      .mocked(dataService.updateAgent)
+      .mockResolvedValue({ ...createAgent('agent_owned'), name: 'Renamed' });
+    const { result } = renderHook(() => useUpdateAgentMutation(), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: 'agent_owned', data: { name: 'Renamed' } });
+    });
+    expect(client.getQueryData<AgentListResponse>(listKey)?.data[0].name).toBe('Renamed');
+    client.clear();
+  });
+
+  it('removes a deleted agent from the filtered options', async () => {
+    const client = new QueryClient();
+    seed(client);
+    jest.mocked(dataService.deleteAgent).mockResolvedValue();
+    const { result } = renderHook(() => useDeleteAgentMutation(), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: 'agent_owned' });
+    });
+    expect(client.getQueryData<AgentListResponse>(listKey)?.data).toEqual([]);
+    client.clear();
+  });
+});
