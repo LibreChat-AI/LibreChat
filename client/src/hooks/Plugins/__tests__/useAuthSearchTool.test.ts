@@ -35,18 +35,35 @@ const emptyForm = (): SearchApiKeyFormData => ({
 });
 
 describe('useAuthSearchTool', () => {
-  it('initializes and resets the Kagi key to an empty default in the search form', () => {
+  it('discards the Kagi key and dirty state when revoking access', () => {
     const { result } = renderHook(() => useSearchApiKeyForm({}));
 
-    expect(result.current.methods.getValues('kagiApiKey')).toBe('');
-    act(() => result.current.methods.setValue('kagiApiKey', 'kagi-test-key'));
+    expect(result.current.methods.getValues('kagiApiKey')).toBeUndefined();
+    act(() =>
+      result.current.methods.setValue('kagiApiKey', 'kagi-test-key', { shouldDirty: true }),
+    );
     act(() => result.current.handleRevokeApiKey());
 
-    expect(result.current.methods.getValues('kagiApiKey')).toBe('');
+    expect(result.current.methods.getValues('kagiApiKey')).toBeUndefined();
+    expect(result.current.methods.formState.dirtyFields).toEqual({});
     expect(mockMutate).toHaveBeenCalledWith({
       pluginKey: Tools.web_search,
       action: 'uninstall',
       auth: {},
+      isEntityTool: true,
+    });
+  });
+
+  it('submits an explicitly cleared Kagi key through the real form', () => {
+    const { result } = renderHook(() => useSearchApiKeyForm({}));
+    act(() => result.current.methods.setValue('kagiApiKey', 'test-key', { shouldDirty: true }));
+    act(() => result.current.methods.setValue('kagiApiKey', '', { shouldDirty: true }));
+    act(() => result.current.onSubmit(result.current.methods.getValues()));
+
+    expect(mockMutate).toHaveBeenCalledWith({
+      pluginKey: Tools.web_search,
+      action: 'install',
+      auth: { kagiApiKey: '' },
       isEntityTool: true,
     });
   });
