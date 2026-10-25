@@ -47,7 +47,7 @@
     "dayjs": "^1.11.13",
     "js-yaml": "^4.3.2",
     "re2js": "^2.8.6",
-    "zod": "^3.22.4"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.21.5",

@@ -325,7 +325,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       }
       const validation = safeValidatePromptGroupUpdate(updates);
       if (!validation.success) {
-        return invalidInput('Invalid request body', validation.error.errors);
+        return invalidInput('Invalid request body', validation.error.issues);
       }
       const rejection = inspect({ group: validation.data }, filters);
       if (rejection != null) {

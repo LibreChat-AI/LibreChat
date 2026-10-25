@@ -637,7 +637,7 @@ export type TDefaultLLMDeliveryPath = z.infer<typeof DefaultLLMDeliveryPath>;
 
 export const defaultLLMDeliveryPathSchema = z.object({
   fallback: DefaultLLMDeliveryPath.optional(),
-  overrides: z.record(DefaultLLMDeliveryPath).optional(),
+  overrides: z.record(z.string(), DefaultLLMDeliveryPath).optional(),
 });
 export type TDefaultLLMDeliveryPathConfig = z.infer<typeof defaultLLMDeliveryPathSchema>;
 type TDeliveryPathOverrides = NonNullable<TDefaultLLMDeliveryPathConfig['overrides']>;
@@ -662,7 +662,7 @@ const skillFileConfigSchema = z.object({
 export const fileConfigSchema = z.object({
   /** Enable only after every replica and rollback target reads retained file destinations. */
   retainedFileCleanup: z.boolean().optional(),
-  endpoints: z.record(endpointFileConfigSchema).optional(),
+  endpoints: z.record(z.string(), endpointFileConfigSchema).optional(),
   skills: skillFileConfigSchema.optional(),
   serverFileSizeLimit: z.number().min(0).optional(),
   avatarSizeLimit: z.number().min(0).optional(),

@@ -96,7 +96,7 @@
     "winston": "^3.17.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yauzl": "^3.2.1",
-    "zod-openapi": "^4.2.4"
+    "zod-openapi": "^6.0.2"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
@@ -167,7 +167,8 @@
     "sharp": "^0.35.5",
     "undici": "^7.30.1",
     "yauzl": "^3.2.1",
-    "zod": "^3.22.4"
+    "zod": "^4.6.7",
+    "zod-to-json-schema": "^3.25.1"
   },
   "dependencies": {
     "@langchain/langgraph-checkpoint": "^1.1.2",
