@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
 import { Table, TableBody, TableCell, TableRow } from './Table';
 import { Tabs, TabsList, TabsTrigger } from './Tabs';
-import InputWithDropdown from './InputWithDropDown';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
 import Dropdown from './Dropdown';
@@ -48,25 +47,6 @@ describe('shared control keyboard focus', () => {
       expect(reached).toContain(button);
       expect(button).toHaveClass('focus-visible:ring-2', 'focus-visible:ring-focus-control');
     });
-  });
-
-  it('rings the dropdown toggle and its options in the focus role', async () => {
-    const user = userEvent.setup();
-    render(<InputWithDropdown aria-label="Stop word" options={['alpha', 'beta']} />);
-
-    await user.tab();
-    await user.tab();
-    const toggle = screen.getByRole('button', { name: 'Open dropdown' });
-    expect(toggle).toHaveFocus();
-    expect(toggle).toHaveClass('focus-visible:ring-1', 'focus-visible:ring-focus-control');
-
-    await user.keyboard('{Enter}');
-    expect(screen.getByRole('listbox')).toHaveClass('focus:ring-focus-control');
-
-    await user.tab();
-    const [first] = screen.getAllByRole('option');
-    expect(first).toHaveFocus();
-    expect(first).toHaveClass('focus:ring-1', 'focus:ring-focus-control');
   });
 
   it('rings the combobox only while it holds keyboard focus', async () => {

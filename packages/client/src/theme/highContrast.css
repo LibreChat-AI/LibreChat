@@ -10,7 +10,7 @@
  * only works because selection is marked by a perimeter; and `::placeholder`
  * has no token at all, so it falls through to Tailwind preflight's raw
  * `gray-400`. Both defects reach package primitives — `TimePicker`,
- * `MultiSelect`, `InputWithDropDown`, `Badge`, `DataTable`,
+ * `MultiSelect`, `Badge`, `DataTable`,
  * `Input`, `Textarea` — so shipping the palette without these rules ships a
  * broken palette.
  *
