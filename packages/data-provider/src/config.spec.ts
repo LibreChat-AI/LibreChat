@@ -34,6 +34,7 @@ import {
   isTwoFactorPolicyProvider,
   resolveEndpointType,
   webSearchSchema,
+  SafeSearchTypes,
   isSafeLinkUrl,
 } from './config';
 
@@ -2361,6 +2362,123 @@ describe('allowedAddressesSchema', () => {
 });
 
 describe('webSearchSchema', () => {
+  describe('Kagi', () => {
+    it('accepts Kagi search with an independent scraper and reranker', () => {
+      const result = configSchema.parse({
+        version: '1.3.18',
+        webSearch: {
+          searchProvider: 'kagi',
+          scraperProvider: 'firecrawl',
+          rerankerType: 'jina',
+          kagiApiKey: 'kagi-test-token',
+          kagiApiKeyPreview: '...oken',
+          kagiSearchOptions: { limit: 10, timeout: 15000 },
+        },
+      });
+
+      expect(result.webSearch).toMatchObject({
+        searchProvider: 'kagi',
+        scraperProvider: 'firecrawl',
+        rerankerType: 'jina',
+        kagiApiKey: 'kagi-test-token',
+        kagiApiKeyPreview: '...oken',
+        kagiSearchOptions: { limit: 10, timeout: 15000 },
+      });
+    });
+
+    it('defaults only the API key reference without selecting providers or adding options', () => {
+      const result = webSearchSchema.parse({});
+
+      expect(result.kagiApiKey).toBe('${KAGI_API_KEY}');
+      expect(result.kagiApiKeyPreview).toBeUndefined();
+      expect(result.kagiSearchOptions).toBeUndefined();
+      expect(result.kagiScraperOptions).toBeUndefined();
+      expect(result.searchProvider).toBeUndefined();
+      expect(result.scraperProvider).toBeUndefined();
+      expect(result.rerankerType).toBeUndefined();
+      expect(result.safeSearch).toBe(SafeSearchTypes.MODERATE);
+      expect(configSchema.parse({ version: '1.3.18' }).webSearch).toBeUndefined();
+    });
+
+    it.each(['user_provided', '${CUSTOM_KAGI_API_KEY}', ''])('preserves key value %p', (key) => {
+      expect(webSearchSchema.parse({ kagiApiKey: key }).kagiApiKey).toBe(key);
+    });
+
+    it.each([{}, { limit: 1 }, { limit: 101 }, { timeout: 1 }, { limit: 1024, timeout: 120000 }])(
+      'accepts optional options and inclusive bounds %p',
+      (options) => {
+        expect(webSearchSchema.parse({ kagiSearchOptions: options }).kagiSearchOptions).toEqual(
+          options,
+        );
+      },
+    );
+
+    it.each([
+      { limit: 0 },
+      { limit: -1 },
+      { limit: 1.5 },
+      { limit: 1025 },
+      { limit: '10' },
+      { timeout: 0 },
+      { timeout: -1 },
+      { timeout: 1.5 },
+      { timeout: 120001 },
+      { timeout: '15000' },
+    ])('rejects invalid options %p', (options) => {
+      expect(webSearchSchema.safeParse({ kagiSearchOptions: options }).success).toBe(false);
+    });
+
+    it.each([
+      { searchProvider: 'kagi', scraperProvider: 'kagi' },
+      { searchProvider: 'serper', scraperProvider: 'kagi' },
+      { scraperProvider: 'kagi' },
+    ])('accepts paired or independently selected Kagi Extract %p', (providers) => {
+      const result = configSchema.parse({
+        version: '1.3.18',
+        webSearch: {
+          ...providers,
+          kagiApiKey: 'kagi-test-token',
+          kagiSearchOptions: { limit: 10, timeout: 15000 },
+          kagiScraperOptions: { timeout: 30000 },
+        },
+      });
+
+      expect(result.webSearch).toMatchObject({
+        ...providers,
+        kagiApiKey: 'kagi-test-token',
+        kagiSearchOptions: { limit: 10, timeout: 15000 },
+        kagiScraperOptions: { timeout: 30000 },
+      });
+    });
+
+    it.each([{}, { timeout: 1 }, { timeout: 120000 }])(
+      'accepts optional scraper options and inclusive timeout bounds %p',
+      (options) => {
+        expect(webSearchSchema.parse({ kagiScraperOptions: options }).kagiScraperOptions).toEqual(
+          options,
+        );
+      },
+    );
+
+    it.each([0, -1, 1.5, 120001, '15000', null])(
+      'rejects invalid scraper timeout %p',
+      (timeout) => {
+        expect(webSearchSchema.safeParse({ kagiScraperOptions: { timeout } }).success).toBe(false);
+      },
+    );
+
+    it('does not register Kagi as a reranker', () => {
+      expect(webSearchSchema.safeParse({ rerankerType: 'kagi' }).success).toBe(false);
+    });
+
+    it('does not expose a custom Kagi URL', () => {
+      expect(webSearchSchema.shape).not.toHaveProperty('kagiApiUrl');
+      expect(webSearchSchema.shape).not.toHaveProperty('kagiSearchUrl');
+      expect(webSearchSchema.shape).not.toHaveProperty('kagiExtractUrl');
+      expect(webSearchSchema.shape).not.toHaveProperty('kagiScraperUrl');
+    });
+  });
+
   it('accepts Tavily string modes for answer and raw content options', () => {
     const result = webSearchSchema.parse({
       tavilySearchOptions: {

@@ -10,7 +10,9 @@ export default function useSearchApiKeyForm({
   onSubmit?: () => void;
   onRevoke?: () => void;
 }) {
-  const methods = useForm<SearchApiKeyFormData>();
+  const methods = useForm<SearchApiKeyFormData>({
+    defaultValues: { kagiApiKey: '' },
+  });
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const badgeTriggerRef = useRef<HTMLInputElement>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);

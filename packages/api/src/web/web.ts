@@ -57,6 +57,8 @@ interface ResolvedCredential {
 type WebSearchOptionBlock =
   | 'firecrawlOptions'
   | 'searxngSearchOptions'
+  | 'kagiSearchOptions'
+  | 'kagiScraperOptions'
   | 'tavilySearchOptions'
   | 'tavilyScraperOptions'
   | 'keenableSearchOptions'
@@ -65,6 +67,8 @@ type WebSearchOptionBlock =
 const WEB_SEARCH_OPTION_BLOCKS: readonly WebSearchOptionBlock[] = [
   'firecrawlOptions',
   'searxngSearchOptions',
+  'kagiSearchOptions',
+  'kagiScraperOptions',
   'tavilySearchOptions',
   'tavilyScraperOptions',
   'keenableSearchOptions',
@@ -863,6 +867,8 @@ export async function loadWebSearchAuth({
     scraperOptionsTimeout = webSearchConfig?.firecrawlOptions?.timeout;
   } else if (scraperProvider === ScraperProviders.KEENABLE) {
     scraperOptionsTimeout = webSearchConfig?.keenableScraperOptions?.timeout;
+  } else if (scraperProvider === ScraperProviders.KAGI) {
+    scraperOptionsTimeout = webSearchConfig?.kagiScraperOptions?.timeout;
   }
 
   const searchProvider = authResult.searchProvider ?? webSearchConfig?.searchProvider;
@@ -877,6 +883,14 @@ export async function loadWebSearchAuth({
   authResult.searxngSearchOptions = pickOptionFields(
     'searxngSearchOptions',
     webSearchConfig?.searxngSearchOptions,
+  );
+  authResult.kagiSearchOptions = pickOptionFields(
+    'kagiSearchOptions',
+    webSearchConfig?.kagiSearchOptions,
+  );
+  authResult.kagiScraperOptions = pickOptionFields(
+    'kagiScraperOptions',
+    webSearchConfig?.kagiScraperOptions,
   );
   authResult.tavilySearchOptions = pickOptionFields(
     'tavilySearchOptions',

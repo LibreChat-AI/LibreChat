@@ -16,6 +16,7 @@ export type SearchApiKeyFormData = {
   selectedReranker?: RerankerTypes;
   selectedScraper?: ScraperProviders;
   // API keys and URLs
+  kagiApiKey: string;
   serperApiKey: string;
   searxngInstanceUrl: string;
   searxngApiKey: string;
@@ -71,6 +72,7 @@ const useAuthSearchTool = (options?: { isEntityTool: boolean }) => {
         selectedProvider: data.selectedProvider,
         selectedScraper: data.selectedScraper,
         selectedReranker: data.selectedReranker,
+        kagiApiKey: data.kagiApiKey,
         serperApiKey: data.serperApiKey,
         searxngInstanceUrl: data.searxngInstanceUrl,
         searxngApiKey: data.searxngApiKey,

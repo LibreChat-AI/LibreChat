@@ -25,6 +25,7 @@ interface InputSectionProps {
   selectedKey: string;
   onSelectionChange: (key: string) => void;
   dropdownOptions: DropdownOption[];
+  excludedInputs?: ReadonlySet<string>;
   showDropdown: boolean;
   register: UseFormRegister<SearchApiKeyFormData>;
   dropdownOpen: boolean;
@@ -37,6 +38,7 @@ export default function InputSection({
   selectedKey,
   onSelectionChange,
   dropdownOptions,
+  excludedInputs,
   showDropdown,
   register,
   dropdownOpen,
@@ -74,43 +76,48 @@ export default function InputSection({
         )}
       </div>
       {selectedOption?.inputs &&
-        Object.entries(selectedOption.inputs).map(([name, config]) => (
-          <div key={name}>
-            <div className="relative">
-              {config.type === 'password' ? (
-                <SecretInput
-                  placeholder={config.placeholder}
-                  autoComplete="one-time-code"
-                  data-lpignore="true"
-                  data-1p-ignore="true"
-                  controlsOnHover
-                  className="mb-2"
-                  {...register(name as keyof SearchApiKeyFormData)}
-                />
-              ) : (
-                <Input
-                  type="text"
-                  placeholder={config.placeholder}
-                  autoComplete="off"
-                  className="mb-2"
-                  {...register(name as keyof SearchApiKeyFormData)}
-                />
+        Object.entries(selectedOption.inputs).map(([name, config]) => {
+          if (excludedInputs?.has(name)) {
+            return null;
+          }
+          return (
+            <div key={name}>
+              <div className="relative">
+                {config.type === 'password' ? (
+                  <SecretInput
+                    placeholder={config.placeholder}
+                    autoComplete="one-time-code"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    controlsOnHover
+                    className="mb-2"
+                    {...register(name as keyof SearchApiKeyFormData)}
+                  />
+                ) : (
+                  <Input
+                    type="text"
+                    placeholder={config.placeholder}
+                    autoComplete="off"
+                    className="mb-2"
+                    {...register(name as keyof SearchApiKeyFormData)}
+                  />
+                )}
+              </div>
+              {config.link && (
+                <div className="text-text-secondary mt-1 text-xs">
+                  <a
+                    href={config.link.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-link hover:text-link-hover underline"
+                  >
+                    {config.link.text}
+                  </a>
+                </div>
               )}
             </div>
-            {config.link && (
-              <div className="text-text-secondary mt-1 text-xs">
-                <a
-                  href={config.link.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-link hover:text-link-hover underline"
-                >
-                  {config.link.text}
-                </a>
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
     </div>
   );
 }

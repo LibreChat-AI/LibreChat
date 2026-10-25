@@ -1,6 +1,8 @@
-import { Tools } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
-import useAuthSearchTool, { type SearchApiKeyFormData } from '../useAuthSearchTool';
+import { Tools, RerankerTypes, SearchProviders, ScraperProviders } from 'librechat-data-provider';
+import type { SearchApiKeyFormData } from '../useAuthSearchTool';
+import useSearchApiKeyForm from '../useSearchApiKeyForm';
+import useAuthSearchTool from '../useAuthSearchTool';
 
 const mockMutate = jest.fn();
 const mockInvalidateQueries = jest.fn();
@@ -18,6 +20,7 @@ jest.mock('librechat-data-provider/react-query', () => ({
 }));
 
 const emptyForm = (): SearchApiKeyFormData => ({
+  kagiApiKey: '',
   serperApiKey: '',
   searxngInstanceUrl: '',
   searxngApiKey: '',
@@ -32,6 +35,120 @@ const emptyForm = (): SearchApiKeyFormData => ({
 });
 
 describe('useAuthSearchTool', () => {
+  it('initializes and resets the Kagi key to an empty default in the search form', () => {
+    const { result } = renderHook(() => useSearchApiKeyForm({}));
+
+    expect(result.current.methods.getValues('kagiApiKey')).toBe('');
+    act(() => result.current.methods.setValue('kagiApiKey', 'kagi-test-key'));
+    act(() => result.current.handleRevokeApiKey());
+
+    expect(result.current.methods.getValues('kagiApiKey')).toBe('');
+    expect(mockMutate).toHaveBeenCalledWith({
+      pluginKey: Tools.web_search,
+      action: 'uninstall',
+      auth: {},
+      isEntityTool: true,
+    });
+  });
+
+  it('submits Kagi credentials without changing the scraper or reranker', () => {
+    const { result } = renderHook(() => useAuthSearchTool());
+
+    act(() =>
+      result.current.installTool({
+        ...emptyForm(),
+        selectedProvider: SearchProviders.KAGI,
+        kagiApiKey: 'kagi-test-key',
+        selectedScraper: ScraperProviders.FIRECRAWL,
+        firecrawlApiKey: 'firecrawl-test-key',
+        selectedReranker: RerankerTypes.JINA,
+        jinaApiKey: 'jina-test-key',
+      }),
+    );
+
+    expect(mockMutate).toHaveBeenCalledWith({
+      pluginKey: Tools.web_search,
+      action: 'install',
+      auth: {
+        selectedProvider: SearchProviders.KAGI,
+        kagiApiKey: 'kagi-test-key',
+        selectedScraper: ScraperProviders.FIRECRAWL,
+        firecrawlApiKey: 'firecrawl-test-key',
+        selectedReranker: RerankerTypes.JINA,
+        jinaApiKey: 'jina-test-key',
+      },
+      isEntityTool: true,
+    });
+  });
+
+  it.each([SearchProviders.SERPER, SearchProviders.KAGI])(
+    'submits Kagi Extract with the shared key and search provider %s',
+    (selectedProvider) => {
+      const { result } = renderHook(() => useAuthSearchTool());
+
+      act(() =>
+        result.current.installTool({
+          ...emptyForm(),
+          selectedProvider,
+          selectedScraper: ScraperProviders.KAGI,
+          kagiApiKey: 'shared-kagi-test-key',
+          selectedReranker: RerankerTypes.NONE,
+        }),
+      );
+
+      expect(mockMutate).toHaveBeenCalledWith({
+        pluginKey: Tools.web_search,
+        action: 'install',
+        auth: {
+          selectedProvider,
+          selectedScraper: 'kagi',
+          kagiApiKey: 'shared-kagi-test-key',
+          selectedReranker: RerankerTypes.NONE,
+        },
+        isEntityTool: true,
+      });
+    },
+  );
+
+  it('submits a Kagi key without overriding an admin-pinned provider or scraper', () => {
+    const { result } = renderHook(() => useAuthSearchTool());
+
+    act(() => result.current.installTool({ ...emptyForm(), kagiApiKey: 'kagi-test-key' }));
+
+    expect(mockMutate).toHaveBeenCalledWith({
+      pluginKey: Tools.web_search,
+      action: 'install',
+      auth: { kagiApiKey: 'kagi-test-key' },
+      isEntityTool: true,
+    });
+  });
+
+  it('omits a pristine empty Kagi key', () => {
+    const { result } = renderHook(() => useAuthSearchTool());
+
+    act(() => result.current.installTool(emptyForm()));
+
+    expect(mockMutate).toHaveBeenCalledWith({
+      pluginKey: Tools.web_search,
+      action: 'install',
+      auth: {},
+      isEntityTool: true,
+    });
+  });
+
+  it('forwards an explicitly cleared Kagi key', () => {
+    const { result } = renderHook(() => useAuthSearchTool());
+
+    act(() => result.current.installTool(emptyForm(), { kagiApiKey: true }));
+
+    expect(mockMutate).toHaveBeenCalledWith({
+      pluginKey: Tools.web_search,
+      action: 'install',
+      auth: { kagiApiKey: '' },
+      isEntityTool: true,
+    });
+  });
+
   it('forwards an explicitly empty Keenable URL as a clear operation', () => {
     const { result } = renderHook(() => useAuthSearchTool());
 
