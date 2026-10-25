@@ -179,11 +179,13 @@ const AuthContextProvider = ({
        * setup route finish the previous user's enrollment and take the tab as them.
        */
       clearTwoFactorSetupToken();
-      if (twoFASetupRequired) {
+      if (twoFASetupRequired || twoFAPending) {
         const redirectTo = new URLSearchParams(window.location.search).get('redirect_to');
         if (redirectTo) {
           persistRedirectToSession(redirectTo);
         }
+      }
+      if (twoFASetupRequired) {
         persistTwoFactorSetupToken(tempToken ?? '');
         navigate('/login/2fa/setup', { replace: true });
         return;

@@ -113,7 +113,10 @@ export function isTwoFactorPolicyProvider(provider: string | null | undefined): 
 /** How long a started social login may take to return to its callback before its `state` expires. */
 export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox'] as const;
+/** Sections only librechat.yaml sets: no config document, Base included, can change or remove
+ * them. `turnstile` stays here until the server verifies Turnstile tokens: until then a stored
+ * site key adds no protection, and a wrong one locks users out of sign-in and registration. */
+export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox', 'turnstile'] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
@@ -121,13 +124,68 @@ export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
  * or tenant config document can neither change nor remove them. The pull request provider and
  * host decide where the deployment's token is sent, the OAuth app which credentials users grant
  * and which environment secret is sent with them, and the shared cache's slot count where every
- * replica looks for a shared answer. */
+ * replica looks for a shared answer. Vertex AI always authenticates with the deployment's service
+ * account: its key file (a path, inline JSON or a URL the server fetches) and its region, which
+ * is part of the API host, stay librechat.yaml's. The admin catalog's model-list lifetime is one
+ * value for the whole deployment, which `GET /api/admin/config/meta` reports. */
 export const BASE_ONLY_CONFIG_PATHS = [
   'endpoints.agents.pullRequests.provider',
   'endpoints.agents.pullRequests.host',
   'endpoints.agents.pullRequests.oauth',
   'endpoints.agents.pullRequests.sharedCacheSlots',
+  'endpoints.anthropic.vertex.serviceKeyFile',
+  'endpoints.anthropic.vertex.region',
+  'endpoints.catalogModelsTtlMs',
 ] as const;
+/** Fields the server derives from another librechat.yaml field, which no config document writes:
+ * the merge leaves a document's value or tombstone there out and derives them itself, and writes
+ * skip them (`derived_path`). `vertexConfig` is what `endpoints.anthropic.vertex` resolves to,
+ * its service key file included, which the Anthropic client loads (a path, inline JSON or a URL
+ * it fetches). Each is both an override path and an AppConfig path: its section keeps its name. */
+export const DERIVED_CONFIG_PATHS = ['endpoints.anthropic.vertexConfig'] as const;
+
+/** How long the admin config catalog reuses a scope's model lists unless
+ * `endpoints.catalogModelsTtlMs` sets it: the two minutes a provider's model list is cached for. */
+export const DEFAULT_CATALOG_MODELS_TTL_MS = 120_000;
+
+/**
+ * Why a deployment-only path is set in librechat.yaml only:
+ * - `startup`: read once when the server starts, so a stored value would never apply.
+ * - `operator`: an operator boundary (signed access, rate limits, permission leases, code
+ *   modules, which tools load), read from librechat.yaml itself.
+ * - `unused`: nothing reads it any more.
+ */
+export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
+
+/**
+ * Paths of overridable sections that only librechat.yaml sets, as YAML key paths. No config
+ * document, Base included, stores them: admin writes skip them, and the merge keeps
+ * librechat.yaml's value. Unlike `BASE_ONLY_CONFIG_PATHS`, their readers never took a value from
+ * the merged config (apart from the tool filters, which only gated `ask_user_question` there), so
+ * a stored override had no effect rather than a dangerous one.
+ */
+export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
+  rateLimits: 'operator',
+  cloudfront: 'operator',
+  permissions: 'operator',
+  openapi: 'operator',
+  skillDeletion: 'startup',
+  includedTools: 'operator',
+  filteredTools: 'operator',
+  'registration.openidDiscovery': 'startup',
+  'registration.oauthStateTtlMs': 'startup',
+  'endpoints.agents.subagentActivity': 'startup',
+  'endpoints.agents.eventDriven': 'startup',
+  'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
+  'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
+  'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
+  'endpoints.agents.toolApproval.hooks': 'operator',
+  'mcpSettings.catalogRecovery.maxStateEntries': 'startup',
+  'mcpSettings.catalogRecovery.maxDetachedDiscoveries': 'startup',
+  'mcpSettings.catalogRecovery.authorizationFenceRetryIntervalMs': 'startup',
+  'mcpSettings.catalogRecovery.authorizationFenceRetryBatchSize': 'startup',
+  cache: 'unused',
+};
 
 export const defaultRetrievalModels = [
   'gpt-4o',
@@ -305,36 +363,60 @@ function parseAllowedAddressEntry(entry: string): { address: string; port: strin
   return { address, port };
 }
 
-const allowedAddressEntrySchema = z
-  .string()
-  .refine((entry) => entry.length > 0 && entry.trim().length > 0, {
-    message: 'allowedAddresses entries must be non-empty',
-  })
-  .refine((entry) => !entry.includes('://') && !entry.includes('/') && !/\s/.test(entry), {
-    message:
-      'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
-  })
-  .refine((entry) => parseAllowedAddressEntry(entry) != null, {
-    message:
-      'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
-  })
-  .refine(
-    (entry) => {
-      const parsed = parseAllowedAddressEntry(entry);
-      if (!parsed) return false;
-      const stripped = parsed.address;
-      const isIPv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(stripped);
-      const isIPv6 = !isIPv4 && stripped.includes(':');
-      if (!isIPv4 && !isIPv6) {
-        return true; // hostname — checked at runtime via DNS
-      }
-      return isIPv4 ? isPrivateIPv4Literal(stripped) : isPrivateIPv6Literal(stripped);
-    },
-    {
-      message:
-        'allowedAddresses is scoped to private IP space — public IP literals are not permitted (use hostname:port if it resolves to a private IP)',
-    },
-  );
+/**
+ * Why an `allowedAddresses` entry is refused, as the `reason` param of its validation issue:
+ * - `empty`: the entry is empty or only whitespace.
+ * - `format`: a URL, path, CIDR range or whitespace instead of a `host:port` pair.
+ * - `missing_port`: no valid port (`localhost`, `10.0.0.5`).
+ * - `public_ip`: an IP literal outside private, loopback and link-local space.
+ */
+export type AllowedAddressIssue = 'empty' | 'format' | 'missing_port' | 'public_ip';
+
+const ALLOWED_ADDRESS_ISSUE_MESSAGES: Readonly<Record<AllowedAddressIssue, string>> = {
+  empty: 'allowedAddresses entries must be non-empty',
+  format:
+    'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
+  missing_port:
+    'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
+  public_ip:
+    'allowedAddresses is scoped to private IP space — public IP literals are not permitted (use hostname:port if it resolves to a private IP)',
+};
+
+/**
+ * The first rule an `allowedAddresses` entry fails, checked in the order above, or `null` for an
+ * entry the schema accepts. A hostname passes: its resolved IP is checked at runtime.
+ */
+export function getAllowedAddressEntryIssue(entry: string): AllowedAddressIssue | null {
+  if (entry.trim().length === 0) {
+    return 'empty';
+  }
+  if (entry.includes('://') || entry.includes('/') || /\s/.test(entry)) {
+    return 'format';
+  }
+  const parsed = parseAllowedAddressEntry(entry);
+  if (!parsed) {
+    return 'missing_port';
+  }
+  const { address } = parsed;
+  const isIPv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(address);
+  if (!isIPv4 && !address.includes(':')) {
+    return null;
+  }
+  const isPrivate = isIPv4 ? isPrivateIPv4Literal(address) : isPrivateIPv6Literal(address);
+  return isPrivate ? null : 'public_ip';
+}
+
+/** One issue per refused entry, with its message and `params.reason`. */
+const allowedAddressEntrySchema = z.string().superRefine((entry, ctx) => {
+  const reason = getAllowedAddressEntryIssue(entry);
+  if (reason) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: ALLOWED_ADDRESS_ISSUE_MESSAGES[reason],
+      params: { reason },
+    });
+  }
+});
 
 export const allowedAddressesSchema = z.array(allowedAddressEntrySchema).optional();
 
@@ -710,6 +792,13 @@ export const azureGroupSchema = z
     models: z.record(z.string(), modelConfigSchema),
   })
   .required()
+  .extend({
+    /**
+     * Masked preview of the group's `apiKey`, set by the admin config API when it stores the key
+     * encrypted. Read-only: writes to it are rejected.
+     */
+    apiKeyPreview: z.string().optional(),
+  })
   .and(azureBaseSchema);
 
 export const azureGroupConfigsSchema = z.array(azureGroupSchema).min(1);
@@ -1599,7 +1688,8 @@ export const agentsEndpointSchema = baseEndpointSchema
           message: 'Use 0 to disable, or at least 1000 ms',
         })
         .default(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS),
-      recursionLimit: z.number().optional(),
+      /** Graph steps an agent run may take; a run with fewer than 1 cannot take a step. */
+      recursionLimit: z.number().int().min(1).optional(),
       disableBuilder: z.boolean().optional().default(false),
       /** Prefixes every user message in the prompt with the time it was sent, to the second. */
       promptMessageTimestamps: z.boolean().optional().default(false),
@@ -1619,6 +1709,15 @@ export const agentsEndpointSchema = baseEndpointSchema
       repositoryInstructions: z
         .object({
           timeoutMs: z.number().int().min(100).max(30_000).optional().default(2000),
+        })
+        .optional(),
+      /** How long a turn on an attached workspace may spend copying chat attachments into it
+       * before the model runs; unfinished copies fall back to a note and retry next turn. */
+      workspaceAttachments: z
+        .object({
+          timeoutMs: z.number().int().min(1_000).max(120_000).optional().default(10_000),
+          /** Workspace requests in flight for the turn, across every agent it primes. */
+          concurrency: z.number().int().min(1).max(16).optional().default(3),
         })
         .optional(),
       /** Budget and cache configuration for resolving an agent's linked prompt-group
@@ -1644,7 +1743,8 @@ export const agentsEndpointSchema = baseEndpointSchema
             .default({}),
         })
         .optional(),
-      maxRecursionLimit: z.number().optional(),
+      /** Cap on any agent's `recursion_limit` and on `recursionLimit`. */
+      maxRecursionLimit: z.number().int().min(1).optional(),
       /** Max cumulative bytes a single streamed tool call's arguments may reach before the run
        * aborts. Defaults to 64 KiB in the agents SDK; `0` disables the guard. */
       maxToolCallArgBytes: z.number().optional(),
@@ -1745,6 +1845,39 @@ export const agentsEndpointSchema = baseEndpointSchema
               enabled: z.boolean().optional(),
               /** Defaults to five. Zero disables enrollment; existing machines remain usable. */
               maxPerUser: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+              browserSetup: z
+                .object({
+                  enabled: z.boolean().optional().default(false),
+                  /** Canonical public instance URL, including the deployment prefix. */
+                  instance: z.string().url(),
+                  maxPending: z.number().int().min(1).max(512).optional().default(128),
+                  maxPerIp: z.number().int().min(1).max(512).optional().default(5),
+                  requestsPerMinute: z.number().int().min(1).max(20000).optional().default(1200),
+                  requestsPerIpMinute: z.number().int().min(1).max(2000).optional().default(120),
+                  proofWindowMs: z.number().int().min(10000).max(120000).optional().default(60000),
+                  maxProofsPerAttempt: z
+                    .number()
+                    .int()
+                    .min(320)
+                    .max(10000)
+                    .optional()
+                    .default(1024),
+                  reconcileIntervalMs: z
+                    .number()
+                    .int()
+                    .min(1000)
+                    .max(60000)
+                    .optional()
+                    .default(10000),
+                  retentionMs: z
+                    .number()
+                    .int()
+                    .min(600000)
+                    .max(604800000)
+                    .optional()
+                    .default(86400000),
+                })
+                .optional(),
             })
             .optional(),
           /** Server-only policy letting a conversation's owner move its sealed attached decision
@@ -2287,13 +2420,42 @@ export type TAzureConfig = Omit<z.infer<typeof azureEndpointSchema>, 'groups'> &
   TAzureConfigValidationResult;
 
 /**
+ * A Vertex AI location as it appears in the API host (`<region>-aiplatform.googleapis.com`):
+ * letters, digits and hyphens only, so no value can name another host.
+ */
+export const VERTEX_REGION_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/**
+ * A Vertex AI project ID or deployment (model) name, each one segment of the request path:
+ * letters, digits, `.`, `_`, `:` (domain-scoped projects), `@` (model versions) and `-`, and not
+ * only dots, so no value can leave its segment.
+ */
+export const VERTEX_PATH_SEGMENT_PATTERN = /^(?!\.+$)[A-Za-z0-9._:@-]+$/;
+
+/**
+ * A whole `${VAR}` reference to one environment variable: a name of letters, digits and
+ * underscores, with nothing around it. Text that only starts with `${` and ends with `}`
+ * (`${A}/x#${A}`) is not one.
+ */
+export const ENV_VAR_REFERENCE_PATTERN = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+/** A Vertex AI setting: a value matching `pattern`, or a whole `${VAR}` reference resolved at load. */
+function vertexSettingSchema(pattern: RegExp, label: string) {
+  return z
+    .string()
+    .refine((value) => ENV_VAR_REFERENCE_PATTERN.test(value) || pattern.test(value), {
+      message: `Must be a valid Vertex AI ${label} or a \${ENV_VAR} reference`,
+    });
+}
+
+/**
  * Vertex AI model configuration - similar to Azure model config
  * Allows specifying deployment name for each model
  */
 export const vertexModelConfigSchema = z
   .object({
     /** The actual model ID/deployment name used by Vertex AI API */
-    deploymentName: z.string().optional(),
+    deploymentName: vertexSettingSchema(VERTEX_PATH_SEGMENT_PATTERN, 'deployment name').optional(),
   })
   .or(z.boolean());
 
@@ -2307,18 +2469,42 @@ export const vertexAISchema = z.object({
   /** Enable Vertex AI mode for Anthropic (defaults to true when vertex config is present) */
   enabled: z.boolean().optional(),
   /** Google Cloud Project ID (optional - auto-detected from service key file if not provided) */
-  projectId: z.string().optional(),
+  projectId: vertexSettingSchema(VERTEX_PATH_SEGMENT_PATTERN, 'project ID').optional(),
   /** Vertex AI region (e.g., 'us-east5', 'europe-west1') */
-  region: z.string().default('us-east5'),
+  region: vertexSettingSchema(VERTEX_REGION_PATTERN, 'region').default('us-east5'),
   /** Optional: Path to service account key file */
   serviceKeyFile: z.string().optional(),
   /** Optional: Default deployment name for all models (can be overridden per model) */
-  deploymentName: z.string().optional(),
+  deploymentName: vertexSettingSchema(VERTEX_PATH_SEGMENT_PATTERN, 'deployment name').optional(),
   /** Optional: Available models - can be string array or object with deploymentName mapping */
   models: z.union([z.array(z.string()), z.record(z.string(), vertexModelConfigSchema)]).optional(),
 });
 
 export type TVertexAISchema = z.infer<typeof vertexAISchema>;
+
+/**
+ * The deployment name a Vertex AI request for `modelName` sends, which the client puts in the
+ * request path as written: a `models` record entry's own `deploymentName`, else the default
+ * `deploymentName` for an entry that is `true` or has none, else (a `models` array, an entry set
+ * to `false`, a model not listed) the model name itself.
+ */
+export function getVertexDeploymentName(
+  modelName: string,
+  vertexConfig?: Pick<TVertexAISchema, 'models' | 'deploymentName'>,
+): string {
+  const models = vertexConfig?.models;
+  if (models == null || Array.isArray(models)) {
+    return modelName;
+  }
+  const modelConfig = models[modelName];
+  if (!modelConfig) {
+    return modelName;
+  }
+  if (typeof modelConfig === 'boolean') {
+    return vertexConfig?.deploymentName || modelName;
+  }
+  return modelConfig.deploymentName || vertexConfig?.deploymentName || modelName;
+}
 
 export type TVertexModelMap = Record<string, string>;
 
@@ -2553,6 +2739,13 @@ export const rateLimitSchema = z.object({
       userWindowInMinutes: z.number().positive().optional(),
     })
     .optional(),
+  /** Limits GET /prompts/groups/:groupId/resolve; keyed by the authenticated user. */
+  promptResolve: z
+    .object({
+      userMax: z.number().int().positive().optional(),
+      userWindowInMinutes: z.number().positive().optional(),
+    })
+    .optional(),
   fileUploads: z
     .object({
       ipMax: z.number().optional(),
@@ -2616,8 +2809,42 @@ export enum EImageOutputType {
   JPEG = 'jpeg',
 }
 
+/** Schemes a configured link may use: web pages, and the mail and phone links that run no script. */
+const LINK_SCHEMES = new Set(['http', 'https', 'mailto', 'tel']);
+/**
+ * A link's scheme as a reader finds it. It skips what either reader strips from the front: the
+ * WHATWG URL parser strips C0 controls and spaces, and `String.prototype.trim()` (which clients
+ * apply first) strips Unicode white space such as U+00A0, U+FEFF, U+2028 and U+3000; skipping
+ * both at once covers either reader, and either order. Inside the scheme it allows the tabs and
+ * newlines the URL parser removes. Only the front of a link decides its scheme, so the match is
+ * anchored there and ends with the scheme: the skipped characters cannot start a scheme, so a
+ * failed match gives each one back once, and nothing after the scheme is read at all.
+ */
+// eslint-disable-next-line no-control-regex
+const URL_SCHEME = /^[\u0000-\u0020\s]*([a-z][a-z\d+.\t\n\r-]*):/i;
+const URL_TAB_OR_NEWLINE = /[\t\n\r]/g;
+
+/**
+ * Whether a configured link, such as a privacy policy or terms of service `externalUrl`, may be
+ * rendered as an `href` on the app's pages, the signed-out sign-in page included: an http(s),
+ * `mailto:` or `tel:` URL, a URL relative to the app (which keeps the page's http(s) scheme),
+ * or a blank value, which publishes no link. The scheme is read the way the URL parser browsers
+ * use reads it, after the trimming clients apply, so letter case, white space (Unicode white
+ * space included) and control characters cannot disguise one that runs script, such as
+ * `javascript:` or `data:`. Only the scheme is judged: a malformed http(s) URL is not opened by
+ * a browser at all, so it stays accepted as it always was.
+ */
+export function isSafeLinkUrl(url: string): boolean {
+  const scheme = URL_SCHEME.exec(url)?.[1];
+  return scheme == null || LINK_SCHEMES.has(scheme.replace(URL_TAB_OR_NEWLINE, '').toLowerCase());
+}
+
+const linkUrlSchema = z
+  .string()
+  .refine(isSafeLinkUrl, { message: 'must be an http(s), mailto: or tel: URL, or a relative URL' });
+
 const termsOfServiceSchema = z.object({
-  externalUrl: z.string().optional(),
+  externalUrl: linkUrlSchema.optional(),
   openNewTab: z.boolean().optional(),
   modalAcceptance: z.boolean().optional(),
   modalTitle: z.string().optional(),
@@ -2859,7 +3086,7 @@ export const interfaceSchema = z
     theme: deploymentThemeSchema.optional(),
     privacyPolicy: z
       .object({
-        externalUrl: z.string().optional(),
+        externalUrl: linkUrlSchema.optional(),
         openNewTab: z.boolean().optional(),
       })
       .optional(),
@@ -3401,6 +3628,11 @@ export type TStartupConfig = {
   socialLogins?: string[];
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
+  langfusePromptSyncAccess?: boolean;
+  /** Whether this admin also holds `manage:prompts`, the capability the server's
+   *  `POST /prompts/sync` route requires in addition to Langfuse settings access. Gates the
+   *  "Sync prompts" action in the connection tab; absent (falsy) for an older server. */
+  langfusePromptManageAccess?: boolean;
   insightsEnabled?: boolean;
   /** Whether pull requests are active (on unless turned off, with a token and a repository scope);
    *  the header does not ask for a pull request without it. */
@@ -4054,6 +4286,20 @@ export const langfuseConfigSchema = z.object({
   headers: z.record(z.string()).optional(),
   /** Trace user identity and allowlisted user/request metadata. */
   trace: langfuseTraceConfigSchema.optional(),
+  /** Tenant admin switch for Langfuse prompt sync. Effective only when the
+   *  deployment sets LANGFUSE_PROMPT_SYNC_AVAILABLE.
+   *  - enabled: the tenant admin switch itself.
+   *  - lockLeaseMs: the per-tenant sync lock lease, in milliseconds (default
+   *    300000, clamped to 60000-3600000).
+   *  - maxPages: the page cap for one sync request, in pages of up to 100
+   *    Langfuse prompts each (default 50, clamped to 1-1000). */
+  promptSync: z
+    .object({
+      enabled: z.boolean().optional(),
+      lockLeaseMs: z.number().int().min(60000).max(3600000).optional(),
+      maxPages: z.number().int().min(1).max(1000).optional(),
+    })
+    .optional(),
 });
 
 export type LangfuseConfig = z.infer<typeof langfuseConfigSchema>;
@@ -4137,6 +4383,8 @@ export const toolCallPreviewsConfigSchema = z.object({
   /** Characters of serialized `args` kept per tool call. JSON arguments stay valid JSON with
    *  every field present; only the longest strings are shortened. */
   argsChars: z.number().int().min(256).max(1_000_000).default(512),
+  /** Transcript nodes and unique scope lookups per message; exhausted calls keep their transcript. */
+  attachmentWorkLimit: z.number().int().min(1).max(1_000_000).default(100_000),
 });
 
 export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
@@ -4407,6 +4655,13 @@ export const configSchema = z.object({
   endpoints: z
     .object({
       allowedAddresses: allowedAddressesSchema,
+      /**
+       * Milliseconds the admin config catalog (`GET /api/admin/config/catalog`) reuses a scope's
+       * model lists while its endpoint config is unchanged, up to one hour; `0` resolves them on
+       * every read, where a fetched list may still come from the two-minute model-list cache.
+       * Only librechat.yaml sets it. Omission keeps `DEFAULT_CATALOG_MODELS_TTL_MS` (two minutes).
+       */
+      catalogModelsTtlMs: z.number().int().min(0).max(3_600_000).optional(),
       /**
        * Defaults applied to every endpoint. Omit-based, so options added to
        * `baseEndpointSchema` are inherited here automatically — no list to
@@ -5291,6 +5546,10 @@ export enum Constants {
   ENCODED_DOMAIN_LENGTH = 10,
   /** Identifier for using current_model in multi-model requests. */
   CURRENT_MODEL = 'current_model',
+  /** Protocol bound for UUIDs, nanoids, and derived user identities. */
+  MAX_MESSAGE_ID_LENGTH = 256,
+  /** A preliminary response reserves one trailing underscore. */
+  MAX_RESPONSE_MESSAGE_ID_LENGTH = MAX_MESSAGE_ID_LENGTH + 1,
   /** Common divider for text values */
   COMMON_DIVIDER = '__',
   /** Max length for commands */

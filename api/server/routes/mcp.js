@@ -10,6 +10,7 @@ const {
 } = require('librechat-data-provider');
 const {
   getBasePath,
+  getSafeErrorMetadata,
   createSafeUser,
   createAuthIdentityContext,
   MCPOAuthHandler,
@@ -35,6 +36,7 @@ const {
   prepareMCPAuthorizationMutation,
   persistMCPAuthorizationTransaction,
   resolveMCPOAuthTarget,
+  canAccessMCPOAuthFlow,
 } = require('@librechat/api');
 const {
   createMCPServerController,
@@ -97,16 +99,7 @@ const OAUTH_CSRF_COOKIE_PATH = '/api/mcp';
 const getOAuthFlowId = (userId, serverName) =>
   MCPOAuthHandler.generateFlowId(userId, serverName, getTenantId());
 
-const canAccessOAuthFlow = (flowId, userId) => {
-  const parsed = MCPOAuthHandler.parseFlowId(flowId);
-  if (!parsed) {
-    return false;
-  }
-  if (parsed.tenantId && parsed.tenantId !== getTenantId()) {
-    return false;
-  }
-  return parsed.userId === userId || parsed.userId === 'system';
-};
+const canAccessOAuthFlow = (flowId, userId) => canAccessMCPOAuthFlow(flowId, userId, getTenantId());
 
 /** What `resolveMCPOAuthTarget` reads: the principal's resolved servers and its config. */
 const getOAuthTargetDeps = () => ({
@@ -257,7 +250,7 @@ router.get('/:serverName/oauth/initiate', requireJwtAuth, setOAuthSession, async
       getTenantId(),
     );
 
-    logger.debug('[MCP OAuth] OAuth flow initiated', { oauthFlowId, authorizationUrl });
+    logger.debug('[MCP OAuth] OAuth flow initiated', { oauthFlowId });
 
     const oldState = flowState.metadata?.state;
     if (typeof oldState === 'string') {
@@ -274,7 +267,7 @@ router.get('/:serverName/oauth/initiate', requireJwtAuth, setOAuthSession, async
     setOAuthCsrfCookie(res, oauthFlowId, OAUTH_CSRF_COOKIE_PATH);
     res.redirect(authorizationUrl);
   } catch (error) {
-    logger.error('[MCP OAuth] Failed to initiate OAuth', error);
+    logger.error('[MCP OAuth] Failed to initiate OAuth', getSafeErrorMetadata(error));
     res.status(500).json({ error: 'Failed to initiate OAuth' });
   }
 });
@@ -292,12 +285,12 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
     logger.debug('[MCP OAuth] Callback received', {
       serverName,
       code: code ? 'present' : 'missing',
-      state,
-      error: oauthError,
+      hasState: !!state,
+      hasError: !!oauthError,
     });
 
     if (oauthError) {
-      logger.error('[MCP OAuth] OAuth error received', { error: oauthError });
+      logger.error('[MCP OAuth] OAuth error received');
       // Gate failFlow behind callback validation to prevent DoS via leaked state
       if (state && typeof state === 'string') {
         try {
@@ -329,7 +322,6 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
                   );
                   logger.debug('[MCP OAuth] Marked flow as FAILED with OAuth error', {
                     flowId,
-                    error: oauthError,
                   });
                 } else {
                   logger.warn('[MCP OAuth] Skipping failFlow for superseded OAuth error callback', {
@@ -340,7 +332,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
             }
           }
         } catch (err) {
-          logger.debug('[MCP OAuth] Could not mark flow as failed', err);
+          logger.debug('[MCP OAuth] Could not mark flow as failed', getSafeErrorMetadata(err));
         }
       }
       return res.redirect(
@@ -363,7 +355,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
 
     const flowId = await MCPOAuthHandler.resolveStateToFlowId(state, flowManager);
     if (!flowId) {
-      logger.error('[MCP OAuth] Could not resolve state to flow ID', { state });
+      logger.error('[MCP OAuth] Could not resolve state to flow ID');
       return res.redirect(`${basePath}/oauth/error?error=invalid_state`);
     }
     logger.debug('[MCP OAuth] Resolved flow ID from state', { flowId });
@@ -502,7 +494,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
           } catch (error) {
             logger.warn(
               `[MCP OAuth] Failed to revoke ${tokenType} token after callback cancellation:`,
-              error,
+              getSafeErrorMetadata(error),
             );
           }
         }
@@ -578,7 +570,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
                     phase === 'prepare'
                       ? '[MCP OAuth] Failed to clear cached token flow state'
                       : '[MCP OAuth] Failed to wake a pending token flow',
-                    error,
+                    getSafeErrorMetadata(error),
                   ),
               },
             );
@@ -587,7 +579,10 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
               userId: flowState.userId,
             });
           } catch (error) {
-            logger.error('[MCP OAuth] Failed to store OAuth tokens before flow completion', error);
+            logger.error(
+              '[MCP OAuth] Failed to store OAuth tokens before flow completion',
+              getSafeErrorMetadata(error),
+            );
             throw error;
           }
 
@@ -612,7 +607,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
           } catch (error) {
             logger.warn(
               `[MCP OAuth] Could not resolve server config for ${serverName} before reconnecting:`,
-              error,
+              getSafeErrorMetadata(error),
             );
           }
 
@@ -648,7 +643,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
               } catch (error) {
                 logger.warn(
                   `[MCP OAuth] Could not resolve customUserVars for ${serverName} before reconnecting:`,
-                  error,
+                  getSafeErrorMetadata(error),
                 );
               }
             }
@@ -716,7 +711,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
       } catch (error) {
         logger.warn(
           `[MCP OAuth] Failed to reconnect ${serverName} after OAuth, but tokens are saved:`,
-          error,
+          getSafeErrorMetadata(error),
         );
       }
 
@@ -738,7 +733,7 @@ router.get('/:serverName/oauth/callback', async (req, res) => {
     const redirectUrl = `${basePath}/oauth/success?serverName=${encodeURIComponent(serverName)}`;
     res.redirect(redirectUrl);
   } catch (error) {
-    logger.error('[MCP OAuth] OAuth callback error', error);
+    logger.error('[MCP OAuth] OAuth callback error', getSafeErrorMetadata(error));
     res.redirect(`${basePath}/oauth/error?error=callback_failed`);
   }
 });
@@ -774,7 +769,7 @@ router.get('/oauth/tokens/:flowId', requireJwtAuth, async (req, res) => {
 
     res.json({ tokens: flowState.result });
   } catch (error) {
-    logger.error('[MCP OAuth] Failed to get tokens', error);
+    logger.error('[MCP OAuth] Failed to get tokens', getSafeErrorMetadata(error));
     res.status(500).json({ error: 'Failed to get tokens' });
   }
 });
@@ -798,7 +793,7 @@ router.post('/:serverName/oauth/bind', requireJwtAuth, setOAuthSession, async (r
 
     res.json({ success: true });
   } catch (error) {
-    logger.error('[MCP OAuth] Failed to set CSRF binding cookie', error);
+    logger.error('[MCP OAuth] Failed to set CSRF binding cookie', getSafeErrorMetadata(error));
     res.status(500).json({ error: 'Failed to bind OAuth flow' });
   }
 });
@@ -835,7 +830,7 @@ router.get('/oauth/status/:flowId', requireJwtAuth, async (req, res) => {
       error: flowState.error,
     });
   } catch (error) {
-    logger.error('[MCP OAuth] Failed to get flow status', error);
+    logger.error('[MCP OAuth] Failed to get flow status', getSafeErrorMetadata(error));
     res.status(500).json({ error: 'Failed to get flow status' });
   }
 });
@@ -882,7 +877,7 @@ router.post('/oauth/cancel/:serverName', requireJwtAuth, async (req, res) => {
       message: `OAuth flow for ${serverName} cancelled successfully`,
     });
   } catch (error) {
-    logger.error('[MCP OAuth Cancel] Failed to cancel OAuth flow', error);
+    logger.error('[MCP OAuth Cancel] Failed to cancel OAuth flow', getSafeErrorMetadata(error));
     res.status(500).json({ error: 'Failed to cancel OAuth flow' });
   }
 });

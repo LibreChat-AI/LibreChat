@@ -67,7 +67,7 @@ const output = (label, index) => `E2E slow echo: ${payload(label, index)}`;
 const prompt = (label, childId = 'main') => `${MARKER}${childId}:${label}`;
 
 /** Only the model is scripted. Every output must come back through the real MCP tool node. */
-function responsesForText(text, { getLatestUserText, messageType, getContentText }) {
+function responsesForText(text, { messageType, getContentText }) {
   const match = text.match(/E2E_SUBAGENT_HISTORY:([\w-]+):([a-z0-9-]{1,96})(?:\s|$)/);
   if (!match) return null;
   const [, childId, label] = match;
@@ -92,7 +92,12 @@ function responsesForText(text, { getLatestUserText, messageType, getContentText
           .filter((message) => messageType(message) === 'tool')
           .map((message) => [message.tool_call_id, getContentText(message.content)]),
       );
-      if (childId !== 'main' && !getLatestUserText(messages).includes(childPrompt)) {
+      const isChild = (messages ?? []).some(
+        (message) =>
+          ['human', 'user'].includes(messageType(message)) &&
+          getContentText(message.content).includes(childPrompt),
+      );
+      if (childId !== 'main' && !isChild) {
         if (results.has(dispatchId(label))) {
           return { response: `E2E history child dispatched ${label}` };
         }

@@ -55,6 +55,11 @@ const OAuthOptionsBaseSchema = z.object({
   client_id: z.string().optional(),
   /** OAuth client secret (requires explicit authorization and token endpoints) */
   client_secret: z.string().optional(),
+  /**
+   * Masked preview of `client_secret`, set by the admin config API when it stores the secret
+   * encrypted. Read-only: writes to it are rejected, and it never reaches end users.
+   */
+  client_secretPreview: z.string().optional(),
   /** OAuth scopes to request */
   scope: z.string().optional(),
   /** OAuth redirect URI (defaults to /api/mcp/{serverName}/oauth/callback) */
@@ -170,6 +175,7 @@ const UserOAuthOptionsSchema = OAuthOptionsBaseSchema.omit({
   audience: true,
   forward_audience_on_refresh: true,
   send_resource_parameter: true,
+  client_secretPreview: true,
 })
   .extend({
     authorization_url: userOAuthEndpointUrlSchema.optional(),
@@ -334,6 +340,11 @@ const BaseOptionsSchema = z.object({
     .object({
       /** API key value (only for admin-provided mode, stored encrypted) */
       key: z.string().optional(),
+      /**
+       * Masked preview of `key`, set by the admin config API when it stores the key encrypted.
+       * Read-only: writes to it are rejected, and it never reaches end users.
+       */
+      keyPreview: z.string().optional(),
       /** Whether key is provided by admin or each user */
       source: z.enum(['admin', 'user']),
       /** How to format the authorization header */

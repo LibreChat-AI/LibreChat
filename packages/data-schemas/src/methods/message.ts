@@ -845,6 +845,7 @@ export interface MessageMethods {
     taskId: string;
     invocationId: string;
     tenantId?: string;
+    activeOnly?: boolean;
   }): Promise<NonNullable<NonNullable<IMessage['subagentTask']>['controlReceipts']>[number] | null>;
   getSubagentTaskControlReplay(input: {
     userId: string;
@@ -2755,12 +2756,14 @@ export function createMessageMethods(
     taskId,
     invocationId,
     tenantId,
+    activeOnly = false,
   }: {
     userId: string;
     conversationId: string;
     taskId: string;
     invocationId: string;
     tenantId?: string;
+    activeOnly?: boolean;
   }): Promise<StoredSubagentControlReceipt | null> {
     if (
       userId.length === 0 ||
@@ -2775,6 +2778,7 @@ export function createMessageMethods(
     }
     const Message = mongoose.models.Message as Model<IMessage>;
     const input = await Message.findOne({
+      ...(activeOnly ? activeExpirationFilter<IMessage>() : {}),
       user: userId,
       conversationId,
       ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }),
@@ -3110,7 +3114,10 @@ export function createMessageMethods(
       };
       const activityProjectionAvailable = {
         $and: [
-          { $eq: ['$subagentActivityProjection.version', 1] },
+          { $in: ['$subagentActivityProjection.version', [1, 2]] },
+          {
+            $eq: ['$messageId', { $concat: ['$subagentActivityProjection.taskId', ':assistant'] }],
+          },
           '$_subagentActivityProjectionSourceIsString',
           {
             $lte: [
@@ -3123,8 +3130,28 @@ export function createMessageMethods(
       const transcriptAvailable = {
         $and: [
           '$_subagentTranscriptSourceIsString',
+          { $eq: ['$messageId', { $concat: ['$subagentTranscript.taskId', ':assistant'] }] },
           {
             $lte: ['$_subagentTranscriptSourceBytes', SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT],
+          },
+        ],
+      };
+      // Legacy reprojection is optional: retain the usable projection until the
+      // API validates the current input boundary against the bounded transcript.
+      const legacySteeringTranscriptAvailable = {
+        $and: [
+          { $eq: ['$subagentActivityProjection.version', 1] },
+          {
+            $cond: [
+              transcriptAvailable,
+              {
+                $gte: [
+                  { $indexOfBytes: ['$subagentTranscript.messagesJson', '"source":"steer"'] },
+                  0,
+                ],
+              },
+              false,
+            ],
           },
         ],
       };
@@ -3186,17 +3213,14 @@ export function createMessageMethods(
         message: {
           $cond: [
             { $eq: [{ $type: '$$receipt.message' }, 'string'] },
-            boundedString('$$receipt.message', SUBAGENT_VIEW_CONTROL_STRING_CODE_POINT_LIMIT),
+            boundedString('$$receipt.message', MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH),
             null,
           ],
         },
         messageTruncated: {
           $or: [
             { $eq: ['$$receipt.messageTruncated', true] },
-            stringProjectionTruncated(
-              '$$receipt.message',
-              SUBAGENT_VIEW_CONTROL_STRING_CODE_POINT_LIMIT,
-            ),
+            stringProjectionTruncated('$$receipt.message', MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH),
           ],
         },
       };
@@ -3659,13 +3683,23 @@ export function createMessageMethods(
         },
         subagentTranscript: {
           $cond: [
-            activityProjectionAvailable,
-            null,
+            {
+              $and: [
+                transcriptAvailable,
+                {
+                  $or: [
+                    { $eq: [activityProjectionAvailable, false] },
+                    legacySteeringTranscriptAvailable,
+                  ],
+                },
+              ],
+            },
             {
               taskId: '$subagentTranscript.taskId',
               mode: '$subagentTranscript.mode',
               messagesJson: '$subagentTranscript.messagesJson',
             },
+            null,
           ],
         },
       };
@@ -3870,6 +3904,9 @@ export function createMessageMethods(
           return {
             ...projected,
             subagentActivityProjectionJson: source.subagentActivityProjectionJson,
+            ...(source.subagentTranscript == null
+              ? {}
+              : { subagentTranscript: source.subagentTranscript }),
             ...(source.subagentActivityProjectionTruncated === true
               ? { subagentActivityProjectionTruncated: true }
               : {}),

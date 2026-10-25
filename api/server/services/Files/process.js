@@ -30,6 +30,9 @@ const {
 const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
   sanitizeFilename,
+  isMissingStorageError,
+  createDeleteFileWithSecondaryStorage,
+  finalizeFileDeletion,
   parseText,
   processAudioFile,
   extractInspectableFileText,
@@ -73,6 +76,7 @@ const { getStrategyFunctions } = require('./strategies');
 const { determineFileType } = require('~/server/utils');
 const { STTService } = require('./Audio/STTService');
 const db = require('~/models');
+const { getFileStorage } = require('~/server/services/Files/operations');
 
 /**
  * Creates a modular file upload wrapper that ensures filename sanitization
@@ -95,20 +99,6 @@ const createSanitizedUploadWrapper = (uploadFunction) => {
 
     return uploadFunction({ req, file: sanitizedFile, file_id, ...restParams });
   };
-};
-
-const hasCodeEnvRef = (file) =>
-  file?.metadata?.codeEnvRef != null || file?.metadata?.codeEnvRefs != null;
-
-const isMissingStorageError = (err) => {
-  const code = err?.code ?? err?.status ?? err?.statusCode ?? err?.response?.status;
-  if ([404, '404', 'ENOENT', 'NoSuchKey', 'NotFound', 'ResourceNotFound'].includes(code)) {
-    return true;
-  }
-
-  return /(?:file|object|blob|key|resource) (?:not found|does not exist)|no such (?:file|key)/i.test(
-    String(err?.message ?? ''),
-  );
 };
 
 /**
@@ -189,35 +179,6 @@ const getDeleteMethod = ({ source, deletionMethods }) => {
 
   deletionMethods[source] = deleteFile;
   return deleteFile;
-};
-
-const createDeleteFileWithSecondaryStorage = ({ source, deleteFile, deletionMethods }) => {
-  return async (req, file, openai) => {
-    const secondaryDeleteMethods = [];
-    if (file.embedded === true && source !== FileSources.vectordb) {
-      secondaryDeleteMethods.push(
-        getDeleteMethod({ source: FileSources.vectordb, deletionMethods }),
-      );
-    }
-    if (hasCodeEnvRef(file) && source !== FileSources.execute_code) {
-      secondaryDeleteMethods.push(
-        getDeleteMethod({ source: FileSources.execute_code, deletionMethods }),
-      );
-    }
-
-    try {
-      await deleteFile(req, file, openai);
-    } catch (err) {
-      if (!isMissingStorageError(err)) {
-        throw err;
-      }
-      logger.warn('Primary file storage was already missing during delete', err);
-    }
-
-    await Promise.all(
-      secondaryDeleteMethods.map((secondaryDeleteFile) => secondaryDeleteFile(req, file)),
-    );
-  };
 };
 
 const resolveUploadDeleteFile = (source) =>
@@ -307,7 +268,15 @@ const processDeleteRequest = async ({ req, files }) => {
     enqueueDeleteOperation({
       req,
       file,
-      deleteFile: createDeleteFileWithSecondaryStorage({ source, deleteFile, deletionMethods }),
+      deleteFile: createDeleteFileWithSecondaryStorage({
+        source,
+        deleteFile,
+        getDeleteFile: (src) => getDeleteMethod({ source: src, deletionMethods }),
+        clearFileEmbeddings: db.clearFileEmbeddings,
+        isFileStorageClean: db.isFileStorageClean,
+        fileStorage: getFileStorage(),
+        logger,
+      }),
       promises,
       resolvedFileIds,
       failedFileIds,
@@ -316,33 +285,19 @@ const processDeleteRequest = async ({ req, files }) => {
   }
 
   await Promise.allSettled(promises);
-  const deletedFileIds = [...resolvedFileIds];
-  let metadataDeletedFileIds = deletedFileIds;
-  if (deletedFileIds.length > 0) {
-    try {
-      await db.deleteFiles(deletedFileIds);
-    } catch (error) {
-      logger.error('Error deleting file metadata after storage deletion', error);
-      deletedFileIds.forEach((fileId) => failedFileIds.add(fileId));
-      metadataDeletedFileIds = [];
-      throw error;
-    }
-    /* The only place a delete removes agent references, and it runs after the metadata delete
-       succeeded: a file that kept its storage, its chunks or its record keeps its references too,
-       so the agent it was removed from can be asked again (see issue #12776). */
-    if (metadataDeletedFileIds.length > 0) {
-      try {
-        await db.removeAgentResourceFilesFromAllAgents({ file_ids: metadataDeletedFileIds });
-      } catch (error) {
-        logger.error('Error cleaning up orphaned agent file references', error);
-      }
-    }
-  }
-
-  return {
-    deletedFileIds: metadataDeletedFileIds,
-    failedFileIds: [...failedFileIds],
-  };
+  return finalizeFileDeletion(
+    {
+      deletedFileIds: [...resolvedFileIds],
+      failedFileIds: [...failedFileIds],
+      files,
+      userId: req.user.id,
+    },
+    {
+      deleteFiles: db.deleteFiles,
+      removeAgentResourceFilesFromAllAgents: db.removeAgentResourceFilesFromAllAgents,
+      logger,
+    },
+  );
 };
 
 /**

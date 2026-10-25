@@ -1117,6 +1117,13 @@ export type TPrompt = {
   _id?: string;
 };
 
+export const PromptGroupSources = {
+  native: 'native',
+  langfuse: 'langfuse',
+} as const;
+
+export type TPromptGroupSource = (typeof PromptGroupSources)[keyof typeof PromptGroupSources];
+
 export type TPromptGroup = {
   name: string;
   numberOfGenerations?: number;
@@ -1131,6 +1138,10 @@ export type TPromptGroup = {
   createdAt?: Date;
   updatedAt?: Date;
   _id?: string;
+  source: TPromptGroupSource;
+  sourcePromptName?: string;
+  sourceProjectId?: string;
+  sourceDestination?: string;
 };
 
 export type TCreatePrompt = {
@@ -1176,7 +1187,10 @@ export type TCreatePromptResponse = {
   group?: TPromptGroup;
 };
 
-export type TUpdatePromptGroupPayload = Partial<TPromptGroup>;
+/** Source identity is set by the server and cannot be updated. */
+export type TUpdatePromptGroupPayload = Partial<
+  Omit<TPromptGroup, 'source' | 'sourcePromptName' | 'sourceProjectId' | 'sourceDestination'>
+>;
 
 export type TUpdatePromptGroupVariables = {
   id: string;
@@ -1232,6 +1246,50 @@ export type TGetRandomPromptsRequest = {
   limit: number;
   skip: number;
 };
+
+/** `GET /api/prompts/groups/:groupId/resolve`. Native resolves the group's
+ *  production; Langfuse fetches text content live, by label `production` or
+ *  an exact `version`, with no cache. */
+export type TResolvedNativePrompt = {
+  source: 'native';
+  groupId: string;
+  promptId: string;
+  prompt: string;
+  type: TPrompt['type'];
+};
+
+export type TResolvedLangfusePrompt = {
+  source: 'langfuse';
+  groupId: string;
+  prompt: string;
+  type: 'text';
+  version: number;
+  labels: string[];
+  /** Deep link to this prompt in the Langfuse console. Present only when the
+   *  requesting user is an admin. */
+  sourceUrl?: string;
+};
+
+export type TResolvedPromptResponse = TResolvedNativePrompt | TResolvedLangfusePrompt;
+
+/** `code` values the `/resolve` route returns, including the Langfuse request
+ *  failure codes relayed through `toLangfusePromptErrorResponse` (`unauthorized`,
+ *  `timeout`, `upstream`, `invalid_response`). A `blocked_content` rejection uses
+ *  `ContentFilterBlockResponse` instead, which has no `code` field. Not every
+ *  error response carries a `code`: a rate-limited 429 or an unexpected 500
+ *  returns only `{ message }`, and the resource-access middleware's 403/404
+ *  returns `{ error, message }`. */
+export type TPromptResolveErrorCode =
+  | 'invalid_request'
+  | 'not_found'
+  | 'unsupported_type'
+  | 'not_available'
+  | 'not_configured'
+  | 'source_changed'
+  | 'unauthorized'
+  | 'timeout'
+  | 'upstream'
+  | 'invalid_response';
 
 export type TCustomConfigSpeechResponse = { [key: string]: string };
 
@@ -1321,6 +1379,8 @@ export type TUpdateSkillNodeRequest = {
 };
 
 export type TLangfuseConnectionStatus = {
+  /** Whether connection editing and testing are available. Omitted by older servers. */
+  connectionAvailable?: boolean;
   configured: boolean;
   enabled: boolean;
   destinations: TLangfuseDestinationOption[];
@@ -1328,6 +1388,36 @@ export type TLangfuseConnectionStatus = {
   publicKey?: string;
   secretKeyPreview?: string;
   updatedAt?: string;
+  promptSync: TLangfusePromptSyncStatus;
+};
+
+/** Whether DevOps made Langfuse prompt sync available, and whether the tenant admin turned it on. */
+export type TLangfusePromptSyncStatus = {
+  available: boolean;
+  enabled: boolean;
+};
+
+/**
+ * Why a deployment offers no Langfuse connection settings, from its environment:
+ * - `tracing_disabled`: `LANGFUSE_TRACING_ENABLED=false`, or `LANGFUSE_SAMPLE_RATE` is 0;
+ * - `env_credentials`: a single-tenant deployment traces with `LANGFUSE_PUBLIC_KEY` and
+ *   `LANGFUSE_SECRET_KEY`, which take the place of a stored connection;
+ * - `fanout_disabled`: traces route per tenant (`TENANT_ISOLATION_STRICT`) but the fanout
+ *   collector is off (`LANGFUSE_FANOUT_ENABLED` with `LANGFUSE_FANOUT_COLLECTOR_URL`);
+ * - `tenant_export_disabled`: the fanout collector runs, but
+ *   `LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED=true` stops the export to tenants' own projects.
+ */
+export type TLangfuseUnavailableReason =
+  | 'tracing_disabled'
+  | 'env_credentials'
+  | 'fanout_disabled'
+  | 'tenant_export_disabled';
+
+/** 404 from the admin Langfuse connection routes on a deployment that offers no connection. */
+export type TLangfuseUnavailableResponse = {
+  error: string;
+  code: 'LANGFUSE_UNAVAILABLE';
+  reason: TLangfuseUnavailableReason;
 };
 
 export type TLangfuseDestinationOption = {
@@ -1367,4 +1457,80 @@ export type TLangfuseSessionLinkResponse = {
   url: string | null;
   /** Opaque identity of the project `url` opens, so a caller can tell whether it holds what it showed. */
   destinationId?: string;
+};
+
+export type TUpdateLangfusePromptSyncRequest = {
+  enabled: boolean;
+};
+
+export type TLangfusePromptListParams = {
+  name?: string;
+  label?: string;
+  tag?: string;
+  page?: number;
+  limit?: number;
+  fromUpdatedAt?: string;
+  toUpdatedAt?: string;
+};
+
+export type TLangfusePromptListItem = {
+  name: string;
+  type: 'text' | 'chat';
+  versions: number[];
+  labels: string[];
+  tags: string[];
+  lastUpdatedAt: string;
+};
+
+export type TLangfusePromptListResponse = {
+  items: TLangfusePromptListItem[];
+  meta: {
+    page: number;
+    limit: number;
+    totalItems: number;
+    totalPages: number;
+  };
+};
+
+export type TLangfusePromptGetParams = {
+  name: string;
+  version?: number;
+};
+
+export type TLangfusePromptGetResponse = {
+  name: string;
+  version: number;
+  labels: string[];
+  prompt: string;
+};
+
+export type TLangfusePromptErrorCode =
+  | 'not_configured'
+  | 'unauthorized'
+  | 'timeout'
+  | 'upstream'
+  | 'invalid_response'
+  | 'not_found'
+  | 'unsupported_type'
+  | 'invalid_request'
+  | 'already_running'
+  | 'lock_lost'
+  | 'internal';
+
+export type TLangfusePromptErrorBody = {
+  code: TLangfusePromptErrorCode;
+  status?: number;
+};
+
+export type TLangfusePromptSyncResult = {
+  created: number;
+  unchanged: number;
+  skipped: number;
+  /** False when the server's page cap stopped the run before every upstream page was read,
+   *  so the counts above are partial. A re-run with the same page limit re-lists from page 1
+   *  and reads the same pages again; the server's `langfuse.promptSync.maxPages` config must
+   *  be raised to import the rest. Optional for compatibility with an older server that has
+   *  not added this field yet: treat a missing value as `true`, matching that server's only
+   *  possible outcome. */
+  complete?: boolean;
 };
