@@ -84,7 +84,7 @@ export const useCreateAgentMutation = (
         keys.forEach((key) => {
           const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
           if (!listRes) {
-            return options?.onSuccess?.(newAgent, variables, context);
+            return;
           }
           /** The create succeeded, so the caller can edit it. Mutation responses carry no
            *  `isEditable`; without this the cached row loses the field the list sets. */
@@ -131,7 +131,7 @@ export const useUpdateAgentMutation = (
             const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
 
             if (!listRes) {
-              return options?.onSuccess?.(updatedAgent, variables, context);
+              return;
             }
 
             queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
@@ -173,24 +173,28 @@ export const useDeleteAgentMutation = (
     {
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
-      onSuccess: (_data, variables, context) => {
+      onSuccess: (_data, variables) => {
         const data = ((keys: t.AgentListParams[]) => {
           let data: t.Agent[] = [];
           keys.forEach((key) => {
             const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
 
             if (!listRes) {
-              return options?.onSuccess?.(_data, variables, context);
+              return;
             }
 
-            data = listRes.data
+            const remainingAgents = listRes.data
               .filter((agent) => agent.id !== variables.agent_id)
               .map((agent) => pruneAgentEdges(agent, variables.agent_id));
 
             queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
               ...listRes,
-              data,
+              data: remainingAgents,
             });
+            // Filtered lists are updated, but never drive post-delete selection.
+            if (key.mine !== 1) {
+              data = remainingAgents;
+            }
           });
           return data;
         })(allAgentViewAndEditQueryKeys);
@@ -333,7 +337,7 @@ export const useUpdateAgentAction = (
           const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
 
           if (!listRes) {
-            return options?.onSuccess?.(updateAgentActionResponse, variables, context);
+            return;
           }
           queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
             ...listRes,
