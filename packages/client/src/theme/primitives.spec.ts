@@ -119,6 +119,9 @@ function hardCoded(file: string): string[] {
     for (const match of text.matchAll(/\b(?:rounded|shadow)(?:-[a-z]{1,2})?-\[[^\]]*\]/g)) {
       found.add(`${file}: arbitrary ${match[0]}`);
     }
+    for (const match of text.matchAll(/(?<=['"` ])(?:rounded|shadow)(?=['"` ])/g)) {
+      found.add(`${file}: bare ${match[0]}`);
+    }
     for (const match of text.matchAll(/\b(?:h|w|size|min-h)-(?:[1-9][0-9.]*|0\.[0-9]+)\b(?!\/)/g)) {
       found.add(`${file}: fixed size ${match[0]}`);
     }

@@ -16,6 +16,7 @@ import type { SubagentProgress } from './state';
 import { REDACTED_REASONING_MARKER } from './state';
 
 export type ChildActivityItem =
+  | Extract<SubagentActivityItem, { type: 'steer' }>
   | {
       type: 'writing';
       text: string;
@@ -105,6 +106,17 @@ const contentPartsToActivity = (
 ): ChildActivityItem[] =>
   parts.flatMap((part, index): ChildActivityItem[] => {
     if (part == null) return [];
+    if (part.type === ContentTypes.STEER) {
+      return [
+        {
+          type: 'steer',
+          steer: part.steer,
+          steerId: part.steerId,
+          clientSteerId: part.clientSteerId,
+          createdAt: part.createdAt,
+        },
+      ];
+    }
     if (part.type === ContentTypes.TEXT) {
       const textPart = part as {
         text: string;
@@ -246,7 +258,7 @@ const mergePersistedAndLiveActivity = (
       merged.push(item);
       continue;
     }
-    if (item.type === 'activity_label') {
+    if (item.type === 'activity_label' || item.type === 'steer') {
       merged.push(item);
       continue;
     }

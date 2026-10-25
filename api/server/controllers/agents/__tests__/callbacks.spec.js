@@ -34,6 +34,7 @@ jest.mock('@librechat/api', () => ({
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
+  feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
   stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
 }));
@@ -505,6 +506,101 @@ describe('resumable event generation fencing', () => {
       toolExecutionDurationMs: 40,
       output: 'ok',
     });
+  });
+
+  it('retains a duplicate steering boundary between parallel child tools and shifted text', async () => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+    });
+    const base = {
+      parentToolCallId: 'nested-parent-call',
+      parentRunId: 'child-run',
+      subagentRunId: 'nested-run',
+      subagentType: 'researcher',
+      subagentAgentId: 'nested-agent',
+      runId: 'parent-run',
+      depth: 2,
+    };
+    const part = {
+      type: 'steer',
+      steer: 'Use the revised sources',
+      steerId: 'steer-1',
+      clientSteerId: 'client-steer-1',
+      createdAt: 1234,
+    };
+    const boundary = {
+      phase: 'steer_applied',
+      data: { index: 2, steerId: part.steerId, clientSteerId: part.clientSteerId, part },
+    };
+    for (const update of [
+      {
+        phase: 'run_step',
+        data: {
+          id: 'parallel-tools',
+          index: 0,
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [
+              { id: 'query-1', name: 'query', args: '{}', mcpServerName: 'search' },
+              { id: 'query-2', name: 'query', args: '{}' },
+            ],
+          },
+        },
+      },
+      boundary,
+      {
+        phase: 'run_step',
+        data: { id: 'after-step', index: 3, stepDetails: { type: 'message_creation' } },
+      },
+      {
+        phase: 'message_delta',
+        data: { id: 'after-step', delta: { content: [{ type: 'text', text: 'after' }] } },
+      },
+      boundary,
+    ]) {
+      await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+        ...base,
+        ...update,
+      });
+    }
+    const aggregator = aggregators.get(base.parentToolCallId);
+    expect(aggregator.contentParts).toHaveLength(4);
+    expect(aggregator.contentParts[0].tool_call).toMatchObject({
+      id: 'query-1',
+      mcpServerName: 'search',
+    });
+    expect(aggregator.contentParts[1].tool_call.id).toBe('query-2');
+    expect(aggregator.contentParts[2]).toEqual(part);
+    expect(aggregator.contentParts[3]).toMatchObject({ type: 'text', text: 'after' });
+    expect(aggregator.stepMap.get('after-step').index).toBe(3);
+    expect(aggregator.contentParts.filter((content) => content?.type === 'steer')).toHaveLength(1);
+    expect(jest.requireMock('@librechat/data-schemas').logger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 1.5, NaN, Infinity])('ignores invalid steering index %s', async (index) => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+    });
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+      parentToolCallId: 'parent-call',
+      phase: 'steer_applied',
+      data: { index, part: { type: 'steer', steer: 'guidance' } },
+    });
+    expect(aggregators.get('parent-call').contentParts).toEqual([]);
   });
 
   it('forwards the originating job epoch with deferred attachments', () => {

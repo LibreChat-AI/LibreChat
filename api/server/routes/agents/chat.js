@@ -9,6 +9,7 @@ const {
   applyResumeRequest,
   GenerationJobManager,
   getSafeErrorMetadata,
+  validateChatMessageIds,
 } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const {
@@ -61,6 +62,7 @@ const restoreResumeContext = async (req, res, next) => {
   next();
 };
 
+router.use(validateChatMessageIds);
 router.use(restoreResumeContext);
 router.use(
   createMessageFilterPii({

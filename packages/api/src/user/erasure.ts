@@ -3,6 +3,7 @@ import { logger } from '@librechat/data-schemas';
 import type { TCheckpointerConfig, MCPOptions } from 'librechat-data-provider';
 import type { AllMethods, IMongoFile } from '@librechat/data-schemas';
 import type { CheckpointDeletion } from '~/agents/checkpoints/deletion';
+import type { FileDeletionOutcome } from '../files/deletion';
 import type { OAuthAclSubject } from '../mcp/oauth/cleanup';
 import {
   cleanupDeletedMCPServerOAuthUsers,
@@ -54,7 +55,7 @@ export interface UserErasureDeps extends ErasureMethods {
   ) => Promise<CheckpointDeletion>;
   deleteSharedLinks: (userId: string) => Promise<unknown>;
   /** Removes stored file objects (local disk, S3, Firebase, vector store) before their metadata. */
-  deleteStoredFiles: (files: IMongoFile[]) => Promise<unknown>;
+  deleteStoredFiles: (files: IMongoFile[]) => Promise<Required<FileDeletionOutcome>>;
   /** Runtime cleanup for a removed MCP server; each hook is best effort. */
   invalidateMCPServerTools?: (serverName: string) => Promise<unknown>;
   disconnectMCPServer?: (serverName: string) => Promise<unknown>;
@@ -230,12 +231,15 @@ export async function eraseUserData(
   await deps.deleteAllAgentQueuedTurnsForUser({ user: userObjectId });
   /** Before user keys: provider-stored files need the user's own assistants credentials. */
   const files = await deps.getFiles({ user: userId });
-  try {
-    await deps.deleteStoredFiles(files ?? []);
-  } catch (error) {
-    logger.error(`[eraseUserData] Failed to delete stored files for user ${userId}`, error);
+  const outcome = await deps.deleteStoredFiles(files ?? []);
+  const deleted = new Set(outcome.deletedFileIds);
+  if (outcome.failedFileIds.length > 0 || files?.some((file) => !deleted.has(file.file_id))) {
+    throw new Error('Stored file deletion incomplete');
   }
-  await deps.deleteFiles([], userId);
+  await deps.deleteFiles([...deleted], undefined, { files: files ?? [], userId });
+  if ((await deps.getFiles({ user: userId }, undefined, { _id: 1 }, 1))?.length) {
+    throw new Error('Stored file deletion incomplete');
+  }
   await deps.deleteAllUserSessions({ userId });
   deps.onSessionsDeleted?.();
   await deps.deleteRefreshTokenBridges({ userId, tenantId });

@@ -251,6 +251,51 @@ describe('getMCPServersList', () => {
     expect(payload.yamlServer.url).toBeUndefined();
   });
 
+  it('never returns an admin-stored credential, its ciphertext or its preview', async () => {
+    await seedManageMcpGrant();
+    const reqUser = await createUser(SystemRoles.ADMIN);
+    const ciphertext = 'v3:0123456789abcdef0123456789abcdef:feedface';
+    mockResolveAllMcpConfigs.mockResolvedValue({
+      dbServer: createDbConfig(new mongoose.Types.ObjectId()),
+      configServer: {
+        type: 'streamable-http',
+        url: 'https://config.example.com/mcp',
+        title: 'Config Server',
+        source: 'config',
+        apiKey: {
+          source: 'admin',
+          authorization_type: 'bearer',
+          key: 'sk-decrypted-admin-key',
+          keyPreview: '...-key',
+        },
+        oauth: {
+          client_id: 'client-id',
+          client_secret: ciphertext,
+          client_secretPreview: '...face',
+          authorization_url: 'https://config.example.com/auth',
+          token_url: 'https://config.example.com/token',
+        },
+      },
+    });
+
+    const res = createRes();
+    await getMCPServersList({ user: reqUser }, res);
+
+    const payload = res.json.mock.calls[0][0];
+    /** The manager sees the destination, never the credential. */
+    expect(payload.configServer.url).toBe('https://config.example.com/mcp');
+    expect(payload.configServer.apiKey).toEqual({ source: 'admin', authorization_type: 'bearer' });
+    expect(payload.configServer.oauth).toEqual({
+      client_id: 'client-id',
+      authorization_url: 'https://config.example.com/auth',
+      token_url: 'https://config.example.com/token',
+    });
+    const body = JSON.stringify(payload);
+    for (const secret of ['sk-decrypted-admin-key', '...-key', ciphertext, '...face']) {
+      expect(body).not.toContain(secret);
+    }
+  });
+
   it('leaves DB-backed servers redacted for viewer-only ACL', async () => {
     const reqUser = await createUser();
     const dbId = new mongoose.Types.ObjectId();

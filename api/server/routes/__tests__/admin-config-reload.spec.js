@@ -51,8 +51,8 @@ function writeYaml(maxMatches) {
   fs.writeFileSync(configPath, yaml.dump({ version: Constants.CONFIG_VERSION, filters }));
 }
 
-const principal = '/api/admin/config/user/reload-sentinel';
-
+/** A real user's profile route: a write that creates a profile needs its principal to exist. */
+let principal;
 let app;
 let mongoServer;
 
@@ -63,6 +63,11 @@ beforeAll(async () => {
   mongoose.set('autoIndex', false);
   createModels(mongoose);
   await mongoose.models.Config.createIndexes();
+  const user = await mongoose.models.User.create({
+    email: 'reload-sentinel@example.com',
+    provider: 'local',
+  });
+  principal = `/api/admin/config/user/${user._id}`;
   writeYaml(1);
   app = express();
   app.use(express.json());
