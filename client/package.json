@@ -144,7 +144,7 @@
     "@babel/preset-env": "^7.29.5",
     "@babel/preset-react": "^7.22.15",
     "@babel/preset-typescript": "^7.28.5",
-    "@happy-dom/jest-environment": "^20.8.9",
+    "@happy-dom/jest-environment": "^21.0.4",
     "@tailwindcss/postcss": "^4.3.3",
     "@tanstack/react-query-devtools": "^4.29.0",
     "@testing-library/dom": "^9.3.0",

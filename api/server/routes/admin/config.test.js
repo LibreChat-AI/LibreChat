@@ -4,12 +4,21 @@ const mongoSanitize = require('express-mongo-sanitize');
 const { createRequestSanitizer } = require('@librechat/api');
 
 let hasAdminAccess;
+/** Whether the deployment asks for terms acceptance, which the signed-in admin has not given. */
+let mockTermsRequired = false;
+/** Authenticates, then runs the real terms gate, as `requireJwtAuth` chains it. */
 const mockRequireJwtAuth = jest.fn((req, res, next) => {
   if (req.headers.authorization !== 'Bearer admin') {
     return res.status(401).json({ message: 'Unauthorized' });
   }
-  req.user = { id: 'user-1', _id: 'user-1', role: 'ADMIN' };
-  next();
+  req.user = { id: 'user-1', _id: 'user-1', role: 'ADMIN', termsAccepted: !mockTermsRequired };
+  const { createTermsAcceptanceGate } = require('@librechat/api');
+  const gate = createTermsAcceptanceGate({
+    getAppConfig: async () => ({
+      interfaceConfig: { termsOfService: { modalAcceptance: mockTermsRequired } },
+    }),
+  });
+  return gate(req, res, next);
 });
 const mockRequireCapability = jest.fn(() => (_req, res, next) => {
   if (!hasAdminAccess) {
@@ -25,6 +34,10 @@ const mockDb = {
   deleteConfig: jest.fn(),
   toggleConfigActiveTracked: jest.fn(),
   recordAuditEntry: jest.fn(),
+  principalExists: jest.fn(async () => true),
+  findPartitionUser: jest.fn(async () => null),
+  getUserPrincipals: jest.fn(async () => []),
+  getApplicableConfigs: jest.fn(async () => []),
 };
 
 jest.mock('~/server/middleware', () => ({ requireJwtAuth: mockRequireJwtAuth }));
@@ -39,9 +52,17 @@ jest.mock('~/server/middleware/roles/capabilities', () => ({
 
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn(async () => ({ config: {} })),
+  resolveConfigLayers: jest.fn(async () => ({ yaml: {}, merged: {}, resolved: {}, layers: [] })),
+  getEndpointsConfig: jest.fn(async () => ({})),
+  loadDefaultModels: jest.fn(async () => ({})),
+  loadConfigModels: jest.fn(async () => ({})),
+  getCachedTools: jest.fn(async () => ({})),
   overrideCacheTtl: 15_000,
   invalidateConfigCaches: jest.fn(async () => undefined),
+  reloadConfigCaches: jest.fn(async () => ({ cleared: true, broadcast: 'sent' })),
 }));
+
+jest.mock('~/app/clients/tools', () => ({ availableTools: [], toolkits: [] }));
 
 jest.mock('~/models', () => mockDb);
 
@@ -75,6 +96,8 @@ describe('admin config routes', () => {
 
   beforeEach(() => {
     hasAdminAccess = true;
+    mockTermsRequired = false;
+    mockDb.listAllConfigs.mockResolvedValue([]);
     mockDb.findConfigByPrincipal.mockResolvedValue(null);
     mockDb.writeConfigDocument.mockImplementation(async (principalType, principalId, draft) => ({
       _id: 'c1',
@@ -148,6 +171,35 @@ describe('admin config routes', () => {
     });
   });
 
+  it('takes config writes from an admin who has not accepted the terms, unlike other routes', async () => {
+    mockTermsRequired = true;
+    const gated = express();
+    gated.use(express.json());
+    gated.post('/api/agents/chat', mockRequireJwtAuth, (_req, res) => res.json({ ok: true }));
+
+    const chat = await request(gated)
+      .post('/api/agents/chat')
+      .set('authorization', 'Bearer admin')
+      .send({})
+      .expect(403);
+    expect(chat.body.code).toBe('terms_not_accepted');
+
+    const response = await request(app)
+      .patch('/api/admin/config/role/__base__/fields')
+      .set('authorization', 'Bearer admin')
+      .send({
+        entries: [{ fieldPath: 'interface.termsOfService.modalAcceptance', value: false }],
+      })
+      .expect(200);
+    expect(response.body.applied).toEqual([
+      {
+        path: 'interface.termsOfService.modalAcceptance',
+        segments: ['interface', 'termsOfService', 'modalAcceptance'],
+      },
+    ]);
+    expect(mockDb.writeConfigDocument).toHaveBeenCalledTimes(1);
+  });
+
   it('serves the config contract behind the same auth', async () => {
     await request(app).get('/api/admin/config/meta').expect(401);
 
@@ -161,7 +213,94 @@ describe('admin config routes', () => {
     expect(response.body.limits).toEqual({
       maxPatchEntries: 100,
       maxChangeOps: 1000,
+      maxEntryKeyLength: 256,
       overrideCacheTtlMs: 15_000,
+      catalogModelsTtlMs: 120_000,
+    });
+  });
+
+  it.each([
+    '/api/admin/config/catalog',
+    '/api/admin/config/env-status',
+    '/api/admin/config/resolved/role/USER',
+    '/api/admin/config/effective?userId=0123456789abcdef01234567',
+  ])('serves the read view %s behind the same auth', async (path) => {
+    const anonymous = await request(app).get(path);
+    hasAdminAccess = false;
+    const withoutAccess = await request(app).get(path).set('authorization', 'Bearer admin');
+
+    expect(anonymous.status).toBe(401);
+    expect(withoutAccess.status).toBe(403);
+  });
+
+  it('serves the catalog to a client that sends no User-Agent', async () => {
+    const response = await request(app)
+      .get('/api/admin/config/catalog?principalType=role&principalId=USER')
+      .set('authorization', 'Bearer admin')
+      .unset('User-Agent')
+      .expect(200);
+
+    expect(response.body).toMatchObject({ principalType: 'role', principalId: 'USER' });
+    expect(response.body.endpoints).toBeDefined();
+  });
+
+  it('routes the resolved, effective and env status views to their handlers', async () => {
+    const auth = (path) => request(app).get(path).set('authorization', 'Bearer admin');
+
+    const resolved = await auth('/api/admin/config/resolved/role/USER').expect(200);
+    expect(resolved.body).toEqual({
+      principalType: 'role',
+      principalId: 'USER',
+      yaml: {},
+      layers: [],
+      resolved: {},
+    });
+
+    const effective = await auth('/api/admin/config/effective?userId=0123456789abcdef01234567');
+    expect(effective.status).toBe(404);
+    expect(effective.body.code).toBe('USER_NOT_FOUND');
+
+    const envStatus = await auth('/api/admin/config/env-status').expect(200);
+    expect(envStatus.body.vars).toBeDefined();
+  });
+
+  it('reloads the config behind the same auth, through the Config service reload', async () => {
+    const { reloadConfigCaches, invalidateConfigCaches } = require('~/server/services/Config');
+    await request(app).post('/api/admin/config/reload').expect(401);
+    hasAdminAccess = false;
+    await request(app)
+      .post('/api/admin/config/reload')
+      .set('authorization', 'Bearer admin')
+      .expect(403);
+    expect(reloadConfigCaches).not.toHaveBeenCalled();
+
+    hasAdminAccess = true;
+    const response = await request(app)
+      .post('/api/admin/config/reload')
+      .set('authorization', 'Bearer admin')
+      .expect(200);
+
+    expect(response.body).toEqual({ success: true, broadcast: true });
+    expect(reloadConfigCaches).toHaveBeenCalledTimes(1);
+    expect(invalidateConfigCaches).not.toHaveBeenCalled();
+    expect(mockDb.writeConfigDocument).not.toHaveBeenCalled();
+    expect(mockDb.recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'config.reloaded' }),
+    );
+  });
+
+  it('answers 503 when the Config service could not tell the other instances', async () => {
+    const { reloadConfigCaches } = require('~/server/services/Config');
+    reloadConfigCaches.mockResolvedValueOnce({ cleared: true, broadcast: 'failed' });
+
+    const response = await request(app)
+      .post('/api/admin/config/reload')
+      .set('authorization', 'Bearer admin')
+      .expect(503);
+
+    expect(response.body).toEqual({
+      error: expect.any(String),
+      code: 'CONFIG_RELOAD_BROADCAST_FAILED',
     });
   });
 });

@@ -119,6 +119,7 @@ import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
@@ -3055,6 +3056,8 @@ export async function createRun({
     indexTokenCountMap,
     subagentUsageSink,
     subagentTasks: activeSubagentTasks,
+    // Without it a subagent that cannot start logs nothing beyond the SDK's fixed `cause`.
+    onSubagentResolutionFailure: reportSubagentResolutionFailure,
     ...(runFilesActive &&
       runFiles != null && {
         subagentContext: { prepare: runFiles.prepare, complete: runFiles.complete },

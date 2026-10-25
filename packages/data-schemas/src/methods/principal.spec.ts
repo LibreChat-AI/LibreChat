@@ -139,3 +139,40 @@ describe('principalExists', () => {
     findOne.mockRestore();
   });
 });
+
+describe('findPartitionUser', () => {
+  it('returns what principal resolution reads, only for a user of the caller partition', async () => {
+    const platform = await seedPrincipals('platform');
+    const tenant = await inTenant('tenant-a', async () => {
+      const user = await new mongoose.models.User({
+        email: 'sso@example.com',
+        provider: 'openid',
+        role: 'EDITOR',
+        idOnTheSource: 'entra-oid',
+      }).save();
+      return user._id.toString();
+    });
+
+    expect(await methods.findPartitionUser(platform.userId)).toEqual({
+      id: platform.userId,
+      role: SystemRoles.USER,
+      idOnTheSource: null,
+    });
+    expect(await methods.findPartitionUser(tenant)).toBeNull();
+    expect(await inTenant('tenant-a', () => methods.findPartitionUser(tenant))).toEqual({
+      id: tenant,
+      role: 'EDITOR',
+      idOnTheSource: 'entra-oid',
+    });
+    expect(await inTenant('tenant-b', () => methods.findPartitionUser(tenant))).toBeNull();
+    expect(await inTenant('tenant-a', () => methods.findPartitionUser(platform.userId))).toBeNull();
+  });
+
+  it('answers null without a query for an id that cannot name a user', async () => {
+    const findOne = jest.spyOn(mongoose.models.User, 'findOne');
+    expect(await methods.findPartitionUser('not-an-id')).toBeNull();
+    expect(await methods.findPartitionUser('F6E5D4C3B2A1F6E5D4C3B2A1')).toBeNull();
+    expect(findOne).not.toHaveBeenCalled();
+    findOne.mockRestore();
+  });
+});

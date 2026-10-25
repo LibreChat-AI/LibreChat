@@ -5,8 +5,16 @@ import { isCanonicalObjectIdString } from '~/utils/objectId';
 
 const systemRoleNames: ReadonlySet<string> = new Set(Object.values(SystemRoles));
 
+/** What principal resolution reads of a user: their role and external identity. */
+export interface PartitionUser {
+  id: string;
+  role?: string;
+  idOnTheSource?: string | null;
+}
+
 export interface PrincipalMethods {
   principalExists: (principalType: PrincipalType, principalId: string) => Promise<boolean>;
+  findPartitionUser: (userId: string) => Promise<PartitionUser | null>;
 }
 
 /** Principal lookups that stay in the caller's tenant partition. */
@@ -53,5 +61,25 @@ export function createPrincipalMethods(mongoose: typeof import('mongoose')): Pri
     }
   }
 
-  return { principalExists };
+  /**
+   * A user of the caller's tenant partition (`tenantPartitionFilter`), by canonical ObjectId, with
+   * the fields principal resolution reads (`getUserPrincipals`); `null` when the partition holds
+   * no such user, as for a user of another tenant.
+   */
+  async function findPartitionUser(userId: string): Promise<PartitionUser | null> {
+    if (!isCanonicalObjectIdString(userId)) {
+      return null;
+    }
+    const model = mongoose.models.User as Model<{ role?: string; idOnTheSource?: string | null }>;
+    const user = await model
+      .findOne({ _id: userId, ...tenantPartitionFilter('findPartitionUser') })
+      .select('role idOnTheSource')
+      .lean();
+    if (user == null) {
+      return null;
+    }
+    return { id: userId, role: user.role, idOnTheSource: user.idOnTheSource ?? null };
+  }
+
+  return { principalExists, findPartitionUser };
 }

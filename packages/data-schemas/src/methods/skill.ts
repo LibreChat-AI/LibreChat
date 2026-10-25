@@ -608,7 +608,8 @@ export type CreateSkillInput = {
   body?: string;
   frontmatter?: Record<string, unknown>;
   category?: string;
-  author: Types.ObjectId;
+  /** A 24-hex string is accepted and converted to an ObjectId here. */
+  author: Types.ObjectId | string;
   authorName: string;
   source?: 'inline' | 'github' | 'notion';
   sourceMetadata?: Record<string, unknown>;
@@ -1176,6 +1177,13 @@ export function createSkillMethods(
       ...validateSkillFrontmatter(frontmatter),
       ...validateAlwaysApply(data.alwaysApply),
     ];
+    if (typeof data.author === 'string' && !isValidObjectIdString(data.author)) {
+      issues.push({
+        field: 'author',
+        code: 'INVALID_FORMAT',
+        message: 'Author must be a 24-character hex string',
+      });
+    }
     /* Body-level `always-apply:` only needs to be well-formed when a
        higher-precedence source won't override it (see
        `resolveAlwaysApplyFromInput` for the cascade). A caller sending
@@ -1204,6 +1212,7 @@ export function createSkillMethods(
     }
 
     const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const author = new mongoose.Types.ObjectId(data.author);
 
     // Application-level uniqueness check on (name, author, tenantId).
     // The unique index in the schema is the persistent guarantee, but Mongoose
@@ -1211,7 +1220,7 @@ export function createSkillMethods(
     // so we also enforce it here for deterministic behavior and a clean error.
     const existing = await Skill.findOne({
       name: data.name,
-      author: data.author,
+      author,
       tenantId: data.tenantId ?? null,
     })
       .select('_id')
@@ -1230,7 +1239,7 @@ export function createSkillMethods(
       body: data.body ?? '',
       frontmatter: frontmatter ?? {},
       category: data.category ?? '',
-      author: data.author,
+      author,
       authorName: data.authorName,
       version: 1,
       source: data.source ?? 'inline',

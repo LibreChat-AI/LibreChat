@@ -752,3 +752,39 @@ describe('tail ellipsis direction', () => {
     expect(textDirection('\u0661\u0662 \u0645\u0631\u062D\u0628\u0627')).toBe('rtl');
   });
 });
+
+it('places applied guidance before subsequent live activity and closes the current text buffer', () => {
+  const applied = makeEvent({
+    phase: 'steer_applied',
+    data: {
+      index: 1,
+      steerId: 'control-1',
+      responseMessageId: 'task:assistant',
+      conversationId: 'thread',
+      part: {
+        type: ContentTypes.STEER,
+        steer: 'Continue with a citation.',
+        steerId: 'control-1',
+        clientSteerId: 'invocation-1',
+        createdAt: 100,
+      },
+    },
+  });
+  const parts = aggregateSubagentContent([
+    makeEvent({
+      phase: 'message_delta',
+      data: { id: 'before', delta: { content: [{ type: 'text', text: 'Earlier work.' }] } },
+    }),
+    applied,
+    applied,
+    makeEvent({
+      phase: 'message_delta',
+      data: { id: 'after', delta: { content: [{ type: 'text', text: 'Later work.' }] } },
+    }),
+  ]);
+  expect(parts).toMatchObject([
+    { type: ContentTypes.TEXT, text: 'Earlier work.' },
+    { type: ContentTypes.STEER, steer: 'Continue with a citation.', steerId: 'control-1' },
+    { type: ContentTypes.TEXT, text: 'Later work.' },
+  ]);
+});

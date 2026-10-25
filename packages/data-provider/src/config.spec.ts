@@ -3,6 +3,10 @@ import type { TEndpointsConfig } from './types';
 import {
   allowedAddressesSchema,
   agentsEndpointSchema,
+  BASE_ONLY_CONFIG_PATHS,
+  BASE_ONLY_CONFIG_SECTIONS,
+  DEPLOYMENT_ONLY_CONFIG_PATHS,
+  getAllowedAddressEntryIssue,
   DEFAULT_RETAINED_ANSWER_TOKENS,
   DEFAULT_HISTORY_CACHE_MAX_BYTES,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
@@ -1518,6 +1522,24 @@ describe('agent event runtime config', () => {
     });
   });
 
+  it('accepts a configured prompt resolve rate limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      rateLimits: {
+        promptResolve: { userMax: 30, userWindowInMinutes: 2 },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.rateLimits?.promptResolve).toEqual({
+      userMax: 30,
+      userWindowInMinutes: 2,
+    });
+  });
+
   it('does not let removed checkpoint fields control memory-checkpointer validation', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -1987,6 +2009,23 @@ describe('any custom endpoint is document-supported regardless of name', () => {
   );
 });
 
+describe('endpoints.catalogModelsTtlMs', () => {
+  const parse = (catalogModelsTtlMs: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { catalogModelsTtlMs } });
+
+  it('accepts zero up to one hour of whole milliseconds', () => {
+    for (const value of [0, 120_000, 3_600_000]) {
+      expect(parse(value).success).toBe(true);
+    }
+  });
+
+  it('rejects negative, fractional and longer lifetimes', () => {
+    for (const value of [-1, 1.5, 3_600_001, '120000']) {
+      expect(parse(value).success).toBe(false);
+    }
+  });
+});
+
 describe('allowedAddressesSchema', () => {
   describe('accepts valid entries', () => {
     it.each([
@@ -2072,6 +2111,70 @@ describe('allowedAddressesSchema', () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error.issues[0]?.message).toMatch(/scoped to private IP space/);
+      }
+    });
+  });
+
+  describe('one issue per refused entry', () => {
+    it.each([
+      ['', 'empty'],
+      ['   ', 'empty'],
+      ['http://localhost:11434', 'format'],
+      ['10.0.0.0/24', 'format'],
+      ['10.0.0.5 ', 'format'],
+      ['localhost', 'missing_port'],
+      ['10.0.0.5', 'missing_port'],
+      ['localhost:0', 'missing_port'],
+      ['8.8.8.8:53', 'public_ip'],
+      ['[2001:4860:4860::8888]:443', 'public_ip'],
+    ])('reports "%s" once, as %s', (entry, reason) => {
+      expect(getAllowedAddressEntryIssue(entry)).toBe(reason);
+      const result = allowedAddressesSchema.safeParse([entry]);
+      expect(result.success).toBe(false);
+      if (result.success) {
+        return;
+      }
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]).toMatchObject({
+        code: 'custom',
+        path: [0],
+        params: { reason },
+      });
+    });
+
+    it.each([['localhost:11434'], ['10.0.0.5:11434'], ['[::1]:8080'], ['ollama.internal:443']])(
+      'accepts "%s" without an issue',
+      (entry) => {
+        expect(getAllowedAddressEntryIssue(entry)).toBeNull();
+      },
+    );
+
+    it('keeps the message of the rule an entry fails', () => {
+      const messages = ['', 'http://x', 'localhost', '8.8.8.8:53'].map((entry) => {
+        const result = allowedAddressesSchema.safeParse([entry]);
+        return result.success ? undefined : result.error.issues[0]?.message;
+      });
+      expect(messages).toEqual([
+        'allowedAddresses entries must be non-empty',
+        'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
+        'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
+        'allowedAddresses is scoped to private IP space — public IP literals are not permitted (use hostname:port if it resolves to a private IP)',
+      ]);
+    });
+
+    it('reports a bare host in a config section once', () => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        endpoints: { allowedAddresses: ['localhost'] },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toEqual([
+          expect.objectContaining({
+            path: ['endpoints', 'allowedAddresses', 0],
+            params: { reason: 'missing_port' },
+          }),
+        ]);
       }
     });
   });
@@ -3110,5 +3213,71 @@ describe('GitHub comparison configuration', () => {
         githubCompare: { enabled: true, baseURL: 'https://other.test' },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('agent recursion limits', () => {
+  it.each(['recursionLimit', 'maxRecursionLimit'])(
+    '%s takes a whole number of at least 1',
+    (field) => {
+      for (const value of [1, 50, 500]) {
+        expect(agentsEndpointSchema.safeParse({ [field]: value }).success).toBe(true);
+      }
+      for (const value of [0, -5, 2.5, 0.5]) {
+        expect(agentsEndpointSchema.safeParse({ [field]: value }).success).toBe(false);
+      }
+      expect(agentsEndpointSchema.parse({})[field as 'recursionLimit']).toBeUndefined();
+    },
+  );
+});
+
+describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
+  type Node = { _def: { typeName?: string; innerType?: Node; schema?: Node }; shape?: unknown };
+
+  /** The object schema beneath optional, default and refinement wrappers. */
+  function unwrap(node: Node): Node {
+    let current = node;
+    while (current._def.innerType ?? current._def.schema) {
+      current = (current._def.innerType ?? current._def.schema) as Node;
+    }
+    return current;
+  }
+
+  function hasSchemaPath(path: string): boolean {
+    let node: Node | undefined = configSchema as unknown as Node;
+    for (const segment of path.split('.')) {
+      const shape: Record<string, Node> | undefined = node
+        ? (unwrap(node).shape as Record<string, Node> | undefined)
+        : undefined;
+      node = shape?.[segment];
+      if (!node) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  it('names fields configSchema defines', () => {
+    const paths = Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS);
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.filter((path) => !hasSchemaPath(path))).toEqual([]);
+  });
+
+  it('declares the tool filters deployment-only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS).toMatchObject({
+      includedTools: 'operator',
+      filteredTools: 'operator',
+      'endpoints.agents.toolApproval.hooks': 'operator',
+      cache: 'unused',
+    });
+  });
+
+  it('overlaps neither the base-only sections nor the base-only paths', () => {
+    const baseOnly = new Set<string>([...BASE_ONLY_CONFIG_SECTIONS, ...BASE_ONLY_CONFIG_PATHS]);
+    for (const path of Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS)) {
+      const segments = path.split('.');
+      const prefixes = segments.map((_, index) => segments.slice(0, index + 1).join('.'));
+      expect(prefixes.filter((prefix) => baseOnly.has(prefix))).toEqual([]);
+    }
   });
 });

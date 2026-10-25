@@ -22,8 +22,8 @@ import type { ServerRequest } from '~/types/http';
 import type { RecordAuditEntry } from './audit';
 import type { CascadeStep } from './cascade';
 import { createAdminAuditEmitter, diffRolePermissions, configTarget } from './audit';
+import { cascadeStep, runCascade, invalidatingConfigStore } from './cascade';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { cascadeStep, runCascade } from './cascade';
 import { parsePagination } from './pagination';
 
 const systemRoleValues = new Set<string>(Object.values(SystemRoles));
@@ -235,7 +235,8 @@ export interface AdminRolesDeps {
     toPrincipalId: string,
     options?: { ids?: readonly string[] },
   ) => Promise<string[]>;
-  /** Clears merged-config caches keyed by role name after a rename moved a profile. */
+  /** Clears the merged-config caches (on every instance, with Redis) once a rename moved a
+   * profile, or a deletion removed or restored one, before the response, as config writes do. */
   invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
   /** Optional audit emission for role mutations and the grants removed by the
    * role-deletion cascade. Failure is logged unless `auditFailClosed` is set. */
@@ -887,16 +888,21 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       const grantSnapshot = findGrantsForPrincipal
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
         : null;
+      const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
+        invalidatingConfigStore(
+          { deleteConfig, restoreConfig },
+          { invalidateConfigCaches, tenantId, logPrefix: '[adminRoles]' },
+        );
       const configStep = cascadeStep(
         'config',
-        () => deleteConfig(PrincipalType.ROLE, name),
-        restoreConfig
+        () => removeProfile(PrincipalType.ROLE, name),
+        restoreProfile
           ? async (config) => {
               if (!config) {
                 return;
               }
               /** Insert-only: an override written after the snapshot is kept. */
-              const restored = await restoreConfig(config);
+              const restored = await restoreProfile(config);
               if (!restored) {
                 logger.warn('[adminRoles] config restore skipped, override exists:', name);
               }

@@ -162,7 +162,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
               files={steer.files}
               steerId={steer.steerId}
               createdAt={steer.createdAt}
-              receiptState={receiptState}
+              receiptState={steer.status === 'failed' ? null : receiptState}
             />
             {steer.status === 'failed' ? (
               <div className="-mt-2 mb-2 flex flex-wrap items-center justify-end gap-3 text-xs">

@@ -704,3 +704,132 @@ describe('isSameConfigValue', () => {
     expect(isSameConfigValue(null, {})).toBe(false);
   });
 });
+
+describe('keyed changes: entries of an array merged by key, by key', () => {
+  const keyedChange = (op: 'unset' | 'tombstone', key: string, rest: string[] = []) =>
+    ({ op, segments: CUSTOM, entry: { key, rest } }) as ConfigChange;
+
+  it('hides an entry, then shows it again when the same batch upserts it', () => {
+    const stored = deepFreeze(state({ endpoints: { custom: [endpoint('gw')] } }));
+    const { state: hidden } = applyConfigChanges(stored, [keyedChange('tombstone', 'gw')]);
+    expect(hidden).toEqual(state({}, ['endpoints.custom["gw"]']));
+
+    const { state: shown, changed } = applyConfigChanges(hidden, [
+      { op: 'upsertEntry', segments: CUSTOM, entry: endpoint('gw') },
+    ]);
+    expect(changed).toEqual([true]);
+    expect(shown).toEqual(state({ endpoints: { custom: [endpoint('gw')] } }));
+  });
+
+  it('an upsert of an entry clears its hide even when the stored entry is already the same', () => {
+    const hiddenWithEntry = state({ endpoints: { custom: [endpoint('gw')] } }, [
+      'endpoints.custom["gw"]',
+      'endpoints.custom["gw"].headers.A',
+    ]);
+    const next = applyConfigChange(hiddenWithEntry, {
+      op: 'upsertEntry',
+      segments: CUSTOM,
+      entry: endpoint('gw'),
+    });
+    expect(next.tombstones).toEqual(['endpoints.custom["gw"].headers.A']);
+    const set = applyConfigChange(hiddenWithEntry, {
+      op: 'set',
+      segments: CUSTOM,
+      value: [endpoint('gw')],
+    });
+    expect(set).not.toBe(hiddenWithEntry);
+    expect(set.tombstones).toEqual(['endpoints.custom["gw"].headers.A']);
+  });
+
+  it('keeps a tombstone inside an entry through an edit of the entry in the same batch', () => {
+    const stored = state({ endpoints: { custom: [endpoint('gw', { headers: { A: 'a' } })] } });
+    const { state: next } = applyConfigChanges(stored, [
+      { op: 'upsertEntry', segments: CUSTOM, entry: endpoint('gw', { titleModel: 't' }) },
+      keyedChange('tombstone', 'gw', ['headers', 'B']),
+    ]);
+    expect(next).toEqual(
+      state({ endpoints: { custom: [endpoint('gw', { titleModel: 't' })] } }, [
+        'endpoints.custom["gw"].headers.B',
+      ]),
+    );
+  });
+
+  it('resets an entry by key with its keyed tombstones, and reports no change when there is none', () => {
+    const stored = state({ endpoints: { custom: [endpoint('Ollama')] } }, [
+      'endpoints.custom["Ollama"].headers.A',
+    ]);
+    expect(applyConfigChange(stored, keyedChange('unset', 'ollama'))).toEqual(state({}));
+    const untouched = state({ endpoints: { custom: [endpoint('gw')] } });
+    expect(applyConfigChange(untouched, keyedChange('unset', 'gw', ['headers', 'A']))).toBe(
+      untouched,
+    );
+    expect(applyConfigChange(untouched, keyedChange('unset', 'other'))).toBe(untouched);
+  });
+
+  it('moves the keyed tombstones of an entry a batch renames', () => {
+    const stored = state({ endpoints: { custom: [endpoint('draft')] } }, [
+      'endpoints.custom["draft"].headers.A',
+    ]);
+    const next = applyConfigChange(stored, {
+      op: 'rename',
+      segments: CUSTOM,
+      from: 'draft',
+      to: 'final',
+    });
+    expect(next).toEqual(
+      state({ endpoints: { custom: [endpoint('draft', { name: 'final' })] } }, [
+        'endpoints.custom["final"].headers.A',
+      ]),
+    );
+  });
+
+  it('counts a set that only shows an entry it writes again as a write of the collection', () => {
+    const stored = state({ endpoints: { custom: [endpoint('gw')] } }, ['endpoints.custom["gw"]']);
+    const batch: ConfigChange[] = [{ op: 'set', segments: CUSTOM, value: [endpoint('gw')] }];
+    const { state: result } = applyConfigChanges(stored, batch);
+    expect(result.tombstones).toEqual([]);
+    expect(getConfigBatchWrittenPaths(batch, result, stored)).toEqual([CUSTOM]);
+  });
+
+  it('a set or record rename by segments that only spell an entry keeps its keyed tombstones', () => {
+    const stored = state({ endpoints: { junk: { a: 1 } } }, [
+      'endpoints.custom["GPT"]',
+      'endpoints.custom["OR"].headers.X',
+    ]);
+    const set = applyConfigChange(stored, {
+      op: 'set',
+      segments: ['endpoints', 'custom["OR"]', 'headers', 'X'],
+      value: 'v',
+    });
+    expect(set.tombstones).toEqual(stored.tombstones);
+    const renamed = applyConfigChange(stored, {
+      op: 'rename',
+      segments: ['endpoints'],
+      from: 'junk',
+      to: 'custom["GPT"]',
+    });
+    expect(renamed).toEqual(state({ endpoints: { 'custom["GPT"]': { a: 1 } } }, stored.tombstones));
+  });
+
+  it('refuses a keyed change whose path inside the entry its stored tombstone could not name', () => {
+    const stored = state({ endpoints: { custom: [endpoint('K', { headers: { 'a.b': 'x' } })] } });
+    for (const op of ['tombstone', 'unset'] as const) {
+      const error = errorOf(() =>
+        applyConfigChange(stored, keyedChange(op, 'K', ['headers', 'a.b'])),
+      );
+      expect(isConfigPathError(error) && error.reason).toBe('dotted_segment');
+    }
+  });
+
+  it('names a keyed change by the own entry it leaves, or by nothing once it removed it', () => {
+    const stored = state({
+      endpoints: { custom: [endpoint('a'), endpoint('gw', { headers: { A: 'a', B: 'b' } })] },
+    });
+    const inside = keyedChange('tombstone', 'gw', ['headers', 'A']);
+    expect(getConfigChangeWrittenPaths(inside, applyConfigChange(stored, inside))).toEqual([
+      ['endpoints', 'custom', '1'],
+    ]);
+    const whole = keyedChange('tombstone', 'gw');
+    expect(getConfigChangeWrittenPaths(whole, applyConfigChange(stored, whole))).toEqual([]);
+  });
+});

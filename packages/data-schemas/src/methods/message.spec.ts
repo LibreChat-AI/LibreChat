@@ -3643,8 +3643,8 @@ describe('Message Operations', () => {
           ),
       );
       for (const receipt of message.subagentTask?.controlReceipts ?? []) {
-        expect(Buffer.byteLength(receipt.message ?? '', 'utf8')).toBeLessThanOrEqual(512);
-        expect(receipt.messageTruncated).toBe(true);
+        expect(receipt.message).toHaveLength(4_096);
+        expect(receipt.messageTruncated).not.toBe(true);
         expect(receipt).not.toHaveProperty('fingerprint');
       }
       expect(message.subagentTask).not.toHaveProperty('attemptKey');
@@ -3760,6 +3760,113 @@ describe('Message Operations', () => {
       expect(messages[0]).not.toHaveProperty('subagentTranscript');
       expect(messages[0].subagentTranscriptProjectionTruncated).toBe(true);
     });
+
+    it.each([1, 2] as const)(
+      'uses projection version %s with steering-aware legacy catch-up',
+      async (version) => {
+        const conversationId = uuidv4();
+        const transcript = JSON.stringify([
+          { type: 'human', data: { content: 'Initial task' } },
+          { type: 'ai', data: { content: 'Before guidance' } },
+          {
+            type: 'human',
+            data: { content: 'Guidance', additional_kwargs: { injected: true, source: 'steer' } },
+          },
+          { type: 'ai', data: { content: 'After guidance' } },
+        ]);
+        const projection = JSON.stringify([
+          { type: 'writing', text: 'Earlier incomplete projection' },
+        ]);
+        await saveMessage(mockCtx, {
+          messageId: 'task-steering:assistant',
+          conversationId,
+          user: 'user123',
+          text: 'Final',
+          subagentTranscript: {
+            taskId: 'task-steering',
+            mode: 'replace',
+            messagesJson: transcript,
+          },
+          subagentActivityProjection: {
+            taskId: 'task-steering',
+            version,
+            activityJson: projection,
+            truncated: false,
+          },
+        });
+        const [message] = await getMessagesForSubagentThreadView({
+          user: 'user123',
+          conversationId,
+          selectedTaskId: 'task-steering',
+          limit: 1,
+          textCodePointLimit: 8192,
+        });
+        if (version === 1) {
+          expect(message.subagentTranscript?.messagesJson).toBe(transcript);
+          expect(message.subagentActivityProjectionJson).toBe(projection);
+        } else {
+          expect(message.subagentActivityProjectionJson).toBe(projection);
+          expect(message.subagentTranscript).toBeUndefined();
+        }
+      },
+    );
+
+    it.each([undefined, 'task-long'] as const)(
+      'retains the legacy fallback beside bounded steering history with selected task %s',
+      async (selectedTaskId) => {
+        const conversationId = uuidv4();
+        const prompt = 'Long current task. '.repeat(575);
+        const projection = JSON.stringify([
+          { type: 'reasoning', text: 'Retained current reasoning.' },
+          { type: 'writing', text: 'Retained current activity.' },
+        ]);
+        const transcript = JSON.stringify([
+          { type: 'human', data: { content: 'Previous task.' } },
+          {
+            type: 'human',
+            data: {
+              content: 'Previous guidance.',
+              additional_kwargs: { injected: true, source: 'steer' },
+            },
+          },
+          { type: 'human', data: { content: prompt } },
+          { type: 'ai', data: { content: 'Current activity.' } },
+        ]);
+        await saveMessage(mockCtx, {
+          messageId: 'task-long:user',
+          conversationId,
+          user: 'user123',
+          text: prompt,
+          isCreatedByUser: true,
+        });
+        await saveMessage(mockCtx, {
+          messageId: 'task-long:assistant',
+          parentMessageId: 'task-long:user',
+          conversationId,
+          user: 'user123',
+          text: 'Result',
+          subagentTranscript: { taskId: 'task-long', mode: 'replace', messagesJson: transcript },
+          subagentActivityProjection: {
+            taskId: 'task-long',
+            version: 1,
+            activityJson: projection,
+            truncated: false,
+          },
+        });
+        const records = await getMessagesForSubagentThreadView({
+          user: 'user123',
+          conversationId,
+          selectedTaskId,
+          limit: 3,
+          textCodePointLimit: 8192,
+        });
+        const input = records.find((message) => message.messageId === 'task-long:user');
+        const assistant = records.find((message) => message.messageId === 'task-long:assistant');
+        expect(input?.textProjectionTruncated).toBe(true);
+        expect(assistant?.subagentActivityProjectionJson).toBe(projection);
+        expect(assistant?.subagentTranscript?.messagesJson).toBe(transcript);
+      },
+    );
 
     it('prefers the bounded settlement projection without materializing its private transcript', async () => {
       const conversationId = uuidv4();
@@ -5078,6 +5185,39 @@ describe('Message Operations', () => {
         },
       });
     };
+
+    it('keeps expired receipt replay private while denying public body reads', async () => {
+      const conversationId = uuidv4();
+      await createTaskInput(conversationId);
+      await recordSubagentTaskControlReceipt({
+        userId: 'user123',
+        conversationId,
+        taskId: 'task-1',
+        receipt: {
+          invocationId: 'expired-read',
+          fingerprint: 'private',
+          controlId: 'control',
+          action: 'steer',
+          status: 'accepted',
+          message: 'retained body',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+      const identity = {
+        userId: 'user123',
+        conversationId,
+        taskId: 'task-1',
+        invocationId: 'expired-read',
+      };
+      expect(await getSubagentTaskControlReceipt({ ...identity, activeOnly: true })).not.toBeNull();
+      await Message.updateOne(
+        { user: 'user123', conversationId, messageId: 'task-1:user' },
+        { $set: { expiredAt: new Date(Date.now() - 1000) } },
+      );
+      expect(await getSubagentTaskControlReceipt({ ...identity, activeOnly: true })).toBeNull();
+      expect(await getSubagentTaskControlReceipt(identity)).not.toBeNull();
+    });
 
     it('advances one invocation monotonically and enforces ownership', async () => {
       const conversationId = uuidv4();
