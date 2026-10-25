@@ -3,6 +3,7 @@ import { Constants, ReasoningEffort } from 'librechat-data-provider';
 import { submissionByIndex, clearSubmissions } from '@librechat/chat/react';
 import { Provider as JotaiProvider, createStore, getDefaultStore } from 'jotai';
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import type {
   SettingDefinition,
   TConversation,
@@ -11,7 +12,6 @@ import type {
   TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../Composer/state';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 
 type MockEndpointConfig = {

@@ -91,7 +91,7 @@ export default function SelectedPrincipalsList({
 
               <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
                 {showInsightsAccess && onInsightsAccessChange && (
-                  <div className="mr-auto flex items-center gap-2 sm:mr-1">
+                  <div className="me-auto flex items-center gap-2 sm:me-1">
                     <Checkbox
                       checked={hasAutomaticInsightsAccess || share.viewInsights === true}
                       disabled={hasAutomaticInsightsAccess}

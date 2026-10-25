@@ -10,8 +10,7 @@ import {
   useSetRecoilState,
   useRecoilCallback,
 } from 'recoil';
-import type { EModelEndpoint, TConversation, TPreset } from 'librechat-data-provider';
-import type { TOptionSettings, ExtendedFile } from '~/common';
+import type { EModelEndpoint, TConversation } from 'librechat-data-provider';
 import {
   clearModelForNonEphemeralAgent,
   createChatSearchParams,
@@ -90,11 +89,6 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
   ] as const,
 });
 
-const filesByIndex = atomFamily<Map<string, ExtendedFile>, string | number>({
-  key: 'filesByIndex',
-  default: new Map(),
-});
-
 const conversationKeysAtom = atom<(string | number)[]>({
   key: 'conversationKeys',
   default: [],
@@ -159,21 +153,6 @@ const conversationAssistantIdByIndex = selectorFamily<string | null, string | nu
       get(conversationByIndex(index))?.assistant_id ?? null,
 });
 
-const presetByIndex = atomFamily<TPreset | null, string | number>({
-  key: 'presetByIndex',
-  default: null,
-});
-
-const optionSettingsFamily = atomFamily<TOptionSettings, string | number>({
-  key: 'optionSettingsByIndex',
-  default: {},
-});
-
-const showPopoverFamily = atomFamily({
-  key: 'showPopoverByIndex',
-  default: false,
-});
-
 const activePromptByIndex = atomFamily<string | undefined, string | number | null>({
   key: 'activePromptByIndex',
   default: undefined,
@@ -226,11 +205,6 @@ const globalAudioFetchingFamily = atomFamily<boolean, string | number | null>({
 const globalAudioPlayingFamily = atomFamily<boolean, string | number | null>({
   key: 'globalAudioisPlayingByIndex',
   default: false,
-});
-
-const activeRunFamily = atomFamily<string | null, string | number | null>({
-  key: 'activeRunByIndex',
-  default: null,
 });
 
 const audioRunFamily = atomFamily<string | null, string | number | null>({
@@ -319,10 +293,6 @@ const updateConversationSelector = selectorFamily({
 export default {
   conversationKeysAtom,
   conversationByIndex,
-  filesByIndex,
-  presetByIndex,
-  optionSettingsFamily,
-  showPopoverFamily,
   conversationIdByIndex,
   conversationEndpointByIndex,
   effectiveEndpointByIndex,
@@ -336,7 +306,6 @@ export default {
   useSetConversationAtom,
   showMentionPopoverFamily,
   globalAudioURLFamily,
-  activeRunFamily,
   audioRunFamily,
   globalAudioPlayingFamily,
   globalAudioFetchingFamily,

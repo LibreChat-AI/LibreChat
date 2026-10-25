@@ -10,8 +10,13 @@ import type { AllMethods, MCPServerDocument, IAgent } from '@librechat/data-sche
 import type { IServerConfigsRepositoryInterface } from '~/mcp/registry/ServerConfigsRepositoryInterface';
 import type { ParsedServerConfig, AddServerResult } from '~/mcp/types';
 import type { ResolvedPrincipal } from '~/types/principal';
-import { getUserApiKeyVariable, requireApiKeyReentryForRebinding } from '~/mcp/registry/binding';
+import {
+  getUserApiKeyVariable,
+  preserveOmittedOAuthBindingFields,
+  getChangedOAuthSecretBindingFields,
+} from '~/mcp/registry/binding';
 import { MCPCommittedWriteError, MCPOAuthSecretReentryRequiredError } from '~/mcp/errors';
+import { requireApiKeyReentryForRebinding } from '~/mcp/registry/reentry';
 import { normalizeLegacyHeaderMaps } from '~/mcp/registry/compat';
 import { AccessControlService } from '~/acl/accessControlService';
 import { isGeneratedUserApiKeyVariable } from '~/mcp/headers';
@@ -32,8 +37,6 @@ const DANGEROUS_CREDENTIAL_PATTERNS = [
 ];
 
 const BLOCKED_USER_OAUTH_ENDPOINT_PARAMS = ['audience', 'resource'] as const;
-
-type OAuthConfig = NonNullable<ParsedServerConfig['oauth']>;
 
 /**
  * Sanitizes headers by removing dangerous credential placeholders.
@@ -120,99 +123,6 @@ function sanitizeUserManagedOAuthConfig(config: ParsedServerConfig): ParsedServe
   };
 }
 
-function normalizeOAuthUrl(value?: string): string | undefined {
-  if (!value) {
-    return value;
-  }
-
-  try {
-    return new URL(value).href;
-  } catch {
-    return value;
-  }
-}
-
-function normalizeOAuthMethods(values?: readonly string[]): string | undefined {
-  if (!values?.length) {
-    return undefined;
-  }
-  return JSON.stringify([...new Set(values)].sort());
-}
-
-function preserveOmittedOAuthBindingFields(
-  existingOAuth: OAuthConfig,
-  updatedOAuth: OAuthConfig,
-): OAuthConfig {
-  return {
-    ...updatedOAuth,
-    ...(updatedOAuth.token_endpoint_auth_methods_supported === undefined &&
-      existingOAuth.token_endpoint_auth_methods_supported !== undefined && {
-        token_endpoint_auth_methods_supported: existingOAuth.token_endpoint_auth_methods_supported,
-      }),
-    ...(updatedOAuth.revocation_endpoint === undefined &&
-      existingOAuth.revocation_endpoint !== undefined && {
-        revocation_endpoint: existingOAuth.revocation_endpoint,
-      }),
-    ...(updatedOAuth.revocation_endpoint_auth_methods_supported === undefined &&
-      existingOAuth.revocation_endpoint_auth_methods_supported !== undefined && {
-        revocation_endpoint_auth_methods_supported:
-          existingOAuth.revocation_endpoint_auth_methods_supported,
-      }),
-  };
-}
-
-function getChangedOAuthSecretBindingFields(
-  existingConfig: MCPServerDocument['config'],
-  updatedConfig: ParsedServerConfig,
-): string[] {
-  const existingOAuth = existingConfig.oauth;
-  const updatedOAuth = updatedConfig.oauth;
-  if (!existingOAuth || !updatedOAuth) {
-    return [];
-  }
-
-  const fields = [
-    [
-      'url',
-      normalizeOAuthUrl('url' in existingConfig ? existingConfig.url : undefined),
-      normalizeOAuthUrl(updatedConfig.url),
-    ],
-    [
-      'oauth.authorization_url',
-      normalizeOAuthUrl(existingOAuth.authorization_url),
-      normalizeOAuthUrl(updatedOAuth.authorization_url),
-    ],
-    [
-      'oauth.token_url',
-      normalizeOAuthUrl(existingOAuth.token_url),
-      normalizeOAuthUrl(updatedOAuth.token_url),
-    ],
-    ['oauth.client_id', existingOAuth.client_id, updatedOAuth.client_id],
-    [
-      'oauth.token_exchange_method',
-      existingOAuth.token_exchange_method,
-      updatedOAuth.token_exchange_method,
-    ],
-    [
-      'oauth.token_endpoint_auth_methods_supported',
-      normalizeOAuthMethods(existingOAuth.token_endpoint_auth_methods_supported),
-      normalizeOAuthMethods(updatedOAuth.token_endpoint_auth_methods_supported),
-    ],
-    [
-      'oauth.revocation_endpoint',
-      normalizeOAuthUrl(existingOAuth.revocation_endpoint),
-      normalizeOAuthUrl(updatedOAuth.revocation_endpoint),
-    ],
-    [
-      'oauth.revocation_endpoint_auth_methods_supported',
-      normalizeOAuthMethods(existingOAuth.revocation_endpoint_auth_methods_supported),
-      normalizeOAuthMethods(updatedOAuth.revocation_endpoint_auth_methods_supported),
-    ],
-  ] as const;
-
-  return fields.filter(([, existing, updated]) => existing !== updated).map(([field]) => field);
-}
-
 /** Unions `mcpServerNames` over the candidate agents the caller can access. */
 function unionMCPServerNames(
   candidates: Array<Pick<IAgent, '_id' | 'mcpServerNames'>>,
@@ -260,7 +170,11 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
    * @param userId - The user ID (optional - if not provided, checks publicly accessible agents)
    * @returns true if user has VIEW access to at least one agent that has this MCP server
    */
-  private async hasAccessViaAgent(serverName: string, userId?: string): Promise<boolean> {
+  private async hasAccessViaAgent(
+    serverName: string,
+    userId?: string,
+    role?: string,
+  ): Promise<boolean> {
     const candidateIds = await this._dbMethods.getAgentIdsByMCPServerName(serverName);
     if (candidateIds.length === 0) {
       return false;
@@ -269,6 +183,7 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
     const accessibleAgentIds = userId
       ? await this._aclService.findAccessibleResources({
           userId,
+          role,
           requiredPermissions: PermissionBits.VIEW,
           resourceType: ResourceType.AGENT,
           resourceIds: candidateIds,
@@ -467,55 +382,63 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
    * @param userId - the user id provide the scope of the request. If the user Id is not provided, only publicly visible servers are returned.
    * @returns The parsed server config or undefined if not found. If accessed via agent, consumeOnly will be true.
    */
-  public async get(serverName: string, userId?: string): Promise<ParsedServerConfig | undefined> {
-    const server = await this._dbMethods.findMCPServerByServerName(serverName);
-    if (!server) return undefined;
+  public async get(
+    serverName: string,
+    userId?: string,
+    role?: string,
+  ): Promise<ParsedServerConfig | undefined> {
+    if (userId) {
+      /** Each lookup is bounded to this server or the agents that reference it. Resolve the
+       *  principal set once so direct and agent ACL checks can start together. */
+      const [server, principalsList, candidateIds] = await Promise.all([
+        this._dbMethods.findMCPServerByServerName(serverName),
+        this._aclService.getUserPrincipals({ userId, role }),
+        this._dbMethods.getAgentIdsByMCPServerName(serverName),
+      ]);
+      if (!server) return undefined;
 
-    if (!userId) {
-      const directlyAccessibleMCPIds = (
-        await this._aclService.findPubliclyAccessibleResources({
+      const [directlyAccessibleIds, accessibleAgentIds] = await Promise.all([
+        this._aclService.findAccessibleResourcesForPrincipals({
+          principalsList,
           resourceType: ResourceType.MCPSERVER,
           requiredPermissions: PermissionBits.VIEW,
-        })
-      ).map((id) => id.toString());
-      if (directlyAccessibleMCPIds.indexOf(server._id.toString()) > -1) {
+          resourceIds: [server._id],
+        }),
+        this.findAccessibleAgentIds(candidateIds, userId, principalsList),
+      ]);
+      if (directlyAccessibleIds.some((id) => id.toString() === server._id.toString())) {
+        logger.debug(
+          `[ServerConfigsDB.get] getting ${serverName} for user with the UserId: ${userId}`,
+        );
         return await this.mapDBServerToParsedConfig(server);
       }
-
-      const hasAgentAccess = await this.hasAccessViaAgent(serverName);
-      if (hasAgentAccess) {
+      if (accessibleAgentIds.length > 0) {
         logger.debug(
-          `[ServerConfigsDB.get] accessing ${serverName} via public agent (consumeOnly)`,
+          `[ServerConfigsDB.get] user ${userId} accessing ${serverName} via agent (consumeOnly)`,
         );
         return {
           ...(await this.mapDBServerToParsedConfig(server)),
           consumeOnly: true,
         };
       }
-
       return undefined;
     }
 
-    const userHasDirectAccess = await this._aclService.checkPermission({
-      userId,
-      resourceType: ResourceType.MCPSERVER,
-      requiredPermission: PermissionBits.VIEW,
-      resourceId: server._id,
-    });
-
-    if (userHasDirectAccess) {
-      logger.debug(
-        `[ServerConfigsDB.get] getting ${serverName} for user with the UserId: ${userId}`,
-      );
+    const server = await this._dbMethods.findMCPServerByServerName(serverName);
+    if (!server) return undefined;
+    const directlyAccessibleMCPIds = (
+      await this._aclService.findPubliclyAccessibleResources({
+        resourceType: ResourceType.MCPSERVER,
+        requiredPermissions: PermissionBits.VIEW,
+      })
+    ).map((id) => id.toString());
+    if (directlyAccessibleMCPIds.indexOf(server._id.toString()) > -1) {
       return await this.mapDBServerToParsedConfig(server);
     }
 
-    /** Check agent access (user can VIEW an agent that has this MCP server) */
-    const hasAgentAccess = await this.hasAccessViaAgent(serverName, userId);
+    const hasAgentAccess = await this.hasAccessViaAgent(serverName);
     if (hasAgentAccess) {
-      logger.debug(
-        `[ServerConfigsDB.get] user ${userId} accessing ${serverName} via agent (consumeOnly)`,
-      );
+      logger.debug(`[ServerConfigsDB.get] accessing ${serverName} via public agent (consumeOnly)`);
       return {
         ...(await this.mapDBServerToParsedConfig(server)),
         consumeOnly: true,

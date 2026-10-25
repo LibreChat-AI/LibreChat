@@ -1,13 +1,13 @@
 import React, { useMemo, useState } from 'react';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
-import { RecoilRoot, useRecoilState } from 'recoil';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
-import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import { Provider as JotaiProvider, createStore, getDefaultStore, useAtom } from 'jotai';
 import {
   activeGenerationCreatedAtByConvoId,
@@ -21,10 +21,10 @@ import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTran
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
 
 const initialConversation = {
   conversationId: 'new',
@@ -58,7 +58,7 @@ function Harness({
   onAsk?: typeof ask;
   speechSettingsInitialized?: boolean;
 }) {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
@@ -86,8 +86,6 @@ function Harness({
       ask: onAsk,
       regenerate: () => undefined,
       setSiblingIdx: () => undefined,
-      showPopover: false,
-      setShowPopover: () => undefined,
       abortScroll: false,
       setAbortScroll: () => undefined,
       preset: null,
@@ -190,14 +188,16 @@ function mountComposer(
             }
           }}
         >
-          <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
-            <NavigationBridge />
-            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-              <ChatTransportContext.Provider value={transport}>
-                <DndProvider backend={HTML5Backend}>{children}</DndProvider>
-              </ChatTransportContext.Provider>
-            </AuthContextProvider>
-          </MemoryRouter>
+          <SteerHostTestProvider>
+            <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
+              <NavigationBridge />
+              <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+                <ChatTransportContext.Provider value={transport}>
+                  <DndProvider backend={HTML5Backend}>{children}</DndProvider>
+                </ChatTransportContext.Provider>
+              </AuthContextProvider>
+            </MemoryRouter>
+          </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>
     </QueryClientProvider>

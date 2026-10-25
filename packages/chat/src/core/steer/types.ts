@@ -118,6 +118,24 @@ export type QueuedMessageOrigin = {
   afterIds: string[];
 };
 
+/** The host's `ask`, as the drain calls it to send one queued message as a new turn. The
+ *  overrides carry everything the message was queued with, so `ask` does not take what the
+ *  composer has staged for the user's next message instead. Returns `false` when it refused
+ *  without sending, which puts the message back in the queue. */
+export type QueuedTurnAsk = (
+  props: { text: string; overrideUserMessageId?: string },
+  options: {
+    overrideFiles: NonNullable<QueuedMessage['files']>;
+    overrideQuotes: string[];
+    overrideManualSkills: string[];
+    overrideReasoning: QueuedMessage['reasoningOverride'] | null;
+    overrideClientRequestId?: string;
+    overrideRecoverySteerId?: string;
+    overrideExpectedPredecessorCreatedAt?: number;
+    overrideQueuedMessageOrigin?: QueuedMessageOrigin;
+  },
+) => false | void;
+
 export type SettledQueuedTurnReceipt = {
   clientRequestId: string;
   status: 'admitted' | 'admitted_pending_boundary' | 'indeterminate' | 'cancelled' | 'dead';

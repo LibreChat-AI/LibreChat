@@ -24,8 +24,8 @@ type SelectDropDownProps = {
   emptyTitle?: boolean;
   showAbove?: boolean;
   showLabel?: boolean;
-  iconSide?: 'left' | 'right';
-  optionIconSide?: 'left' | 'right';
+  iconSide?: IconSide;
+  optionIconSide?: IconSide;
   renderOption?: () => React.ReactNode;
   containerClassName?: string;
   currentValueClass?: string;
@@ -37,6 +37,27 @@ type SelectDropDownProps = {
   searchClassName?: string;
   searchPlaceholder?: string;
   showOptionIcon?: boolean;
+};
+
+/** `left` and `right` are physical edges in every direction; `start` and `end` follow the
+ *  reading direction, so they mirror in RTL. */
+type IconSide = 'left' | 'right' | 'start' | 'end';
+
+const checkMarkSide: Record<IconSide, string> = {
+  left: 'left-0 pl-2',
+  right: 'right-0 pr-3',
+  start: 'inset-s-0 ps-2',
+  end: 'inset-e-0 pe-3',
+};
+
+/** Room for a check mark that sits before the label. */
+const labelCheckGap: Record<IconSide, string> = { left: 'ml-4', right: '', start: 'ms-4', end: '' };
+
+const trailingOptionIcon: Record<IconSide, string> = {
+  left: '',
+  right: 'absolute right-0 pr-2',
+  start: '',
+  end: 'absolute inset-e-0 pe-2',
 };
 
 function getOptionText(option: string | Option | OptionWithIcon): string {
@@ -61,8 +82,8 @@ function SelectDropDown({
   showAbove = false,
   showLabel = true,
   emptyTitle = false,
-  iconSide = 'right',
-  optionIconSide = 'left',
+  iconSide = 'end',
+  optionIconSide = 'start',
   placeholder,
   containerClassName,
   optionsListClass,
@@ -98,6 +119,8 @@ function SelectDropDown({
   const hasSearchRender = searchRender != null;
   const options = hasSearchRender ? filteredValues : values;
   const renderIcon = showOptionIcon && value != null && (value as OptionWithIcon).icon != null;
+  /** The wide padding keeps the label clear of a trailing check mark, on the same axis as it. */
+  const optionPadding = iconSide === 'left' || iconSide === 'right' ? 'pr-9 pl-3' : 'ps-3 pe-9';
 
   return (
     <div className={cn('flex items-center justify-center gap-2', containerClassName ?? '')}>
@@ -119,7 +142,7 @@ function SelectDropDown({
                   }
                 }}
                 className={cn(
-                  'border-border-control bg-surface-secondary focus-visible:ring-focus-control disabled:bg-surface-secondary relative flex w-full cursor-default flex-col rounded-md border py-2 pr-10 pl-3 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden sm:text-sm',
+                  'border-border-control bg-surface-secondary focus-visible:ring-focus-control disabled:bg-surface-secondary relative flex w-full cursor-default flex-col rounded-md border py-2 ps-3 pe-10 text-start focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden sm:text-sm',
                   disabledFillClasses,
                   className ?? '',
                 )}
@@ -144,13 +167,13 @@ function SelectDropDown({
                     {!showLabel && !emptyTitle && (
                       <span className="text-text-secondary text-xs">{title}:</span>
                     )}
-                    {renderIcon && optionIconSide !== 'right' && (
+                    {renderIcon && trailingOptionIcon[optionIconSide] === '' && (
                       <span className="icon-md flex items-center">
                         {(value as OptionWithIcon).icon}
                       </span>
                     )}
                     {renderIcon && (
-                      <span className="icon-md absolute right-0 mr-8 flex items-center">
+                      <span className="icon-md absolute inset-e-0 me-8 flex items-center">
                         {(value as OptionWithIcon).icon}
                       </span>
                     )}
@@ -165,7 +188,7 @@ function SelectDropDown({
                     })()}
                   </span>
                 </span>
-                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
+                <span className="pointer-events-none absolute inset-y-0 inset-e-0 flex items-center pe-2">
                   <svg
                     stroke="currentColor"
                     fill="none"
@@ -202,7 +225,8 @@ function SelectDropDown({
                       key={'listbox-render-option'}
                       value={null}
                       className={cn(
-                        'group text-text-primary hover:bg-surface-hover relative flex h-[2.625rem] cursor-pointer items-center overflow-hidden pr-9 pl-3 select-none',
+                        'group text-text-primary hover:bg-surface-hover relative flex h-[2.625rem] cursor-pointer items-center overflow-hidden select-none',
+                        optionPadding,
                         optionsClass ?? '',
                       )}
                     >
@@ -231,7 +255,8 @@ function SelectDropDown({
                         value={option}
                         className={({ active }) =>
                           cn(
-                            'group text-text-primary hover:bg-surface-hover relative flex h-[2.625rem] cursor-pointer items-center overflow-hidden pr-9 pl-3 select-none',
+                            'group text-text-primary hover:bg-surface-hover relative flex h-[2.625rem] cursor-pointer items-center overflow-hidden select-none',
+                            optionPadding,
                             active ? 'bg-surface-active text-text-primary' : '',
                             optionsClass ?? '',
                           )
@@ -242,16 +267,11 @@ function SelectDropDown({
                             className={cn(
                               'text-text-primary flex h-6 items-center gap-1',
                               option === value ? 'font-semibold' : '',
-                              iconSide === 'left' ? 'ml-4' : '',
+                              labelCheckGap[iconSide],
                             )}
                           >
                             {currentIcon != null && (
-                              <span
-                                className={cn(
-                                  'mr-1',
-                                  optionIconSide === 'right' ? 'absolute right-0 pr-2' : '',
-                                )}
-                              >
+                              <span className={cn('me-1', trailingOptionIcon[optionIconSide])}>
                                 {currentIcon}
                               </span>
                             )}
@@ -261,7 +281,7 @@ function SelectDropDown({
                             <span
                               className={cn(
                                 'text-text-primary absolute inset-y-0 flex items-center',
-                                iconSide === 'left' ? 'left-0 pl-2' : 'right-0 pr-3',
+                                checkMarkSide[iconSide],
                               )}
                             >
                               <CheckMark />

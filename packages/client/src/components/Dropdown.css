@@ -25,7 +25,7 @@
   transition-duration: 150ms;
   scale: 0.95;
   margin-top: 4px;
-  margin-right: -2px;
+  margin-inline-end: -2px;
 }
 
 /* Elevation here is a black shadow, which carries no separation at all against

@@ -7,8 +7,8 @@ jest.mock('~/hooks', () => ({
 }));
 
 import QuoteButton from '../QuoteButton';
-import { pendingQuotesByConvoId } from '~/components/Chat/Input/Composer/state';
 import { mainTextareaId } from '~/common';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 
 const CONVO_ID = 'convo-1';
 const SELECTED_TEXT = 'Selected assistant text';

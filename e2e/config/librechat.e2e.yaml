@@ -118,6 +118,29 @@ mcpServers:
       authorization_url: http://127.0.0.1:8767/authorize
       token_url: http://127.0.0.1:8767/token
       client_id: e2e-oauth-client
+  e2e-oauth-deferred:
+    type: streamable-http
+    url: http://127.0.0.1:8767/mcp
+    startup: false
+    title: E2E OAuth Deferred
+    description: Protected MCP fixture whose sign-in waits for the first tool call.
+    # Reached through agent tools only; kept out of the composer so palette specs keep their layout.
+    chatMenu: false
+    timeout: 30000
+    requiresOAuth: true
+    oauthPrompt: on_use
+    oauthToolCatalog:
+      - name: echo
+        description: Echo the given text back.
+        inputSchema:
+          type: object
+          properties:
+            text: { type: string }
+          required: [text]
+    oauth:
+      authorization_url: http://127.0.0.1:8767/authorize
+      token_url: http://127.0.0.1:8767/token
+      client_id: e2e-oauth-client
   # __E2E_DYNAMIC_MCP_NETWORK_SERVERS__
   # __E2E_MCP_APPS_SERVER__
 
@@ -150,6 +173,8 @@ endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    subagentActivity:
+      contentRecoveryEnabled: true
     fileSharing:
       enabled: true
       allowSiblingSharing: true
@@ -196,6 +221,16 @@ endpoints:
         - module: e2e/setup/tool-approval-hook.js
           matcher: ^approval_probe_mcp_e2e-memory$
   custom:
+    - name: 'Mock Retained History'
+      apiKey: 'e2e-mock-history'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-retained-history'
+        fetch: false
+      maxToolResultChars: 131072
+      titleConvo: false
+      modelDisplayLabel: 'Mock Retained History'
     # Substituted with a REAL provider endpoint only when the mock config runs
     # in model-fixture record mode (E2E_MODEL_FIXTURES=record); a comment
     # otherwise, so the credential-free profile never gains a live endpoint.
@@ -320,6 +355,26 @@ endpoints:
       activityPhaseLabel: true
       activityPhaseModel: 'mock-phase-label-model'
 
+    # Gemini-compatible gateway: `defaultParamsEndpoint: google` routes the
+    # request through the Google transform, and `addParams` carries the sampling
+    # params that model-specific rules must strip before they reach the provider.
+    - name: 'Mock Gemini'
+      apiKey: 'e2e-mock-key-gemini'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'gemini-4-argon'
+          - 'gemini-2.5-pro'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Gemini'
+      customParams:
+        defaultParamsEndpoint: google
+      addParams:
+        temperature: 0.8
+        topP: 0.95
+        presencePenalty: 0.5
+
 modelSpecs:
   prioritize: true
   # Enforcement would reject sends from the non-spec paths addedEndpoints
@@ -335,6 +390,7 @@ modelSpecs:
     - 'Mock Provider D'
     - 'Mock Provider E'
     - 'Mock Provider F'
+    - 'Mock Gemini'
     - 'agents'
   list:
     - name: 'e2e-mock-provider-a'
@@ -403,3 +459,7 @@ modelSpecs:
       preset:
         endpoint: 'Mock Provider A'
         model: 'mock-model-a'
+
+# Short enough that a stalled fake RAG query fails the tool call well inside a test.
+timeouts:
+  ragMs: 3000

@@ -304,6 +304,7 @@ async function expectAppHeight(page: Page, occurrence: number) {
   const outerFrame = page.locator('iframe[title="MCP App: show_app"]').nth(occurrence);
   const container = outerFrame.locator('..');
   await expect(outerFrame).toHaveCSS('height', '260px');
+  await expect(outerFrame).toHaveCSS('width', '640px');
   await expect(container).toHaveCSS('height', '260px');
 }
 
@@ -452,7 +453,9 @@ test.describe('MCP Apps full integration', () => {
     const sandboxUrl = await outerFrame.getAttribute('data-sandbox-url');
     expect(sandboxUrl).toBeTruthy();
     expect(new URL(sandboxUrl!).origin).not.toBe(new URL(page.url()).origin);
-    expect(new URL(sandboxUrl!).origin).toBe('http://localhost:3080');
+    expect(new URL(sandboxUrl!).origin).toBe(
+      new URL(process.env.E2E_MCP_SANDBOX_URL || 'http://localhost:3080/api/mcp/sandbox').origin,
+    );
     await expect(outerFrame).toHaveAttribute(
       'sandbox',
       'allow-scripts allow-same-origin allow-forms',
@@ -509,6 +512,24 @@ test.describe('MCP Apps full integration', () => {
     await toolDialog.getByRole('button', { name: 'Run tool' }).click();
     expect((await approvedTool).ok()).toBeTruthy();
     await expect(app.getByTestId('operation')).toContainText('"followUp":"from-view"');
+    // Both requests arrive together, but consent authorizes only the displayed request.
+    await app.getByTestId('call-two-tools').click();
+    await expect(toolDialog).toContainText('queued-first');
+    const queuedCalls = async () =>
+      (await readEvents(page)).filter(
+        (event) =>
+          event.method === 'tools/call:follow_up' &&
+          String(event.params.label).startsWith('queued-'),
+      );
+    expect(await queuedCalls()).toHaveLength(0);
+    await toolDialog.getByRole('button', { name: 'Run tool' }).click();
+    await expect(toolDialog).toContainText('queued-second');
+    await expect
+      .poll(queuedCalls)
+      .toEqual([expect.objectContaining({ params: { label: 'queued-first' } })]);
+    await toolDialog.getByRole('button', { name: 'Run tool' }).click();
+    await expect(app.getByTestId('operation')).toContainText('"followUp":"queued-first"');
+    await expect(app.getByTestId('operation')).toContainText('"followUp":"queued-second"');
     await page.screenshot({ path: testInfo.outputPath('settled-app.png'), fullPage: true });
 
     await clickAndExpectRoute(page, app, 'read-resource', '/api/mcp/resources/read');
@@ -763,6 +784,68 @@ test.describe('MCP Apps full integration', () => {
     expect(
       (await readEvents(page)).filter((event) => event.method.startsWith('resources/read:show_')),
     ).toEqual([]);
+
+    // A delivered pagehide signal tears down the inner frame.
+    await app.getByTestId('detach-view').click();
+    const navigatedFrame = page
+      .locator('iframe[title="MCP App: show_app"]')
+      .first()
+      .contentFrame()
+      .locator('iframe');
+    await expect(navigatedFrame).toHaveCount(0);
+
+    // Drop detach delivery at the outer boundary to test the independent load challenge.
+    await page.addInitScript(() => {
+      if (location.pathname !== '/api/mcp/sandbox') return;
+      let dropped = 0;
+      Object.defineProperty(window, '__mcpAppDroppedDetaches', { get: () => dropped });
+      addEventListener(
+        'message',
+        (event: MessageEvent) => {
+          if (event.data?.method === 'ui/notifications/sandbox-frame-detach') {
+            dropped += 1;
+            event.stopImmediatePropagation();
+          }
+        },
+        true,
+      );
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expectConnectedApp(page, label);
+    await app.getByTestId('detach-view').click();
+    await expect
+      .poll(() =>
+        outerFrame
+          .contentFrame()
+          .locator('body')
+          .evaluate(() => Reflect.get(window, '__mcpAppDroppedDetaches')),
+      )
+      .toBe(1);
+    await expect(navigatedFrame).toHaveCount(1);
+    await app.getByTestId('navigate-view').click();
+    await expect(navigatedFrame).toHaveCount(1);
+    await expect.poll(() => app.locator('body').evaluate(() => location.href)).toBe('about:blank');
+    const navigatedRead = page
+      .waitForRequest((request) => new URL(request.url()).pathname === '/api/mcp/resources/read', {
+        timeout: 1500,
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    await app.locator('body').evaluate(() => {
+      window.parent.postMessage(
+        {
+          jsonrpc: '2.0',
+          id: 'navigated-document',
+          method: 'resources/read',
+          params: { uri: 'ui://e2e/details/current' },
+        },
+        '*',
+      );
+    });
+    expect(await navigatedRead).toBe(false);
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
 
     const share = await createShare(page, conversationId!);
     expect(share.shareId).toBeTruthy();

@@ -72,7 +72,7 @@ function Header({
         className="shrink-0"
         onClick={onClose}
       >
-        <Sidebar className="icon-md" aria-hidden="true" />
+        <Sidebar className="icon-md rtl:-scale-x-100" aria-hidden="true" />
       </Button>
       <Switcher
         links={links}

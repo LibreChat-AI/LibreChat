@@ -4,20 +4,14 @@ import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { Constants, ReasoningEffort } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import { revealedQueuedTurnFamily, resetSteerFamilies } from '@librechat/chat/react';
+import { useQueueDrain, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import {
   claimQueuedIntent,
   releaseQueuedIntent,
   acquireQueueSendLock,
   releaseQueueSendLock,
 } from '@librechat/chat';
-import type {
-  DrainAfterAbort,
-  RunEnd,
-  QueuedMessage,
-  SettledQueuedTurnReceipt,
-} from '~/hooks/Chat/queue';
 import {
   settledQueuedTurnReceiptsByConvoId,
   queuedMessagesByConvoId,
@@ -25,10 +19,15 @@ import {
   drainAfterAbortByIndex,
   runEndByIndex,
   resetQueueFamilies,
-} from '~/hooks/Chat/queue';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
-import useQueueDrain from '../useQueueDrain';
-import '~/Providers/SteerHostContext';
+  recoveryDispositionsFamily,
+} from '@librechat/chat/react';
+import type {
+  DrainAfterAbort,
+  RunEnd,
+  QueuedMessage,
+  SettledQueuedTurnReceipt,
+} from '@librechat/chat';
+import { SteerHostTestProvider } from 'test/steerHost';
 
 const mockMarkFilesUsage = jest.fn();
 jest.mock('~/data-provider', () => ({
@@ -85,8 +84,10 @@ function setup(
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot initializeState={initialize}>
-        <Harness />
-        {children}
+        <SteerHostTestProvider>
+          <Harness />
+          {children}
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>
   );
@@ -1008,7 +1009,7 @@ describe('useQueueDrain', () => {
             });
           }}
         >
-          {children}
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
         </RecoilRoot>
       </QueryClientProvider>
     );
@@ -1190,8 +1191,10 @@ describe('useQueueDrain', () => {
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <QueryClientProvider client={queryClient}>
           <RecoilRoot initializeState={initialize}>
-            <Harness />
-            {children}
+            <SteerHostTestProvider>
+              <Harness />
+              {children}
+            </SteerHostTestProvider>
           </RecoilRoot>
         </QueryClientProvider>
       );

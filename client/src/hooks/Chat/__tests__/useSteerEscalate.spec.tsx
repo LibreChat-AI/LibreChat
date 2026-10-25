@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore, useAtomValue } from 'jotai';
+import { useSteerEscalate } from '@librechat/chat/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import {
   escalatingSteerFamily,
@@ -9,10 +10,9 @@ import {
   pendingSteersByConvoId,
   resetSteerFamilies,
 } from '@librechat/chat/react';
-import type { PendingSteer } from '~/hooks/Chat/queue';
+import type { PendingSteer } from '@librechat/chat';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
-import useSteerEscalate from '../useSteerEscalate';
-import '~/Providers/SteerHostContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 
 const mockArmMutateAsync = jest.fn();
 const mockShowToast = jest.fn();
@@ -68,14 +68,16 @@ function setup({
   );
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot>
-      <ChatSettingsContext.Provider
-        value={{
-          ...defaultChatSettings,
-          config: { ...defaultChatSettings.config, steerArmConfirmationTimeoutMs },
-        }}
-      >
-        {children}
-      </ChatSettingsContext.Provider>
+      <SteerHostTestProvider>
+        <ChatSettingsContext.Provider
+          value={{
+            ...defaultChatSettings,
+            config: { ...defaultChatSettings.config, steerArmConfirmationTimeoutMs },
+          }}
+        >
+          {children}
+        </ChatSettingsContext.Provider>
+      </SteerHostTestProvider>
     </RecoilRoot>
   );
 

@@ -63,6 +63,9 @@ describe('redactMessage', () => {
     expect(redactMessage('https://example.test/?api_key=secretvalue&next=true')).toBe(
       'https://example.test/?api_key=[REDACTED]&next=true',
     );
+    expect(redactMessage('https://example.test/?input=x&appid=secretvalue&limit=1')).toBe(
+      'https://example.test/?input=x&appid=[REDACTED]&limit=1',
+    );
   });
 
   it('masks email addresses in messages', () => {
@@ -857,6 +860,7 @@ describe('redactFormat', () => {
   it('redacts values under sensitive splat metadata keys', () => {
     const metadata = {
       apiKey: 'secretvalue',
+      appid: 'secretvalue',
       authorization: 'secretvalue',
       nested: { token: 'secretvalue' },
       safe: 'secretvalue',
@@ -873,6 +877,7 @@ describe('redactFormat', () => {
     const splat = info[SPLAT_SYMBOL] as Array<typeof metadata>;
 
     expect(splat[0].apiKey).toBe('[REDACTED]');
+    expect(splat[0].appid).toBe('[REDACTED]');
     expect(splat[0].authorization).toBe('[REDACTED]');
     expect(splat[0].nested.token).toBe('[REDACTED]');
     expect(splat[0]['x-api-key']).toBe('[REDACTED]');
@@ -1160,5 +1165,88 @@ describe('jsonTruncateFormat structured events', () => {
       recovery_classification: 'terminal_rejection',
       response_status: 401,
     });
+  });
+
+  it('preserves transport symbols in a single enumeration of the log record', () => {
+    const LEVEL = Symbol.for('level');
+    const format = jsonTruncateFormat();
+    const message = 'x'.repeat(300);
+    const splat = [{ requestId: 'request-123' }];
+    const ownKeys = jest.fn(Reflect.ownKeys);
+    const info = new Proxy<winston.Logform.TransformableInfo>(
+      {
+        level: 'error',
+        message,
+        [LEVEL]: 'error',
+        [MESSAGE_SYMBOL]: message,
+        [SPLAT_SYMBOL]: splat,
+      },
+      { ownKeys },
+    );
+
+    const output = format.transform(info, format.options);
+    if (typeof output !== 'object') {
+      throw new Error('Expected jsonTruncateFormat to preserve the log record');
+    }
+
+    expect(ownKeys).toHaveBeenCalledTimes(1);
+    expect(output[LEVEL]).toBe('error');
+    expect(output[MESSAGE_SYMBOL]).toBe(message);
+    expect(output[SPLAT_SYMBOL]).toBe(splat);
+    expect(output.level).toBe('error');
+    expect(output.message).toBe(`${message.slice(0, 255)}...`);
+    expect(info.message).toBe(message);
+  });
+
+  it('preserves non-enumerable symbols without reading non-enumerable string fields', () => {
+    const LEVEL = Symbol.for('level');
+    const format = jsonTruncateFormat();
+    const info = { level: 'error', message: 'request failed' };
+    const readHidden = jest.fn(() => {
+      throw new Error('Hidden string fields must not be read');
+    });
+    Object.defineProperties(info, {
+      [LEVEL]: { value: 'error', enumerable: false },
+      hidden: { get: readHidden, enumerable: false },
+    });
+
+    const output = format.transform(info, format.options);
+    if (typeof output !== 'object') {
+      throw new Error('Expected jsonTruncateFormat to preserve the log record');
+    }
+
+    expect(output[LEVEL]).toBe('error');
+    expect(output).not.toHaveProperty('hidden');
+    expect(readHidden).not.toHaveBeenCalled();
+  });
+
+  it('keeps nested values JSON-shaped while truncating strings and handling cycles', () => {
+    const format = jsonTruncateFormat();
+    const message = 'x'.repeat(300);
+    const nested: Record<string | symbol, unknown> = {
+      detail: message,
+      items: [{ detail: message }],
+      [SPLAT_SYMBOL]: [{ detail: message }],
+    };
+    nested.self = nested;
+    const readHidden = jest.fn(() => {
+      throw new Error('Hidden string fields must not be read');
+    });
+    Object.defineProperty(nested, 'hidden', { get: readHidden, enumerable: false });
+    const info = { level: 'info', message: 'event', metadata: nested };
+
+    const output = format.transform(info, format.options);
+    if (typeof output !== 'object') {
+      throw new Error('Expected jsonTruncateFormat to preserve the log record');
+    }
+
+    expect(output.metadata).toEqual({
+      detail: `${message.slice(0, 255)}...`,
+      items: [{ detail: `${message.slice(0, 255)}...` }],
+      self: '[Circular]',
+    });
+    expect(nested.detail).toBe(message);
+    expect(nested.self).toBe(nested);
+    expect(readHidden).not.toHaveBeenCalled();
   });
 });

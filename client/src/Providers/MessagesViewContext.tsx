@@ -31,6 +31,12 @@ type MessagesOperations = Pick<
   'ask' | 'regenerate' | 'handleContinue' | 'getMessages' | 'setMessages'
 >;
 
+/** The view's conversation with the operations an inline editor writes through. */
+export type MessagesEditing = Pick<
+  MessagesViewContextValue,
+  'conversation' | 'ask' | 'getMessages' | 'setMessages'
+>;
+
 const MessagesViewContext = createContext<MessagesViewContextValue | undefined>(undefined);
 
 /**

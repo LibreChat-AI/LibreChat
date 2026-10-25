@@ -84,7 +84,7 @@ const FileContainer = ({
       <div className="flex flex-row items-center gap-2">
         <FilePreview file={file} fileType={fileType} className="relative" />
         <div className="overflow-hidden">
-          <div className="truncate font-medium" title={visibleName}>
+          <div dir="auto" className="truncate font-medium" title={visibleName}>
             {visibleName}
           </div>
           {subtitleAction != null ? (
@@ -103,7 +103,7 @@ const FileContainer = ({
                  * center still opens the editor. The colour shift answers focus as well as
                  * hover: the ring already announces focus, but leaving the two input modes
                  * with different feedback is a difference with no reason behind it. */
-                'text-text-secondary hover:text-text-primary focus-visible:text-text-primary pointer-events-auto relative z-10 inline-block max-w-full truncate rounded text-left align-middle leading-4 underline underline-offset-2',
+                'text-text-secondary hover:text-text-primary focus-visible:text-text-primary pointer-events-auto relative z-10 inline-block max-w-full truncate rounded text-start align-middle leading-4 underline underline-offset-2',
                 focusRing,
               )}
             >

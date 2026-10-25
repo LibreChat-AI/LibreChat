@@ -1,8 +1,11 @@
 import React from 'react';
 import { act, render, renderHook } from '@testing-library/react';
 import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai';
-import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RecoilRoot, useSetRecoilState, type MutableSnapshot } from 'recoil';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '@librechat/chat/react';
+import { ComposerRestoreProvider, useComposerRestoreHost } from '@librechat/chat/react';
+import { useSteerRecovery, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import {
   pendingSteerCancelClientIdsFamily,
   acceptedSteerClientIdsByConvoId,
@@ -11,23 +14,25 @@ import {
   pendingSteersByConvoId,
   resetSteerFamilies,
 } from '@librechat/chat/react';
-import type { RewakeDrain } from '~/Providers/ComposerRestoreContext';
-import {
-  ComposerRestoreProvider,
-  useComposerRestoreHost,
-} from '~/Providers/ComposerRestoreContext';
+import type { RewakeDrain } from '@librechat/chat/react';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { usePaneConversations } from '~/routes/ChatSettings';
-import useSteerRecovery from '../useSteerRecovery';
+import { SteerHostTestProvider } from 'test/steerHost';
 import store from '~/store';
-import '~/Providers/SteerHostContext';
 
 const mockMutateAsync = jest.fn();
 const mockCancelSteer = jest.fn();
+/** Whether the steer mutation runs on React Query itself rather than a bare `mutateAsync`
+ *  stub, for a case that depends on what the library does with a request that outlives its
+ *  component. */
+let mockRealSteerMutation = false;
 
 jest.mock('~/data-provider', () => ({
-  useSteerMessageMutation: () => ({ mutateAsync: mockMutateAsync }),
+  useSteerMessageMutation: () => {
+    const { useMutation } = jest.requireActual('@tanstack/react-query');
+    const mutation = useMutation({ mutationFn: (request: unknown) => mockMutateAsync(request) });
+    return mockRealSteerMutation ? mutation : { mutateAsync: mockMutateAsync };
+  },
   useCancelSteerMutation: () => ({ mutateAsync: mockCancelSteer }),
 }));
 
@@ -36,6 +41,8 @@ jest.mock('~/data-provider', () => ({
 const flush = () => act(async () => undefined);
 
 const CONVO_ID = 'convo-steer-recovery';
+
+const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
 
 /** The hook resolves "is the run over" from the conversation's own submitting
  *  state, not from its own unmount, so every case has to place the
@@ -69,18 +76,22 @@ function PaneSettings({ children }: { children: React.ReactNode }) {
 
 function setup(initialize?: (snapshot: MutableSnapshot) => void, rewake?: RewakeDrain) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <RecoilRoot
-      initializeState={(snapshot) => {
-        seedRun(snapshot, true);
-        initialize?.(snapshot);
-      }}
-    >
-      <PaneSettings>
-        <ComposerRestoreProvider>
-          {rewake ? <RewakePublisher rewake={rewake}>{children}</RewakePublisher> : children}
-        </ComposerRestoreProvider>
-      </PaneSettings>
-    </RecoilRoot>
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot
+        initializeState={(snapshot) => {
+          seedRun(snapshot, true);
+          initialize?.(snapshot);
+        }}
+      >
+        <SteerHostTestProvider>
+          <PaneSettings>
+            <ComposerRestoreProvider>
+              {rewake ? <RewakePublisher rewake={rewake}>{children}</RewakePublisher> : children}
+            </ComposerRestoreProvider>
+          </PaneSettings>
+        </SteerHostTestProvider>
+      </RecoilRoot>
+    </QueryClientProvider>
   );
   return renderHook(
     () => ({
@@ -100,6 +111,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mockRealSteerMutation = false;
   resetSubmitting(getDefaultStore());
 });
 
@@ -166,6 +178,28 @@ describe('useSteerRecovery', () => {
       // The old local id must be gone entirely: leaving it behind is what let
       // the applied SteerPart and a stale pending copy render together.
       expect(result.current.chips).toEqual([
+        expect.objectContaining({ steerId: 'srv-9', text: 'redo this', status: 'pending' }),
+      ]);
+    });
+
+    it('settles a retry whose row unmounted before the server answered', async () => {
+      mockRealSteerMutation = true;
+      let answer: (result: unknown) => void = () => undefined;
+      mockMutateAsync.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+      const { result, unmount } = setup(() => {
+        getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
+          { steerId: 'local-1', text: 'redo this', status: 'failed', createdAt: 5 },
+        ]);
+      });
+      act(() => {
+        result.current.recovery.retry('local-1');
+      });
+      unmount();
+
+      answer({ steerId: 'srv-9', status: 'queued', position: 1, conversationId: CONVO_ID });
+      await flush();
+
+      expect(getDefaultStore().get(pendingSteersByConvoId(CONVO_ID))).toEqual([
         expect.objectContaining({ steerId: 'srv-9', text: 'redo this', status: 'pending' }),
       ]);
     });
@@ -286,25 +320,29 @@ describe('useSteerRecovery', () => {
         }
         render(
           <ComposerRestoreProvider>
-            <RecoilRoot
-              initializeState={(snapshot) => {
-                seedRun(snapshot, true);
-                getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
-                  {
-                    steerId: 'local-race',
-                    text: 'changed my mind',
-                    status: 'failed',
-                    createdAt: 4,
-                  },
-                ]);
-              }}
-            >
-              <PaneSettings>
-                <RewakePublisher rewake={rewake}>
-                  <Tree />
-                </RewakePublisher>
-              </PaneSettings>
-            </RecoilRoot>
+            <QueryClientProvider client={queryClient}>
+              <RecoilRoot
+                initializeState={(snapshot) => {
+                  seedRun(snapshot, true);
+                  getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
+                    {
+                      steerId: 'local-race',
+                      text: 'changed my mind',
+                      status: 'failed',
+                      createdAt: 4,
+                    },
+                  ]);
+                }}
+              >
+                <SteerHostTestProvider>
+                  <PaneSettings>
+                    <RewakePublisher rewake={rewake}>
+                      <Tree />
+                    </RewakePublisher>
+                  </PaneSettings>
+                </SteerHostTestProvider>
+              </RecoilRoot>
+            </QueryClientProvider>
           </ComposerRestoreProvider>,
         );
         act(() => {
@@ -390,23 +428,27 @@ describe('useSteerRecovery', () => {
         };
         render(
           <ComposerRestoreProvider>
-            <RecoilRoot
-              initializeState={(snapshot) => {
-                seedRun(snapshot, true);
-                getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
-                  {
-                    steerId: 'local-vanish',
-                    text: 'do not lose me',
-                    status: 'failed',
-                    createdAt: 4,
-                  },
-                ]);
-              }}
-            >
-              <PaneSettings>
-                <Tree />
-              </PaneSettings>
-            </RecoilRoot>
+            <QueryClientProvider client={queryClient}>
+              <RecoilRoot
+                initializeState={(snapshot) => {
+                  seedRun(snapshot, true);
+                  getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
+                    {
+                      steerId: 'local-vanish',
+                      text: 'do not lose me',
+                      status: 'failed',
+                      createdAt: 4,
+                    },
+                  ]);
+                }}
+              >
+                <SteerHostTestProvider>
+                  <PaneSettings>
+                    <Tree />
+                  </PaneSettings>
+                </SteerHostTestProvider>
+              </RecoilRoot>
+            </QueryClientProvider>
           </ComposerRestoreProvider>,
         );
         act(() => {
@@ -556,19 +598,23 @@ describe('useSteerRecovery', () => {
         return null;
       };
       const Tree = ({ live }: { live: boolean }) => (
-        <RecoilRoot
-          initializeState={(snapshot) => {
-            seedRun(snapshot, true);
-            getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
-              { steerId: 'local-late', text: 'landed too late', status: 'failed', createdAt: 3 },
-            ]);
-          }}
-        >
-          <PaneSettings>
-            <Observer />
-            {live && <Recovery />}
-          </PaneSettings>
-        </RecoilRoot>
+        <QueryClientProvider client={queryClient}>
+          <RecoilRoot
+            initializeState={(snapshot) => {
+              seedRun(snapshot, true);
+              getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
+                { steerId: 'local-late', text: 'landed too late', status: 'failed', createdAt: 3 },
+              ]);
+            }}
+          >
+            <SteerHostTestProvider>
+              <PaneSettings>
+                <Observer />
+                {live && <Recovery />}
+              </PaneSettings>
+            </SteerHostTestProvider>
+          </RecoilRoot>
+        </QueryClientProvider>
       );
 
       const { rerender } = render(<Tree live={true} />);
@@ -625,18 +671,22 @@ describe('useSteerRecovery', () => {
       };
 
       render(
-        <RecoilRoot
-          initializeState={(snapshot) => {
-            seedRun(snapshot, true);
-            getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
-              { steerId: 'local-nav', text: 'still running', status: 'failed', createdAt: 2 },
-            ]);
-          }}
-        >
-          <PaneSettings>
-            <Tree />
-          </PaneSettings>
-        </RecoilRoot>,
+        <QueryClientProvider client={queryClient}>
+          <RecoilRoot
+            initializeState={(snapshot) => {
+              seedRun(snapshot, true);
+              getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
+                { steerId: 'local-nav', text: 'still running', status: 'failed', createdAt: 2 },
+              ]);
+            }}
+          >
+            <SteerHostTestProvider>
+              <PaneSettings>
+                <Tree />
+              </PaneSettings>
+            </SteerHostTestProvider>
+          </RecoilRoot>
+        </QueryClientProvider>,
       );
 
       act(() => {

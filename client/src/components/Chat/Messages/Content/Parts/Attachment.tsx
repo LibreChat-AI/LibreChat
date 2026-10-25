@@ -235,7 +235,7 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         aria-label={buttonLabel}
         onClick={() => setIsExpanded((prev) => !prev)}
         className={cn(
-          'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pr-2 text-sm',
+          'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pe-2 text-sm',
           'text-text-secondary hover:text-text-primary transition-colors',
           'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
         )}
@@ -243,14 +243,14 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
         <span className="shrink-0 font-medium">{fileCount}</span>
         {summary.length > 0 && (
-          <span className="min-w-0 truncate text-left text-xs font-normal" title={summary}>
+          <span className="min-w-0 truncate text-start text-xs font-normal" title={summary}>
             {'— '}
             {summary}
           </span>
         )}
         <ChevronDown
           className={cn(
-            'ml-auto size-4 shrink-0 transition-transform duration-200 ease-out',
+            'ms-auto size-4 shrink-0 transition-transform duration-200 ease-out',
             isExpanded && 'rotate-180',
           )}
           aria-hidden="true"

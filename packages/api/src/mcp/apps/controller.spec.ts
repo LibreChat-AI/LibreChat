@@ -40,6 +40,7 @@ type MockResponse = EventEmitter & {
   json: jest.Mock;
   send: jest.Mock;
   setHeader: jest.Mock;
+  removeHeader: jest.Mock;
   end: jest.Mock;
 };
 
@@ -63,6 +64,7 @@ const makeResponse = (): MockResponse => {
     json: jest.fn(),
     send: jest.fn(),
     setHeader: jest.fn(),
+    removeHeader: jest.fn(),
     end: jest.fn(),
   });
   response.status.mockReturnValue(response);
@@ -101,9 +103,7 @@ function makeDependencies(manager: MCPAppsProxyManager) {
     ensureConfigServers: jest.fn(async () => ({
       srv: { type: 'stdio', command: 'test', args: [] },
     })),
-    getAllServerConfigs: jest.fn(async () => ({
-      srv: { type: 'stdio', command: 'effective', args: [] },
-    })),
+    getServerConfig: jest.fn(async () => ({ type: 'stdio', command: 'effective', args: [] })),
     recoverServerConfig: jest.fn(async (_serverName, config) => config),
     isAppServerConfig: jest.fn(async () => false),
     resolveCachedAppServerConfig: jest.fn(async () => ({
@@ -180,7 +180,7 @@ describe('createMCPAppsController', () => {
       allowedAddresses: null,
     });
     expect(dependencies.ensureConfigServers).not.toHaveBeenCalled();
-    expect(dependencies.getAllServerConfigs).not.toHaveBeenCalled();
+    expect(dependencies.getServerConfig).not.toHaveBeenCalled();
     expect(dependencies.recoverServerConfig).not.toHaveBeenCalled();
     expect(dependencies.getFlowManager).not.toHaveBeenCalled();
     expect(dependencies.createOAuthCredentialsChanging).not.toHaveBeenCalled();
@@ -224,7 +224,8 @@ describe('createMCPAppsController', () => {
     expect(dependencies.ensureConfigServers).toHaveBeenCalledWith({
       srv: { type: 'stdio', command: 'test', args: [] },
     });
-    expect(dependencies.getAllServerConfigs).toHaveBeenCalledWith(
+    expect(dependencies.getServerConfig).toHaveBeenCalledWith(
+      'srv',
       'user-1',
       { srv: { type: 'stdio', command: 'test', args: [] } },
       'USER',
@@ -344,7 +345,7 @@ describe('createMCPAppsController', () => {
       );
 
       expect(dependencies.ensureConfigServers).not.toHaveBeenCalled();
-      expect(dependencies.getAllServerConfigs).not.toHaveBeenCalled();
+      expect(dependencies.getServerConfig).not.toHaveBeenCalled();
       expect(dependencies.getManager).not.toHaveBeenCalled();
       expect(manager.readResource).not.toHaveBeenCalled();
       expect(response.json).not.toHaveBeenCalled();
@@ -391,7 +392,7 @@ describe('createMCPAppsController', () => {
     );
 
     expect(dependencies.ensureConfigServers).not.toHaveBeenCalled();
-    expect(dependencies.getAllServerConfigs).not.toHaveBeenCalled();
+    expect(dependencies.getServerConfig).not.toHaveBeenCalled();
     expect(dependencies.getManager).not.toHaveBeenCalled();
     expect(manager.readResource).not.toHaveBeenCalled();
     expect(response.json).not.toHaveBeenCalled();
@@ -400,10 +401,8 @@ describe('createMCPAppsController', () => {
   it('stops after cancellation during effective config resolution without manager lookup', async () => {
     const manager = makeManager();
     const { dependencies } = makeDependencies(manager);
-    let finishResolution!: (
-      value: Record<string, { type: 'stdio'; command: string; args: string[] }>,
-    ) => void;
-    dependencies.getAllServerConfigs = jest.fn(
+    let finishResolution!: (value: { type: 'stdio'; command: string; args: string[] }) => void;
+    dependencies.getServerConfig = jest.fn(
       () =>
         new Promise((resolve) => {
           finishResolution = resolve;
@@ -427,7 +426,7 @@ describe('createMCPAppsController', () => {
     await Promise.resolve();
     request.aborted = true;
     request.emit('aborted');
-    finishResolution({ srv: { type: 'stdio', command: 'effective', args: [] } });
+    finishResolution({ type: 'stdio', command: 'effective', args: [] });
     await handled;
 
     expect(dependencies.getManager).not.toHaveBeenCalled();
@@ -451,7 +450,7 @@ describe('createMCPAppsController', () => {
 
     expect(response.status).toHaveBeenCalledWith(401);
     expect(dependencies.ensureConfigServers).not.toHaveBeenCalled();
-    expect(dependencies.getAllServerConfigs).not.toHaveBeenCalled();
+    expect(dependencies.getServerConfig).not.toHaveBeenCalled();
     expect(manager.readResource).not.toHaveBeenCalled();
   });
 
@@ -469,7 +468,7 @@ describe('createMCPAppsController', () => {
 
     expect(response.status).toHaveBeenCalledWith(500);
     expect(dependencies.ensureConfigServers).not.toHaveBeenCalled();
-    expect(dependencies.getAllServerConfigs).not.toHaveBeenCalled();
+    expect(dependencies.getServerConfig).not.toHaveBeenCalled();
     expect(manager.readResource).not.toHaveBeenCalled();
   });
 
@@ -519,7 +518,7 @@ describe('createMCPAppsController', () => {
     expect(response.status).toHaveBeenCalledWith(500);
     expect(next).not.toHaveBeenCalled();
     expect(dependencies.ensureConfigServers).not.toHaveBeenCalled();
-    expect(dependencies.getAllServerConfigs).not.toHaveBeenCalled();
+    expect(dependencies.getServerConfig).not.toHaveBeenCalled();
     expect(manager.readResource).not.toHaveBeenCalled();
   });
 
@@ -548,7 +547,7 @@ describe('createMCPAppsController', () => {
       srv: { type: 'stdio', command: 'scoped' },
     });
     expect(response.status).toHaveBeenCalledWith(500);
-    expect(dependencies.getAllServerConfigs).not.toHaveBeenCalled();
+    expect(dependencies.getServerConfig).not.toHaveBeenCalled();
     expect(manager.readResource).not.toHaveBeenCalled();
   });
 
@@ -561,8 +560,8 @@ describe('createMCPAppsController', () => {
       source: 'config' as const,
       inspectionFailed: true,
     };
-    dependencies.ensureConfigServers = jest.fn().mockResolvedValue({ srv: stub });
-    dependencies.getAllServerConfigs = jest.fn().mockResolvedValue({ srv: stub });
+    dependencies.ensureConfigServers = jest.fn().mockResolvedValue(stub);
+    dependencies.getServerConfig = jest.fn().mockResolvedValue(stub);
     dependencies.recoverServerConfig = jest.fn().mockResolvedValue(undefined);
     const controller = createMCPAppsController(dependencies);
     const request = makeRequest({
@@ -600,7 +599,7 @@ describe('createMCPAppsController', () => {
       url: 'https://recovered.example.com',
       source: 'yaml' as const,
     };
-    dependencies.getAllServerConfigs = jest.fn().mockResolvedValue({ srv: stub });
+    dependencies.getServerConfig = jest.fn().mockResolvedValue(stub);
     dependencies.recoverServerConfig = jest.fn().mockResolvedValue(recovered);
     const controller = createMCPAppsController(dependencies);
     const request = makeRequest({
@@ -632,7 +631,7 @@ describe('createMCPAppsController', () => {
       source: 'yaml' as const,
       inspectionFailed: true,
     };
-    dependencies.getAllServerConfigs = jest.fn().mockResolvedValue({ srv: stub });
+    dependencies.getServerConfig = jest.fn().mockResolvedValue(stub);
     dependencies.recoverServerConfig = jest.fn().mockRejectedValue(new Error('recovery failed'));
     const controller = createMCPAppsController(dependencies);
     const request = makeRequest({
@@ -665,7 +664,7 @@ describe('createMCPAppsController', () => {
       url: 'https://recovered.example.com',
       source: 'yaml' as const,
     };
-    dependencies.getAllServerConfigs = jest.fn().mockResolvedValue({ srv: stub });
+    dependencies.getServerConfig = jest.fn().mockResolvedValue(stub);
     let recoveryStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       recoveryStarted = resolve;
@@ -720,6 +719,42 @@ describe('createMCPAppsController', () => {
     expect(dependencies.readSandboxFile).toHaveBeenCalledTimes(1);
     expect(dependencies.readSandboxFile).toHaveBeenCalledWith('/tmp/mcp-sandbox.html', 'utf8');
     expect(dependencies.getSandboxCspLimits).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes an inherited frame guard when cross-origin ancestors are configured', async () => {
+    const manager = makeManager();
+    const { dependencies } = makeDependencies(manager);
+    const controller = createMCPAppsController(dependencies);
+    const response = makeResponse();
+
+    await controller.serveMCPSandbox(
+      asHandlerRequest(makeRequest()),
+      asHandlerResponse(response),
+      jest.fn(),
+    );
+
+    expect(response.removeHeader).toHaveBeenCalledWith('X-Frame-Options');
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Content-Security-Policy',
+      expect.arrayContaining(['frame-ancestors https://host.example.com']),
+    );
+  });
+
+  it('replaces an inherited frame guard with DENY when no ancestors are configured', async () => {
+    const manager = makeManager();
+    const { dependencies } = makeDependencies(manager);
+    dependencies.sandboxFrameAncestors = undefined;
+    const controller = createMCPAppsController(dependencies);
+    const response = makeResponse();
+
+    await controller.serveMCPSandbox(
+      asHandlerRequest(makeRequest()),
+      asHandlerResponse(response),
+      jest.fn(),
+    );
+
+    expect(response.removeHeader).not.toHaveBeenCalledWith('X-Frame-Options');
+    expect(response.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
   });
 
   it('fails closed when trusted sandbox limits cannot be resolved', async () => {

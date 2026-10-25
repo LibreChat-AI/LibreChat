@@ -1,7 +1,6 @@
 import React, { memo, useMemo, useRef, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
-import { useToastContext } from '@librechat/client';
 import { PermissionTypes, Permissions, apiBaseUrl } from 'librechat-data-provider';
+import type { Element, ElementContent } from 'hast';
 import {
   handleDoubleClick,
   triggerDownload,
@@ -9,12 +8,13 @@ import {
   toAbsoluteFilePath,
 } from '~/utils';
 import Mermaid, { MermaidErrorBoundary } from '~/components/Messages/Content/Mermaid';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useCodeBlockContext, useMediaContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
+import { strongDirection } from '~/utils/direction';
 import { useFileDownload } from '~/data-provider';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 type TCodeProps = {
   inline?: boolean;
@@ -115,8 +115,9 @@ type TAnchorProps = {
 };
 
 export const a: React.ElementType = memo(function MarkdownAnchor({ href, children }: TAnchorProps) {
-  const user = useRecoilValue(store.user);
-  const { showToast } = useToastContext();
+  const { useUser, useToast } = useMessagePartsHost();
+  const user = useUser();
+  const showToast = useToast();
   const localize = useLocalize();
 
   const {
@@ -190,17 +191,86 @@ type TParagraphProps = {
 };
 
 export const p: React.ElementType = memo(function MarkdownParagraph({ children }: TParagraphProps) {
-  return <p className="mb-2 whitespace-pre-wrap">{children}</p>;
+  return (
+    <p dir="auto" className="mb-2 whitespace-pre-wrap">
+      {children}
+    </p>
+  );
 });
 p.displayName = 'MarkdownParagraph';
 
-type TTableProps = {
-  children: React.ReactNode;
+type TBlockProps = React.HTMLAttributes<HTMLElement> & { node?: Element };
+
+/** Resolves direction per block so a mixed-language reply is not laid out by its first character. */
+const withAutoDir = (Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6') => {
+  const Block: React.ElementType = memo(function MarkdownBlock({
+    node: _node,
+    ...props
+  }: TBlockProps) {
+    return <Tag dir="auto" {...props} />;
+  });
+  Block.displayName = `Markdown${Tag.toUpperCase()}`;
+  return Block;
 };
 
-export const table: React.ElementType = memo(function MarkdownTable({ children }: TTableProps) {
+/** First strong direction of a subtree's text, skipping code, which is always left-to-right. */
+const nodeDirection = (node: Element | ElementContent): 'ltr' | 'rtl' | null => {
+  if (node.type === 'text') {
+    return strongDirection(node.value);
+  }
+  if (node.type !== 'element' || node.tagName === 'code' || node.tagName === 'pre') {
+    return null;
+  }
+  for (const child of node.children) {
+    const direction = nodeDirection(child);
+    if (direction != null) {
+      return direction;
+    }
+  }
+  return null;
+};
+
+/**
+ * Quotes and lists hold paragraphs that carry their own `dir="auto"`, and the browser's
+ * `dir="auto"` skips those, so a container would resolve to LTR whatever its text. Resolve it
+ * from the subtree instead, and inherit when there is no strong character. A list takes one
+ * direction so its markers and indent stay on the same side.
+ */
+const withContentDir = (Tag: 'ul' | 'ol' | 'blockquote') => {
+  const Block: React.ElementType = memo(function MarkdownContainer({
+    node,
+    ...props
+  }: TBlockProps) {
+    const dir = node != null ? (nodeDirection(node) ?? undefined) : undefined;
+    return <Tag dir={dir} {...props} />;
+  });
+  Block.displayName = `Markdown${Tag.toUpperCase()}`;
+  return Block;
+};
+
+export const ul = withContentDir('ul');
+export const ol = withContentDir('ol');
+export const h1 = withAutoDir('h1');
+export const h2 = withAutoDir('h2');
+export const h3 = withAutoDir('h3');
+export const h4 = withAutoDir('h4');
+export const h5 = withAutoDir('h5');
+export const h6 = withAutoDir('h6');
+export const blockquote = withContentDir('blockquote');
+
+type TTableProps = {
+  children: React.ReactNode;
+  node?: Element;
+};
+
+/** One direction for the whole table, so cell borders and corners stay on a single frame. */
+export const table: React.ElementType = memo(function MarkdownTable({
+  children,
+  node,
+}: TTableProps) {
+  const dir = node != null ? (nodeDirection(node) ?? undefined) : undefined;
   return (
-    <div className="markdown-table-wrapper w-full max-w-full">
+    <div dir={dir} className="markdown-table-wrapper w-full max-w-full">
       <table>{children}</table>
     </div>
   );

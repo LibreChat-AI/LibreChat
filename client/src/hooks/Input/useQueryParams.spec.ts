@@ -19,7 +19,7 @@ jest.mock('~/store', () => ({
 
 import { renderHook, act } from '@testing-library/react';
 import { useLocation, useSearchParams } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRecoilValue } from 'recoil';
 import { EModelEndpoint, parseConvo } from 'librechat-data-provider';
 import type { TConversation, TStartupConfig } from 'librechat-data-provider';
@@ -115,6 +115,7 @@ describe('useQueryParams', () => {
   // Setup common mocks before each test
   beforeEach(() => {
     jest.useFakeTimers();
+    (useQuery as jest.Mock).mockReturnValue({ status: 'loading', fetchStatus: 'idle' });
     (useLocation as jest.Mock).mockReturnValue({ pathname: '/c/new', key: 'origin' });
 
     // Reset mock for window.history.replaceState
@@ -202,6 +203,10 @@ describe('useQueryParams', () => {
       modelSpecs?: Partial<NonNullable<TStartupConfig['modelSpecs']>>;
       interface?: Partial<NonNullable<TStartupConfig['interface']>>;
     } | null = { modelSpecs: { list: [] } },
+    options: {
+      conversation?: Partial<TConversation>;
+      queryClient?: Record<string, unknown>;
+    } = {},
   ) => {
     const textAreaRef = { current: document.createElement('textarea') };
     const mockSetValue = jest.fn((_field: string, text: string) => {
@@ -222,6 +227,7 @@ describe('useQueryParams', () => {
         }
         return null;
       }),
+      ...options.queryClient,
     });
     (useChatFormContext as jest.Mock).mockReturnValue({
       setValue: mockSetValue,
@@ -235,7 +241,9 @@ describe('useQueryParams', () => {
         newConversation: mockNewConversation,
       });
     };
-    updateConversation({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' });
+    updateConversation(
+      options.conversation ?? { endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
+    );
     const hook = renderHook(() => useQueryParams({ textAreaRef }));
     act(() => jest.advanceTimersByTime(100));
     return {
@@ -592,6 +600,48 @@ describe('useQueryParams', () => {
     hook.updateConversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_test' });
     hook.rerender();
     act(() => jest.advanceTimersByTime(4000));
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.textAreaRef.current.value).toBe('hi');
+    expect(hook.result.current.isPreparing).toBe(false);
+  });
+
+  /** Mounts a prompt URL on an existing chat whose history query has not resolved yet. */
+  const mountExistingChat = () => {
+    (useLocation as jest.Mock).mockReturnValue({ pathname: '/c/convo-1', key: 'origin' });
+    const history: { state?: { status: string; data?: unknown } } = {};
+    const hook = mountQuery({ q: 'hi', submit: 'true' }, undefined, {
+      conversation: { conversationId: 'convo-1', endpoint: EModelEndpoint.openAI },
+      queryClient: { getQueryState: jest.fn(() => history.state) },
+    });
+    /** The history observer re-renders the hook once the messages query settles. */
+    const settle = (state: { status: string; data?: unknown }) => {
+      history.state = state;
+      (useQuery as jest.Mock).mockReturnValue({ ...state, fetchStatus: 'idle', dataUpdatedAt: 1 });
+      hook.rerender();
+    };
+    return { hook, settle };
+  };
+
+  it('waits for an existing chat history to load before auto-submitting', () => {
+    const { hook, settle } = mountExistingChat();
+    act(() => jest.advanceTimersByTime(1000));
+    expect(hook.textAreaRef.current.value).toBe('hi');
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    expect(hook.result.current.isPreparing).toBe(true);
+
+    settle({ status: 'success', data: [] });
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.mockSubmitMessage).toHaveBeenCalledWith({ text: 'hi' });
+    expect(hook.mockSetSearchParams).toHaveBeenCalled();
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops waiting for chat history when the history request fails', () => {
+    const { hook, settle } = mountExistingChat();
+    hook.mockSubmitMessage.mockReturnValue(false);
+    settle({ status: 'error' });
     hook.rerender();
     expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
     expect(hook.textAreaRef.current.value).toBe('hi');

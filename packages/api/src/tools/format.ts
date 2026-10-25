@@ -1,3 +1,4 @@
+import { redactMessage } from '@librechat/data-schemas';
 import { AuthType, EToolResources } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
 
@@ -81,4 +82,10 @@ export function getToolkitKey({
     }
   }
   return toolkitKey;
+}
+
+/** Error text a tool returns to the model, with credentials in request URLs and headers redacted. */
+export function formatToolError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `Error: ${redactMessage(message)}`;
 }

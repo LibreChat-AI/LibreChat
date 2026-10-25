@@ -18,6 +18,7 @@ import type {
   ChatTransportError,
   ChatCancelSteerResult,
 } from '../../core/types';
+import type { StreamStatusResponse } from '../../core/resumable/host';
 import type { FileDeliveryMetadataMap } from '../../core/files';
 
 /** Callbacks of a fire-and-forget request, called once it settles. */
@@ -41,6 +42,13 @@ export type SteerMessageKey =
   | 'com_ui_steer_paused_queued'
   | 'com_ui_steer_preempt_unsupported';
 
+/** One mounted chat pane and the conversation it shows. */
+export type SteerPane = {
+  /** The pane key, as the app keys its panes (`0` for the main chat). */
+  index: string | number;
+  conversationId: string | null;
+};
+
 /** The app-global preferences and deployment limits the steer hooks read. */
 export type SteerSettings = {
   duringRunDefaultAction: DuringRunAction;
@@ -48,6 +56,22 @@ export type SteerSettings = {
   queuedSendLockTimeoutMs?: number;
   queuedTurnReconciliationTimeoutMs?: number;
   steerArmConfirmationTimeoutMs?: number;
+  /** The conversation each mounted chat pane shows, read when called rather than at render:
+   *  steer recovery asks whether any pane holding a conversation is still running. */
+  getPaneConversations: () => ReadonlyArray<SteerPane>;
+};
+
+/** What the host's caches already hold about a conversation's queued-turn handoff. */
+export type QueuedTurnSnapshot = {
+  receipts?: TAgentQueuedTurnReceipt[];
+  status?: StreamStatusResponse;
+};
+
+/** Reads the cached handoff of one conversation without fetching it, and subscribes to changes
+ *  of it. Both functions keep their identity while the conversation does. */
+export type QueuedTurnCache = {
+  read: () => QueuedTurnSnapshot;
+  subscribe: (notify: () => void) => () => void;
 };
 
 /**
@@ -61,6 +85,9 @@ export interface SteerHost {
     request: ChatSteerRequest,
     callbacks?: SteerRequestCallbacks<ChatSteerResult>,
   ) => void;
+  /** Posts a steer and settles with the server's answer even after the caller unmounts, which a
+   *  retry from the thread needs: its row unmounts when the user navigates away mid-request. */
+  useSteerMessageAsync(): (request: ChatSteerRequest) => Promise<ChatSteerResult>;
   /** Withdraws a steer that has not been injected yet. */
   useCancelSteer(): (
     request: ChatSteerTarget & { clientSteerId?: string },
@@ -87,6 +114,9 @@ export interface SteerHost {
     reconcileUntil: number | undefined,
     expectsReceipts: boolean,
   ): TAgentQueuedTurnReceipt[] | undefined;
+  /** The queued-turn receipts and stream status the host has cached for a conversation, observed
+   *  without registering a competing fetcher. */
+  useQueuedTurnCache(conversationId: string): QueuedTurnCache;
   /** Reads a conversation's generation state, including steers it could not deliver. */
   useFetchStreamStatus(): (conversationId: string) => Promise<ChatStreamStatus>;
   /** The latest message of the pane, on the branch on screen. */
@@ -106,13 +136,6 @@ export interface SteerHost {
   useSettings(): SteerSettings;
 }
 
-let defaultSteerHost: SteerHost | null = null;
-
-/** Registers the host used outside any `SteerHostProvider`, once at the app's entry. */
-export function setDefaultSteerHost(host: SteerHost): void {
-  defaultSteerHost = host;
-}
-
 const SteerHostContext = createContext<SteerHost | null>(null);
 
 export function SteerHostProvider({
@@ -126,9 +149,9 @@ export function SteerHostProvider({
 }
 
 export function useSteerHost(): SteerHost {
-  const host = useContext(SteerHostContext) ?? defaultSteerHost;
+  const host = useContext(SteerHostContext);
   if (host == null) {
-    throw new Error('The steer hooks need a SteerHostProvider or a default steer host.');
+    throw new Error('The steer hooks need a SteerHostProvider above them.');
   }
   return host;
 }

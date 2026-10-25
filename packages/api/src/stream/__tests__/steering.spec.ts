@@ -15,8 +15,9 @@ import {
 import { PARKED_STEERS_TTL_MS, InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { synthesizeAppliedSteerEvents, toPendingSteer } from '~/stream/SteeringLifecycle';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { buildPendingAction } from '~/agents/hitl/policy';
 
 jest.spyOn(console, 'log').mockImplementation();
 

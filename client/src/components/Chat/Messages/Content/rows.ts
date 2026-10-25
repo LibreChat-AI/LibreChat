@@ -8,7 +8,7 @@
 export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center gap-2.5';
 
 /** Leave an 8px gap beside MessageNav's hit area in full-width chat. */
-export const ARTIFACT_ROW_NAV_SPACING = 'pr-3 md:pr-17';
+export const ARTIFACT_ROW_NAV_SPACING = 'pe-3 md:pe-17';
 
 /** Behavior hook for header glyphs, independent of their layout. */
 export const FOLD_GLYPH_CLASS = 'fold-glyph';
@@ -38,7 +38,7 @@ export const FOLD_GLYPH_SELECTOR = `.${FOLD_GLYPH_CLASS}`;
  * drawn 12px left of the row, show at all. The rail is absolutely positioned
  * in that inset, out of flow, so the height animation is untouched.
  */
-export const FOLD_RAIL_CLASSES = 'relative pl-6';
+export const FOLD_RAIL_CLASSES = 'relative ps-6';
 
 /**
  * A copy action laid over its pane (`group/copy`) instead of beside it, so it

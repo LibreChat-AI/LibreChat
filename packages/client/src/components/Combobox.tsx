@@ -91,7 +91,7 @@ export default function ComboboxComponent({
             <div className="assistant-item flex items-center justify-center overflow-hidden rounded-full">
               {SelectIcon ? SelectIcon : <ChevronDownIcon />}
             </div>
-            <span className={cn('ml-2 select-none', isCollapsed ? 'hidden' : '')}>
+            <span className={cn('ms-2 select-none', isCollapsed ? 'hidden' : '')}>
               {selectedValue
                 ? (displayValue ?? selectedValue)
                 : selectPlaceholder && selectPlaceholder}
@@ -111,7 +111,7 @@ export default function ComboboxComponent({
             )}
           >
             <RadixSelect.Viewport className="mb-5 h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]">
-              <div className="group bg-surface-secondary text-text-primary sticky top-0 left-0 z-10 flex h-12 items-center gap-2 px-3 py-2 duration-300">
+              <div className="group bg-surface-secondary text-text-primary sticky inset-s-0 top-0 z-10 flex h-12 items-center gap-2 px-3 py-2 duration-300">
                 <SearchIcon className="text-text-secondary group-focus-within:text-text-primary group-hover:text-text-primary h-4 w-4 transition-colors duration-300" />
                 <Combobox
                   autoSelect
@@ -141,7 +141,7 @@ export default function ComboboxComponent({
                   <RadixSelect.Item key={value} value={`${value ?? ''}`} asChild>
                     <ComboboxItem
                       className={cn(
-                        'focus:bg-surface-hover focus:text-text-primary relative flex w-full cursor-pointer items-center rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+                        'focus:bg-surface-hover focus:text-text-primary relative flex w-full cursor-pointer items-center rounded-sm py-1.5 ps-2 pe-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
                         disabledInkClasses,
                         'hover:bg-surface-hover rounded-lg',
                       )}
@@ -151,7 +151,7 @@ export default function ComboboxComponent({
                         setOpen(false);
                       }}
                     >
-                      <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
+                      <span className="absolute inset-e-2 flex h-3.5 w-3.5 items-center justify-center">
                         <RadixSelect.ItemIndicator>
                           <CheckIcon className="size-theme-icon" />
                         </RadixSelect.ItemIndicator>

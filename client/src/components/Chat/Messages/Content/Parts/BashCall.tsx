@@ -245,7 +245,10 @@ export default function BashCall({
                   isCopied={isCopied}
                   onClick={handleCopy}
                   disabled={contentPending}
-                  className={cn('bg-surface-code absolute top-1 right-1.5 z-[1]', PANE_COPY_REVEAL)}
+                  className={cn(
+                    'bg-surface-code absolute inset-e-1.5 top-1 z-[1]',
+                    PANE_COPY_REVEAL,
+                  )}
                   label={localize('com_ui_copy_code')}
                 />
                 <div
@@ -253,7 +256,10 @@ export default function BashCall({
                   onScroll={onCommandPaneScroll}
                   className="max-h-[18.75rem] overflow-auto"
                 >
-                  <pre className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap">
+                  <pre
+                    dir="ltr"
+                    className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap"
+                  >
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
                     </span>

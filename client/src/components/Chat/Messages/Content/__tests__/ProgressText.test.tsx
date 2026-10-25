@@ -13,10 +13,8 @@ jest.mock('~/hooks', () => ({
         com_ui_tool_call_time: 'Tool call',
         com_ui_tool_total_time: 'Total elapsed',
         com_ui_duration_minutes: `${values?.[0]}m ${values?.[1]}s`,
-        com_ui_duration_announced_seconds: `took ${values?.count} seconds`,
-        com_ui_duration_announced_seconds_one: `took ${values?.count} second`,
-        com_ui_duration_announced_minutes: `took ${values?.count} minutes`,
-        com_ui_duration_announced_minutes_one: `took ${values?.count} minute`,
+        com_ui_duration_announced_seconds: `took ${values?.value} ${values?.count === 1 ? 'second' : 'seconds'}`,
+        com_ui_duration_announced_minutes: `took ${values?.value} ${values?.count === 1 ? 'minute' : 'minutes'}`,
       };
       return translations[key] ?? key;
     },

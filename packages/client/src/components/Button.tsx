@@ -205,7 +205,7 @@ const buttonVariantRecipe = cva(
          * fill and the focus ring that mark it as a control.
          */
         'inline-edit':
-          'justify-start whitespace-normal text-left hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
+          'justify-start whitespace-normal text-start hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
         /**
          * A whole card or list row that is one click target, such as a project
          * tile or a chat row. It carries no fill of its own because the card
@@ -232,16 +232,16 @@ const buttonVariantRecipe = cva(
          * `data-selected` marks the highlighted or chosen row.
          */
         option:
-          'w-full select-none justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
-        card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
+          'w-full select-none justify-start gap-2.5 whitespace-normal text-start font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
+        card: 'justify-start whitespace-normal rounded-2xl text-start font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
         /** A small text action in the secondary ink beside a status line, such as a failed
          *  steer's Retry or a pending one's Cancel; it rises to the primary ink under the pointer. */
         'text-action':
-          'rounded text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
+          'rounded-sm text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
         /** The content of a list row whose row owns the highlight, such as a composer palette
          *  entry: it lays the row out and takes the pointer, and leaves fill and ink to the row. */
         'row-content':
-          'flex cursor-pointer justify-start gap-2.5 px-2 text-left font-normal transition-none',
+          'flex cursor-pointer justify-start gap-2.5 px-2 text-start font-normal transition-none',
         /** An outlined chip that toggles a mode, its pressed state marked with `aria-pressed`. */
         'chip-toggle':
           'min-h-theme-target shrink-0 rounded-full border border-border-medium text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-offset-0 aria-pressed:border-transparent aria-pressed:bg-surface-active-alt aria-pressed:text-text-primary aria-pressed:hover:bg-surface-active-alt',
@@ -298,7 +298,7 @@ const buttonVariantRecipe = cva(
         /** The padding of a list row that is itself the click target. */
         row: 'h-auto gap-3 px-3.5 py-3',
         /** The padding of a tile that reserves a corner for an overflow menu. */
-        tile: 'h-auto gap-0 p-4 pr-12',
+        tile: 'h-auto gap-0 p-4 pe-12',
       },
       shape: {
         default: 'rounded-lg',

@@ -1916,7 +1916,7 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
-    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
   });
 
   it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {

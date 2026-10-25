@@ -427,6 +427,7 @@ const appearanceValidators = {
   menuRadius: isLength,
   popoverRadius: isLength,
   menuPanelRadius: isLength,
+  compactPanelRadius: isLength,
   composerActionRadius: isLength,
   inlineCodeWeight: isFontWeight,
   tooltipRadius: isLength,

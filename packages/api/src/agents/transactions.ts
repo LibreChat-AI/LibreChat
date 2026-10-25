@@ -14,7 +14,8 @@ interface GetMultiplierParams {
 }
 
 interface GetCacheMultiplierParams {
-  cacheType: 'write' | 'read';
+  /** `write1h` is Anthropic's 1-hour cache write; `write` is the 5-minute rate */
+  cacheType: 'write' | 'read' | 'write1h';
   model?: string;
   endpointTokenConfig?: EndpointTokenConfig;
   inputTokenCount?: number;
@@ -47,6 +48,8 @@ interface StructuredTxData extends BaseTxData {
   tokenType: TokenType;
   inputTokens?: number;
   writeTokens?: number;
+  /** Subset of `writeTokens` written to the 1-hour cache */
+  write1hTokens?: number;
   readTokens?: number;
   inputTokenCount?: number;
   rawAmount?: number;
@@ -66,6 +69,8 @@ export interface TokenUsage {
 export interface StructuredPromptTokens {
   input?: number;
   write?: number;
+  /** Subset of `write` written to the 1-hour cache, billed at its own rate */
+  write1h?: number;
   read?: number;
 }
 
@@ -141,20 +146,31 @@ function calculateStructuredTokenValue(
 
     const inputAbs = Math.abs(txData.inputTokens ?? 0);
     const writeAbs = Math.abs(txData.writeTokens ?? 0);
+    const write1hAbs = Math.min(Math.abs(txData.write1hTokens ?? 0), writeAbs);
     const readAbs = Math.abs(txData.readTokens ?? 0);
     const totalPromptTokens = inputAbs + writeAbs + readAbs;
+    const write1hMultiplier =
+      write1hAbs > 0
+        ? (pricing.getCacheMultiplier({
+            cacheType: 'write1h',
+            model,
+            endpointTokenConfig,
+            inputTokenCount,
+          }) ?? writeMultiplier)
+        : writeMultiplier;
 
+    const promptValue =
+      inputAbs * Math.abs(inputMultiplier) +
+      (writeAbs - write1hAbs) * Math.abs(writeMultiplier) +
+      write1hAbs * Math.abs(write1hMultiplier) +
+      readAbs * Math.abs(readMultiplier);
     const rate =
-      totalPromptTokens > 0
-        ? (Math.abs(inputMultiplier * (txData.inputTokens ?? 0)) +
-            Math.abs(writeMultiplier * (txData.writeTokens ?? 0)) +
-            Math.abs(readMultiplier * (txData.readTokens ?? 0))) /
-          totalPromptTokens
-        : Math.abs(inputMultiplier);
+      totalPromptTokens > 0 ? promptValue / totalPromptTokens : Math.abs(inputMultiplier);
 
     const tokenValue = -(
       inputAbs * inputMultiplier +
-      writeAbs * writeMultiplier +
+      (writeAbs - write1hAbs) * writeMultiplier +
+      write1hAbs * write1hMultiplier +
       readAbs * readMultiplier
     );
 
@@ -162,7 +178,12 @@ function calculateStructuredTokenValue(
       tokenValue,
       rate,
       rawAmount: -totalPromptTokens,
-      rateDetail: { input: inputMultiplier, write: writeMultiplier, read: readMultiplier },
+      rateDetail: {
+        input: inputMultiplier,
+        write: writeMultiplier,
+        read: readMultiplier,
+        ...(write1hAbs > 0 && { write1h: write1hMultiplier }),
+      },
     };
   }
 
@@ -289,6 +310,7 @@ export function prepareStructuredTokenSpend(
   if (promptTokens) {
     const input = Math.max(promptTokens.input ?? 0, 0);
     const write = Math.max(promptTokens.write ?? 0, 0);
+    const write1h = Math.min(Math.max(promptTokens.write1h ?? 0, 0), write);
     const read = Math.max(promptTokens.read ?? 0, 0);
     const totalInputTokens = input + write + read;
     const entry = prepareStructuredTx(
@@ -297,6 +319,7 @@ export function prepareStructuredTokenSpend(
         tokenType: 'prompt',
         inputTokens: -input,
         writeTokens: -write,
+        ...(write1h > 0 && { write1hTokens: -write1h }),
         readTokens: -read,
         inputTokenCount: totalInputTokens,
       },

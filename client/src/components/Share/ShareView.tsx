@@ -416,7 +416,7 @@ export function ShareHeader({
                   className={cn(
                     'border-border-medium transition-colors',
                     isMobile
-                      ? 'absolute right-4 bottom-4 justify-center p-0 shadow-lg'
+                      ? 'absolute inset-e-4 bottom-4 justify-center p-0 shadow-lg'
                       : 'gap-2 self-start px-4 py-2',
                   )}
                 >
@@ -431,7 +431,7 @@ export function ShareHeader({
                 onPointerDownOutside={handleDialogOutside}
                 onInteractOutside={handleDialogOutside}
               >
-                <OGDialogHeader className="text-left">
+                <OGDialogHeader className="text-start">
                   <OGDialogTitle>{settingsLabel}</OGDialogTitle>
                 </OGDialogHeader>
                 <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pt-2 text-sm">

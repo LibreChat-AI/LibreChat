@@ -60,7 +60,7 @@ export function ModelSpecItem({ spec, isSelected, posInSet, setSize }: ModelSpec
           </div>
         )}
         <div className="flex min-w-0 flex-col gap-1">
-          <span className="truncate text-left">{spec.label}</span>
+          <span className="truncate text-start">{spec.label}</span>
           <SpecDescription description={spec.description} />
         </div>
       </div>

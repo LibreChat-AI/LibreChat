@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import { Trans } from 'react-i18next';
-import { useRecoilValue } from 'recoil';
 import { BookCopy } from 'lucide-react';
+import { presetFamily } from '@librechat/chat/react';
 import { tConvoUpdateSchema } from 'librechat-data-provider';
 import { Content, Portal, Root, Trigger } from '@radix-ui/react-popover';
 import {
@@ -18,7 +19,6 @@ import { SaveAsPresetDialog } from '~/components/Endpoints';
 import { EditPresetDialog, PresetItems } from './Presets';
 import { useLocalize, usePresets } from '~/hooks';
 import { useChatContext } from '~/Providers';
-import store from '~/store';
 
 const PresetsMenu: FC = () => {
   const localize = useLocalize();
@@ -41,7 +41,7 @@ const PresetsMenu: FC = () => {
     presetToDelete,
     confirmDeletePreset,
   } = usePresets();
-  const presetToEdit = useRecoilValue(store.presetByIndex(0));
+  const presetToEdit = useAtomValue(presetFamily(0));
 
   const openSaveAsDialog = () => {
     if (!conversation) {

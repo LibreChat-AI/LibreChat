@@ -10,6 +10,7 @@ import {
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import {
   toolPanelSpacingClassName,
+  useToolContentRequest,
   useToolExpansion,
   LoneGroupContext,
   SoleToolContext,
@@ -248,6 +249,8 @@ export default function ToolCall({
     hasInfo &&
     (hasToolParams(args) || hasRenderableOutput(output));
   const showInfo = bare || expandedInfo;
+  /** A bare panel is open without the reader expanding it, so it asks for the stored part too. */
+  useToolContentRequest(bare);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const rowRef = useRowHandoff(bare);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);

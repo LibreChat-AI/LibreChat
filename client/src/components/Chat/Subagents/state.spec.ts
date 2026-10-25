@@ -3,12 +3,15 @@ import { ContentTypes } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
 import type { SubagentUpdateEvent } from 'librechat-data-provider';
+import type { SubagentProgress } from './state';
 import {
   closeParentSubagentProgress,
   reduceSubagentProgress,
   reduceSubagentReplay,
   registerSubagentProgressKey,
+  rememberSubagentChildCalls,
   removeSubagentProgressAtoms,
+  rememberedSubagentChildCalls,
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   subagentProgressKey,
@@ -384,6 +387,61 @@ describe('reduceSubagentProgress', () => {
     ).toBeLessThanOrEqual(64 * 1024);
   });
 
+  it('keeps the calls one batch evicts so their files keep an owner', () => {
+    const toolEvents = Array.from({ length: 120 }, (_, index) =>
+      update({
+        activityEventId: `evicting-tool-${index}`,
+        phase: 'run_step',
+        data: {
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: `evicting-call-${index}`, name: 'search', args: { index } }],
+          },
+        },
+      }),
+    );
+    const bounded = reduceSubagentProgress(null, toolEvents);
+    expect(bounded?.contentParts).toHaveLength(100);
+    expect(bounded?.aggregatorState.evictedToolCalls?.map((call) => call.id)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `evicting-call-${index}`),
+    );
+  });
+
+  it('keeps a bounded memory of the child calls an invocation showed', () => {
+    const key = 'memory-message\u0000memory-call\u00000';
+    rememberSubagentChildCalls(
+      key,
+      Array.from({ length: 520 }, (_, index) => ({ id: `remembered-${index}` })),
+    );
+    const ids = new Set(['remembered-0', 'remembered-519']);
+    expect(rememberedSubagentChildCalls(key, ids)).toEqual([{ id: 'remembered-519' }]);
+    removeSubagentProgressAtoms(key);
+    expect(rememberedSubagentChildCalls(key, ids)).toEqual([]);
+  });
+
+  it('remembers the calls a replay segment evicted', () => {
+    const store = createStore();
+    const key = 'replay-message\u0000replay-call\u00000';
+    store.set(subagentProgressByToolCallId(key), {
+      contentParts: [],
+      aggregatorState: { evictedToolCalls: [] },
+      replaySegments: [
+        {
+          from: 0,
+          through: 1,
+          progress: {
+            contentParts: [],
+            aggregatorState: { evictedToolCalls: [{ id: 'segment-evicted' }] },
+          },
+        },
+      ],
+    } as unknown as SubagentProgress);
+    expect(rememberedSubagentChildCalls(key, new Set(['segment-evicted']))).toEqual([
+      { id: 'segment-evicted' },
+    ]);
+    removeSubagentProgressAtoms(key);
+  });
+
   it('keeps only the newest bounded activity and continues folding afterward', () => {
     const toolEvents = Array.from({ length: 120 }, (_, index) =>
       update({
@@ -463,6 +521,32 @@ describe('useSubagentProgress', () => {
 
     card.unmount();
     expect(subagentProgressByToolCallId(key)).not.toBe(held);
+  });
+
+  it('keeps retained readers and stream writers together after navigation', () => {
+    const key = subagentProgressKey('retained-message', 'retained-call', 0);
+    const store = createStore();
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(JotaiProvider, { store }, children);
+    const { result, unmount } = renderHook(() => useSubagentProgress(key), { wrapper });
+    const held = subagentProgressByToolCallId(key);
+    const streamOpen = subagentParentStreamOpenByToolCallId(key);
+    registerSubagentProgressKey(key);
+    act(() => {
+      for (const drained of takeRegisteredSubagentProgressKeys()) {
+        store.set(subagentProgressByToolCallId(drained), null);
+        store.set(subagentParentStreamOpenByToolCallId(drained), false);
+        removeSubagentProgressAtoms(drained);
+      }
+    });
+    expect(subagentProgressByToolCallId(key)).toBe(held);
+    expect(subagentParentStreamOpenByToolCallId(key)).toBe(streamOpen);
+    act(() => store.set(held, reduceSubagentProgress(null, [update()])));
+    expect(result.current?.contentParts).toEqual([{ type: ContentTypes.TEXT, text: 'Working.' }]);
+    act(() => store.set(held, null));
+    unmount();
+    expect(subagentProgressByToolCallId(key)).not.toBe(held);
+    expect(subagentParentStreamOpenByToolCallId(key)).not.toBe(streamOpen);
   });
 
   /** The drain owns a streaming key; freeing it here would race that boundary. */

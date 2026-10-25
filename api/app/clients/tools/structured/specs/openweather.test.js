@@ -355,4 +355,15 @@ describe('OpenWeather Tool', () => {
     });
     expect(result).toMatch(/Error: Invalid date format. Expected YYYY-MM-DD./);
   });
+
+  test('a failed request does not echo the API key to the model', async () => {
+    fetch.mockImplementationOnce((url) =>
+      Promise.reject(new Error(`request to ${url} failed, reason: getaddrinfo ENOTFOUND`)),
+    );
+
+    const result = await tool.call({ action: 'current_forecast', lat: 35.96, lon: -83.92 });
+
+    expect(result).toMatch(/^Error: request to .*appid=\[REDACTED\]/);
+    expect(result).not.toContain('test-api-key');
+  });
 });

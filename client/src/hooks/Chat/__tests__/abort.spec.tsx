@@ -5,6 +5,12 @@ import { useAtomValue, useSetAtom, getDefaultStore } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
+  stopRequestedByConvoId,
+  drainAfterAbortByIndex,
+  resetQueueFamilies,
+  runEndByIndex,
+} from '@librechat/chat/react';
+import {
   resetSteerFamilies,
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
@@ -12,13 +18,7 @@ import {
   clearSubmissions,
 } from '@librechat/chat/react';
 import type { TSubmission, TConversation } from 'librechat-data-provider';
-import type { DrainAfterAbort, RunEnd } from '~/hooks/Chat/queue';
-import {
-  stopRequestedByConvoId,
-  drainAfterAbortByIndex,
-  resetQueueFamilies,
-  runEndByIndex,
-} from '~/hooks/Chat/queue';
+import type { DrainAfterAbort, RunEnd } from '@librechat/chat';
 import useChatHelpers from '../useChatHelpers';
 import { useAbortCleanup } from '../abort';
 import store from '~/store';
@@ -50,9 +50,9 @@ jest.mock('~/hooks/useNewConvo', () => ({
   default: () => ({ newConversation: jest.fn() }),
 }));
 
-jest.mock('~/hooks/Chat/useSteerConvert', () => ({
-  __esModule: true,
-  default: () => mockConvertSteersToQueued,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerConvert: () => mockConvertSteersToQueued,
 }));
 
 const INDEX = 0;

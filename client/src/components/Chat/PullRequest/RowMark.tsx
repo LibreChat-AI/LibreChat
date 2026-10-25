@@ -89,7 +89,7 @@ function PullRequestRowMark({
           onKeyDown={(event: React.KeyboardEvent) => {
             if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
           }}
-          className="focus-visible:ring-text-primary text-status-warning relative mr-1 flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2"
+          className="focus-visible:ring-text-primary text-status-warning relative me-1 flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2"
         >
           <TriangleAlert aria-hidden="true" className="size-4 shrink-0" />
         </Ariakit.HovercardAnchor>
@@ -150,7 +150,7 @@ function PullRequestRowMark({
           if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
         }}
         className={cn(
-          'focus-visible:ring-text-primary relative mr-1 flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2',
+          'focus-visible:ring-text-primary relative me-1 flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2',
         )}
       >
         <PullRequestIcon icon={view.icon} tone={view.iconTone} className="size-4 shrink-0" />

@@ -4,6 +4,7 @@ import { useAtom, useStore, useAtomValue } from 'jotai';
 import { submissionByIndex } from '@librechat/chat/react';
 import { Button, Input, Slider } from '@librechat/client';
 import { BrainCircuit, ChevronDown, X } from 'lucide-react';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
   Constants,
   ReasoningParameterFormat,
@@ -22,7 +23,6 @@ import type {
   TReasoningOverride,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from './Composer/state';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
 import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { formatTokens, resolveAgentTarget } from '~/utils';
@@ -148,7 +148,7 @@ export function ReasoningControl({
                 variant="ghost"
                 size="icon-xs"
                 aria-label={localize('com_ui_close')}
-                className="group -mr-1 shrink-0"
+                className="group -me-1 shrink-0"
               >
                 <X
                   className="text-text-secondary group-hover:text-text-primary size-4"
@@ -176,7 +176,7 @@ export function ReasoningControl({
                   <span className="truncate">
                     {translated(setting.enumMappings?.[options[0]] ?? options[0], localize)}
                   </span>
-                  <span className="truncate text-right">
+                  <span className="truncate text-end">
                     {translated(
                       setting.enumMappings?.[options[options.length - 1]] ??
                         options[options.length - 1],
@@ -200,7 +200,7 @@ export function ReasoningControl({
                         step={range.step ?? 1}
                         onChange={(event) => setNumericValue(event.target.value)}
                         onBlur={commitNumericValue}
-                        className="h-8 w-24 text-right"
+                        className="h-8 w-24 text-end"
                       />
                     </div>
                     <span className="text-text-secondary truncate text-xs">

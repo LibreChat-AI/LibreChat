@@ -1,10 +1,10 @@
 import { Types } from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
-import { logger, isValidObjectIdString } from '@librechat/data-schemas';
+import { logger, isValidObjectIdString, buildUserSearchFilter } from '@librechat/data-schemas';
 import type {
   IUser,
-  IConfig,
+  ConfigRecord,
   AdminUserListItem,
   AdminUserSearchResult,
   UserDeleteResult,
@@ -16,6 +16,7 @@ import type { UserGenerationControl } from '~/user/generations';
 import type { UserErasureDeps } from '~/user/erasure';
 import type { ServerRequest } from '~/types/http';
 import { stopUserGenerations } from '~/user/generations';
+import { invalidatingConfigStore } from './cascade';
 import { parsePagination } from './pagination';
 import { eraseUserData } from '~/user/erasure';
 
@@ -107,7 +108,10 @@ export interface AdminUsersDeps {
   deleteConfig: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
-  ) => Promise<IConfig | null>;
+  ) => Promise<ConfigRecord | null>;
+  /** Clears the merged-config caches (on every instance, with Redis) after the deletion removes
+   * the user's config override, before the response, as config writes do. */
+  invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
   deleteAclEntries: (filter: {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
@@ -138,6 +142,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
     deleteUserById,
     invalidateCodeEnvironmentConfigCache,
     deleteConfig,
+    invalidateConfigCaches,
     deleteAclEntries,
     deletePasskeysByUser,
     resolveErasure,
@@ -197,14 +202,13 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       }
 
       const searchLimit = Math.min(Math.max(1, parseInt(limitStr, 10) || 20), 50);
-      const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`^${escaped}`, 'i');
-
-      const users = await findUsers(
-        { $or: [{ name: regex }, { email: regex }, { username: regex }] },
-        '_id name email username avatar',
-        { limit: searchLimit, sort: { name: 1 } },
-      );
+      const filter = buildUserSearchFilter(trimmed, { legacyPrefix: true });
+      const users = filter
+        ? await findUsers(filter, '_id name email username avatar', {
+            limit: searchLimit,
+            sort: { name: 1 },
+          })
+        : [];
 
       const results: AdminUserSearchResult[] = users.map((u) => ({
         id: u._id?.toString() ?? '',
@@ -310,8 +314,12 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
       }
 
       const objectId = new Types.ObjectId(id);
+      const profiles = invalidatingConfigStore(
+        { deleteConfig },
+        { invalidateConfigCaches, tenantId: req.user?.tenantId, logPrefix: '[adminUsers]' },
+      );
       const cleanupResults = await Promise.allSettled([
-        deleteConfig(PrincipalType.USER, id),
+        profiles.deleteConfig(PrincipalType.USER, id),
         ...(codeEnvironmentCleanupSafe ? [deleteUserCodeEnvironments(objectId)] : []),
         deleteAclEntries({ principalType: PrincipalType.USER, principalId: objectId }),
         deletePasskeysByUser(id),

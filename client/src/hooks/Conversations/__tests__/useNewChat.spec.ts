@@ -1,6 +1,8 @@
+import { getDefaultStore } from 'jotai';
+import { filesFamily } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
-
 import type { MouseEvent } from 'react';
+import type { ExtendedFile } from '~/common';
 import type { FilesDraft } from '~/utils';
 
 const mockNewConversation = jest.fn();
@@ -28,7 +30,13 @@ const mockState = {
   tabId: 'this-tab',
   filesDraft: { fileIds: [], pendingPastes: {} } as FilesDraft,
   pendingFilesDraft: { fileIds: [], pendingPastes: {} } as FilesDraft,
-  files: new Map<string, LiveFile>(),
+  /** Pane 0's live composer files, held in the real Jotai atom the hook reads. */
+  get files(): Map<string, LiveFile> {
+    return getDefaultStore().get(filesFamily(0));
+  },
+  set files(files: Map<string, LiveFile>) {
+    getDefaultStore().set(filesFamily(0), files as Map<string, ExtendedFile>);
+  },
   retainedDeletions: [] as { file_id: string; filepath: string; source: string }[],
   markedPasteIds: [] as string[],
   submittedPasteIds: [] as string[],
@@ -60,9 +68,6 @@ jest.mock('recoil', () => ({
   useRecoilValue: (key: unknown) => {
     if (typeof key === 'string' && key.startsWith('conversationIdByIndex')) {
       return 'convo-1';
-    }
-    if (typeof key === 'string' && key.startsWith('files-by-index')) {
-      return mockState.files;
     }
     if (typeof key === 'string' && key.startsWith('isSubmitting')) {
       return mockState.isSubmitting;
@@ -210,7 +215,6 @@ jest.mock('~/store', () => ({
   __esModule: true,
   default: {
     conversationIdByIndex: (index: number) => `conversationIdByIndex-${index}`,
-    filesByIndex: (index: number) => `files-by-index-${index}`,
   },
 }));
 

@@ -54,12 +54,20 @@ export default function Presentation({
 
   useArtifactsRegistryLifetime(conversationId);
 
+  useEffect(
+    () => () =>
+      setSelectedSubagent((current) => (current?.host === 'conversation' ? null : current)),
+    [setSelectedSubagent],
+  );
+
   useEffect(() => {
     const previous = previousConversationIdRef.current;
     const next = conversationId ?? null;
     previousConversationIdRef.current = next;
-    if (previous != null && previous !== next) resetSelectedSubagent();
-  }, [conversationId, resetSelectedSubagent]);
+    if (previous != null && previous !== next) {
+      setSelectedSubagent((current) => (current?.durable == null ? null : current));
+    }
+  }, [conversationId, setSelectedSubagent]);
 
   const setFilesToDelete = useSetFilesToDelete();
 
@@ -153,14 +161,16 @@ export default function Presentation({
     if (
       selectedSubagent == null ||
       selectedSubagent.host !== 'conversation' ||
-      selectedSubagent.parentConversationId !== conversationId
+      (selectedSubagent.durable == null && selectedSubagent.parentConversationId !== conversationId)
     ) {
       return null;
     }
     return (
-      <Suspense fallback={null}>
-        <SubagentThreadPanel selection={selectedSubagent} />
-      </Suspense>
+      <ParentSubagentsProvider conversationId={selectedSubagent.parentConversationId} enabled>
+        <Suspense fallback={null}>
+          <SubagentThreadPanel selection={selectedSubagent} />
+        </Suspense>
+      </ParentSubagentsProvider>
     );
   }, [conversationId, selectedSubagent]);
 

@@ -1,6 +1,5 @@
 import { useCallback, useRef } from 'react';
 import { useStore } from 'jotai';
-import { useRecoilCallback } from 'recoil';
 import {
   reduceStep,
   flushSummary,
@@ -8,6 +7,7 @@ import {
   resetStreamState,
   syncStreamMessage,
   createStreamState,
+  subagentProgressKey,
 } from '@librechat/chat';
 import type {
   TMessage,
@@ -18,6 +18,7 @@ import type {
 import type { StepEvent, StepEffect, StepContext, StreamState } from '@librechat/chat';
 import type { AnnounceOptions } from '~/common';
 import {
+  activeSubagentPanel,
   closeParentSubagentProgress,
   listRegisteredSubagentProgressKeys,
   reduceSubagentProgress,
@@ -27,12 +28,8 @@ import {
   subagentProgressByToolCallId,
   takeRegisteredSubagentProgressKeys,
 } from '~/components/Chat/Subagents/state';
-import {
-  sandboxStartingByToolCallId,
-  ptcTraceByToolCallId,
-  PTC_TRACE_MAX_ENTRIES,
-  ptcTraceKey,
-} from '~/store';
+import { ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES, ptcTraceKey } from './ptc';
+import { sandboxStartingByToolCallId } from './sandbox';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 
 type TUseStepHandler = {
@@ -86,27 +83,34 @@ export default function useStepHandler({
     [subagentStore],
   );
 
-  /**
-   * Resets all accumulated subagent state. Kept for conversation-switch
-   * cleanup (see top-level hook usage) but NOT called from `clearStepMaps`:
-   * the collapsed SubagentCall ticker and its panel read from these atoms to
-   * render the child's content parts, and we want that history to remain
-   * visible after the stream ends so the user can reopen the panel for
-   * auditability. The atoms are bounded by aggregated structure and
-   * per-conversation (one atom per subagent spawn), so growth is proportional
-   * to messages: the same growth profile as the rest of the conversation
-   * state.
-   */
-  const resetSubagentAtoms = useCallback((): void => {
-    for (const invocationKey of takeRegisteredSubagentProgressKeys()) {
-      /** Clear before freeing: `remove` drops the cached family member but
-       *  tells nothing still subscribed to it, so anything mounted at this
-       *  boundary has to see the empty value first. */
-      subagentStore.set(subagentProgressByToolCallId(invocationKey), null);
-      subagentStore.set(subagentParentStreamOpenByToolCallId(invocationKey), false);
-      removeSubagentProgressAtoms(invocationKey);
-    }
-  }, [subagentStore]);
+  /** Navigation retains the selected durable task; host teardown drains every invocation. */
+  const resetSubagentAtoms = useCallback(
+    ({ preserveSelectedTask = false }: { preserveSelectedTask?: boolean } = {}): void => {
+      const selected = preserveSelectedTask ? subagentStore.get(activeSubagentPanel) : null;
+      const retainedKey =
+        selected?.host === 'conversation' && selected.durable != null
+          ? subagentProgressKey(
+              selected.parentMessageId,
+              selected.event?.progressKey ?? selected.toolCallId,
+              selected.partIndex,
+            )
+          : null;
+      for (const invocationKey of takeRegisteredSubagentProgressKeys()) {
+        subagentStore.set(subagentParentStreamOpenByToolCallId(invocationKey), false);
+        if (invocationKey === retainedKey) {
+          registerSubagentProgressKey(invocationKey);
+          subagentStore.set(
+            subagentProgressByToolCallId(invocationKey),
+            closeParentSubagentProgress,
+          );
+          continue;
+        }
+        subagentStore.set(subagentProgressByToolCallId(invocationKey), null);
+        removeSubagentProgressAtoms(invocationKey);
+      }
+    },
+    [subagentStore],
+  );
 
   const closeParentSubagentStreams = useCallback((): void => {
     for (const invocationKey of listRegisteredSubagentProgressKeys()) {
@@ -147,6 +151,7 @@ export default function useStepHandler({
 
   /** PTC tool call ids with a live trace, so the atoms can be released. */
   const knownPtcAtomKeys = useRef(new Set<string>());
+  const ptcStore = useStore();
 
   /**
    * Folds one `on_ptc_tool_call` envelope into its program's trace: the
@@ -154,64 +159,60 @@ export default function useStepHandler({
    * place by `call_id`. Order follows the sandbox's dispatch order, which is
    * what the code reads like; a round trip can settle out of order.
    */
-  const applyPtcToolCall = useRecoilCallback(
-    ({ set }) =>
-      (event: PtcToolCallEvent, parentMessageId: string): void => {
-        const { tool_call_id: toolCallId, call_id: callId, name, status } = event;
-        /** No parent message means no occurrence to scope this to; a raw
-         *  `tool_call_id` would leak the rows into whichever card reused it. */
-        if (!toolCallId || !callId || !parentMessageId) {
-          return;
+  const applyPtcToolCall = useCallback(
+    (event: PtcToolCallEvent, parentMessageId: string): void => {
+      const { tool_call_id: toolCallId, call_id: callId, name, status } = event;
+      /** No parent message means no occurrence to scope this to; a raw
+       *  `tool_call_id` would leak the rows into whichever card reused it. */
+      if (!toolCallId || !callId || !parentMessageId) {
+        return;
+      }
+      const atomKey = ptcTraceKey(parentMessageId, toolCallId);
+      knownPtcAtomKeys.current.add(atomKey);
+      ptcStore.set(ptcTraceByToolCallId(atomKey), (previous) => {
+        const index = previous.entries.findIndex((entry) => entry.callId === callId);
+        const entry = {
+          callId,
+          name,
+          status,
+          ...(event.args ? { args: event.args } : {}),
+          ...(event.error ? { error: event.error } : {}),
+          ...(event.durationMs != null ? { durationMs: event.durationMs } : {}),
+        };
+
+        if (index !== -1) {
+          const next = [...previous.entries];
+          next[index] = { ...previous.entries[index], ...entry };
+          return { entries: next, dropped: previous.dropped };
         }
-        const atomKey = ptcTraceKey(parentMessageId, toolCallId);
-        knownPtcAtomKeys.current.add(atomKey);
-        set(ptcTraceByToolCallId(atomKey), (previous) => {
-          const index = previous.entries.findIndex((entry) => entry.callId === callId);
-          const entry = {
-            callId,
-            name,
-            status,
-            ...(event.args ? { args: event.args } : {}),
-            ...(event.error ? { error: event.error } : {}),
-            ...(event.durationMs != null ? { durationMs: event.durationMs } : {}),
-          };
 
-          if (index !== -1) {
-            const next = [...previous.entries];
-            next[index] = { ...previous.entries[index], ...entry };
-            return { entries: next, dropped: previous.dropped };
-          }
+        /** A settle whose row is gone, evicted by the cap, or pruned across
+         *  a resume gap, must not reappear at the tail out of order. */
+        if (status !== 'running') {
+          return previous;
+        }
 
-          /** A settle whose row is gone, evicted by the cap, or pruned across
-           *  a resume gap, must not reappear at the tail out of order. */
-          if (status !== 'running') {
-            return previous;
-          }
-
-          const appended = [...previous.entries, entry];
-          const overflow = appended.length - PTC_TRACE_MAX_ENTRIES;
-          if (overflow <= 0) {
-            return { entries: appended, dropped: previous.dropped };
-          }
-          return {
-            entries: appended.slice(overflow),
-            dropped: previous.dropped + overflow,
-          };
-        });
-      },
-    [],
+        const appended = [...previous.entries, entry];
+        const overflow = appended.length - PTC_TRACE_MAX_ENTRIES;
+        if (overflow <= 0) {
+          return { entries: appended, dropped: previous.dropped };
+        }
+        return {
+          entries: appended.slice(overflow),
+          dropped: previous.dropped + overflow,
+        };
+      });
+    },
+    [ptcStore],
   );
 
-  const resetPtcAtoms = useRecoilCallback(
-    ({ reset }) =>
-      (): void => {
-        for (const atomKey of knownPtcAtomKeys.current) {
-          reset(ptcTraceByToolCallId(atomKey));
-        }
-        knownPtcAtomKeys.current.clear();
-      },
-    [],
-  );
+  const resetPtcAtoms = useCallback((): void => {
+    for (const atomKey of knownPtcAtomKeys.current) {
+      ptcStore.set(ptcTraceByToolCallId(atomKey), EMPTY_PTC_TRACE);
+      ptcTraceByToolCallId.remove(atomKey);
+    }
+    knownPtcAtomKeys.current.clear();
+  }, [ptcStore]);
 
   /**
    * Settles rows still marked `running` after a stream gap as `interrupted`.
@@ -226,26 +227,20 @@ export default function useStepHandler({
    * gone is dropped rather than re-appended out of order, and the call would
    * vanish from the trace despite having run. Settled rows are untouched.
    */
-  const prunePtcTraces = useRecoilCallback(
-    ({ set }) =>
-      (): void => {
-        for (const atomKey of knownPtcAtomKeys.current) {
-          set(ptcTraceByToolCallId(atomKey), (previous) =>
-            previous.entries.some((entry) => entry.status === 'running')
-              ? {
-                  ...previous,
-                  entries: previous.entries.map((entry) =>
-                    entry.status === 'running'
-                      ? { ...entry, status: 'interrupted' as const }
-                      : entry,
-                  ),
-                }
-              : previous,
-          );
-        }
-      },
-    [],
-  );
+  const prunePtcTraces = useCallback((): void => {
+    for (const atomKey of knownPtcAtomKeys.current) {
+      ptcStore.set(ptcTraceByToolCallId(atomKey), (previous) =>
+        previous.entries.some((entry) => entry.status === 'running')
+          ? {
+              ...previous,
+              entries: previous.entries.map((entry) =>
+                entry.status === 'running' ? { ...entry, status: 'interrupted' as const } : entry,
+              ),
+            }
+          : previous,
+      );
+    }
+  }, [ptcStore]);
 
   /**
    * Per-token deltas fold into the stream state immediately (authoritative), but

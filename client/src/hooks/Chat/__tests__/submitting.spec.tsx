@@ -18,17 +18,17 @@ describe('useIsSubmitting beside a Recoil atom', () => {
     const commits: Array<{ text: string; submitting: boolean }> = [];
     const { result } = renderHook(
       () => {
-        const preset = useRecoilValue(store.presetByIndex(0));
+        const prompt = useRecoilValue(store.activePromptByIndex(0));
         const submitting = useIsSubmitting(0);
-        commits.push({ text: preset?.title ?? '', submitting });
-        return useSetRecoilState(store.presetByIndex(0));
+        commits.push({ text: prompt ?? '', submitting });
+        return useSetRecoilState(store.activePromptByIndex(0));
       },
       { wrapper },
     );
 
     act(() => {
       jotaiStore.set(isSubmittingFamily(0), false);
-      result.current({ endpoint: null, title: 'next' });
+      result.current('next');
     });
 
     const withNewText = commits.filter(({ text }) => text === 'next');

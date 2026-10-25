@@ -1,6 +1,6 @@
 import { AuthType, EToolResources } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
-import { filterUniquePlugins, checkPluginAuth, getToolkitKey } from './format';
+import { filterUniquePlugins, checkPluginAuth, getToolkitKey, formatToolError } from './format';
 
 describe('format.ts helper functions', () => {
   describe('filterUniquePlugins', () => {
@@ -345,6 +345,24 @@ describe('format.ts helper functions', () => {
         toolName: 'complex_toolkit_with_underscores_function',
       });
       expect(result).toBe('complex_toolkit_with_underscores');
+    });
+  });
+
+  describe('formatToolError', () => {
+    it('redacts a key carried in the failed request URL', () => {
+      const error = new Error(
+        'request to https://api.example.test/data?lat=1&appid=secret-key failed, reason: ENOTFOUND',
+      );
+      expect(formatToolError(error)).toBe(
+        'Error: request to https://api.example.test/data?lat=1&appid=[REDACTED] failed, reason: ENOTFOUND',
+      );
+    });
+
+    it('keeps a plain message and stringifies non-errors', () => {
+      expect(formatToolError(new Error('Could not find coordinates for city: Rome'))).toBe(
+        'Error: Could not find coordinates for city: Rome',
+      );
+      expect(formatToolError('timeout')).toBe('Error: timeout');
     });
   });
 });

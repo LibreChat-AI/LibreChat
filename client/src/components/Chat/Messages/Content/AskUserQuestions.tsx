@@ -2,11 +2,14 @@ import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import { Input, Button } from '@librechat/client';
 import type { Agents } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
+import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
+import { isCancelKey, isReboundSubmitChord } from '~/utils/shortcuts';
 import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
 import AskOptions from '~/components/Chat/ask/options';
 import { splitOtherOption } from '~/utils/approval';
 import { AutoHeight } from '~/components/ui';
+import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -21,23 +24,32 @@ export default function AskUserQuestions({
   questions,
   className,
   headerAction,
+  focusOnArrival = false,
+  onEscape,
 }: {
   actionId: string;
   questions: Agents.AskUserQuestionBatchItem[];
   className?: string;
+  /** This surface is the live pause's visible one, so the batch arriving may
+   *  take focus. A Share view or a hidden footprint copy leaves it alone. */
+  focusOnArrival?: boolean;
   /** The surface's own control (move to chat, move back), set in the
    *  question's header row so it shares the form's inset. */
   headerAction?: ReactNode;
+  /** Escape on this surface. Without one, Escape skips the batch. */
+  onEscape?: () => void;
 }) {
   const localize = useLocalize();
   const promptId = useId();
   const form = useAskQuestionsForm(actionId, questions);
+  const composerBindings = useOptionalChatSurface()?.composerBindings;
   const { goToStep, selectOption } = form;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stepRef = useRef<HTMLFieldSetElement>(null);
-  /** Set only when a choice click is about to unmount the button that owns
-   *  focus, which would otherwise drop focus to <body> mid-batch. */
+  const answerRef = useRef<HTMLInputElement>(null);
+  /** Set only when a choice click or an Enter is about to swap the step out
+   *  from under focus, which would otherwise drop focus to <body> mid-batch. */
   const refocusRef = useRef(false);
 
   const total = questions.length;
@@ -69,6 +81,33 @@ export default function AskUserQuestions({
     [activeIndex, goToStep, selectOption, total],
   );
 
+  /**
+   * Focus the step's control that is ready to answer: its picked option, else
+   * the answer field. Each is labelled within the step, so a screen reader
+   * still announces the new question. The step itself is the fallback when
+   * every control is locked.
+   *
+   * An unpicked option is only a target on arrival (`firstOption`). After a
+   * step change the key that caused it may still be down: a held or
+   * double-tapped Enter on a focused option is its click, which would pick it,
+   * advance again, and on the last step confirm the pick and submit the batch.
+   */
+  const focusStep = useCallback(
+    ({ firstOption = false, ...options }: FocusOptions & { firstOption?: boolean } = {}) => {
+      const step = stepRef.current;
+      if (step == null) {
+        return;
+      }
+      const target =
+        step.querySelector<HTMLElement>('button[data-selected]:not(:disabled)') ??
+        (firstOption ? step.querySelector<HTMLElement>('button:not(:disabled)') : null) ??
+        (answerRef.current?.disabled === false ? answerRef.current : null) ??
+        step;
+      target.focus(options);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (scrollRef.current != null) {
       scrollRef.current.scrollTop = 0;
@@ -77,8 +116,36 @@ export default function AskUserQuestions({
       return;
     }
     refocusRef.current = false;
-    stepRef.current?.focus();
-  }, [activeIndex]);
+    focusStep();
+  }, [activeIndex, focusStep]);
+
+  /**
+   * An arriving batch puts the user on the first question's controls, but
+   * only when focus is idle (nowhere, or the empty composer that just sent
+   * the turn), so a draft or any other control the user is in keeps focus.
+   * It happens once per batch: moving it between the popover and the chat
+   * remounts it, and that is not a new arrival.
+   */
+  useEffect(() => {
+    if (!focusOnArrival || form.locked || form.arrivalFocused) {
+      return;
+    }
+    const active = document.activeElement;
+    const idle =
+      active == null ||
+      active === document.body ||
+      (active instanceof HTMLTextAreaElement &&
+        active.id === mainTextareaId &&
+        active.value.trim().length === 0);
+    if (!idle) {
+      return;
+    }
+    focusStep({ firstOption: true, preventScroll: true });
+    if (stepRef.current?.contains(document.activeElement) === true) {
+      form.markArrivalFocused();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- arrival only
+  }, []);
 
   if (form.status === 'submitted') {
     return null;
@@ -108,8 +175,41 @@ export default function AskUserQuestions({
   );
   const text = Object.hasOwn(form.state.text, question.id) ? form.state.text[question.id] : '';
 
+  /** Confirm the current answer: the next step, or the batch on the last one. */
+  const confirmStep = () => {
+    if (!isLastStep) {
+      if (!navLocked) {
+        refocusRef.current = true;
+        goToStep(activeIndex + 1);
+      }
+      return;
+    }
+    form.submit();
+  };
+
+  /**
+   * Escape is the surface's way out when it has one (the popover moves the
+   * batch to the chat), else Skip. Skip only fires before anything is
+   * answered, so a stray Escape cannot discard answers and resume the run.
+   */
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!isCancelKey(event.nativeEvent) || event.nativeEvent.isComposing) {
+      return;
+    }
+    if (onEscape != null) {
+      event.preventDefault();
+      onEscape();
+      return;
+    }
+    if (form.locked || Object.keys(form.answers).length > 0) {
+      return;
+    }
+    event.preventDefault();
+    form.skip();
+  };
+
   return (
-    <div className={cn('flex min-h-0 flex-col', className)}>
+    <div className={cn('flex min-h-0 flex-col', className)} onKeyDown={handleKeyDown}>
       {/* Only the active step renders, laid out at its final size at once.
           One `AutoHeight` holds everything above the buttons and clips only at
           its bottom edge, so the header and title stay put and the footer
@@ -188,6 +288,27 @@ export default function AskUserQuestions({
             tabIndex={-1}
             aria-labelledby={promptId}
             className="flex flex-col gap-2 pt-3 outline-hidden"
+            onKeyDown={(event) => {
+              /* Picking and confirming stay separate (WCAG 3.2.2): Enter on an
+                 option is its click, so a pick never submits by itself. Enter
+                 on the single-select option that is ALREADY the answer confirms
+                 that answer, like Enter in the field: the next step, or the
+                 batch. */
+              const target = event.target;
+              if (
+                event.key !== 'Enter' ||
+                event.repeat ||
+                event.shiftKey ||
+                event.altKey ||
+                question.multiSelect === true ||
+                !(target instanceof HTMLButtonElement) ||
+                target.getAttribute('aria-pressed') !== 'true'
+              ) {
+                return;
+              }
+              event.preventDefault();
+              confirmStep();
+            }}
           >
             {choices.length > 0 && (
               <AskOptions
@@ -204,31 +325,41 @@ export default function AskUserQuestions({
               />
             )}
             <Input
+              ref={answerRef}
               value={text}
               disabled={form.locked}
               onChange={(event) => form.setText(question, event.target.value)}
               onKeyDown={(event) => {
                 /* The composer popover sits inside the chat form, where Enter in a
                    single-line field would submit the composer draft instead.
-                   Enter confirms this answer: the next step, or the batch. An Enter that
-                   confirms an IME composition is left alone, with the same Safari
-                   fallback as the composer. */
+                   Enter (or Ctrl/Cmd+Enter) confirms this answer: the next step,
+                   or the batch, and so does a submit shortcut rebound off Enter.
+                   Shift+Enter and Alt+Enter never submit, as in the
+                   composer, and neither does a held Enter repeating into the next
+                   step; those are still kept from submitting the form. An Enter
+                   that confirms an IME composition is left alone, with the same
+                   Safari fallback as the composer. */
+                const composing =
+                  event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
                 if (
-                  event.key !== 'Enter' ||
-                  event.nativeEvent.isComposing ||
-                  event.nativeEvent.keyCode === 229
+                  !composing &&
+                  composerBindings != null &&
+                  isReboundSubmitChord(event.nativeEvent, composerBindings)
                 ) {
-                  return;
-                }
-                event.preventDefault();
-                if (!isLastStep) {
-                  if (!navLocked) {
-                    refocusRef.current = true;
-                    goToStep(activeIndex + 1);
+                  event.preventDefault();
+                  if (!event.repeat) {
+                    confirmStep();
                   }
                   return;
                 }
-                form.submit();
+                if (event.key !== 'Enter' || composing) {
+                  return;
+                }
+                event.preventDefault();
+                if (event.repeat || event.shiftKey || event.altKey) {
+                  return;
+                }
+                confirmStep();
               }}
               placeholder={otherLabel ?? localize('com_ui_your_answer')}
               aria-label={`${question.question} ${localize('com_ui_your_answer')}`}
@@ -247,12 +378,12 @@ export default function AskUserQuestions({
           {showRemaining && (
             <button
               type="button"
-              className="text-text-secondary hover:text-text-primary pt-2 text-left text-xs select-none hover:underline"
+              className="text-text-secondary hover:text-text-primary pt-2 text-start text-xs select-none hover:underline"
               onClick={() => goToStep(firstUnanswered)}
             >
               {localize(
                 remaining === 1 ? 'com_ui_questions_remaining_one' : 'com_ui_questions_remaining',
-                { 0: remaining },
+                { count: remaining, 0: remaining },
               )}
             </button>
           )}

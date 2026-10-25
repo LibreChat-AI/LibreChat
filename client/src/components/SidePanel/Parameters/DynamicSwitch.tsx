@@ -56,7 +56,7 @@ function DynamicSwitch({
             <div className="flex justify-between">
               <Label
                 htmlFor={`${settingKey}-dynamic-switch`}
-                className="text-left text-xs font-medium break-words"
+                className="text-start text-xs font-medium break-words"
               >
                 {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
                 {showDefault && (

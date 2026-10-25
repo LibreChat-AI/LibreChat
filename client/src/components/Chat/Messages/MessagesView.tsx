@@ -50,9 +50,15 @@ function MessagesViewContent({
   useScrollbarGutter(scrollableRef);
 
   const { conversationId } = conversation ?? {};
-  const fileMap = useFileMapContext();
-  const threadRows = useThreadRows(FLAT_THREAD ? messages : null, conversationId, fileMap);
   const { index, latestMessageId, latestMessageDepth, messagesKey } = useChatContext();
+  /** Re-arm from the conversation that owns the RENDERED tree: the Recoil
+   *  conversation id lags the route during warm-cache navigation, and keying
+   *  off it would first mount the new tree unwindowed, then narrow it after
+   *  the fact, visibly unmounting rows the user is already reading. An empty
+   *  tree has no message to name its owner, so the route's key stands in. */
+  const treeConversationId = _messagesTree?.[0]?.conversationId ?? (messagesKey || conversationId);
+  const fileMap = useFileMapContext();
+  const threadRows = useThreadRows(FLAT_THREAD ? messages : null, treeConversationId, fileMap);
   const isSubmitting = useIsSubmitting(index);
   const { showScrollButton, maximizeChatSpace } = useChatSurface();
   const autoScroll = useAtomValue(autoScrollAtom);
@@ -104,12 +110,6 @@ function MessagesViewContent({
     [handleNearBottomChange, reportNearBottom],
   );
 
-  /** Re-arm from the conversation that owns the RENDERED tree: the Recoil
-   *  conversation id lags the route during warm-cache navigation, and keying
-   *  off it would first mount the new tree unwindowed, then narrow it after
-   *  the fact, visibly unmounting rows the user is already reading. An empty
-   *  tree has no message to name its owner, so the route's key stands in. */
-  const treeConversationId = _messagesTree?.[0]?.conversationId ?? (messagesKey || conversationId);
   const mountWindow = useProgressiveRowMount({
     tailDepth: latestMessageDepth,
     anchorBottom: autoScroll || isSubmitting,
@@ -175,7 +175,7 @@ function MessagesViewContent({
                       ) : (
                         <MultiMessage
                           messagesTree={_messagesTree}
-                          messageId={conversationId ?? null}
+                          messageId={treeConversationId ?? null}
                           setCurrentEditId={setCurrentEditId}
                           currentEditId={currentEditId ?? null}
                         />
@@ -220,7 +220,11 @@ function MessagesViewContent({
             onNearBottomChange={handleNearBottom}
           />
 
-          <MessageNav scrollableRef={scrollableRef} />
+          <MessageNav
+            key={treeConversationId}
+            conversationId={treeConversationId}
+            scrollableRef={scrollableRef}
+          />
         </div>
       </div>
     </>

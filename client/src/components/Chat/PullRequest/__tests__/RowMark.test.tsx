@@ -173,11 +173,11 @@ describe('PullRequestRowMark', () => {
   it('keeps its spacing on the rendered mark, so an absent mark takes no room', async () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     const first = renderMark();
-    expect(await screen.findByTestId('convo-pull-request')).toHaveClass('mr-1');
+    expect(await screen.findByTestId('convo-pull-request')).toHaveClass('me-1');
     first.unmount();
     mockGetMany.mockRejectedValueOnce(new Error('503'));
     renderMark();
-    expect(await screen.findByTestId('convo-pull-request-failed')).toHaveClass('mr-1');
+    expect(await screen.findByTestId('convo-pull-request-failed')).toHaveClass('me-1');
   });
 
   it('falls back to the single route when the replica that answered has no batch route', async () => {

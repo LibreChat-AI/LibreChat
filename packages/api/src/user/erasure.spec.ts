@@ -114,8 +114,9 @@ function createDeps() {
     ...methods,
     openCheckpointDeletion: jest.fn(async () => checkpointDeletion),
     deleteSharedLinks: deleteAllSharedLinksWithCleanup,
-    deleteStoredFiles: jest.fn(async () => {
+    deleteStoredFiles: jest.fn(async (files) => {
       order.push('deleteStoredFiles');
+      return { deletedFileIds: files.map((file) => file.file_id), failedFileIds: [] };
     }),
     invalidateMCPServerTools: jest.fn(async () => undefined),
     disconnectMCPServer: jest.fn(async () => undefined),
@@ -201,6 +202,29 @@ describe('eraseUserData', () => {
     expect(await count('AgentQueuedTurn', { user: otherId })).toBe(1);
     expect(await count('AgentQueuedTurnSequence', { user: otherId })).toBe(1);
     expect(await count('RefreshTokenBridge', { userId: otherId.toString() })).toBe(1);
+  });
+
+  it('keeps new file retry anchors and provider credentials after concurrent provisioning', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const user = userId.toString();
+    await seedUser(userId);
+    const { deps } = createDeps();
+    deps.deleteStoredFiles = jest.fn(async (files) => {
+      await model('File').insertOne({
+        user: userId,
+        file_id: 'newly-provisioned',
+        metadata: { codeEnvRefs: { default: { file_id: 'remote-copy' } } },
+      });
+      return { deletedFileIds: files.map((file) => file.file_id), failedFileIds: [] };
+    });
+    const deleteKeys = jest.spyOn(deps, 'deleteUserKey');
+    const getFiles = jest.spyOn(deps, 'getFiles');
+    await expect(eraseUserData({ userId: user }, deps)).rejects.toThrow(
+      'Stored file deletion incomplete',
+    );
+    expect(await count('File', { user: userId, file_id: 'newly-provisioned' })).toBe(1);
+    expect(deleteKeys).not.toHaveBeenCalled();
+    expect(getFiles).toHaveBeenNthCalledWith(2, { user }, undefined, { _id: 1 }, 1);
   });
 
   it('keeps the transaction ledger when the operator retains it', async () => {
@@ -452,18 +476,38 @@ describe('eraseUserData', () => {
     expect(order.indexOf('deleteStoredFiles')).toBeLessThan(order.indexOf('deleteUserKey'));
   });
 
-  it('still erases the account when the storage provider fails', async () => {
+  it.each(['reported', 'thrown', 'unreported'])('keeps anchors on %s failure', async (failure) => {
     const userId = new mongoose.Types.ObjectId();
-    const { skillId } = await seedUser(userId);
+    await seedUser(userId);
     const { deps } = createDeps();
-    (deps.deleteStoredFiles as jest.Mock).mockRejectedValueOnce(new Error('provider down'));
+    const removeKeys = jest.spyOn(deps, 'deleteUserKey');
+    if (failure === 'thrown') {
+      (deps.deleteStoredFiles as jest.Mock).mockRejectedValueOnce(new Error('provider down'));
+    } else {
+      (deps.deleteStoredFiles as jest.Mock).mockResolvedValueOnce({
+        deletedFileIds: [],
+        failedFileIds: failure === 'reported' ? [`file-a-${userId}`] : [],
+      });
+    }
+
+    await expect(eraseUserData({ userId: userId.toString() }, deps)).rejects.toThrow();
+    expect(await count('File', { user: userId })).toBe(2);
+    expect(removeKeys).not.toHaveBeenCalled();
+    expect(await count('MCPServer', { author: userId })).toBe(2);
 
     await eraseUserData({ userId: userId.toString() }, deps);
-
     expect(await count('File', { user: userId })).toBe(0);
-    expect(await methods.getSkillById(skillId)).toBeNull();
-    expect(await count('AclEntry', { principalId: userId })).toBe(0);
-    await finishSkillCleanup(skillId);
+  });
+
+  it('calls deleteUserPrompts with the user id during erasure', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await seedUser(userId);
+    const { deps } = createDeps();
+    const deleteUserPrompts = jest.fn(async () => undefined);
+
+    await eraseUserData({ userId: userId.toString() }, { ...deps, deleteUserPrompts });
+
+    expect(deleteUserPrompts).toHaveBeenCalledWith(userId.toString());
   });
 
   for (const modelName of ['Agent', 'PromptGroup']) {

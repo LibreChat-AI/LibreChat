@@ -275,6 +275,16 @@ function permissionDecision(
   return resolveCodePermissionDecision({ mode: effectiveMode, category, decision });
 }
 
+/**
+ * Whether this machine denies file writes outright, before any turn mode applies. A chat
+ * upload is the user's consent where the policy only asks, never where it denies.
+ */
+export function isAttachedFileWriteDenied(
+  policy: AttachedCodeEnvironmentPolicySettings | undefined,
+): boolean {
+  return permissionDecision(policy, 'fileWrite') === 'deny';
+}
+
 function isCodeApprovalMode(value: unknown): value is CodeApprovalMode {
   return CODE_APPROVAL_MODES.some((mode) => mode === value);
 }

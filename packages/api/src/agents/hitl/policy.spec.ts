@@ -6,7 +6,6 @@ import {
   isHITLEnabled,
   healToolApprovalPolicy,
   mapToolApprovalPolicy,
-  buildToolApprovalPayload,
   buildPendingAction,
   isToolApprovalPayloadValid,
   toClientPendingAction,
@@ -200,69 +199,6 @@ describe('mapToolApprovalPolicy', () => {
       mode: 'default',
       deny: ['rm'],
     });
-  });
-});
-
-describe('buildToolApprovalPayload', () => {
-  const calls = [
-    {
-      name: 'shell',
-      arguments: { command: 'ls' },
-      tool_call_id: 'call_abc',
-      description: 'List files',
-    },
-  ];
-
-  test('produces a tool_approval-discriminated payload', () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.type).toBe('tool_approval');
-    expect(payload.action_requests).toEqual([
-      {
-        name: 'shell',
-        arguments: { command: 'ls' },
-        tool_call_id: 'call_abc',
-        description: 'List files',
-      },
-    ]);
-  });
-
-  test("default decisions exclude 'respond' (reserved for AskUserQuestion semantics)", () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject', 'edit']);
-  });
-
-  test('respects per-tool decision overrides', () => {
-    const payload = buildToolApprovalPayload(calls, {
-      shell: ['approve', 'reject'],
-    });
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject']);
-  });
-
-  test('produces one review_config per call, in order', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'a', arguments: {}, tool_call_id: '1' },
-      { name: 'b', arguments: {}, tool_call_id: '2' },
-    ]);
-    expect(payload.review_configs.map((r) => r.action_name)).toEqual(['a', 'b']);
-  });
-
-  test('carries tool_call_id on each review_config (join key for duplicate-tool batches)', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'mcp:server:search', arguments: { q: 'a' }, tool_call_id: 'call_1' },
-      { name: 'mcp:server:search', arguments: { q: 'b' }, tool_call_id: 'call_2' },
-    ]);
-    expect(payload.review_configs).toEqual([
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_1',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_2',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-    ]);
   });
 });
 

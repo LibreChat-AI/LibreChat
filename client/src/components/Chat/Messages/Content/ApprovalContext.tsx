@@ -19,9 +19,9 @@ import {
 } from '~/data-provider';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { askSubmitStatusAtom } from '~/components/Chat/ask/state';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
 import { ChatContext } from '~/Providers/ChatContext';
-import { useGetEphemeralAgent } from '~/store/agents';
 
 /** Shared read/write for the ask-answer submit status. */
 export function useAskSubmitStatus(): {
@@ -428,7 +428,7 @@ export function useResumeSubmit() {
   const jotaiStore = useStore();
   const chatContext = useContext(ChatContext);
   const conversation = chatContext?.conversation;
-  const getEphemeralAgent = useGetEphemeralAgent();
+  const { getEphemeralAgent } = useChatSettings();
   const approvalMutation = useSubmitToolApprovalMutation();
   const askMutation = useSubmitAskAnswerMutation();
   const { getDecisions, isReady, setStatus, beginToolSubmission, endToolSubmission } =

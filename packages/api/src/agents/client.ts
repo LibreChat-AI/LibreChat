@@ -481,14 +481,6 @@ export function collectToolCallIds(
   return ids;
 }
 
-export function createTokenCounter(
-  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
-): TokenCounter {
-  return createMessageTokenCounter(encoding, (text: string) =>
-    Tokenizer.getTokenCount(text, encoding),
-  );
-}
-
 function createMessageTokenCounter(
   encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
   countTokens: (text: string) => number,

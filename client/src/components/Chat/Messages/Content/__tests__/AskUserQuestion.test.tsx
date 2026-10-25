@@ -2,16 +2,27 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
+import type { ShortcutBinding } from '~/utils/shortcuts';
+import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
+import { ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import ApprovalProvider from '../ApprovalContext';
 import AskUserQuestion from '../AskUserQuestion';
 
 const mockSubmitAnswer = jest.fn();
 const mockSetAnswerText = jest.fn();
+const mockInsertTextAtCursor = jest.fn();
 let mockPopoverVisible = false;
 let mockCollapsed = false;
 let mockLiveActionId: string | null = null;
 let mockChecked: number[] = [];
 let mockAnswerText = '';
+
+/** jsdom has no execCommand, so the newline path is observed through the mock. */
+jest.mock('~/utils/textarea', () => ({
+  ...jest.requireActual('~/utils/textarea'),
+  forceResize: jest.fn(),
+  insertTextAtCursor: (...args: unknown[]) => mockInsertTextAtCursor(...args),
+}));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => {
@@ -56,14 +67,29 @@ jest.mock('~/Providers/ChatContext', () => ({
   }),
 }));
 
+const yieldedChords = new Set<string>();
+let submitOverride: ShortcutBinding | undefined;
+
 const tree = (
   key: string,
   question: Agents.AskUserQuestionRequest = { question: 'Which environment?' },
+  enterToSend = true,
 ) => (
   <RecoilRoot>
-    <ApprovalProvider>
-      <AskUserQuestion key={key} actionId="ask-1" question={question} />
-    </ApprovalProvider>
+    <ChatSurfaceProvider
+      value={{
+        enterToSend,
+        maximizeChatSpace: false,
+        showScrollButton: false,
+        composerBindings: { shortcutsEnabled: true, submitOverride, yieldedChords },
+        claimForeground: jest.fn(),
+        handOffComposerText: jest.fn(),
+      }}
+    >
+      <ApprovalProvider>
+        <AskUserQuestion key={key} actionId="ask-1" question={question} />
+      </ApprovalProvider>
+    </ChatSurfaceProvider>
   </RecoilRoot>
 );
 
@@ -75,6 +101,7 @@ describe('AskUserQuestion', () => {
     mockLiveActionId = null;
     mockChecked = [];
     mockAnswerText = '';
+    submitOverride = undefined;
   });
 
   test('restores a typed answer after the card remounts inside the same message', () => {
@@ -108,5 +135,104 @@ describe('AskUserQuestion', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
 
     expect(mockSubmitAnswer).toHaveBeenCalledWith(['public', 'carried free-form answer']);
+  });
+
+  describe('answer box keyboard submit', () => {
+    const liveTree = (enterToSend: boolean, answerText = 'Use staging first') => {
+      mockCollapsed = true;
+      mockLiveActionId = 'ask-1';
+      mockAnswerText = answerText;
+      return tree('live', { question: 'Which environment?' }, enterToSend);
+    };
+    const answerBox = () => screen.getByRole('textbox', { name: 'Your answer' });
+
+    test('Enter submits when Enter-to-send is on', () => {
+      render(liveTree(true));
+      fireEvent.keyDown(answerBox(), { key: 'Enter' });
+      expect(mockSubmitAnswer).toHaveBeenCalledWith(['Use staging first']);
+    });
+
+    test('Ctrl+Enter and Cmd+Enter submit when Enter-to-send is off', () => {
+      render(liveTree(false));
+      fireEvent.keyDown(answerBox(), { key: 'Enter', ctrlKey: true });
+      fireEvent.keyDown(answerBox(), { key: 'Enter', metaKey: true });
+      expect(mockSubmitAnswer).toHaveBeenCalledTimes(2);
+    });
+
+    test('plain Enter writes a newline instead of submitting when Enter-to-send is off', () => {
+      render(liveTree(false));
+      fireEvent.keyDown(answerBox(), { key: 'Enter' });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+      expect(mockInsertTextAtCursor).toHaveBeenCalledWith(answerBox(), '\n');
+    });
+
+    test('Shift+Enter never submits', () => {
+      render(liveTree(true));
+      fireEvent.keyDown(answerBox(), { key: 'Enter', shiftKey: true });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+
+    test('Enter confirming an IME composition does not submit', () => {
+      render(liveTree(true));
+      fireEvent.keyDown(answerBox(), { key: 'Enter', keyCode: 229 });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+
+    test('a submit shortcut rebound off Enter submits the answer', () => {
+      submitOverride = { meta: false, ctrl: true, alt: false, shift: false, key: 'J' };
+      render(liveTree(true));
+      fireEvent.keyDown(answerBox(), { key: 'j', ctrlKey: true });
+      expect(mockSubmitAnswer).toHaveBeenCalledWith(['Use staging first']);
+    });
+
+    test('does not submit an empty answer', () => {
+      render(liveTree(true, '   '));
+      fireEvent.keyDown(answerBox(), { key: 'Enter' });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Escape', () => {
+    const liveTree = (answerText = '') => {
+      mockCollapsed = true;
+      mockLiveActionId = 'ask-1';
+      mockAnswerText = answerText;
+      return tree('live', { question: 'Which environment?' });
+    };
+    const answerBox = () => screen.getByRole('textbox', { name: 'Your answer' });
+
+    test('skips the question when nothing is entered', () => {
+      render(liveTree());
+      fireEvent.keyDown(answerBox(), { key: 'Escape' });
+      expect(mockSubmitAnswer).toHaveBeenCalledWith([ASK_USER_DECLINED_ANSWER]);
+    });
+
+    test('keeps a typed answer instead of skipping', () => {
+      render(liveTree('Use staging first'));
+      fireEvent.keyDown(answerBox(), { key: 'Escape' });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+
+    test('keeps checked options instead of skipping', () => {
+      mockCollapsed = true;
+      mockLiveActionId = 'ask-1';
+      mockChecked = [0];
+      render(
+        tree('live', {
+          question: 'Choose a source',
+          multiSelect: true,
+          options: [{ label: 'Public data', value: 'public' }],
+        }),
+      );
+      fireEvent.keyDown(answerBox(), { key: 'Escape' });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+
+    test('ignores Escape that cancels an IME composition or carries a modifier', () => {
+      render(liveTree());
+      fireEvent.keyDown(answerBox(), { key: 'Escape', isComposing: true });
+      fireEvent.keyDown(answerBox(), { key: 'Escape', shiftKey: true });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
   });
 });

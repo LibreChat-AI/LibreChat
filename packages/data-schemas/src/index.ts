@@ -117,4 +117,11 @@ export {
   migrateTenantIndexes,
   dropSupersededPromptGroupIndexes,
   backfillMCPServerNormalizedNames,
+  backfillSearchTokens,
+  warnOnMissingSearchTokens,
 } from './migrations';
+export type { SearchTokenBackfillResult } from './migrations';
+
+export { createBrowserSetupStore, createBrowserSetupBackend } from './methods/browserSetup';
+export type * from './types/browserSetup';
+export type * from './types/codeEnvironmentSetup';

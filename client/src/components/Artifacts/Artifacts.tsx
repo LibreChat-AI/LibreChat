@@ -495,7 +495,7 @@ export default function Artifacts() {
                   'h-full overflow-hidden shadow-2xl',
                   isVisible && !isClosing
                     ? 'translate-x-0 opacity-100 transition-all duration-350'
-                    : 'translate-x-5 opacity-0 transition-all duration-300',
+                    : 'translate-x-5 opacity-0 transition-all duration-300 rtl:-translate-x-5',
                 ),
           )}
           style={isMobile ? { height: isFullscreen ? '100%' : `${height}vh` } : undefined}
@@ -533,7 +533,7 @@ export default function Artifacts() {
                   'flex items-center transition-all duration-500 motion-reduce:transition-none',
                   isVisible && !isClosing
                     ? 'translate-x-0 opacity-100'
-                    : '-translate-x-2 opacity-0',
+                    : '-translate-x-2 opacity-0 rtl:translate-x-2',
                 )}
               >
                 <Radio
@@ -641,7 +641,7 @@ export default function Artifacts() {
                   )}
                 >
                   {isUndocked ? (
-                    <PanelRight className="size-4" aria-hidden="true" />
+                    <PanelRight className="size-4 rtl:-scale-x-100" aria-hidden="true" />
                   ) : (
                     <PictureInPicture2 className="size-4" aria-hidden="true" />
                   )}

@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
-import { revealedQueuedTurnFamily } from '@librechat/chat/react';
+import {
+  hasRevealSuccessor,
+  buildRevealedMessage,
+  revealedQueuedTurnFamily,
+} from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
 import type { TMessageIcon } from '~/common';
-import { buildRevealedMessage, hasRevealSuccessor } from '~/hooks/Chat/useQueuedTurnReveal';
 import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import { messageFooterClasses } from '~/components/Chat/Messages/styles';

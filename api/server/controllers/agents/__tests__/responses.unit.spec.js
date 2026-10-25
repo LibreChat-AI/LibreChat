@@ -198,10 +198,14 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createFileProvisionRecovery: () =>
+    jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   getConversationWriteContext: (...args) =>
     jest.requireActual('@librechat/api').getConversationWriteContext(...args),
+  isTemporaryTurn: (...args) => jest.requireActual('@librechat/api').isTemporaryTurn(...args),
+  getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
   announceReply: jest.fn().mockResolvedValue(undefined),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
@@ -1039,7 +1043,9 @@ describe('createResponse controller', () => {
 
     await createResponse(req, res);
 
-    expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123');
+    expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123', {
+      isTemporary: false,
+    });
     expect(saveMessage).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user-123' }),
       expect.objectContaining({
@@ -1052,6 +1058,24 @@ describe('createResponse controller', () => {
       { context: 'Responses API - save assistant response' },
     );
   });
+
+  it.each([false, true])(
+    'runs and records a forced-temporary turn as temporary for Langfuse: stream=%s',
+    async (stream) => {
+      const api = require('@librechat/api');
+      req.config.interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 1 };
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { ...req.body, stream, store: true },
+      });
+
+      await createResponse(req, res);
+
+      expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({ isTemporary: true }));
+      expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123', {
+        isTemporary: true,
+      });
+    },
+  );
 
   it.each([false, true])(
     'stores input and output under the retention write context: stream=%s',

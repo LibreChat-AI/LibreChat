@@ -149,7 +149,7 @@ export default function ModelPanel({
           aria-label={localize('com_ui_back_to_builder')}
           className="text-text-secondary hover:bg-surface-secondary shrink-0 rounded-xl"
         >
-          <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
+          <ChevronLeft className="h-5 w-5 rtl:-scale-x-100" strokeWidth={1.75} aria-hidden="true" />
         </Button>
         <h2 className="text-text-primary text-center text-base font-semibold">
           {localize('com_ui_model_parameters')}

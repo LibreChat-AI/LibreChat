@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { LoneGroupContext, SoleToolContext } from '../../disclosure';
+import { LoneGroupContext, SoleToolContext, ToolContentRequestContext } from '../../disclosure';
 import BashCall from '../BashCall';
 import store from '~/store';
 
@@ -397,6 +397,34 @@ describe('BashCall sole tool disclosure', () => {
     );
     expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
     expect(screen.getByText('hi')).toBeInTheDocument();
+  });
+
+  it('requests the stored part for a bare panel it did not open itself', () => {
+    const renderLone = (lone: boolean, request: () => void) =>
+      render(
+        <RecoilRoot>
+          <ToolContentRequestContext.Provider value={request}>
+            <SoleToolContext.Provider value={false}>
+              <LoneGroupContext.Provider value={lone}>
+                <BashCall
+                  initialProgress={1}
+                  isSubmitting={false}
+                  args={{ command: 'echo hi' }}
+                  output="hi"
+                  runStepStatus="completed"
+                />
+              </LoneGroupContext.Provider>
+            </SoleToolContext.Provider>
+          </ToolContentRequestContext.Provider>
+        </RecoilRoot>,
+      );
+    const bareRequest = jest.fn();
+    renderLone(true, bareRequest);
+    expect(bareRequest).toHaveBeenCalled();
+
+    const rowRequest = jest.fn();
+    renderLone(false, rowRequest);
+    expect(rowRequest).not.toHaveBeenCalled();
   });
 
   it('keeps its row while the only call is still running', () => {

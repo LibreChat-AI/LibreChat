@@ -37,7 +37,7 @@ export default function AddedConvo({
     return null;
   }
   return (
-    <div className="flex items-start gap-4 py-2.5 pr-1.5 pl-3 text-sm">
+    <div className="flex items-start gap-4 py-2.5 ps-3 pe-1.5 text-sm">
       <span className="mt-0 flex h-6 w-6 shrink-0 items-center justify-center">
         <div className="icon-md">
           <EndpointIcon

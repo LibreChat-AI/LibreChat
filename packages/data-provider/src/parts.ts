@@ -673,6 +673,8 @@ const applyFileEdits = <F extends Partial<TFile>>(
   }
   if (part.filename !== undefined && part.filename !== file.filename) {
     edited.filename = part.filename;
+  } else if (part.filename === undefined && file.filename) {
+    delete edited.filename;
   }
   if (part.mediaType !== (file.type || fallbackType)) {
     edited.type = part.mediaType;

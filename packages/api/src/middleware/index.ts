@@ -7,6 +7,7 @@ export * from './origin';
 export * from './balance';
 export * from './ban';
 export * from './json';
+export * from './sanitize';
 export * from './capabilities';
 export * from './auth';
 export {
@@ -31,3 +32,5 @@ export * from './generationRetry';
 export * from './code';
 export * from './management';
 export * from './twoFactor';
+export * from './messageIds';
+export * from './promptResolveLimiter';

@@ -88,9 +88,9 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
           )}
         >
           {isLoading ? (
-            <Spinner className="absolute left-3 h-4 w-4" />
+            <Spinner className="absolute inset-s-3 h-4 w-4" />
           ) : (
-            <Search className="text-text-secondary absolute left-3 h-4 w-4" aria-hidden="true" />
+            <Search className="text-text-secondary absolute inset-s-3 h-4 w-4" aria-hidden="true" />
           )}
           <Ariakit.Combobox
             render={<Input />}
@@ -116,7 +116,7 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
             value={localQuery}
             // autoSelect
             placeholder={placeholder || localize('com_ui_select_options')}
-            className={cn('h-10 w-full pl-10 text-sm leading-tight', inputClassName)}
+            className={cn('h-10 w-full ps-10 text-sm leading-tight', inputClassName)}
           />
         </div>
       </>

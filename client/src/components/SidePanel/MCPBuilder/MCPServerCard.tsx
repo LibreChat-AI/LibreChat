@@ -132,7 +132,7 @@ export default function MCPServerCard({
           {/* Status dot - color indicates connection state */}
           <div
             className={cn(
-              'absolute -right-0.5 -bottom-0.5 size-3 rounded-full',
+              'absolute -inset-e-0.5 -bottom-0.5 size-3 rounded-full',
               'border-surface-primary border-2',
               statusDotColor,
               (isInitializing || serverStatus?.connectionState === 'connecting') && 'animate-pulse',

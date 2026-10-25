@@ -148,6 +148,7 @@ export default function PtcToolTrace({
       <ol
         ref={listRef}
         onScroll={onScroll}
+        dir="ltr"
         className="max-h-[200px] overflow-auto font-mono"
         aria-live="polite"
       >

@@ -3,6 +3,7 @@ import { useAtom, useAtomValue } from 'jotai';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, ChevronUp, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent, RefObject } from 'react';
 import type { TranslationKeys } from '~/hooks';
 import {
   useApprovalContext,
@@ -15,6 +16,7 @@ import {
 import { buildApprovalPreview, buildApprovalPreviews } from '~/components/Chat/approval/preview';
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
 import { useComposerOverlay } from '~/components/Chat/Input/overlay';
+import { isCancelKey } from '~/utils/shortcuts';
 import { useLocalize } from '~/hooks';
 
 function usePendingToolApproval(conversationId: string) {
@@ -53,8 +55,11 @@ function previewTitle(
 
 export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
   conversationId,
+  triggerRef,
 }: {
   conversationId: string;
+  /** The composer toggle that reopens the panel; collapsing returns focus to it. */
+  triggerRef?: RefObject<HTMLButtonElement>;
 }) {
   const localize = useLocalize();
   const pendingAction = usePendingToolApproval(conversationId);
@@ -88,6 +93,22 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
     return null;
   }
 
+  /** Collapsing unmounts the focused control, so focus goes back to the
+   *  toggle rather than falling to the page. Decisions and drafts are kept. */
+  const collapse = () => {
+    setOpen(false);
+    triggerRef?.current?.focus();
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const isComposing = e.nativeEvent.isComposing || e.key === 'Process' || e.keyCode === 229;
+    if (!isCancelKey(e.nativeEvent) || isComposing) {
+      return;
+    }
+    e.preventDefault();
+    collapse();
+  };
+
   const decisions = getDecisions(pendingAction.actionId);
   const status = getStatus(pendingAction.actionId);
   const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
@@ -102,6 +123,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
       role="region"
       aria-labelledby="pending-tool-approval-title"
       aria-live="polite"
+      onKeyDown={handleKeyDown}
     >
       <div className="popover border-border-light bg-surface-primary-alt rounded-theme-popover pointer-events-auto flex max-h-[70vh] flex-col border shadow-lg">
         <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
@@ -120,7 +142,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
                 size="icon"
                 aria-label={localize('com_ui_collapse')}
                 className="size-auto rounded-md p-1"
-                onClick={() => setOpen(false)}
+                onClick={collapse}
               >
                 <ChevronDown className="size-4" aria-hidden="true" />
               </Button>
@@ -168,7 +190,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
                 />
               ) : (
                 <p className="text-text-warning mt-2 flex items-center text-xs" role="alert">
-                  <TriangleAlert className="mr-1.5 size-4" aria-hidden="true" />
+                  <TriangleAlert className="me-1.5 size-4" aria-hidden="true" />
                   {localize('com_ui_approval_unavailable')}
                 </p>
               )}
@@ -185,7 +207,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
           <div className="flex items-center gap-2">
             {(status === 'expired' || status === 'error') && (
               <span className="text-text-warning flex items-center text-xs" role="alert">
-                <TriangleAlert className="mr-1.5 size-4" aria-hidden="true" />
+                <TriangleAlert className="me-1.5 size-4" aria-hidden="true" />
                 {localize(
                   status === 'expired' ? 'com_ui_approval_expired' : 'com_ui_approval_error',
                 )}
@@ -211,8 +233,10 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
 
 export const PendingToolApprovalButton = memo(function PendingToolApprovalButton({
   conversationId,
+  triggerRef,
 }: {
   conversationId: string;
+  triggerRef?: RefObject<HTMLButtonElement>;
 }) {
   const localize = useLocalize();
   const pendingAction = usePendingToolApproval(conversationId);
@@ -225,6 +249,7 @@ export const PendingToolApprovalButton = memo(function PendingToolApprovalButton
   const count = pendingAction.payload.action_requests.length;
   return (
     <Button
+      ref={triggerRef}
       type="button"
       variant="quiet"
       size="sm"

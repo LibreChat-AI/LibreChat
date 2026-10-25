@@ -197,6 +197,7 @@ export default function ExecuteCode({
             {code && <CodeWindowHeader language={lang} code={code} />}
             {code && (
               <pre
+                dir="ltr"
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
                 className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"

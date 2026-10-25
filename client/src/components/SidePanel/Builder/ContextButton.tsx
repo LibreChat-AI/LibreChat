@@ -106,7 +106,7 @@ export default function ContextButton({
           <>
             <div className="flex w-full flex-col items-center gap-2">
               <div className="grid w-full items-center gap-2">
-                <Label htmlFor="delete-assistant" className="text-left text-sm font-medium">
+                <Label htmlFor="delete-assistant" className="text-start text-sm font-medium">
                   {localize('com_ui_delete_assistant_confirm')}
                 </Label>
               </div>

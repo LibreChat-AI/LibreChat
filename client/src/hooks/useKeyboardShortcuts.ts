@@ -26,7 +26,6 @@ import { getFocusedChatPane } from '~/utils/pane';
 import store from '~/store';
 
 const isMac = isMacPlatform;
-const CUSTOM_STORAGE_KEY = 'customKeyboardShortcuts';
 
 export type ShortcutDefinition = {
   labelKey: string;
@@ -485,49 +484,6 @@ export function resolveShortcutBindings(
   }
 
   return resolved;
-}
-
-function readOverridesFromStorage(): Record<string, ShortcutOverride> {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-  try {
-    const raw = window.localStorage.getItem(CUSTOM_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-export function effectiveBinding(
-  actionId: ShortcutActionId,
-  overrides?: Record<string, ShortcutOverride>,
-): ShortcutBinding | null {
-  const map = overrides ?? readOverridesFromStorage();
-  return resolveShortcutBindings(map).get(actionId) ?? null;
-}
-
-export function getShortcutDisplay(actionId: ShortcutActionId): string {
-  const binding = effectiveBinding(actionId);
-  if (!binding) {
-    return '';
-  }
-  return bindingDisplayString(binding, isMac);
-}
-
-export function getShortcutAriaKey(actionId: ShortcutActionId): string {
-  const binding = effectiveBinding(actionId);
-  if (!binding) {
-    return '';
-  }
-  return bindingToString(binding) ?? '';
-}
-
-export function getShortcutHint(actionId: ShortcutActionId, label: string): string {
-  const display = getShortcutDisplay(actionId);
-  return display ? `${label} (${display})` : label;
 }
 
 export function isOverridden(actionId: ShortcutActionId, override?: ShortcutOverride): boolean {

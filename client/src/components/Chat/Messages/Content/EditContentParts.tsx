@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageContentMutation } from 'librechat-data-provider/react-query';
 import {
@@ -9,13 +8,12 @@ import {
 } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { useMessagesConversation, useMessagesOperations } from '~/Providers';
 import { getPartText, isEditablePart, withPartText } from './editableParts';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { findRerunParent } from './rerunParent';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 type EditableType = ContentTypes.TEXT | ContentTypes.THINK;
 
@@ -48,9 +46,9 @@ export default function EditContentParts({
   renderReadOnlyPart,
 }: EditContentPartsProps) {
   const localize = useLocalize();
-  const isRTL = useRecoilValue(store.chatDirection).toLowerCase() === 'rtl';
-  const { conversation } = useMessagesConversation();
-  const { ask, getMessages, setMessages } = useMessagesOperations();
+  const { useChatDirection, useMessagesEditing } = useMessagePartsHost();
+  const chatDirection = useChatDirection();
+  const { conversation, ask, getMessages, setMessages } = useMessagesEditing();
   const getAddedConvo = useGetAddedConvo();
   const firstEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const [saveError, setSaveError] = useState(false);
@@ -397,7 +395,7 @@ export default function EditContentParts({
           return (
             <label
               key={`editor-${messageId}-${absoluteIndex}`}
-              dir={isRTL ? 'rtl' : 'ltr'}
+              dir={chatDirection === 'auto' ? undefined : chatDirection}
               className="text-text-secondary flex min-w-0 flex-col gap-1.5 text-xs font-medium"
             >
               {label}
@@ -420,12 +418,11 @@ export default function EditContentParts({
                 }
                 disabled={isBusy}
                 minRows={3}
-                dir={isRTL ? 'rtl' : 'ltr'}
+                dir={chatDirection}
                 className={cn(
                   'message-editor-text max-h-[65vh] min-h-24 w-full resize-y rounded-lg',
                   'border-border-medium bg-surface-tertiary-alt border px-3 py-2',
-                  'text-text-primary font-normal',
-                  isRTL ? 'text-right' : 'text-left',
+                  'text-text-primary text-start font-normal',
                   'disabled:opacity-50 md:max-h-[75vh]',
                 )}
               />

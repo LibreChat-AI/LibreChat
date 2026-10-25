@@ -199,7 +199,7 @@ describe('SteerPart presentation', () => {
 
     expect(images).toHaveLength(2);
     expect(imageGroup).toContainElement(images[1]);
-    expect(imageGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
+    expect(imageGroup).toHaveClass('ms-auto', 'flex-wrap', 'justify-end');
     expect(imageGroup?.parentElement).toHaveClass('w-full');
     expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
@@ -334,4 +334,25 @@ describe('SteerPart receipt settling', () => {
     expect(checks()).toHaveClass('text-text-secondary');
     expect(checks()).not.toHaveClass(STEER_ICON);
   });
+});
+
+it('keeps an unsuccessful guidance body and timestamp without a waiting or applied receipt', () => {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData([QueryKeys.endpoints], {});
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot>
+        <SteerPart
+          steer="unsuccessful guidance"
+          steerId="failed"
+          createdAt={1}
+          receiptState={null}
+        />
+      </RecoilRoot>
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText('unsuccessful guidance')).toBeVisible();
+  expect(screen.getByTestId('steer-timestamp')).toBeInTheDocument();
+  expect(screen.queryByTestId('steer-receipt')).not.toBeInTheDocument();
+  queryClient.clear();
 });

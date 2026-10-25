@@ -1,6 +1,7 @@
 import { getConfigDefaults, RetentionMode } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
-import { loadDefaultInterface } from './interface';
+import type { AppConfig } from '~/types';
+import { loadDefaultInterface, deriveSpecInterface } from './interface';
 
 describe('loadDefaultInterface', () => {
   it('uses the schema default for URL auto-submit when not configured', async () => {
@@ -125,13 +126,17 @@ describe('loadDefaultInterface', () => {
     });
     expect(defaultInterface?.historyCacheTtlMs).toBe(60_000);
     expect(defaultInterface?.historyCacheRecent).toBe(1);
+    expect(defaultInterface?.historyCacheMaxBytes).toBe(8 * 1024 * 1024);
 
     const configuredInterface = await loadDefaultInterface({
-      config: { interface: { historyCacheTtlMs: 0, historyCacheRecent: 3 } },
+      config: {
+        interface: { historyCacheTtlMs: 0, historyCacheRecent: 3, historyCacheMaxBytes: 0 },
+      },
       configDefaults,
     });
     expect(configuredInterface?.historyCacheTtlMs).toBe(0);
     expect(configuredInterface?.historyCacheRecent).toBe(3);
+    expect(configuredInterface?.historyCacheMaxBytes).toBe(0);
   });
 
   it('uses and preserves the schema default for steer arm confirmation', async () => {
@@ -503,5 +508,67 @@ describe('welcome screen heading and footer', () => {
     });
     expect(interfaceConfig?.landingHeading).toBe('greeting');
     expect(interfaceConfig?.landingFooter).toBe(false);
+  });
+});
+
+describe('deriveSpecInterface', () => {
+  const defaults = getConfigDefaults().interface;
+  const specs = (list: unknown[], addedEndpoints?: string[]) =>
+    ({ list, ...(addedEndpoints && { addedEndpoints }) }) as AppConfig['modelSpecs'];
+  const spec = { name: 's', label: 'S', preset: { endpoint: 'openAI' } };
+  const served = { modelSelect: true, parameters: true, presets: true, prompts: true };
+
+  it('turns the spec-dependent controls off for served specs, the selector kept for addedEndpoints', () => {
+    expect(deriveSpecInterface(served, undefined, specs([spec]), { defaults })).toEqual({
+      modelSelect: false,
+      parameters: false,
+      presets: false,
+      prompts: true,
+    });
+    expect(
+      deriveSpecInterface(served, undefined, specs([spec], ['openAI']), { defaults })?.modelSelect,
+    ).toBe(true);
+  });
+
+  it('turns them back on when no spec is served, a control left unset included', () => {
+    const off = { modelSelect: false, parameters: false };
+    const on = {
+      modelSelect: defaults.modelSelect,
+      parameters: defaults.parameters,
+      presets: defaults.presets,
+    };
+    expect(deriveSpecInterface(off, undefined, specs([]), { defaults })).toEqual(on);
+    expect(deriveSpecInterface(off, undefined, undefined, { defaults })).toEqual(on);
+  });
+
+  it('keeps what librechat.yaml or an override sets, and derives only the fields asked for', () => {
+    const explicit = { parameters: true, presets: false };
+    expect(deriveSpecInterface(served, explicit, specs([spec]), { defaults })).toEqual({
+      ...served,
+      modelSelect: false,
+      presets: false,
+    });
+    expect(
+      deriveSpecInterface(served, undefined, specs([spec]), { defaults, fields: ['parameters'] }),
+    ).toEqual({ ...served, parameters: false });
+    const settled = { modelSelect: false, parameters: false, presets: false };
+    expect(deriveSpecInterface(settled, undefined, specs([spec]), { defaults })).toBe(settled);
+  });
+
+  it('derives them into a config whose interface a layer tombstoned, where none would read as off', () => {
+    expect(deriveSpecInterface(undefined, undefined, undefined, { defaults })).toEqual({
+      modelSelect: defaults.modelSelect,
+      parameters: defaults.parameters,
+      presets: defaults.presets,
+    });
+    expect(
+      deriveSpecInterface(undefined, { parameters: true }, specs([spec]), { defaults }),
+    ).toEqual({ modelSelect: false, parameters: true, presets: false });
+    expect(
+      deriveSpecInterface(undefined, undefined, specs([spec]), { defaults, fields: ['presets'] }),
+    ).toEqual({ presets: false });
+    expect(deriveSpecInterface(undefined, undefined, undefined, { defaults, fields: [] })).toBe(
+      undefined,
+    );
   });
 });

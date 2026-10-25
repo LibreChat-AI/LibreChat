@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect, useRef } from 'react';
 import { useWatch } from 'react-hook-form';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, CornerDownLeft, TriangleAlert } from 'lucide-react';
@@ -6,6 +6,7 @@ import AskUserQuestions from '~/components/Chat/Messages/Content/AskUserQuestion
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskOptions from '~/components/Chat/ask/options';
 import { useChatFormContext } from '~/Providers';
+import { isCancelKey } from '~/utils/shortcuts';
 import { useComposerOverlay } from './overlay';
 import { useLocalize } from '~/hooks';
 
@@ -32,20 +33,47 @@ function AskUserQuestionPopoverContent({
   textAreaRef?: React.RefObject<HTMLTextAreaElement>;
 }) {
   const ask = useAskAnswerMode(conversationId);
-  useComposerOverlay(conversationId, ask.popoverVisible);
+  const { collapse, popoverVisible } = ask;
+  useComposerOverlay(conversationId, popoverVisible);
 
-  if (!ask.popoverVisible || !ask.liveAsk) {
+  /**
+   * Escape from inside the popover does what it does from the composer: moves
+   * the question to the chat. Focus then returns to the composer, which a
+   * batch keeps disabled until the popover is gone, hence after the commit.
+   */
+  const refocusComposer = useRef(false);
+  const escapeToChat = useCallback(() => {
+    refocusComposer.current = true;
+    collapse();
+  }, [collapse]);
+  useEffect(() => {
+    if (popoverVisible || !refocusComposer.current) {
+      return;
+    }
+    refocusComposer.current = false;
+    textAreaRef?.current?.focus();
+  }, [popoverVisible, textAreaRef]);
+
+  if (!popoverVisible || !ask.liveAsk) {
     return null;
   }
 
   if (ask.liveAsk.questions != null && ask.liveAsk.questions.length > 0) {
-    return <AskUserQuestionsPopoverPanel ask={ask} />;
+    return <AskUserQuestionsPopoverPanel ask={ask} onEscape={escapeToChat} />;
   }
 
-  return <AskUserQuestionPopoverPanel ask={ask} textAreaRef={textAreaRef} />;
+  return (
+    <AskUserQuestionPopoverPanel ask={ask} textAreaRef={textAreaRef} onEscape={escapeToChat} />
+  );
 }
 
-function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAnswerMode> }) {
+function AskUserQuestionsPopoverPanel({
+  ask,
+  onEscape,
+}: {
+  ask: ReturnType<typeof useAskAnswerMode>;
+  onEscape: () => void;
+}) {
   const { liveAsk, collapse } = ask;
   const questions = liveAsk?.questions;
   if (liveAsk == null || questions == null || questions.length === 0) {
@@ -62,6 +90,8 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
           actionId={liveAsk.actionId}
           questions={questions}
           className="shrink-0"
+          focusOnArrival
+          onEscape={onEscape}
           headerAction={<MoveToChatButton onClick={collapse} />}
         />
       </div>
@@ -101,9 +131,11 @@ function MoveToChatButton({ onClick }: { onClick: () => void }) {
 function AskUserQuestionPopoverPanel({
   ask,
   textAreaRef,
+  onEscape,
 }: {
   ask: ReturnType<typeof useAskAnswerMode>;
   textAreaRef?: React.RefObject<HTMLTextAreaElement>;
+  onEscape: () => void;
 }) {
   const localize = useLocalize();
   const { control } = useChatFormContext();
@@ -165,9 +197,16 @@ function AskUserQuestionPopoverPanel({
           overflows it is unreachable by page scroll. */}
       <div
         className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[60vh] flex-col border p-2 shadow-lg [view-transition-name:ask-question]"
-        onKeyDown={handlePopoverKeyDown}
+        onKeyDown={(e) => {
+          if (isCancelKey(e.nativeEvent) && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            onEscape();
+            return;
+          }
+          handlePopoverKeyDown(e);
+        }}
       >
-        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 p-1 pl-2">
+        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 p-1 ps-2">
           <div className="max-h-[24vh] min-w-0 overflow-y-auto pt-1">
             <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
               {liveAsk.question.question}
@@ -226,7 +265,7 @@ function AskUserQuestionPopoverPanel({
                 onClick={() => submit(composerText)}
               >
                 {localize('com_ui_submit')}
-                <CornerDownLeft className="ml-1.5 h-4 w-4" aria-hidden="true" />
+                <CornerDownLeft className="ms-1.5 h-4 w-4 rtl:-scale-x-100" aria-hidden="true" />
               </Button>
             )}
           </div>

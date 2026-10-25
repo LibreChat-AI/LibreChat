@@ -739,6 +739,7 @@ describe('MCPServersRegistry', () => {
         'srv',
         yamlConfig,
       );
+      const getServerConfigSpy = jest.spyOn(registry, 'getServerConfig');
 
       await expect(
         registry.resolveCachedAppServerConfig({
@@ -749,6 +750,40 @@ describe('MCPServersRegistry', () => {
           ...allowlists,
         }),
       ).resolves.toEqual({ serverConfig: storedYamlConfig, connectionOwner: 'operator' });
+      expect(getServerConfigSpy).toHaveBeenCalledWith('srv', 'user-1', undefined, 'USER');
+    });
+
+    it('rechecks the current role for a persisted App without reusing another role or a legacy cache entry', async () => {
+      const roleServer = {
+        ...testParsedConfig,
+        source: 'user' as const,
+        title: 'Role-scoped server',
+      };
+      const dbGet = jest.spyOn(registry['dbConfigsRepo'], 'get');
+      dbGet.mockImplementation(async (_serverName, userId, role) =>
+        userId === 'user-1' && (role === 'ADMIN' || role === undefined) ? roleServer : undefined,
+      );
+      const validate = (role: string) =>
+        registry.resolveCachedAppServerConfig({
+          serverName: 'srv',
+          userId: 'user-1',
+          role,
+          mcpConfig: {},
+          ...allowlists,
+        });
+
+      // A roleless caller may already have filled the original per-server cache key.
+      await registry.getServerConfig('srv', 'user-1');
+      await expect(validate('USER')).resolves.toBeUndefined();
+      await expect(validate('ADMIN')).resolves.toMatchObject({ serverConfig: roleServer });
+      await expect(validate('USER')).resolves.toBeUndefined();
+      await expect(validate('ADMIN')).resolves.toMatchObject({ serverConfig: roleServer });
+
+      expect(dbGet.mock.calls.filter(([, userId]) => userId === 'user-1')).toEqual([
+        ['srv', 'user-1', undefined],
+        ['srv', 'user-1', 'USER'],
+        ['srv', 'user-1', 'ADMIN'],
+      ]);
     });
   });
 

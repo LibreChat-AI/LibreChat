@@ -177,7 +177,7 @@ describe('ActivityPhaseGroup', () => {
     for (const token of ROW_GLYPH_SLOT.split(' ')) {
       expect(trigger.firstElementChild).toHaveClass(token);
     }
-    expect(screen.getByText(LABEL).parentElement).toHaveClass('flex-1', 'text-left');
+    expect(screen.getByText(LABEL).parentElement).toHaveClass('flex-1', 'text-start');
   });
 
   test.each([
@@ -378,7 +378,7 @@ describe('ActivityPhaseGroup', () => {
     );
 
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
-    expect(screen.getByText(LABEL)).toHaveClass('text-left');
+    expect(screen.getByText(LABEL)).toHaveClass('text-start');
     expect(pendingFrames()).toBe(0);
   });
 
@@ -723,7 +723,7 @@ describe('ActivityPhaseGroup open header', () => {
     fireEvent.click(header);
     expect(pinned).toHaveClass('sticky', 'top-0', 'bg-surface-primary-alt');
     expect(pinned).not.toHaveClass('bg-presentation');
-    expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('pl-6');
+    expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('ps-6');
   });
 
   test('collapses from its rail, showing the knob on its header while the rail is hovered', () => {

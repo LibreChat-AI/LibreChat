@@ -6,6 +6,7 @@ import {
   ErrorTypes,
   EModelEndpoint,
   EToolResources,
+  canToolResourceConsume,
   paramEndpoints,
   isAgentsEndpoint,
   AgentCapabilities,
@@ -14,6 +15,7 @@ import {
   hasActivePiiPatterns,
   replaceSpecialVars,
   providerEndpointMap,
+  normalizeEndpointName,
 } from 'librechat-data-provider';
 import type {
   AgentToolResources,
@@ -37,6 +39,8 @@ import type {
   TFilterFilesByAgentAccess,
   TProvisionToCodeEnv,
   TProvisionToVectorDB,
+  TAdoptLegacySearchEmbeddings,
+  THasEntityEmbeddings,
   TCheckSessionsAlive,
   TLoadCodeApiKey,
 } from './resources';
@@ -63,6 +67,7 @@ import type { ResolvedChatProjectContext } from '../projects/context';
 import type { TextContentFragment } from '../protection/types';
 import type { CheckAccessParams } from '../middleware/access';
 import type { GetProjectFiles } from '../projects/resources';
+import type { CodeContextEntry } from '~/files/code/priming';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { CodeExecutionContext } from './execution';
 import type { AgentExecutionContext } from './runtime';
@@ -110,6 +115,11 @@ import {
   resolveAttachedWorkspaceCommandTimeoutDefault,
 } from '~/code/command';
 import {
+  resolveAgentInferenceParameters,
+  restoreAgentInferenceInput,
+  retainAgentInferenceInput,
+} from './inference';
+import {
   formatChatProjectInstructions,
   hydrateChatProjectContextResources,
 } from '../projects/context';
@@ -131,14 +141,18 @@ import { createRequestAgentExecutionContext } from './runtime';
 import { resolveTurnDeliveryRouting } from './files/delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files';
 import { isFatalAgentInitializationError } from './errors';
+import { assertToolOptionsWithinLimits } from './options';
 import { hasActiveFilePolicy } from '../protection/files';
 import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
+import { admitCurrentFileBudget } from './files/budget';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
+import { getAgentInferencePolicy } from './input';
 import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
+import { pinAgentModel } from './pin';
 
 /**
  * Fraction of context budget reserved as headroom when no explicit maxContextTokens is set.
@@ -169,7 +183,12 @@ export function partitionCommittedFiles<T extends { file_id?: string }>(
   );
   const alreadyCommitted: T[] = [];
   const pending: T[] = [];
+  const seen = new Set<string>();
   for (const file of files) {
+    if (file.file_id != null) {
+      if (seen.has(file.file_id)) continue;
+      seen.add(file.file_id);
+    }
     if (file.file_id != null && ids.has(file.file_id)) {
       alreadyCommitted.push(file);
       continue;
@@ -299,32 +318,59 @@ function addProjectFilesToFileSearch(
   effectiveToolNames: readonly string[],
   appConfig: AppConfig | undefined,
   fileSearchAvailable?: boolean,
-): AgentToolResources | undefined {
+  provisionState?: ProvisionState,
+): { resources: AgentToolResources | undefined; provisionState?: ProvisionState } {
   if (files == null || files.length === 0) {
-    return resources;
+    return { resources, provisionState };
   }
   const capabilities = appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? [];
   if (!capabilities.includes(AgentCapabilities.file_search)) {
-    return resources;
+    return { resources, provisionState };
   }
   if (fileSearchAvailable === false) {
-    return resources;
+    return { resources, provisionState };
   }
   if (!effectiveToolNames.includes(Tools.file_search)) {
-    return resources;
+    return { resources, provisionState };
   }
   const current = resources?.[EToolResources.file_search] ?? {};
   const currentFiles = current.files ?? [];
   const seen = new Set(currentFiles.map((file) => file.file_id));
-  const projectFiles = files.filter((file) => !seen.has(file.file_id));
+  const projectFiles: TFile[] = [];
+  const queuedIds = new Set(provisionState?.vectorDBFiles.map((file) => file.file_id));
+  for (const file of files) {
+    if (!seen.has(file.file_id)) {
+      projectFiles.push(file);
+      seen.add(file.file_id);
+    }
+    if (
+      file.embedded === true ||
+      file.metadata?.searchDestination !== true ||
+      !canToolResourceConsume(EToolResources.file_search, file.type) ||
+      queuedIds.has(file.file_id)
+    ) {
+      continue;
+    }
+    provisionState ??= {
+      codeEnvFiles: [],
+      vectorDBFiles: [],
+      aliveFileIds: new Set(),
+      agentScopedFileIds: new Set(),
+    };
+    provisionState.vectorDBFiles.push(file);
+    queuedIds.add(file.file_id);
+  }
   if (projectFiles.length === 0) {
-    return resources;
+    return { resources, provisionState };
   }
   return {
-    ...(resources ?? {}),
-    [EToolResources.file_search]: {
-      ...current,
-      files: currentFiles.concat(projectFiles),
+    provisionState,
+    resources: {
+      ...(resources ?? {}),
+      [EToolResources.file_search]: {
+        ...current,
+        files: currentFiles.concat(projectFiles),
+      },
     },
   };
 }
@@ -869,6 +915,9 @@ export type InitializedAgent = Agent & {
    * call #1 the sandbox can't see the files at all.
    */
   primedCodeFiles?: import('@librechat/agents').CodeEnvFile[];
+  /** Files the primed code-file note described on an attached workspace, so the note can be
+   *  rebuilt once attachments are copied in (`primeWorkspaceAttachments`). */
+  codeContextEntries?: CodeContextEntry[];
   /**
    * Resolved token/pricing config for this agent's endpoint (admin static
    * `tokenConfig` and/or fetched custom-endpoint config). Surfaced from the
@@ -955,6 +1004,8 @@ export interface InitializeAgentParams {
      * artifacts don't reach the sandbox.
      */
     primedCodeFiles?: import('@librechat/agents').CodeEnvFile[];
+    /** Structured form of the primed code-file note on an attached workspace. */
+    codeContextEntries?: CodeContextEntry[];
     /** Live workspace binding resolved by the execution-side loader. */
     codeExecutionContext?: CodeExecutionContext;
     repositoryInstructionSource?: RepositoryInstructionSource;
@@ -1142,6 +1193,10 @@ export interface InitializeAgentDbMethods extends EndpointDbMethods {
   provisionToVectorDB?: TProvisionToVectorDB;
   /** Optional: batch-check code env file liveness */
   checkSessionsAlive?: TCheckSessionsAlive;
+  /** Optional: record the agent's namespace on legacy File Search embeddings confirmed there */
+  adoptLegacySearchEmbeddings?: TAdoptLegacySearchEmbeddings;
+  /** Optional: ask the vector store whether a file's chunks are in an entity's namespace */
+  hasEntityEmbeddings?: THasEntityEmbeddings;
   /** Optional: load CODE_API_KEY once per request */
   loadCodeApiKey?: TLoadCodeApiKey;
   /** Optional: persist file metadata updates after provisioning */
@@ -1168,7 +1223,7 @@ export async function initializeAgent(
   db?: InitializeAgentDbMethods,
 ): Promise<InitializedAgent> {
   const {
-    agent: inputAgent,
+    agent: suppliedAgent,
     loadTools,
     requestFiles = [],
     authorizedRunFiles,
@@ -1187,6 +1242,8 @@ export async function initializeAgent(
   }
   const shouldUseChatProjectContext =
     useChatProjectContext ?? params.req?.chatProjectContextEnabled === true;
+  assertToolOptionsWithinLimits(suppliedAgent.tool_options);
+  const inputAgent = restoreAgentInferenceInput(suppliedAgent);
   const agent = shouldUseChatProjectContext ? { ...inputAgent } : inputAgent;
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
@@ -1352,6 +1409,16 @@ export async function initializeAgent(
     }
   }
 
+  /**
+   * An agent saved under another spelling of a folded endpoint name (`Ollama`) runs on the
+   * endpoint the runtime serves (`ollama`). Folded once, before anything keys on it: the
+   * `allowedProviders` check (served names, `normalizeEndpointReferences`), provider setup,
+   * user key lookups and token configs all read the served name.
+   */
+  const servedProvider = normalizeEndpointName(agent.provider);
+  if (servedProvider !== agent.provider) {
+    agent.provider = servedProvider;
+  }
   if (
     isAgentsEndpoint(endpointOption?.endpoint) &&
     allowedProviders.size > 0 &&
@@ -1492,18 +1559,6 @@ export async function initializeAgent(
   const effectiveToolNames =
     extraAllowedToolNames.length > 0 ? [...baseToolNames, ...extraAllowedToolNames] : baseToolNames;
   const requestedToolNames = effectiveToolNames;
-  const _modelOptions = structuredClone(
-    Object.assign(
-      { model: agent.model },
-      agent.model_parameters ?? { model: agent.model },
-      isInitialAgent === true ? endpointOption?.model_parameters : {},
-    ),
-  );
-
-  const { resendFiles, maxContextTokens, imageDetail, modelOptions } = extractLibreChatParams(
-    _modelOptions as Record<string, unknown>,
-  );
-
   const provider = agent.provider;
   agent.endpoint = provider;
 
@@ -1519,10 +1574,18 @@ export async function initializeAgent(
     agent.provider = overrideProvider;
   }
 
-  const finalModelOptions = {
-    ...modelOptions,
-    model: agent.model,
-  };
+  const inference = resolveAgentInferenceParameters({
+    parameters: {
+      ...agent.model_parameters,
+      ...(isInitialAgent === true ? endpointOption?.model_parameters : undefined),
+    },
+    ...getAgentInferencePolicy(provider, appConfig, customEndpointConfig),
+    model: agent.model ?? '',
+  });
+  const { resendFiles, maxContextTokens, imageDetail, modelOptions } = extractLibreChatParams(
+    inference.parameters,
+  );
+  const finalModelOptions = pinAgentModel(modelOptions, agent.model);
 
   const options: InitializeResultBase = await getOptions({
     runtime: {
@@ -1532,6 +1595,7 @@ export async function initializeAgent(
     },
     endpoint: provider,
     model_parameters: finalModelOptions,
+    inferenceParameters: inference.customParameters,
     db,
   });
 
@@ -1901,36 +1965,26 @@ export async function initializeAgent(
       endpointType,
     });
 
+    currentFiles = admitCurrentFileBudget(
+      currentFiles,
+      deliveryRouting.endpointConfig.totalSizeLimit,
+    );
+
     /* The same endpoint configuration governs both paths. A file this endpoint refuses
      * by size, MIME type, or a files-disabled setting must not reach the Code API or
      * RAG through provisioning just because it left the delivery set. */
     if (deferredProvisionFiles.length > 0) {
-      /* One request, one total-size allowance. Filtering each set from zero would let a
-       * delivery attachment and a provisioning candidate that each fit alone exceed the
-       * limit together once withDeferredCandidates merges them.
-       *
-       * A file can appear in both sets, an embedded attachment still missing the active
-       * code route being the case in point, and the merge deduplicates afterwards. Charging
-       * it twice would spend an allowance the request never uses and drop a different
-       * candidate that fits, so the shared ones are counted once. */
-      const deferredFileIds = new Set(
-        deferredProvisionFiles
-          .map((file) => file.file_id)
-          .filter((fileId): fileId is string => fileId != null),
+      const { committed, pending } = partitionCommittedFiles(deferredProvisionFiles, currentFiles);
+      /* Current admission is final. Charge only new deferred identities against its
+       * remainder, regardless of their order relative to overlapping current files. */
+      deferredProvisionFiles = committed.concat(
+        filterFilesByEndpointRuntimeConfig(appConfig, {
+          files: pending,
+          endpoint: agent.endpoint ?? '',
+          endpointType,
+          consumedBytes: sumUniqueBytes(currentFiles),
+        }) as IMongoFile[],
       );
-      deferredProvisionFiles = filterFilesByEndpointRuntimeConfig(appConfig, {
-        files: deferredProvisionFiles,
-        endpoint: agent.endpoint ?? '',
-        endpointType,
-        /* The deferred pass charges its own list as it walks it, so a file in both sets
-         * is counted there. Only what delivery spends on files the deferred pass will
-         * not see is carried in. */
-        consumedBytes: sumUniqueBytes(
-          (currentFiles ?? []).filter(
-            (file) => file.file_id == null || !deferredFileIds.has(file.file_id),
-          ),
-        ),
-      }) as IMongoFile[];
     }
   }
 
@@ -2025,12 +2079,13 @@ export async function initializeAgent(
     runtimeToolResources = { ...runtimeToolResources };
     delete runtimeToolResources[EToolResources.execute_code];
   }
+  let admittedPersistentFiles: TFile[] = [];
   const {
     attachments: primedAttachments,
     requestAttachments: primedRequestAttachments,
     agentContextAttachments: primedAgentContextAttachments,
     tool_resources,
-    provisionState,
+    provisionState: primedProvisionState,
     warnings: provisionWarnings,
   } = await primeResources({
     req: params.req,
@@ -2047,6 +2102,8 @@ export async function initializeAgent(
     enabledToolResources: toolResourceSet,
     checkSessionsAlive: db.checkSessionsAlive,
     loadCodeApiKey: db.loadCodeApiKey,
+    adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+    hasEntityEmbeddings: db.hasEntityEmbeddings,
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
@@ -2070,7 +2127,7 @@ export async function initializeAgent(
       /* Dropped rather than fatal, matching the deferred candidates: these were not
        * attached by this request, so refusing the conversation over a historical record
        * would be harsher than leaving it out. */
-      return committed.concat(withinPolicy).filter((file) => {
+      admittedPersistentFiles = committed.concat(withinPolicy).filter((file) => {
         try {
           assertModelBoundContent({
             filters: appConfig?.filters,
@@ -2085,15 +2142,37 @@ export async function initializeAgent(
           return false;
         }
       });
+      return admittedPersistentFiles;
     },
   });
-  runtimeToolResources = addProjectFilesToFileSearch(
+  if (projectRuntimeFiles.length > 0) {
+    /* Project repairs join after priming, but spend the same allowance as the files
+     * already admitted above. Reuse their snapshots without charging overlaps twice. */
+    const committedFiles = [
+      ...(currentFiles ?? []),
+      ...deferredProvisionFiles,
+      ...admittedPersistentFiles,
+    ];
+    const { committed, pending } = partitionCommittedFiles(projectRuntimeFiles, committedFiles);
+    projectRuntimeFiles = committed.concat(
+      filterFilesByEndpointRuntimeConfig(appConfig, {
+        files: pending,
+        endpoint: agent.endpoint ?? '',
+        endpointType: endpointFileType,
+        consumedBytes: sumUniqueBytes(committedFiles),
+      }),
+    );
+  }
+  const projectResources = addProjectFilesToFileSearch(
     tool_resources,
     projectRuntimeFiles,
     effectiveToolNames,
     appConfig,
     params.fileSearchAvailable,
+    primedProvisionState,
   );
+  runtimeToolResources = projectResources.resources;
+  const provisionState = projectResources.provisionState;
   const dropFileSearchResources = (): void => {
     if (runtimeToolResources?.[EToolResources.file_search] == null) {
       return;
@@ -2190,6 +2269,7 @@ export async function initializeAgent(
     oauthActionToolNames,
     tools: structuredTools,
     primedCodeFiles,
+    codeContextEntries,
     codeExecutionContext: loadedCodeExecutionContext,
     repositoryInstructionSource,
   } = loadToolsResult ?? {
@@ -2206,6 +2286,7 @@ export async function initializeAgent(
     actionsEnabled: undefined,
     oauthActionToolNames: undefined,
     primedCodeFiles: undefined,
+    codeContextEntries: undefined,
     codeExecutionContext: undefined,
     repositoryInstructionSource: undefined,
   };
@@ -2494,6 +2575,10 @@ export async function initializeAgent(
   if (options.configOptions) {
     (agent.model_parameters as Record<string, unknown>).configuration = options.configOptions;
   }
+  retainAgentInferenceInput(agent, provider, {
+    ...inference.parameters,
+    ...inference.customParameters,
+  });
 
   /**
    * Resolves an `instructionsPrompt` link before special-vars substitution, so
@@ -2814,6 +2899,7 @@ export async function initializeAgent(
         ? maxContextTokens
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
     primedCodeFiles,
+    codeContextEntries,
     endpointTokenConfig: options.endpointTokenConfig,
     instructionsPromptFacts,
   };

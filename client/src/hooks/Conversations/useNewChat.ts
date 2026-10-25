@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
+import { filesFamily } from '@librechat/chat/react';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import type { FileSources, TFile } from 'librechat-data-provider';
@@ -119,7 +121,7 @@ export default function useNewChat({
   const queryClient = useQueryClient();
   const { newConversation } = useNewConvo(index);
   const conversationId = useRecoilValue(store.conversationIdByIndex(index));
-  const files = useRecoilValue(store.filesByIndex(index));
+  const files = useAtomValue(filesFamily(index));
   const { saveDrafts } = useChatSettings();
   const { data: fileList } = useGetFiles<TFile[]>();
   const { mutateAsync } = useDeleteFilesMutation();

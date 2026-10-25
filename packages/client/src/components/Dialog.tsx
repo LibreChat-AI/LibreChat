@@ -73,7 +73,7 @@ const DialogContent: React.ForwardRefExoticComponent<
         >
           {children}
           {showCloseButton && (
-            <DialogPrimitive.Close className="focus:ring-focus-control data-[state=open]:bg-surface-hover min-h-theme-target min-w-theme-target absolute top-[1.6rem] right-6 -mt-0.5 -mr-0.5 inline-flex items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+            <DialogPrimitive.Close className="focus:ring-focus-control data-[state=open]:bg-surface-hover min-h-theme-target min-w-theme-target absolute inset-e-6 top-[1.6rem] -me-0.5 -mt-0.5 inline-flex items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
               <X className="text-text-primary size-theme-icon-md" aria-hidden="true" />
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
@@ -89,7 +89,7 @@ const DialogHeader: {
   ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element;
   displayName: string;
 } = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
-  <div className={cn('flex flex-col space-y-2 p-6 pb-4 text-left', className ?? '')} {...props} />
+  <div className={cn('flex flex-col space-y-2 p-6 pb-4 text-start', className ?? '')} {...props} />
 );
 DialogHeader.displayName = 'DialogHeader';
 

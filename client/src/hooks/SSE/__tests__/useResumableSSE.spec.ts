@@ -1,3 +1,4 @@
+import { createElement } from 'react';
 import { getDefaultStore } from 'jotai';
 import { QueryClient } from '@tanstack/react-query';
 import { renderHook, act, waitFor } from '@testing-library/react';
@@ -12,7 +13,7 @@ import {
 } from 'librechat-data-provider';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { Query, QueryKey } from '@tanstack/react-query';
-import type { PendingSteer } from '~/hooks/Chat/queue';
+import type { ReactNode } from 'react';
 import {
   activeUsageResponseIdFamily,
   liveTokensFamily,
@@ -20,7 +21,7 @@ import {
   pendingUsageFamily,
   removeUsageAtoms,
 } from '~/components/Chat/Input/TokenUsage/store';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
+import { registerComposerDraft, captureComposerDraft, bindComposerLaunch } from '~/utils/drafts';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;
@@ -103,7 +104,6 @@ const mockQueryClient = {
   }),
 };
 
-const mockActiveRunAtom = { key: 'activeRun' };
 /** The follow-up queue a restored submission lands back in. */
 const queuedIn = (conversationId: string) =>
   getDefaultStore().get(queuedMessagesByConvoId(conversationId));
@@ -120,12 +120,7 @@ const mockSeedSteerChips = jest.fn();
 const mockSettleAppliedSteerParts = jest.fn();
 const mockConvertLocalSteersToQueued = jest.fn();
 const mockUpdateGenerationEpoch = jest.fn();
-const mockUseSetRecoilStateMock = jest.fn((atom: unknown) => {
-  if (atom === mockActiveRunAtom) {
-    return mockSetActiveRun;
-  }
-  return jest.fn();
-});
+const mockUseSetRecoilStateMock = jest.fn((_atom: unknown) => jest.fn());
 function mockUseSetRecoilState(atom: unknown) {
   return mockUseSetRecoilStateMock(atom);
 }
@@ -166,7 +161,7 @@ jest.mock('jotai', () => {
   return {
     ...actual,
     useSetAtom: (atom: unknown) => {
-      const queue = jest.requireActual('~/hooks/Chat/queue');
+      const queue = jest.requireActual('@librechat/chat/react');
       if (atom === queue.runEndByIndex(0)) {
         return mockSetRunEnd;
       }
@@ -183,6 +178,9 @@ jest.mock('jotai', () => {
       if (atom === generation.showStopButtonByIndex(0)) {
         return mockSetShowStopButton;
       }
+      if (atom === jest.requireActual('~/hooks/SSE/atoms').activeRunFamily(0)) {
+        return mockSetActiveRun;
+      }
       return actual.useSetAtom(atom);
     },
   };
@@ -190,14 +188,17 @@ jest.mock('jotai', () => {
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: {
-    activeRunFamily: jest.fn(() => mockActiveRunAtom),
-  },
+  default: {},
 }));
 
-jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ token: 'test-token', isAuthenticated: true }),
-}));
+jest.mock('~/Providers/ChatSettingsContext', () => {
+  const actual = jest.requireActual('~/Providers/ChatSettingsContext');
+  const settings = {
+    ...actual.defaultChatSettings,
+    auth: { token: 'test-token', isAuthenticated: true },
+  };
+  return { ...actual, useChatSettings: () => settings };
+});
 
 const mockFetchStreamStatus = jest.fn();
 const mockGetConversationById = jest.fn();
@@ -225,9 +226,9 @@ jest.mock('~/data-provider', () => ({
   postGenerationRequest: (...args: unknown[]) => mockPostGenerationRequest(...args),
 }));
 
-jest.mock('~/hooks/Chat/useSteerConvert', () => ({
-  __esModule: true,
-  default: () => mockConvertSteersToQueued,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerConvert: () => mockConvertSteersToQueued,
 }));
 
 /** The steer-chip/queue writers are swapped for stable named spies, so these tests
@@ -316,12 +317,16 @@ import useResumableSSE, {
   ABORT_SWEEP_STATUSES,
 } from '~/hooks/SSE/useResumableSSE';
 import useSSE from '~/hooks/SSE/useSSE';
+import type { PendingSteer } from '@librechat/chat';
+import type { Transport } from '~/hooks/Chat/contract';
+import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import {
+  recoveryDispositionsFamily,
   queuedMessagesByConvoId,
   stopRequestedByConvoId,
   detachedRunByConvoId,
   resetQueueFamilies,
-} from '~/hooks/Chat/queue';
+} from '@librechat/chat/react';
 
 const CONV_ID = 'conv-abc-123';
 
@@ -500,6 +505,27 @@ describe('useResumableSSE', () => {
     return { sse, unmount, chatHelpers };
   };
 
+  it('adopts the acknowledged composer before hydrating a resumable submission', async () => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello');
+    const release = registerComposerDraft(0, Constants.NEW_CONVO, Constants.PENDING_CONVO, {});
+    const submission = buildSubmission({
+      conversation: { conversationId: String(Constants.NEW_CONVO) },
+    });
+    bindComposerLaunch(submission.conversation, 0);
+    const captured = captureComposerDraft(0, Constants.NEW_CONVO);
+    const helpers = buildChatHelpers();
+    const { unmount } = renderHook(() => useResumableSSE(submission, helpers));
+    await flushMicrotasks();
+    expect(captured.conversationId()).toBe('stream-123');
+    expect(window.location.pathname).toBe('/c/stream-123');
+    expect(window.location.search).toBe('?prompt=hello');
+    expect(captured()).toBe(true);
+    getLastSSE().readyState = MOCK_SSE_CLOSED;
+    unmount();
+    release();
+    window.history.replaceState({}, '', '/');
+  });
+
   it.each([useSSE, useResumableSSE])(
     '%p binds a created response before any output or usage',
     async (useTransport) => {
@@ -625,6 +651,25 @@ describe('useResumableSSE', () => {
     await act(async () => {
       finishStart({ streamId: 'stream-123', generationCreatedAt: 1000 });
     });
+  });
+
+  it('calls a host transport start on the transport itself', async () => {
+    const receivers: unknown[] = [];
+    const hostTransport: Transport = {
+      ...defaultChatTransport,
+      start(this: Transport, startRequest, options) {
+        receivers.push(this);
+        return defaultChatTransport.start(startRequest, options);
+      },
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(ChatTransportContext.Provider, { value: hostTransport }, children);
+    const { unmount } = renderHook(() => useResumableSSE(buildSubmission(), buildChatHelpers()), {
+      wrapper,
+    });
+    await waitFor(() => expect(receivers).toHaveLength(1));
+    expect(receivers[0]).toBe(hostTransport);
+    unmount();
   });
 
   it.each([useSSE, useResumableSSE])(

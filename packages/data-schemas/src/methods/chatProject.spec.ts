@@ -843,6 +843,25 @@ describe('persistent Project context', () => {
     expect((await methods.getChatProject(owner, id))?.file_ids).toEqual([]);
   });
 
+  it('accepts a retained search destination without claiming its vectors exist', async () => {
+    const project = await methods.createChatProject(owner, { name: 'Repairable' });
+    await createReference('repairable', {
+      embedded: false,
+      metadata: { searchDestination: true },
+    });
+    const attached = await methods.addChatProjectFile(owner, project._id!.toString(), 'repairable');
+    expect(attached?.file_ids).toEqual(['repairable']);
+    expect((await File.findOne({ file_id: 'repairable' }).lean())?.embedded).toBe(false);
+    await createReference('foreign-repair', {
+      user: new mongoose.Types.ObjectId(otherOwner),
+      embedded: false,
+      metadata: { searchDestination: true },
+    });
+    await expect(
+      methods.addChatProjectFile(owner, project._id!.toString(), 'foreign-repair'),
+    ).rejects.toThrow('Project file unavailable');
+  });
+
   it('rejects unauthorized, agent-scoped, unindexed, missing and expired references', async () => {
     const project = await methods.createChatProject(owner, { name: 'Private' });
     const id = project._id!.toString();

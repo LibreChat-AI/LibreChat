@@ -314,6 +314,13 @@ describe('ServerConfigsDB', () => {
         (config) => ({ ...updateOAuth(config, {}), url: 'https://attacker.example.com/sse' }),
       ],
       [
+        'proxy',
+        (config) => ({
+          ...updateOAuth(config, {}),
+          proxy: 'http://proxy.attacker.example.com:8080',
+        }),
+      ],
+      [
         'oauth.authorization_url',
         (config) =>
           updateOAuth(config, { authorization_url: 'https://attacker.example.com/authorize' }),
@@ -1807,9 +1814,77 @@ describe('ServerConfigsDB', () => {
         expect(result).toBeDefined();
         expect(result?.title).toBe('Shared Server');
       });
+
+      it('uses the supplied role for direct and agent-derived server access', async () => {
+        const direct = await serverConfigsDB.add('temp', createSSEConfig('Role Direct'), userId);
+        const viaAgent = await serverConfigsDB.add('temp', createSSEConfig('Role Agent'), userId);
+        const agent = await mongoose.models.Agent.create({
+          id: 'role-scoped-agent',
+          name: 'Role Scoped Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: new mongoose.Types.ObjectId(userId),
+          mcpServerNames: [viaAgent.serverName],
+        });
+        const serverRole = await mongoose.models.AccessRole.findOne({
+          accessRoleId: AccessRoleIds.MCPSERVER_VIEWER,
+        });
+        const agentRole = await mongoose.models.AccessRole.findOne({
+          accessRoleId: AccessRoleIds.AGENT_VIEWER,
+        });
+        await mongoose.models.AclEntry.create([
+          {
+            principalType: PrincipalType.ROLE,
+            principalModel: PrincipalModel.ROLE,
+            principalId: 'ADMIN',
+            resourceType: ResourceType.MCPSERVER,
+            resourceId: new mongoose.Types.ObjectId(direct.config.dbId!),
+            permBits: PermissionBits.VIEW,
+            roleId: serverRole!._id,
+          },
+          {
+            principalType: PrincipalType.ROLE,
+            principalModel: PrincipalModel.ROLE,
+            principalId: 'ADMIN',
+            resourceType: ResourceType.AGENT,
+            resourceId: agent._id,
+            permBits: PermissionBits.VIEW,
+            roleId: agentRole!._id,
+          },
+        ]);
+
+        await expect(
+          serverConfigsDB.get(direct.serverName, userId2, 'ADMIN'),
+        ).resolves.toMatchObject({ title: 'Role Direct' });
+        await expect(
+          serverConfigsDB.get(viaAgent.serverName, userId2, 'ADMIN'),
+        ).resolves.toMatchObject({ title: 'Role Agent', consumeOnly: true });
+        await expect(
+          serverConfigsDB.get(direct.serverName, userId2, 'USER'),
+        ).resolves.toBeUndefined();
+        await expect(
+          serverConfigsDB.get(viaAgent.serverName, userId2, 'USER'),
+        ).resolves.toBeUndefined();
+      });
     });
 
     describe('agent-based access (consumeOnly)', () => {
+      it('resolves user principals once for direct and agent access', async () => {
+        const created = await serverConfigsDB.add(
+          'temp-name',
+          createSSEConfig('Shared Lookup'),
+          userId,
+        );
+        const findByIdSpy = jest.spyOn(mongoose.models.User, 'findById');
+
+        try {
+          await serverConfigsDB.get(created.serverName, userId2, 'USER');
+          expect(findByIdSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          findByIdSpy.mockRestore();
+        }
+      });
+
       it('should return server with consumeOnly when user has access via agent', async () => {
         const config = createSSEConfig('Agent Accessible Server');
         const created = await serverConfigsDB.add('temp-name', config, userId);

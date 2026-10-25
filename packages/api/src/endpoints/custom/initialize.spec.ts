@@ -511,7 +511,14 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
 
   it('uses a static tokenConfig for billing and skips the model fetch', async () => {
     const tokenConfig = {
-      'gpt-4': { prompt: 1.5, completion: 4.5, context: 32000, cacheRead: 0.3, cacheWrite: 1.8 },
+      'gpt-4': {
+        prompt: 1.5,
+        completion: 4.5,
+        context: 32000,
+        cacheRead: 0.3,
+        cacheWrite: 1.8,
+        cacheWrite1h: 2.9,
+      },
     };
     mockGetCustomEndpointConfig.mockReturnValue({
       apiKey: 'sk-test-key',
@@ -546,7 +553,9 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
       context: 32000,
       cacheRead: 0.3,
       cacheWrite: 1.8,
+      cacheWrite1h: 2.9,
       write: 1.8,
+      write1h: 2.9,
       read: 0.3,
     });
   });

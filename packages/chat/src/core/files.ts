@@ -1,4 +1,25 @@
-import type { TFile, TMessage } from 'librechat-data-provider';
+import type { FileSources, TFile, TMessage } from 'librechat-data-provider';
+
+/** A file attached to a chat pane's composer, from local pick through upload. */
+export interface ExtendedFile {
+  file?: File;
+  file_id: string;
+  temp_file_id?: string;
+  type?: string;
+  filepath?: string;
+  filename?: string;
+  width?: number;
+  height?: number;
+  size: number;
+  preview?: string;
+  progress: number;
+  source?: FileSources;
+  attached?: boolean;
+  embedded?: boolean;
+  llmDeliveryPath?: TFile['llmDeliveryPath'];
+  tool_resource?: string;
+  metadata?: TFile['metadata'];
+}
 
 export type FileDeliveryMetadataMap = Readonly<
   Record<string, Pick<TFile, 'llmDeliveryPath'> | undefined>

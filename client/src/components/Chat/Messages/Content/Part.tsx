@@ -681,7 +681,7 @@ const renderers: PartRenderers = {
       const failed = part.status === 'failed' || part.status === 'partial';
       return (
         <div
-          className={`my-1 pl-1 text-sm break-words italic ${failed ? 'text-text-warning' : 'text-text-secondary'}`}
+          className={`my-1 ps-1 text-sm break-words italic ${failed ? 'text-text-warning' : 'text-text-secondary'}`}
         >
           {display}
         </div>

@@ -1,15 +1,15 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useStore } from 'jotai';
-import type { TMessage } from 'librechat-data-provider';
-import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
-import type { ExtendedFile, FileSetter } from '~/common';
-import type { useChatFormContext } from '~/Providers';
 import {
   getReasoningStateKey,
   pendingQuotesByConvoId,
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
+} from '@librechat/chat/react';
+import type { QueuedMessageContext } from '@librechat/chat';
+import type { TMessage } from 'librechat-data-provider';
+import type { ExtendedFile, FileSetter } from '~/common';
+import type { useChatFormContext } from '~/Providers';
 
 export interface ComposerRestore {
   /** Chip "Edit message": replaces the draft outright, since the caller has

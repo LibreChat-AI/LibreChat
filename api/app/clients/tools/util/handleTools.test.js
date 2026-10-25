@@ -47,11 +47,11 @@ jest.mock('~/server/services/Config', () => ({
   }),
   getCachedTools: jest.fn().mockResolvedValue({
     // Default cached tools for tests
-    dalle: {
+    flux: {
       type: 'function',
       function: {
-        name: 'dalle',
-        description: 'DALL-E image generation',
+        name: 'flux',
+        description: 'Flux image generation',
         parameters: {},
       },
     },
@@ -99,14 +99,14 @@ const { ASK_USER_QUESTION_TOOL_NAME, STANDARD_MCP_CAPABILITY_PROFILE } = require
 const { User } = require('~/db/models');
 const PluginService = require('~/server/services/PluginService');
 const { loadTools, loadToolWithAuth } = require('./handleTools');
-const { StructuredSD, availableTools, DALLE3 } = require('../');
+const { StructuredSD, availableTools, FluxAPI } = require('../');
 
 describe('Tool Handlers', () => {
   let mongoServer;
   let fakeUser;
-  const pluginKey = 'dalle';
+  const pluginKey = 'flux';
   const pluginKey2 = 'wolfram';
-  const ToolClass = DALLE3;
+  const ToolClass = FluxAPI;
   const initialTools = [pluginKey, pluginKey2];
   const mockCredential = 'mock-credential';
   const mainPlugin = availableTools.find((tool) => tool.pluginKey === pluginKey);
@@ -241,48 +241,55 @@ describe('Tool Handlers', () => {
       expect(tool).toBeInstanceOf(ToolClass2);
     });
 
+    class AuthTool {}
+
     it('should initialize an authenticated tool with primary auth field', async () => {
-      process.env.DALLE3_API_KEY = 'mocked_api_key';
+      process.env.PRIMARY_API_KEY = 'mocked_api_key';
       const initToolFunction = loadToolWithAuth(
         'userId',
-        ['DALLE3_API_KEY||DALLE_API_KEY'],
-        ToolClass,
+        ['PRIMARY_API_KEY||ALTERNATE_API_KEY'],
+        AuthTool,
       );
       const authTool = await initToolFunction();
 
-      expect(authTool).toBeInstanceOf(ToolClass);
+      expect(authTool).toBeInstanceOf(AuthTool);
       expect(mockPluginService.getUserPluginAuthValue).not.toHaveBeenCalled();
     });
 
     it('should initialize an authenticated tool with alternate auth field when primary is missing', async () => {
-      delete process.env.DALLE3_API_KEY; // Ensure the primary key is not set
-      process.env.DALLE_API_KEY = 'mocked_alternate_api_key';
+      delete process.env.PRIMARY_API_KEY; // Ensure the primary key is not set
+      process.env.ALTERNATE_API_KEY = 'mocked_alternate_api_key';
       const initToolFunction = loadToolWithAuth(
         'userId',
-        ['DALLE3_API_KEY||DALLE_API_KEY'],
-        ToolClass,
+        ['PRIMARY_API_KEY||ALTERNATE_API_KEY'],
+        AuthTool,
       );
       const authTool = await initToolFunction();
 
-      expect(authTool).toBeInstanceOf(ToolClass);
+      expect(authTool).toBeInstanceOf(AuthTool);
       expect(mockPluginService.getUserPluginAuthValue).toHaveBeenCalledTimes(1);
       expect(mockPluginService.getUserPluginAuthValue).toHaveBeenCalledWith(
         'userId',
-        'DALLE3_API_KEY',
+        'PRIMARY_API_KEY',
         true,
       );
     });
 
     it('should fallback to getUserPluginAuthValue when env vars are missing', async () => {
-      mockPluginService.updateUserPluginAuth('userId', 'DALLE_API_KEY', 'dalle', 'mocked_api_key');
+      mockPluginService.updateUserPluginAuth(
+        'userId',
+        'ALTERNATE_API_KEY',
+        'custom-tool',
+        'mocked_api_key',
+      );
       const initToolFunction = loadToolWithAuth(
         'userId',
-        ['DALLE3_API_KEY||DALLE_API_KEY'],
-        ToolClass,
+        ['PRIMARY_API_KEY||ALTERNATE_API_KEY'],
+        AuthTool,
       );
       const authTool = await initToolFunction();
 
-      expect(authTool).toBeInstanceOf(ToolClass);
+      expect(authTool).toBeInstanceOf(AuthTool);
       expect(mockPluginService.getUserPluginAuthValue).toHaveBeenCalledTimes(2);
     });
 
@@ -316,12 +323,11 @@ describe('Tool Handlers', () => {
       });
       expect(toolFunctions).toEqual({});
     });
-    it('should return the StructuredTool version when using functions', async () => {
+    it('should return the StructuredTool version', async () => {
       process.env.SD_WEBUI_URL = mockCredential;
       toolFunctions = await loadTools({
         user: fakeUser._id,
         tools: ['stable-diffusion'],
-        functions: true,
         returnMap: true,
         useSpecs: true,
       });
@@ -582,7 +588,7 @@ describe('Tool Handlers', () => {
         tools: [normalizedKey],
         options: {
           req: {
-            user: { id: fakeUser._id.toString(), role: 'USER' },
+            user: { id: fakeUser._id.toString(), role: 'USER', idOnTheSource: null },
             body: {},
             config: {
               mcpSettings: { apps: true },
@@ -599,8 +605,10 @@ describe('Tool Handlers', () => {
       expect(result.loadedTools).toEqual([{ name: normalizedKey }]);
       expect(mockGetServerConfig).toHaveBeenCalledWith(
         rawServerName,
+        fakeUser._id.toString(),
         expect.anything(),
-        expect.anything(),
+        'USER',
+        { idOnTheSource: null },
       );
       expect(mockCreateMCPTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -839,6 +847,8 @@ describe('Tool Handlers', () => {
         rawServerName,
         expect.anything(),
         expect.anything(),
+        expect.anything(),
+        expect.anything(),
       );
       expect(mockCreateMCPTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -882,6 +892,8 @@ describe('Tool Handlers', () => {
       expect(result.loadedTools).toEqual([{ name: 'loaded-mcp-tool' }]);
       expect(mockGetServerConfig).toHaveBeenCalledWith(
         serverName,
+        expect.anything(),
+        expect.anything(),
         expect.anything(),
         expect.anything(),
       );

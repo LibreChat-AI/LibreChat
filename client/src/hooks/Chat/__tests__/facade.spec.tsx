@@ -65,8 +65,6 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     setFiles: noop,
     filesLoading: false,
     setFilesLoading: noop,
-    showPopover: false,
-    setShowPopover: noop,
     feedbackEnabled: false,
     ...overrides,
   };

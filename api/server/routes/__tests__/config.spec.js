@@ -10,10 +10,10 @@ jest.mock('~/server/services/Config/ldap', () => ({
 }));
 
 const mockHasCapability = jest.fn();
-const mockHasConfigCapability = jest.fn();
+const mockGetHeldCapabilities = jest.fn();
 jest.mock('~/server/middleware/roles/capabilities', () => ({
   hasCapability: (...args) => mockHasCapability(...args),
-  hasConfigCapability: (...args) => mockHasConfigCapability(...args),
+  getHeldCapabilities: (...args) => mockGetHeldCapabilities(...args),
 }));
 
 const mockGetTenantId = jest.fn(() => undefined);
@@ -37,6 +37,7 @@ jest.mock('@librechat/api', () => ({
 
 const request = require('supertest');
 const express = require('express');
+const { SystemCapabilities, configCapability } = require('@librechat/data-schemas');
 const configRoute = require('../config');
 
 function createApp(user) {
@@ -111,6 +112,7 @@ afterEach(() => {
   delete process.env.ANALYTICS_GTM_ID;
   delete process.env.CUSTOM_FOOTER;
   delete process.env.HELP_AND_FAQ_URL;
+  delete process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE;
   delete process.env.LANGFUSE_FANOUT_ENABLED;
   delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
   delete process.env.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED;
@@ -124,31 +126,93 @@ afterEach(() => {
 
 describe('GET /api/config', () => {
   describe('unauthenticated (no req.user)', () => {
-    it('should call getAppConfig with baseOnly when no tenant context', async () => {
+    it('should resolve the __base__ overrides without runtime augmentation when no tenant context', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       mockGetTenantId.mockReturnValue(undefined);
       const app = createApp(null);
 
       await request(app).get('/api/config');
 
-      expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+      expect(mockGetAppConfig).toHaveBeenCalledWith({ skipRuntimeAugmentation: true });
+      expect(mockGetAppConfig).not.toHaveBeenCalledWith(
+        expect.objectContaining({ failClosed: true }),
+      );
     });
 
-    it('should call getAppConfig with tenantId when tenant context is present', async () => {
+    it('should serve the pre-login config: __base__ socialLogins and interface, YAML Turnstile', async () => {
+      mockGetTenantId.mockReturnValue(undefined);
+      mockResolveBuildInfo.mockReturnValue({
+        commit: 'abc1234def',
+        commitShort: 'abc1234',
+        branch: 'main',
+        buildDate: '2026-01-01T00:00:00.000Z',
+      });
+      /** What the merge hands back: `turnstile` is base-only, so it is librechat.yaml's. */
+      const preLoginConfig = {
+        registration: { socialLogins: ['google', 'openid'] },
+        interfaceConfig: {
+          privacyPolicy: { externalUrl: 'https://base.example/privacy' },
+          theme: 'clickhouse',
+          buildInfo: false,
+          modelSelect: false,
+        },
+        turnstileConfig: { siteKey: 'yaml-site-key' },
+      };
+      mockGetAppConfig.mockResolvedValue(preLoginConfig);
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
+      expect(mockGetAppConfig).toHaveBeenCalledWith({ skipRuntimeAugmentation: true });
+      expect(response.body.socialLogins).toEqual(['google', 'openid']);
+      expect(response.body.interface).toEqual({
+        privacyPolicy: { externalUrl: 'https://base.example/privacy' },
+        buildInfo: false,
+        theme: 'clickhouse',
+      });
+      expect(response.body).not.toHaveProperty('buildInfo');
+      expect(response.body.turnstile).toEqual({ siteKey: 'yaml-site-key' });
+    });
+
+    it('should never serve a signed-out visitor a policy link that would run script', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: {
+          privacyPolicy: {
+            externalUrl: '\u00a0javascript:alert(document.domain)',
+            openNewTab: true,
+          },
+          termsOfService: { externalUrl: '\u0001data:text/html,<script>alert(1)</script>' },
+        },
+      });
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.interface).toEqual({
+        privacyPolicy: { openNewTab: true },
+        termsOfService: {},
+      });
+    });
+
+    it('should resolve a tenant context in one read without an explicit tenantId', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       mockGetTenantId.mockReturnValue('tenant-abc');
       const app = createApp(null);
 
       await request(app).get('/api/config');
 
-      expect(mockGetAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-abc' });
+      expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
+      expect(mockGetAppConfig).toHaveBeenCalledWith({ skipRuntimeAugmentation: true });
     });
 
     it('should map tenant-scoped config fields in unauthenticated response', async () => {
       const tenantConfig = {
         ...baseAppConfig,
         registration: { socialLogins: ['saml'] },
-        turnstileConfig: { siteKey: 'tenant-key' },
       };
       mockGetAppConfig.mockResolvedValue(tenantConfig);
       mockGetTenantId.mockReturnValue('tenant-abc');
@@ -158,7 +222,7 @@ describe('GET /api/config', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.body.socialLogins).toEqual(['saml']);
-      expect(response.body.turnstile).toEqual({ siteKey: 'tenant-key' });
+      expect(response.body.turnstile).toEqual({ siteKey: 'test-key' });
       expect(response.body).not.toHaveProperty('modelSpecs');
     });
 
@@ -352,7 +416,7 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.statusCode).toBe(500);
-      expect(response.body).toHaveProperty('error');
+      expect(response.body).toEqual({ error: 'Failed to load startup config' });
     });
 
     it('should not expose endpointsDropParamsMap to unauthenticated callers', async () => {
@@ -389,6 +453,27 @@ describe('GET /api/config', () => {
       const anonymous = await request(createApp()).get('/api/config');
       expect(anonymous.statusCode).toBe(200);
       expect(anonymous.body).not.toHaveProperty('ragEnabled');
+    });
+
+    it('drops a policy link that would run script and keeps the rest of the interface', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: {
+          privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+          termsOfService: { externalUrl: 'JavaScript:alert(1)', modalAcceptance: true },
+          modelSelect: true,
+        },
+      });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.interface).toEqual({
+        privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+        termsOfService: { modalAcceptance: true },
+        modelSelect: true,
+      });
     });
 
     it('should call getAppConfig with role, userId, and tenantId', async () => {
@@ -732,10 +817,18 @@ describe('GET /api/config', () => {
       });
     });
 
+    /** A held-capability set that grants connection access and prompt-sync manage access. */
+    const fullLangfuseAccess = () =>
+      new Set([
+        SystemCapabilities.ACCESS_ADMIN,
+        SystemCapabilities.MANAGE_CONFIGS,
+        configCapability('langfuse'),
+        SystemCapabilities.MANAGE_PROMPTS,
+      ]);
+
     it('should advertise Langfuse fanout only when the toggle and collector URL are configured', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env.LANGFUSE_FANOUT_ENABLED = 'true';
       const app = createApp(mockUser);
 
@@ -756,8 +849,7 @@ describe('GET /api/config', () => {
 
     it('hides Langfuse connection access when tenant export is emergency-disabled', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env.LANGFUSE_FANOUT_ENABLED = 'true';
       process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
       process.env.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED = 'true';
@@ -767,8 +859,7 @@ describe('GET /api/config', () => {
 
       expect(response.body.langfuseFanoutEnabled).toBe(true);
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasCapability).not.toHaveBeenCalled();
-      expect(mockHasConfigCapability).not.toHaveBeenCalled();
+      expect(mockGetHeldCapabilities).not.toHaveBeenCalled();
     });
 
     it('advertises Langfuse connection access from capabilities rather than the user role', async () => {
@@ -778,34 +869,81 @@ describe('GET /api/config', () => {
       process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
       const app = createApp({ ...mockUser, role: 'DELEGATED_ADMIN' });
 
-      mockHasCapability.mockImplementation(
-        async (_user, capability) => capability === 'access:admin',
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, configCapability('langfuse')]),
       );
-      mockHasConfigCapability.mockResolvedValue(true);
       let response = await request(app).get('/api/config');
       expect(response.body.langfuseConnectionAccess).toBe(true);
 
-      mockHasConfigCapability.mockResolvedValue(false);
+      mockGetHeldCapabilities.mockResolvedValue(new Set([SystemCapabilities.ACCESS_ADMIN]));
       response = await request(app).get('/api/config');
       expect(response.body.langfuseFanoutEnabled).toBe(true);
       expect(response.body.langfuseConnectionAccess).toBe(false);
     });
 
-    it('skips the Langfuse management capability check without admin access', async () => {
+    it('advertises prompt-sync manage access alongside connection access when the admin holds manage:prompts', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(false);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
+      process.env.LANGFUSE_FANOUT_ENABLED = 'true';
+      process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.langfuseConnectionAccess).toBe(true);
+      expect(response.body.langfusePromptManageAccess).toBe(true);
+      expect(mockGetHeldCapabilities).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.arrayContaining([SystemCapabilities.MANAGE_PROMPTS]),
+      );
+    });
+
+    it('withholds prompt-sync manage access when the admin lacks manage:prompts', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.LANGFUSE_FANOUT_ENABLED = 'true';
+      process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
+      const app = createApp(mockUser);
+
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, SystemCapabilities.MANAGE_CONFIGS]),
+      );
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.langfuseConnectionAccess).toBe(true);
+      expect(response.body.langfusePromptManageAccess).toBe(false);
+    });
+
+    it('withholds prompt-sync manage access when Langfuse connection access itself is unavailable, even if manage:prompts is held', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.LANGFUSE_FANOUT_ENABLED = 'true';
+      process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
+      const app = createApp(mockUser);
+
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, SystemCapabilities.MANAGE_PROMPTS]),
+      );
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+      expect(response.body.langfusePromptManageAccess).toBe(false);
+      expect(mockGetHeldCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    it('withholds Langfuse connection access without admin access', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(new Set());
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
 
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasConfigCapability).not.toHaveBeenCalled();
     });
 
     it('advertises Langfuse connection access by default in single-tenant mode', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
@@ -816,8 +954,7 @@ describe('GET /api/config', () => {
 
     it('hides single-tenant connection settings when environment credentials are configured', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
       process.env.LANGFUSE_SECRET_KEY = 'sk-env';
       const app = createApp(mockUser);
@@ -825,8 +962,7 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasCapability).not.toHaveBeenCalled();
-      expect(mockHasConfigCapability).not.toHaveBeenCalled();
+      expect(mockGetHeldCapabilities).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -834,15 +970,73 @@ describe('GET /api/config', () => {
       ['LANGFUSE_SAMPLE_RATE', '0'],
     ])('hides Langfuse connection settings when %s=%s', async (key, value) => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env[key] = value;
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
 
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasCapability).not.toHaveBeenCalled();
+      expect(mockGetHeldCapabilities).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['environment credentials', { LANGFUSE_PUBLIC_KEY: 'pk-env', LANGFUSE_SECRET_KEY: 'sk-env' }],
+      ['tracing disabled', { LANGFUSE_TRACING_ENABLED: 'false' }],
+      ['zero sampling', { LANGFUSE_SAMPLE_RATE: '0' }],
+      ['strict tenants without fanout', { TENANT_ISOLATION_STRICT: 'true' }],
+      [
+        'tenant export disabled',
+        {
+          LANGFUSE_FANOUT_ENABLED: 'true',
+          LANGFUSE_FANOUT_COLLECTOR_URL: 'http://collector:4318',
+          LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED: 'true',
+        },
+      ],
+    ])('advertises prompt access with %s without advertising trace access', async (_mode, env) => {
+      Object.assign(process.env, env, { LANGFUSE_PROMPT_SYNC_AVAILABLE: 'true' });
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
+      const response = await request(createApp(mockUser)).get('/api/config');
+      expect(response.status).toBe(200);
+      expect(response.body.langfusePromptSyncAccess).toBe(true);
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+      expect(response.body.langfusePromptManageAccess).toBe(true);
+      expect(mockGetHeldCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [false, true],
+      [true, false],
+    ])('requires admin=%s and Langfuse manage=%s for prompt access', async (admin, manage) => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      process.env.LANGFUSE_TRACING_ENABLED = 'false';
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([
+          ...(admin ? [SystemCapabilities.ACCESS_ADMIN] : []),
+          ...(manage ? [configCapability('langfuse')] : []),
+          SystemCapabilities.MANAGE_PROMPTS,
+        ]),
+      );
+      const response = await request(createApp(mockUser)).get('/api/config');
+      expect(response.body.langfusePromptSyncAccess).toBe(false);
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+    });
+
+    it('shows prompt settings without sync permission when tracing is disabled', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      process.env.LANGFUSE_TRACING_ENABLED = 'false';
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, configCapability('langfuse')]),
+      );
+
+      const response = await request(createApp(mockUser)).get('/api/config');
+
+      expect(response.body.langfusePromptSyncAccess).toBe(true);
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+      expect(response.body.langfusePromptManageAccess).toBe(false);
     });
 
     it('should include post-login informational fields', async () => {

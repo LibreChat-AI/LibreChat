@@ -1,9 +1,6 @@
 import { useMemo, useCallback } from 'react';
 import { useAtom } from 'jotai';
-import {
-  pendingQuotesByConvoId,
-  pendingManualSkillsByConvoId,
-} from '~/components/Chat/Input/Composer/state';
+import { pendingQuotesByConvoId, pendingManualSkillsByConvoId } from '@librechat/chat/react';
 
 export type ComposerItemKind = 'quote' | 'skill';
 

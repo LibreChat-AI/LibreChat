@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import type { Page, Locator } from '@playwright/test';
 import {
@@ -92,10 +93,10 @@ test.describe('context usage gauge', () => {
      *  token-config endpoint prices mock models at the default rate, and the
      *  fake model emits usage — so a $ value must render. A single (unbranched)
      *  conversation shows only the branch cost, no all-branches total line. */
-    const costSection = popover.getByTestId('token-usage-cost');
+    const costSection = popover.getByTestId('token-usage-totals').getByTestId('usage-cost');
     await expect(costSection).toBeVisible();
     await expect(costSection.getByText(/\$\d|<\$0\.01/).first()).toBeVisible();
-    await expect(costSection.getByText('All branches')).toHaveCount(0);
+    await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
     /** Persistence (Parts A + B): after reload the breakdown rehydrates from
@@ -107,7 +108,7 @@ test.describe('context usage gauge', () => {
     const reloaded = await openBreakdown(page);
     await expect(reloaded.getByTestId('context-breakdown')).toBeVisible({ timeout: 10000 });
     await expect(reloaded.getByTestId('token-usage-last-turn')).toContainText('Input (uncached)');
-    const reloadedCost = reloaded.getByTestId('token-usage-cost');
+    const reloadedCost = reloaded.getByTestId('token-usage-totals').getByTestId('usage-cost');
     await expect(reloadedCost).toBeVisible();
     await expect(reloadedCost.getByText(/\$\d|<\$0\.01/).first()).toBeVisible();
   });
@@ -133,7 +134,7 @@ test.describe('context usage gauge', () => {
 
     /** Single branch: branch cost == total, so no all-branches line renders. */
     let popover = await openBreakdown(page);
-    await expect(popover.getByTestId('token-usage-cost')).toBeVisible();
+    await expect(popover.getByTestId('token-usage-totals').getByTestId('usage-cost')).toBeVisible();
     await expect(popover.getByText('All branches')).toHaveCount(0);
     await page.keyboard.press('Escape');
 
@@ -153,7 +154,7 @@ test.describe('context usage gauge', () => {
 
     /** Branch cost is shown live for the regenerated branch. */
     popover = await openBreakdown(page);
-    await expect(popover.getByTestId('token-usage-cost')).toBeVisible();
+    await expect(popover.getByTestId('token-usage-totals').getByTestId('usage-cost')).toBeVisible();
     await page.keyboard.press('Escape');
 
     /** After reload both branches rehydrate from persisted metadata.usage, so
@@ -162,10 +163,12 @@ test.describe('context usage gauge', () => {
     await page.reload({ timeout: 15000 });
     await expect(mockReply(page)).toBeVisible({ timeout: 20000 });
     const reloaded = await openBreakdown(page);
-    const costSection = reloaded.getByTestId('token-usage-cost');
+    const costSection = reloaded.getByTestId('token-usage-totals').getByTestId('usage-cost');
     await expect(costSection).toBeVisible();
-    await expect(costSection.getByText('Cost (this branch)')).toBeVisible();
-    await expect(costSection.getByText('All branches')).toBeVisible();
+    await expect(costSection).toContainText('Cost (this branch)');
+    await expect(
+      reloaded.getByTestId('token-usage-all-branches').getByTestId('usage-cost'),
+    ).toBeVisible();
   });
 
   test('preserves the granular breakdown after switching branches', async ({ page }) => {
@@ -206,7 +209,7 @@ test.describe('context usage gauge', () => {
      *  flushed usage is restored from the sticky usage history even though its
      *  cache message lacks metadata.usage and B's regenerate dropped it. */
     const popover = page.getByRole('region', { name: 'Context usage' });
-    const costSection = popover.getByTestId('token-usage-cost');
+    const costSection = popover.getByTestId('token-usage-totals').getByTestId('usage-cost');
     await expect(costSection).toBeVisible();
     /** Branch A also has siblings, so both a branch-cost row and an all-branches
      *  total render — assert at least one cost value is present. */
@@ -252,6 +255,86 @@ test.describe('context usage gauge', () => {
       'true',
     );
     await expect(popover.getByTestId('token-usage-totals')).toBeVisible({ timeout: 10000 });
+  });
+
+  test('reflows condensed sections inside the viewport with keyboard-accessible details', async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120000);
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await sendAndAwaitReply(page, 'hello');
+    const popover = await openBreakdown(page);
+    await expect(popover).toHaveCSS('container-type', 'inline-size');
+    const dialog = page.getByRole('dialog', { name: 'Context usage' });
+    const details = popover.getByTestId('context-details');
+    const lastTurn = popover.getByTestId('token-usage-last-turn');
+    const disclosure = lastTurn.getByRole('button');
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    await expect(lastTurn.getByText('Cache read', { exact: true })).toBeVisible();
+
+    for (const viewport of [
+      { width: 1280, height: 900, columns: 2 },
+      { width: 768, height: 800, columns: 2 },
+      { width: 375, height: 812, columns: 1 },
+      { width: 320, height: 568, columns: 1 },
+      { width: 1280, height: 450, columns: 2 },
+    ]) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await expect
+        .poll(() =>
+          details.evaluate((element) =>
+            getComputedStyle(element).gridTemplateColumns.split(' ').length,
+          ),
+        )
+        .toBe(viewport.columns);
+      await expect
+        .poll(async () => {
+          const box = await dialog.boundingBox();
+          return (
+            box != null &&
+            box.x >= 7 &&
+            box.y >= 7 &&
+            box.x + box.width <= viewport.width - 7 &&
+            box.y + box.height <= viewport.height - 7
+          );
+        })
+        .toBe(true);
+      await expect
+        .poll(() => dialog.evaluate((element) => element.scrollWidth <= element.clientWidth))
+        .toBe(true);
+    }
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await disclosure.focus();
+    await page.keyboard.press('Enter');
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    await expect(lastTurn.getByText('Cache write', { exact: true })).toBeVisible();
+    await page.keyboard.press('Space');
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    await expect(lastTurn.getByText('Input (uncached)', { exact: true })).toBeVisible();
+
+    const accessibility = await new AxeBuilder({ page })
+      .include('[data-testid="token-usage-card"]')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])
+      .analyze();
+    expect(accessibility.violations).toEqual([]);
+    await testInfo.attach('context-panel-desktop', {
+      body: await dialog.screenshot(),
+      contentType: 'image/png',
+    });
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect
+      .poll(() =>
+        details.evaluate((element) =>
+          getComputedStyle(element).gridTemplateColumns.split(' ').length,
+        ),
+      )
+      .toBe(1);
+    await testInfo.attach('context-panel-mobile', {
+      body: await dialog.screenshot(),
+      contentType: 'image/png',
+    });
   });
 
   test('hides on a new chat, then reveals the breakdown on hover and pins it on click', async ({

@@ -1,5 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import {
   Constants,
   ContentTypes,
@@ -29,7 +30,6 @@ import {
   pendingUsageFamily,
 } from '~/components/Chat/Input/TokenUsage/store';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
-import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
 import useChatFunctions from '../useChatFunctions';
 import { isPasteSubmitted } from '~/utils';
 

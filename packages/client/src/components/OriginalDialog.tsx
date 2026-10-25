@@ -381,7 +381,7 @@ const DialogContent: React.ForwardRefExoticComponent<
             aria-hidden="true"
           />
           {showCloseButton && (
-            <DialogPrimitive.Close className="ring-ring-primary ring-offset-surface-dialog focus:ring-focus-control data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary min-h-theme-target min-w-theme-target absolute top-4 right-4 inline-flex items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+            <DialogPrimitive.Close className="ring-ring-primary ring-offset-surface-dialog focus:ring-focus-control data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary min-h-theme-target min-w-theme-target absolute inset-e-4 top-4 inline-flex items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
               <X className="size-theme-icon-lg" aria-hidden="true" />
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
@@ -398,7 +398,7 @@ const DialogHeader: {
   displayName: string;
 } = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
   <div
-    className={cn('space-y-theme-dialog-header flex flex-col text-center sm:text-left', className)}
+    className={cn('space-y-theme-dialog-header flex flex-col text-center sm:text-start', className)}
     {...props}
   />
 );

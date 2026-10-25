@@ -22,9 +22,12 @@ export * from './mcp/mcpConfig';
 export * from './mcp/capabilities';
 export * from './mcp/authority';
 export * from './mcp/registry/MCPServersRegistry';
+export * from './mcp/registry/policy';
+export { reportStoredMCPTombstones } from './mcp/registry/hidden';
 export * from './mcp/MCPManager';
 export * from './mcp/connection';
 export * from './mcp/toolsChanged';
+export * from './mcp/defer';
 export * from './mcp/oauth';
 export * from './mcp/auth';
 export * from './mcp/zod';
@@ -134,6 +137,8 @@ export * from './stream';
 export { memoryDiagnostics } from './utils/memory';
 /* RUM */
 export * from './rum/proxy';
+export * from './rum/policy';
+export * from './rum/config';
 export * from './rum/limiter';
 /* OpenAPI */
 export { createOpenApiRouter } from './openapi/router';

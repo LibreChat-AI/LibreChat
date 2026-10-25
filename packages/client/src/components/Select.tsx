@@ -146,14 +146,14 @@ const SelectItem: React.ForwardRefExoticComponent<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'focus:bg-surface-hover focus:text-text-primary relative flex w-full cursor-pointer items-center rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      'focus:bg-surface-hover focus:text-text-primary relative flex w-full cursor-pointer items-center rounded-sm py-1.5 ps-2 pe-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       disabledInkClasses,
       'hover:bg-surface-hover rounded-lg',
       className,
     )}
     {...props}
   >
-    <span className="size-theme-icon absolute right-2 flex items-center justify-center">
+    <span className="size-theme-icon absolute inset-e-2 flex items-center justify-center">
       <SelectPrimitive.ItemIndicator>
         <CheckIcon className="size-theme-icon" />
       </SelectPrimitive.ItemIndicator>

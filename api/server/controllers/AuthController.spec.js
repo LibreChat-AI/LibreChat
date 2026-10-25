@@ -3142,7 +3142,7 @@ describe('resetPasswordController', () => {
     expect(deleteAllUserSessions).not.toHaveBeenCalled();
     expect(deletePasskeysByUser).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({ message: resetError.message });
+    expect(res.json).toHaveBeenCalledWith({ message: 'Password reset failed' });
     expect(logger.error).toHaveBeenCalledWith('[resetPasswordController]', resetError);
   });
 });

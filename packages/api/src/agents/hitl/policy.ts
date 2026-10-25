@@ -10,15 +10,6 @@ import type { ToolPolicyConfig } from '@librechat/agents';
 import type { MCPToolAlias } from '~/tools/classification';
 
 /**
- * Default decisions offered to the user for a paused tool call.
- *
- * `'respond'` is intentionally NOT in the default set: it represents the agent
- * substituting a synthetic tool result, which is rarely the right ergonomic for
- * a stock approval prompt. Hosts that want it can pass an override.
- */
-const DEFAULT_REVIEW_DECISIONS: Agents.ToolApprovalDecisionType[] = ['approve', 'reject', 'edit'];
-
-/**
  * Layered sources that combine into the effective tool-approval policy for a turn.
  *
  * Endpoint policy remains the administrative baseline. Attached code environments
@@ -258,40 +249,6 @@ export function mapToolApprovalPolicy(
     config.reason = policy.reason;
   }
   return Object.keys(config).length > 0 ? config : undefined;
-}
-
-/** Tool-call shape consumed by {@link buildToolApprovalPayload}. */
-export interface ToolApprovalCallInput {
-  name: string;
-  arguments: string | Record<string, unknown>;
-  tool_call_id: string;
-  description?: string;
-}
-
-/**
- * Build a tool-approval interrupt payload from one or more paused tool calls.
- *
- * Mirrors the SDK's `ToolApprovalInterruptPayload` shape so this can be used
- * to synthesize payloads in tests, or by the host before the SDK upgrade ships.
- */
-export function buildToolApprovalPayload(
-  toolCalls: ToolApprovalCallInput[],
-  decisionsByToolName?: Record<string, Agents.ToolApprovalDecisionType[]>,
-): Agents.ToolApprovalInterruptPayload {
-  return {
-    type: 'tool_approval',
-    action_requests: toolCalls.map((tc) => ({
-      name: tc.name,
-      arguments: tc.arguments,
-      tool_call_id: tc.tool_call_id,
-      description: tc.description,
-    })),
-    review_configs: toolCalls.map((tc) => ({
-      action_name: tc.name,
-      tool_call_id: tc.tool_call_id,
-      allowed_decisions: decisionsByToolName?.[tc.name] ?? DEFAULT_REVIEW_DECISIONS,
-    })),
-  };
 }
 
 /** Require one uniquely identified review policy for every paused tool call. */

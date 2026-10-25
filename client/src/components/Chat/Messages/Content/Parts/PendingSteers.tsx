@@ -1,16 +1,20 @@
 import { memo, useMemo, useRef, useState } from 'react';
+import { hasLiveRunPause } from '@librechat/chat';
 import { Clock, TextQuote, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
+import {
+  useSteerCancel,
+  useSteerMoveToQueue,
+  useSteerRehome,
+  useSteerEscalate,
+  useSteerRecovery,
+} from '@librechat/chat/react';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
-import useSteerCancel, { useSteerMoveToQueue, useSteerRehome } from '~/hooks/Chat/useSteerCancel';
 import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
-import useSteerRecovery from '~/hooks/Chat/useSteerRecovery';
-import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { cn, isLegacyDeliveryUncertain } from '~/utils';
 import { useLatestMessage } from '~/hooks/Messages';
@@ -158,7 +162,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
               files={steer.files}
               steerId={steer.steerId}
               createdAt={steer.createdAt}
-              receiptState={receiptState}
+              receiptState={steer.status === 'failed' ? null : receiptState}
             />
             {steer.status === 'failed' ? (
               <div className="-mt-2 mb-2 flex flex-wrap items-center justify-end gap-3 text-xs">

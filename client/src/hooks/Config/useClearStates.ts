@@ -1,21 +1,24 @@
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import { isSubmittingFamily, useClearSubmissions } from '@librechat/chat/react';
-import {
-  abortScrollFamily,
-  showStopButtonByIndex,
-  submissionStartFamily,
-} from '@librechat/chat/react';
 import {
   getReasoningStateKey,
   clearPendingComposerContext,
   clearPendingReasoningOverrides,
-} from '~/components/Chat/Input/Composer/state';
+  filesFamily,
+  presetFamily,
+  abortScrollFamily,
+  isSubmittingFamily,
+  optionSettingsFamily,
+  showStopButtonByIndex,
+  submissionStartFamily,
+  useClearSubmissions,
+} from '@librechat/chat/react';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
 import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { clearLocalStorage } from '~/utils/localStorage';
+import { activeRunFamily } from '~/hooks/SSE/atoms';
 import store from '~/store';
 
 export default function useClearStates() {
@@ -56,14 +59,13 @@ export default function useClearStates() {
             continue;
           }
 
-          reset(store.filesByIndex(key));
-          reset(store.presetByIndex(key));
+          jotaiStore.set(filesFamily(key), new Map());
+          jotaiStore.set(presetFamily(key), null);
           jotaiStore.set(showStopButtonByIndex(key), false);
           jotaiStore.set(abortScrollFamily(key), false);
           jotaiStore.set(submissionStartFamily(key), null);
           jotaiStore.set(isSubmittingFamily(key), false);
-          reset(store.optionSettingsFamily(key));
-          reset(store.showPopoverFamily(key));
+          jotaiStore.set(optionSettingsFamily(key), {});
           reset(store.showMentionPopoverFamily(key));
           reset(store.showPlusPopoverFamily(key));
           reset(store.showPromptsPopoverFamily(key));
@@ -72,7 +74,7 @@ export default function useClearStates() {
           reset(store.globalAudioURLFamily(key));
           reset(store.globalAudioFetchingFamily(key));
           reset(store.globalAudioPlayingFamily(key));
-          reset(store.activeRunFamily(key));
+          jotaiStore.set(activeRunFamily(key), null);
           reset(store.audioRunFamily(key));
           jotaiStore.set(siblingIdxFamily(siblingKey(key.toString())), 0);
         }

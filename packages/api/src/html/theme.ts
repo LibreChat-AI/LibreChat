@@ -4,9 +4,16 @@ import { logger } from '@librechat/data-schemas';
 import {
   THEME_BOOT_FILE,
   isBundledThemeName,
+  describeThemeModes,
+  validateThemeDefinition,
   DEPLOYMENT_THEME_BOOT_ID,
 } from 'librechat-data-provider';
-import type { BundledThemeBoot, DeploymentThemeBoot } from 'librechat-data-provider';
+import type {
+  ThemeBootModes,
+  ThemeDefinition,
+  BundledThemeBoot,
+  DeploymentThemeBoot,
+} from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import { rejectTenantHeader } from '../middleware/tenantHeader';
 import { isEnabled } from '../utils/common';
@@ -35,10 +42,26 @@ export function readBundledThemeBoot(distPath: string): BundledThemeBoot {
 }
 
 /**
+ * Both modes of the deployment theme as the boot script replays them: a bundled name from the
+ * build's file, an inline definition resolved here by the resolver the client runs. A definition
+ * the client would reject has none, so the shell keeps the stock palette the bundle falls back to.
+ */
+function resolveBootModes(
+  source: DeploymentThemeBoot['source'],
+  bundled: BundledThemeBoot,
+): ThemeBootModes | undefined {
+  if (typeof source === 'string') {
+    return isBundledThemeName(source) ? bundled[source] : undefined;
+  }
+  const definition = source as ThemeDefinition;
+  return validateThemeDefinition(definition).length === 0
+    ? describeThemeModes(definition)
+    : undefined;
+}
+
+/**
  * Embeds the deployment's `interface.theme` ahead of the shell's boot script, so a first-ever
- * visit paints it before `/api/config` answers. A bundled name carries both resolved modes for
- * the boot script; an inline definition carries only its source, which the bundle resolves at
- * its first render.
+ * visit paints it before `/api/config` answers, with both resolved modes for the boot script.
  */
 export function injectDeploymentThemeBoot(
   html: string,
@@ -48,8 +71,7 @@ export function injectDeploymentThemeBoot(
   if (source == null || html.includes(`id="${DEPLOYMENT_THEME_BOOT_ID}"`)) {
     return html;
   }
-  const modes =
-    typeof source === 'string' && isBundledThemeName(source) ? bundled[source] : undefined;
+  const modes = resolveBootModes(source, bundled);
   const boot: DeploymentThemeBoot = { source, ...(modes && { modes }) };
   /** A `<` in the payload could close the block; it never has to be raw. */
   const payload = JSON.stringify(boot).replace(/</g, '\\u003c');

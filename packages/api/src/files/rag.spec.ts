@@ -12,6 +12,7 @@ jest.mock('~/crypto/jwt', () => ({
 
 jest.mock('axios', () => ({
   delete: jest.fn(),
+  post: jest.fn(),
   interceptors: {
     request: { use: jest.fn(), eject: jest.fn() },
     response: { use: jest.fn(), eject: jest.fn() },
@@ -19,7 +20,7 @@ jest.mock('axios', () => ({
 }));
 
 import axios from 'axios';
-import { deleteRagFile } from './rag';
+import { deleteRagFile, hasEntityEmbeddings, createVectorFileDeleter } from './rag';
 import { logger } from '@librechat/data-schemas';
 import { generateShortLivedToken } from '~/crypto/jwt';
 
@@ -146,5 +147,132 @@ describe('deleteRagFile', () => {
       expect(result).toBe(false);
       expect(mockedLogger.error).toHaveBeenCalledWith('[deleteRagFile] No user ID provided');
     });
+  });
+});
+
+describe('hasEntityEmbeddings', () => {
+  const originalEnv = process.env;
+  const params = { userId: 'user1', file_id: 'file1', entity_id: 'agent1', query: 'notes.pdf' };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env = { ...originalEnv, RAG_API_URL: 'http://localhost:8000' };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('asks RAG for chunks of the file under the entity', async () => {
+    mockedAxios.post.mockResolvedValueOnce({
+      data: [[{ page_content: 'x', metadata: { user_id: 'agent1' } }, 0.1]],
+    });
+
+    await expect(hasEntityEmbeddings(params)).resolves.toBe(true);
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      'http://localhost:8000/query',
+      { file_id: 'file1', query: 'notes.pdf', k: 10, entity_id: 'agent1' },
+      {
+        headers: {
+          Authorization: 'Bearer mock-jwt-token',
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+  });
+
+  it("ignores chunks RAG returns because they are the requesting user's own", async () => {
+    mockedAxios.post.mockResolvedValueOnce({
+      data: [[{ page_content: 'x', metadata: { user_id: 'user1' } }, 0.1]],
+    });
+
+    await expect(hasEntityEmbeddings(params)).resolves.toBe(false);
+  });
+
+  it("finds the entity's chunks behind a requesting user's copy of the file", async () => {
+    mockedAxios.post.mockResolvedValueOnce({
+      data: [
+        [{ page_content: 'x', metadata: { user_id: 'user1' } }, 0.1],
+        [{ page_content: 'x', metadata: { user_id: 'agent1' } }, 0.1],
+      ],
+    });
+
+    await expect(hasEntityEmbeddings(params)).resolves.toBe(true);
+  });
+
+  it('reports no embeddings when RAG returns no chunks', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: [] });
+
+    await expect(hasEntityEmbeddings(params)).resolves.toBe(false);
+  });
+
+  it('passes the timeout to the request', async () => {
+    mockedAxios.post.mockResolvedValueOnce({ data: [] });
+
+    await hasEntityEmbeddings({ ...params, timeoutMs: 1234 });
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({ timeout: 1234 }),
+    );
+  });
+
+  it('rejects when RAG cannot be asked', async () => {
+    mockedAxios.post.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+    await expect(hasEntityEmbeddings(params)).rejects.toThrow('connect ECONNREFUSED');
+  });
+
+  it('reports no embeddings without asking when RAG is not configured', async () => {
+    delete process.env.RAG_API_URL;
+
+    await expect(hasEntityEmbeddings(params)).resolves.toBe(false);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+});
+
+describe('createVectorFileDeleter receipts', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const file = { file_id: 'retained-file', embedded: true };
+  const req = { user: { id: 'owner' } };
+  const setup = (baseUrl: string | undefined = 'https://rag.example') => {
+    const remove = createVectorFileDeleter({
+      baseUrl,
+      httpClient: axios,
+      generateToken: () => 'test-token',
+    });
+    return remove;
+  };
+
+  it('returns a receipt only after a confirmed delete', async () => {
+    mockedAxios.delete.mockResolvedValueOnce({ status: 200 });
+    expect(await setup()(req, file)).toEqual({ deleted: true });
+    expect(mockedAxios.delete).toHaveBeenCalledWith(
+      'https://rag.example/documents',
+      expect.objectContaining({ data: ['retained-file'] }),
+    );
+  });
+
+  it('confirms an already absent vector copy', async () => {
+    mockedAxios.delete.mockRejectedValueOnce({
+      code: 'ERR_BAD_REQUEST',
+      response: { status: 404 },
+    });
+    expect(await setup()(req, file)).toEqual({ deleted: true });
+  });
+
+  it('does not issue a receipt for an unconfigured store or a non-embedded file', async () => {
+    expect(await setup('')(req, file)).toBeUndefined();
+    expect(await setup()(req, { ...file, embedded: false })).toBeUndefined();
+  });
+
+  it.each([
+    new Error('network down'),
+    { response: { status: 403 } },
+    { response: { status: 500 } },
+  ])('propagates failed requests without a deletion receipt', async (error) => {
+    mockedAxios.delete.mockRejectedValueOnce(error);
+    await expect(setup()(req, file)).rejects.toBe(error);
   });
 });

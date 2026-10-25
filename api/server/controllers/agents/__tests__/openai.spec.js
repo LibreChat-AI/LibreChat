@@ -175,8 +175,11 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createFileProvisionRecovery: () =>
+    jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  isTemporaryTurn: (...args) => jest.requireActual('@librechat/api').isTemporaryTurn(...args),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
   createAgentExecutionContext: (context) => context,
@@ -908,6 +911,15 @@ describe('OpenAIChatCompletionController', () => {
       }),
     );
     expect(createSubagentUsageSink).toHaveBeenCalledWith(expect.any(Array));
+  });
+
+  it('runs a temporary conversation as temporary for Langfuse', async () => {
+    const { createRun } = require('@librechat/api');
+    req.resolvedConversation = { isTemporary: true };
+
+    await OpenAIChatCompletionController(req, res);
+
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({ isTemporary: true }));
   });
 
   it('uses collected usage for the non-streaming response', async () => {

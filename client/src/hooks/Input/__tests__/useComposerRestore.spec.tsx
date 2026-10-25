@@ -2,13 +2,13 @@ import React from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { ReasoningEffort } from 'librechat-data-provider';
 import { Provider as JotaiProvider, createStore } from 'jotai';
-import type { TMessage } from 'librechat-data-provider';
-import type { ExtendedFile } from '~/common';
 import {
   pendingQuotesByConvoId,
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
+} from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
+import type { ExtendedFile } from '~/common';
 import useComposerRestore from '../useComposerRestore';
 
 /**

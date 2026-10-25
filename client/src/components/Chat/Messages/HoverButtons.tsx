@@ -229,7 +229,7 @@ const HoverButtons = ({
           isLast={isLast}
           disabled={!canCopy}
           className={cn(
-            'ml-0 flex items-center gap-1.5 text-xs',
+            'ms-0 flex items-center gap-1.5 text-xs',
             isSubmitting && isCreatedByUser ? 'no-touch:opacity-0 group-hover:opacity-100' : '',
           )}
           dataTestId={!isCreatedByUser ? 'copy-response-button' : undefined}

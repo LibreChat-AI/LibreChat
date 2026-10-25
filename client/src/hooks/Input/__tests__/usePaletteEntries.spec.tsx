@@ -2,8 +2,8 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
+import { pendingManualSkillsByConvoId } from '@librechat/chat/react';
 import { ArtifactModes, PermissionTypes } from 'librechat-data-provider';
-import { pendingManualSkillsByConvoId } from '~/components/Chat/Input/Composer/state';
 import usePaletteEntries from '../usePaletteEntries';
 
 /**

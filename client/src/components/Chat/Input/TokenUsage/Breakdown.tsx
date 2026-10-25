@@ -16,9 +16,10 @@ import {
 import type { MeterSegment } from '@librechat/client';
 import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
 import type { CurrencyConfig } from '~/utils';
-import { groupToolTokens, formatTokens, formatCost, normalizeTokenCount, cn } from '~/utils';
+import { groupToolTokens, formatTokens, normalizeTokenCount, cn } from '~/utils';
 import { contextBreakdownExpandedAtom } from './store';
 import { useLocalize } from '~/hooks';
+import Usage from './Usage';
 
 interface RowProps {
   label: string;
@@ -66,7 +67,7 @@ function Row({
       <span className="text-text-primary shrink-0 font-medium whitespace-nowrap">
         {formatTokens(safeValue)}
         {percent != null && (
-          <span className="text-text-secondary ml-1 text-xs" aria-hidden="true">
+          <span className="text-text-secondary ms-1 text-xs" aria-hidden="true">
             ({Math.round(percent)}%)
           </span>
         )}
@@ -74,7 +75,7 @@ function Row({
     </>
   );
   const className = cn(
-    'flex w-full items-center justify-between gap-4 text-left text-sm',
+    'flex w-full items-center justify-between gap-4 text-start text-sm',
     onClick != null &&
       'rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-text-primary',
   );
@@ -351,14 +352,14 @@ export default function Breakdown({
     hoveredSegment != null && hoverIsValid(hoveredSegment) ? hoveredSegment : null;
 
   return (
-    <div className="w-full" role="region" aria-label={localize('com_ui_context_usage')}>
+    <div className="@container w-full" role="region" aria-label={localize('com_ui_context_usage')}>
       <Collapsible open={expanded} onOpenChange={setExpanded}>
         <CollapsibleTrigger
           focusOutline="hidden"
           className="group focus-visible:ring-text-primary flex w-full flex-wrap items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
           data-testid="context-breakdown-toggle"
         >
-          <span className="text-text-primary min-w-0 text-left text-sm font-medium">
+          <span className="text-text-primary min-w-0 text-start text-sm font-medium">
             {localize('com_ui_context_window')}
           </span>
           <span className="text-text-secondary flex min-w-0 items-center gap-1 text-xs font-medium">
@@ -389,355 +390,286 @@ export default function Breakdown({
             outside the animation, and unmounting the content would drop it in a
             single 12px jump after the height reached zero. */}
         <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none">
-          <div className="mt-3 space-y-3">
-            {(pressure !== 'none' || insights.length > 0) && (
-              <div className="relative flex items-center justify-between gap-2">
-                {pressure !== 'none' ? (
-                  <p
-                    className={cn(
-                      'flex min-w-0 items-center gap-1.5 text-xs',
-                      pressure === 'danger' ? 'text-text-destructive' : 'text-text-warning',
-                    )}
-                  >
-                    <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
-                    {localize(
-                      pressure === 'danger'
-                        ? 'com_ui_context_pressure_danger'
-                        : 'com_ui_context_pressure_warn',
-                    )}
-                  </p>
-                ) : (
-                  <span />
-                )}
-                {insights.length > 0 && (
-                  <HoverCard open={insightsOpen} onOpenChange={setInsightsOpen}>
-                    <HoverCardTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="quiet"
-                        size="icon"
-                        aria-label={localize('com_ui_context_insights')}
-                        aria-expanded={insightsOpen}
-                        aria-controls={insightsOpen ? insightsId : undefined}
-                        data-testid="context-insights-toggle"
-                        className="size-6"
-                        onFocus={() => setInsightsOpen(true)}
-                        onBlur={() => setInsightsOpen(false)}
-                        onClick={() => setInsightsOpen(true)}
-                      >
-                        <Info className="size-3.5" aria-hidden="true" />
-                      </Button>
-                    </HoverCardTrigger>
-                    <HoverCardPortal>
-                      <HoverCardContent
-                        id={insightsId}
-                        role="region"
-                        aria-label={localize('com_ui_context_insights')}
-                        data-testid="context-hints"
-                        className="max-w-[calc(100vw-2rem)] motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none"
-                        align="end"
-                      >
-                        {insights.map((insight, index) => (
-                          <p className="text-text-secondary text-xs break-words" key={index}>
-                            {insight}
-                          </p>
-                        ))}
-                      </HoverCardContent>
-                    </HoverCardPortal>
-                  </HoverCard>
-                )}
-              </div>
-            )}
-            <div
-              className="space-y-1.5"
-              data-testid={breakdown ? 'context-breakdown' : 'context-estimate'}
-            >
-              {breakdown ? (
-                <>
-                  {segments.map(({ id, label, value, ...segment }) => {
-                    const shouldRender =
-                      value > 0 || (id === 'tool-calls' && toolCallTokens != null);
-                    if (!shouldRender) {
-                      return null;
-                    }
-                    return (
-                      <Fragment key={id}>
-                        {id === 'tool-calls' && hasToolCounts ? (
-                          <Row
-                            label={label}
-                            value={value}
-                            max={maxTokens}
-                            segment={segment}
-                            id={id}
-                            onHoverChange={setHoveredSegment}
-                            onClick={() => setToolsExpanded((open) => !open)}
-                            expanded={toolsExpanded}
-                            controls={toolsExpanded ? toolBreakdownId : undefined}
-                          />
-                        ) : (
-                          <Row
-                            label={label}
-                            value={value}
-                            max={maxTokens}
-                            segment={segment}
-                            id={id}
-                            onHoverChange={setHoveredSegment}
-                          />
-                        )}
-                        {id === 'tool-calls' && toolsExpanded && hasToolCounts && (
-                          <div id={toolBreakdownId} className="space-y-1 pl-6">
-                            <p className="text-text-tertiary text-xs font-medium">
-                              {localize('com_ui_context_tool_breakdown')}
-                            </p>
-                            {toolBreakdown.map((tool) => (
-                              <Row key={tool.name} label={tool.name} value={tool.tokens} />
-                            ))}
-                          </div>
-                        )}
-                        {id === 'system' && dynamicInstructionTokens > 0 && (
-                          <div className="pl-6">
-                            <Row
-                              label={localize('com_ui_context_dynamic_instructions')}
-                              value={dynamicInstructionTokens}
-                            />
-                          </div>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                  {/** The reconciling call's cached prompt share is already inside
-                   *  the segments above (reconciliation counted it in `usedTokens`),
-                   *  so it renders indented, like the estimate path's tool-call
-                   *  share — as peer rows a fully cached prompt would show its
-                   *  tokens twice and the visible rows would sum past the meter. */}
-                  {(normalizeTokenCount(view.cacheRead) > 0 ||
-                    normalizeTokenCount(view.cacheWrite) > 0) && (
-                    <div className="space-y-1.5 pl-6">
-                      <p className="text-text-tertiary text-xs font-medium">
-                        {localize('com_ui_context_cache_last_call')}
-                      </p>
-                      {normalizeTokenCount(view.cacheRead) > 0 && (
-                        <Row
-                          label={localize('com_ui_context_cached')}
-                          value={normalizeTokenCount(view.cacheRead)}
-                          max={maxTokens}
-                        />
+          <div
+            className="mt-3 grid min-w-0 grid-cols-1 items-start gap-3 @min-[38rem]:grid-cols-2"
+            data-testid="context-details"
+          >
+            <div className="min-w-0 space-y-3">
+              {(pressure !== 'none' || insights.length > 0) && (
+                <div className="relative flex items-center justify-between gap-2">
+                  {pressure !== 'none' ? (
+                    <p
+                      className={cn(
+                        'flex min-w-0 items-center gap-1.5 text-xs',
+                        pressure === 'danger' ? 'text-text-destructive' : 'text-text-warning',
                       )}
-                      {normalizeTokenCount(view.cacheWrite) > 0 && (
-                        <Row
-                          label={localize('com_ui_context_cache_write')}
-                          value={normalizeTokenCount(view.cacheWrite)}
-                          max={maxTokens}
-                        />
+                    >
+                      <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+                      {localize(
+                        pressure === 'danger'
+                          ? 'com_ui_context_pressure_danger'
+                          : 'com_ui_context_pressure_warn',
                       )}
-                    </div>
-                  )}
-                  {freeTokens != null && (
-                    <Row
-                      label={localize('com_ui_context_free')}
-                      value={freeTokens}
-                      max={maxTokens}
-                      track
-                      id="free"
-                      onHoverChange={setHoveredSegment}
-                    />
-                  )}
-                </>
-              ) : (
-                <>
-                  {normalizeTokenCount(view.branchTotals.summaryBaseline) > 0 && (
-                    <Row
-                      label={localize('com_ui_context_summary')}
-                      value={view.branchTotals.summaryBaseline}
-                      max={maxTokens}
-                    />
-                  )}
-                  {view.messagesPruned ? (
-                    /** Over-window: the per-category split no longer describes what's
-                     *  sent, so show the pruned message total (incl. in-flight). */
-                    <Row
-                      label={localize('com_ui_context_messages')}
-                      value={view.messageTokens + view.liveTokens}
-                      max={maxTokens}
-                    />
-                  ) : (
-                    <>
-                      <Row label={localize('com_ui_input')} value={view.branchTotals.input} />
-                      <Row
-                        label={localize('com_ui_output')}
-                        value={view.branchTotals.output + view.liveTokens}
-                      />
-                      {normalizeTokenCount(view.estimatedTokens) > 0 && (
-                        <Row
-                          label={localize('com_ui_context_estimated')}
-                          value={view.estimatedTokens}
-                        />
-                      )}
-                    </>
-                  )}
-                  {/** Retained tool traffic is already inside the message rows above
-                   *  (their clamped tool-content share), so it renders as an indented
-                   *  subtotal — as a peer row the visible rows would sum past
-                   *  `usedTokens`. The snapshot path instead subtracts it from
-                   *  Messages, which is exact there; here the counted Input/Output
-                   *  rows are provider counts and this share is a char estimate, so
-                   *  subtracting it would corrupt them. */}
-                  {normalizeTokenCount(view.toolCallTokens) > 0 && (
-                    <div className="pl-6">
-                      <Row
-                        label={localize('com_ui_context_tool_calls')}
-                        value={normalizeTokenCount(view.toolCallTokens)}
-                      />
-                    </div>
-                  )}
-                  {view.overheadTokens > 0 && (
-                    <Row label={localize('com_ui_context_system')} value={view.overheadTokens} />
-                  )}
-                  {maxTokens == null && (
-                    <p className="text-text-secondary text-xs">
-                      {localize('com_ui_context_unknown')}
                     </p>
+                  ) : (
+                    <span />
                   )}
-                  <p className="text-text-secondary text-xs italic">
-                    {localize('com_ui_estimated')}
-                  </p>
-                </>
-              )}
-            </div>
-
-            <div className="border-border-light border-t" role="separator" />
-            <div className="space-y-1.5" data-testid="token-usage-last-turn">
-              <h3 className="text-text-tertiary text-xs font-semibold tracking-wider uppercase">
-                {view.turnInProgress
-                  ? localize('com_ui_context_current_turn')
-                  : localize('com_ui_context_last_turn')}
-              </h3>
-              {view.lastTurnUsage != null ? (
-                <>
-                  <Row
-                    label={localize('com_ui_context_uncached_input')}
-                    value={view.lastTurnUsage.input}
-                  />
-                  <Row label={localize('com_ui_cache_read')} value={view.lastTurnUsage.cacheRead} />
-                  <Row
-                    label={localize('com_ui_cache_write')}
-                    value={view.lastTurnUsage.cacheWrite}
-                  />
-                  <Row label={localize('com_ui_output')} value={view.lastTurnUsage.output} />
-                </>
-              ) : (
-                <p className="text-text-secondary text-xs">
-                  {view.turnInProgress
-                    ? localize('com_ui_context_waiting_usage')
-                    : localize('com_ui_context_unavailable_usage')}
-                </p>
-              )}
-            </div>
-
-            {hasUsage && (
-              <>
-                <div className="border-border-light border-t" role="separator" />
-                <div className="space-y-1.5" data-testid="token-usage-totals">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <h3 className="text-text-tertiary text-xs font-semibold tracking-wider uppercase">
-                      {localize('com_ui_context_totals')}
-                    </h3>
-                    <span className="text-text-tertiary text-xs">
-                      {localize('com_ui_context_this_branch')}
-                    </span>
-                  </div>
-                  <Row
-                    label={localize('com_ui_context_uncached_input')}
-                    value={branchUsage.input}
-                  />
-                  <Row label={localize('com_ui_output')} value={branchUsage.output} />
-                  {normalizeTokenCount(branchUsage.cacheRead) > 0 && (
-                    <Row label={localize('com_ui_cache_read')} value={branchUsage.cacheRead} />
-                  )}
-                  {normalizeTokenCount(branchUsage.cacheWrite) > 0 && (
-                    <Row label={localize('com_ui_cache_write')} value={branchUsage.cacheWrite} />
-                  )}
-                  {/** Subagent calls are accumulated per conversation for the session
-                   *  and are not attributed to a response; label them all-branches. */}
-                  {subagentTokens > 0 && (
-                    <Row label={localize('com_ui_context_subagents_all')} value={subagentTokens} />
+                  {insights.length > 0 && (
+                    <HoverCard open={insightsOpen} onOpenChange={setInsightsOpen}>
+                      <HoverCardTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          size="icon"
+                          aria-label={localize('com_ui_context_insights')}
+                          aria-expanded={insightsOpen}
+                          aria-controls={insightsOpen ? insightsId : undefined}
+                          data-testid="context-insights-toggle"
+                          className="size-6"
+                          onFocus={() => setInsightsOpen(true)}
+                          onBlur={() => setInsightsOpen(false)}
+                          onClick={() => setInsightsOpen(true)}
+                        >
+                          <Info className="size-3.5" aria-hidden="true" />
+                        </Button>
+                      </HoverCardTrigger>
+                      <HoverCardPortal>
+                        <HoverCardContent
+                          id={insightsId}
+                          role="region"
+                          aria-label={localize('com_ui_context_insights')}
+                          data-testid="context-hints"
+                          className="max-w-[calc(100vw-2rem)] motion-reduce:data-[state=closed]:animate-none motion-reduce:data-[state=open]:animate-none"
+                          align="end"
+                        >
+                          {insights.map((insight, index) => (
+                            <p className="text-text-secondary text-xs break-words" key={index}>
+                              {insight}
+                            </p>
+                          ))}
+                        </HoverCardContent>
+                      </HoverCardPortal>
+                    </HoverCard>
                   )}
                 </div>
-              </>
-            )}
-            {showTotal && (
+              )}
               <div
-                className="border-border-light space-y-1.5 border-t pt-2"
-                data-testid="token-usage-all-branches"
+                className="space-y-1.5"
+                data-testid={breakdown ? 'context-breakdown' : 'context-estimate'}
               >
-                <h3 className="text-text-tertiary text-xs font-semibold tracking-wider uppercase">
-                  {localize('com_ui_context_cost_total')}
-                </h3>
-                <Row
-                  label={localize('com_ui_context_uncached_input')}
-                  value={view.totalUsage.input}
-                />
-                <Row label={localize('com_ui_output')} value={view.totalUsage.output} />
-                {normalizeTokenCount(view.totalUsage.cacheRead) > 0 && (
-                  <Row label={localize('com_ui_cache_read')} value={view.totalUsage.cacheRead} />
-                )}
-                {normalizeTokenCount(view.totalUsage.cacheWrite) > 0 && (
-                  <Row label={localize('com_ui_cache_write')} value={view.totalUsage.cacheWrite} />
+                {breakdown ? (
+                  <>
+                    {segments.map(({ id, label, value, ...segment }) => {
+                      const shouldRender =
+                        value > 0 || (id === 'tool-calls' && toolCallTokens != null);
+                      if (!shouldRender) {
+                        return null;
+                      }
+                      return (
+                        <Fragment key={id}>
+                          {id === 'tool-calls' && hasToolCounts ? (
+                            <Row
+                              label={label}
+                              value={value}
+                              max={maxTokens}
+                              segment={segment}
+                              id={id}
+                              onHoverChange={setHoveredSegment}
+                              onClick={() => setToolsExpanded((open) => !open)}
+                              expanded={toolsExpanded}
+                              controls={toolsExpanded ? toolBreakdownId : undefined}
+                            />
+                          ) : (
+                            <Row
+                              label={label}
+                              value={value}
+                              max={maxTokens}
+                              segment={segment}
+                              id={id}
+                              onHoverChange={setHoveredSegment}
+                            />
+                          )}
+                          {id === 'tool-calls' && toolsExpanded && hasToolCounts && (
+                            <div id={toolBreakdownId} className="space-y-1 ps-6">
+                              <p className="text-text-tertiary text-xs font-medium">
+                                {localize('com_ui_context_tool_breakdown')}
+                              </p>
+                              {toolBreakdown.map((tool) => (
+                                <Row key={tool.name} label={tool.name} value={tool.tokens} />
+                              ))}
+                            </div>
+                          )}
+                          {id === 'system' && dynamicInstructionTokens > 0 && (
+                            <div className="ps-6">
+                              <Row
+                                label={localize('com_ui_context_dynamic_instructions')}
+                                value={dynamicInstructionTokens}
+                              />
+                            </div>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                    {/** The reconciling call's cached prompt share is already inside
+                     *  the segments above (reconciliation counted it in `usedTokens`),
+                     *  so it renders indented, like the estimate path's tool-call
+                     *  share — as peer rows a fully cached prompt would show its
+                     *  tokens twice and the visible rows would sum past the meter. */}
+                    {(normalizeTokenCount(view.cacheRead) > 0 ||
+                      normalizeTokenCount(view.cacheWrite) > 0) && (
+                      <div className="space-y-1.5 ps-6">
+                        <p className="text-text-tertiary text-xs font-medium">
+                          {localize('com_ui_context_cache_last_call')}
+                        </p>
+                        {normalizeTokenCount(view.cacheRead) > 0 && (
+                          <Row
+                            label={localize('com_ui_context_cached')}
+                            value={normalizeTokenCount(view.cacheRead)}
+                            max={maxTokens}
+                          />
+                        )}
+                        {normalizeTokenCount(view.cacheWrite) > 0 && (
+                          <Row
+                            label={localize('com_ui_context_cache_write')}
+                            value={normalizeTokenCount(view.cacheWrite)}
+                            max={maxTokens}
+                          />
+                        )}
+                      </div>
+                    )}
+                    {freeTokens != null && (
+                      <Row
+                        label={localize('com_ui_context_free')}
+                        value={freeTokens}
+                        max={maxTokens}
+                        track
+                        id="free"
+                        onHoverChange={setHoveredSegment}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {normalizeTokenCount(view.branchTotals.summaryBaseline) > 0 && (
+                      <Row
+                        label={localize('com_ui_context_summary')}
+                        value={view.branchTotals.summaryBaseline}
+                        max={maxTokens}
+                      />
+                    )}
+                    {view.messagesPruned ? (
+                      /** Over-window: the per-category split no longer describes what's
+                       *  sent, so show the pruned message total (incl. in-flight). */
+                      <Row
+                        label={localize('com_ui_context_messages')}
+                        value={view.messageTokens + view.liveTokens}
+                        max={maxTokens}
+                      />
+                    ) : (
+                      <>
+                        <Row label={localize('com_ui_input')} value={view.branchTotals.input} />
+                        <Row
+                          label={localize('com_ui_output')}
+                          value={view.branchTotals.output + view.liveTokens}
+                        />
+                        {normalizeTokenCount(view.estimatedTokens) > 0 && (
+                          <Row
+                            label={localize('com_ui_context_estimated')}
+                            value={view.estimatedTokens}
+                          />
+                        )}
+                      </>
+                    )}
+                    {/** Retained tool traffic is already inside the message rows above
+                     *  (their clamped tool-content share), so it renders as an indented
+                     *  subtotal — as a peer row the visible rows would sum past
+                     *  `usedTokens`. The snapshot path instead subtracts it from
+                     *  Messages, which is exact there; here the counted Input/Output
+                     *  rows are provider counts and this share is a char estimate, so
+                     *  subtracting it would corrupt them. */}
+                    {normalizeTokenCount(view.toolCallTokens) > 0 && (
+                      <div className="ps-6">
+                        <Row
+                          label={localize('com_ui_context_tool_calls')}
+                          value={normalizeTokenCount(view.toolCallTokens)}
+                        />
+                      </div>
+                    )}
+                    {view.overheadTokens > 0 && (
+                      <Row label={localize('com_ui_context_system')} value={view.overheadTokens} />
+                    )}
+                    {maxTokens == null && (
+                      <p className="text-text-secondary text-xs">
+                        {localize('com_ui_context_unknown')}
+                      </p>
+                    )}
+                    <p className="text-text-secondary text-xs italic">
+                      {localize('com_ui_estimated')}
+                    </p>
+                  </>
                 )}
               </div>
-            )}
-
-            {showCost &&
-              (view.lastTurnUsage?.costKnown === true ||
-                (hasUsage && branchUsage.costKnown) ||
-                (showTotal && view.totalUsage.costKnown)) && (
-                <>
-                  <div className="border-border-light border-t" role="separator" />
-                  <div className="space-y-1.5" data-testid="token-usage-cost">
-                    {view.lastTurnUsage?.costKnown === true && (
-                      <div className="flex items-center justify-between gap-4 text-sm">
-                        <span className="text-text-secondary">
-                          {localize(
-                            view.turnInProgress
-                              ? 'com_ui_context_cost_current_turn'
-                              : 'com_ui_context_cost_last_turn',
-                          )}
-                        </span>
-                        <span className="text-text-primary font-medium">
-                          {formatCost(view.lastTurnUsage.cost, currency)}
-                        </span>
-                      </div>
-                    )}
-                    {hasUsage && branchUsage.costKnown && (
-                      <div className="flex items-center justify-between gap-4 text-sm">
-                        <span className="text-text-secondary">
-                          {showTotal
-                            ? localize('com_ui_context_cost_branch')
-                            : localize('com_ui_context_cost')}
-                        </span>
-                        <span className="text-text-primary font-medium">
-                          {formatCost(view.branchCost, currency)}
-                        </span>
-                      </div>
-                    )}
-                    {showTotal && view.totalUsage.costKnown && (
-                      <div className="flex items-center justify-between gap-4 text-xs">
-                        <span className="text-text-secondary">
-                          {localize('com_ui_context_cost_total')}
-                        </span>
-                        <span className="text-text-secondary">
-                          {formatCost(view.totalCost, currency)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </>
+            </div>
+            <div className="min-w-0 space-y-3">
+              <Usage
+                title={localize(
+                  view.turnInProgress ? 'com_ui_context_current_turn' : 'com_ui_context_last_turn',
+                )}
+                usage={view.lastTurnUsage}
+                unavailable={localize(
+                  view.turnInProgress
+                    ? 'com_ui_context_waiting_usage'
+                    : 'com_ui_context_unavailable_usage',
+                )}
+                cost={
+                  showCost && view.lastTurnUsage?.costKnown ? view.lastTurnUsage.cost : undefined
+                }
+                costLabel={localize(
+                  view.turnInProgress
+                    ? 'com_ui_context_cost_current_turn'
+                    : 'com_ui_context_cost_last_turn',
+                )}
+                currency={currency}
+                testId="token-usage-last-turn"
+              />
+              {hasUsage && (
+                <Usage
+                  title={localize('com_ui_context_totals')}
+                  subtitle={localize('com_ui_context_this_branch')}
+                  usage={branchUsage}
+                  cost={showCost && branchUsage.costKnown ? view.branchCost : undefined}
+                  costLabel={localize(
+                    showTotal ? 'com_ui_context_cost_branch' : 'com_ui_context_cost',
+                  )}
+                  currency={currency}
+                  subagentTokens={subagentTokens}
+                  testId="token-usage-totals"
+                />
               )}
+              {showTotal && (
+                <Usage
+                  title={localize('com_ui_context_cost_total')}
+                  usage={view.totalUsage}
+                  cost={showCost && view.totalUsage.costKnown ? view.totalCost : undefined}
+                  costLabel={localize('com_ui_context_cost_total')}
+                  currency={currency}
+                  testId="token-usage-all-branches"
+                />
+              )}
+            </div>
 
             {langfuseSessionUrl && (
               <>
-                <div className="border-border-light border-t" role="separator" />
-                <Button asChild variant="link" size="bare" className="w-full justify-between">
+                <div
+                  className="border-border-light border-t @min-[38rem]:col-span-2"
+                  role="separator"
+                />
+                <Button
+                  asChild
+                  variant="link"
+                  size="bare"
+                  className="w-full justify-between @min-[38rem]:col-span-2"
+                >
                   <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
                     <span>{localize('com_ui_langfuse_view_session')}</span>
                     <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
