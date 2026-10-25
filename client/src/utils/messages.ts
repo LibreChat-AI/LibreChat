@@ -141,6 +141,26 @@ export const getBranchSiblingIndexesForTarget = (
   return [];
 };
 
+export const applyBranchSiblingIndexes = (
+  indexes: readonly BranchSiblingIndex[],
+  setSiblingIdx: (parentMessageId: string | null | undefined, siblingIdx: number) => void,
+): void => {
+  for (const { parentMessageId, siblingIdx } of indexes) {
+    setSiblingIdx(parentMessageId, siblingIdx);
+  }
+};
+
+export const restoreBranchForTarget = (
+  messages: TMessage[] | null | undefined,
+  targetMessageId: string | null | undefined,
+  rootSiblingKey: string | null | undefined,
+  setSiblingIdx: (parentMessageId: string | null | undefined, siblingIdx: number) => void,
+): BranchSiblingIndex[] => {
+  const indexes = getBranchSiblingIndexesForTarget(messages, targetMessageId, rootSiblingKey);
+  applyBranchSiblingIndexes(indexes, setSiblingIdx);
+  return indexes;
+};
+
 export const getLatestText = (message?: TMessage | null, includeIndex?: boolean): string => {
   if (!message) {
     return '';

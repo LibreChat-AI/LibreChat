@@ -26,7 +26,7 @@ import type { TMessage, Agents } from 'librechat-data-provider';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { getBranchSiblingIndexesForTarget } from '~/utils';
+import { restoreBranchForTarget } from '~/utils';
 import useResumeAnnouncements from './announcements';
 import { useStreamStatus } from '~/data-provider';
 import { settleFinishedRun } from './finished';
@@ -92,16 +92,14 @@ export default function useResumeOnLoad(
   const consumedHandoffGenerationRef = useRef<string | null>(null);
   const restoreResumeBranch = useCallback(
     (resumeState: Agents.ResumeState, messages: TMessage[], activeConversationId: string) => {
-      const targetMessageId = getResumeBranchTargetMessageId(resumeState, messages);
-      const branchIndexes = getBranchSiblingIndexesForTarget(
+      restoreBranchForTarget(
         messages,
-        targetMessageId,
+        getResumeBranchTargetMessageId(resumeState, messages),
         activeConversationId,
+        (parentMessageId, siblingIdx) => {
+          jotaiStore.set(siblingIdxFamily(siblingKey(parentMessageId)), siblingIdx);
+        },
       );
-
-      for (const { parentMessageId, siblingIdx } of branchIndexes) {
-        jotaiStore.set(siblingIdxFamily(siblingKey(parentMessageId)), siblingIdx);
-      }
     },
     [jotaiStore],
   );
