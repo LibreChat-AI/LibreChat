@@ -5,9 +5,9 @@ import * as Select from '@ariakit/react/select';
 import * as Combobox from '@ariakit/react/combobox';
 import type { Option } from '~/common';
 import { useDialogDepth, usePopoverZIndex } from './OriginalDialog';
+import { fieldControl, fieldInvalid } from './Field';
 import { cn, disabledFillClasses } from '~/utils';
 import { focusOutlineRole } from './Focus';
-import { fieldControl } from './Field';
 import './Dropdown.css';
 
 type DropdownShape = 'default' | 'theme' | 'round';
@@ -30,6 +30,8 @@ interface DropdownProps {
   ariaLabel?: string;
   'aria-labelledby'?: string;
   'aria-describedby'?: string;
+  /** Marks the field invalid; a `field` trigger then draws its border in the destructive role. */
+  'aria-invalid'?: boolean;
   /** Portals the list out of the trigger's parent. Defaults to `true`, and to `false` inside a
    *  dialog, whose focus trap and `aria-hidden` pass would cut a portaled list off. */
   portal?: boolean;
@@ -48,6 +50,8 @@ interface DropdownProps {
   searchable?: boolean;
   searchPlaceholder?: string;
   searchEmptyText?: string;
+  /** Shown in the secondary tone while no option is chosen. */
+  placeholder?: string;
 }
 
 const shapeClasses: Record<DropdownShape, string> = {
@@ -80,6 +84,7 @@ const Dropdown: React.FC<DropdownProps> = ({
   ariaLabel,
   'aria-labelledby': ariaLabelledBy,
   'aria-describedby': ariaDescribedBy,
+  'aria-invalid': ariaInvalid,
   portal,
   variant = 'default',
   shape = 'theme',
@@ -88,6 +93,7 @@ const Dropdown: React.FC<DropdownProps> = ({
   searchable = false,
   searchPlaceholder,
   searchEmptyText,
+  placeholder,
 }) => {
   const valueId = `${useId()}value`;
   const inDialog = useDialogDepth() > 0;
@@ -191,7 +197,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           iconOnly
             ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
             : 'w-fit max-w-full gap-2 px-3',
-          variant === 'field' && fieldControl,
+          variant === 'field' && [fieldControl, fieldInvalid],
           variant === 'compact' && 'h-theme-button-compact px-2.5 py-0 text-xs transition-none',
           triggerClassName,
         )}
@@ -206,6 +212,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           ariaLabelledBy == null || iconOnly ? ariaLabelledBy : `${ariaLabelledBy} ${valueId}`
         }
         aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
       >
         <div className={cn('flex min-w-0 items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
           {icon}
@@ -217,7 +224,11 @@ const Dropdown: React.FC<DropdownProps> = ({
                 if (matchedOption && renderValue) {
                   return renderValue(matchedOption);
                 }
-                return getOptionLabel(selectedValue);
+                const optionLabel = getOptionLabel(selectedValue);
+                if (!optionLabel && placeholder) {
+                  return <span className="text-text-secondary">{placeholder}</span>;
+                }
+                return optionLabel;
               })()}
             </span>
           )}

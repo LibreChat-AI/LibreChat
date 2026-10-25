@@ -7,7 +7,6 @@ import { Tabs, TabsList, TabsTrigger } from './Tabs';
 import InputWithDropdown from './InputWithDropDown';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
-import MultiSearch from './MultiSearch';
 import Dropdown from './Dropdown';
 
 jest.mock('./MorphIcon', () => {
@@ -49,16 +48,6 @@ describe('shared control keyboard focus', () => {
       expect(reached).toContain(button);
       expect(button).toHaveClass('focus-visible:ring-2', 'focus-visible:ring-focus-control');
     });
-  });
-
-  it('rings the model search field in the focus role', async () => {
-    const user = userEvent.setup();
-    render(<MultiSearch value="" onChange={jest.fn()} />);
-
-    await user.tab();
-    const search = screen.getByRole('textbox', { name: 'Search Model' });
-    expect(search).toHaveFocus();
-    expect(search).toHaveClass('focus:ring-1', 'focus:ring-focus-control');
   });
 
   it('rings the dropdown toggle and its options in the focus role', async () => {

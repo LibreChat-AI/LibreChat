@@ -642,9 +642,6 @@
   "client/src/components/Endpoints/Settings/Assistants.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    },
-    "shadcn/require-static-classes": {
-      "count": 4
     }
   },
   "client/src/components/Endpoints/Settings/Examples.tsx": {
@@ -1181,19 +1178,6 @@
       "count": 8
     }
   },
-  "client/src/components/SidePanel/Builder/AssistantPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Builder/AssistantSelect.tsx": {
-    "shadcn/no-restyle": {
-      "count": 7
-    }
-  },
   "client/src/components/SidePanel/Builder/Retrieval.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -1246,7 +1230,7 @@
   },
   "client/src/components/SidePanel/Parameters/DynamicDropdown.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Parameters/DynamicInput.tsx": {
