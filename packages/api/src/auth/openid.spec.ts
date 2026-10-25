@@ -1,6 +1,6 @@
 import mongoose, { Types } from 'mongoose';
-import { ErrorTypes } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { ErrorTypes, SystemRoles } from 'librechat-data-provider';
 import { logger, tenantStorage, createMethods, createModels } from '@librechat/data-schemas';
 import type { IUser, AppConfig, UserMethods } from '@librechat/data-schemas';
 import type { CommandStartedEvent } from 'mongodb';
@@ -1035,14 +1035,15 @@ describe('createOpenIDUser', () => {
     return { findUser: methods.findUser, email, openidId, openidIssuer: issuer };
   }
 
-  function firstLogin(
-    balance?: { enabled: boolean; startBalance: number },
-    overrides: Partial<Parameters<typeof createOpenIDUser>[0]> = {},
-  ) {
+  /** Answers the new account's config read, then the read of the account a lookup recovers. */
+  function configsFor(newAccount: AppConfig, recovered: AppConfig): void {
+    getAppConfig.mockResolvedValueOnce(newAccount).mockResolvedValueOnce(recovered);
+  }
+
+  function firstLogin(overrides: Partial<Parameters<typeof createOpenIDUser>[0]> = {}) {
     return createOpenIDUser({
       lookup: getLookup(),
       profile,
-      appConfig: appConfigWith(balance),
       getAppConfig,
       getBalanceConfig: (config: AppConfig) => config.balance ?? null,
       createUserIfAbsent: methods.createUserIfAbsent,
@@ -1066,6 +1067,7 @@ describe('createOpenIDUser', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    getAppConfig.mockReset().mockResolvedValue(appConfigWith());
     await mongoose.connection.dropDatabase();
     await User.syncIndexes();
   });
@@ -1092,7 +1094,7 @@ describe('createOpenIDUser', () => {
       emailVerified: false,
     };
 
-    const { user } = await firstLogin(undefined, {
+    const { user } = await firstLogin({
       lookup: { ...getLookup(), email: renamed.email },
       profile: renamed,
     });
@@ -1109,9 +1111,9 @@ describe('createOpenIDUser', () => {
   });
 
   it('credits the start balance once across concurrent first logins', async () => {
-    const balance = { enabled: true, startBalance: 500 };
+    getAppConfig.mockResolvedValue(appConfigWith({ enabled: true, startBalance: 500 }));
 
-    const [{ user }] = await Promise.all([firstLogin(balance), firstLogin(balance)]);
+    const [{ user }] = await Promise.all([firstLogin(), firstLogin()]);
 
     const balances = await mongoose.models.Balance.find({ user: user._id }).lean<
       Array<{ tokenCredits: number }>
@@ -1121,8 +1123,9 @@ describe('createOpenIDUser', () => {
 
   it('fails the recovered login while the winner has not credited its start balance yet', async () => {
     await User.create({ email, provider: 'openid', openidId, openidIssuer: issuer });
+    getAppConfig.mockResolvedValue(appConfigWith({ enabled: true, startBalance: 500 }));
 
-    const login = firstLogin({ enabled: true, startBalance: 500 });
+    const login = firstLogin();
 
     await expect(login).rejects.toThrow(ErrorTypes.AUTH_FAILED);
     expect(await mongoose.models.Balance.countDocuments()).toBe(0);
@@ -1130,8 +1133,9 @@ describe('createOpenIDUser', () => {
 
   it('recovers an account created without a balance when no start balance is configured', async () => {
     await User.create({ email, provider: 'openid', openidId, openidIssuer: issuer });
+    getAppConfig.mockResolvedValue(appConfigWith({ enabled: true, startBalance: 0 }));
 
-    const { user } = await firstLogin({ enabled: true, startBalance: 0 });
+    const { user } = await firstLogin();
 
     expect(user).toEqual(expect.objectContaining({ openidId, email }));
   });
@@ -1140,7 +1144,7 @@ describe('createOpenIDUser', () => {
     await tenantStorage.run({ tenantId }, () =>
       User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
     );
-    getAppConfig.mockResolvedValueOnce(appConfigWith(undefined, ['other.example']));
+    configsFor(appConfigWith(), appConfigWith(undefined, ['other.example']));
 
     const login = tenantStorage.run({ tenantId }, () => firstLogin());
 
@@ -1152,7 +1156,7 @@ describe('createOpenIDUser', () => {
     await tenantStorage.run({ tenantId }, () =>
       User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
     );
-    getAppConfig.mockResolvedValueOnce(appConfigWith({ enabled: true, startBalance: 500 }));
+    configsFor(appConfigWith(), appConfigWith({ enabled: true, startBalance: 500 }));
 
     const login = await tenantStorage.run({ tenantId }, () => firstLogin());
 
@@ -1163,11 +1167,12 @@ describe('createOpenIDUser', () => {
     await tenantStorage.run({ tenantId }, () =>
       User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
     );
-    getAppConfig.mockResolvedValueOnce(appConfigWith({ enabled: false, startBalance: 0 }));
-
-    const login = tenantStorage.run({ tenantId }, () =>
-      firstLogin({ enabled: true, startBalance: 500 }),
+    configsFor(
+      appConfigWith({ enabled: true, startBalance: 500 }),
+      appConfigWith({ enabled: false, startBalance: 0 }),
     );
+
+    const login = tenantStorage.run({ tenantId }, () => firstLogin());
 
     await expect(login).rejects.toThrow(ErrorTypes.AUTH_FAILED);
   });
@@ -1177,12 +1182,56 @@ describe('createOpenIDUser', () => {
       User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
     );
     const tenantConfig = appConfigWith(undefined, ['example.com']);
-    getAppConfig.mockResolvedValueOnce(tenantConfig);
+    configsFor(appConfigWith(), tenantConfig);
 
     const login = await tenantStorage.run({ tenantId }, () => firstLogin());
 
     expect(login.appConfig).toBe(tenantConfig);
     expect(login.user).toEqual(expect.objectContaining({ openidId, tenantId }));
+  });
+
+  it("refuses a first login the USER role's domain list excludes, creating nothing", async () => {
+    getAppConfig.mockResolvedValueOnce(appConfigWith(undefined, ['other.example']));
+
+    await expect(firstLogin()).rejects.toThrow('Email domain not allowed');
+    expect(getAppConfig).toHaveBeenCalledWith({
+      role: SystemRoles.USER,
+      skipRuntimeAugmentation: true,
+      failClosed: true,
+    });
+    expect(await User.countDocuments()).toBe(0);
+  });
+
+  it('creates the account in the USER role and reports that this call created it', async () => {
+    const login = await firstLogin({ claimedRole: SystemRoles.ADMIN });
+
+    expect(login.created).toBe(true);
+    expect(login.user).toEqual(expect.objectContaining({ role: SystemRoles.USER }));
+    expect(getAppConfig).toHaveBeenCalledWith({
+      role: SystemRoles.ADMIN,
+      skipRuntimeAugmentation: true,
+      failClosed: true,
+    });
+  });
+
+  it('refuses a first login the role its claims assign excludes, creating nothing', async () => {
+    getAppConfig
+      .mockResolvedValueOnce(appConfigWith({ enabled: true, startBalance: 500 }))
+      .mockResolvedValueOnce(appConfigWith(undefined, ['other.example']));
+
+    await expect(firstLogin({ claimedRole: SystemRoles.ADMIN })).rejects.toThrow(
+      'Email domain not allowed',
+    );
+    expect(await User.countDocuments()).toBe(0);
+    expect(await mongoose.models.Balance.countDocuments()).toBe(0);
+  });
+
+  it('reports a recovered account as not created by this call', async () => {
+    await firstLogin();
+
+    const login = await firstLogin();
+
+    expect(login.created).toBe(false);
   });
 
   it('fails the login when the email was taken by another provider in the meantime', async () => {
@@ -1195,7 +1244,7 @@ describe('createOpenIDUser', () => {
   it('throws when the lookup cannot account for the existing account', async () => {
     await User.create({ email: 'taken@example.com', provider: 'openid', openidId: 'other-sub' });
 
-    const login = firstLogin(undefined, {
+    const login = firstLogin({
       lookup: { findUser: methods.findUser, openidId, openidIssuer: issuer },
       profile: { ...profile, email: 'taken@example.com' },
     });
@@ -1206,7 +1255,7 @@ describe('createOpenIDUser', () => {
   it('rethrows other create failures without a second lookup', async () => {
     const findUser = jest.fn(methods.findUser);
 
-    const login = firstLogin(undefined, {
+    const login = firstLogin({
       lookup: { ...getLookup(), findUser },
       profile: { ...profile, email: 'not-an-email' },
     });

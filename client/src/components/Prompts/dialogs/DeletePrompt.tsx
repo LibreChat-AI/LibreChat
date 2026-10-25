@@ -6,7 +6,9 @@ import {
   OGDialogTrigger,
   TooltipAnchor,
   OGDialogTemplate,
+  useToastContext,
 } from '@librechat/client';
+import { getPromptMutationErrorKey } from '~/utils';
 import { useDeletePrompt } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 
@@ -75,7 +77,16 @@ interface DeletePromptProps {
 
 const DeletePrompt = React.memo(
   ({ promptId, groupId, promptName, disabled }: DeletePromptProps) => {
-    const deletePromptMutation = useDeletePrompt();
+    const localize = useLocalize();
+    const { showToast } = useToastContext();
+    const deletePromptMutation = useDeletePrompt({
+      onError: (error) => {
+        showToast({
+          status: 'error',
+          message: localize(getPromptMutationErrorKey(error, 'com_ui_prompt_delete_error')),
+        });
+      },
+    });
 
     const handleDelete = useCallback(() => {
       if (!promptId) {

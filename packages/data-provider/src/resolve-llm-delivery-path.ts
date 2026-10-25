@@ -364,13 +364,7 @@ export interface TurnFileConsumers {
   fileSearch: boolean;
 }
 
-/**
- * Whether the record shows this file reached a tool's own store: vectors for file search, a
- * sandbox pointer for code execution. Nothing else writes either, so their presence is proof
- * the file was provisioned and their absence proof it was not. The same evidence deferred
- * provisioning reads before queueing a file, so a turn cannot withhold content for a tool that
- * provisioning has yet to serve.
- */
+/** Whether the record shows a copy in a tool's store, not merely a chosen destination. */
 export function hasToolResourceProvisioning(file: TurnDeliveryFile, toolResource: string): boolean {
   if (toolResource === EToolResources.execute_code) {
     return getCodeEnvRefs(file.metadata).length > 0;
@@ -378,28 +372,31 @@ export function hasToolResourceProvisioning(file: TurnDeliveryFile, toolResource
   return file.embedded === true || (file.metadata?.embeddedEntities?.length ?? 0) > 0;
 }
 
+/** A durable destination survives cleanup; presence still answers whether its copy exists. */
+export function hasToolResourceDestination(file: TurnDeliveryFile, toolResource: string): boolean {
+  return (
+    (toolResource === EToolResources.file_search && file.metadata?.searchDestination === true) ||
+    (toolResource === EToolResources.execute_code && file.metadata?.codeDestination === true) ||
+    hasToolResourceProvisioning(file, toolResource)
+  );
+}
+
 /**
- * Whether a tool this turn runs can read a file of this type.
- *
- * Passing the record asks the stricter question a delivery decision needs where a tool serves
- * only what it already holds. File search reads the vector store, and an upload that named no
- * destination is filed under no tool at all, so an enabled search tool is a reader only once
- * the record shows the store holds the file. Run Code needs no copy in advance: its first call
- * uploads every attachment it can read to the sandbox, so enabling it is enough. Requiring a
- * copy there would hand the file's text to the prompt on every turn before the first code run,
- * and a turn that refuses that text never runs code, so the file would never become held.
+ * Whether an enabled tool can consume this file. Search needs a proven destination so
+ * lazy repair can restore cleared vectors. Code uploads readable attachments on first use.
  */
 export function hasTurnFileConsumer(
   mimeType: string,
   consumers: TurnFileConsumers,
   file?: TurnDeliveryFile,
 ): boolean {
-  const searchHolds = file == null || hasToolResourceProvisioning(file, EToolResources.file_search);
+  const searchDestination =
+    file == null || hasToolResourceDestination(file, EToolResources.file_search);
   return (
     (consumers.executeCode && canToolResourceConsume(EToolResources.execute_code, mimeType)) ||
     (consumers.fileSearch &&
       canToolResourceConsume(EToolResources.file_search, mimeType) &&
-      searchHolds)
+      searchDestination)
   );
 }
 
@@ -436,6 +433,10 @@ export interface TurnDeliveryFile {
         destinationChosen?: boolean;
         /** Vector namespaces holding this file, written as each embedding succeeds. */
         embeddedEntities?: string[];
+        /** Chosen search destination, including while its vectors await repair. */
+        searchDestination?: boolean;
+        /** Chosen code destination while its remote copy awaits repair. */
+        codeDestination?: boolean;
       } & CodeEnvReferenceSet)
     | null;
 }

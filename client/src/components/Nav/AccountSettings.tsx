@@ -19,8 +19,8 @@ import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog
 import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import { useGetStartupConfig } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { openInNewTab, policyUrls } from '~/utils';
 import { settingsOpenAtom } from './Settings';
-import { openInNewTab } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -100,6 +100,7 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
   const localize = useLocalize();
   const { user, logout } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
+  const { privacyPolicyUrl, termsOfServiceUrl } = policyUrls(startupConfig);
   const setShowSettings = useSetAtom(settingsOpenAtom);
   const setShowFiles = useSetAtom(showFilesDialogAtom);
   const setFilesDialogTrigger = useSetAtom(filesDialogTriggerAtom);
@@ -148,8 +149,8 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
         <DropdownMenuSeparator />
         <HelpSubmenu
           helpAndFaqURL={startupConfig?.helpAndFaqURL}
-          termsOfServiceURL={startupConfig?.interface?.termsOfService?.externalUrl}
-          privacyPolicyURL={startupConfig?.interface?.privacyPolicy?.externalUrl}
+          termsOfServiceURL={termsOfServiceUrl}
+          privacyPolicyURL={privacyPolicyUrl}
           onShowShortcuts={() => setShowShortcutsDialog(true)}
         />
         <Menu.MenuItem onClick={() => setShowArchived(true)} className="select-item text-sm">

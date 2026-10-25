@@ -237,6 +237,9 @@ export type ChatSettings = {
   /** The conversation each mounted chat pane shows, read when called rather than at render:
    *  steer recovery asks whether any pane holding a conversation is still running. */
   getPaneConversations: () => ReadonlyArray<PaneConversation>;
+  /** A hook, stable across renders: the conversation a pane shows, subscribed so the reader
+   *  re-renders when the pane moves to another conversation. `null` before the pane has one. */
+  usePaneConversation: (index: string | number) => TConversation | null;
 };
 
 /** One mounted chat pane and the conversation it shows. */

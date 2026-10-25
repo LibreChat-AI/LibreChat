@@ -70,7 +70,6 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
     runIndex,
     announcePolite,
     lastAnnouncementTimeRef,
-    setAbortScroll,
     applyAgentTemplate,
     focusRegeneratedResponse,
     location,
@@ -289,12 +288,11 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
         });
       }
 
-      scrollToEnd(() => setAbortScroll(false));
+      scrollToEnd();
     },
     [
       setMessages,
       queryClient,
-      setAbortScroll,
       isAddedRequest,
       announcePolite,
       setConversation,

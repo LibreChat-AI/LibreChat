@@ -1,9 +1,11 @@
 const FormData = require('form-data');
 const { logger } = require('@librechat/data-schemas');
 const { getCodeBaseURL } = require('@librechat/agents');
-const { EModelEndpoint, getCodeEnvRefs } = require('librechat-data-provider');
+const { clearFileCodeEnvRefs } = require('~/models');
 const {
   logAxiosError,
+  createCodeFileDeleter,
+  dispatchFileStorageOperation,
   wrapCodeApiUploadError,
   appendCodeEnvFile,
   createAxiosInstance,
@@ -72,106 +74,18 @@ async function getCodeOutputDownloadStream(fileIdentifier, identity, req, route 
   }
 }
 
-/**
- * A deployment that no longer serves a ref's profile rejects every retry the same
- * way, so failing the delete would leave a record the user can never remove and an
- * agent that aborts every code turn on it.
- */
-const isProfileMismatch = (error) =>
-  error.response?.status === 409 && error.response?.data?.error === 'execution_profile_mismatch';
-
-/**
- * Deletes a file from the Code Environment server.
- *
- * @param {ServerRequest} req - Current authenticated request, used to mint Code API auth.
- * @param {MongoFile} file - File metadata containing `metadata.codeEnvRef`.
- * @returns {Promise<void>}
- */
-async function deleteCodeEnvFile(req, file) {
-  const refs = getCodeEnvRefs(file?.metadata);
-  if (refs.length === 0) {
-    return;
-  }
-
-  for (const [executionRouteKey, ref] of refs) {
-    const executionProfile = ref.executionProfile ?? 'default';
-    const environments =
-      req.config?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments;
-    const configuredEnvironment = environments?.find(
-      (environment) =>
-        createCodeExecutionRouteKey(executionProfile, environment) === executionRouteKey,
-    );
-    if (
-      executionProfile === 'stateful' &&
-      executionRouteKey !== executionProfile &&
-      !configuredEnvironment
-    ) {
-      logger.warn(
-        `[deleteCodeEnvFile] Skipping remote cleanup for unmapped historical route ${executionRouteKey}`,
-      );
-      continue;
-    }
-    let baseURL;
-    try {
-      baseURL = getCodeExecutionBaseUrl(executionProfile, configuredEnvironment);
-    } catch (error) {
-      if (
-        executionProfile === 'stateful' &&
-        executionRouteKey === executionProfile &&
-        !configuredEnvironment
-      ) {
-        logger.warn(
-          '[deleteCodeEnvFile] Skipping remote cleanup for retired legacy stateful route',
-        );
-        continue;
-      }
-      throw error;
-    }
-    const query = buildCodeEnvDownloadQuery({
-      kind: ref.kind,
-      id: ref.id,
-      ...(ref.kind === 'skill' ? { version: ref.version } : {}),
-    });
-    const bridgeWorkerId =
-      configuredEnvironment?.workerId ?? configuredEnvironment?.pairing?.workerId;
-    const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
-    /* codeapi has mounted DELETE at `/files/:session_id/:fileId` since its
-     * first release. The file-server's own `/sessions/:id/objects/:fileId`
-     * only gained DELETE in LibreChat-AI/code-interpreter#85, so trying it
-     * first cost a guaranteed 404 against every older deployment. */
-    try {
-      await axios({
-        method: 'delete',
-        url: `${baseURL}/files/${ref.storage_session_id}/${ref.file_id}${query}`,
-        headers: {
-          'User-Agent': 'LibreChat/1.0',
-          ...authHeaders,
-          ...codeExecutionHeaders({
-            executionProfile,
-            bridgeWorkerId,
-          }),
-        },
-        httpAgent: codeServerHttpAgent,
-        httpsAgent: codeServerHttpsAgent,
-        timeout: 15000,
-      });
-    } catch (error) {
-      const profileMismatch = isProfileMismatch(error);
-      if (error.response?.status !== 404 && !profileMismatch) {
-        throw error;
-      }
-      /* Already gone. Logged rather than swallowed: a 404 from a
-       * misconfigured base URL is indistinguishable from one for an absent
-       * object, and this branch drops the file's record either way. */
-      logAxiosError({
-        error,
-        message: profileMismatch
-          ? `Code environment no longer serves the ${executionProfile} profile; dropping the unreachable object: ${error.message}`
-          : `Code environment object already absent: ${error.message}`,
-      });
-    }
-  }
-}
+const deleteCodeEnvFile = createCodeFileDeleter({
+  httpClient: axios,
+  getAuthHeaders: getCodeApiAuthHeaders,
+  getBaseUrl: getCodeExecutionBaseUrl,
+  routeKey: createCodeExecutionRouteKey,
+  profileHeaders: codeExecutionHeaders,
+  downloadQuery: buildCodeEnvDownloadQuery,
+  clearFileCodeEnvRefs,
+  logger,
+  httpAgent: codeServerHttpAgent,
+  httpsAgent: codeServerHttpsAgent,
+});
 
 /**
  * Uploads a file to the Code Environment server.
@@ -211,6 +125,7 @@ async function uploadCodeEnvFile({
   executionProfile,
   bridgeWorkerId,
   signal,
+  onUploadStart,
 }) {
   try {
     const form = new FormData();
@@ -237,7 +152,9 @@ async function uploadCodeEnvFile({
       ...(signal ? { signal } : {}),
     };
 
-    const response = await axios.post(`${baseURL}/upload`, form, options);
+    const response = await dispatchFileStorageOperation(onUploadStart, () =>
+      axios.post(`${baseURL}/upload`, form, options),
+    );
 
     /** @type {{ message: string; storage_session_id: string; files: Array<{ fileId: string; filename: string }> }} */
     const result = response.data;

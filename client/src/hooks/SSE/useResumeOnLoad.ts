@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRecoilValue } from 'recoil';
 import { useQueryClient } from '@tanstack/react-query';
 import { useStore, useSetAtom, useAtomValue } from 'jotai';
 import {
@@ -33,7 +32,6 @@ import { useStreamStatus } from '~/data-provider';
 import { settleFinishedRun } from './finished';
 import useOwedSuccessor from './successor';
 import useSteerState from './steer';
-import store from '~/store';
 
 /**
  * Hook to resume streaming if navigating to a conversation with active generation.
@@ -61,12 +59,12 @@ export default function useResumeOnLoad(
   const attachedGenerationCreatedAt = useAtomValue(
     activeGenerationCreatedAtByConvoId(conversationId ?? ''),
   );
-  const currentConversation = useRecoilValue(store.conversationByIndex(runIndex));
+  const { config, usePaneConversation } = useChatSettings();
+  const currentConversation = usePaneConversation(runIndex);
   const endpoint = currentConversation?.endpoint;
   const endpointType = currentConversation?.endpointType;
   const actualEndpoint = endpointType ?? endpoint;
   const resumableEnabled = !isAssistantsEndpoint(actualEndpoint);
-  const { config } = useChatSettings();
   const startupConfigSettled = config.loaded !== false;
   const isRetentionForced = isForcedTemporaryRetention(config.retentionMode);
   // Track conversations we've already processed (either resumed or skipped)
