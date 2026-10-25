@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { EarthIcon } from 'lucide-react';
 import { ControlCombobox } from '@librechat/client';
 import { useFormContext, Controller } from 'react-hook-form';
@@ -13,6 +13,7 @@ import type { TAgentCapabilities, AgentForm } from '~/common';
 import { cn, createProviderOption, processAgentOption, getDefaultAgentFormValues } from '~/utils';
 import { useListAgentsQuery, useGetStartupConfig } from '~/data-provider';
 import { useLocalize, useAgentDefaultPermissionLevel } from '~/hooks';
+import MineFilterToggle from '~/components/Agents/MineFilterToggle';
 import { mergeDirtyToolsWithServerActions } from './agentTools';
 
 const keys = new Set(Object.keys(defaultAgentFormValues));
@@ -42,6 +43,7 @@ function AgentSelect({
   instructionsPromptReady?: boolean;
 }) {
   const localize = useLocalize();
+  const [mine, setMine] = useState(false);
   const lastSelectedAgent = useRef<string | null>(null);
   const {
     control,
@@ -58,8 +60,8 @@ function AgentSelect({
   const { data: startupConfig } = useGetStartupConfig();
   const selectorLimit = normalizeAgentSelectorLimit(startupConfig?.interface?.agentSelectorLimit);
 
-  const { data: agents = null } = useListAgentsQuery(
-    { requiredPermission: permissionLevel },
+  const { data: listedAgents = null } = useListAgentsQuery(
+    { requiredPermission: permissionLevel, ...(mine ? { mine: 1 as const } : {}) },
     {
       select: (res) =>
         res.data.map((agent) =>
@@ -72,6 +74,24 @@ function AgentSelect({
         ),
     },
   );
+
+  const agents = useMemo(() => {
+    const currentAgent = agentQuery.data;
+    if (
+      !mine ||
+      !currentAgent ||
+      currentAgent.id !== selectedAgentId ||
+      listedAgents?.some((agent) => agent.id === selectedAgentId)
+    ) {
+      return listedAgents;
+    }
+    return [
+      ...(listedAgents ?? []),
+      processAgentOption({
+        agent: { ...currentAgent, name: currentAgent.name || currentAgent.id },
+      }),
+    ];
+  }, [listedAgents, mine, agentQuery.data, selectedAgentId]);
 
   const resetAgentForm = useCallback(
     (fullAgent: Agent, preserveDirtyValues = false) => {
@@ -309,6 +329,7 @@ function AgentSelect({
           selectPlaceholder={field?.value?.value ?? createAgent}
           iconSide="right"
           searchPlaceholder={localize('com_agents_search_name')}
+          searchActions={<MineFilterToggle checked={mine} onCheckedChange={setMine} />}
           popoverMaxHeight={SELECTOR_MAX_HEIGHT}
           unsearchedLimit={selectorLimit}
           SelectIcon={field?.value?.icon}
