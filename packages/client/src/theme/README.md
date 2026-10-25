@@ -469,10 +469,12 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `text-xs` to `text-3xl` - Sizes and line heights read `textXs`..`text3xl` and
   `leadingXs`..`leading3xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.
-- `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
-  and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
-  `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
-  65% by default). A bundled scrim dims the page and never lifts it.
+- `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog and
+  AlertDialog scrims, plus a third for a consumer's own modal: `surface-overlay`
+  at the `scrimOpacity`, `alertScrimOpacity` and `modalScrimOpacity` appearance
+  roles (80%, 90% and 65% by default). No bundled dialog draws `bg-scrim-modal`
+  since the legacy `Dialog` was removed; the role stays so released themes keep
+  loading. A bundled scrim dims the page and never lifts it.
 - `theme-destructive-soft:` - A variant for a `destructive-soft` Button's tint (the inline delete or revoke; a dialog's confirming `destructive` button stays solid): the
   button paints a 10% tint of the destructive surface under the destructive ink
   when the theme's `destructiveStyle` is `soft`. The default `fill` keeps the
