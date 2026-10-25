@@ -45,9 +45,11 @@ const getOpenIdSessionExpiry = () => {
  * Configures OpenID Connect for the application.
  * @param {Express.Application} app - The Express application instance.
  * @param {AppConfig} [appConfig] - Base app config, read for OpenID discovery retry settings.
+ * @param {Omit<import('@librechat/api').OAuthStateStoreOptions, 'provider'>} [stateOptions] - Signs
+ *   and verifies `state` in OAuth2-only mode; the OIDC path keeps its state in the session.
  * @returns {Promise<void>}
  */
-async function configureOpenId(app, appConfig) {
+async function configureOpenId(app, appConfig, stateOptions) {
   logger.info('Configuring OpenID Connect...');
   const sessionExpiry = getOpenIdSessionExpiry();
   const sessionOptions = {
@@ -64,9 +66,11 @@ async function configureOpenId(app, appConfig) {
   app.use(passport.session());
 
   await registerOpenIdWithRetry({
-    setupOpenId,
+    setupOpenId: () => setupOpenId({ stateOptions }),
     registerJwtStrategy: (config) => passport.use('openidJwt', openIdJwtLogin(config)),
-    reuseTokens: isEnabled(process.env.OPENID_REUSE_TOKENS),
+    /** OAuth2-only providers issue no id_token, so there is no token set to reuse */
+    reuseTokens:
+      isEnabled(process.env.OPENID_REUSE_TOKENS) && !isEnabled(process.env.OPENID_USE_OAUTH2),
     discovery: appConfig?.registration?.openidDiscovery,
     env: {
       startupAttempts: process.env.OPENID_DISCOVERY_RETRY_ATTEMPTS,
@@ -111,11 +115,11 @@ const configureSocialLogins = async (app, appConfig) => {
   if (
     process.env.OPENID_CLIENT_ID &&
     (isEnabled(process.env.OPENID_USE_PKCE) || process.env.OPENID_CLIENT_SECRET?.trim()) &&
-    process.env.OPENID_ISSUER &&
+    (process.env.OPENID_ISSUER || isEnabled(process.env.OPENID_USE_OAUTH2)) &&
     process.env.OPENID_SCOPE &&
     process.env.OPENID_SESSION_SECRET
   ) {
-    await configureOpenId(app, appConfig);
+    await configureOpenId(app, appConfig, stateOptions);
   }
   if (
     process.env.SAML_ENTRY_POINT &&

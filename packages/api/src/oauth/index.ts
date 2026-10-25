@@ -5,4 +5,5 @@ export * from './expiry';
 export * from './callback';
 export * from './failure';
 export * from './tokens';
+export * from './oauth2Login';
 export * from './validation';

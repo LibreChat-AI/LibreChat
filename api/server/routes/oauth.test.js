@@ -70,6 +70,7 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  isEnabled: (value) => value === 'true',
   buildOAuthFailureLog: (...args) => mockBuildOAuthFailureLog(...args),
   createOpenIDCallbackAuthenticator: (...args) => mockCreateOpenIDCallbackAuthenticator(...args),
   createSetBalanceConfig: jest.fn(() => (_req, _res, next) => next()),
@@ -203,5 +204,41 @@ describe('OAuth route failure logging', () => {
       }),
     );
     expect(JSON.stringify(mockLogger.warn.mock.calls[0])).not.toContain('Unknown OAuth error');
+  });
+});
+
+describe('OpenID login start', () => {
+  const originalUseOAuth2 = process.env.OPENID_USE_OAUTH2;
+
+  beforeEach(() => {
+    mockPassportAuthenticate.mockReset();
+    mockPassportAuthenticate.mockImplementation(() => (_req, res) => res.status(204).end());
+  });
+
+  afterAll(() => {
+    if (originalUseOAuth2 === undefined) {
+      delete process.env.OPENID_USE_OAUTH2;
+      return;
+    }
+    process.env.OPENID_USE_OAUTH2 = originalUseOAuth2;
+  });
+
+  it('passes a random state to the OpenID Connect strategy', async () => {
+    delete process.env.OPENID_USE_OAUTH2;
+
+    await request(createApp()).get('/oauth/openid').expect(204);
+
+    expect(mockPassportAuthenticate).toHaveBeenCalledWith('openid', {
+      session: false,
+      state: 'random-state',
+    });
+  });
+
+  it('leaves state to the OAuth2-only strategy store, which a preset state would bypass', async () => {
+    process.env.OPENID_USE_OAUTH2 = 'true';
+
+    await request(createApp()).get('/oauth/openid').expect(204);
+
+    expect(mockPassportAuthenticate).toHaveBeenCalledWith('openid', { session: false });
   });
 });
