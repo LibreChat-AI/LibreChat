@@ -286,10 +286,10 @@ jobs:
           name: build-chat-package
           path: packages/chat/dist
 
-      - name: Use Bun 1.4.3
+      - name: Use Bun 1.4.4
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Type check client
         run: npm run typecheck
@@ -337,10 +337,10 @@ jobs:
           name: build-client-package
           path: packages/client/dist
 
-      - name: Use Bun 1.4.3
+      - name: Use Bun 1.4.4
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.3'
+          bun-version: '1.4.4'
 
       - name: Type check
         run: npm run typecheck
