@@ -1,14 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
-import {
-  ResumableRun,
-  mountSubmission,
-  releaseSubmission,
-  documentVisibility,
-  attachResumableStream,
-} from '@librechat/chat';
-import type { ResumableHost, ResumableParts } from '@librechat/chat';
-import type { TSubmission } from 'librechat-data-provider';
-import type { EventHandlerParams } from './useEventHandlers';
+import { useCallback } from 'react';
+import { documentVisibility } from '@librechat/chat';
+import type { ResumableServices, ResumableStreamParams } from '@librechat/chat/react';
+import type { ResumableParts } from '@librechat/chat';
 import {
   logger,
   applySteerPart,
@@ -28,11 +21,6 @@ import useResumableCache from './cache';
 import useResumablePane from './pane';
 import useSteerState from './steer';
 
-type ChatHelpers = Pick<
-  EventHandlerParams,
-  'setMessages' | 'getMessages' | 'setConversation' | 'setIsSubmitting' | 'newConversation'
->;
-
 /** How the app's message parts place steers and labels onto a response. */
 const resumableParts: ResumableParts = {
   applySteer: applySteerPart,
@@ -47,31 +35,21 @@ const resumableParts: ResumableParts = {
 export { ABORT_SWEEP_STATUSES, selectLocalSteersForQueue } from '@librechat/chat';
 
 /**
- * Hook for resumable SSE streams.
- * Separates generation start (POST) from stream subscription (GET EventSource).
- * Supports auto-reconnection with exponential backoff.
- *
- * Key behavior:
- * - Navigation away does NOT abort the generation (just closes SSE)
- * - Only explicit abort (via stop button → backend abort endpoint) stops generation
- * - Backend emits `done` event with `aborted: true` on abort, handled via finalHandler
- *
- * The run itself lives in `@librechat/chat` (`mountSubmission`, `attachResumableStream`);
- * this hook supplies it the app it runs in.
+ * The services a pane's resumable stream runs on in this app: its query cache, steer chips,
+ * stream handlers, pane controls, balance refresh and transport. The binding in
+ * `@librechat/chat/react` owns the run, the stream id and how a stream re-attaches.
  */
-export default function useResumableSSE(
-  submission: TSubmission | null,
-  chatHelpers: ChatHelpers,
-  isAddedRequest = false,
-  runIndex = 0,
-) {
-  const [run] = useState(() => new ResumableRun());
-  const [streamId, setStreamId] = useState<string | null>(null);
+export function useResumableServices({
+  run,
+  chat,
+  runIndex,
+  isAddedRequest,
+  setStreamId,
+}: ResumableStreamParams): () => ResumableServices {
   const { auth, config } = useChatSettings();
   const { token, isAuthenticated = false } = auth;
   const transport = useChatTransport();
-  const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } =
-    chatHelpers;
+  const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } = chat;
 
   const { balanceEnabled = false } = config;
   const balanceQuery = useGetUserBalance({ enabled: isAuthenticated && balanceEnabled });
@@ -82,7 +60,12 @@ export default function useResumableSSE(
   const cache = useResumableCache(getMessages, runIndex);
   const steerState = useSteerState();
   const steers = useResumableSteers(steerState);
-  const { events, usage } = useResumableEvents({ run, runIndex, isAddedRequest, chatHelpers });
+  const { events, usage } = useResumableEvents({
+    run,
+    runIndex,
+    isAddedRequest,
+    chatHelpers: chat,
+  });
   const { pane, queue } = useResumablePane({
     run,
     runIndex,
@@ -95,12 +78,11 @@ export default function useResumableSSE(
     setGenerationEpoch: steerState.updateActiveGenerationCreatedAt,
   });
 
-  const buildHost = useCallback(
-    (): ResumableHost => ({
+  return useCallback(
+    (): ResumableServices => ({
       logger,
       visibility: documentVisibility,
       fetchStatus: fetchStreamStatus,
-      subscribe: (next) => attachResumableStream(run, buildHost(), next),
       cache,
       queue,
       pane,
@@ -123,18 +105,6 @@ export default function useResumableSSE(
         : undefined,
       parts: resumableParts,
     }),
-    [run, cache, queue, pane, steers, events, usage, getMessages, setMessages, transport, token],
+    [cache, queue, pane, steers, events, usage, getMessages, setMessages, transport, token],
   );
-
-  useEffect(() => {
-    const host = buildHost();
-    if (!submission || Object.keys(submission).length === 0) {
-      releaseSubmission(run, host);
-      return;
-    }
-    return mountSubmission(run, host, submission);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [submission]);
-
-  return { streamId };
 }

@@ -1,12 +1,28 @@
+/**
+ * @jest-environment jsdom
+ */
+import React from 'react';
 import { renderHook } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TSubmission } from 'librechat-data-provider';
-import useResumableSSE from '../useResumableSSE';
-import useAdaptiveSSE from '../useAdaptiveSSE';
-import useSSE from '../useSSE';
+import type { StreamHost } from '../host';
+import { StreamHostProvider } from '../host';
+import useResumableSSE from '../resumable';
+import useAdaptiveSSE from '../adaptive';
 
-jest.mock('../useSSE', () => jest.fn());
-jest.mock('../useResumableSSE', () => jest.fn(() => ({ streamId: 'stream' })));
+jest.mock('../resumable', () => jest.fn(() => ({ streamId: 'stream' })));
+
+const useLegacyStream = jest.fn();
+const host: StreamHost = {
+  useResumableServices: () => () => {
+    throw new Error('the resumable binding is replaced in this spec');
+  },
+  useLegacyStream,
+};
+
+const wrapper = ({ children }: { children: React.ReactNode }) => (
+  <StreamHostProvider host={host}>{children}</StreamHostProvider>
+);
 
 const helpers = {
   setMessages: jest.fn(),
@@ -30,19 +46,21 @@ it.each([
       codeEnvironmentMode: 'attached',
       codeWorkspaces: [{ environmentId: 'vm', workspaceId: 'repo' }],
     } as TSubmission;
-    const { rerender } = renderHook(({ value }) => useAdaptiveSSE(value, helpers), {
+    const { rerender, result } = renderHook(({ value }) => useAdaptiveSSE(value, helpers), {
       initialProps: { value: submission as TSubmission | null },
+      wrapper,
     });
-    expect(useSSE).toHaveBeenLastCalledWith(null, helpers, false, 0);
+    expect(useLegacyStream).toHaveBeenLastCalledWith(null, helpers, false, 0);
     expect(useResumableSSE).toHaveBeenLastCalledWith(submission, helpers, false, 0);
+    expect(result.current).toEqual({ streamId: 'stream', resumableEnabled: true });
     rerender({ value: null });
-    expect(useSSE).toHaveBeenLastCalledWith(null, helpers, false, 0);
+    expect(useLegacyStream).toHaveBeenLastCalledWith(null, helpers, false, 0);
   },
 );
 
 it('preserves the Assistants transport and its server abort endpoint', () => {
   const submission = { conversation: { endpoint: EModelEndpoint.assistants } } as TSubmission;
-  renderHook(() => useAdaptiveSSE(submission, helpers));
-  expect(useSSE).toHaveBeenLastCalledWith(submission, helpers, false, 0);
+  renderHook(() => useAdaptiveSSE(submission, helpers), { wrapper });
+  expect(useLegacyStream).toHaveBeenLastCalledWith(submission, helpers, false, 0);
   expect(useResumableSSE).toHaveBeenLastCalledWith(null, helpers, false, 0);
 });
