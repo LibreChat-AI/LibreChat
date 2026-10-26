@@ -886,6 +886,28 @@ describe('Chat', () => {
       expect(state.connection).toBe('idle');
     });
 
+    it('stops a stream event when a listener disposes the chat on its write', async () => {
+      const { chat, stream, state, onEvent } = setup({
+        applyEvent: (event, context) => {
+          if (event.type === 'created') {
+            context.write([...context.messages, { ...placeholder, messageId: 'created-1' }]);
+          }
+        },
+      });
+      chat.subscribe(() => {
+        if (chat.messages.some((m) => m.messageId === 'created-1')) {
+          chat.dispose();
+        }
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'created', data: { message: userMessage, created: true } });
+      await sent;
+
+      expect(state.statuses).not.toContain('streaming');
+      expect(onEvent).not.toHaveBeenCalled();
+    });
+
     it('reports no response for a turn whose optimistic write failed', async () => {
       const earlier: TMessage = { ...placeholder, messageId: 'earlier-1', text: 'Earlier' };
       const { chat, onFinish, transport } = setup({

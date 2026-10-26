@@ -774,6 +774,10 @@ export class Chat {
       messages: this.messages,
       write: (messages) => this.write(messages),
     });
+    /** A listener told of that write may have disposed the chat, which then owns no more state. */
+    if (this.disposed) {
+      return undefined;
+    }
     let outcome: Outcome | undefined;
     if (streamingEvents.has(event.type) || event.type === 'pending_action') {
       /** A live pause is the generation running, however its first frame arrives. */
