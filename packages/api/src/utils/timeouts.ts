@@ -84,3 +84,16 @@ export function toolRequestBudget(
 ): ReturnType<typeof outboundRequestBudget> {
   return outboundRequestBudget(getOutboundTimeoutMs({ timeouts }, 'toolsMs'), 'toolsMs', signal);
 }
+
+/**
+ * Budget factory for speech providers, per `timeouts.speechMs`. Each call starts a fresh
+ * deadline, so every provider request gets the full budget while `signal` (a client
+ * disconnect) stays shared across them.
+ */
+export function createSpeechBudget(
+  appConfig: Pick<AppConfig, 'timeouts'> | null | undefined,
+  signal?: AbortSignal,
+): () => ReturnType<typeof outboundRequestBudget> {
+  const timeoutMs = getOutboundTimeoutMs(appConfig, 'speechMs');
+  return () => outboundRequestBudget(timeoutMs, 'speechMs', signal);
+}

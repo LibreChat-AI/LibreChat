@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { mkdir, copyFile, rename, unlink, writeFile } from 'fs/promises';
 import type { TFileConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import { stripCacheBust } from './path';
 
 export interface LocalStoragePaths {
@@ -18,7 +19,7 @@ interface LocalFile {
 
 interface LocalDeleteRequest {
   user: { id: string };
-  config: { paths: LocalStoragePaths; fileConfig?: TFileConfig };
+  config: { paths: LocalStoragePaths; fileConfig?: TFileConfig; timeouts?: AppConfig['timeouts'] };
 }
 
 interface LocalFileDeleteDependencies {
@@ -26,6 +27,7 @@ interface LocalFileDeleteDependencies {
     userId: string;
     file: LocalFile;
     fileConfig?: TFileConfig;
+    timeouts?: AppConfig['timeouts'];
   }) => Promise<unknown>;
   logger: { warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
 }
@@ -52,6 +54,7 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
       userId: ownerId,
       file,
       ...(req.config.fileConfig ? { fileConfig: req.config.fileConfig } : {}),
+      ...(req.config.timeouts ? { timeouts: req.config.timeouts } : {}),
     };
     if (!ownerId) throw new Error('Invalid file owner');
     const cleanFilepath = stripCacheBust(file.filepath);

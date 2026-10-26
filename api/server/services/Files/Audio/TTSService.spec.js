@@ -9,8 +9,7 @@ jest.mock('@librechat/api', () => ({
   pipeSegment: jest.fn(),
   pipeToResponse: jest.fn(),
   abortOnClose: jest.requireActual('@librechat/api').abortOnClose,
-  outboundRequestBudget: jest.requireActual('@librechat/api').outboundRequestBudget,
-  getOutboundTimeoutMs: jest.requireActual('@librechat/api').getOutboundTimeoutMs,
+  createSpeechBudget: jest.requireActual('@librechat/api').createSpeechBudget,
 }));
 jest.mock('librechat-data-provider', () => ({
   /** Real constants: `validateTTSInput` comes from the built `@librechat/api`, which reads them. */

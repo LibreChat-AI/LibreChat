@@ -761,6 +761,7 @@ export async function deleteFileFromS3(
     userId: ownerId,
     file,
     ...(req.config?.fileConfig ? { fileConfig: req.config.fileConfig } : {}),
+    ...(req.config?.timeouts ? { timeouts: req.config.timeouts } : {}),
   };
 
   try {

@@ -65,6 +65,27 @@ describe('deleteRagFile', () => {
       );
     });
 
+    it('honors the configured RAG budget', async () => {
+      mockedAxios.delete.mockResolvedValueOnce({ status: 200 });
+
+      await deleteRagFile({
+        fileConfig: { vectorOwnershipTrackingStart: '2026-10-19T00:00:00.000Z' },
+        timeouts: { ragMs: 1_234 },
+        userId: 'user123',
+        file: {
+          file_id: 'file-123',
+          embedded: true,
+          embeddingOwnersComplete: true,
+          embeddingOwnersTrackedAt: '2026-10-20T00:00:00.000Z',
+        },
+      });
+
+      expect(mockedAxios.delete).toHaveBeenCalledWith(
+        'http://localhost:8000/documents',
+        expect.objectContaining({ timeout: 1_234 }),
+      );
+    });
+
     it('should delete the document from RAG API successfully', async () => {
       const file = {
         file_id: 'file-123',

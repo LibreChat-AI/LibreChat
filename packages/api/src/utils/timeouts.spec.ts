@@ -4,6 +4,7 @@ import {
   getOutboundTimeout,
   getOutboundTimeoutMs,
   toolRequestBudget,
+  createSpeechBudget,
   outboundRequestBudget,
   DEFAULT_OUTBOUND_TIMEOUTS_MS,
 } from './timeouts';
@@ -135,5 +136,20 @@ describe('toolRequestBudget', () => {
     const budget = toolRequestBudget({ toolsMs: 2_000 });
     expect(budget.timeout).toBe(2_000);
     expect(budget.timeoutErrorMessage).toBe(outboundTimeoutMessage('toolsMs', 2_000));
+  });
+});
+
+describe('createSpeechBudget', () => {
+  it('starts a fresh deadline per request and shares the disconnect signal', () => {
+    const close = new AbortController();
+    const next = createSpeechBudget({ timeouts: { speechMs: 2_000 } }, close.signal);
+    const first = next();
+    const second = next();
+    expect(first.timeout).toBe(2_000);
+    expect(first.signal).not.toBe(second.signal);
+    close.abort();
+    expect(first.signal.aborted).toBe(true);
+    expect(second.signal.aborted).toBe(true);
+    expect(next().signal.aborted).toBe(true);
   });
 });

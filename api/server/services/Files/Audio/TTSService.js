@@ -10,8 +10,7 @@ const {
   abortOnClose,
   pipeToResponse,
   capSpeechInput,
-  outboundRequestBudget,
-  getOutboundTimeoutMs,
+  createSpeechBudget,
 } = require('@librechat/api');
 const {
   TTSProviders,
@@ -325,11 +324,7 @@ class TTSService {
       const ttsSchema = appConfig?.speech?.tts?.[provider];
       const allowedAddresses = appConfig?.speech?.tts?.allowedAddresses;
       const voice = await this.getVoice(ttsSchema, requestVoice);
-      const requestOptions = outboundRequestBudget(
-        getOutboundTimeoutMs(appConfig, 'speechMs'),
-        'speechMs',
-        abortOnClose(res),
-      );
+      const nextBudget = createSpeechBudget(appConfig, abortOnClose(res));
 
       if (text.length < 4096) {
         const response = await this.ttsRequest(
@@ -337,7 +332,7 @@ class TTSService {
           ttsSchema,
           { input: text, voice },
           allowedAddresses,
-          requestOptions,
+          nextBudget(),
         );
         pipeToResponse(response.data, res, (error) =>
           logAxiosError({ message: '[TTS] Audio stream failed:', error }),
@@ -358,7 +353,7 @@ class TTSService {
               stream: true,
             },
             allowedAddresses,
-            requestOptions,
+            nextBudget(),
           );
 
           logger.debug(`[textToSpeech] user: ${req?.user?.id} | writing audio stream`);
@@ -410,8 +405,7 @@ class TTSService {
     const ttsSchema = appConfig?.speech?.tts?.[provider];
     const allowedAddresses = appConfig?.speech?.tts?.allowedAddresses;
     const voice = await this.getVoice(ttsSchema, req.body.voice);
-    const closeSignal = abortOnClose(res);
-    const speechTimeoutMs = getOutboundTimeoutMs(appConfig, 'speechMs');
+    const nextBudget = createSpeechBudget(appConfig, abortOnClose(res));
 
     let shouldContinue = true;
 
@@ -450,7 +444,7 @@ class TTSService {
                 stream: true,
               },
               allowedAddresses,
-              outboundRequestBudget(speechTimeoutMs, 'speechMs', closeSignal),
+              nextBudget(),
             );
 
             if (!shouldContinue) {
