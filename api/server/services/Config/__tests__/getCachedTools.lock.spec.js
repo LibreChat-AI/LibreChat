@@ -34,6 +34,7 @@ const getLogStores = require('~/cache/getLogStores');
 const mockCache = { get: jest.fn(), set: jest.fn(), delete: jest.fn() };
 getLogStores.mockReturnValue(mockCache);
 
+const { createMCPCatalogStore } = require('@librechat/api');
 const {
   getCachedTools,
   updateCachedGlobalTools,
@@ -60,6 +61,53 @@ describe('global tool cache write lock', () => {
     mockKeyvRedisClient.eval.mockResolvedValue(1);
     mockCache.set.mockResolvedValue(true);
     mockCache.delete.mockResolvedValue(true);
+  });
+
+  describe.each([
+    { REDIS_KEY_PREFIX: undefined },
+    { REDIS_KEY_PREFIX: '' },
+    { REDIS_KEY_PREFIX: 'myprefix_' },
+    { REDIS_KEY_PREFIX: 'myprefix_', GLOBAL_PREFIX_SEPARATOR: ':' },
+    { REDIS_KEY_PREFIX: 'myprefix_{tenant}', GLOBAL_PREFIX_SEPARATOR: '' },
+  ])('fence key namespace %j', (cacheConfig) => {
+    it.each(['global', 'user'])('namespaces the %s fence without changing its slot', async (scope) => {
+      mockCache.get.mockResolvedValue(null);
+      const store = createMCPCatalogStore({
+        cacheConfig,
+        getCache: () => mockCache,
+        ioredisClient: mockRedisClient,
+        keyvRedisClient: mockKeyvRedisClient,
+      });
+      const prefix = cacheConfig.REDIS_KEY_PREFIX
+        ? `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR ?? '::'}`
+        : '';
+      const namespace = `${prefix}${CacheKeys.TOOL_CACHE}:`;
+      const guardedKey =
+        scope === 'global'
+          ? `${namespace}tools:global`
+          : `${namespace}tools:metadata:mcp:user-generation:{user-1:server-1}`;
+      const hashTag = cacheConfig.REDIS_KEY_PREFIX?.includes('{tenant}')
+        ? 'tenant'
+        : scope === 'global'
+          ? guardedKey
+          : 'user-1:server-1';
+      const fenceKey = `${namespace}tools:${scope === 'global' ? 'global' : 'mcp'}:write-fence:{${hashTag}}`;
+
+      if (scope === 'global') {
+        await expect(store.setCachedTools({ builtin: {} })).resolves.toBe(true);
+      } else {
+        await expect(
+          store.getMCPToolsCacheGeneration({ userId: 'user-1', serverName: 'server-1' }),
+        ).resolves.toEqual(expect.any(String));
+      }
+
+      expect(mockKeyvRedisClient.eval.mock.calls.map(([, options]) => options.keys)).toEqual([
+        [fenceKey],
+        [fenceKey, guardedKey],
+        [fenceKey],
+      ]);
+      expect(calculateSlot(fenceKey)).toBe(calculateSlot(guardedKey));
+    });
   });
 
   it('waits for the shared Redis client before accessing the catalog', async () => {
@@ -147,7 +195,7 @@ describe('global tool cache write lock', () => {
       expect.stringContaining("redis.call('GET', KEYS[1])"),
       expect.objectContaining({
         keys: [
-          `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
+          `${CacheKeys.TOOL_CACHE}:tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
           `${CacheKeys.TOOL_CACHE}:tools:global`,
         ],
       }),
@@ -168,7 +216,7 @@ describe('global tool cache write lock', () => {
           expect.stringContaining("redis.call('PSETEX', KEYS[2]"),
           expect.objectContaining({
             keys: [
-              `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
+              `${CacheKeys.TOOL_CACHE}:tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
               `${CacheKeys.TOOL_CACHE}:tools:global`,
             ],
             arguments: [
@@ -339,7 +387,7 @@ describe('global tool cache write lock', () => {
       expect.stringContaining("redis.call('EXISTS', KEYS[2])"),
       expect.objectContaining({
         keys: [
-          `tools:mcp:write-fence:{user-1:server-1}`,
+          `${CacheKeys.TOOL_CACHE}:tools:mcp:write-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-legacy-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-generation:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:mcp:user:{user-1:server-1}:v2:config-current`,
