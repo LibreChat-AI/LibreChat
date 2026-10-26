@@ -4282,8 +4282,11 @@ export function createMessageMethods(
       queryFilter.$and = [...(queryFilter.$and ?? []), after];
     }
     const query = Message.find(queryFilter);
-    if (select) {
-      query.select(select);
+    /** The cursor needs `_id`, so an `-_id` projection is applied after it is read. */
+    const tokens = select ? select.split(/\s+/).filter(Boolean) : [];
+    const omitId = tokens.includes('-_id');
+    if (tokens.length > 0) {
+      query.select(tokens.filter((token) => token !== '-_id').join(' '));
     }
     /** `_id` makes the order total, so a page boundary inside a run of equal sort values is stable. */
     const messages = await query
@@ -4296,6 +4299,11 @@ export function createMessageMethods(
       messages.pop();
       const last = messages[messages.length - 1];
       nextCursor = formatMessageCursor(last[sortField as keyof IMessage], last._id);
+    }
+    if (omitId) {
+      for (const message of messages) {
+        delete (message as { _id?: unknown })._id;
+      }
     }
     return { messages, nextCursor };
   }

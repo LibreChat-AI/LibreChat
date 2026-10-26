@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { v4 as uuid } from 'uuid';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createMessageMethods } from './message';
+import { createMessageMethods, CLIENT_MESSAGE_SELECT } from './message';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -89,6 +89,27 @@ describe('getMessagesByCursor', () => {
       { limit: 1 },
     );
     expect(first.nextCursor).toContain('2026-01-01T00:00:00.456Z|');
+  });
+
+  it('pages ties without skips under the client projection that omits _id', async () => {
+    const conversationId = uuid();
+    const seeded = await seedTied(conversationId, 7, new Date('2026-01-01T00:00:00.123Z'));
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const result = await methods.getMessagesByCursor(
+        { conversationId, user: 'user-1' },
+        { limit: 3, cursor, select: CLIENT_MESSAGE_SELECT },
+      );
+      expect(result.messages.every((message) => message._id === undefined)).toBe(true);
+      seen.push(...result.messages.map((message) => message.messageId));
+      if (result.nextCursor == null) {
+        break;
+      }
+      cursor = result.nextCursor;
+    }
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen)).toEqual(new Set(seeded));
   });
 
   it('still honors a legacy bare timestamp cursor', async () => {
