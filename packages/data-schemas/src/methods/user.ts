@@ -999,17 +999,13 @@ export function createUserMethods(
   };
 
   /**
-   * Updates the plugins for a user based on the action specified (install/uninstall).
+   * Installs or uninstalls a plugin with a single atomic array operator, so concurrent
+   * install/uninstall requests cannot overwrite each other.
    * @param userId - The user ID whose plugins are to be updated
-   * @param plugins - The current plugins array
+   * @param _plugins - Ignored; the caller's possibly stale snapshot, kept for signature compatibility
    * @param pluginKey - The key of the plugin to install or uninstall
    * @param action - The action to perform, 'install' or 'uninstall'
-   * @returns The result of the update operation or null if action is invalid
-   */
-  /**
-   * Installs or uninstalls a plugin with a single atomic array operator, so concurrent
-   * install/uninstall requests cannot overwrite each other. `_plugins` (the caller's possibly
-   * stale snapshot) is ignored and kept only for signature compatibility.
+   * @returns The updated user, or null if the action is invalid or the user is missing
    */
   async function updateUserPlugins(
     userId: string,
@@ -1029,7 +1025,7 @@ export function createUserMethods(
     const updated = await User.findByIdAndUpdate(
       userId,
       { ...arrayOperation, $unset: { expiresAt: '' } },
-      { new: true },
+      { new: true, runValidators: true },
     ).lean<IUser>();
     await invalidateAuthUserDocCache(userId);
     return updated;
