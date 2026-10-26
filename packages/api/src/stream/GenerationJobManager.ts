@@ -5336,6 +5336,10 @@ class GenerationJobManagerClass {
       }
     };
 
+    const needsDurableInitialReplay =
+      this._isRedis &&
+      !options?.skipBufferReplay &&
+      this.ownedJobs.get(streamId) !== runtime.createdAt;
     const deferSequenceDelivery =
       this._isRedis && !runtime.hasSubscriber && !options?.skipBufferReplay;
     const transportSubscription = this.eventTransport.subscribe(
@@ -5370,8 +5374,13 @@ class GenerationJobManagerClass {
         // sequence reaches this process. Hold sequenced pub/sub delivery until replay and
         // sync establish the exact frontier, otherwise the new subscriber sees it twice.
         deferSequenceDelivery,
+        captureSequenceFrontier: needsDurableInitialReplay,
       },
     );
+    const synchronizeReorderBuffer = (replayedNextSeq?: number): void | Promise<void> =>
+      needsDurableInitialReplay && transportSubscription.syncReorderBuffer
+        ? transportSubscription.syncReorderBuffer()
+        : this.eventTransport.syncReorderBuffer?.(streamId, replayedNextSeq);
     runtime.localErrorHandlers.add(queueError);
     if (!options?.skipBufferReplay) {
       runtime.earlyReplayHandlers.add(queueChunk);
@@ -5442,10 +5451,6 @@ class GenerationJobManagerClass {
       return subscriptionActive;
     };
 
-    const needsDurableInitialReplay =
-      this._isRedis &&
-      !options?.skipBufferReplay &&
-      this.ownedJobs.get(streamId) !== runtime.createdAt;
     let initialReplayUnavailable = false;
     const stillMatchesExpectedGeneration = async (): Promise<boolean> => {
       if (options?.expectedCreatedAt == null && !needsDurableInitialReplay) {
@@ -5549,6 +5554,7 @@ class GenerationJobManagerClass {
           jobData,
           attachmentGeneration,
           deferSequenceDelivery,
+          synchronizeReorderBuffer,
         );
         return null;
       }
@@ -5631,7 +5637,7 @@ class GenerationJobManagerClass {
           runtime.earlyEventBufferClosed = true;
         }
         try {
-          const reorderSync = this.eventTransport.syncReorderBuffer?.(streamId, replayedNextSeq);
+          const reorderSync = synchronizeReorderBuffer(replayedNextSeq);
           if (reorderSync) {
             await waitWhileAttached(reorderSync);
           }
@@ -6003,6 +6009,7 @@ class GenerationJobManagerClass {
     jobData: SerializableJobData | null,
     attachmentGeneration: number,
     sequenceDeliveryDeferred: boolean,
+    synchronizeReorderBuffer: (replayedNextSeq?: number) => void | Promise<void>,
   ): void {
     if (this.eventTransport.getSubscriberCount(streamId) === 0) {
       return;
@@ -6065,7 +6072,7 @@ class GenerationJobManagerClass {
             /** Same closure as the owning-subscriber bootstrap above. */
             runtime.earlyEventBufferClosed = true;
           }
-          await this.eventTransport.syncReorderBuffer?.(streamId, replayedNextSeq);
+          await synchronizeReorderBuffer(replayedNextSeq);
         }
       })
       .catch((err) => {

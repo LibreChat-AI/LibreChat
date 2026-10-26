@@ -32,7 +32,7 @@ function replica() {
   manager.configure({ jobStore, eventTransport, isRedis: true });
   manager.initialize();
   managers.push(manager);
-  return { manager, jobStore, eventTransport };
+  return { manager, jobStore, eventTransport, subscriber };
 }
 
 async function prompt(manager: GenerationJobManagerClass, streamId: string) {
@@ -131,6 +131,56 @@ describe('initial cross-replica durable recovery', () => {
       expect(onError).toHaveBeenCalledTimes(1);
     },
   );
+
+  test('preserves a prompt published after validation but before sequence synchronization', async () => {
+    const owner = replica();
+    const viewer = replica();
+    const streamId = randomUUID();
+    const job = await owner.manager.createJob(streamId, 'user', streamId);
+    const listeners = viewer.subscriber.listeners('message');
+    const held: Array<[string, string]> = [];
+    viewer.subscriber.removeAllListeners('message');
+    viewer.subscriber.on('message', (channel: string, message: string) => {
+      if (JSON.parse(message).type === 'chunk') {
+        held.push([channel, message]);
+      } else {
+        for (const listener of listeners) listener(channel, message);
+      }
+    });
+    const getJob = viewer.jobStore.getJob.bind(viewer.jobStore);
+    let emitted = false;
+    jest.spyOn(viewer.jobStore, 'getJob').mockImplementation(async (...args) => {
+      const snapshot = await getJob(...args);
+      if (!emitted && viewer.eventTransport.getSubscriberCount(streamId) > 0) {
+        emitted = true;
+        await prompt(owner.manager, streamId);
+      }
+      return snapshot;
+    });
+    const received: ServerSentEvent[] = [];
+    const onError = jest.fn();
+    const subscription = await viewer.manager.subscribe(
+      streamId,
+      (event) => received.push(event),
+      undefined,
+      onError,
+      { expectedCreatedAt: job.createdAt },
+    );
+    subscriptions.push(subscription!);
+    const deadline = Date.now() + 5_000;
+    while (held.length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(held).toHaveLength(2);
+    for (const [channel, message] of held) {
+      for (const listener of listeners) listener(channel, message);
+    }
+    expect(received.map((event) => ('event' in event ? event.event : undefined))).toEqual([
+      'on_run_step',
+      'on_run_step_delta',
+    ]);
+    expect(onError).not.toHaveBeenCalled();
+  });
 
   test('keeps owner-local OAuth replay on the initial connection', async () => {
     const owner = replica();
