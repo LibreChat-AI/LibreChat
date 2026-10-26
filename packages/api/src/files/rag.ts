@@ -157,24 +157,31 @@ export function createVectorFileDeleter({
         throw new Error('Vector ownership predates the safe writer rollout');
       }
     }
-    const headers = {
+    const headers = () => ({
       Authorization: `Bearer ${generateToken(req.user.id)}`,
       'Content-Type': 'application/json',
       accept: 'application/json',
-    };
+    });
     // Unscoped embeds can live in RAG's public scope even when metadata records a user ID.
     const namespaces = [...new Set(entities ?? []), undefined];
     const results = await Promise.allSettled(
       namespaces.map((entity_id) =>
         limit(async () => {
-          const config = { headers, ...(entity_id ? { params: { entity_id } } : {}) };
+          const config = entity_id ? { params: { entity_id } } : {};
           try {
-            await httpClient.delete(`${baseUrl}/documents`, { ...config, data: [file.file_id] });
+            await httpClient.delete(`${baseUrl}/documents`, {
+              ...config,
+              headers: headers(),
+              data: [file.file_id],
+            });
           } catch (error) {
             // A 404 can mean a wrong scope. Only a successful inventory can establish absence,
             // including when a prior attempt removed just some of the namespaces.
             if (getSafeErrorMetadata(error).status !== 404) throw error;
-            const { data } = await httpClient.get<string[]>(`${baseUrl}/ids`, config);
+            const { data } = await httpClient.get<string[]>(`${baseUrl}/ids`, {
+              ...config,
+              headers: headers(),
+            });
             if (
               !Array.isArray(data) ||
               data.some((id) => typeof id !== 'string') ||

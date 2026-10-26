@@ -444,6 +444,74 @@ describe('createVectorFileDeleter receipts', () => {
     },
   );
 
+  it('mints credentials at dispatch so a queue longer than token TTL still converges', async () => {
+    let clock = 0;
+    const owners = Array.from({ length: 20 }, (_, index) => `agent-${index}`);
+    const copies = new Set([...owners, 'public']);
+    let rejected = 0;
+    const generateToken = jest.fn(() => String(clock));
+    const httpClient = {
+      delete: jest
+        .fn()
+        .mockImplementation(
+          async (
+            _url: string,
+            config: { headers: { Authorization: string }; params?: { entity_id: string } },
+          ) => {
+            if (clock - Number(config.headers.Authorization.slice(7)) >= 300_000) {
+              rejected++;
+              throw Object.assign(new Error('expired token'), { response: { status: 401 } });
+            }
+            clock += 20_000;
+            copies.delete(config.params?.entity_id ?? 'public');
+            return { status: 200 };
+          },
+        ),
+      get: jest.fn(),
+    };
+    const erase = createVectorFileDeleter({
+      baseUrl: 'https://rag.example',
+      httpClient,
+      generateToken,
+      namespaceConcurrency: 1,
+      ownershipTrackingStart: '2026-10-19T00:00:00.000Z',
+    });
+    await expect(erase(req, { ...file, metadata: { embeddedEntities: owners } })).resolves.toEqual({
+      deleted: true,
+    });
+    expect(clock).toBeGreaterThan(300_000);
+    expect(rejected).toBe(0);
+    expect(copies.size).toBe(0);
+    expect(generateToken).toHaveBeenCalledTimes(21);
+  });
+
+  it('renews credentials for inventory when the DELETE outlives its token', async () => {
+    let clock = 0;
+    const generateToken = jest.fn(() => String(clock));
+    const httpClient = {
+      delete: jest.fn().mockImplementation(async () => {
+        clock += 301_000;
+        throw Object.assign(new Error('already erased'), { response: { status: 404 } });
+      }),
+      get: jest
+        .fn()
+        .mockImplementation(
+          async (_url: string, config: { headers: { Authorization: string } }) => {
+            expect(config.headers.Authorization).toBe(`Bearer ${clock}`);
+            return { data: [] };
+          },
+        ),
+    };
+    const erase = createVectorFileDeleter({
+      baseUrl: 'https://rag.example',
+      httpClient,
+      generateToken,
+      ownershipTrackingStart: '2026-10-19T00:00:00.000Z',
+    });
+    await expect(erase(req, file)).resolves.toEqual({ deleted: true });
+    expect(generateToken).toHaveBeenCalledTimes(2);
+  });
+
   it('does not mistake a wrong-namespace 404 for erasure', async () => {
     mockedAxios.delete.mockRejectedValueOnce({ response: { status: 404 } });
     mockedAxios.get.mockResolvedValueOnce({ data: [file.file_id] });
