@@ -11,7 +11,12 @@ import {
   collectRunMCPToolAliases,
   createRun,
 } from './run';
-import { ContextPartKeys, contributeContext } from './systemParts';
+import {
+  ContextPartKeys,
+  contributeContext,
+  TAIL_CONTEXT_OPEN,
+  TAIL_CONTEXT_CLOSE,
+} from './systemParts';
 
 describe('getRunDiscoveredTools', () => {
   it('uses the run discovery snapshot instead of reconstructing it from messages', () => {
@@ -480,6 +485,7 @@ describe('createRun instructions with prompt caching', () => {
   const MEMORY = 'Memory: prefers metric units.';
   const RAG = 'Retrieved context for this question.';
   const VOLATILE = `${RAG}\n\n${MEMORY}`;
+  const framed = (text: string) => `${TAIL_CONTEXT_OPEN}\n\n${text}\n${TAIL_CONTEXT_CLOSE}`;
   /** An agent as `initializeAgent` and `AgentClient.buildMessages` leave it. */
   const withParts = (rag = RAG) => {
     const agent = {};
@@ -532,7 +538,7 @@ describe('createRun instructions with prompt caching', () => {
       const input = await agentInput(provider, true, withParts());
       expect(input.instructions).toBe('Base instructions.');
       expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
-      expect(input.additional_instructions).toBe(VOLATILE);
+      expect(input.additional_instructions).toBe(framed(VOLATILE));
     },
   );
 
@@ -546,7 +552,7 @@ describe('createRun instructions with prompt caching', () => {
   it('keeps only the per-turn parts dynamic when a memory or RAG part is empty', async () => {
     const input = await agentInput(Providers.ANTHROPIC, true, withParts(''));
     expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions).toBe(MEMORY);
+    expect(input.additional_instructions).toBe(framed(MEMORY));
   });
 
   it('assembles the tail from the parts, not from a direct write to additional_instructions', async () => {
@@ -555,7 +561,7 @@ describe('createRun instructions with prompt caching', () => {
       additional_instructions: 'Written directly.',
     });
     expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions).toBe(VOLATILE);
+    expect(input.additional_instructions).toBe(framed(VOLATILE));
     expect(JSON.stringify(input)).not.toContain('Written directly.');
   });
 
@@ -607,7 +613,10 @@ describe('createRun instructions with prompt caching', () => {
       ...queuedFiles(),
     });
     expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions.startsWith(`${VOLATILE}\n\n`)).toBe(true);
+    expect(
+      input.additional_instructions.startsWith(`${TAIL_CONTEXT_OPEN}\n\n${VOLATILE}\n\n`),
+    ).toBe(true);
+    expect(input.additional_instructions.endsWith(TAIL_CONTEXT_CLOSE)).toBe(true);
     expect(input.additional_instructions).toContain('report.csv');
   });
 

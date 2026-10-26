@@ -2519,6 +2519,7 @@ export async function createRun({
     } = assembleSystemPrompt(agent, {
       stableContext: isStableContextEnabled(appConfig),
       conversationBlock: !isSubagent && sdkCachesConversationBlock(provider, llmConfig),
+      frameTail: sdkCachesConversationBlock(provider, llmConfig),
     });
 
     /** Resolves issues with new OpenAI usage field */
