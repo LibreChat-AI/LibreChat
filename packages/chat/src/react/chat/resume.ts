@@ -1,4 +1,5 @@
 import { atom } from 'jotai';
+import type { PrimitiveAtom } from 'jotai';
 
 /**
  * Conversations with an unanswered request to reattach to their running generation (the
@@ -7,4 +8,6 @@ import { atom } from 'jotai';
  * never builds a second resume path. Entries are consumed, so the set stays as small as the
  * requests in flight. Chat-owned, so it lives with the chat rather than in the app store.
  */
-export const resumeRequestsAtom = atom<ReadonlySet<string>>(new Set<string>());
+export const resumeRequestsAtom: PrimitiveAtom<ReadonlySet<string>> = atom<ReadonlySet<string>>(
+  new Set<string>(),
+);

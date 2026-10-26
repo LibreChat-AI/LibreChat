@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { useAtomValue, getDefaultStore } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { useChat, resumeRequestsAtom } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Tools, QueryKeys, ContentTypes, EModelEndpoint, request } from 'librechat-data-provider';
 import {
@@ -31,16 +32,15 @@ import type { StreamStatusResponse } from '~/data-provider';
 import type { ChatContract } from '~/hooks/Chat/contract';
 import type { Transport } from '~/hooks/Chat/contract';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { usePaneConversation, usePaneConversationState } from '~/routes/ChatSettings';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { ChatContext, useChatContext } from '~/Providers/ChatContext';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
-import { usePaneConversation } from '~/routes/ChatSettings';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
+import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
-import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import { SteerHostTestProvider } from 'test/steerHost';
-import { useChat } from '~/hooks/Chat/facade';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
@@ -94,6 +94,7 @@ function createFakeTransport(overrides: Partial<Transport> = {}) {
 const chatSettings = {
   ...defaultChatSettings,
   usePaneConversation,
+  usePaneConversationState,
   auth: { token: 'test-token', isAuthenticated: true },
 };
 
@@ -210,7 +211,7 @@ const renderSteering = (transport: Transport) =>
 
 /** The host builds the pane's chat contract, as the chat view does. */
 function ChatHost({ children }: { children: React.ReactNode }) {
-  const helpers: ChatContract = useChatHelpers(0, 'convo-1');
+  const helpers: ChatContract = useChatHelpers(0, 'convo-1', getMappingOptions);
   return <ChatContext.Provider value={helpers}>{children}</ChatContext.Provider>;
 }
 
@@ -310,7 +311,7 @@ describe('chat transport boundary', () => {
 
     it('stops a resumable generation through the host transport', async () => {
       const fake = createFakeTransport();
-      const { result } = renderHook(() => useChatHelpers(0), {
+      const { result } = renderHook(() => useChatHelpers(0, undefined, getMappingOptions), {
         wrapper: createWrapper(fake.transport, seedRun),
       });
 
@@ -328,7 +329,7 @@ describe('chat transport boundary', () => {
     it('settles a rejected stop without throwing to the caller', async () => {
       const failure = Object.assign(new Error('Not found'), { response: { status: 404 } });
       const fake = createFakeTransport({ abort: jest.fn(async () => Promise.reject(failure)) });
-      const { result } = renderHook(() => useChatHelpers(0), {
+      const { result } = renderHook(() => useChatHelpers(0, undefined, getMappingOptions), {
         wrapper: createWrapper(fake.transport, seedRun),
       });
 

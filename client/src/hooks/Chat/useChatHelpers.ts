@@ -23,20 +23,27 @@ import type { ChatContract } from './contract';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
 import { useAbortStreamMutation, supportsGenerationProtocolV2 } from '~/data-provider';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { getMessageCacheIds, createMessagesSubscription } from './cache';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import { resolveAbortSteerTarget } from '~/utils';
 import useNewConvo from '~/hooks/useNewConvo';
-import { getMessageCacheIds } from './cache';
 import { useAbortCleanup } from './abort';
-import store from '~/store';
 
 /** The live attachments map the stream and preview polling write. */
 const useLiveAttachments = () => useAtomValue(messageAttachmentsMapAtom);
 
-// this to be set somewhere else
-export default function useChatHelpers(index = 0, paramId?: string): ChatContract {
+/**
+ * Builds a pane's chat contract. `getMappingOptions` carries the app's tool outcome rules for
+ * the facade's message views; the providers pass them so this hook never loads the part
+ * components those rules live with.
+ */
+export default function useChatHelpers(
+  index: number,
+  paramId: string | undefined,
+  getMappingOptions: ChatContract['getMappingOptions'],
+): ChatContract {
   const clearAllSubmissions = useClearSubmissions();
   const [files, setFiles] = useAtom(filesFamily(index));
   const [filesLoading, setFilesLoading] = useState(false);
@@ -91,8 +98,8 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   );
 
   const { newConversation } = useNewConvo(index);
-  const { useCreateConversationAtom } = store;
-  const { conversation, setConversation } = useCreateConversationAtom(index);
+  const chatSettings = useChatSettings();
+  const { conversation, setConversation } = chatSettings.usePaneConversationState(index);
   const { conversationId, endpoint, endpointType } = conversation ?? {};
   const activeGenerationCreatedAt = useAtomValue(
     activeGenerationCreatedAtByConvoId(conversationId ?? Constants.NEW_CONVO),
@@ -130,6 +137,11 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       }
     },
     [queryParam, queryClient, conversationId],
+  );
+
+  const { subscribeMessages, getMessagesRevision } = useMemo(
+    () => createMessagesSubscription(queryClient, queryParam),
+    [queryClient, queryParam],
   );
 
   const getMessages = useCallback(
@@ -393,7 +405,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
 
   /** Read once per chat rather than per message row: message rows never unmount, so a
    *  per-row settings read would accumulate for the length of the conversation. */
-  const { feedbackEnabled } = useChatSettings().config;
+  const { feedbackEnabled } = chatSettings.config;
 
   return useMemo(
     (): ChatContract => ({
@@ -405,6 +417,8 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       getMessages,
       messagesKey: queryParam,
       setMessages,
+      subscribeMessages,
+      getMessagesRevision,
       setSiblingIdx,
       latestMessageId,
       latestMessageDepth,
@@ -427,6 +441,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       filesLoading,
       setFilesLoading,
       feedbackEnabled,
+      getMappingOptions,
     }),
     [
       newConversation,
@@ -437,6 +452,8 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       getMessages,
       queryParam,
       setMessages,
+      subscribeMessages,
+      getMessagesRevision,
       setSiblingIdx,
       latestMessageId,
       latestMessageDepth,
@@ -458,6 +475,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       filesLoading,
       setFilesLoading,
       feedbackEnabled,
+      getMappingOptions,
     ],
   );
 }

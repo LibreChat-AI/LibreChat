@@ -11,6 +11,7 @@ import type { ReactNode } from 'react';
 import { useAdaptiveSSE, useResumeOnLoad } from '~/hooks/SSE';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { ChatContext } from '~/Providers/ChatContext';
+import { getMappingOptions } from './outcomes';
 import useChatHelpers from './useChatHelpers';
 
 /**
@@ -29,7 +30,7 @@ export function ChatProvider({
   conversationId?: string;
   children: ReactNode;
 }) {
-  const chat = useChatHelpers(index, conversationId);
+  const chat = useChatHelpers(index, conversationId, getMappingOptions);
   return <ChatContext.Provider value={chat}>{children}</ChatContext.Provider>;
 }
 
@@ -77,7 +78,7 @@ export function ChatSessionProvider({
     { isStreaming: isSubmitting },
   );
 
-  const chat = useChatHelpers(index, conversationId);
+  const chat = useChatHelpers(index, conversationId, getMappingOptions);
   const rootSubmission = useAtomValue(submissionByIndex(index));
 
   useAdaptiveSSE(rootSubmission, chat, false, index);

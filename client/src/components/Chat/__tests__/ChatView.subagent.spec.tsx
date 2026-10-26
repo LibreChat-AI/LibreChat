@@ -48,6 +48,10 @@ jest.mock('~/hooks/Chat/useChatHelpers', () => ({
   }),
 }));
 
+jest.mock('~/hooks/Chat/outcomes', () => ({
+  getMappingOptions: () => ({}),
+}));
+
 jest.mock('~/hooks/SSE', () => ({
   useAdaptiveSSE: jest.fn(),
   useResumeOnLoad: jest.fn(),

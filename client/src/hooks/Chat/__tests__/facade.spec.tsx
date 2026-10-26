@@ -1,14 +1,14 @@
 import React from 'react';
 import { act, render, renderHook } from '@testing-library/react';
 import { QueryKeys, Constants, ContentTypes } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { useChat, ChatContext, useChatActions, resumeRequestsAtom } from '@librechat/chat/react';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import type { JotaiStore } from 'test/harness';
-import { ChatContext } from '~/Providers/ChatContext';
-import { useChat, useChatActions } from '../facade';
+import { createMessagesSubscription } from '../cache';
 import { IsolatedAtomStore } from 'test/harness';
-import { resumeRequestsAtom } from '../resume';
+import { getMappingOptions } from '../outcomes';
 
 const userMessage: TMessage = {
   messageId: 'user-1',
@@ -50,7 +50,10 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     setSiblingIdx: noop,
     latestMessageId: 'user-1',
     latestMessageDepth: 0,
+    subscribeMessages: () => () => undefined,
+    getMessagesRevision: () => 0,
     useLiveAttachments: () => noLiveAttachments,
+    getMappingOptions,
     ask: jest.fn(),
     regenerate: jest.fn(),
     isSubmitting: false,
@@ -70,6 +73,16 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
   };
 };
 
+/** Serves `contract` subscribed to the provided query cache, as `useChatHelpers` serves it. */
+function CachedChat({ contract, children }: { contract: ChatContract; children: React.ReactNode }) {
+  const queryClient = useQueryClient();
+  const value = React.useMemo(
+    () => ({ ...contract, ...createMessagesSubscription(queryClient, contract.messagesKey) }),
+    [contract, queryClient],
+  );
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
+}
+
 /** The facade delivers cache writes on a microtask, outside the render that caused them. */
 const flushCacheNotify = () => Promise.resolve();
 
@@ -79,7 +92,7 @@ const renderChat = (initial: ChatContract) => {
   const queryClient = new QueryClient();
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+      <CachedChat contract={contract}>{children}</CachedChat>
     </QueryClientProvider>
   );
   const view = renderHook(() => useChat(), { wrapper });
@@ -295,7 +308,7 @@ describe('useChat', () => {
     });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+        <CachedChat contract={contract}>{children}</CachedChat>
       </QueryClientProvider>
     );
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -345,18 +358,18 @@ describe('useChat', () => {
     };
     const view = render(
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>
+        <CachedChat contract={contract}>
           <Probe withReader={false} />
-        </ChatContext.Provider>
+        </CachedChat>
       </QueryClientProvider>,
     );
 
     await act(async () => {
       view.rerender(
         <QueryClientProvider client={queryClient}>
-          <ChatContext.Provider value={contract}>
+          <CachedChat contract={contract}>
             <Probe withReader />
-          </ChatContext.Provider>
+          </CachedChat>
         </QueryClientProvider>,
       );
       await flushCacheNotify();
@@ -379,7 +392,7 @@ describe('useChat', () => {
     });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+        <CachedChat contract={contract}>{children}</CachedChat>
       </QueryClientProvider>
     );
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -747,7 +760,7 @@ describe('useChat', () => {
               store.set(resumeRequestsAtom, new Set(['convo-2']));
             }}
           >
-            <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+            <CachedChat contract={contract}>{children}</CachedChat>
           </IsolatedAtomStore>
         </QueryClientProvider>
       ),
@@ -808,7 +821,7 @@ describe('useChatActions', () => {
     let renders = 0;
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+        <CachedChat contract={contract}>{children}</CachedChat>
       </QueryClientProvider>
     );
     const view = renderHook(

@@ -8,9 +8,13 @@ import type { MutableSnapshot } from 'recoil';
 import type { ChatSettings } from '../contract';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
+import { usePaneConversationState } from '~/routes/ChatSettings';
 import useChatHelpers from '../useChatHelpers';
 import useTokenLimits from '../useTokenLimits';
 import store from '~/store';
+
+/** The contract's tool outcome rules are the app's; these specs map no tool parts. */
+const noToolOutcomes = () => ({});
 
 /** No `useGetStartupConfig`: a hook that still read the deployment config directly would throw. */
 jest.mock('~/data-provider', () => ({
@@ -40,9 +44,12 @@ jest.mock('@librechat/chat/react', () => ({
   useSteerConvert: () => jest.fn(),
 }));
 
+/** The pane conversation comes from the app's pane store, as the host supplies it. */
+const paneSettings: ChatSettings = { ...defaultChatSettings, usePaneConversationState };
+
 function createWrapper(
   initializeState?: (snapshot: MutableSnapshot) => void,
-  settings: ChatSettings = defaultChatSettings,
+  settings: ChatSettings = paneSettings,
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { children: React.ReactNode }) {
@@ -60,7 +67,9 @@ function renderChatHelpers(
   paramId?: string,
   initializeState?: (snapshot: MutableSnapshot) => void,
 ) {
-  return renderHook(() => useChatHelpers(0, paramId), { wrapper: createWrapper(initializeState) });
+  return renderHook(() => useChatHelpers(0, paramId, noToolOutcomes), {
+    wrapper: createWrapper(initializeState),
+  });
 }
 
 describe('useChatHelpers contract members', () => {
@@ -102,7 +111,7 @@ describe('substitute host config', () => {
   const wrapper = createWrapper(undefined, hostSettings);
 
   it('reaches the chat helpers', () => {
-    const { result } = renderHook(() => useChatHelpers(0), { wrapper });
+    const { result } = renderHook(() => useChatHelpers(0, undefined, noToolOutcomes), { wrapper });
 
     expect(result.current.feedbackEnabled).toBe(true);
   });
@@ -124,7 +133,7 @@ describe('substitute host config', () => {
     const conversation = { endpoint: 'openAI', spec: 'long' } as TConversation;
     const { result } = renderHook(
       () => ({
-        helpers: useChatHelpers(0),
+        helpers: useChatHelpers(0, undefined, noToolOutcomes),
         temporary: useTemporaryChat(),
         limits: useTokenLimits(conversation),
       }),

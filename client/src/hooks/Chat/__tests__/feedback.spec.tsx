@@ -6,6 +6,9 @@ import type { TStartupConfig } from 'librechat-data-provider';
 import ChatSettingsProvider from '~/routes/ChatSettings';
 import useChatHelpers from '../useChatHelpers';
 
+/** The contract's tool outcome rules are the app's; these specs map no tool parts. */
+const noToolOutcomes = () => ({});
+
 let mockStartupConfig: Partial<TStartupConfig> | undefined;
 
 jest.mock('~/data-provider', () => ({
@@ -47,7 +50,7 @@ function renderChatHelpers() {
       </RecoilRoot>
     </QueryClientProvider>
   );
-  return renderHook(() => useChatHelpers(0), { wrapper });
+  return renderHook(() => useChatHelpers(0, undefined, noToolOutcomes), { wrapper });
 }
 
 describe('useChatHelpers feedbackEnabled', () => {

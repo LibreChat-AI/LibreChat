@@ -1,11 +1,11 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { renderHook } from '@testing-library/react';
+import { useChatActions } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import { ChatProvider, ChatSessionProvider } from '../provider';
-import { useChatActions } from '../facade';
 
 const mockUseChatHelpers = jest.fn();
 const mockUseAdaptiveSSE = jest.fn();
@@ -46,7 +46,10 @@ const contract: ChatContract = {
   setSiblingIdx: noop,
   latestMessageId: undefined,
   latestMessageDepth: undefined,
+  subscribeMessages: () => () => undefined,
+  getMessagesRevision: () => 0,
   useLiveAttachments: () => ({}),
+  getMappingOptions: () => ({}),
   ask: jest.fn(),
   regenerate: jest.fn(),
   isSubmitting: false,

@@ -19,9 +19,14 @@ import {
 } from '@librechat/chat/react';
 import type { TSubmission, TConversation } from 'librechat-data-provider';
 import type { DrainAfterAbort, RunEnd } from '@librechat/chat';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { usePaneConversationState } from '~/routes/ChatSettings';
 import useChatHelpers from '../useChatHelpers';
 import { useAbortCleanup } from '../abort';
 import store from '~/store';
+
+/** The contract's tool outcome rules are the app's; these specs map no tool parts. */
+const noToolOutcomes = () => ({});
 
 const mockAbortMutateAsync = jest.fn();
 const mockConvertSteersToQueued = jest.fn();
@@ -56,6 +61,8 @@ jest.mock('@librechat/chat/react', () => ({
 }));
 
 const INDEX = 0;
+/** The pane conversation comes from the app's pane store, as the host supplies it. */
+const paneSettings = { ...defaultChatSettings, usePaneConversationState };
 const OTHER_INDEX = 1;
 
 const submission = (id: string) =>
@@ -237,12 +244,14 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
           }}
         >
           <RunEndProbe />
-          {children}
+          <ChatSettingsContext.Provider value={paneSettings}>
+            {children}
+          </ChatSettingsContext.Provider>
         </RecoilRoot>
       </QueryClientProvider>
     );
     return {
-      ...renderHook(() => useChatHelpers(INDEX), { wrapper }),
+      ...renderHook(() => useChatHelpers(INDEX, undefined, noToolOutcomes), { wrapper }),
       stoppedSubmission,
       setDrainAfterAbort: (value: DrainAfterAbort | false) => setDrainAfterAbort?.(value),
     };
