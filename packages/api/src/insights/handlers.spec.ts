@@ -25,8 +25,8 @@ const emptyInsights: TInsightsResponse = {
   latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },
 };
 
-const insightsEnabled = jest.fn(() => true);
-const insightsDisabled = jest.fn(() => false);
+const insightsEnabled = jest.fn(() => ({ enabled: true, showDetails: true }));
+const insightsDisabled = jest.fn(() => ({ enabled: false, showDetails: false }));
 const getAccessibleAgents = jest.fn().mockResolvedValue(agents);
 
 const createResponse = () => {
@@ -49,7 +49,7 @@ const createRequest = (query: ServerRequest['query'] = {}): ServerRequest =>
 const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyInsights)) => ({
   getInsights,
   handler: createInsightsHandler({
-    isInsightsEnabled: insightsEnabled,
+    resolveInsightsConfig: insightsEnabled,
     getAccessibleAgents,
     getInsights,
   }),
@@ -63,7 +63,7 @@ describe('Insights handlers', () => {
 
   it('returns access when at least one agent is accessible', async () => {
     const handler = createInsightsAccessHandler({
-      isInsightsEnabled: insightsEnabled,
+      resolveInsightsConfig: insightsEnabled,
       getAccessibleAgents,
     });
     const { response, json } = createResponse();
@@ -76,7 +76,7 @@ describe('Insights handlers', () => {
   it('returns 403 from the access endpoint when no agent is accessible', async () => {
     getAccessibleAgents.mockResolvedValueOnce([]);
     const handler = createInsightsAccessHandler({
-      isInsightsEnabled: insightsEnabled,
+      resolveInsightsConfig: insightsEnabled,
       getAccessibleAgents,
     });
     const { response, status } = createResponse();
@@ -88,7 +88,7 @@ describe('Insights handlers', () => {
 
   it('returns 404 from the access endpoint when Insights is disabled', async () => {
     const handler = createInsightsAccessHandler({
-      isInsightsEnabled: insightsDisabled,
+      resolveInsightsConfig: insightsDisabled,
       getAccessibleAgents,
     });
     const { response, status, json } = createResponse();
@@ -103,7 +103,7 @@ describe('Insights handlers', () => {
   it('returns 404 without resolving access when Insights is disabled', async () => {
     const getInsights = jest.fn();
     const handler = createInsightsHandler({
-      isInsightsEnabled: insightsDisabled,
+      resolveInsightsConfig: insightsDisabled,
       getAccessibleAgents,
       getInsights,
     });
@@ -126,6 +126,7 @@ describe('Insights handlers', () => {
     );
 
     expect(getInsights).toHaveBeenCalledWith({
+      showDetails: true,
       page: 3,
       pageSize: 50,
       tenantId: 'tenant-a',
@@ -217,5 +218,76 @@ describe('Insights handlers', () => {
     await handler(createRequest({ search: 'ab' }), response);
 
     expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ search: undefined }));
+  });
+
+  it.each(['USER', 'ADMIN'])(
+    'returns only whitelisted aggregate fields for %s when detail is disabled',
+    async (role) => {
+      insightsEnabled.mockReturnValueOnce({ enabled: true, showDetails: false });
+      const privateValue = 'private-content-must-not-cross-api';
+      const getInsights = jest.fn().mockResolvedValue({
+        ...emptyInsights,
+        agents: [{ id: 'agent-a', name: 'Alpha', email: privateValue }],
+        summary: { ...emptyInsights.summary, userId: privateValue },
+        daily: [
+          {
+            date: '2026-10-01',
+            conversations: 1,
+            users: 1,
+            messages: 2,
+            totalTokens: 5,
+            text: privateValue,
+          },
+        ],
+        topUsers: [{ name: privateValue }],
+        churnedUsers: [{ email: privateValue }],
+        latest: { conversations: [{ firstMessage: privateValue, conversationId: privateValue }] },
+        feedbackText: privateValue,
+      });
+      const { handler } = createDashboardHandler(getInsights);
+      const req = createRequest({
+        search: privateValue,
+        page: '20',
+        pageSize: '50',
+        showDetails: 'true',
+      });
+      req.user = { ...req.user, role } as NonNullable<ServerRequest['user']>;
+      const { response, json } = createResponse();
+      await handler(req, response);
+      expect(getInsights).toHaveBeenCalledWith(
+        expect.objectContaining({
+          showDetails: false,
+          search: undefined,
+          page: 1,
+          pageSize: 10,
+        }),
+      );
+      expect(json).toHaveBeenCalledWith({
+        agents: [{ id: 'agent-a', name: 'Alpha' }],
+        summary: emptyInsights.summary,
+        daily: [{ date: '2026-10-01', conversations: 1, users: 1, messages: 2, totalTokens: 5 }],
+      });
+      expect(JSON.stringify(json.mock.calls)).not.toContain(privateValue);
+    },
+  );
+
+  it('does not let request parameters enable a disabled feature', async () => {
+    insightsEnabled.mockReturnValueOnce({ enabled: false, showDetails: false });
+    const { handler, getInsights } = createDashboardHandler();
+    const { response, status } = createResponse();
+    await handler(createRequest({ enabled: 'true', showDetails: 'true' }), response);
+    expect(status).toHaveBeenCalledWith(404);
+    expect(getInsights).not.toHaveBeenCalled();
+  });
+
+  it('returns a generic error without disclosing private query failures', async () => {
+    const { handler } = createDashboardHandler(
+      jest.fn().mockRejectedValue(new Error('private prompt')),
+    );
+    const { response, status, json } = createResponse();
+    await handler(createRequest(), response);
+    expect(status).toHaveBeenCalledWith(500);
+    expect(json).toHaveBeenCalledWith({ message: 'Failed to load insights' });
+    expect(JSON.stringify(json.mock.calls)).not.toContain('private prompt');
   });
 });

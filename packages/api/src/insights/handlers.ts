@@ -3,22 +3,24 @@ import {
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
   INSIGHTS_AGENT_ID_MAX_LENGTH,
-  type TInsightsAgent,
-  type TInsightsParams,
 } from 'librechat-data-provider';
+import type { TInsightsAgent, TInsightsParams } from 'librechat-data-provider';
 import type { InsightsMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
+import type { InsightsConfigResolver } from './config';
 import type { ServerRequest } from '~/types';
+import { toAggregateInsightsResponse } from './privacy';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 type InsightsHandlerDeps = {
-  isInsightsEnabled: () => boolean;
+  resolveInsightsConfig: InsightsConfigResolver;
   getInsights: InsightsMethods['getInsights'];
   getAccessibleAgents: (user: NonNullable<ServerRequest['user']>) => Promise<TInsightsAgent[]>;
 };
 
 type InsightsAccessHandlerDeps = Pick<
   InsightsHandlerDeps,
-  'isInsightsEnabled' | 'getAccessibleAgents'
+  'resolveInsightsConfig' | 'getAccessibleAgents'
 >;
 
 const firstQueryValue = (value: unknown): string | undefined => {
@@ -66,12 +68,12 @@ const timeZoneValue = (value: unknown): string | undefined => {
 };
 
 export function createInsightsAccessHandler({
-  isInsightsEnabled,
+  resolveInsightsConfig,
   getAccessibleAgents,
 }: InsightsAccessHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
-      if (!isInsightsEnabled()) {
+      if (!resolveInsightsConfig(req).enabled) {
         res.status(404).json({ message: 'Not found' });
         return;
       }
@@ -88,20 +90,21 @@ export function createInsightsAccessHandler({
 
       res.json({ access: true });
     } catch (error) {
-      logger.error('[Insights] Failed to load access status', error);
+      logger.error('[Insights] Failed to load access status', getSafeErrorMetadata(error));
       res.status(500).json({ message: 'Failed to load insights access' });
     }
   };
 }
 
 export function createInsightsHandler({
-  isInsightsEnabled,
+  resolveInsightsConfig,
   getInsights,
   getAccessibleAgents,
 }: InsightsHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
-      if (!isInsightsEnabled()) {
+      const { enabled, showDetails } = resolveInsightsConfig(req);
+      if (!enabled) {
         res.status(404).json({ message: 'Not found' });
         return;
       }
@@ -128,15 +131,18 @@ export function createInsightsHandler({
       }
       const agentIds = requestedAgentIds.length > 0 ? requestedAgentIds : [...authorizedAgentIds];
 
-      const page = positiveInteger(req.query.page, 1);
-      const pageSize = Math.min(50, Math.max(5, positiveInteger(req.query.pageSize, 10)));
+      const page = showDetails ? positiveInteger(req.query.page, 1) : 1;
+      const pageSize = showDetails
+        ? Math.min(50, Math.max(5, positiveInteger(req.query.pageSize, 10)))
+        : 10;
       const tenantId = stringValue(req.user?.tenantId);
       const requestedSearch = stringValue(req.query.search)?.slice(0, INSIGHTS_SEARCH_MAX_LENGTH);
       const search =
-        requestedSearch && requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH
+        showDetails && requestedSearch && requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH
           ? requestedSearch
           : undefined;
       const insights = await getInsights({
+        showDetails,
         page,
         pageSize,
         tenantId,
@@ -148,9 +154,9 @@ export function createInsightsHandler({
         toTimestamp: stringValue(req.query.toTimestamp),
         timeZone: timeZoneValue(req.query.timeZone),
       });
-      res.json(insights);
+      res.json(showDetails ? insights : toAggregateInsightsResponse(insights));
     } catch (error) {
-      logger.error('[Insights] Failed to load dashboard', error);
+      logger.error('[Insights] Failed to load dashboard', getSafeErrorMetadata(error));
       res.status(500).json({ message: 'Failed to load insights' });
     }
   };

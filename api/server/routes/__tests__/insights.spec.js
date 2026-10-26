@@ -23,12 +23,17 @@ jest.mock('@librechat/api', () => ({
     [mockDashboardHandlerDeps] = args;
     return mockCreateInsightsHandler(...args);
   },
+  createInsightsConfigResolver: () => (req) => req.config.interfaceConfig.insights,
   isEnabled: (value) => value === 'true',
 }));
 
 jest.mock('~/server/middleware', () => ({
   requireJwtAuth: (req, _res, next) => {
     req.user = mockUser;
+    next();
+  },
+  strictConfigMiddleware: (req, _res, next) => {
+    req.config = { interfaceConfig: { insights: { enabled: true, showDetails: false } } };
     next();
   },
 }));
