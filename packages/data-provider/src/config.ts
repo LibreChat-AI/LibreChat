@@ -3208,6 +3208,31 @@ const mcpServersSchema = z
   })
   .optional();
 
+export const insightsConfigSchema = z
+  .object({
+    /** Enables Insights when configured; defaults to false when resolved. */
+    enabled: z.boolean().optional(),
+    /** Allows identity and conversation sections; defaults to false when resolved. */
+    showDetails: z.boolean().optional(),
+  })
+  .strict();
+
+export type TInsightsConfig = z.infer<typeof insightsConfigSchema>;
+export type TResolvedInsightsConfig = {
+  enabled: boolean;
+  showDetails: boolean;
+};
+
+/** Keep partial overrides inheritable; resolve absent or invalid flags to false at use time. */
+export function resolveInsightsConfig(
+  config?: Partial<Record<keyof TInsightsConfig, unknown>> | null,
+): TResolvedInsightsConfig {
+  return {
+    enabled: config?.enabled === true,
+    showDetails: config?.showDetails === true,
+  };
+}
+
 /** Values the trace viewer uses for any `interface.traceViewer` field left unset. */
 export const traceViewerDefaults = {
   enabled: false,
@@ -3510,6 +3535,7 @@ export const interfaceSchema = z
     fileSearch: z.boolean().optional(),
     fileCitations: z.boolean().optional(),
     traceViewer: traceViewerSchema.optional(),
+    insights: insightsConfigSchema.optional(),
     /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),

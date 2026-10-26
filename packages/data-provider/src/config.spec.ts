@@ -17,6 +17,8 @@ import {
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
   interfaceSchema,
+  insightsConfigSchema,
+  resolveInsightsConfig,
   supportsConversationTitleOwnership,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
@@ -114,6 +116,69 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('Insights configuration', () => {
+  it('accepts the proposed YAML object without adding other settings', () => {
+    const insights = { enabled: true, showDetails: false };
+    expect(
+      configSchema.parse({ version: '1.3.9', interface: { insights } }).interface?.insights,
+    ).toEqual(insights);
+  });
+
+  it('leaves an unconfigured Insights section absent', () => {
+    expect(interfaceSchema.parse({}).insights).toBeUndefined();
+    expect(interfaceSchema.parse(undefined).insights).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.9' }).interface?.insights).toBeUndefined();
+  });
+
+  it('retains omitted flags for partial configuration overrides', () => {
+    expect(insightsConfigSchema.parse({ enabled: true })).toEqual({ enabled: true });
+    expect(insightsConfigSchema.parse({ showDetails: false })).toEqual({ showDetails: false });
+  });
+
+  it.each([
+    true,
+    false,
+    'aggregate',
+    'detailed',
+    null,
+    [],
+    { enabled: 'true' },
+    { showDetails: 'false' },
+    { enabled: 1 },
+    { enabled: null },
+    { showDetails: null },
+    { mode: 'aggregate' },
+    { enabled: true, showDetail: false },
+  ])('rejects unsupported configuration %p', (insights) => {
+    expect(insightsConfigSchema.safeParse(insights).success).toBe(false);
+    expect(configSchema.safeParse({ version: '1.3.9', interface: { insights } }).success).toBe(
+      false,
+    );
+  });
+
+  it('resolves missing flags to disabled and aggregate-only defaults', () => {
+    expect(resolveInsightsConfig()).toEqual({ enabled: false, showDetails: false });
+    expect(resolveInsightsConfig(null)).toEqual({ enabled: false, showDetails: false });
+    expect(resolveInsightsConfig({})).toEqual({ enabled: false, showDetails: false });
+    expect(resolveInsightsConfig({ enabled: true })).toEqual({ enabled: true, showDetails: false });
+  });
+
+  it('requires explicit booleans for enablement and detailed inspection', () => {
+    expect(resolveInsightsConfig({ enabled: 'true', showDetails: 'true' })).toEqual({
+      enabled: false,
+      showDetails: false,
+    });
+    expect(resolveInsightsConfig({ enabled: true, showDetails: false })).toEqual({
+      enabled: true,
+      showDetails: false,
+    });
+    expect(resolveInsightsConfig({ enabled: true, showDetails: true })).toEqual({
+      enabled: true,
+      showDetails: true,
+    });
+  });
+});
 
 describe('host-side file edit limits', () => {
   it('keeps configuration optional and resolves safe defaults when configured', () => {

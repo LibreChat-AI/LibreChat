@@ -4,6 +4,27 @@ import type { AppConfig } from '~/types';
 import { loadDefaultInterface, deriveSpecInterface } from './interface';
 
 describe('loadDefaultInterface', () => {
+  it.each([
+    { enabled: true, showDetails: false },
+    { enabled: false, showDetails: false },
+    { enabled: true, showDetails: true },
+    { enabled: true },
+  ])('passes the configured Insights object through unchanged: %p', async (insights) => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { insights } },
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.insights).toEqual(insights);
+  });
+
+  it('does not introduce Insights into deployments that did not configure it', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig).not.toHaveProperty('insights');
+  });
+
   it('uses the schema default for URL auto-submit when not configured', async () => {
     const interfaceConfig = await loadDefaultInterface({
       config: {},
