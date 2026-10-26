@@ -52,6 +52,12 @@ interface DropdownProps {
   searchEmptyText?: string;
   /** Shown in the secondary tone while no option is chosen. */
   placeholder?: string;
+  /** Draws the list exactly as wide as the trigger, as `DropdownPopup` does. */
+  sameWidth?: boolean;
+  /** Preferred CSS minimum width for the list, capped to the space available to it. */
+  minWidth?: string;
+  /** Space between the trigger and the list, in pixels. */
+  gutter?: number;
 }
 
 const shapeClasses: Record<DropdownShape, string> = {
@@ -94,6 +100,9 @@ const Dropdown: React.FC<DropdownProps> = ({
   searchPlaceholder,
   searchEmptyText,
   placeholder,
+  sameWidth,
+  minWidth,
+  gutter,
 }) => {
   const valueId = `${useId()}value`;
   const inDialog = useDialogDepth() > 0;
@@ -245,7 +254,15 @@ const Dropdown: React.FC<DropdownProps> = ({
         store={selectProps}
         /* Inside a dialog the list layers over it; elsewhere `z-40` applies. Pointer
            events are already re-enabled by the class below. */
-        style={{ zIndex: inDialog ? popoverZIndex : undefined }}
+        style={{
+          zIndex: inDialog ? popoverZIndex : undefined,
+          minWidth:
+            minWidth == null
+              ? undefined
+              : `min(${minWidth}, calc(100vw - 1rem), var(--popover-available-width, 100vw))`,
+        }}
+        sameWidth={sameWidth}
+        gutter={gutter}
         data-variant={variant}
         wrapperProps={variant === 'field' ? { className: 'popover-field-wrapper' } : undefined}
         className={cn(
