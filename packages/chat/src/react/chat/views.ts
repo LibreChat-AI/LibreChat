@@ -27,17 +27,26 @@ type CachedView = {
   view: UIMessage;
   source: Pick<TMessage, (typeof viewSourceKeys)[number]>;
   live: TAttachment[] | undefined;
+  getMappingOptions: ChatViewContract['getMappingOptions'];
 };
 
 const views = new WeakMap<TMessage, CachedView>();
 
-const isSameSource = (cached: CachedView, message: TMessage, live: TAttachment[] | undefined) =>
-  cached.live === live && viewSourceKeys.every((key) => cached.source[key] === message[key]);
+const isSameSource = (
+  cached: CachedView,
+  message: TMessage,
+  live: TAttachment[] | undefined,
+  getMappingOptions: ChatViewContract['getMappingOptions'],
+) =>
+  cached.live === live &&
+  cached.getMappingOptions === getMappingOptions &&
+  viewSourceKeys.every((key) => cached.source[key] === message[key]);
 
 /**
  * Cached per message, per snapshot of the fields a view reads and per live attachment list: a
  * stream frame that replaces a response's content, or an attachment that arrives for it, remaps
- * that response, while untouched messages keep their views.
+ * that response, while untouched messages keep their views. A host with other tool outcome rules
+ * maps its own view.
  */
 export const toView = (
   message: TMessage,
@@ -45,7 +54,7 @@ export const toView = (
   getMappingOptions: ChatViewContract['getMappingOptions'],
 ): UIMessage => {
   const cached = views.get(message);
-  if (cached && isSameSource(cached, message, live)) {
+  if (cached && isSameSource(cached, message, live, getMappingOptions)) {
     return cached.view;
   }
   const view = toUIMessage(message, getMappingOptions(live));
@@ -53,6 +62,6 @@ export const toView = (
   for (const key of viewSourceKeys) {
     Object.assign(source, { [key]: message[key] });
   }
-  views.set(message, { view, source, live });
+  views.set(message, { view, source, live, getMappingOptions });
   return view;
 };
