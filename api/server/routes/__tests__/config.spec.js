@@ -758,7 +758,7 @@ describe('GET /api/config', () => {
       expect(response.body.conversationImportMaxFileSize).toBe(5000000);
     });
 
-    it('should advertise Insights only when ENABLE_INSIGHTS is enabled', async () => {
+    it('uses ENABLE_INSIGHTS as a fallback when YAML does not configure Insights', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       const app = createApp(mockUser);
 
@@ -768,6 +768,65 @@ describe('GET /api/config', () => {
       process.env.ENABLE_INSIGHTS = 'true';
       response = await request(app).get('/api/config');
       expect(response.body.insightsEnabled).toBe(true);
+    });
+
+    it.each([
+      [{ enabled: true, showDetails: false }, undefined, true],
+      [{ enabled: true }, 'false', true],
+      [{ enabled: false, showDetails: false }, 'true', false],
+      [{ showDetails: false }, 'true', false],
+    ])(
+      'advertises effective YAML Insights settings %p with legacy switch %p',
+      async (insights, legacy, expected) => {
+        if (legacy === undefined) {
+          delete process.env.ENABLE_INSIGHTS;
+        } else {
+          process.env.ENABLE_INSIGHTS = legacy;
+        }
+        mockGetAppConfig.mockResolvedValue({
+          ...baseAppConfig,
+          interfaceConfig: { ...baseAppConfig.interfaceConfig, insights },
+        });
+
+        const response = await request(createApp(mockUser)).get('/api/config');
+
+        expect(response.statusCode).toBe(200);
+        expect(response.body.insightsEnabled).toBe(expected);
+        expect(response.body.interface.insights).toEqual(insights);
+      },
+    );
+
+    it('uses each viewer’s effective Insights setting without another config lookup', async () => {
+      mockGetAppConfig.mockImplementation(async (options) => ({
+        ...baseAppConfig,
+        interfaceConfig: {
+          ...baseAppConfig.interfaceConfig,
+          insights: { enabled: options?.userId === 'selected-user', showDetails: false },
+        },
+      }));
+
+      for (const [userId, expected] of [
+        ['selected-user', true],
+        ['other-user', false],
+      ]) {
+        mockGetAppConfig.mockClear();
+        const response = await request(
+          createApp({ ...mockUser, id: userId, tenantId: 'tenant-a' }),
+        ).get('/api/config');
+
+        expect(response.statusCode).toBe(200);
+        expect(response.body.insightsEnabled).toBe(expected);
+        expect(mockGetAppConfig).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userId,
+            role: 'USER',
+            tenantId: 'tenant-a',
+            failClosed: true,
+          }),
+        );
+        // Startup already loads scoped config and base conversation-list limits in parallel.
+        expect(mockGetAppConfig).toHaveBeenCalledTimes(2);
+      }
     });
 
     describe('pull requests', () => {

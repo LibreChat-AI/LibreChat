@@ -1,6 +1,6 @@
 import React from 'react';
-import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { render, screen, waitFor } from '@testing-library/react';
 import type { TInsightsParams, TInsightsResponse } from 'librechat-data-provider';
 import InsightsView from '../InsightsView';
@@ -18,17 +18,24 @@ const insightsData: TInsightsResponse = {
   churnedUsers: [],
 };
 
-const mockUseInsightsQuery = jest.fn((params: TInsightsParams) => ({
-  data: insightsData,
+const mockUseInsightsQuery = jest.fn(
+  (params: TInsightsParams, _options?: { enabled?: boolean; retry?: boolean }) => ({
+    data: insightsData,
+    isLoading: false,
+    isFetching: false,
+    error: null,
+    params,
+  }),
+);
+const mockStartupConfig = jest.fn(() => ({
+  data: { insightsEnabled: true },
   isLoading: false,
-  isFetching: false,
-  error: null,
-  params,
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { insightsEnabled: true }, isLoading: false }),
-  useInsightsQuery: (params: TInsightsParams) => mockUseInsightsQuery(params),
+  useGetStartupConfig: () => mockStartupConfig(),
+  useInsightsQuery: (params: TInsightsParams, options?: { enabled?: boolean; retry?: boolean }) =>
+    mockUseInsightsQuery(params, options),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -74,6 +81,7 @@ async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
 
 describe('InsightsView agent selection', () => {
   beforeEach(() => {
+    mockStartupConfig.mockReturnValue({ data: { insightsEnabled: true }, isLoading: false });
     mockUseInsightsQuery.mockClear();
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: insightsData,
@@ -82,6 +90,24 @@ describe('InsightsView agent selection', () => {
       error: null,
       params,
     }));
+  });
+
+  it('redirects a direct visit and disables statistics loading when startup disables Insights', () => {
+    mockStartupConfig.mockReturnValue({ data: { insightsEnabled: false }, isLoading: false });
+    render(
+      <MemoryRouter initialEntries={['/insights']}>
+        <Routes>
+          <Route path="/insights" element={<InsightsView />} />
+          <Route path="/c/new" element={<div data-testid="chat-destination" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('chat-destination')).toBeInTheDocument();
+    expect(mockUseInsightsQuery).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ enabled: false }),
+    );
   });
 
   it('renders an aggregate-only response without detail tables or identity search', () => {
