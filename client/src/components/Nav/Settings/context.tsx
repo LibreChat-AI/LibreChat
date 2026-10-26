@@ -7,16 +7,18 @@ import {
   isTwoFactorPolicyProvider,
 } from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
+import { useGetStartupConfig, usePullRequestConnectionStatus } from '~/data-provider';
 import useProviderKeys from '../SettingsTabs/ProviderKeys/useProviderKeys';
 import { useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
 import usePersonalizationAccess from '~/hooks/usePersonalizationAccess';
-import { useGetStartupConfig } from '~/data-provider';
+import { hasAnalyticsGtmId } from '~/store/analytics';
 import store from '~/store';
 
 export function useSettingsContext(): SettingsContextValue {
   const { user } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
   const { agentsConfig } = useGetAgentsConfig();
+  const pullRequestConnection = usePullRequestConnectionStatus();
   const { hasAnyPersonalizationFeature, hasMemoryOptOut } = usePersonalizationAccess();
 
   const hasRemoteAgents = useHasAccess({
@@ -34,11 +36,16 @@ export function useSettingsContext(): SettingsContextValue {
 
   const balanceEnabled = startupConfig?.balance?.enabled === true;
   const langfuseConnectionAccess = startupConfig?.langfuseConnectionAccess === true;
+  const langfusePromptSyncAccess = startupConfig?.langfusePromptSyncAccess === true;
   const adminPanelURL = startupConfig?.adminPanelURL ?? '';
   const isLocalProvider = user?.provider === 'local';
   const emailEnabled = startupConfig?.emailEnabled === true;
   const allowEmailChange = startupConfig?.allowEmailChange === true;
   const passkeyLoginEnabled = startupConfig?.passkeyLoginEnabled === true;
+  /** Also while a stored grant outlives its app, so it can still be disconnected. */
+  const hasPullRequestConnect =
+    pullRequestConnection?.connected === true ||
+    (startupConfig?.pullRequestsConnect != null && pullRequestConnection?.configured !== false);
   const twoFactorPolicyProvider = user != null && isTwoFactorPolicyProvider(user.provider);
   const twoFactorEnabled = user?.twoFactorEnabled === true;
   const allowAccountDeletion = startupConfig?.allowAccountDeletion !== false;
@@ -55,6 +62,7 @@ export function useSettingsContext(): SettingsContextValue {
     replyConfigLoaded && replyNotificationsConfig?.desktop !== false;
   const replyNotificationSoundAllowed =
     replyConfigLoaded && replyNotificationsConfig?.sound !== false;
+  const analyticsConfigured = hasAnalyticsGtmId(startupConfig?.analyticsGtmId);
   const hasRemoteAgentsBool = hasRemoteAgents === true;
   const hasMultiConvoBool = hasMultiConvo === true;
   const hasPromptsBool = hasPrompts === true;
@@ -77,6 +85,7 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      hasPullRequestConnect,
       isTwoFactorPolicyProvider: twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
@@ -84,10 +93,12 @@ export function useSettingsContext(): SettingsContextValue {
       mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
+      langfusePromptSyncAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,
       replyNotificationSoundAllowed,
+      analyticsConfigured,
     }),
     [
       balanceEnabled,
@@ -102,6 +113,7 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      hasPullRequestConnect,
       twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
@@ -109,10 +121,12 @@ export function useSettingsContext(): SettingsContextValue {
       mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
+      langfusePromptSyncAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,
       replyNotificationSoundAllowed,
+      analyticsConfigured,
     ],
   );
 }

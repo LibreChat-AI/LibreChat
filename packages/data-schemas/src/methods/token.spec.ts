@@ -3,6 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import type * as t from '~/types';
 import { createTokenModel } from '~/models/token';
 import { createTokenMethods } from './token';
+import logger from '~/config/winston';
 
 /** Mocking logger */
 jest.mock('~/config/winston', () => ({
@@ -1290,5 +1291,25 @@ describe('Token email normalization', () => {
 
     const found = await methods.findToken({ token: 'null-email-token', email: null });
     expect(found).not.toBeNull();
+  });
+});
+
+describe('token method failure logging', () => {
+  it('logs only the error type when a lookup fails and still rethrows', async () => {
+    const failure = new Error('E11000 duplicate key leak@example.com');
+    const spy = jest.spyOn(Token, 'findOne').mockImplementationOnce(() => {
+      throw failure;
+    });
+    (logger.debug as jest.Mock).mockClear();
+
+    await expect(methods.findToken({ email: 'leak@example.com' })).rejects.toBe(failure);
+
+    expect(logger.debug).toHaveBeenCalledWith('An error occurred while finding token', {
+      type: 'Error',
+    });
+    expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(
+      'leak@example.com',
+    );
+    spy.mockRestore();
   });
 });

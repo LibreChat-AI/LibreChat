@@ -174,7 +174,7 @@ function DynamicInput({
           <div className="flex w-full justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-input`}
-              className="text-left text-xs font-medium"
+              className="text-start text-xs font-medium"
             >
               {labelCode ? localize(label as TranslationKeys) || label : label || settingKey}{' '}
               {showDefault && (
@@ -197,7 +197,7 @@ function DynamicInput({
             onBlur={handleInputBlur}
             placeholder={placeholderText}
             className={cn(
-              'border-border-light bg-surface-secondary flex h-9 max-h-9 w-full resize-none rounded-lg border px-3 py-2',
+              'bg-surface-secondary flex h-9 max-h-9 w-full resize-none rounded-lg px-3 py-2',
             )}
           />
         </HoverCardTrigger>

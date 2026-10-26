@@ -8,6 +8,7 @@ import Landing from '../Landing';
 let mockConversation: Record<string, unknown> | null = null;
 let mockAgentsMap: Record<string, any> | undefined;
 let mockAssistantMap: Record<string, any> | undefined;
+let mockInterfaceConfig: Record<string, unknown> = {};
 
 jest.mock('@react-spring/web', () => ({
   easings: {
@@ -36,7 +37,7 @@ jest.mock('~/Providers', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { interface: {} } }),
+  useGetStartupConfig: () => ({ data: { interface: mockInterfaceConfig } }),
   useGetEndpointsQuery: () => ({ data: {} }),
 }));
 
@@ -230,5 +231,43 @@ describe('Landing temporary chat empty state', () => {
     expect(screen.getByText('Welcome')).toBeInTheDocument();
     expect(screen.queryByText('Temporary Chat')).not.toBeInTheDocument();
     expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+  });
+});
+
+describe('Landing heading', () => {
+  beforeEach(() => {
+    mockInterfaceConfig = {};
+    mockConversation = { endpoint: 'agents', agent_id: 'agent-1' };
+    mockAgentsMap = {
+      'agent-1': { id: 'agent-1', name: 'Data Analyst', description: 'Answers SQL questions' },
+    };
+    mockAssistantMap = undefined;
+  });
+
+  it('heads the welcome screen with the selected agent name by default', () => {
+    renderLanding();
+
+    expect(screen.getByText('Data Analyst')).toBeInTheDocument();
+    expect(screen.queryByText('Welcome')).not.toBeInTheDocument();
+  });
+
+  it('greets the user instead when the deployment opts into the greeting heading', () => {
+    mockInterfaceConfig = { landingHeading: 'greeting' };
+
+    renderLanding();
+
+    expect(screen.getByText('Welcome')).toBeInTheDocument();
+    expect(screen.queryByText('Data Analyst')).not.toBeInTheDocument();
+    expect(screen.getByText('Answers SQL questions')).toBeInTheDocument();
+    expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+  });
+
+  it('uses the configured welcome as the greeting heading', () => {
+    mockInterfaceConfig = { landingHeading: 'greeting', customWelcome: 'Hello there' };
+
+    renderLanding();
+
+    expect(screen.getByText('Hello there')).toBeInTheDocument();
+    expect(screen.queryByText('Data Analyst')).not.toBeInTheDocument();
   });
 });

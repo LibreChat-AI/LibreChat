@@ -1,4 +1,5 @@
-import { ContentTypes } from 'librechat-data-provider';
+import { GraphEvents } from '@librechat/agents';
+import { ContentTypes, StepTypes, ReasoningLabelEvents } from 'librechat-data-provider';
 import {
   createReasoningLabelHostWiring,
   getLabelUsageSequenceSeed,
@@ -65,5 +66,49 @@ describe('reasoning label host', () => {
 
     expect(markResumable).toHaveBeenCalledTimes(2);
     expect(onMarkFailure).not.toHaveBeenCalled();
+  });
+
+  it('emits a same-step reset for a resumed step titled from an encoded payload', async () => {
+    const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
+      'base64',
+    );
+    const parts = [
+      {
+        type: ContentTypes.THINK,
+        think: encoded,
+        reasoning_label: 'Inspecting an encoded data snapshot',
+        reasoning_label_step_id: 'reasoning-1',
+        reasoning_label_revision: 1,
+        reasoning_label_attempts: 1,
+      },
+    ];
+    const emitEvent = jest.fn(async () => undefined);
+    const pending: Promise<void>[] = [];
+    const host = createHost({
+      seedFromContent: true,
+      getContentParts: () => parts,
+      getStepIndex: (stepId) => (stepId === 'reasoning-1' ? 0 : undefined),
+      emitEvent,
+      trackPendingFill: (task) => pending.push(task),
+    });
+    const handlers = host.wiring.handlers({
+      [GraphEvents.ON_RUN_STEP]: { handle: () => undefined },
+    });
+    await handlers?.[GraphEvents.ON_RUN_STEP]?.handle(GraphEvents.ON_RUN_STEP, {
+      id: 'reasoning-1',
+      stepDetails: {
+        type: StepTypes.MESSAGE_CREATION,
+        message_creation: { content_type: ContentTypes.THINK },
+      },
+    } as never);
+    await Promise.all(pending);
+
+    expect(emitEvent).toHaveBeenCalledWith(ReasoningLabelEvents.ON_REASONING_LABEL, {
+      index: 0,
+      stepId: 'reasoning-1',
+      previousStepId: 'reasoning-1',
+      attempts: 1,
+      reset: true,
+    });
   });
 });

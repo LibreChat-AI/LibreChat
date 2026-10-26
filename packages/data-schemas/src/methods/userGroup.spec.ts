@@ -117,16 +117,18 @@ describe('userGroup methods', () => {
       expect(results[0].name).toBe('Design');
     });
 
-    it('matches on description field', async () => {
+    it('does not match on the description field (search covers name and email)', async () => {
       const results = await methods.findGroupsByNamePattern('Eng team');
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Engineering');
+      expect(results).toEqual([]);
     });
 
     it('treats regex metacharacters as literal text', async () => {
       const results = await methods.findGroupsByNamePattern('.*');
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Literal .* Group');
+      expect(results).toEqual([]);
+
+      const literal = await methods.findGroupsByNamePattern('literal');
+      expect(literal).toHaveLength(1);
+      expect(literal[0].name).toBe('Literal .* Group');
     });
 
     it('filters by source when provided', async () => {
@@ -141,39 +143,6 @@ describe('userGroup methods', () => {
       }
       const results = await methods.findGroupsByNamePattern('Numbered', null, 2);
       expect(results).toHaveLength(2);
-    });
-  });
-
-  describe('findGroupsByMemberId', () => {
-    it('returns groups the user is a member of via idOnTheSource', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-      await Group.create([
-        { name: 'Group A', source: 'local', memberIds: ['user-ext-1'] },
-        { name: 'Group B', source: 'local', memberIds: ['user-ext-1'] },
-        { name: 'Group C', source: 'local', memberIds: ['other-user'] },
-      ]);
-
-      const groups = await methods.findGroupsByMemberId(user._id);
-      expect(groups).toHaveLength(2);
-      const names = groups.map((g) => g.name).sort();
-      expect(names).toEqual(['Group A', 'Group B']);
-    });
-
-    it('returns empty array when user does not exist', async () => {
-      const groups = await methods.findGroupsByMemberId(new Types.ObjectId());
-      expect(groups).toEqual([]);
-    });
-
-    it('falls back to userId string when user has no idOnTheSource', async () => {
-      const user = await createTestUser();
-      await Group.create({
-        name: 'Group X',
-        source: 'local',
-        memberIds: [user._id.toString()],
-      });
-
-      const groups = await methods.findGroupsByMemberId(user._id);
-      expect(groups).toHaveLength(1);
     });
   });
 
@@ -297,17 +266,6 @@ describe('userGroup methods', () => {
       await expect(
         methods.removeUserFromAllGroups(new Types.ObjectId().toString()),
       ).resolves.not.toThrow();
-    });
-  });
-
-  describe('getUserGroups', () => {
-    it('delegates to findGroupsByMemberId', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-      await Group.create({ name: 'Team', source: 'local', memberIds: ['user-ext-1'] });
-
-      const groups = await methods.getUserGroups(user._id);
-      expect(groups).toHaveLength(1);
-      expect(groups[0].name).toBe('Team');
     });
   });
 
@@ -1264,129 +1222,6 @@ describe('userGroup methods', () => {
     });
   });
 
-  describe('syncUserEntraGroups', () => {
-    it('creates new groups and adds user as member', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-
-      const { addedGroups, removedGroups } = await methods.syncUserEntraGroups(user._id, [
-        { id: 'entra-g1', name: 'Entra Group 1' },
-        { id: 'entra-g2', name: 'Entra Group 2', description: 'desc', email: 'g2@co.com' },
-      ]);
-
-      expect(addedGroups).toHaveLength(2);
-      expect(removedGroups).toHaveLength(0);
-
-      const groups = await Group.find({ source: 'entra' });
-      expect(groups).toHaveLength(2);
-      expect(groups.every((g) => g.memberIds!.includes('user-ext-1'))).toBe(true);
-    });
-
-    it('adds user to existing group they are not a member of', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-      await Group.create({
-        name: 'Existing Entra Group',
-        source: 'entra',
-        idOnTheSource: 'entra-g1',
-        memberIds: ['other-user'],
-      });
-
-      const { addedGroups } = await methods.syncUserEntraGroups(user._id, [
-        { id: 'entra-g1', name: 'Existing Entra Group' },
-      ]);
-
-      expect(addedGroups).toHaveLength(1);
-      const group = await Group.findOne({ idOnTheSource: 'entra-g1' });
-      expect(group!.memberIds).toContain('user-ext-1');
-      expect(group!.memberIds).toContain('other-user');
-    });
-
-    it('skips groups the user is already a member of', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-      await Group.create({
-        name: 'Already Member',
-        source: 'entra',
-        idOnTheSource: 'entra-g1',
-        memberIds: ['user-ext-1'],
-      });
-
-      const { addedGroups } = await methods.syncUserEntraGroups(user._id, [
-        { id: 'entra-g1', name: 'Already Member' },
-      ]);
-
-      expect(addedGroups).toHaveLength(0);
-    });
-
-    it('removes user from stale entra groups', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-      await Group.create({
-        name: 'Stale Group',
-        source: 'entra',
-        idOnTheSource: 'entra-stale',
-        memberIds: ['user-ext-1'],
-      });
-
-      const { removedGroups } = await methods.syncUserEntraGroups(user._id, []);
-
-      expect(removedGroups).toHaveLength(1);
-      expect(removedGroups[0].name).toBe('Stale Group');
-      const group = await Group.findOne({ idOnTheSource: 'entra-stale' });
-      expect(group!.memberIds).not.toContain('user-ext-1');
-    });
-
-    it('handles add-and-remove in one sync call', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-
-      await Group.create({
-        name: 'Keep Group',
-        source: 'entra',
-        idOnTheSource: 'entra-keep',
-        memberIds: ['user-ext-1'],
-      });
-      await Group.create({
-        name: 'Remove Group',
-        source: 'entra',
-        idOnTheSource: 'entra-remove',
-        memberIds: ['user-ext-1'],
-      });
-
-      const { addedGroups, removedGroups } = await methods.syncUserEntraGroups(user._id, [
-        { id: 'entra-keep', name: 'Keep Group' },
-        { id: 'entra-new', name: 'New Group' },
-      ]);
-
-      expect(addedGroups).toHaveLength(1);
-      expect(addedGroups[0].name).toBe('New Group');
-      expect(removedGroups).toHaveLength(1);
-      expect(removedGroups[0].name).toBe('Remove Group');
-    });
-
-    it('preserves local groups during entra sync', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-      await Group.create({
-        name: 'Local Group',
-        source: 'local',
-        memberIds: ['user-ext-1'],
-      });
-
-      await methods.syncUserEntraGroups(user._id, []);
-
-      const localGroup = await Group.findOne({ name: 'Local Group' });
-      expect(localGroup!.memberIds).toContain('user-ext-1');
-    });
-
-    it('throws when user does not exist', async () => {
-      await expect(
-        methods.syncUserEntraGroups(new Types.ObjectId(), [{ id: 'g1', name: 'Group' }]),
-      ).rejects.toThrow(/User not found/);
-    });
-
-    it('returns the updated user document', async () => {
-      const user = await createTestUser({ idOnTheSource: 'user-ext-1' });
-      const { user: updatedUser } = await methods.syncUserEntraGroups(user._id, []);
-      expect((updatedUser._id as Types.ObjectId).toString()).toBe(user._id.toString());
-    });
-  });
-
   describe('calculateRelevanceScore', () => {
     it('returns 100 for exact match', () => {
       const score = methods.calculateRelevanceScore(
@@ -1412,6 +1247,14 @@ describe('userGroup methods', () => {
       expect(score).toBe(50);
     });
 
+    it('scores accent-folded matches like their plain spelling', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Zoë', source: 'local' },
+        'zoe',
+      );
+      expect(score).toBe(100);
+    });
+
     it('returns 10 (default) when no substring or exact match', () => {
       const score = methods.calculateRelevanceScore(
         { type: PrincipalType.USER, name: 'bob', source: 'local' },
@@ -1434,17 +1277,51 @@ describe('userGroup methods', () => {
       expect(score).toBe(100);
     });
 
-    it('checks description for GROUP type', () => {
-      const score = methods.calculateRelevanceScore(
+    it('ignores description for GROUP type, which search no longer matches', () => {
+      const weak = methods.calculateRelevanceScore(
         {
           type: PrincipalType.GROUP,
-          name: 'other',
-          description: 'alice team',
+          name: 'Corporate Platform',
+          description: 'plat',
           source: 'local',
         },
-        'alice',
+        'plat',
       );
-      expect(score).toBe(80);
+      const strong = methods.calculateRelevanceScore(
+        { type: PrincipalType.GROUP, name: 'Platform Team', source: 'local' },
+        'plat',
+      );
+      expect(weak).toBe(50);
+      expect(strong).toBeGreaterThan(weak);
+    });
+
+    it('scores a name equal to the query up to separators as an exact match', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Mary-Jane', source: 'local' },
+        'mary jane',
+      );
+      expect(score).toBe(100);
+    });
+
+    it('scores a reordered full-name query as exact, above a longer prefix match', () => {
+      const exact = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'John Smith', source: 'local' },
+        'smith john',
+      );
+      const prefix = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'Smith Johnson', source: 'local' },
+        'smith john',
+      );
+      expect(exact).toBe(100);
+      expect(prefix).toBe(80);
+    });
+
+    it('scores query words matched across fields like a contains match', () => {
+      const score = methods.calculateRelevanceScore(
+        { type: PrincipalType.USER, name: 'John Doe', email: 'jd@gmail.com', source: 'local' },
+        'john gmail',
+      );
+      expect(score).toBe(50);
     });
 
     it('picks the highest score across multiple fields', () => {
@@ -1569,9 +1446,11 @@ describe('userGroup methods', () => {
       });
 
       const results = await methods.searchPrincipals('.*', 10, [PrincipalType.USER]);
+      expect(results).toEqual([]);
 
-      expect(results).toHaveLength(1);
-      expect(results[0].name).toBe('Literal .* User');
+      const literal = await methods.searchPrincipals('literal', 10, [PrincipalType.USER]);
+      expect(literal).toHaveLength(1);
+      expect(literal[0].name).toBe('Literal .* User');
     });
 
     it('handles invalid regex syntax as literal search text', async () => {

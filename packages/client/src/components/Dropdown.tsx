@@ -4,8 +4,10 @@ import { matchSorter } from 'match-sorter';
 import * as Select from '@ariakit/react/select';
 import * as Combobox from '@ariakit/react/combobox';
 import type { Option } from '~/common';
+import { useDialogDepth, usePopoverZIndex } from './OriginalDialog';
+import { fieldControl, fieldInvalid } from './Field';
 import { cn, disabledFillClasses } from '~/utils';
-import { fieldControl } from './Field';
+import { focusOutlineRole } from './Focus';
 import './Dropdown.css';
 
 type DropdownShape = 'default' | 'theme' | 'round';
@@ -27,6 +29,11 @@ interface DropdownProps {
   renderValue?: (option: Option) => React.ReactNode;
   ariaLabel?: string;
   'aria-labelledby'?: string;
+  'aria-describedby'?: string;
+  /** Marks the field invalid; a `field` trigger then draws its border in the destructive role. */
+  'aria-invalid'?: boolean;
+  /** Portals the list out of the trigger's parent. Defaults to `true`, and to `false` inside a
+   *  dialog, whose focus trap and `aria-hidden` pass would cut a portaled list off. */
   portal?: boolean;
   /** `field` matches Input; `compact` supplies the small toolbar-control recipe. */
   variant?: 'default' | 'field' | 'compact';
@@ -43,6 +50,8 @@ interface DropdownProps {
   searchable?: boolean;
   searchPlaceholder?: string;
   searchEmptyText?: string;
+  /** Shown in the secondary tone while no option is chosen. */
+  placeholder?: string;
 }
 
 const shapeClasses: Record<DropdownShape, string> = {
@@ -74,7 +83,9 @@ const Dropdown: React.FC<DropdownProps> = ({
   renderValue,
   ariaLabel,
   'aria-labelledby': ariaLabelledBy,
-  portal = true,
+  'aria-describedby': ariaDescribedBy,
+  'aria-invalid': ariaInvalid,
+  portal,
   variant = 'default',
   shape = 'theme',
   portalElement,
@@ -82,8 +93,11 @@ const Dropdown: React.FC<DropdownProps> = ({
   searchable = false,
   searchPlaceholder,
   searchEmptyText,
+  placeholder,
 }) => {
   const valueId = `${useId()}value`;
+  const inDialog = useDialogDepth() > 0;
+  const popoverZIndex = usePopoverZIndex();
   const [searchValue, setSearchValue] = useState('');
 
   const handleChange = (value: string) => {
@@ -138,14 +152,18 @@ const Dropdown: React.FC<DropdownProps> = ({
       {option.icon != null && <span>{option.icon as React.ReactNode}</span>}
       <span className="block truncate">{option.label}</span>
       {selectedValue === option.value && (
-        <span className="ml-auto pl-2">
+        <span className="ms-auto shrink-0 ps-2">
           <svg
             width="24"
             height="24"
             viewBox="0 0 24 24"
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
-            className="icon-md block group-hover:hidden"
+            /* A field list's check follows the theme's icon size role, as the form select did. */
+            className={cn(
+              'block group-hover:hidden',
+              variant === 'field' ? 'size-theme-icon' : 'icon-md',
+            )}
             aria-hidden="true"
           >
             <path
@@ -171,6 +189,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           variant !== 'field' && [
             shapeClasses[shape],
             'hover:text-text-primary disabled:hover:text-text-primary',
+            focusOutlineRole,
           ],
           'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
           disabledFillClasses,
@@ -178,7 +197,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           iconOnly
             ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
             : 'w-fit max-w-full gap-2 px-3',
-          variant === 'field' && fieldControl,
+          variant === 'field' && [fieldControl, fieldInvalid],
           variant === 'compact' && 'h-theme-button-compact px-2.5 py-0 text-xs transition-none',
           triggerClassName,
         )}
@@ -192,6 +211,8 @@ const Dropdown: React.FC<DropdownProps> = ({
         aria-labelledby={
           ariaLabelledBy == null || iconOnly ? ariaLabelledBy : `${ariaLabelledBy} ${valueId}`
         }
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
       >
         <div className={cn('flex min-w-0 items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
           {icon}
@@ -203,7 +224,11 @@ const Dropdown: React.FC<DropdownProps> = ({
                 if (matchedOption && renderValue) {
                   return renderValue(matchedOption);
                 }
-                return getOptionLabel(selectedValue);
+                const optionLabel = getOptionLabel(selectedValue);
+                if (!optionLabel && placeholder) {
+                  return <span className="text-text-secondary">{placeholder}</span>;
+                }
+                return optionLabel;
               })()}
             </span>
           )}
@@ -211,9 +236,18 @@ const Dropdown: React.FC<DropdownProps> = ({
         {!iconOnly && <Select.SelectArrow className="shrink-0" />}
       </Select.Select>
       <Select.SelectPopover
-        portal={portal}
+        /* A modal dialog traps focus inside its own DOM and hides every other body
+           child from assistive technology, so a list portaled out of it can be
+           neither reached by keyboard nor read. Inside a dialog the list renders in
+           place, as Ariakit menus already do, unless the caller asks otherwise. */
+        portal={portal ?? (portalElement != null || !inDialog)}
         portalElement={portalElement}
         store={selectProps}
+        /* Inside a dialog the list layers over it; elsewhere `z-40` applies. Pointer
+           events are already re-enabled by the class below. */
+        style={{ zIndex: inDialog ? popoverZIndex : undefined }}
+        data-variant={variant}
+        wrapperProps={variant === 'field' ? { className: 'popover-field-wrapper' } : undefined}
         className={cn(
           // `className` sizes the TRIGGER only (applied above on Select.Select).
           // Forwarding it here too meant a caller's trigger height (a fixed height utility)
@@ -231,7 +265,7 @@ const Dropdown: React.FC<DropdownProps> = ({
             <div className="sticky -top-2 z-10 -mx-2 -mt-2 mb-1 bg-inherit px-2 pt-2 pb-1.5">
               <div className="relative">
                 <Search
-                  className="text-text-tertiary size-theme-icon pointer-events-none absolute top-1/2 left-2 -translate-y-1/2"
+                  className="text-text-tertiary size-theme-icon pointer-events-none absolute inset-s-2 top-1/2 -translate-y-1/2"
                   aria-hidden="true"
                 />
                 <Combobox.Combobox
@@ -239,7 +273,7 @@ const Dropdown: React.FC<DropdownProps> = ({
                   autoSelect
                   placeholder={searchPlaceholder}
                   aria-label={searchPlaceholder}
-                  className="border-border-control text-text-primary placeholder:text-text-secondary w-full rounded-lg border bg-inherit py-1.5 pr-2 pl-8 text-sm focus:outline-hidden"
+                  className="border-border-control text-text-primary placeholder:text-text-secondary w-full rounded-lg border bg-inherit py-1.5 ps-8 pe-2 text-sm focus:outline-hidden"
                 />
               </div>
             </div>
@@ -286,6 +320,7 @@ const Dropdown: React.FC<DropdownProps> = ({
               <Select.SelectItem
                 key={`option-${index}`}
                 value={String(option.value)}
+                disabled={option.disabled === true}
                 className="select-item"
                 data-theme={option.value}
               >

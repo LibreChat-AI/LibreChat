@@ -1,6 +1,6 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { EndpointTokenConfig } from '~/types';
-import { getModelMaxTokens, getModelMaxOutputTokens, findMatchingPattern } from './tokens';
+import { getModelMaxTokens, findMatchingPattern } from './tokens';
 
 describe('Bedrock OpenAI context windows', () => {
   const models = [
@@ -87,24 +87,10 @@ describe('future Claude context windows', () => {
   });
 });
 
-describe('getModelMaxOutputTokens partial-override fallback', () => {
-  const partialOverride: EndpointTokenConfig = {
-    'custom-model': { prompt: 1, completion: 2, context: 32000, output: 4096 },
-  };
-
-  it('falls back to the built-in map for a model absent from a partial override', () => {
-    const fallback = getModelMaxOutputTokens('gpt-4o', EModelEndpoint.openAI, partialOverride);
-    const builtin = getModelMaxOutputTokens('gpt-4o', EModelEndpoint.openAI);
-    expect(fallback).toBe(builtin);
-    expect(fallback).toBeGreaterThan(0);
-  });
-});
-
 describe('gpt-5.6 tiers', () => {
-  it('resolves 1.05M context and 128K output for every tier and the sol alias', () => {
+  it('resolves 1.05M context for every tier and the sol alias', () => {
     for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(model, EModelEndpoint.openAI)).toBe(128000);
     }
   });
 
@@ -142,10 +128,9 @@ describe('Gemini 3.8 Flash', () => {
 });
 
 describe('GPT point releases', () => {
-  it('inherit their family context window and output limit', () => {
+  it('inherit their family context window', () => {
     for (const model of ['gpt-6.1-sol', 'gpt-6.1-sol-2026-10-01', 'openai/gpt-6.1-sol']) {
       expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(model, EModelEndpoint.openAI)).toBe(128000);
     }
     expect(getModelMaxTokens('gpt-6.2-astra', EModelEndpoint.openAI)).toBe(1050000);
     expect(getModelMaxTokens('us.openai.gpt-6.1-sol', EModelEndpoint.bedrock)).toBe(950000);
@@ -168,9 +153,8 @@ describe('GPT point releases', () => {
 });
 
 describe('GPT-6 Astra', () => {
-  it('resolves 1.05M context and 128K output', () => {
+  it('resolves 1.05M context', () => {
     expect(getModelMaxTokens('gpt-6-astra', EModelEndpoint.openAI)).toBe(1050000);
-    expect(getModelMaxOutputTokens('gpt-6-astra', EModelEndpoint.openAI)).toBe(128000);
   });
 
   it('matches its own key for snapshots and provider prefixes', () => {
@@ -180,8 +164,20 @@ describe('GPT-6 Astra', () => {
       'gpt-6-astra-2026-04-30/openai',
     ]) {
       expect(getModelMaxTokens(model, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(model, EModelEndpoint.openAI)).toBe(128000);
     }
+  });
+});
+
+describe('Gemini 4 Argon', () => {
+  it('resolves the shared 1,048,576-token context window', () => {
+    expect(getModelMaxTokens('gemini-4-argon', EModelEndpoint.google)).toBe(1048576);
+  });
+
+  it('matches the Argon key for prefixed and variant ids', () => {
+    expect(getModelMaxTokens('models/gemini-4-argon', EModelEndpoint.google)).toBe(1048576);
+    expect(getModelMaxTokens('gemini-4-argon-cyber-permissive', EModelEndpoint.google)).toBe(
+      1048576,
+    );
   });
 });
 
@@ -319,7 +315,22 @@ describe('Opus 5.5 token limits', () => {
     'global.anthropic.claude-opus-5-5',
   ])('resolves %s to the existing modern Claude profile', (model) => {
     expect(getModelMaxTokens(model)).toBe(1000000);
-    expect(getModelMaxOutputTokens(model)).toBe(128000);
+  });
+});
+
+describe('Haiku 5.5 token limits', () => {
+  it.each([
+    'claude-haiku-5-5',
+    'claude-haiku-5.5',
+    'anthropic/claude-haiku-5-5',
+    'global.anthropic.claude-haiku-5-5',
+  ])('resolves %s to the modern Claude profile', (model) => {
+    expect(getModelMaxTokens(model)).toBe(1000000);
+    expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+  });
+
+  it('keeps Haiku 4.5 at a 200K context', () => {
+    expect(getModelMaxTokens('claude-haiku-4-5', EModelEndpoint.anthropic)).toBe(200000);
   });
 });
 
@@ -331,9 +342,7 @@ describe('Sonnet 5.5 token limits', () => {
     'global.anthropic.claude-sonnet-5-5',
   ])('resolves %s to the modern Claude profile', (model) => {
     expect(getModelMaxTokens(model)).toBe(1000000);
-    expect(getModelMaxOutputTokens(model)).toBe(128000);
     expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
-    expect(getModelMaxOutputTokens(model, EModelEndpoint.anthropic)).toBe(128000);
   });
 });
 
@@ -341,7 +350,6 @@ describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
   it('resolves exact, snapshot, and provider-prefixed IDs', () => {
     for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
       expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
-      expect(getModelMaxOutputTokens(name, EModelEndpoint.openAI)).toBe(128000);
     }
   });
 });

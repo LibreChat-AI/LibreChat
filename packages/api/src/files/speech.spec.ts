@@ -1,11 +1,12 @@
+import { logger } from '@librechat/data-schemas';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { SpeechMessageCache } from './speech';
-import { createSpeechChunkProcessor } from './speech';
+import { capSpeechInput, createSpeechChunkProcessor, DEFAULT_TTS_MAX_INPUT_CHARS } from './speech';
 
 const messageId = 'message-id';
 
-function setup(stored: TMessage | null = null) {
+function setup(stored: TMessage | null = null, maxInputChars?: number) {
   const entries = new Map<string, Parameters<SpeechMessageCache['set']>[1]>();
   const cache = {
     get: jest.fn(async (key: string) => entries.get(key)),
@@ -19,6 +20,7 @@ function setup(stored: TMessage | null = null) {
     messageId,
     cache,
     getMessage,
+    maxInputChars,
   });
   return { cache, getMessage, processChunks };
 }
@@ -62,6 +64,20 @@ describe('createSpeechChunkProcessor', () => {
     expect(await processChunks()).toEqual([
       { text: 'This is a long message. It should be split into chunks.', isFinished: false },
     ]);
+  });
+
+  it('finishes a message that reaches the cap exactly', async () => {
+    const { cache, processChunks } = setup(null, 10);
+    cache.get.mockResolvedValueOnce({ text: 'Ten chars.', complete: false });
+
+    expect(await processChunks()).toEqual([{ text: 'Ten chars.', isFinished: true }]);
+  });
+
+  it('stops a message longer than the cap at the cap', async () => {
+    const { cache, processChunks } = setup(null, 10);
+    cache.get.mockResolvedValueOnce({ text: 'Twelve chars and then some more', complete: false });
+
+    expect(await processChunks()).toEqual([{ text: 'Twelve cha', isFinished: true }]);
   });
 
   it('sends an incomplete message without separators whole', async () => {
@@ -112,5 +128,60 @@ describe('createSpeechChunkProcessor', () => {
     } as TMessage);
 
     expect(await processChunks()).toEqual([{ text: 'The answer is 4.', isFinished: true }]);
+  });
+});
+
+describe('capSpeechInput', () => {
+  it('keeps text within the default cap whole', () => {
+    const text = 'a'.repeat(DEFAULT_TTS_MAX_INPUT_CHARS);
+    expect(capSpeechInput(text)).toBe(text);
+  });
+
+  it.each([['a', 'b'], { length: 5 }, 42, undefined])(
+    'treats a non-text body (%j) as empty',
+    (input) => {
+      expect(capSpeechInput(input)).toBe('');
+    },
+  );
+
+  it('reads text over the configured cap only up to the cap, saying so without the text', () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    try {
+      expect(capSpeechInput('a'.repeat(11), { maxInputChars: 10 })).toBe('a'.repeat(10));
+      expect(warn).toHaveBeenCalledWith(
+        '[TTS] Text of 11 characters exceeds speech.tts.maxInputChars (10); reading the first 10',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays quiet for text within the cap', () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    try {
+      capSpeechInput('a'.repeat(10), { maxInputChars: 10 });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('createSpeechChunkProcessor at the cap', () => {
+  it('warns once when a message is longer than the cap', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const { cache, processChunks } = setup(null, 10);
+    cache.get.mockResolvedValue({ text: 'b'.repeat(25), complete: false });
+    try {
+      await processChunks();
+      await processChunks();
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[TTS] Text of 25 characters exceeds speech.tts.maxInputChars (10); reading the first 10',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

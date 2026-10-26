@@ -630,6 +630,31 @@ describe('Agent Methods', () => {
       expect(nodes[0]).not.toHaveProperty('_id');
     });
 
+    test('getAgentModelSummaries loads only the models list fields', async () => {
+      const { agentId, authorId } = createTestIds();
+      const agent = await createAgent({
+        id: agentId,
+        name: 'Listed Agent',
+        description: 'shown in the models list',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+
+      const summaries = await methods.getAgentModelSummaries([agent._id]);
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toMatchObject({
+        id: agentId,
+        name: 'Listed Agent',
+        description: 'shown in the models list',
+        provider: 'test',
+      });
+      expect(Object.keys(summaries[0]).sort()).toEqual(
+        ['_id', 'author', 'createdAt', 'description', 'id', 'name', 'provider'].sort(),
+      );
+    });
+
     describe('MCP server name candidate lookups', () => {
       test('getAgentsWithMCPServerNames returns only agents with a non-empty list, projected', async () => {
         const { agentId, authorId } = createTestIds();
@@ -1338,6 +1363,116 @@ describe('Agent Methods', () => {
           description: 'Unrelated bulk edge',
         },
       ]);
+    });
+
+    test('keeps a sole-owned agent discoverable when the agent delete fails, so a retry erases it', async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const authorId = new mongoose.Types.ObjectId();
+      const agent = await createAgent({
+        id: `agent_${uuidv4()}`,
+        name: 'Owned But Authored Elsewhere',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: ownerId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        permBits:
+          PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+        grantedBy: ownerId,
+      });
+
+      const failure = jest
+        .spyOn(mongoose.models.Agent, 'deleteMany')
+        .mockRejectedValueOnce(new Error('transient outage'));
+      await expect(deleteUserAgents(ownerId.toString())).rejects.toThrow('transient outage');
+      failure.mockRestore();
+
+      expect(await AclEntry.countDocuments({ resourceId: agent._id })).toBe(1);
+
+      await deleteUserAgents(ownerId.toString());
+
+      expect(await getAgent({ id: agent.id })).toBeNull();
+      expect(await AclEntry.countDocuments({ resourceId: agent._id })).toBe(0);
+    });
+
+    test('keeps the agent when reference cleanup fails, so a retry erases it', async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const agent = await createAgent({
+        id: `agent_${uuidv4()}`,
+        name: 'Owned',
+        provider: 'test',
+        model: 'test-model',
+        author: ownerId,
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: ownerId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: agent._id,
+        permBits:
+          PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+        grantedBy: ownerId,
+      });
+
+      const failure = jest
+        .spyOn(mongoose.models.User, 'updateMany')
+        .mockRejectedValueOnce(new Error('favorites outage'));
+      await expect(deleteUserAgents(ownerId.toString())).rejects.toThrow('favorites outage');
+      failure.mockRestore();
+
+      expect(await getAgent({ id: agent.id })).not.toBeNull();
+
+      await deleteUserAgents(ownerId.toString());
+
+      expect(await getAgent({ id: agent.id })).toBeNull();
+    });
+
+    test('does not touch same-id references in another tenant when the author is tenantless', async () => {
+      const authorId = new mongoose.Types.ObjectId();
+      const sharedAgentId = `agent_${uuidv4()}`;
+      const otherGraphId = `agent_${uuidv4()}`;
+      const otherTargetId = `agent_${uuidv4()}`;
+      await createAgent({
+        id: sharedAgentId,
+        name: 'Tenantless Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+      const Agent = mongoose.models.Agent;
+      await Agent.collection.insertOne({
+        id: otherGraphId,
+        name: 'Other Tenant Graph',
+        provider: 'test',
+        model: 'test-model',
+        author: new mongoose.Types.ObjectId(),
+        tenantId: 'tenant-2',
+        edges: [
+          { from: otherGraphId, to: sharedAgentId, edgeType: 'handoff' },
+          { from: otherGraphId, to: otherTargetId, edgeType: 'handoff' },
+        ],
+      });
+      await mongoose.models.User.collection.insertOne({
+        email: 'tenant2@example.com',
+        tenantId: 'tenant-2',
+        favorites: [{ agentId: sharedAgentId }],
+      });
+
+      await deleteUserAgents(authorId.toString());
+
+      expect(await getAgent({ id: sharedAgentId })).toBeNull();
+      const graph = await Agent.collection.findOne({ id: otherGraphId });
+      expect(graph?.edges).toHaveLength(2);
+      const otherUser = await mongoose.models.User.collection.findOne({
+        email: 'tenant2@example.com',
+      });
+      expect(otherUser?.favorites).toEqual([{ agentId: sharedAgentId }]);
     });
 
     test('keeps an edge added to the graph while the cleanup was running', async () => {

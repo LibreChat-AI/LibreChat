@@ -86,7 +86,7 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
           {localize('com_auth_email_verification_resend_prompt')}
           <button
             type="button"
-            className="text-link ml-2 hover:underline"
+            className="text-link ms-2 hover:underline"
             onClick={handleResendEmail}
             disabled={resendLinkMutation.isLoading}
           >
@@ -182,7 +182,8 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
             disabled={(requireCaptcha && !turnstileToken) || isSubmitting}
             variant="submit"
             shape="soft"
-            className="h-12 w-full"
+            size="auth"
+            className="w-full"
           >
             {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
           </Button>

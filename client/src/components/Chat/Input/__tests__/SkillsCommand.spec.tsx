@@ -29,9 +29,20 @@ jest.mock('jotai', () => ({
   useAtomValue: jest.fn((atom: unknown) =>
     atom === 'show-skills-popover' ? mockShowSkillsPopover.current : undefined,
   ),
-  useSetAtom: jest.fn((atom: unknown) =>
-    atom === 'show-skills-popover' ? mockSetShowSkillsPopover : jest.fn(),
-  ),
+  useSetAtom: jest.fn((atom: unknown) => {
+    if (atom === 'show-skills-popover') {
+      return mockSetShowSkillsPopover;
+    }
+    if (atom === 'pending-manual-skills') {
+      return mockSetPendingManualSkills;
+    }
+    return jest.fn();
+  }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  pendingManualSkillsByConvoId: () => 'pending-manual-skills',
 }));
 
 jest.mock('../skillsState', () => ({
@@ -48,9 +59,6 @@ jest.mock('recoil', () => {
       if (atom === 'ephemeral-agent') {
         return mockSetEphemeralAgent;
       }
-      if (atom === 'pending-manual-skills') {
-        return mockSetPendingManualSkills;
-      }
       return jest.fn();
     }),
   };
@@ -58,11 +66,7 @@ jest.mock('recoil', () => {
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: {
-    pendingManualSkillsByConvoId: () => 'pending-manual-skills',
-  },
   ephemeralAgentByConvoId: () => 'ephemeral-agent',
-  pendingManualSkillsByConvoId: () => 'pending-manual-skills',
 }));
 
 const mockUseSkillsInfiniteQuery = jest.fn();

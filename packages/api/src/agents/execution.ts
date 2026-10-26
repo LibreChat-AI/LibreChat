@@ -73,36 +73,6 @@ export interface CodeExecutionContext {
   };
 }
 
-/** Removes live capability data before a workspace binding is persisted. */
-export function getCodeWorkspaceSelections(
-  contexts: Array<
-    | Pick<CodeExecutionContext, 'environmentId' | 'environmentType' | 'codeWorkspace'>
-    | null
-    | undefined
-  >,
-): CodeWorkspaceSelection[] | undefined {
-  const selections = new Map<string, CodeWorkspaceSelection>();
-  for (const context of contexts) {
-    const workspace = context?.codeWorkspace;
-    if (
-      context?.environmentType !== 'attached' ||
-      context.environmentId == null ||
-      workspace == null ||
-      workspace.environmentId !== context.environmentId
-    ) {
-      continue;
-    }
-    selections.set(workspace.environmentId, {
-      environmentId: workspace.environmentId,
-      workspaceId: workspace.workspaceId,
-      ...(workspace.checkout == null ? {} : { checkout: workspace.checkout }),
-      ...(workspace.agentIds == null ? {} : { agentIds: [...workspace.agentIds] }),
-    });
-  }
-  if (selections.size === 0) return undefined;
-  return [...selections.values()].sort((a, b) => a.environmentId.localeCompare(b.environmentId));
-}
-
 type CodeExecutionApprovalAgent = {
   id?: string | null;
   codeExecutionContext?: CodeExecutionContext | null;

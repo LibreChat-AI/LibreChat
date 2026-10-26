@@ -65,7 +65,9 @@ jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
 }));
 jest.mock('~/components/Chat/Messages/SiblingSwitch', () => ({
   __esModule: true,
-  default: () => null,
+  default: ({ className }: { className?: string }) => (
+    <span data-testid="sibling-footer" className={className} />
+  ),
 }));
 jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
   __esModule: true,
@@ -362,4 +364,13 @@ it('uses the validated spawning lane for a private self wake-up', () => {
   renderMessage(subagentWakeup('self'), 'agent_lia');
   expect(screen.getByRole('heading', { name: 'Code Reviewer' })).toBeInTheDocument();
   expect(screen.getByTestId('author-face')).toHaveAttribute('data-agent', 'Code Reviewer');
+});
+
+it('aligns a System event footer with its transcript body', () => {
+  renderMessage(backgroundWakeup);
+  expect(screen.getByTestId('sibling-footer').parentElement).not.toHaveClass('justify-end');
+});
+it('does not reorder System sibling controls to the user edge', () => {
+  renderMessage(backgroundWakeup);
+  expect(screen.getByTestId('sibling-footer')).not.toHaveClass('order-last');
 });

@@ -1,14 +1,14 @@
-import React, { Profiler } from 'react';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import React, { Profiler, useState } from 'react';
 import { act, render, screen, fireEvent } from '@testing-library/react';
+import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
 import QuoteButton from '../QuoteButton';
-import store from '~/store';
 import { mainTextareaId } from '~/common';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 
 const CONVO_ID = 'convo-1';
 const SELECTED_TEXT = 'Selected assistant text';
@@ -37,8 +37,14 @@ const rect = ({
   }) as DOMRect;
 
 function Quotes() {
-  const quotes = useRecoilValue(store.pendingQuotesByConvoId(CONVO_ID));
+  const quotes = useAtomValue(pendingQuotesByConvoId(CONVO_ID));
   return <output data-testid="quotes">{JSON.stringify(quotes)}</output>;
+}
+
+/** A fresh Jotai store per mount, so a quote committed by one test never reaches the next. */
+function JotaiRoot({ children }: { children: React.ReactNode }) {
+  const [jotaiStore] = useState(createStore);
+  return <JotaiProvider store={jotaiStore}>{children}</JotaiProvider>;
 }
 
 function pointer(target: Document | HTMLElement, type: string) {
@@ -72,14 +78,14 @@ describe('QuoteButton', () => {
     try {
       const onRender = jest.fn();
       render(
-        <RecoilRoot>
+        <JotaiRoot>
           <div className="message-render">{SELECTED_TEXT}</div>
           <textarea id={mainTextareaId} />
           <Quotes />
           <Profiler id="quote-button" onRender={onRender}>
             <QuoteButton conversationId={CONVO_ID} />
           </Profiler>
-        </RecoilRoot>,
+        </JotaiRoot>,
       );
 
       onRender.mockClear();
@@ -173,7 +179,7 @@ describe('QuoteButton', () => {
 
       try {
         render(
-          <RecoilRoot>
+          <JotaiRoot>
             <div className="message-render" style={{ overflow: 'auto' }}>
               {codeFirst ? (
                 <>
@@ -194,7 +200,7 @@ describe('QuoteButton', () => {
             <textarea id={mainTextareaId} />
             <Quotes />
             <QuoteButton conversationId={CONVO_ID} />
-          </RecoilRoot>,
+          </JotaiRoot>,
         );
         const code = document.querySelector('.message-render code')?.firstChild;
         const prose = screen.getByText(proseText).firstChild;
@@ -286,7 +292,7 @@ describe('QuoteButton', () => {
 
     try {
       render(
-        <RecoilRoot>
+        <JotaiRoot>
           <div className="message-render" style={{ overflow: 'auto' }}>
             <pre style={{ overflowX: 'auto' }}>
               <code>{codeLine}</code>
@@ -295,7 +301,7 @@ describe('QuoteButton', () => {
           <textarea id={mainTextareaId} />
           <Quotes />
           <QuoteButton conversationId={CONVO_ID} />
-        </RecoilRoot>,
+        </JotaiRoot>,
       );
       const code = document.querySelector('.message-render code');
       if (!code) {
@@ -368,12 +374,12 @@ describe('QuoteButton lifecycle', () => {
 
   function setup() {
     const content = (conversationId: string) => (
-      <RecoilRoot>
+      <JotaiRoot>
         <div className="message-render">{SELECTED_TEXT}</div>
         <textarea id={mainTextareaId} />
         <Quotes />
         <QuoteButton conversationId={conversationId} />
-      </RecoilRoot>
+      </JotaiRoot>
     );
     const view = render(content(CONVO_ID));
     const range = document.createRange();

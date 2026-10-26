@@ -1,17 +1,18 @@
 import { z } from 'zod';
-import { encryptV3, logger } from '@librechat/data-schemas';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
+import { encryptV3, logger, mergeConfigOverrides } from '@librechat/data-schemas';
 import {
   EModelEndpoint,
   FileSources,
+  PrincipalType,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
 import type { CompactionSemanticIndex, SubagentTaskConfig, AgentInputs } from '@librechat/agents';
+import type { AppConfig, ConfigOverrideLayer, IUser } from '@librechat/data-schemas';
 import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
-import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
@@ -20,6 +21,7 @@ import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/
 import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
+import { createSecretRebindingGuard } from '~/app/rebinding';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 
 // Mock winston logger — `format` must be callable so @librechat/data-schemas
@@ -5127,5 +5129,146 @@ describe('steering provider capabilities', () => {
     });
     expect(disable).not.toHaveBeenCalled();
     expect(jest.mocked(Run.create).mock.calls[0]?.[0].preemption).toBeDefined();
+  });
+});
+
+/**
+ * The override pipeline's rebinding guard, end to end: what a profile writes to
+ * `summarization` is merged as `getAppConfig` merges it, and the run's real summarizer makes the
+ * request.
+ */
+describe('summarization destinations an override profile sets', () => {
+  const ATTACKER = 'https://attacker.example/openai/deployments/summary-production';
+  const GROUP_RESOURCE = 'https://summary-instance.openai.azure.com/';
+
+  function azureAppConfig(summarization?: SummarizationConfig): AppConfig {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      modelNames: ['gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        summary: {
+          apiKey: 'deployment-group-secret',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    } as unknown as NonNullable<AppConfig['endpoints']>[EModelEndpoint.azureOpenAI];
+    if (summarization != null) {
+      appConfig.config.summarization = structuredClone(summarization);
+      appConfig.summarization = structuredClone(summarization);
+    }
+    return appConfig;
+  }
+
+  function mergeProfile(base: AppConfig, profile: Partial<ConfigOverrideLayer>) {
+    const ignored: string[] = [];
+    const layer = {
+      principalType: PrincipalType.ROLE,
+      principalId: 'editors',
+      priority: 10,
+      overrides: {},
+      ...profile,
+    } as ConfigOverrideLayer;
+    const merged = mergeConfigOverrides(base, [layer], {
+      afterLayer: createSecretRebindingGuard(({ path }) => ignored.push(path)),
+    });
+    return { merged, ignored };
+  }
+
+  async function summarize(appConfig: AppConfig) {
+    const agents = await callAndCapture({
+      agents: [makeAgent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: appConfig.summarization,
+    });
+    const { requests } = await compactSummary(agents);
+    return requests.map(({ url, headers }) => ({
+      url: url.href,
+      apiKey: headers.get('api-key'),
+    }));
+  }
+
+  it.each([1, 0, true, false])(
+    'keeps the Azure group key on its own resource under a profile key of %p',
+    async (apiKey) => {
+      const { merged, ignored } = mergeProfile(azureAppConfig(), {
+        overrides: {
+          summarization: {
+            provider: 'azureOpenAI',
+            model: 'gpt-4.1-mini',
+            parameters: { baseURL: ATTACKER, apiKey },
+          },
+        },
+      });
+
+      expect(ignored).toEqual(['summarization.parameters.baseURL']);
+      const requests = await summarize(merged);
+      expect(requests).toEqual([
+        { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+      ]);
+    },
+  );
+
+  it('sends a key the profile enters, and only that key, to the destination it sets', async () => {
+    const { merged, ignored } = mergeProfile(azureAppConfig(), {
+      overrides: {
+        summarization: {
+          provider: 'azureOpenAI',
+          model: 'gpt-4.1-mini',
+          parameters: { baseURL: ATTACKER, apiKey: 'profile-own-key' },
+        },
+      },
+    });
+
+    expect(ignored).toEqual([]);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(/^https:\/\/attacker\.example\//), apiKey: 'profile-own-key' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's gateway once a profile removes the gateway's key", async () => {
+    const yaml = azureAppConfig({
+      provider: 'azureOpenAI',
+      model: 'gpt-4.1-mini',
+      parameters: {
+        baseURL: 'https://yaml-gateway.example/openai/deployments/summary-production',
+        apiKey: 'yaml-gateway-key',
+      },
+    });
+    expect(await summarize(yaml)).toEqual([
+      {
+        url: expect.stringMatching(/^https:\/\/yaml-gateway\.example\//),
+        apiKey: 'yaml-gateway-key',
+      },
+    ]);
+    jest.mocked(Run.create).mockClear();
+
+    const { merged, ignored } = mergeProfile(yaml, {
+      tombstones: ['summarization.parameters.apiKey'],
+    });
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's unkeyed gateway for another provider", async () => {
+    const { merged, ignored } = mergeProfile(
+      azureAppConfig({
+        provider: 'openAI',
+        model: 'gpt-4.1-mini',
+        parameters: { baseURL: 'https://yaml-gateway.example/openai/deployments/x' },
+      }),
+      { overrides: { summarization: { provider: 'azureOpenAI' } } },
+    );
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
   });
 });

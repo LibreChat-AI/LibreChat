@@ -24,7 +24,6 @@ export default defineConfig({
   fixedExtension: true,
   define,
   copy: [
-    { from: 'src/icons/provider/assets', to: 'dist' },
     // The color tokens ship as CSS: an app imports `@librechat/client/theme.css` into the
     // stylesheet that imports Tailwind, and gets `bg-surface-primary` and the rest. `to` names
     // the destination directory, not the file, pointing it at `dist/theme.css` produced a

@@ -11,40 +11,28 @@ import {
 import { useRecoilValue } from 'recoil';
 import { notifyManager, useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, MutationKeys, isBundledThemeName } from 'librechat-data-provider';
-import {
-  ThemeProvider,
-  clickHouseTheme,
-  libreChatTheme,
-  fromLegacyTheme,
-  validateThemeDefinition,
-} from '@librechat/client';
-import type {
-  TInterfaceConfig,
-  BundledThemeName,
-  TRefreshTokenResponse,
-} from 'librechat-data-provider';
+import { ThemeProvider, fromLegacyTheme, validateThemeDefinition } from '@librechat/client';
+import type { TInterfaceConfig, TRefreshTokenResponse } from 'librechat-data-provider';
 import type { IThemeRGB, ThemeDefinition } from '@librechat/client';
 import type { ComponentProps } from 'react';
 import {
   themeOwner,
   appBasePath,
   isPublicRoute,
-  readThemeCache,
+  setThemeOwner,
+  readShellTheme,
   clearThemeCache,
   buildThemeCache,
   writeThemeCache,
+  readOwnedThemeCache,
   reconcileThemeCache,
 } from './themeCache';
 import { getThemeFromEnv } from '~/utils/getThemeFromEnv';
 import { useGetStartupConfig } from '~/data-provider';
+import { bundledThemes } from './bootVersion';
 import store from '~/store';
 
 type DeploymentThemeValue = TInterfaceConfig['theme'];
-
-const bundledThemes: Readonly<Record<BundledThemeName, ThemeDefinition>> = {
-  librechat: libreChatTheme,
-  clickhouse: clickHouseTheme,
-};
 
 /**
  * Resolves `interface.theme` from librechat.yaml to a theme definition: a bundled
@@ -145,16 +133,20 @@ function useRebindOnStartupConfigRebuild() {
  * The cached deployment theme, as last read or written. Losing the signed-in user drops
  * it, whichever way the session ended (logout, an empty silent refresh, a failed user
  * query, account deletion), so the next person on this browser does not get the
- * previous identity's theme painted before their own config answers.
+ * previous identity's theme painted before their own config answers. The cache is read
+ * only for the owner this tab last saw signed in, which the same session end forgets.
  */
 function useThemeCache(owner?: string) {
   const queryClient = useQueryClient();
   const [cached, setCached] = useState(() =>
-    isPublicRoute(window.location.pathname, appBasePath()) ? undefined : readThemeCache(),
+    isPublicRoute(window.location.pathname, appBasePath()) ? undefined : readOwnedThemeCache(),
   );
   const signedIn = useRef(owner);
   useEffect(() => {
-    if (signedIn.current && !owner) {
+    if (owner) {
+      setThemeOwner(owner);
+    } else if (signedIn.current) {
+      setThemeOwner(undefined);
       clearThemeCache();
       setCached(undefined);
     }
@@ -168,6 +160,7 @@ function useThemeCache(owner?: string) {
    */
   useEffect(() => {
     const drop = () => {
+      setThemeOwner(undefined);
       clearThemeCache();
       setCached(undefined);
     };
@@ -243,7 +236,17 @@ export default function DeploymentTheme({ children }: { children: React.ReactNod
   useRebindOnStartupConfigRebuild();
   const { data: startupConfig, isPreviousData } = useGetStartupConfig({ keepPreviousData: true });
   const owner = themeOwner(useRecoilValue(store.user));
+  /**
+   * The signed-out answer by identity, kept apart from the query cache: login removes the
+   * queries, yet the observer keeps showing that answer as previous data until the signed-in
+   * one arrives, and it must still read as the signed-out one.
+   */
+  const signedOutAnswer = useRef<typeof startupConfig>(undefined);
+  if (startupConfig && !isPreviousData && !owner) {
+    signedOutAnswer.current = startupConfig;
+  }
   const [cached, setCached] = useThemeCache(owner);
+  const [shell] = useState(() => readShellTheme(window.location.pathname, appBasePath()));
   const [override, setOverride] = useState<ThemeOverride>(undefined);
   /** A route override is another tenant's theme: it neither reads nor writes the cache. */
   const decision = override
@@ -254,7 +257,9 @@ export default function DeploymentTheme({ children }: { children: React.ReactNod
         answer: startupConfig && {
           theme: startupConfig.interface?.theme,
           current: !isPreviousData,
+          signedOut: startupConfig === signedOutAnswer.current,
         },
+        shell,
       });
   const configTheme = decision.theme;
   const themeDefinition = useMemo(() => resolveDeploymentTheme(configTheme), [configTheme]);

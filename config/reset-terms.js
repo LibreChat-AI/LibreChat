@@ -1,7 +1,6 @@
 const path = require('path');
-const mongoose = require('mongoose');
-const { User } = require('@librechat/data-schemas').createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
+const { resetTermsAcceptance } = require('~/models');
 const { askQuestion, silentExit } = require('./helpers');
 const connect = require('./connect');
 
@@ -21,10 +20,7 @@ const connect = require('./connect');
   }
 
   try {
-    const result = await User.updateMany(
-      {},
-      { $set: { termsAccepted: false, termsAcceptedAt: null } },
-    );
+    const result = await resetTermsAcceptance();
     console.green(`Updated ${result.modifiedCount} user(s).`);
   } catch (error) {
     console.red('Error resetting terms acceptance:', error);

@@ -27,6 +27,9 @@ export interface IConversationLaneGit {
   head: string | null;
   /** `owner/name` of the lane's repository, as its worker registered it. */
   repo?: string;
+  /** A pull request of `repo` a command's output linked to while the lane was on `branch`. Kept
+   *  across later reports on the same branch and repository, dropped when either changes. */
+  pullRequest?: number;
   /** Reserved sequence number; internal, never returned by `getConvoLaneGit`. */
   seq?: number;
 }
@@ -334,6 +337,9 @@ export interface IConversation extends Document {
   pinned?: boolean;
   /** Derived per request from the shared-links collection; never persisted on the conversation. */
   isShared?: boolean;
+  /** Derived per list request: this replica listed the row's code decision, so an absent decision
+   *  means an ordinary chat rather than a server that does not say. Never persisted. */
+  codeDecisionListed?: boolean;
   iconURL?: string;
   greeting?: string;
   spec?: string;

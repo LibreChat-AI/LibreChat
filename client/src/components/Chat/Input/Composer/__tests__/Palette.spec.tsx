@@ -887,7 +887,7 @@ describe('Palette', () => {
       expect(configure.parentElement).toHaveClass(
         'transition-none',
         'opacity-100',
-        '[@media(hover:hover)]:opacity-0',
+        'no-touch:opacity-0',
       );
 
       await waitFor(() => expect(screen.getByTestId('composer-palette-search')).toHaveFocus());
@@ -912,7 +912,7 @@ describe('Palette', () => {
       expect(favorite.parentElement).toHaveClass(
         'transition-none',
         'opacity-100',
-        '[@media(hover:hover)]:opacity-0',
+        'no-touch:opacity-0',
       );
       expect(favorite.parentElement).not.toHaveClass('transition-opacity');
       expect(favorite.closest('[role="gridcell"]')).not.toHaveAttribute('id');

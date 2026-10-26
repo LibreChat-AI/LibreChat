@@ -234,6 +234,8 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
     history: { type: [historySchema], default: undefined },
     settledAt: { type: Date },
     expiresAt: { type: Date },
+    /** Deadline of a dead batch root, armed into expiresAt once its members are settled. */
+    deadLetterExpiresAt: { type: Date },
     requeueCount: { type: Number, default: 0, min: 0 },
     stagingRecoveryAt: { type: Date },
     laneCleanupPendingAt: { type: Date },
@@ -291,8 +293,8 @@ triggerDeliverySchema.index({ user: 1, actorActionAdmittedAt: 1 }, { sparse: tru
 triggerDeliverySchema.index({ stagingRecoveryAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ laneCleanupPendingAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ backgroundToolResultDeletionPendingAt: 1 }, { sparse: true });
-// Only successful rows receive expiresAt. Dead letters remain available until
-// an operator explicitly requeues or removes them.
+// Successful rows expire after their retention window; dead letters expire after the
+// configured review window, and a requeue clears expiresAt again.
 triggerDeliverySchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export default triggerDeliverySchema;

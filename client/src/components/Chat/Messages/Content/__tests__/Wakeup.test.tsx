@@ -95,6 +95,19 @@ const subagentDisplay = {
 };
 
 describe('Wakeup', () => {
+  it('uses a transparent disclosure for the System header', () => {
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup display={subagentDisplay} />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    expect(
+      screen.getByRole('button', { name: 'com_ui_wakeup_subagent_completed' }),
+    ).toHaveAttribute('variant', 'disclosure');
+  });
+
   it.each([
     ['subagent', subagentDisplay, 'com_ui_wakeup_subagent_completed'],
     [

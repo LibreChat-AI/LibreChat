@@ -1,6 +1,7 @@
-import { useRecoilCallback } from 'recoil';
+import { useCallback } from 'react';
+import { useStore } from 'jotai';
+import { submissionByIndex, useClearSubmissions } from '@librechat/chat/react';
 import type { TSubmission } from 'librechat-data-provider';
-import store from '~/store';
 
 /**
  * Identity-guarded post-abort cleanup: the abort HTTP response can resolve
@@ -11,25 +12,23 @@ import store from '~/store';
  * only clear when it is still the current one.
  */
 export function useAbortCleanup(index: string | number) {
-  const clearAllSubmissions = store.useClearSubmissionState();
+  const jotaiStore = useStore();
+  const clearAllSubmissions = useClearSubmissions();
 
-  const captureSubmission = useRecoilCallback(
-    ({ snapshot }) =>
-      (): TSubmission | null =>
-        snapshot.getLoadable(store.submissionByIndex(index)).getValue(),
-    [index],
+  const captureSubmission = useCallback(
+    (): TSubmission | null => jotaiStore.get(submissionByIndex(index)),
+    [jotaiStore, index],
   );
 
-  const clearSubmissionsUnlessReplaced = useRecoilCallback(
-    ({ snapshot }) =>
-      (captured: TSubmission | null) => {
-        const current = snapshot.getLoadable(store.submissionByIndex(index)).getValue();
-        if (current != null && current !== captured) {
-          return;
-        }
-        clearAllSubmissions();
-      },
-    [clearAllSubmissions, index],
+  const clearSubmissionsUnlessReplaced = useCallback(
+    (captured: TSubmission | null) => {
+      const current = jotaiStore.get(submissionByIndex(index));
+      if (current != null && current !== captured) {
+        return;
+      }
+      clearAllSubmissions();
+    },
+    [clearAllSubmissions, jotaiStore, index],
   );
 
   return { captureSubmission, clearSubmissionsUnlessReplaced };

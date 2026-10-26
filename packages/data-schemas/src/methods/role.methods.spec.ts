@@ -44,6 +44,8 @@ let countUsersByRole: ReturnType<typeof createRoleMethods>['countUsersByRole'];
 let updateRoleByName: ReturnType<typeof createRoleMethods>['updateRoleByName'];
 let listRoles: ReturnType<typeof createRoleMethods>['listRoles'];
 let countRoles: ReturnType<typeof createRoleMethods>['countRoles'];
+let getPartitionRole: ReturnType<typeof createRoleMethods>['getPartitionRole'];
+let findUserIdsByRole: ReturnType<typeof createRoleMethods>['findUserIdsByRole'];
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
@@ -67,6 +69,8 @@ beforeAll(async () => {
   countUsersByRole = methods.countUsersByRole;
   listRoles = methods.listRoles;
   countRoles = methods.countRoles;
+  getPartitionRole = methods.getPartitionRole;
+  findUserIdsByRole = methods.findUserIdsByRole;
 });
 
 afterAll(async () => {
@@ -885,6 +889,29 @@ describe('deleteRoleByName', () => {
     expect(carol!.role).toBe(SystemRoles.USER);
   });
 
+  it('leaves a role recreated under the same name when the expected id no longer matches', async () => {
+    const original = await createRoleByName({ name: 'editor' });
+    await Role.deleteOne({ name: 'editor' });
+    await createRoleByName({ name: 'editor' });
+    await User.create({ name: 'Dana', email: 'dana@test.com', role: 'editor', username: 'dana' });
+
+    const result = await deleteRoleByName('editor', { id: String(original._id) });
+
+    expect(result).toBeNull();
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+    const dana = await User.findOne({ email: 'dana@test.com' }).lean();
+    expect(dana!.role).toBe('editor');
+  });
+
+  it('deletes the role when the expected id matches', async () => {
+    const created = await createRoleByName({ name: 'editor' });
+
+    const result = await deleteRoleByName('editor', { id: String(created._id) });
+
+    expect(result?.name).toBe('editor');
+    expect(await Role.exists({ name: 'editor' })).toBeNull();
+  });
+
   it('returns null when role does not exist', async () => {
     const result = await deleteRoleByName('nonexistent');
     expect(result).toBeNull();
@@ -1127,6 +1154,22 @@ describe('updateUsersRoleByIds', () => {
       `${AUTH_USER_DOC_BY_ID_PREFIX}:${bob._id.toString()}`,
     );
   });
+
+  it('with fromRole, changes only the users still on that role', async () => {
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'writer', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'viewer', username: 'bob' },
+    ]);
+
+    await updateUsersRoleByIds([alice._id.toString(), bob._id.toString()], 'editor', {
+      fromRole: 'writer',
+    });
+
+    const roles = await User.find({ _id: { $in: [alice._id, bob._id] } })
+      .sort({ username: 1 })
+      .lean();
+    expect(roles.map((user) => user.role)).toEqual(['editor', 'viewer']);
+  });
 });
 
 describe('countUsersByRole', () => {
@@ -1262,5 +1305,224 @@ describe('createRoleByName - duplicate key race', () => {
     await expect(createRoleByName({ name: 'editor2' })).rejects.toThrow(/already exists/);
 
     insertSpy.mockRestore();
+  });
+});
+
+describe('role-name-keyed operations stay in the caller tenant partition', () => {
+  const inTenant = <T>(tenantId: string, run: () => Promise<T>): Promise<T> =>
+    tenantStorage.run({ tenantId }, run);
+
+  /** An `editor` role and member at platform level and in tenant-a, and a tenant-only role. */
+  async function seed() {
+    const platformRole = await Role.create({ name: 'editor', description: 'platform' });
+    const platformUser = await User.create({ email: 'p@example.com', role: 'editor' });
+    const tenant = await inTenant('tenant-a', async () => ({
+      role: await Role.create({ name: 'editor', description: 'tenant' }),
+      user: await User.create({ email: 't@example.com', role: 'editor' }),
+      only: await Role.create({ name: 'tenant-only' }),
+    }));
+    return {
+      platformRoleId: platformRole._id.toString(),
+      platformUserId: platformUser._id.toString(),
+      tenantRoleId: tenant.role._id.toString(),
+      tenantUserId: tenant.user._id.toString(),
+    };
+  }
+
+  const userRole = async (id: string) =>
+    (await User.collection.findOne({ _id: new mongoose.Types.ObjectId(id) }))?.role;
+  const roleDescription = async (id: string) =>
+    (await Role.collection.findOne({ _id: new mongoose.Types.ObjectId(id) }))?.description;
+
+  it('reads and lists only the platform roles and members outside a tenant', async () => {
+    const ids = await seed();
+
+    expect(String((await getPartitionRole('editor'))?._id)).toBe(ids.platformRoleId);
+    expect(await getPartitionRole('tenant-only')).toBeNull();
+    expect((await listRoles()).map(({ name }) => name)).toEqual(['editor']);
+    expect(await countRoles()).toBe(1);
+    expect(await findUserIdsByRole('editor')).toEqual([ids.platformUserId]);
+    expect((await listUsersByRole('editor')).map(({ _id }) => String(_id))).toEqual([
+      ids.platformUserId,
+    ]);
+    expect(await countUsersByRole('editor')).toBe(1);
+  });
+
+  it("reads and lists only the active tenant's roles and members inside it", async () => {
+    const ids = await seed();
+
+    const found = await inTenant('tenant-a', async () => ({
+      role: await getPartitionRole('editor'),
+      roles: (await listRoles()).map(({ name }) => name).sort(),
+      members: await findUserIdsByRole('editor'),
+      count: await countUsersByRole('editor'),
+    }));
+
+    expect(String(found.role?._id)).toBe(ids.tenantRoleId);
+    expect(found.roles).toEqual(['editor', 'tenant-only']);
+    expect(found.members).toEqual([ids.tenantUserId]);
+    expect(found.count).toBe(1);
+  });
+
+  it('creates a missing system role in the partition that reads it, never reading the role cache', async () => {
+    await inTenant('tenant-a', () => Role.create({ name: SystemRoles.USER }));
+
+    const platform = await getPartitionRole(SystemRoles.USER);
+
+    expect(platform?.name).toBe(SystemRoles.USER);
+    expect(platform?.tenantId).toBeUndefined();
+    expect(await Role.collection.countDocuments({ name: SystemRoles.USER })).toBe(2);
+    expect(mockCache.get).not.toHaveBeenCalled();
+  });
+
+  it("renames and migrates only the platform role and its members, leaving the tenant's", async () => {
+    const ids = await seed();
+    const platform = await getPartitionRole('editor');
+
+    await updateUsersByRole('editor', 'writer');
+    const renamed = await updateRoleByName(
+      'editor',
+      { name: 'writer', description: 'moved' },
+      { id: String(platform?._id) },
+    );
+
+    expect(String(renamed._id)).toBe(ids.platformRoleId);
+    expect(await userRole(ids.platformUserId)).toBe('writer');
+    expect(await userRole(ids.tenantUserId)).toBe('editor');
+    expect(await roleDescription(ids.tenantRoleId)).toBe('tenant');
+    expect(
+      (await Role.collection.findOne({ _id: new mongoose.Types.ObjectId(ids.tenantRoleId) }))?.name,
+    ).toBe('editor');
+  });
+
+  it("creates a platform role whose name a tenant's role holds, and refuses one the partition holds", async () => {
+    await seed();
+
+    const created = await createRoleByName({ name: 'tenant-only' });
+
+    expect(created.tenantId).toBeUndefined();
+    await expect(createRoleByName({ name: 'editor' })).rejects.toThrow(/already exists/);
+    await expect(
+      inTenant('tenant-a', () => createRoleByName({ name: 'tenant-only' })),
+    ).rejects.toThrow(/already exists/);
+  });
+
+  it('updates only the role document an id names, and nothing once it no longer has the name', async () => {
+    const tenantRole = await inTenant('tenant-a', () =>
+      Role.create({ name: 'editor', description: 'tenant' }),
+    );
+    const platformRole = await Role.create({ name: 'editor', description: 'platform' });
+
+    const updated = await updateRoleByName(
+      'editor',
+      { description: 'changed' },
+      { id: String(platformRole._id) },
+    );
+    const missed = await updateRoleByName(
+      'writer',
+      { description: 'never' },
+      { id: String(platformRole._id) },
+    );
+
+    expect(String(updated._id)).toBe(String(platformRole._id));
+    expect(missed).toBeNull();
+    expect(await roleDescription(String(platformRole._id))).toBe('changed');
+    expect(await roleDescription(String(tenantRole._id))).toBe('tenant');
+  });
+
+  it('writes access permissions to the role document it was given, never another of its name', async () => {
+    const tenantRole = await inTenant('tenant-a', () =>
+      Role.create({ name: 'editor', permissions: {} }),
+    );
+    await Role.create({ name: 'editor', permissions: {} });
+    const platform = await getPartitionRole('editor');
+
+    await updateAccessPermissions(
+      'editor',
+      { [PermissionTypes.BOOKMARKS]: { [Permissions.USE]: true } },
+      platform as IRole,
+    );
+
+    const stored = await Role.collection
+      .find({ name: 'editor' })
+      .project({ tenantId: 1, permissions: 1 })
+      .toArray();
+    const byTenant = new Map(stored.map((role) => [role.tenantId ?? '-', role.permissions]));
+    expect(byTenant.get('-')?.[PermissionTypes.BOOKMARKS]).toEqual({ [Permissions.USE]: true });
+    expect(byTenant.get('tenant-a')?.[PermissionTypes.BOOKMARKS]).toBeUndefined();
+    expect(String(tenantRole._id)).not.toBe(String(platform?._id));
+  });
+
+  it('reads and writes by name alone the platform role outside a tenant, though an older tenant role has its name', async () => {
+    const tenantRole = await inTenant('tenant-a', () =>
+      Role.create({ name: 'editor', description: 'tenant', permissions: {} }),
+    );
+    const platformRole = await Role.create({
+      name: 'editor',
+      description: 'platform',
+      permissions: {},
+    });
+
+    const read = await getRoleByName('editor');
+    const updated = await updateRoleByName('editor', { description: 'changed' });
+    await updateAccessPermissions('editor', {
+      [PermissionTypes.BOOKMARKS]: { [Permissions.USE]: true },
+    });
+    /** A role read without its `_id`, as `GET /api/roles/:roleName` reads (and caches) it. */
+    const withoutId = await getRoleByName('editor', '-_id -__v');
+    await updateAccessPermissions(
+      'editor',
+      { [PermissionTypes.PROMPTS]: { [Permissions.USE]: false } },
+      withoutId,
+    );
+
+    expect(String(read._id)).toBe(String(platformRole._id));
+    expect(String(updated._id)).toBe(String(platformRole._id));
+    expect(withoutId._id).toBeUndefined();
+    const stored = async (id: unknown) =>
+      Role.collection.findOne({ _id: new mongoose.Types.ObjectId(String(id)) });
+    expect(await stored(platformRole._id)).toMatchObject({
+      description: 'changed',
+      permissions: {
+        [PermissionTypes.BOOKMARKS]: { [Permissions.USE]: true },
+        [PermissionTypes.PROMPTS]: { [Permissions.USE]: false },
+      },
+    });
+    const tenantStored = await stored(tenantRole._id);
+    expect(tenantStored?.description).toBe('tenant');
+    expect(tenantStored?.permissions?.[PermissionTypes.BOOKMARKS]).toBeUndefined();
+    expect(tenantStored?.permissions?.[PermissionTypes.PROMPTS]).toBeUndefined();
+  });
+
+  it("deletes only the platform role and reassigns only its members, leaving the tenant's", async () => {
+    const ids = await seed();
+
+    const deleted = await deleteRoleByName('editor');
+    const refused = await deleteRoleByName('editor', { id: ids.tenantRoleId });
+
+    expect(String(deleted?._id)).toBe(ids.platformRoleId);
+    expect(refused).toBeNull();
+    expect(await userRole(ids.platformUserId)).toBe(SystemRoles.USER);
+    expect(await userRole(ids.tenantUserId)).toBe('editor');
+    expect(await roleDescription(ids.tenantRoleId)).toBe('tenant');
+  });
+
+  it("deletes and renames only the active tenant's role and members inside it", async () => {
+    const ids = await seed();
+
+    await inTenant('tenant-a', async () => {
+      await updateUsersByRole('editor', 'writer');
+      await updateRoleByName('editor', { name: 'writer' });
+      await deleteRoleByName('tenant-only');
+    });
+
+    expect(await userRole(ids.tenantUserId)).toBe('writer');
+    expect(await userRole(ids.platformUserId)).toBe('editor');
+    expect(await roleDescription(ids.platformRoleId)).toBe('platform');
+    expect(
+      (await Role.collection.findOne({ _id: new mongoose.Types.ObjectId(ids.platformRoleId) }))
+        ?.name,
+    ).toBe('editor');
+    expect(await Role.collection.countDocuments({ name: 'tenant-only' })).toBe(0);
   });
 });

@@ -167,7 +167,7 @@ function LoadingStatusIcon({ serverName, onCancel, canCancel }: InitializingStat
             aria-label={localize('com_ui_cancel')}
           >
             <div className="relative size-4">
-              <Spinner className="text-text-primary size-4 group-hover:opacity-0" />
+              <Spinner tone="primary" className="size-4 group-hover:opacity-0" />
               <X className="text-text-destructive absolute inset-0 size-4 opacity-0 group-hover:opacity-100" />
             </div>
           </Button>
@@ -179,7 +179,8 @@ function LoadingStatusIcon({ serverName, onCancel, canCancel }: InitializingStat
   return (
     <div className="flex size-6 items-center justify-center rounded p-1">
       <Spinner
-        className="text-text-primary size-4"
+        tone="primary"
+        className="size-4"
         aria-label={localize('com_nav_mcp_status_connecting', { 0: serverName })}
       />
     </div>
@@ -190,7 +191,8 @@ function ConnectingSpinner({ serverName }: { serverName: string }) {
   return (
     <div className="flex size-6 items-center justify-center rounded p-1">
       <Spinner
-        className="text-text-primary size-4"
+        tone="primary"
+        className="size-4"
         aria-label={localize('com_nav_mcp_status_connecting', { 0: serverName })}
       />
     </div>

@@ -96,60 +96,96 @@ describe('checkWebSearchConfig', () => {
     });
   });
 
-  describe('when config values are actual values instead of environment variable references', () => {
-    it('should warn when serperApiKey contains actual API key', () => {
-      const config = {
-        serperApiKey: 'sk-1234567890abcdef',
-      };
+  describe('when config values are literals instead of environment variable references', () => {
+    const { extractVariableName: actualExtractVariableName } =
+      jest.requireActual<typeof import('librechat-data-provider')>('librechat-data-provider');
 
-      extractVariableName.mockReturnValue(null);
+    beforeEach(() => {
+      extractVariableName.mockImplementation(actualExtractVariableName);
+    });
 
-      checkWebSearchConfig(config);
+    it('warns that a literal API key is a shared credential without repeating it', () => {
+      checkWebSearchConfig({ serperApiKey: 'sk-1234567890abcdef' });
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          '❗ Web search configuration error: serperApiKey contains an actual value',
-        ),
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const [message] = (logger.warn as jest.Mock).mock.calls[0];
+      expect(message).toContain('Web search serperApiKey holds a literal credential');
+      expect(message).toContain(
+        'More info: https://www.librechat.ai/docs/configuration/librechat_yaml/web_search',
       );
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Current value: "sk-1234567..."'),
-      );
+      expect(message).not.toContain('sk-123');
       expect(logger.debug).not.toHaveBeenCalled();
     });
 
-    it('should warn when firecrawlApiUrl contains actual URL', () => {
-      const config = {
-        firecrawlApiUrl: 'https://api.firecrawl.dev',
-      };
+    it('accepts a literal URL whose API key variable is unset', () => {
+      delete process.env.FIRECRAWL_API_KEY;
+      checkWebSearchConfig({
+        firecrawlApiUrl: 'https://firecrawl.internal.example.com',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+        searxngInstanceUrl: 'https://searx.example.com',
+      });
 
-      extractVariableName.mockReturnValue(null);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
 
-      checkWebSearchConfig(config);
+    it.each([
+      { name: 'an environment key', envValue: 'fc-env-key' },
+      { name: "each user's saved key", envValue: 'user_provided' },
+    ])('warns when a literal URL is kept from $name', ({ envValue }) => {
+      process.env.FIRECRAWL_API_KEY = envValue;
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          '❗ Web search configuration error: firecrawlApiUrl contains an actual value',
-        ),
+      checkWebSearchConfig({
+        firecrawlApiUrl: 'https://firecrawl.internal.example.com',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+      });
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const [message] = (logger.warn as jest.Mock).mock.calls[0];
+      expect(message).toContain(
+        "Web search firecrawlApiUrl is set in librechat.yaml, but firecrawlApiKey comes from the environment or from each user's saved key",
       );
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Current value: "https://ap..."'),
+      expect(message).toContain(
+        "firecrawlApiUrl is ignored and firecrawlApiKey goes to the provider's default URL",
+      );
+      expect(message).not.toContain('firecrawl.internal.example.com');
+      expect(message).not.toContain('fc-env-key');
+    });
+
+    it('warns that a required literal URL gets no key from outside config', () => {
+      process.env.SEARXNG_API_KEY = 'sx-env-key';
+
+      checkWebSearchConfig({ searxngInstanceUrl: 'https://searx.example.com' });
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const [message] = (logger.warn as jest.Mock).mock.calls[0];
+      expect(message).toContain('requests to searxngInstanceUrl carry no searxngApiKey');
+      expect(message).not.toContain('sx-env-key');
+    });
+
+    it('reads the default key reference when librechat.yaml leaves the key out', () => {
+      process.env.KEENABLE_API_KEY = 'kn-env-key';
+
+      checkWebSearchConfig({ keenableApiUrl: 'https://keenable.example.com/v1/search' });
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const [message] = (logger.warn as jest.Mock).mock.calls[0];
+      expect(message).toContain(
+        "keenableApiUrl is ignored and keenableApiKey goes to the provider's default URL",
       );
     });
 
-    it('should include documentation link in warning message', () => {
-      const config = {
-        firecrawlApiKey: 'fc-actual-key',
-      };
-
-      extractVariableName.mockReturnValue(null);
-
-      checkWebSearchConfig(config);
+    it('warns that a user_provided literal is never read', () => {
+      checkWebSearchConfig({ jinaApiKey: 'user_provided' });
 
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'More info: https://www.librechat.ai/docs/configuration/librechat_yaml/web_search',
-        ),
+        expect.stringContaining('Web search jinaApiKey is "user_provided"'),
       );
+    });
+
+    it('ignores literal values that need no explanation', () => {
+      checkWebSearchConfig({ firecrawlVersion: 'v2', keenableApiUrl: '' });
+
+      expect(logger.warn).not.toHaveBeenCalled();
     });
   });
 
@@ -188,20 +224,6 @@ describe('checkWebSearchConfig', () => {
       expect(extractVariableName).not.toHaveBeenCalled();
       expect(logger.debug).not.toHaveBeenCalled();
       expect(logger.warn).not.toHaveBeenCalled();
-    });
-
-    it('should truncate long values in warning messages', () => {
-      const config = {
-        serperApiKey: 'this-is-a-very-long-api-key-that-should-be-truncated-in-the-warning-message',
-      };
-
-      extractVariableName.mockReturnValue(null);
-
-      checkWebSearchConfig(config);
-
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Current value: "this-is-a-..."'),
-      );
     });
   });
 });
@@ -366,5 +388,17 @@ describe('handleRateLimits', () => {
 
     expect(process.env.AGENT_EVENT_USER_MAX).toEqual('80');
     expect(process.env.AGENT_EVENT_USER_WINDOW).toEqual('2');
+  });
+
+  it('should set the prompt resolve rate limit', () => {
+    handleRateLimits({
+      promptResolve: {
+        userMax: 30,
+        userWindowInMinutes: 2,
+      },
+    });
+
+    expect(process.env.PROMPT_RESOLVE_USER_MAX).toEqual('30');
+    expect(process.env.PROMPT_RESOLVE_USER_WINDOW).toEqual('2');
   });
 });

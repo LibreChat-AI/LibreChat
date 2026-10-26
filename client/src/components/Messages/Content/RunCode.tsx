@@ -113,7 +113,7 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
           isError && 'text-text-destructive hover:text-text-destructive',
           iconOnly
             ? 'rounded-lg p-1.5'
-            : 'ml-auto gap-2 rounded-lg p-1.5 md:rounded-md md:px-2 md:py-1',
+            : 'ms-auto gap-2 rounded-lg p-1.5 md:rounded-md md:px-2 md:py-1',
         )}
       >
         <span

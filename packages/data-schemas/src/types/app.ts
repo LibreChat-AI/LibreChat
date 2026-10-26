@@ -4,6 +4,7 @@ import type {
   TFileConfig,
   TAzureConfig,
   TCustomConfig,
+  TCredentialsConfig,
   TChatProjectsConfig,
   TMemoryConfig,
   EModelEndpoint,
@@ -68,6 +69,15 @@ export interface AppConfig {
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
   githubCompare?: TCustomConfig['githubCompare'];
+  /** Outbound call budgets; unset keys fall back to the server defaults */
+  timeouts?: TCustomConfig['timeouts'];
+  skillDeletion?: {
+    finalizationEnabled?: boolean;
+    sweepIntervalMs?: number;
+    claimLeaseMs?: number;
+    batchSize?: number;
+    recheckIntervalMs?: number;
+  };
   /** Source-scoped content filter configuration */
   filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */
@@ -118,6 +128,8 @@ export interface AppConfig {
   fileConfig?: TFileConfig;
   /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
+  /** Stored user credential write format, `v3` unless configured */
+  credentials?: TCredentialsConfig;
   /** Validation limits for the conversation list's filter facets */
   conversationList?: TConversationListConfig;
   /** Bounds for the tool-call previews sent on conversation loads */
@@ -129,12 +141,14 @@ export interface AppConfig {
   endpoints?: {
     /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
     allowedAddresses?: string[];
+    /** How long the admin config catalog reuses a scope's model lists, in milliseconds */
+    catalogModelsTtlMs?: number;
     /** OpenAI endpoint configuration */
     openAI?: Partial<TEndpoint>;
     /** Google endpoint configuration */
     google?: Partial<TEndpoint>;
     /** Bedrock endpoint configuration */
-    bedrock?: Partial<TEndpoint>;
+    bedrock?: Partial<TEndpoint> & { availableRegions?: string[] };
     /** Anthropic endpoint configuration with optional Vertex AI support */
     anthropic?: Partial<TAnthropicEndpoint> & {
       /** Validated Vertex AI configuration */

@@ -1,9 +1,32 @@
 import { resolve } from 'path';
 import { readFileSync } from 'fs';
 import { render } from '@testing-library/react';
-import { ThemeProvider, applyResolvedTheme, resolveTheme } from '@librechat/client';
+import {
+  ThemeProvider,
+  resolveTheme,
+  clickHouseTheme,
+  applyResolvedTheme,
+} from '@librechat/client';
+import {
+  formatSessionHint,
+  SESSION_HINT_COOKIE,
+  DEPLOYMENT_THEME_BOOT_ID,
+} from 'librechat-data-provider';
+import type { DeploymentThemeBoot } from 'librechat-data-provider';
 import type { ThemeDefinition } from '@librechat/client';
-import { isPublicRoute, buildThemeCache, writeThemeCache } from '../themeCache';
+import {
+  isPublicRoute,
+  setThemeOwner,
+  buildThemeCache,
+  writeThemeCache,
+  THEME_CACHE_KEY,
+  THEME_CACHE_VERSION,
+} from '../themeCache';
+import {
+  bundledThemeBoot,
+  injectThemeCacheVersion,
+  THEME_CACHE_VERSION_PLACEHOLDER,
+} from '../bootVersion';
 
 /** The inline shell script in `client/index.html`, run as the browser runs it. */
 const bootScript = (() => {
@@ -13,7 +36,7 @@ const bootScript = (() => {
   if (!script) {
     throw new Error('client/index.html has no deployment theme boot script');
   }
-  return script;
+  return injectThemeCacheVersion(script);
 })();
 
 const acme: ThemeDefinition = {
@@ -33,6 +56,14 @@ const acme: ThemeDefinition = {
 
 const root = () => document.documentElement;
 
+/** The readable hint the server sets beside the session cookies; no `expires` removes it. */
+function sessionHint(expires?: number, owner = 'tenant-a:user-1') {
+  document.cookie =
+    expires === undefined
+      ? `${SESSION_HINT_COOKIE}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`
+      : `${SESSION_HINT_COOKIE}=${encodeURIComponent(formatSessionHint({ expires, owner }))}; path=/`;
+}
+
 function mockMedia(dark: boolean) {
   window.matchMedia = jest.fn().mockImplementation((query: string) => ({
     matches: dark && query === '(prefers-color-scheme: dark)',
@@ -47,15 +78,30 @@ function boot() {
 }
 
 /** What `applyResolvedTheme` writes for `mode`, read off a detached element. */
-function appliedStyle(mode: 'light' | 'dark') {
+function appliedStyle(mode: 'light' | 'dark', theme: ThemeDefinition = acme) {
   const element = document.createElement('div');
-  applyResolvedTheme(resolveTheme(acme, mode), element);
+  applyResolvedTheme(resolveTheme(theme, mode), element);
   return element;
 }
+
+/** The block the server embeds ahead of the boot script for the deployment's base theme. */
+function embedShellTheme(boot: DeploymentThemeBoot | string) {
+  const block = document.createElement('script');
+  block.type = 'application/json';
+  block.id = DEPLOYMENT_THEME_BOOT_ID;
+  block.textContent = typeof boot === 'string' ? boot : JSON.stringify(boot);
+  document.head.prepend(block);
+}
+
+const clickhouseShell = (): DeploymentThemeBoot => ({
+  source: 'clickhouse',
+  modes: bundledThemeBoot().clickhouse,
+});
 
 describe('index.html deployment theme boot script', () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     root().removeAttribute('style');
     root().removeAttribute('class');
     [...root().attributes].forEach(({ name }) => {
@@ -63,13 +109,17 @@ describe('index.html deployment theme boot script', () => {
         root().removeAttribute(name);
       }
     });
-    document.head.querySelectorAll('style, base').forEach((element) => element.remove());
+    document.head
+      .querySelectorAll(`style, base, #${DEPLOYMENT_THEME_BOOT_ID}`)
+      .forEach((element) => element.remove());
     const base = document.createElement('base');
     base.href = '/';
     document.head.append(base);
     mockMedia(false);
     window.history.pushState({}, '', '/c/new');
     writeThemeCache(buildThemeCache('tenant-a:user-1', 'acme', acme));
+    setThemeOwner('tenant-a:user-1');
+    sessionHint(Date.now() + 60000);
   });
 
   it.each(['light', 'dark'] as const)(
@@ -95,6 +145,162 @@ describe('index.html deployment theme boot script', () => {
       );
     },
   );
+
+  it('leaves the placeholder out of the script the build serves', () => {
+    expect(bootScript).not.toContain(THEME_CACHE_VERSION_PLACEHOLDER);
+    expect(bootScript).toContain(`'${THEME_CACHE_VERSION}'`);
+  });
+
+  it('does not replay an entry stored against another role set', () => {
+    const stored = JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
+    localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ ...stored, v: 'before-a-new-role' }));
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+  });
+
+  it.each([
+    ['a tab that has not seen its owner signed in', undefined],
+    ['a tab last signed in as someone else', 'tenant-b:user-2'],
+  ])('paints no cached theme in %s', (_, tabOwner) => {
+    setThemeOwner(tabOwner);
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+    expect(root().hasAttribute('data-theme-boot')).toBe(false);
+    expect(document.head.textContent).toContain('background-color: #ffffff');
+  });
+
+  it.each([
+    ['has ended', Date.now() - 1000],
+    ['left no expiry', undefined],
+  ])('paints no cached theme for the tab owner when the session %s', (_, at) => {
+    sessionHint(at);
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+    expect(root().hasAttribute('data-theme-boot')).toBe(false);
+    expect(document.head.textContent).toContain('background-color: #ffffff');
+  });
+
+  it('paints no cached theme when the live session belongs to someone who signed in since', () => {
+    sessionHint(Date.now() + 60000, 'tenant-b:user-2');
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+    expect(root().hasAttribute('data-theme-boot')).toBe(false);
+    expect(document.head.textContent).toContain('background-color: #ffffff');
+  });
+
+  it('paints no cached theme that names no owner', () => {
+    const stored = JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
+    localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ ...stored, owner: undefined }));
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+  });
+
+  it('paints nothing on a first-ever visit to a shell no server embedded a theme in', () => {
+    localStorage.clear();
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+    expect(root().hasAttribute('data-theme-boot')).toBe(false);
+    expect(root().classList.contains('light')).toBe(true);
+  });
+
+  describe('the deployment theme the server embeds in the shell', () => {
+    beforeEach(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+      embedShellTheme(clickhouseShell());
+    });
+
+    it.each(['light', 'dark'] as const)(
+      'paints a first-ever visit in %s exactly as the provider would',
+      (mode) => {
+        localStorage.setItem('color-theme', mode);
+        boot();
+
+        const expected = appliedStyle(mode, clickHouseTheme);
+        expect(root().getAttribute('style')).toBe(expected.getAttribute('style'));
+        expect(root().dataset.theme).toBe('clickhouse');
+        expect(root().hasAttribute('data-theme-boot')).toBe(true);
+        const canvas = resolveTheme(clickHouseTheme, mode).colors['rgb-surface-canvas'];
+        expect(document.head.textContent).toContain(
+          `background-color: rgb(${canvas?.split(' ').join(', ')})`,
+        );
+      },
+    );
+
+    it('yields to the copy this tab cached for its signed-in owner', () => {
+      writeThemeCache(buildThemeCache('tenant-a:user-1', 'acme', acme));
+      setThemeOwner('tenant-a:user-1');
+      boot();
+      expect(root().dataset.theme).toBe('acme');
+    });
+
+    it('stands in for a copy cached for someone else', () => {
+      writeThemeCache(buildThemeCache('tenant-a:user-1', 'acme', acme));
+      setThemeOwner('tenant-b:user-2');
+      boot();
+      expect(root().dataset.theme).toBe('clickhouse');
+    });
+
+    it.each([
+      ['has ended', Date.now() - 1000, 'tenant-a:user-1'],
+      ['belongs to someone who signed in since', Date.now() + 60000, 'tenant-b:user-2'],
+    ])('stands in for the owned copy when the session %s', (_, expires, owner) => {
+      writeThemeCache(buildThemeCache('tenant-a:user-1', 'acme', acme));
+      setThemeOwner('tenant-a:user-1');
+      sessionHint(expires, owner);
+      boot();
+      expect(root().dataset.theme).toBe('clickhouse');
+    });
+
+    it.each(['/login', '/register', '/oauth/success'])(
+      'paints on %s, which renders the same signed-out theme',
+      (path) => {
+        window.history.pushState({}, '', path);
+        boot();
+        expect(root().dataset.theme).toBe('clickhouse');
+      },
+    );
+
+    it.each(['/share/abc', '/Share/abc'])(
+      "does not paint on %s, which paints its own tenant's theme",
+      (path) => {
+        window.history.pushState({}, '', path);
+        boot();
+        expect(root().getAttribute('style')).toBeNull();
+        expect(root().hasAttribute('data-theme')).toBe(false);
+      },
+    );
+
+    it('leaves the shell alone under high contrast', () => {
+      localStorage.setItem('color-theme', 'high-contrast-light');
+      boot();
+      expect(root().getAttribute('style')).toBeNull();
+      expect(root().hasAttribute('data-theme')).toBe(false);
+    });
+
+    it('leaves an inline definition, which the build has not resolved, to the bundle', () => {
+      document.getElementById(DEPLOYMENT_THEME_BOOT_ID)?.remove();
+      embedShellTheme(JSON.stringify({ source: acme }));
+      boot();
+      expect(root().getAttribute('style')).toBeNull();
+      expect(root().hasAttribute('data-theme')).toBe(false);
+    });
+
+    it('paints the stock shell for a malformed block', () => {
+      document.getElementById(DEPLOYMENT_THEME_BOOT_ID)?.remove();
+      embedShellTheme('{not json');
+      localStorage.setItem('color-theme', 'dark');
+      boot();
+      expect(root().getAttribute('style')).toBeNull();
+      expect(document.head.textContent).toContain('background-color: #0d0d0d');
+    });
+  });
 
   it('follows the OS scheme under `system`', () => {
     mockMedia(true);

@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TStartupConfig } from 'librechat-data-provider';
+import ChatSettingsProvider from '~/routes/ChatSettings';
 import useChatHelpers from '../useChatHelpers';
 
 let mockStartupConfig: Partial<TStartupConfig> | undefined;
@@ -11,6 +12,10 @@ jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: mockStartupConfig }),
   useAbortStreamMutation: () => ({ mutateAsync: jest.fn() }),
   supportsGenerationProtocolV2: () => false,
+}));
+
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: undefined }),
 }));
 
 jest.mock('~/hooks/Messages/useLatestMessage', () => ({
@@ -28,16 +33,18 @@ jest.mock('~/hooks/useNewConvo', () => ({
   default: () => ({ newConversation: jest.fn() }),
 }));
 
-jest.mock('~/hooks/Chat/useSteerConvert', () => ({
-  __esModule: true,
-  default: () => jest.fn(),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerConvert: () => jest.fn(),
 }));
 
 function renderChatHelpers() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot>{children}</RecoilRoot>
+      <RecoilRoot>
+        <ChatSettingsProvider>{children}</ChatSettingsProvider>
+      </RecoilRoot>
     </QueryClientProvider>
   );
   return renderHook(() => useChatHelpers(0), { wrapper });

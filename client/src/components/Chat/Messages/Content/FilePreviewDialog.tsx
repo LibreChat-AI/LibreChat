@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import copy from 'copy-to-clipboard';
 import { Download } from 'lucide-react';
-import { useRecoilValue } from 'recoil';
 import {
   Button,
   OGDialog,
@@ -24,10 +23,10 @@ import {
   useSharedFileDownload,
 } from '~/data-provider';
 import { getDownloadFilename, logger, sortPagesByRelevance, triggerDownload } from '~/utils';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useFileMapContext, useShareContext } from '~/Providers';
+import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 interface FilePreviewDialogProps {
   open: boolean;
@@ -109,9 +108,10 @@ export default function FilePreviewDialog({
   triggerRef,
 }: FilePreviewDialogProps) {
   const localize = useLocalize();
-  const user = useRecoilValue(store.user);
+  const { useUser, useFileMap } = useMessagePartsHost();
+  const user = useUser();
   const { shareId } = useShareContext();
-  const fileMap = useFileMapContext();
+  const fileMap = useFileMap();
   const showExtractedText = shouldUseExtractedTextPreview(
     deliveryPath ?? (!shareId && fileId ? fileMap?.[fileId]?.llmDeliveryPath : undefined),
   );
@@ -266,7 +266,7 @@ export default function FilePreviewDialog({
         className="flex w-full max-w-4xl flex-col !overflow-hidden p-0"
         showCloseButton={true}
       >
-        <div className="shrink-0 px-6 pt-6 pr-12">
+        <div className="shrink-0 px-6 pe-12 pt-6">
           <OGDialogTitle className="truncate text-base">{fileName}</OGDialogTitle>
           <div className="mt-0.5 flex items-center gap-3">
             <OGDialogDescription className="min-w-0 truncate">
@@ -321,7 +321,7 @@ export default function FilePreviewDialog({
           )}
           {displayedText !== null && !isLoading && !hasPreviewError && (
             <>
-              <div className="pointer-events-none sticky top-0 z-10 flex justify-end pr-1">
+              <div className="pointer-events-none sticky top-0 z-10 flex justify-end pe-1">
                 <CopyButton
                   isCopied={isCopied}
                   onClick={handleCopy}
@@ -331,7 +331,7 @@ export default function FilePreviewDialog({
                 />
               </div>
               <div className="bg-surface-secondary -mt-8 rounded-lg p-4">
-                <pre className="text-text-primary pr-8 font-mono text-sm leading-6 break-words whitespace-pre-wrap">
+                <pre className="text-text-primary pe-8 font-mono text-sm leading-6 break-words whitespace-pre-wrap">
                   {displayedText}
                 </pre>
               </div>

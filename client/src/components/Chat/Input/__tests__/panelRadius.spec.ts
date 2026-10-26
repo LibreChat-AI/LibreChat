@@ -7,14 +7,26 @@ const PACKAGE_COMPONENTS = path.resolve(
   __dirname,
   '../../../../../../packages/client/src/components',
 );
-const PACKAGE_PANELS = ['SendActions.tsx'];
+const PACKAGE_PANELS = [
+  'SendActions.tsx',
+  'TimePicker.tsx',
+  'ControlCombobox.tsx',
+  'MultiSelect.tsx',
+];
+const COMPONENTS_DIR = path.resolve(CHAT_DIR, '..');
+const CLIENT_PANELS = [
+  'ui/LocalizedDateRangePicker.tsx',
+  'Nav/AccountSettings.tsx',
+  'Prompts/editor/VariablesDropdown.tsx',
+  'Variables/Editor.tsx',
+];
 const SOURCE = /\.tsx$/;
 const SKIPPED = /(__tests__|\.spec\.|\.test\.)/;
 const PANEL_TAG =
-  /<(?:Ariakit\.(?:Menu|Popover|SelectPopover|ComboboxPopover|Hovercard)|Popover\.Content)\b(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
+  /<(?:(?:Ariakit\.)?(?:Popover|SelectPopover|ComboboxPopover|Hovercard)|(?:Ariakit|Menu)\.Menu|(?:Popover\.)?Content)(?![.\w])(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
 const PANEL_CLASS = /className="popover\b[^"]*"/g;
 const PANEL_CONSTANT = /const (?:menuClasses|panelClasses|popoverClasses)\b[^;]*;/g;
-const PANEL_ROLE = /\brounded-theme-(?:menu-panel|popover)\b/;
+const PANEL_ROLE = /\b(?:rounded-theme-(?:menu-panel|compact-panel|popover|surface)|popover-ui)\b/;
 const DELEGATED = /className=\{[A-Za-z.]+\}/;
 
 function sourcesUnder(dir: string): string[] {
@@ -30,10 +42,11 @@ function sourcesUnder(dir: string): string[] {
   });
 }
 
-describe('composer menu and popover panels', () => {
+describe('menu, popover and picker panels', () => {
   const files = [
     ...SCAN_DIRS.flatMap((dir) => sourcesUnder(path.join(CHAT_DIR, dir))),
     ...PACKAGE_PANELS.map((file) => path.join(PACKAGE_COMPONENTS, file)),
+    ...CLIENT_PANELS.map((file) => path.join(COMPONENTS_DIR, file)),
   ];
 
   it('finds the panels the theme roles are meant to cover', () => {
@@ -45,7 +58,7 @@ describe('composer menu and popover panels', () => {
         ...(text.match(PANEL_CLASS) ?? []),
       ];
     });
-    expect(panels.length).toBeGreaterThanOrEqual(10);
+    expect(panels.length).toBeGreaterThanOrEqual(15);
   });
 
   it.each(files.map((file) => [path.relative(CHAT_DIR, file), file]))(

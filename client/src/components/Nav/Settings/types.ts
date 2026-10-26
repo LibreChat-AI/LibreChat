@@ -35,6 +35,7 @@ export type SectionId =
   | 'danger'
   | 'profile'
   | 'security'
+  | 'connections'
   | 'billing'
   | 'about';
 
@@ -51,6 +52,7 @@ export interface SettingsContextValue {
   emailEnabled: boolean;
   allowEmailChange: boolean;
   passkeyLoginEnabled: boolean;
+  hasPullRequestConnect: boolean;
   isTwoFactorPolicyProvider: boolean;
   twoFactorEnabled: boolean;
   allowAccountDeletion: boolean;
@@ -58,10 +60,12 @@ export interface SettingsContextValue {
   mascotAllowed: boolean;
   engineTTS: string;
   langfuseConnectionAccess: boolean;
+  langfusePromptSyncAccess?: boolean;
   adminPanelURL: string;
   replyTabBadgeAllowed: boolean;
   replyNotificationsAllowed: boolean;
   replyNotificationSoundAllowed: boolean;
+  analyticsConfigured: boolean;
 }
 
 export interface SettingEntry {
@@ -145,7 +149,7 @@ export const TABS: TabMeta[] = [
         icon: createLangfuseIcon('h-3.5 w-3.5'),
       },
     ],
-    show: (ctx) => ctx.langfuseConnectionAccess,
+    show: (ctx) => ctx.langfuseConnectionAccess || ctx.langfusePromptSyncAccess === true,
   },
   {
     id: SettingsTabValues.DATA,
@@ -166,6 +170,7 @@ export const TABS: TabMeta[] = [
     sections: [
       { id: 'profile', labelKey: 'com_ui_settings_section_profile' },
       { id: 'security', labelKey: 'com_ui_settings_section_security' },
+      { id: 'connections', labelKey: 'com_ui_settings_section_connections' },
       { id: 'billing', labelKey: 'com_ui_settings_section_billing' },
       { id: 'danger', labelKey: 'com_ui_settings_section_danger_zone', danger: true },
     ],

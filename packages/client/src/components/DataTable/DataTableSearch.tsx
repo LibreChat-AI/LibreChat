@@ -26,7 +26,7 @@ export const DataTableSearch: MemoExoticComponent<
           {localize('com_ui_search_table')}
         </label>
         <Search
-          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-tertiary"
+          className="text-text-tertiary pointer-events-none absolute inset-s-3 top-1/2 size-4 -translate-y-1/2"
           aria-hidden="true"
         />
         <Input
@@ -40,7 +40,7 @@ export const DataTableSearch: MemoExoticComponent<
           aria-describedby={descriptionId}
           placeholder={placeholder || localize('com_ui_search')}
           className={cn(
-            'h-11 rounded-none border-0 bg-transparent pl-9 text-sm placeholder:text-text-tertiary focus-visible:ring-inset',
+            'placeholder:text-text-tertiary h-11 rounded-none border-0 bg-transparent ps-9 text-sm focus-visible:ring-inset',
             className,
           )}
         />

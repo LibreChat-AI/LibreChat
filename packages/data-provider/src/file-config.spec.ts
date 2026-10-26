@@ -979,6 +979,15 @@ describe('getEndpointFileConfig', () => {
       expect(merged.skills?.fileSizeLimit).toBe(50 * 1024 * 1024);
     });
 
+    it('defaults whole-Skill deletion concurrency and preserves configured overrides', () => {
+      expect(mergeFileConfig(undefined).skills?.deletionCleanupConcurrency).toBe(8);
+      const parsed = fileConfigSchema.parse({ skills: { deletionCleanupConcurrency: 3 } });
+      expect(mergeFileConfig(parsed).skills?.deletionCleanupConcurrency).toBe(3);
+      expect(
+        fileConfigSchema.safeParse({ skills: { deletionCleanupConcurrency: 0 } }).success,
+      ).toBe(false);
+    });
+
     it.each([0, -1, 1.5])('rejects invalid rollback concurrency %s', (concurrency) => {
       expect(
         fileConfigSchema.safeParse({ skills: { importCleanupConcurrency: concurrency } }).success,
@@ -2240,5 +2249,17 @@ describe('mergeFileConfig memoization', () => {
     setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
     expect(mergeFileConfig(dynamic)).not.toBe(before);
     expect(mergeFileConfig(undefined)).not.toBe(beforeStatic);
+  });
+});
+
+describe('retained file cleanup rollout', () => {
+  it('defaults to retaining embedded files until readers are upgraded', () => {
+    expect(mergeFileConfig(undefined).retainedFileCleanup).toBe(false);
+    expect(mergeFileConfig({}).retainedFileCleanup).toBe(false);
+  });
+
+  it('accepts an explicit activation only after marker-aware reader rollout', () => {
+    expect(mergeFileConfig({ retainedFileCleanup: true }).retainedFileCleanup).toBe(true);
+    expect(mergeFileConfig({ retainedFileCleanup: false }).retainedFileCleanup).toBe(false);
   });
 });

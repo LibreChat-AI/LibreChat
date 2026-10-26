@@ -5,7 +5,7 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn, peerDisabledInkClasses } from '~/utils';
 
 type LabelVariantOptions =
-  | ({ variant?: 'default' | 'section' | null | undefined } & ClassProp)
+  | ({ variant?: 'default' | 'secondary' | 'section' | null | undefined } & ClassProp)
   | undefined;
 
 /**
@@ -22,6 +22,9 @@ const labelVariants: (props?: LabelVariantOptions) => string = cva('', {
        *  surrounding weight by default. */
       default:
         'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-primary',
+      /** The default metrics in the secondary ink, for a label that annotates rather than names. */
+      secondary:
+        'text-(length:--theme-label-size) leading-(--theme-label-leading) font-theme-label text-text-secondary',
       /** Eyebrow above a field or settings group. */
       section: 'text-[11px] font-medium uppercase tracking-wide text-text-secondary',
     },

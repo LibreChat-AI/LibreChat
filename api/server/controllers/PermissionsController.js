@@ -9,7 +9,8 @@ const {
   enrichRemoteAgentPrincipals,
   createPrincipalSearch,
   backfillRemoteAgentPermissions,
-  auditInsightsPermissionChanges,
+  runAuditedPermissionUpdate,
+  permissionErrorCode,
   getInsightsPrincipalState,
   maskAgentInsightsBit,
   sanitizeInsightsPermissionPrincipals,
@@ -17,7 +18,6 @@ const {
 } = require('@librechat/api');
 const {
   bulkUpdateResourcePermissions,
-  restoreInsightsPermissionChanges,
   ensureGroupPrincipalExists,
   getResourcePermissionsMap,
   findAccessibleResources,
@@ -170,31 +170,24 @@ const updateResourcePermissions = async (req, res) => {
       });
     }
 
-    const results = await bulkUpdateResourcePermissions({
+    const results = await runAuditedPermissionUpdate({
+      req,
       resourceType,
       resourceId,
-      maxWriteAttempts: req.config?.config?.permissions?.maxWriteAttempts,
-      updatedPrincipals: validatedPrincipals,
-      revokedPrincipals,
-      grantedBy: userId,
-    });
-
-    await auditInsightsPermissionChanges({
-      req,
-      resourceId,
-      changes: results.insightsChanges ?? [],
-      failClosed: process.env.AUDIT_LOG_FAIL_CLOSED === 'true',
-      deps: {
-        getAgent: db.getAgent,
-        recordAuditEntry: db.recordAuditEntry,
-        restoreInsightsPermissionChanges: (changes) =>
-          restoreInsightsPermissionChanges({
-            resourceType: ResourceType.AGENT,
-            resourceId,
-            changes,
-          }),
-        logger,
-      },
+      deps: { recordAuditEntry: db.recordAuditEntry, getAgent: db.getAgent, logger },
+      update: (beforeWrite, afterWrite) =>
+        bulkUpdateResourcePermissions({
+          resourceType,
+          resourceId,
+          maxWriteAttempts: req.config?.config?.permissions?.maxWriteAttempts,
+          leaseTtlMs: req.config?.config?.permissions?.leaseTtlMs,
+          leaseWaitMs: req.config?.config?.permissions?.leaseWaitMs,
+          updatedPrincipals: validatedPrincipals,
+          revokedPrincipals,
+          grantedBy: userId,
+          beforeWrite,
+          afterWrite,
+        }),
     });
 
     if (resourceType === ResourceType.CODE_ENVIRONMENT) {
@@ -238,6 +231,7 @@ const updateResourcePermissions = async (req, res) => {
     res.status(error.statusCode ?? 400).json({
       error: 'Failed to update permissions',
       details: error.message,
+      ...permissionErrorCode(error),
     });
   }
 };

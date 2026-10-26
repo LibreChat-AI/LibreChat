@@ -256,6 +256,7 @@ export default function FileAuthoringCall({
                 <DiffView parsed={parsedDiff} />
               ) : (
                 <pre
+                  dir="ltr"
                   ref={previewPaneRef}
                   onScroll={onPreviewPaneScroll}
                   className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
@@ -267,6 +268,7 @@ export default function FileAuthoringCall({
               )}
               {showOutputSection && (
                 <pre
+                  dir="ltr"
                   className={cn(
                     'border-border-inset max-h-[18.75rem] overflow-auto border-t px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap',
                     phase === 'failed' ? 'text-status-error' : 'text-text-secondary',

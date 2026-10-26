@@ -240,7 +240,7 @@ describe('App request config and auth resolution', () => {
         return { srv: parsed };
       },
     );
-    const getAllServerConfigs = jest.fn().mockResolvedValue({ srv: effective });
+    const getServerConfig = jest.fn().mockResolvedValue(effective);
     const recoverServerConfig = jest.fn();
 
     await expect(
@@ -252,14 +252,14 @@ describe('App request config and auth resolution', () => {
           unrelated: { type: 'stdio', command: 'never-initialized', args: [] },
         },
         ensureConfigServers,
-        getAllServerConfigs,
+        getServerConfig,
         recoverServerConfig,
         isAppServerConfig: jest.fn().mockResolvedValue(false),
       }),
     ).resolves.toEqual({ serverConfig: effective, connectionOwner: 'principal' });
 
     expect(ensureConfigServers).toHaveBeenCalledWith({ srv: target });
-    expect(getAllServerConfigs).toHaveBeenCalledWith(user.id, { srv: parsed }, user.role);
+    expect(getServerConfig).toHaveBeenCalledWith('srv', user.id, { srv: parsed }, user.role);
     expect(recoverServerConfig).not.toHaveBeenCalled();
   });
 
@@ -270,7 +270,7 @@ describe('App request config and auth resolution', () => {
       url: 'https://base.example.com',
     };
     const ensureConfigServers = jest.fn().mockResolvedValue({});
-    const getAllServerConfigs = jest.fn().mockResolvedValue({ srv: effective });
+    const getServerConfig = jest.fn().mockResolvedValue(effective);
     const recoverServerConfig = jest.fn();
 
     await expect(
@@ -279,14 +279,14 @@ describe('App request config and auth resolution', () => {
         user,
         mcpConfig: {},
         ensureConfigServers,
-        getAllServerConfigs,
+        getServerConfig,
         recoverServerConfig,
         isAppServerConfig: jest.fn().mockResolvedValue(false),
       }),
     ).resolves.toEqual({ serverConfig: effective, connectionOwner: 'principal' });
 
     expect(ensureConfigServers).toHaveBeenCalledWith({});
-    expect(getAllServerConfigs).toHaveBeenCalledWith(user.id, {}, user.role);
+    expect(getServerConfig).toHaveBeenCalledWith('srv', user.id, {}, user.role);
     expect(recoverServerConfig).not.toHaveBeenCalled();
   });
 
@@ -310,7 +310,7 @@ describe('App request config and auth resolution', () => {
         user,
         mcpConfig: {},
         ensureConfigServers: jest.fn().mockResolvedValue({}),
-        getAllServerConfigs: jest.fn().mockResolvedValue({ srv: stub }),
+        getServerConfig: jest.fn().mockResolvedValue(stub),
         recoverServerConfig,
         isAppServerConfig: jest.fn().mockResolvedValue(false),
       }),
@@ -328,7 +328,7 @@ describe('App request config and auth resolution', () => {
         user,
         mcpConfig: {},
         ensureConfigServers: jest.fn().mockResolvedValue({}),
-        getAllServerConfigs: jest.fn().mockResolvedValue({}),
+        getServerConfig: jest.fn().mockResolvedValue(undefined),
         recoverServerConfig,
         isAppServerConfig: jest.fn().mockResolvedValue(false),
       }),

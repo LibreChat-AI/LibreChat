@@ -1,6 +1,9 @@
 import React from 'react';
+import { useSteering } from '@librechat/chat/react';
+import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { claimQueuedIntent, releaseQueuedIntent } from '@librechat/chat';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
+import { useQueueDrain, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import {
   getDefaultStore,
   Provider as JotaiProvider,
@@ -9,15 +12,22 @@ import {
   useSetAtom,
 } from 'jotai';
 import {
+  hasLiveRunPause,
+  hydrateFileDeliveryMetadata as mergeQueuedTurnFileMetadata,
+} from '@librechat/chat';
+import {
   Constants,
   ContentTypes,
   EModelEndpoint,
   LocalStorageKeys,
   ReasoningEffort,
 } from 'librechat-data-provider';
-import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
-import type { QueuedMessage } from '~/hooks/Chat/queue';
-import type { ExtendedFile } from '~/common';
+import {
+  getReasoningStateKey,
+  pendingQuotesByConvoId,
+  pendingManualSkillsByConvoId,
+  pendingReasoningOverrideFamily,
+} from '@librechat/chat/react';
 import {
   pendingQueuedTurnEnqueueIdsByConvoId,
   settledQueuedTurnReceiptsByConvoId,
@@ -26,23 +36,28 @@ import {
   drainAfterAbortByIndex,
   runEndByIndex,
   resetQueueFamilies,
-} from '~/hooks/Chat/queue';
+  recoveryDispositionsFamily,
+} from '@librechat/chat/react';
 import {
-  getReasoningStateKey,
-  pendingReasoningOverrideFamily,
-} from '~/components/Chat/Input/Composer/state';
-import { revealedQueuedTurnFamily, pendingSteerCancelClientIdsFamily } from '~/store/steer';
-import useSteering, { hasLiveRunPause, mergeQueuedTurnFileMetadata } from '../useSteering';
+  revealedQueuedTurnFamily,
+  pendingSteerCancelClientIdsFamily,
+  acceptedSteerClientIdsByConvoId,
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  appliedSteerIdsByConvoId,
+  pendingSteersByConvoId,
+  resetSteerFamilies,
+} from '@librechat/chat/react';
+import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
+import type { QueuedMessage } from '@librechat/chat';
+import type { ExtendedFile } from '~/common';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
-import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
-import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import ChatSettingsProvider from '~/routes/ChatSettings';
 import { duringRunActionAtom } from '~/store/duringRun';
+import { SteerHostTestProvider } from 'test/steerHost';
 import { applyPendingAction } from '~/utils/approval';
 import English from '~/locales/en/translation.json';
-import useQueueDrain from '../useQueueDrain';
-import store from '~/store';
 
 const CONVO_ID = 'convo-steer-ui';
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -69,6 +84,10 @@ jest.mock('~/hooks/Agents/useCodeApprovalMode', () => ({
 
 jest.mock('~/Providers', () => ({
   useFileMapContext: () => mockFileMap,
+}));
+
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: undefined }),
 }));
 
 /** The reconciliation window is an operator lever; these specs exercise the
@@ -130,10 +149,14 @@ const agentsConversation = {
 type HookParams = Partial<Parameters<typeof useSteering>[0]>;
 
 const withActiveGeneration =
-  (initialize?: (snapshot: MutableSnapshot) => void, conversationId = CONVO_ID) =>
+  (
+    initialize?: (snapshot: MutableSnapshot) => void,
+    conversationId = CONVO_ID,
+    jotaiStore: ReturnType<typeof createStore> = getDefaultStore(),
+  ) =>
   (snapshot: MutableSnapshot) => {
-    snapshot.set(store.activeGenerationCreatedAtByConvoId(conversationId), 41);
-    snapshot.set(store.activeGenerationProtocolVersionByConvoId(conversationId), 2);
+    jotaiStore.set(activeGenerationCreatedAtByConvoId(conversationId), 41);
+    jotaiStore.set(activeGenerationProtocolVersionByConvoId(conversationId), 2);
     initialize?.(snapshot);
   };
 
@@ -142,8 +165,8 @@ function setup(params: HookParams = {}, initialize?: (snapshot: MutableSnapshot)
   const stopGenerating = jest.fn();
   let setGenerationCreatedAt: ((value: number | null) => void) | undefined;
   const GenerationProbe = () => {
-    setGenerationCreatedAt = useSetRecoilState(
-      store.activeGenerationCreatedAtByConvoId(params.conversationId ?? CONVO_ID),
+    setGenerationCreatedAt = useSetAtom(
+      activeGenerationCreatedAtByConvoId(params.conversationId ?? CONVO_ID),
     );
     return null;
   };
@@ -151,8 +174,10 @@ function setup(params: HookParams = {}, initialize?: (snapshot: MutableSnapshot)
     <RecoilRoot
       initializeState={withActiveGeneration(initialize, params.conversationId ?? CONVO_ID)}
     >
-      <GenerationProbe />
-      <ChatSettingsProvider>{children}</ChatSettingsProvider>
+      <SteerHostTestProvider>
+        <GenerationProbe />
+        <ChatSettingsProvider>{children}</ChatSettingsProvider>
+      </SteerHostTestProvider>
     </RecoilRoot>
   );
   const rendered = renderHook(
@@ -202,7 +227,16 @@ function sendFromQueue(
   current.steering.sendQueuedNow(item);
 }
 
-beforeEach(() => resetQueueFamilies());
+beforeEach(() => {
+  resetQueueFamilies();
+  resetSteerFamilies();
+  getDefaultStore().set(pendingQuotesByConvoId(CONVO_ID), []);
+  getDefaultStore().set(pendingManualSkillsByConvoId(CONVO_ID), []);
+});
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('useSteering', () => {
   beforeEach(() => {
@@ -236,9 +270,8 @@ describe('useSteering', () => {
       setFiles,
       consumeDraft,
     };
-    const { result, rerender, stopGenerating, sendNow } = setup(params, ({ set }) => {
-      set(store.pendingQuotesByConvoId(CONVO_ID), ['preserved quote']);
-    });
+    getDefaultStore().set(pendingQuotesByConvoId(CONVO_ID), ['preserved quote']);
+    const { result, rerender, stopGenerating, sendNow } = setup(params);
     const captured = result.current[action];
     params.composerDisabled = true;
     rerender();
@@ -282,12 +315,12 @@ describe('useSteering', () => {
       const ask = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <RecoilRoot
-          initializeState={withActiveGeneration(({ set }) => {
+          initializeState={withActiveGeneration(() => {
             getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [item]);
-            set(store.isSubmittingFamily(0), false);
+            getDefaultStore().set(isSubmittingFamily(0), false);
           })}
         >
-          {children}
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
         </RecoilRoot>
       );
       const { result } = renderHook(
@@ -373,12 +406,12 @@ describe('useSteering', () => {
       const ask = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <RecoilRoot
-          initializeState={withActiveGeneration(({ set }) => {
+          initializeState={withActiveGeneration(() => {
             getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [held, first, second]);
-            set(store.isSubmittingFamily(0), false);
+            getDefaultStore().set(isSubmittingFamily(0), false);
           })}
         >
-          {children}
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
         </RecoilRoot>
       );
       const { result } = renderHook(
@@ -597,8 +630,8 @@ describe('useSteering', () => {
     });
 
     it('queues during startup and exposes no live mutation until the generation epoch arrives', () => {
-      const { result, stopGenerating, setGenerationCreatedAt } = setup({}, ({ set }) => {
-        set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), null);
+      const { result, stopGenerating, setGenerationCreatedAt } = setup({}, () => {
+        getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), null);
       });
 
       expect(result.current.duringRunActive).toBe(true);
@@ -664,7 +697,9 @@ describe('useSteering', () => {
     ) {
       const sendNow = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <RecoilRoot initializeState={initializer}>{children}</RecoilRoot>
+        <RecoilRoot initializeState={initializer}>
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
+        </RecoilRoot>
       );
       const rendered = renderHook(
         () => ({
@@ -741,8 +776,8 @@ describe('useSteering', () => {
 
     it('keeps startup turns local until the server generation epoch exists', async () => {
       const { result } = setupServerQueue(
-        withActiveGeneration(({ set }) => {
-          set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), null);
+        withActiveGeneration(() => {
+          getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), null);
         }),
       );
 
@@ -760,8 +795,8 @@ describe('useSteering', () => {
 
     it('keeps a re-queued row durable on its own lineage once the run it waited on has ended', async () => {
       const { result } = setupServerQueue(
-        withActiveGeneration(({ set }) => {
-          set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), null);
+        withActiveGeneration(() => {
+          getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), null);
         }),
       );
 
@@ -814,10 +849,10 @@ describe('useSteering', () => {
           updatedAt: new Date().toISOString(),
         });
       });
-      const { result, unmount } = setup({ isSubmitting: false }, ({ set }) => {
-        set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), null);
-        set(store.pendingQuotesByConvoId(CONVO_ID), ['quoted context']);
-        set(store.pendingManualSkillsByConvoId(CONVO_ID), ['skill']);
+      getDefaultStore().set(pendingQuotesByConvoId(CONVO_ID), ['quoted context']);
+      getDefaultStore().set(pendingManualSkillsByConvoId(CONVO_ID), ['skill']);
+      const { result, unmount } = setup({ isSubmitting: false }, () => {
+        getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), null);
       });
       expect(result.current.duringRunActive).toBe(true);
       expect(result.current.canSteer).toBe(false);
@@ -1590,8 +1625,8 @@ describe('useSteering', () => {
       const sendNow = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <RecoilRoot
-          initializeState={withActiveGeneration(({ set }) => {
-            set(store.isSubmittingFamily(0), false);
+          initializeState={withActiveGeneration(() => {
+            getDefaultStore().set(isSubmittingFamily(0), false);
             getDefaultStore().set(runEndByIndex(0), {
               conversationId: CONVO_ID,
               outcome: 'completed',
@@ -1610,7 +1645,7 @@ describe('useSteering', () => {
             ]);
           })}
         >
-          {children}
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
         </RecoilRoot>
       );
       const { result } = renderHook(
@@ -1816,7 +1851,9 @@ describe('useSteering', () => {
       const sendNow = jest.fn();
       const stopGenerating = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <RecoilRoot initializeState={withActiveGeneration(initialize)}>{children}</RecoilRoot>
+        <RecoilRoot initializeState={withActiveGeneration(initialize)}>
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
+        </RecoilRoot>
       );
       const rendered = renderHook(
         () => ({
@@ -1996,7 +2033,9 @@ describe('useSteering', () => {
     ) {
       const sendNow = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <RecoilRoot initializeState={withActiveGeneration(initialize)}>{children}</RecoilRoot>
+        <RecoilRoot initializeState={withActiveGeneration(initialize)}>
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
+        </RecoilRoot>
       );
       const rendered = renderHook(
         ({ convoId, isSubmitting }: { convoId: string; isSubmitting: boolean }) => ({
@@ -2567,14 +2606,14 @@ describe('useSteering', () => {
       const stopGenerating = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <RecoilRoot
-          initializeState={({ set }) => {
-            set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 41);
-            set(store.activeGenerationProtocolVersionByConvoId(CONVO_ID), 2);
-            set(store.activeGenerationCreatedAtByConvoId(otherConversationId), 42);
-            set(store.activeGenerationProtocolVersionByConvoId(otherConversationId), 2);
+          initializeState={() => {
+            getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), 41);
+            getDefaultStore().set(activeGenerationProtocolVersionByConvoId(CONVO_ID), 2);
+            getDefaultStore().set(activeGenerationCreatedAtByConvoId(otherConversationId), 42);
+            getDefaultStore().set(activeGenerationProtocolVersionByConvoId(otherConversationId), 2);
           }}
         >
-          {children}
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
         </RecoilRoot>
       );
       const { result, rerender } = renderHook(
@@ -2636,7 +2675,9 @@ describe('useSteering', () => {
       const sendNow = jest.fn();
       const stopGenerating = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <RecoilRoot initializeState={withActiveGeneration(initialize)}>{children}</RecoilRoot>
+        <RecoilRoot initializeState={withActiveGeneration(initialize)}>
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
+        </RecoilRoot>
       );
       const rendered = renderHook(
         () => ({
@@ -2653,14 +2694,12 @@ describe('useSteering', () => {
           }),
           queue: useQueue(CONVO_ID),
           setQueue: useSetAtom(queuedMessagesByConvoId(CONVO_ID)),
-          setActiveEpoch: useSetRecoilState(store.activeGenerationCreatedAtByConvoId(CONVO_ID)),
-          setActiveProtocol: useSetRecoilState(
-            store.activeGenerationProtocolVersionByConvoId(CONVO_ID),
-          ),
-          setAcceptedIds: useSetRecoilState(store.acceptedSteerClientIdsByConvoId(CONVO_ID)),
-          chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
-          setChips: useSetRecoilState(store.pendingSteersByConvoId(CONVO_ID)),
-          setAppliedIds: useSetRecoilState(store.appliedSteerIdsByConvoId(CONVO_ID)),
+          setActiveEpoch: useSetAtom(activeGenerationCreatedAtByConvoId(CONVO_ID)),
+          setActiveProtocol: useSetAtom(activeGenerationProtocolVersionByConvoId(CONVO_ID)),
+          setAcceptedIds: useSetAtom(acceptedSteerClientIdsByConvoId(CONVO_ID)),
+          chips: useAtomValue(pendingSteersByConvoId(CONVO_ID)),
+          setChips: useSetAtom(pendingSteersByConvoId(CONVO_ID)),
+          setAppliedIds: useSetAtom(appliedSteerIdsByConvoId(CONVO_ID)),
           drainFlag: useAtomValue(drainAfterAbortByIndex(0)),
         }),
         { wrapper },
@@ -2793,8 +2832,8 @@ describe('useSteering', () => {
       mockMutate.mockImplementationOnce((_params, { onError }) =>
         onError(new Error('network disconnected')),
       );
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.activeGenerationProtocolVersionByConvoId(CONVO_ID), 1);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(activeGenerationProtocolVersionByConvoId(CONVO_ID), 1);
       });
 
       act(() => {
@@ -2905,8 +2944,8 @@ describe('useSteering', () => {
       mockMutate.mockImplementation((_params, { onError }) => {
         onError({ response: { status: 400, data: { code: 'INVALID_STEER' } } });
       });
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 41);
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), 41);
       });
 
       act(() => {
@@ -3016,10 +3055,10 @@ describe('useSteering', () => {
           conversationId: CONVO_ID,
         });
       });
-      const { result } = setupWithState({}, ({ set }) => {
+      const { result } = setupWithState({}, () => {
         // seedSteerChips already re-minted this chip from resumeState before
         // the 202 ACK landed; the ACK must upsert, not append.
-        set(store.pendingSteersByConvoId(CONVO_ID), [
+        getDefaultStore().set(pendingSteersByConvoId(CONVO_ID), [
           {
             steerId: 'srv-3',
             text: 'reseeded',
@@ -3764,12 +3803,12 @@ describe('useSteering', () => {
             initialize === null
               ? undefined
               : (snapshot) => {
-                  snapshot.set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 41);
+                  getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), 41);
                   initialize?.(snapshot);
                 }
           }
         >
-          {children}
+          <SteerHostTestProvider>{children}</SteerHostTestProvider>
         </RecoilRoot>
       );
       const rendered = renderHook(
@@ -3838,7 +3877,7 @@ describe('useSteering', () => {
         type: 'image/png',
       });
 
-      function setupComposer() {
+      function setupComposer(initialFiles = new Map<string, ExtendedFile>()) {
         const sendNow = jest.fn();
         const stopGenerating = jest.fn();
         const observed: { files: Map<string, ExtendedFile> } = { files: new Map() };
@@ -3848,7 +3887,7 @@ describe('useSteering', () => {
         /** Real composer state, so `useUpdateFiles` and `useSteering` write
          *  through the same setter they share in `ChatForm`. */
         const Composer = () => {
-          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          const [files, setFiles] = React.useState(initialFiles);
           observed.files = files;
           updates = useUpdateFiles(setFiles);
           steering = useSteering({
@@ -3868,7 +3907,9 @@ describe('useSteering', () => {
 
         render(
           <RecoilRoot initializeState={withActiveGeneration()}>
-            <Composer />
+            <SteerHostTestProvider>
+              <Composer />
+            </SteerHostTestProvider>
           </RecoilRoot>,
         );
         return {
@@ -3877,6 +3918,59 @@ describe('useSteering', () => {
           getSteering: () => steering!,
         };
       }
+
+      const uploadedFile = {
+        ...extended('file-uploaded', 1),
+        temp_file_id: 'upload-key',
+      };
+
+      it('clears a queued attachment stored under its temporary upload key', () => {
+        const { observed, getSteering } = setupComposer(new Map([['upload-key', uploadedFile]]));
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+
+        expect(observed.files.size).toBe(0);
+      });
+
+      it('does not attach a previously queued upload to the next queued message', () => {
+        const { getSteering } = setupComposer(new Map([['upload-key', uploadedFile]]));
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+        act(() => {
+          getSteering().queueFromComposer('next message without attachments');
+        });
+
+        expect(getDefaultStore().get(queuedMessagesByConvoId(CONVO_ID))[1].files).toBeUndefined();
+      });
+
+      it('ignores a late callback using the queued attachment temporary upload id', () => {
+        const { observed, getUpdates, getSteering } = setupComposer(
+          new Map([['upload-key', uploadedFile]]),
+        );
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+        act(() => getUpdates().replaceFile(extended('upload-key', 1)));
+
+        expect(observed.files.size).toBe(0);
+      });
+
+      it('keeps the server file reference on the queued message', () => {
+        const { getSteering } = setupComposer(new Map([['upload-key', uploadedFile]]));
+
+        act(() => {
+          getSteering().queueFromComposer('use the uploaded image');
+        });
+
+        expect(getDefaultStore().get(queuedMessagesByConvoId(CONVO_ID))[0].files).toEqual([
+          expect.objectContaining({ file_id: 'file-uploaded' }),
+        ]);
+      });
 
       it('ignores a late callback for an attachment the steer already took', () => {
         const { observed, getUpdates, getSteering } = setupComposer();
@@ -4141,9 +4235,13 @@ describe('useSteering', () => {
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <JotaiProvider store={reasoningStore}>
           <RecoilRoot
-            initializeState={withActiveGeneration(initialize, params.conversationId ?? CONVO_ID)}
+            initializeState={withActiveGeneration(
+              initialize,
+              params.conversationId ?? CONVO_ID,
+              reasoningStore,
+            )}
           >
-            {children}
+            <SteerHostTestProvider>{children}</SteerHostTestProvider>
           </RecoilRoot>
         </JotaiProvider>
       );
@@ -4162,20 +4260,20 @@ describe('useSteering', () => {
           }),
           queue: useQueue(CONVO_ID),
           setQueue: useSetAtom(queuedMessagesByConvoId(CONVO_ID)),
-          chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
-          pendingQuotes: useRecoilValue(store.pendingQuotesByConvoId(CONVO_ID)),
-          pendingSkills: useRecoilValue(store.pendingManualSkillsByConvoId(CONVO_ID)),
+          chips: useAtomValue(pendingSteersByConvoId(CONVO_ID)),
+          pendingQuotes: useAtomValue(pendingQuotesByConvoId(CONVO_ID)),
+          pendingSkills: useAtomValue(pendingManualSkillsByConvoId(CONVO_ID)),
           pendingReasoning: useAtomValue(pendingReasoningOverrideFamily(CONVO_ID)),
-          markApplied: useSetRecoilState(store.appliedSteerIdsByConvoId(CONVO_ID)),
+          markApplied: useSetAtom(appliedSteerIdsByConvoId(CONVO_ID)),
         }),
         { wrapper },
       );
       return { ...rendered, sendNow, stopGenerating };
     }
 
-    const stageContext = ({ set }: MutableSnapshot) => {
-      set(store.pendingQuotesByConvoId(CONVO_ID), ['quoted excerpt']);
-      set(store.pendingManualSkillsByConvoId(CONVO_ID), ['skill-1']);
+    const stageContext = () => {
+      contextStore.set(pendingQuotesByConvoId(CONVO_ID), ['quoted excerpt']);
+      contextStore.set(pendingManualSkillsByConvoId(CONVO_ID), ['skill-1']);
     };
 
     it('queues rather than steering when reasoning is staged for a new generation', () => {
@@ -4808,8 +4906,8 @@ describe('useSteering', () => {
           text: 'pending',
           revealedAt: new Date().toISOString(),
         });
-        const { result, unmount } = setup({ isSubmitting: false, filesLoading }, ({ set }) => {
-          set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), null);
+        const { result, unmount } = setup({ isSubmitting: false, filesLoading }, () => {
+          getDefaultStore().set(activeGenerationCreatedAtByConvoId(CONVO_ID), null);
         });
         await act(async () => {
           expect(result.current.submitDuringRun('drafted text')).toBe(!filesLoading);

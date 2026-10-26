@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
+import { getDefaultStore, useAtom } from 'jotai';
+import { filesFamily, isSubmittingFamily } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
-import { RecoilRoot, useRecoilState } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
@@ -14,8 +16,8 @@ import type { ChatFormValues } from '~/common';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import DragDropWrapper from '../Files/DragDropWrapper';
+import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
-import store from '~/store';
 
 const mockUpload = jest.fn();
 const mockAsk = jest.fn();
@@ -65,8 +67,8 @@ class StubImage {
 }
 
 function Harness() {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
 
@@ -90,8 +92,6 @@ function Harness() {
         ask: mockAsk,
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
-        showPopover: false,
-        setShowPopover: () => undefined,
         abortScroll: false,
         setAbortScroll: () => undefined,
         preset: null,
@@ -134,13 +134,15 @@ function renderComposer({ legacyUploadUX = false }: { legacyUploadUX?: boolean }
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <Harness />
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <Harness />
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );
@@ -159,6 +161,10 @@ const pasteImage = (textarea: HTMLElement) => {
   });
   fireEvent(textarea, event);
 };
+
+afterEach(() => {
+  getDefaultStore().set(filesFamily(0), new Map());
+});
 
 /**
  * The upload-destination dialog is opened by the paste itself, so Radix has no

@@ -27,6 +27,21 @@ describe('presentPullRequest', () => {
     });
   });
 
+  it("speaks of a GitLab merge request in GitLab's words, and of anything else as GitHub", () => {
+    expect(presentPullRequest(make({ provider: 'gitlab' }))).toMatchObject({
+      provider: 'gitlab',
+      nounKey: 'com_ui_merge_request',
+      labelKey: 'com_ui_pr_label_gitlab',
+      openKey: 'com_ui_pr_open_in_gitlab',
+    });
+    expect(presentPullRequest(base)).toMatchObject({
+      provider: 'github',
+      nounKey: 'com_ui_pull_request',
+      labelKey: 'com_ui_pr_label',
+      openKey: 'com_ui_pr_open_in_github',
+    });
+  });
+
   it('shows merge conflicts as an error on the icon and the state badge', () => {
     expect(presentPullRequest(make({ mergeable: 'conflicting' }))).toMatchObject({
       icon: 'open',
@@ -54,15 +69,21 @@ describe('presentPullRequest', () => {
     });
   });
 
-  it.each([
-    ['merged', 'merged', 'com_ui_pr_state_merged'],
-    ['closed', 'closed', 'com_ui_pr_state_closed'],
-  ] as const)('shows a %s pull request with its own icon', (state, icon, stateKey) => {
-    expect(presentPullRequest(make({ state, mergeable: 'unknown' }))).toMatchObject({
-      icon,
+  it('shows a closed pull request with its own icon', () => {
+    expect(presentPullRequest(make({ state: 'closed', mergeable: 'unknown' }))).toMatchObject({
+      icon: 'closed',
       iconTone: 'neutral',
-      stateKey,
+      stateKey: 'com_ui_pr_state_closed',
       stateTone: 'neutral',
+    });
+  });
+
+  it('shows a merged pull request with the merged icon in the purple tone', () => {
+    expect(presentPullRequest(make({ state: 'merged', mergeable: 'unknown' }))).toMatchObject({
+      icon: 'merged',
+      iconTone: 'merged',
+      stateKey: 'com_ui_pr_state_merged',
+      stateTone: 'merged',
     });
   });
 

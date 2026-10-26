@@ -1,12 +1,24 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { Constants } from 'librechat-data-provider';
 import { useAtomValue, useSetAtom, getDefaultStore } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { RecoilRoot, useSetRecoilState, useRecoilValue } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  stopRequestedByConvoId,
+  drainAfterAbortByIndex,
+  resetQueueFamilies,
+  runEndByIndex,
+} from '@librechat/chat/react';
+import {
+  resetSteerFamilies,
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  submissionByIndex,
+  clearSubmissions,
+} from '@librechat/chat/react';
 import type { TSubmission, TConversation } from 'librechat-data-provider';
-import type { DrainAfterAbort, RunEnd } from '~/hooks/Chat/queue';
-import { drainAfterAbortByIndex, runEndByIndex, resetQueueFamilies } from '~/hooks/Chat/queue';
+import type { DrainAfterAbort, RunEnd } from '@librechat/chat';
 import useChatHelpers from '../useChatHelpers';
 import { useAbortCleanup } from '../abort';
 import store from '~/store';
@@ -38,9 +50,9 @@ jest.mock('~/hooks/useNewConvo', () => ({
   default: () => ({ newConversation: jest.fn() }),
 }));
 
-jest.mock('~/hooks/Chat/useSteerConvert', () => ({
-  __esModule: true,
-  default: () => mockConvertSteersToQueued,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerConvert: () => mockConvertSteersToQueued,
 }));
 
 const INDEX = 0;
@@ -67,10 +79,10 @@ function setup() {
     const cleanup = useAbortCleanup(INDEX);
     handles.captureSubmission = cleanup.captureSubmission;
     handles.clearSubmissionsUnlessReplaced = cleanup.clearSubmissionsUnlessReplaced;
-    handles.setSubmission = useSetRecoilState(store.submissionByIndex(INDEX));
-    handles.setOtherSubmission = useSetRecoilState(store.submissionByIndex(OTHER_INDEX));
-    current.submission = useRecoilValue(store.submissionByIndex(INDEX));
-    current.otherSubmission = useRecoilValue(store.submissionByIndex(OTHER_INDEX));
+    handles.setSubmission = useSetAtom(submissionByIndex(INDEX));
+    handles.setOtherSubmission = useSetAtom(submissionByIndex(OTHER_INDEX));
+    current.submission = useAtomValue(submissionByIndex(INDEX));
+    current.otherSubmission = useAtomValue(submissionByIndex(OTHER_INDEX));
     return null;
   }
 
@@ -89,7 +101,14 @@ function setup() {
   return { handles, current };
 }
 
-beforeEach(() => resetQueueFamilies());
+beforeEach(() => {
+  resetQueueFamilies();
+  resetSteerFamilies();
+});
+
+afterEach(() => {
+  clearSubmissions(getDefaultStore());
+});
 
 describe('useAbortCleanup', () => {
   it('clears all submissions when the captured submission is still current', async () => {
@@ -186,7 +205,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     let setDrainAfterAbort: ((value: DrainAfterAbort | false) => void) | undefined;
     const stoppedSubmission = submission('stopped-run');
     function RunEndProbe() {
-      currentSubmission = useRecoilValue(store.submissionByIndex(INDEX));
+      currentSubmission = useAtomValue(submissionByIndex(INDEX));
       observed.runEnd = useAtomValue(runEndByIndex(INDEX));
       observed.drainAfterAbort = useAtomValue(drainAfterAbortByIndex(INDEX));
       setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(INDEX));
@@ -198,7 +217,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
         <RecoilRoot
           initializeState={({ set }) => {
             set(store.conversationKeysAtom, [INDEX]);
-            set(store.submissionByIndex(INDEX), stoppedSubmission);
+            getDefaultStore().set(submissionByIndex(INDEX), stoppedSubmission);
             set(store.conversationByIndex(INDEX), {
               conversationId,
               endpoint: 'agents',
@@ -209,8 +228,11 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
               generationCreatedAt: 41,
             });
             if (generationCreatedAt != null) {
-              set(store.activeGenerationCreatedAtByConvoId(conversationId), generationCreatedAt);
-              set(store.activeGenerationProtocolVersionByConvoId(conversationId), 2);
+              getDefaultStore().set(
+                activeGenerationCreatedAtByConvoId(conversationId),
+                generationCreatedAt,
+              );
+              getDefaultStore().set(activeGenerationProtocolVersionByConvoId(conversationId), 2);
             }
           }}
         >
@@ -380,6 +402,9 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
     expect(observed.runEnd).toBeNull();
     expect(observed.drainAfterAbort).toBe(false);
+    expect(getDefaultStore().get(stopRequestedByConvoId('convo-held'))).toEqual({
+      generationCreatedAt: 41,
+    });
   });
 
   it('does not release the abort-drain queue when natural completion already settled the run', async () => {
@@ -401,6 +426,29 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
     expect(observed.runEnd).toBeNull();
     expect(observed.drainAfterAbort).toBe(false);
+    /** Stop lost the race, so the run's persisted outcome decides the queue if the user leaves. */
+    expect(getDefaultStore().get(stopRequestedByConvoId('convo-held'))).toBeNull();
+  });
+
+  it('keeps Stop when another Stop already aborted the run', async () => {
+    mockAbortMutateAsync.mockResolvedValue({
+      success: false,
+      settled: true,
+      code: 'RUN_ALREADY_SETTLED',
+      streamId: 'convo-held',
+      terminalStatus: 'aborted',
+      generationProtocolVersion: 2,
+    });
+    const { result } = setupStop('convo-held');
+
+    await act(async () => {
+      await result.current.stopGenerating();
+    });
+
+    expect(observed.runEnd).toBeNull();
+    expect(getDefaultStore().get(stopRequestedByConvoId('convo-held'))).toEqual({
+      generationCreatedAt: 41,
+    });
   });
 
   it('does not let a late abort response clear another conversation epoch', async () => {

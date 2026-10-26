@@ -55,10 +55,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -70,7 +70,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -115,3 +115,30 @@ jobs:
           NODE_ENV: test
           REDIS_URI: redis://127.0.0.1:6379
         run: npm run test:integration
+
+      - name: Checkout merged browser enrollment compatibility fixture
+        uses: actions/checkout@v5
+        with:
+          repository: LibreChat-AI/code-interpreter
+          ref: a3207a75c8327ba1c9526eff8b06f3588f3739ed
+          path: .verification/browser-enrollment-upstream
+          persist-credentials: false
+          sparse-checkout: |
+            packages/code
+            service/src/bridge
+            service/src/logger.ts
+          sparse-checkout-cone-mode: false
+
+      - name: Build the pinned merged CLI
+        working-directory: .verification/browser-enrollment-upstream/packages/code
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Verify merged CLI enrollment and profile persistence
+        working-directory: packages/api
+        env:
+          NODE_ENV: test
+          CODE_SETUP_UPSTREAM: ${{ github.workspace }}/.verification/browser-enrollment-upstream
+          CODE_SETUP_REDIS_URI: redis://127.0.0.1:6379/15
+        run: >-
+          npx jest src/code/setup/compatibility.integration.spec.ts
+          --runInBand --coverage=false --forceExit

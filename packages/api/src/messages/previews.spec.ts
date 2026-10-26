@@ -8,11 +8,13 @@ import {
   containsToolCallPreviews,
   prepareToolCallPreviews,
   previewMessagesToolCalls,
+  previewContentToolCalls,
   prepareResultToolCallPreviews,
   rejectToolCallPreviewWrites,
   withToolCallPreviews,
   withMessageToolCallPreviews,
   TOOL_CALL_PREVIEW_ELISION,
+  findSubagentAttachmentCalls,
 } from './previews';
 
 const limits = { outputChars: 1_024, argsChars: 1_024 };
@@ -32,6 +34,9 @@ type TestToolCall = {
   outputTruncated?: true;
   argsTruncated?: true;
   subagentContentOmitted?: true;
+  subagentAttachmentCalls?: Array<{ id: string; agentId?: string; stepId?: string }>;
+  agentId?: string;
+  subagentIdentity?: { subagentKind?: string; subagentAgentId?: string };
   function?: unknown;
 };
 
@@ -44,6 +49,21 @@ const toolPart = (toolCall: TestToolCall) => ({
 
 const longOutput = (head: string, tail: string, fill = 'x'.repeat(20_000)) =>
   `${head}${fill}${tail}`;
+
+describe('attachment matching work configuration', () => {
+  it('defaults to a bounded budget and accepts overrides', () => {
+    expect(toolCallPreviewsConfigSchema.parse({}).attachmentWorkLimit).toBe(100_000);
+    expect(toolCallPreviewsConfigSchema.parse({ attachmentWorkLimit: 2 }).attachmentWorkLimit).toBe(
+      2,
+    );
+  });
+
+  it.each([0, -1, 1.5, 1_000_001, Infinity, '100'])('rejects invalid budget %p', (value) => {
+    expect(toolCallPreviewsConfigSchema.safeParse({ attachmentWorkLimit: value }).success).toBe(
+      false,
+    );
+  });
+});
 
 describe('previewOutputText', () => {
   it('keeps short output untouched', () => {
@@ -379,6 +399,45 @@ describe('JSON numbers in previews', () => {
     expect(parsed).toMatchObject({ a: 1.5, b: 1.5, c: 0, d: 9007199254740991, e: '1e400' });
   });
 
+  it.each([20_000, 40_000, 80_000])(
+    'previews a finite decimal with %i internal zeros without stalling',
+    (zeros) => {
+      const output = `{"n":1.${'0'.repeat(zeros)}1}`;
+      const part = toolPart({ output, args: output });
+      const messages = [{ content: [part] }];
+      const budget = { outputChars: 512, argsChars: 512 };
+      expect(JSON.parse(output)).toEqual({ n: 1 });
+
+      const start = performance.now();
+      const [message] = previewMessagesToolCalls(messages, budget);
+      const elapsed = performance.now() - start;
+
+      expect(message.content[0].tool_call).toMatchObject({
+        output: previewOutputText(output, budget.outputChars),
+        outputTruncated: true,
+        outputLength: output.length,
+        args: output.slice(0, budget.argsChars),
+        argsTruncated: true,
+        argsLength: output.length,
+      });
+      expect(part.tool_call.output).toBe(output);
+      expect(part.tool_call.args).toBe(output);
+      // Generous headroom for CI; the suffix regex takes seconds on this input.
+      expect(elapsed).toBeLessThan(1_000);
+    },
+  );
+
+  it.each([
+    ['1.', '', 1],
+    ['-1.', 'e+3', -1_000],
+    ['0.', '', 0],
+  ])('keeps exact values with long trailing zeros (%s…%s)', (prefix, suffix, value) => {
+    const output = `{"n":${prefix}${'0'.repeat(80_000)}${suffix}}`;
+    const preview = previewToolCall(toolPart({ output, args: output }).tool_call, limits);
+    expect(JSON.parse(preview.output as string)).toEqual({ n: value });
+    expect(JSON.parse(preview.args as string)).toEqual({ n: value });
+  });
+
   it('sends a background-task result whole rather than as unparseable text', () => {
     const output = `{"status":"completed","task_id":"task_1","bytes":9007199254740993,"output":"${pad}"}`;
     const check = toolPart({ name: 'check_background_task', output }).tool_call;
@@ -413,6 +472,199 @@ describe('previewMessagesToolCalls', () => {
     expect(result[1].content?.[2]).toBe(smallPart);
     expect(result[1].content?.[1]).toMatchObject({ tool_call: { outputTruncated: true } });
     expect(bigPart.tool_call.output).toHaveLength(10_000);
+  });
+
+  it('keeps the nested tool call ids an omitted transcript saved attachments under', () => {
+    const transcript = [
+      toolPart({
+        id: 'child_image',
+        stepId: 'step_child',
+        agentId: 'agent_on_call',
+        output: 'Image generated',
+      }),
+      toolPart({
+        id: 'child_subagent',
+        name: 'subagent',
+        output: 'done',
+        subagent_content: [
+          {
+            ...toolPart({ id: 'grandchild_image', output: 'Image generated' }),
+            agentId: 'agent_grandchild',
+          },
+          toolPart({ id: 'grandchild_search', output: 'found' }),
+        ],
+      }),
+    ];
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'summary',
+      subagent_content: transcript,
+    });
+    const attachments = [
+      { file_id: 'f1', toolCallId: 'child_image' },
+      { file_id: 'f2', toolCallId: 'grandchild_image' },
+      { file_id: 'f3', toolCallId: 'unrelated' },
+    ];
+    const [message] = previewMessagesToolCalls([{ content: [subagent], attachments }], limits);
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call).not.toHaveProperty('subagent_content');
+    expect(part.tool_call.subagentAttachmentCalls).toEqual(
+      expect.arrayContaining([
+        { id: 'child_image', stepId: 'step_child', agentId: 'agent_on_call' },
+        { id: 'grandchild_image', agentId: 'agent_grandchild' },
+      ]),
+    );
+    expect(part.tool_call.subagentAttachmentCalls).toHaveLength(2);
+
+    const [bare] = previewMessagesToolCalls([{ content: [subagent] }], limits);
+    const [barePart] = bare.content as Array<{ tool_call: TestToolCall }>;
+    expect(barePart.tool_call).toMatchObject({ subagentContentOmitted: true });
+    expect(barePart.tool_call).not.toHaveProperty('subagentAttachmentCalls');
+  });
+
+  it('keeps one hint per owning identity when a provider reuses a child id', () => {
+    const reused = Array.from({ length: 50 }, (_, index) =>
+      toolPart({ id: 'call_0', stepId: `step_${index}`, output: 'done' }),
+    );
+    const subagent = toolPart({ name: 'subagent', output: 'summary', subagent_content: reused });
+    const [message] = previewMessagesToolCalls(
+      [{ content: [subagent], attachments: [{ toolCallId: 'call_0', stepId: 'step_7' }] }],
+      limits,
+    );
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toEqual([{ id: 'call_0', stepId: 'step_7' }]);
+  });
+
+  it('keeps one hint for an unscoped attachment whatever the id reuse', () => {
+    const reused = Array.from({ length: 50 }, (_, index) =>
+      toolPart({ id: 'call_0', stepId: `step_${index}`, output: 'done' }),
+    );
+    const subagent = toolPart({ name: 'subagent', output: 'summary', subagent_content: reused });
+    const [message] = previewMessagesToolCalls(
+      [{ content: [subagent], attachments: [{ toolCallId: 'call_0' }] }],
+      limits,
+    );
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toHaveLength(1);
+  });
+
+  it('deduplicates repeated attachment tuples before charging the matching budget', () => {
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'done',
+      subagent_content: Array.from({ length: 10_000 }, () => toolPart({ id: 'x' })),
+    });
+    const attachments = Array.from({ length: 30_000 }, () => ({ toolCallId: 'x' }));
+    const messages = [{ content: [subagent], attachments }];
+    expect(Buffer.byteLength(JSON.stringify(messages))).toBeLessThan(3 * 1024 * 1024);
+    const [message] = previewMessagesToolCalls(messages, {
+      ...limits,
+      attachmentWorkLimit: 10_001,
+    });
+    expect(message.content[0].tool_call).toMatchObject({
+      subagentContentOmitted: true,
+      subagentAttachmentCalls: [{ id: 'x' }],
+    });
+    expect(subagent.tool_call.subagent_content).toHaveLength(10_000);
+  });
+
+  it('looks up each distinct scope once rather than scanning it for every reused child id', () => {
+    const scopes = Array.from({ length: 300 }, (_, i) => ({ agentId: `agent_${i}` }));
+    let visits = 0;
+    const originalIterator = scopes[Symbol.iterator].bind(scopes);
+    scopes[Symbol.iterator] = () => {
+      const iterator = originalIterator();
+      const next = iterator.next.bind(iterator);
+      iterator.next = () => {
+        const entry = next();
+        if (!entry.done && ++visits > scopes.length) {
+          throw new Error('Attachment scope scanned more than once');
+        }
+        return entry;
+      };
+      return iterator;
+    };
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'done',
+      subagent_content: Array.from({ length: 300 }, (_, i) =>
+        toolPart({ id: 'x', agentId: `agent_${i}` }),
+      ),
+    });
+    const [part] = previewContentToolCalls(
+      [subagent],
+      limits,
+      '',
+      new Map([['x', scopes]]),
+    ) as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentContentOmitted).toBe(true);
+    expect(part.tool_call.subagentAttachmentCalls).toHaveLength(300);
+    expect(visits).toBe(300);
+  });
+
+  it('shares the work budget across parent calls and keeps incomplete transcripts in full', () => {
+    const parent = (id: string) =>
+      toolPart({
+        id,
+        name: 'subagent',
+        output: 'done',
+        subagent_content: [toolPart({ id: 'x' })],
+      });
+    const content = [parent('first'), parent('second')];
+    const [message] = previewMessagesToolCalls([{ content, attachments: [{ toolCallId: 'x' }] }], {
+      ...limits,
+      attachmentWorkLimit: 3,
+    });
+    expect(message.content[0].tool_call.subagentContentOmitted).toBe(true);
+    expect(message.content[1]).toBe(content[1]);
+    expect(message.content[1].tool_call).not.toHaveProperty('subagentAttachmentCalls');
+    expect(message.content[1].tool_call.subagent_content).toHaveLength(1);
+  });
+
+  it('keeps the full transcript when the node budget is exhausted before a later match', () => {
+    const subagent = toolPart({
+      output: 'done',
+      subagent_content: [{ type: ContentTypes.TEXT, text: 'first' }, toolPart({ id: 'x' })],
+    });
+    const [message] = previewMessagesToolCalls(
+      [{ content: [subagent], attachments: [{ toolCallId: 'x' }] }],
+      { ...limits, attachmentWorkLimit: 1 },
+    );
+    expect(message.content[0]).toBe(subagent);
+    expect(message.content[0].tool_call).not.toHaveProperty('subagentContentOmitted');
+  });
+
+  it('scopes hints to the agent a stored subagent call ran', () => {
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'summary',
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_child' },
+      subagent_content: [toolPart({ id: 'call_0', output: 'done' })],
+    });
+    const [message] = previewMessagesToolCalls(
+      [{ content: [subagent], attachments: [{ toolCallId: 'call_0', agentId: 'agent_child' }] }],
+      limits,
+    );
+    const [part] = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toEqual([
+      { id: 'call_0', agentId: 'agent_child' },
+    ]);
+  });
+
+  it('keeps hints for a mutation response that leaves its attachments out', () => {
+    const subagent = toolPart({
+      name: 'subagent',
+      output: 'summary',
+      subagent_content: [toolPart({ id: 'child_image', output: 'Image generated' })],
+    });
+    const req = { query: { toolPreviews: '1' }, config: {} } as unknown as Parameters<
+      typeof withMessageToolCallPreviews
+    >[0];
+    const response = { conversationId: 'c1', content: [subagent], text: '' };
+    const previewed = withMessageToolCallPreviews(req, response, [{ toolCallId: 'child_image' }]);
+    const [part] = previewed.content as Array<{ tool_call: TestToolCall }>;
+    expect(part.tool_call.subagentAttachmentCalls).toEqual([{ id: 'child_image' }]);
+    expect(previewed).not.toHaveProperty('attachments');
   });
 
   it('previews a call only when its identity is unique in the message', () => {
@@ -623,5 +875,94 @@ describe('rejectToolCallPreviewWrites', () => {
     const result = run([toolPart({ output: 'x'.repeat(10_000) })]);
     expect(result.next).toHaveBeenCalled();
     expect(result.status).not.toHaveBeenCalled();
+  });
+});
+
+describe('findSubagentAttachmentCalls', () => {
+  const call = (id: string, extra: Record<string, unknown> = {}) => ({
+    type: ContentTypes.TOOL_CALL,
+    ...extra,
+    tool_call: { id, name: 'bash_tool', args: '{}', output: 'ok', progress: 1 },
+  });
+  const subagent = (id: string, transcript: unknown[], extra: Record<string, unknown> = {}) => ({
+    type: ContentTypes.TOOL_CALL,
+    ...extra,
+    tool_call: {
+      id,
+      name: 'subagent',
+      args: '{}',
+      output: 'done',
+      progress: 1,
+      subagent_content: transcript,
+    },
+  });
+
+  it('names the subagent whose transcript holds the scoped call, not one reusing the id unscoped', () => {
+    const content = [
+      call('call_0'),
+      subagent('sub_a', [call('call_0')]),
+      subagent('sub_b', [call('call_0', { agentId: 'illustrator' })], { agentId: 'host' }),
+    ];
+    const found = findSubagentAttachmentCalls(content, [
+      { toolCallId: 'call_0', agentId: 'illustrator' },
+    ]);
+    expect(found).toEqual([
+      { toolCallId: 'sub_a', calls: [{ id: 'call_0' }] },
+      {
+        toolCallId: 'sub_b',
+        agentId: 'host',
+        calls: [{ id: 'call_0', agentId: 'illustrator' }],
+      },
+    ]);
+  });
+
+  it('preserves first exact and first agreeing matches for every partial scope', () => {
+    const values = [undefined, '', 'a', 'b'];
+    const scopes = values.flatMap((agentId) => values.map((stepId) => ({ agentId, stepId })));
+    const calls = scopes.map((scope) => ({ id: 'x', ...scope }));
+    // Rotate traversal order so an unscoped fallback does not always precede an exact match.
+    for (let offset = 0; offset < calls.length; offset++) {
+      const ordered = [...calls.slice(offset), ...calls.slice(0, offset)];
+      for (const file of scopes) {
+        const exact = ordered.find(
+          (candidate) =>
+            (file.agentId == null || candidate.agentId === file.agentId) &&
+            (file.stepId == null || candidate.stepId === file.stepId),
+        );
+        const agreeing = ordered.find(
+          (candidate) =>
+            (file.agentId == null ||
+              candidate.agentId == null ||
+              candidate.agentId === file.agentId) &&
+            (file.stepId == null || candidate.stepId == null || candidate.stepId === file.stepId),
+        );
+        const expected = ordered.filter(
+          (candidate) => candidate === exact || candidate === agreeing,
+        );
+        const transcript = ordered.map(({ id, agentId, stepId }) =>
+          toolPart({ id, agentId, stepId }),
+        );
+        expect(
+          findSubagentAttachmentCalls(
+            [subagent('parent', transcript)],
+            [
+              { toolCallId: 'x', ...file },
+              { toolCallId: 'x', ...file },
+            ],
+          ),
+        ).toEqual([{ toolCallId: 'parent', calls: expected }]);
+      }
+    }
+  });
+
+  it('walks nested runs and ignores calls no queried file names', () => {
+    const content = [
+      subagent('outer', [subagent('inner', [call('deep'), call('other')])]),
+      { type: ContentTypes.TEXT, text: 'done' },
+    ];
+    expect(findSubagentAttachmentCalls(content, [{ toolCallId: 'deep' }])).toEqual([
+      { toolCallId: 'outer', calls: [{ id: 'deep' }] },
+    ]);
+    expect(findSubagentAttachmentCalls(content, [])).toEqual([]);
   });
 });

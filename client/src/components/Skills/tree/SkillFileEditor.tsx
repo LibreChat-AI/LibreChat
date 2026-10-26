@@ -90,11 +90,11 @@ export default function SkillFileEditor({ skillId, nodeId, fileName }: SkillFile
         <Button
           type="button"
           variant={isDirty ? 'submit' : 'outline'}
-          size="sm"
+          size="compact"
           disabled={!isDirty || updateContent.isLoading}
           onClick={handleSave}
           aria-label={localize('com_ui_save')}
-          className="h-7 gap-1.5 px-2.5 text-xs"
+          className="h-7"
         >
           <Save className="size-3" />
           {localize('com_ui_save')}
@@ -106,20 +106,21 @@ export default function SkillFileEditor({ skillId, nodeId, fileName }: SkillFile
           value={displayContent}
           onChange={handleChange}
           spellCheck={false}
+          variant="transparent"
           className={cn(
-            'text-text-primary size-full resize-none rounded-none border-0 bg-transparent px-4 py-3 font-mono text-[13px] leading-6',
-            'focus-visible:ring-ring-primary focus:ring-0 focus:ring-offset-0 focus-visible:ring-2 focus-visible:ring-inset',
+            'text-text-primary size-full resize-none rounded-none border-0 px-4 py-3 font-mono text-[13px] leading-6',
+            'focus-visible:ring-ring-primary focus:ring-0 focus:ring-offset-0 focus-visible:ring-inset',
           )}
           aria-label={`${localize('com_ui_edit')} ${fileName}`}
         />
       </div>
       <div className="border-border-light flex items-center justify-between border-t px-4 py-1">
-        <span className="text-text-secondary text-[11px]">
+        <span className="text-text-secondary text-2xs">
           {lineCount === 1
             ? localize('com_ui_line_count', { 0: String(lineCount) })
             : localize('com_ui_lines_count', { 0: String(lineCount) })}
         </span>
-        <span className="text-text-secondary text-[11px]">
+        <span className="text-text-secondary text-2xs">
           {isDirty ? localize('com_ui_file_modified') : localize('com_ui_saved')}
         </span>
       </div>

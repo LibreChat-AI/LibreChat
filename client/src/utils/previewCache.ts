@@ -28,8 +28,3 @@ export function deletePreview(fileId: string): void {
     previewCache.delete(fileId);
   }
 }
-
-export function clearPreviewCache(): void {
-  previewCache.forEach((url) => URL.revokeObjectURL(url));
-  previewCache.clear();
-}

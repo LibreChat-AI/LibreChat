@@ -64,7 +64,7 @@ export default function MemoryArtifacts({ attachments }: { attachments?: TAttach
         <Button
           variant="ghost"
           className={cn(
-            'group/disclosure h-auto w-full justify-start gap-2 rounded-none p-0 font-normal hover:bg-transparent',
+            'group/disclosure h-auto w-full justify-start rounded-none p-0 font-normal hover:bg-transparent',
             hasErrors ? 'text-status-error' : 'text-text-secondary',
           )}
           onClick={() => setShowInfo((prev) => !prev)}

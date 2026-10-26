@@ -22,8 +22,8 @@ const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
   if (isEntityEndpoint(iconURL)) {
     return (
       <div
-        className="relative"
-        style={{ width: pxToRem(20), height: pxToRem(20), margin: pxToRem(2) }}
+        className="relative m-0.5"
+        style={{ width: pxToRem(20), height: pxToRem(20) }}
         title={groupName}
       >
         <EntityEndpointMark endpoint={iconURL} />
@@ -33,15 +33,12 @@ const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
 
   if (provider || !isImageURL(iconURL) || imageError) {
     return (
-      <div
-        className="relative"
-        style={{ width: pxToRem(20), height: pxToRem(20), margin: pxToRem(2) }}
-      >
+      <div className="relative m-0.5" style={{ width: pxToRem(20), height: pxToRem(20) }}>
         <ProviderIcon provider={provider} size={20} className="icon-md shrink-0" />
         {imageError && (
           <div
-            className="bg-surface-destructive absolute flex items-center justify-center rounded-full"
-            style={{ width: pxToRem(14), height: pxToRem(14), top: 0, right: 0 }}
+            className="bg-surface-destructive absolute inset-e-0 top-0 flex items-center justify-center rounded-full"
+            style={{ width: pxToRem(14), height: pxToRem(14) }}
           >
             <AlertCircle className="text-text-on-status size-2.5" />
           </div>

@@ -4,42 +4,33 @@
 const path = require('path');
 const mongoose = require('mongoose');
 const { randomUUID } = require('node:crypto');
-const { createModels, createMethods, runAsSystem } = require('@librechat/data-schemas');
 const {
-  Key,
-  User,
-  File,
-  Agent,
-  Token,
-  Group,
-  Action,
-  Preset,
-  Prompt,
-  Balance,
-  Message,
-  Session,
-  Passkey,
-  AclEntry,
-  ToolCall,
-  Assistant,
-  SharedLink,
-  PluginAuth,
-  MemoryEntry,
-  PromptGroup,
-  AgentApiKey,
-  Transaction,
-  Conversation,
-  ConversationTag,
-} = createModels(mongoose);
+  createModels,
+  createMethods,
+  runAsSystem,
+  tenantStorage,
+} = require('@librechat/data-schemas');
+const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const {
+  eraseUserData,
   GenerationJobManager,
   createStreamServices,
-  revokeUserCodeEnvironmentWorkers,
+  initializeFileStorage,
+  openCheckpointDeletion,
   waitForKeyvRedisClient,
+  MCPOAuthHandler,
+  MCPTokenStorage,
+  cleanupMCPServerOAuth,
+  revokeUserCodeEnvironmentWorkers,
+  deleteAllSharedLinksWithCleanup,
 } = require('@librechat/api');
+const { CacheKeys } = require('librechat-data-provider');
+const { getFlowStateManager } = require('~/config');
 const getLogStores = require('~/cache/getLogStores');
 const { getAppConfig } = require('~/server/services/Config');
+const { processDeleteRequest } = require('~/server/services/Files/process');
+const { invalidateCachedTools } = require('~/server/services/Config/getCachedTools');
 const { askQuestion, silentExit } = require('./helpers');
 const connect = require('./connect');
 
@@ -199,42 +190,96 @@ async function gracefulExit(code = 0) {
 
     const deletionAppConfig = await getAppConfig({ baseOnly: true });
 
-    // 5) Build and run deletion tasks
-    const tasks = [
-      Action.deleteMany({ user: uid }),
-      Agent.deleteMany({ author: uid }),
-      AgentApiKey.deleteMany({ user: uid }),
-      Assistant.deleteMany({ user: uid }),
-      Balance.deleteMany({ user: uid }),
-      ConversationTag.deleteMany({ user: uid }),
-      Conversation.deleteMany({ user: uid }),
-      Message.deleteMany({ user: uid }),
-      File.deleteMany({ user: uid }),
-      Key.deleteMany({ userId: uid }),
-      MemoryEntry.deleteMany({ userId: uid }),
-      PluginAuth.deleteMany({ userId: uid }),
-      Prompt.deleteMany({ author: uid }),
-      PromptGroup.deleteMany({ author: uid }),
-      Preset.deleteMany({ user: uid }),
-      Session.deleteMany({ user: uid }),
-      Passkey.deleteMany({ user: uid }),
-      SharedLink.deleteMany({ user: uid }),
-      ToolCall.deleteMany({ user: uid }),
-      Token.deleteMany({ userId: uid }),
-      AclEntry.deleteMany({ principalId: user._id }),
-    ];
+    // 5) Erase account-owned data through the same cascade as account self-deletion
+    const userAppConfig = await getAppConfig({
+      role: user.role,
+      userId: uid,
+      tenantId: user.tenantId,
+    });
+    initializeFileStorage(userAppConfig);
+    const fileRequest = {
+      user: { id: uid, _id: user._id, role: user.role, tenantId: user.tenantId },
+      /** Assistants client setup reads these Express request fields. */
+      baseUrl: '',
+      query: {},
+      body: {},
+      config: userAppConfig,
+    };
+    /** ID-keyed cleanup (file metadata, MCP lookups) stays in the deleted user's tenant. */
+    const runInUserTenant = (operation) =>
+      user.tenantId
+        ? tenantStorage.run({ tenantId: user.tenantId, userId: uid }, operation)
+        : operation();
+    await runAsSystem(() =>
+      eraseUserData(
+        {
+          userId: uid,
+          tenantId: user.tenantId,
+          checkpointer: userAppConfig?.endpoints?.agents?.checkpointer,
+          keepTransactions: !deleteTx,
+        },
+        {
+          ...methods,
+          openCheckpointDeletion,
+          deleteSharedLinks: (id) => deleteAllSharedLinksWithCleanup(id, { awaitCleanup: true }),
+          deleteStoredFiles: (files) =>
+            runInUserTenant(async () => processDeleteRequest({ req: fileRequest, files })),
+          /** Server names are unique per tenant, so these lookups stay in the deleted user's tenant. */
+          findMCPServerOAuthTokenUserIds: (serverName, tenantId) =>
+            runInUserTenant(async () =>
+              methods.findMCPServerOAuthTokenUserIds(serverName, tenantId),
+            ),
+          findMCPServerViewerEntries: (serverId) =>
+            runInUserTenant(async () => methods.findMCPServerViewerEntries(serverId)),
+          invalidateMCPServerTools: (serverName) =>
+            invalidateCachedTools({ userId: uid, serverName }),
+          /** The CLI has no MCP registry or live connections, so shared users get local token and cache cleanup. */
+          mcpOAuth: {
+            getUserPrincipals: (candidateId) => methods.getUserPrincipals({ userId: candidateId }),
+            /** Looked up by its unique object id, so a server stamped before tenancy is still found. */
+            getServerConfig: async (_serverName, serverId) =>
+              (await methods.findMCPServerByObjectId(serverId))?.config,
+            resolveAllowlists: (candidateId) =>
+              runInUserTenant(async () => {
+                const candidate = await methods.getUserById(candidateId, 'role');
+                const candidateConfig = await getAppConfig({
+                  role: candidate?.role,
+                  userId: candidateId,
+                  tenantId: user.tenantId,
+                });
+                return {
+                  allowedDomains: candidateConfig?.mcpSettings?.allowedDomains,
+                  allowedAddresses: candidateConfig?.mcpSettings?.allowedAddresses,
+                };
+              }),
+            invalidateUserTools: (candidateId, serverName) =>
+              runInUserTenant(async () =>
+                invalidateCachedTools({ userId: candidateId, serverName }),
+              ),
+            uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig) =>
+              runInUserTenant(async () =>
+                cleanupMCPServerOAuth({
+                  userId: candidateId,
+                  pluginKey,
+                  appConfig: cleanupConfig,
+                  serverConfigOverride: serverConfig,
+                  dependencies: {
+                    flowManager: getFlowStateManager(getLogStores(CacheKeys.FLOWS)),
+                    oauthHandler: MCPOAuthHandler,
+                    tokenStorage: MCPTokenStorage,
+                    findToken: methods.findToken,
+                    deleteTokens: methods.deleteTokens,
+                    getServerConfig: async () => undefined,
+                    isRegisteredOAuthServer: async () => false,
+                  },
+                }),
+              ),
+          },
+        },
+      ),
+    );
 
-    if (deleteTx) {
-      tasks.push(Transaction.deleteMany({ user: uid }));
-    }
-
-    await Promise.all(tasks);
-    await runAsSystem(() => methods.deleteSchedulesByUser(uid));
-
-    // 6) Remove user from all groups
-    await Group.updateMany({ memberIds: uid }, { $pullAll: { memberIds: [uid] } });
-
-    // 7) Finally delete the user document itself
+    // 6) Finally delete the user document itself
     const deletedUser = await runAsSystem(() => methods.deleteUserById(uid));
     if (deletedUser.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');

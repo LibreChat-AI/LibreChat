@@ -101,7 +101,7 @@ function RatingBadge({ rating, ratingCount }: { rating?: number; ratingCount?: n
     return null;
   }
   return (
-    <span className="text-text-secondary flex items-center gap-1 text-[11px]">
+    <span className="text-text-secondary text-2xs flex items-center gap-1">
       <Star className="size-3 fill-current" aria-hidden="true" />
       {rating}
       {ratingCount != null && <span className="text-text-secondary">({ratingCount})</span>}
@@ -173,14 +173,12 @@ function ShoppingStrip({ items, label }: { items: ShoppingResult[]; label: strin
               {item.title}
             </span>
             {(item.price || item.source) && (
-              <span className="text-text-secondary mt-0.5 block truncate text-[11px]">
+              <span className="text-text-secondary text-2xs mt-0.5 block truncate">
                 {[item.price, item.source].filter(Boolean).join(' · ')}
               </span>
             )}
             {item.delivery && (
-              <span className="text-text-secondary block truncate text-[11px]">
-                {item.delivery}
-              </span>
+              <span className="text-text-secondary text-2xs block truncate">{item.delivery}</span>
             )}
             <span className="mt-0.5 block">
               <RatingBadge rating={item.rating} ratingCount={item.ratingCount} />
@@ -217,7 +215,7 @@ function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) 
                 {place.name}
               </span>
               {(place.category || place.address) && (
-                <span className="text-text-secondary block truncate text-[11px]">
+                <span className="text-text-secondary text-2xs block truncate">
                   {[place.category, place.address].filter(Boolean).join(' · ')}
                 </span>
               )}

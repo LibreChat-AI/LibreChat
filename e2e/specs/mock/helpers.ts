@@ -45,7 +45,7 @@ export function isAgentGenerationStart(response: Response) {
   );
 }
 
-const modelSelectorTrigger = (page: Page) =>
+export const modelSelectorTrigger = (page: Page) =>
   page.getByRole('button', { name: 'Select a model' }).first();
 
 export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

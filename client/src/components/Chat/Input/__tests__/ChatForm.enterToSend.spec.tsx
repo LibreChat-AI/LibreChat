@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
+import { getDefaultStore, useAtom } from 'jotai';
+import { filesFamily, isSubmittingFamily } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
-import { RecoilRoot, useRecoilState } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { render, screen } from '@testing-library/react';
@@ -13,8 +15,8 @@ import type { TFile, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
-import store from '~/store';
 
 const conversation = {
   conversationId: 'new',
@@ -24,14 +26,13 @@ const conversation = {
 } as TConversation;
 
 /**
- * The atom default (`atomWithLocalStorage('enterToSend', true)`) always stays
- * true here: these tests prove the composer follows the `enterToSend` prop
- * ChatView passes it, not the atom it used to read directly, so the prop is
- * deliberately set opposite to that default.
+ * The atom keeps its default (`atomWithLocalStorage('enterToSend', true)`)
+ * here: these tests prove the composer follows the `enterToSend` prop ChatView
+ * passes it, not the atom it used to read directly, so each value is covered.
  */
 function Harness({ enterToSend }: { enterToSend: boolean }) {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
 
@@ -55,8 +56,6 @@ function Harness({ enterToSend }: { enterToSend: boolean }) {
         ask: () => undefined,
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
-        showPopover: false,
-        setShowPopover: () => undefined,
         abortScroll: false,
         setAbortScroll: () => undefined,
         preset: null,
@@ -94,17 +93,23 @@ function renderComposer({ enterToSend }: { enterToSend: boolean }) {
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <Harness enterToSend={enterToSend} />
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <Harness enterToSend={enterToSend} />
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );
 }
+
+afterEach(() => {
+  getDefaultStore().set(filesFamily(0), new Map());
+});
 
 describe('ChatForm enterToSend prop', () => {
   beforeEach(() => {
@@ -123,7 +128,7 @@ describe('ChatForm enterToSend prop', () => {
     expect(hint).not.toHaveTextContent('Enter to send');
   }, 20000);
 
-  test('reflects the prop when it agrees with the persisted default', async () => {
+  test('follows the prop when it agrees with the persisted default', async () => {
     renderComposer({ enterToSend: true });
 
     const textarea = await screen.findByTestId('text-input');

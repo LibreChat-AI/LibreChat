@@ -66,6 +66,8 @@ export function langFromPath(filePath: string): string {
 }
 
 export default function ReadFileCall({
+  toolCallId,
+  stepId,
   isSubmitting,
   runStepStatus,
   runStepDurationMs,
@@ -76,6 +78,8 @@ export default function ReadFileCall({
   hideAttachments = false,
   onExpand,
 }: {
+  toolCallId?: string;
+  stepId?: string;
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
@@ -118,7 +122,12 @@ export default function ReadFileCall({
     <>
       <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
           <ProgressText
             phase={phase}
             onClick={toggleCode}
@@ -149,7 +158,10 @@ export default function ReadFileCall({
               )}
             >
               <CodeWindowHeader language={fileName} code={output} />
-              <pre className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs">
+              <pre
+                dir="ltr"
+                className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
+              >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? output}
                 </code>

@@ -541,16 +541,18 @@ export default function VirtualizedAgentGrid({
                   ref={virtualizer.measureElement}
                   className={
                     windowed
-                      ? 'absolute top-0 left-0 grid w-full items-stretch gap-5'
-                      : 'relative col-span-full grid items-stretch gap-5'
+                      ? 'absolute top-0 left-0 grid w-full grid-cols-(--agent-columns) items-stretch gap-5'
+                      : 'relative col-span-full grid grid-cols-(--agent-columns) items-stretch gap-5'
                   }
-                  style={{
-                    gridTemplateColumns: columns,
-                    ...(windowed
-                      ? { transform: `translateY(${row.start - layout.margin}px)` }
-                      : {}),
-                    ...(row.index === liftedRow ? { zIndex: LIFTED_ROW_Z_INDEX } : {}),
-                  }}
+                  style={
+                    {
+                      '--agent-columns': columns,
+                      transform: windowed
+                        ? `translateY(${row.start - layout.margin}px)`
+                        : undefined,
+                      zIndex: row.index === liftedRow ? LIFTED_ROW_Z_INDEX : undefined,
+                    } as React.CSSProperties
+                  }
                 >
                   {cards}
                 </div>

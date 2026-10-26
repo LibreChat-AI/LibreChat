@@ -6,6 +6,7 @@ const {
   resolveAgentScopedSkillIds,
   resolveModelSpecSkillIds,
   loadAddedAgent: loadAddedAgentFn,
+  hasEntityEmbeddings,
 } = require('@librechat/api');
 const { isEphemeralAgentId } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
@@ -215,6 +216,8 @@ const processAddedConvo = async ({
       {
         getProjectFiles: db.getProjectFiles,
         getFiles: db.getFiles,
+        adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
         getUserKey: db.getUserKey,
         getMessages: db.getMessages,
         getConvoFiles: db.getConvoFiles,

@@ -57,6 +57,10 @@ export type MinimalConversation = Pick<
   | 'lastResponseIsManual'
   | 'isMarkedUnread'
   | 'lastSeenAt'
+  /** Lets a row tell a code conversation, the only kind that can have a pull request. */
+  | 'codeEnvironmentMode'
+  | 'codeWorkspaces'
+  | 'codeDecisionListed'
 >;
 
 export type ConversationListResponse = {
@@ -129,6 +133,25 @@ export type ToolCallPartResponse = {
   /** Index of the part in the stored message, which may differ from the requested one. */
   partIndex: number;
   tool_call: FullToolCall;
+};
+
+/** A file whose owner a client resolves: the tool call it was saved under, with its scope. */
+export type SubagentAttachmentFile = { toolCallId: string; agentId?: string; stepId?: string };
+
+export type SubagentAttachmentCallsParams = {
+  conversationId: string;
+  messageId: string;
+  files: SubagentAttachmentFile[];
+};
+
+export type SubagentAttachmentCallsResponse = {
+  /** Each subagent call of the stored message whose transcript holds a call the files name. */
+  parts: Array<{
+    toolCallId: string;
+    stepId?: string;
+    agentId?: string;
+    calls: a.Agents.SubagentAttachmentCall[];
+  }>;
 };
 
 /* Shared Links */
@@ -306,17 +329,6 @@ export interface MCPConnectionStatusResponse {
   connectionStatus: Record<string, MCPServerStatus>;
   /** Server-configured OAuth completion window in ms (`MCP_OAUTH_HANDLING_TIMEOUT`) */
   oauthTimeout?: number;
-}
-
-export interface MCPServerConnectionStatusResponse {
-  success: boolean;
-  serverName: string;
-  requiresOAuth: boolean;
-  requestScoped?: boolean;
-  configurationState?: MCPServerStatus['configurationState'];
-  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
-  authorizationState?: MCPServerStatus['authorizationState'];
-  authorizationGeneration?: string;
 }
 
 export interface MCPAuthValuesResponse {

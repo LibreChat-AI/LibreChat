@@ -139,8 +139,8 @@ describe('ShareButton', () => {
     expect(screen.getByLabelText(/com_ui_share_files_description/)).toBeInTheDocument();
     const sharedLinkInput = screen.getByTestId('shared-link-url') as HTMLInputElement;
     expect(sharedLinkInput.value).toContain('/share/share-1');
-    expect(sharedLinkInput).toHaveClass('text-right');
-    expect(sharedLinkInput).toHaveAttribute('dir', 'ltr');
+    expect(sharedLinkInput).toHaveClass('text-end');
+    expect(sharedLinkInput.closest('[dir="ltr"]')).not.toBeNull();
     expect(screen.getByRole('button', { name: 'com_ui_copy_link' })).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'com_ui_share_files' })).toBeChecked();
     expect(document.querySelector('svg[width="200"]')).toBeInTheDocument();

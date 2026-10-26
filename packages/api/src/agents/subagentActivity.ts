@@ -1,8 +1,12 @@
 import { logger } from '@librechat/data-schemas';
 import { createHash, randomUUID } from 'node:crypto';
 import { subagentActivityConfigSchema } from 'librechat-data-provider';
+import type {
+  TSubagentActivityConfig,
+  SubagentContentAvailableFrame,
+  SubagentContentWatermark,
+} from 'librechat-data-provider';
 import type { ConversationMethods, MessageMethods } from '@librechat/data-schemas';
-import type { TSubagentActivityConfig } from 'librechat-data-provider';
 import type { SubagentUpdateEvent } from '@librechat/agents';
 import type { Response } from 'express';
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
@@ -25,7 +29,8 @@ const SHUTDOWN_SUBSCRIBER_ERROR = 'Server is shutting down';
 
 export type SubagentActivityTerminalStatus = 'completed' | 'failed' | 'cancelled';
 
-export type SubagentActivityUpdateEvent = SubagentUpdateEvent & {
+export type SubagentActivityUpdateEvent = Omit<SubagentUpdateEvent, 'phase'> & {
+  phase: SubagentUpdateEvent['phase'] | 'steer_applied';
   /** Host-assigned identity shared by parent and detached delivery paths. */
   activityEventId?: string;
   /** Host-assigned monotonic sequence shared by parent and detached delivery paths. */
@@ -49,6 +54,7 @@ export type SubagentActivitySubscription = {
 };
 
 export type SubagentActivitySubscriber = {
+  onContent?: (event: SubagentContentAvailableFrame) => void;
   onEvent: (event: SubagentActivityEnvelope | SubagentActivityReplayEnvelope) => void;
   onDone?: (event: {
     final: true;
@@ -255,6 +261,29 @@ export class SubagentActivityStream {
     await emitObservedChunk(this.transport, streamId, envelope);
   }
 
+  /** Tiny invalidations have their own sequence space and never evict activity replay. */
+  async publishContent(
+    threadId: string,
+    taskId: string,
+    watermark: SubagentContentWatermark,
+  ): Promise<void> {
+    const streamId = `${subagentActivityStreamId(threadId, taskId)}:content`;
+    const event: SubagentContentAvailableFrame = {
+      event: 'subagent_content_available',
+      data: watermark,
+    };
+    if (this.transport.emitReplayableChunk != null) {
+      await this.transport.emitReplayableChunk(
+        streamId,
+        event,
+        { ...this.replayLimits, items: 1, bytes: 1024 },
+        { id: `content:${watermark.revision}` },
+      );
+      return;
+    }
+    await emitObservedChunk(this.transport, streamId, event);
+  }
+
   subscribe(
     threadId: string,
     taskId: string,
@@ -307,6 +336,19 @@ export class SubagentActivityStream {
         captureSequenceFrontier: synchronizeAttachment,
       },
     );
+    const contentStreamId = `${streamId}:content`;
+    const onContent = (value: unknown): void => {
+      const frame = value as SubagentContentAvailableFrame | null;
+      if (frame?.event === 'subagent_content_available') subscriber.onContent?.(frame);
+    };
+    const contentSubscription =
+      subscriber.onContent == null
+        ? undefined
+        : this.transport.subscribe(
+            contentStreamId,
+            { onChunk: onContent, onReplay: (events) => events.forEach(onContent) },
+            replayable ? { replay: { ...this.replayLimits, items: 1, bytes: 1024 } } : undefined,
+          );
     let closed = false;
     let demandHeartbeat: ReturnType<typeof setInterval> | undefined;
     unsubscribe = () => {
@@ -314,9 +356,13 @@ export class SubagentActivityStream {
       closed = true;
       if (demandHeartbeat != null) clearInterval(demandHeartbeat);
       subscription.unsubscribe();
+      contentSubscription?.unsubscribe();
+      if (contentSubscription != null && this.transport.getSubscriberCount(contentStreamId) === 0) {
+        this.transport.cleanup(contentStreamId);
+      }
       cleanupIfIdle();
     };
-    const ready = Promise.resolve(subscription.ready).then(async () => {
+    const ready = Promise.all([subscription.ready, contentSubscription?.ready]).then(async () => {
       if (synchronizeAttachment) {
         /** The attachment that deferred the shared buffer owns synchronization even if
          * its panel closes meanwhile; a surviving local subscriber still needs release. */
@@ -624,6 +670,7 @@ export function createSubagentActivityStreamHandler(
       heartbeat.unref?.();
       try {
         subscription = stream.subscribe(threadId, taskId, {
+          onContent: (event) => writer?.send(event),
           onEvent: (event) => {
             writer?.send(
               publicActivityEnvelope(
@@ -669,7 +716,7 @@ export function createSubagentActivityStreamHandler(
         );
         return;
       }
-      writer.send({ ready: true });
+      writer.send({ ready: true, contentRecovery: true });
     } catch (error) {
       if (closed || res.destroyed) return;
       logger.error('[subagentActivity] Failed to open child activity stream', error);
@@ -682,11 +729,3 @@ export function createSubagentActivityStreamHandler(
     }
   };
 }
-
-export const SUBAGENT_ACTIVITY_STREAM_LIMITS: Readonly<{
-  eventBytes: number;
-  labelBytes: number;
-}> = Object.freeze({
-  eventBytes: MAX_EVENT_BYTES,
-  labelBytes: MAX_LABEL_BYTES,
-});

@@ -1006,7 +1006,7 @@ export default function AgentPanel() {
                   disabled={agentQuery.isInitialLoading}
                   aria-label={localize('com_ui_create_new_agent')}
                 >
-                  <Plus className="mr-1 h-4 w-4" aria-hidden="true" />
+                  <Plus className="me-1 h-4 w-4" aria-hidden="true" />
                   {localize('com_ui_create_new_agent')}
                 </Button>
                 <Button

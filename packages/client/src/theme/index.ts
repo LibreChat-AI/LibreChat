@@ -1,5 +1,16 @@
 // Export types
-export * from './types';
+export type {
+  Theme,
+  IThemeRGB,
+  ThemeMode,
+  IThemeBrands,
+  IThemeColors,
+  IThemeVariables,
+  ThemeDefinition,
+  IThemeAppearance,
+  ThemeModeDefinition,
+  ResolvedThemeDefinition,
+} from 'librechat-data-provider';
 
 // Export ThemeProvider, ThemeContext, useTheme hook, and the mode predicates
 export {
@@ -37,8 +48,9 @@ export {
   themeAppearanceProperties,
   themeBrandTokens,
   themeColorTokens,
+  renamedColorTokens,
   validateThemeDefinition,
-} from './registry';
+} from 'librechat-data-provider';
 
 // Export theme atoms for persistence
 export { themeModeAtom, themeColorsAtom, themeNameAtom } from './atoms/themeAtoms';

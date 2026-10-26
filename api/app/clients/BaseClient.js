@@ -39,6 +39,7 @@ const {
   rejectPrivateTextAdmission,
   bindPrivateTextPersistenceAbort,
   persistedReasoningOverrideFields,
+  isTemporaryTurn,
 } = require('@librechat/api');
 const {
   Constants,
@@ -59,7 +60,6 @@ const {
 } = require('librechat-data-provider');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { logViolation } = require('~/cache');
-const TextStream = require('./TextStream');
 const db = require('~/models');
 
 const omitUnreplayedHistoricalFiles = (messages) =>
@@ -423,11 +423,6 @@ class BaseClient {
 
   getBuildMessagesOptions() {
     throw new Error('Subclasses must implement getBuildMessagesOptions');
-  }
-
-  async generateTextStream(text, onProgress, options = {}) {
-    const stream = new TextStream(text, options);
-    await stream.processTextStream(onProgress);
   }
 
   /**
@@ -1076,7 +1071,9 @@ class BaseClient {
     const isAgentResponse =
       this.clientName === EModelEndpoint.agents || isAgentsEndpoint(this.options.endpoint);
     const langfuseTraceFields = isAgentResponse
-      ? await getLangfuseTraceMessageFields(appConfig, responseMessageId)
+      ? await getLangfuseTraceMessageFields(appConfig, responseMessageId, {
+          isTemporary: isTemporaryTurn(this.options.req),
+        })
       : undefined;
 
     /** @type {TMessage} */

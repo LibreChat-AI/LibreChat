@@ -26,29 +26,16 @@ function ProviderIconComponent({
     className,
   );
 
-  if (def.art.kind === 'component') {
-    const { Component } = def.art;
-    return (
-      <span
-        role="img"
-        aria-label={def.label}
-        style={{ width: pxToRem(size), height: pxToRem(size) }}
-        className={cn('inline-flex items-center justify-center', classes)}
-      >
-        <Component size={size} className={cn(classes, 'h-full w-full')} />
-      </span>
-    );
-  }
-
+  const { Component } = def.art;
   return (
-    <img
-      src={def.art.src}
-      alt={def.label}
-      width={size}
-      height={size}
+    <span
+      role="img"
+      aria-label={def.label}
       style={{ width: pxToRem(size), height: pxToRem(size) }}
-      className={cn('object-contain', classes)}
-    />
+      className={cn('inline-flex items-center justify-center', classes)}
+    >
+      <Component size={size} className={cn(classes, 'h-full w-full')} />
+    </span>
   );
 }
 

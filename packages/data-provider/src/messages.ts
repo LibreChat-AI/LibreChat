@@ -240,3 +240,59 @@ export function isCompactedLeaf(message?: Pick<TMessage, 'content'> | null): boo
   }
   return usable;
 }
+
+/** The shapes a persisted content part references a stored file by, as historical replay reads
+ *  them: attached `files`, an `image_file` or `file` locator, or a direct `file_id`. */
+export type FileLocatorPart = {
+  files?: readonly object[] | null;
+  image_file?: { file_id?: unknown } | null;
+  file?: { file_id?: unknown } | null;
+  file_id?: unknown;
+};
+
+const isFileId = (value: unknown): boolean => typeof value === 'string' && value !== '';
+
+/** Whether a content part is itself a stored file (a generated image, a provider file block). */
+export function isFileContentPart(
+  part: TMessageContentParts | FileLocatorPart | null | undefined,
+): boolean {
+  if (part == null) {
+    return false;
+  }
+  const locator = part as FileLocatorPart;
+  return (
+    isFileId(locator.image_file?.file_id) ||
+    isFileId(locator.file?.file_id) ||
+    isFileId(locator.file_id)
+  );
+}
+
+/** Whether a content part carries attached files of its own, as a steer part can. */
+export function hasContentPartFiles(
+  part: TMessageContentParts | FileLocatorPart | null | undefined,
+): boolean {
+  const files = (part as FileLocatorPart | null | undefined)?.files;
+  return Array.isArray(files) && files.length > 0;
+}
+
+/** Whether an attachment is a stored file (a code output) rather than tool metadata such as
+ *  search sources, which carry no `file_id`. */
+export function isFileAttachment(
+  attachment: NonNullable<TMessage['attachments']>[number] | null | undefined,
+): boolean {
+  return attachment != null && 'file_id' in attachment && isFileId(attachment.file_id);
+}
+
+/**
+ * Whether a message references any stored file a later turn would collect from history and send
+ * again: uploads, file-backed attachments, and file references inside its content.
+ */
+export function messageCarriesFiles(
+  message: Pick<TMessage, 'files' | 'attachments' | 'content'>,
+): boolean {
+  return (
+    (message.files?.length ?? 0) > 0 ||
+    (message.attachments?.some(isFileAttachment) ?? false) ||
+    (message.content?.some((part) => isFileContentPart(part) || hasContentPartFiles(part)) ?? false)
+  );
+}

@@ -13,7 +13,6 @@ const themedControls = [
    *  tap-target floor as well as the geometry. */
   ['DuringRunSendButton.tsx', ['composerSubmitClasses()']],
   ['TokenUsage/Popover.tsx', ['size-theme-control', 'rounded-theme-control-round']],
-  ['Files/AttachFile.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   /** The context rail's pills share one recipe built on the composer control classes. */
   ['chip.ts', ['composerControlClasses()']],
   ['CodeApprovalMenu.tsx', ['chipClasses']],

@@ -184,6 +184,72 @@ test.describe('message parts host', () => {
     await expect(row).toHaveAttribute('aria-expanded', 'false');
   });
 
+  test('tool calls route to their cards by prefix and by name, with any other name on the generic card @scenario:tool-calls-route-to-their-cards', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    const conversationId = unique('e2e-part-routing');
+    const messageId = `${conversationId}-msg`;
+    const now = new Date(0).toISOString();
+    const toolCall = (name: string, suffix: string) => ({
+      type: 'tool_call',
+      tool_call: {
+        id: `${conversationId}-${suffix}`,
+        name,
+        args: '{}',
+        output: 'ok',
+        progress: 1,
+      },
+    });
+    const message = {
+      messageId,
+      conversationId,
+      parentMessageId: NO_PARENT,
+      isCreatedByUser: false,
+      sender: 'Assistant',
+      endpoint: 'Mock Provider A',
+      model: 'mock-model-a',
+      text: '',
+      content: [
+        toolCall('lc_transfer_to_researcher', 'handoff'),
+        { type: 'text', text: 'Between the calls.' },
+        toolCall('weather_lookup', 'generic'),
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const conversation = {
+      conversationId,
+      title: 'Part routing',
+      endpoint: 'Mock Provider A',
+      endpointType: 'custom',
+      model: 'mock-model-a',
+      createdAt: now,
+      updatedAt: now,
+    };
+    const convoIdRe = escapeRe(conversationId);
+    await page.route(new RegExp(`/api/convos/${convoIdRe}(?:\\?.*)?$`), (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(conversation),
+      }),
+    );
+    await page.route(new RegExp(`/api/messages/${convoIdRe}(?:\\?.*)?$`), (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([message]),
+      }),
+    );
+
+    await page.goto(`/c/${conversationId}`, { timeout: 30000 });
+    const view = messagesView(page);
+    await expect(view.getByText('Between the calls.')).toBeVisible({ timeout: 15000 });
+    await expect(view.getByText('Transferred to', { exact: true })).toBeVisible();
+    await expect(view.getByText(/weather_lookup/i).first()).toBeVisible();
+  });
+
   test('a shared link renders parts without a host @scenario:shared-link-renders-parts-without-host', async ({
     page,
   }) => {

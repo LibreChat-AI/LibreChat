@@ -2,8 +2,12 @@ import { validateHeaderValue } from 'node:http';
 import { logger } from '@librechat/data-schemas';
 import { RUM_COLLECTOR_ACK_HEADER } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
+import type { TTelemetryConfig } from 'librechat-data-provider';
 import type { RumProxyEndpoint, RumProxyResult } from '~/app/metrics';
+import type { RumRequest } from './policy';
 import { recordRumProxyRequest } from '~/app/metrics';
+import { resolveRumPolicy } from './policy';
+import { filterReplayLogs } from './replay';
 import { isEnabled } from '~/utils';
 
 const DEFAULT_PROXY_PATH = '/api/rum';
@@ -62,9 +66,9 @@ export function getRumProxyTargetBaseUrl(): URL | undefined {
   return url;
 }
 
-export function isRumProxyEnabled(): boolean {
+export function isRumProxyEnabled(telemetry?: TTelemetryConfig): boolean {
   return (
-    isEnabled(process.env.RUM_ENABLED) &&
+    resolveRumPolicy(telemetry, process.env).enabled &&
     process.env.RUM_AUTH_MODE === 'proxy' &&
     getRumProxyTargetBaseUrl() != null
   );
@@ -76,8 +80,8 @@ export function isRumProxyEnabled(): boolean {
  * its own; proxy mode only, so the logs reach the collector through session auth and never with
  * a browser-held ingestion key.
  */
-export function isRumClientLogsEnabled(): boolean {
-  return isRumProxyEnabled() && isEnabled(process.env.RUM_CLIENT_LOGS);
+export function isRumClientLogsEnabled(telemetry?: TTelemetryConfig): boolean {
+  return isRumProxyEnabled(telemetry) && isEnabled(process.env.RUM_CLIENT_LOGS);
 }
 
 /**
@@ -85,12 +89,11 @@ export function isRumClientLogsEnabled(): boolean {
  * session replay produce browser logs, so with all three off the logs route refuses even tabs
  * still holding an older startup config, which makes turning `RUM_CLIENT_LOGS` off authoritative.
  */
-export function isRumLogsEndpointEnabled(): boolean {
-  if (!isRumProxyEnabled()) {
+export function isRumLogsEndpointEnabled(telemetry?: TTelemetryConfig): boolean {
+  if (!isRumProxyEnabled(telemetry)) {
     return false;
   }
-  const replaySetting = process.env.RUM_DISABLE_REPLAY?.trim();
-  const replayEnabled = !!replaySetting && !isEnabled(replaySetting);
+  const replayEnabled = resolveRumPolicy(telemetry, process.env).sessionReplay.enabled;
   return (
     isEnabled(process.env.RUM_CLIENT_LOGS) ||
     isEnabled(process.env.RUM_CONSOLE_CAPTURE) ||
@@ -99,16 +102,16 @@ export function isRumLogsEndpointEnabled(): boolean {
 }
 
 /** HTTP gates stay with the proxy policy rather than the CJS route wiring. */
-export const requireRumProxyEnabled: RequestHandler = (_req, res, next) => {
-  if (!isRumProxyEnabled()) {
+export const requireRumProxyEnabled: RequestHandler = (req: RumRequest, res, next) => {
+  if (!isRumProxyEnabled(req.config?.config?.telemetry)) {
     res.status(404).json({ message: 'RUM proxy is not configured' });
     return;
   }
   next();
 };
 
-export const requireRumLogsEnabled: RequestHandler = (_req, res, next) => {
-  if (!isRumLogsEndpointEnabled()) {
+export const requireRumLogsEnabled: RequestHandler = (req: RumRequest, res, next) => {
+  if (!isRumLogsEndpointEnabled(req.config?.config?.telemetry)) {
     res.status(404).json({ message: 'RUM logs are not enabled' });
     return;
   }
@@ -215,7 +218,7 @@ function getProxyHeaders(
 }
 
 export async function proxyRumRequest(
-  req: Request,
+  req: RumRequest,
   res: Response,
   upstreamAuthorization?: string,
 ): Promise<void> {
@@ -234,11 +237,29 @@ export async function proxyRumRequest(
     return;
   }
 
-  const body = getRequestBody(req);
+  let body = getRequestBody(req);
   if (!body) {
     recordRumProxyRequest(endpoint, 'bad_request');
     res.status(400).json({ message: 'RUM payload is required' });
     return;
+  }
+
+  if (
+    endpoint === 'logs' &&
+    !resolveRumPolicy(req.config?.config?.telemetry, process.env).sessionReplay.enabled
+  ) {
+    const filtered = filterReplayLogs(body, getHeader(req, 'content-type') ?? '');
+    if (!filtered.ok) {
+      recordRumProxyRequest(endpoint, 'bad_request');
+      res.status(400).json({ message: 'Invalid RUM logs payload' });
+      return;
+    }
+    if (filtered.body == null) {
+      recordRumProxyRequest(endpoint, 'replay_disabled');
+      res.status(204).end();
+      return;
+    }
+    body = filtered.body;
   }
 
   const controller = new AbortController();

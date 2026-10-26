@@ -64,11 +64,12 @@ export interface MCPAppsControllerDependencies {
   ensureConfigServers: (
     mcpConfig: Record<string, t.MCPOptions>,
   ) => Promise<Record<string, t.ParsedServerConfig>>;
-  getAllServerConfigs: (
+  getServerConfig: (
+    serverName: string,
     userId: string,
     configServers: Record<string, t.ParsedServerConfig>,
     role?: string,
-  ) => Promise<Record<string, t.ParsedServerConfig>>;
+  ) => Promise<t.ParsedServerConfig | undefined>;
   recoverServerConfig: (
     serverName: string,
     config: t.ParsedServerConfig,
@@ -228,7 +229,7 @@ export function createMCPAppsController(dependencies: MCPAppsControllerDependenc
                   user,
                   mcpConfig: getAdmittedMCPConfig(request),
                   ensureConfigServers: dependencies.ensureConfigServers,
-                  getAllServerConfigs: dependencies.getAllServerConfigs,
+                  getServerConfig: dependencies.getServerConfig,
                   recoverServerConfig: dependencies.recoverServerConfig,
                   isAppServerConfig: dependencies.isAppServerConfig,
                 }),
@@ -354,6 +355,9 @@ export function createMCPAppsController(dependencies: MCPAppsControllerDependenc
         csp: typeof request.query.csp === 'string' ? request.query.csp : undefined,
         limits,
       });
+      if (!('X-Frame-Options' in headers)) {
+        response.removeHeader('X-Frame-Options');
+      }
       for (const [name, value] of Object.entries(headers)) {
         response.setHeader(name, value);
       }

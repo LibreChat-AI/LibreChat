@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { logger } = require('@librechat/data-schemas');
+const { logger, filterExistingSkillIds } = require('@librechat/data-schemas');
 const {
   MAX_SKILL_STATES,
   toSkillStatesRecord,
@@ -20,13 +20,8 @@ function buildPruneDeps(user) {
       if (!Skill) {
         return validIds;
       }
-      const existing = await Skill.find({ _id: { $in: validIds } })
-        .select('_id')
-        .lean();
-      const deploymentIds = getDeploymentSkillIds()
-        .map((id) => id.toString())
-        .filter((id) => validIds.includes(id));
-      return [...existing.map((doc) => doc._id.toString()), ...deploymentIds];
+      const deploymentIds = new Set(getDeploymentSkillIds().map((id) => id.toString()));
+      return filterExistingSkillIds(mongoose, validIds, (id) => deploymentIds.has(id));
     },
     findAccessibleSkillIds: async () =>
       mergeDeploymentSkillIds(

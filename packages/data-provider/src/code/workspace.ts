@@ -52,6 +52,8 @@ export const CODE_WORKSPACE_OPERATIONS = [
   'preview_edit',
   'edit_file',
   'execute_command',
+  /** Copies a Code API stored object into the workspace; sent only when advertised. */
+  'import_file',
 ] as const;
 export const CODE_WORKSPACE_INSTANCE_TYPES = ['git_worktree'] as const;
 export const CODE_WORKSPACE_CHECKOUT_MODES = ['source', 'isolated'] as const;
@@ -133,7 +135,8 @@ export function isCodeWorkspaceEnvironment(
     (environment.repo === undefined ||
       (typeof environment.repo === 'string' &&
         environment.repo.length <= 256 &&
-        /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(environment.repo))) &&
+        /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+){1,19}$/.test(environment.repo) &&
+        environment.repo.split('/').every((segment) => segment !== '.' && segment !== '..'))) &&
     (environment.ref === undefined ||
       (typeof environment.ref === 'string' &&
         environment.ref.trim().length > 0 &&

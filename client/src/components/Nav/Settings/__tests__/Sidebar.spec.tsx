@@ -18,6 +18,7 @@ const ctx: SettingsContextValue = {
   emailEnabled: true,
   allowEmailChange: true,
   passkeyLoginEnabled: false,
+  hasPullRequestConnect: false,
   isTwoFactorPolicyProvider: true,
   twoFactorEnabled: false,
   allowAccountDeletion: true,
@@ -29,6 +30,7 @@ const ctx: SettingsContextValue = {
   replyTabBadgeAllowed: true,
   replyNotificationsAllowed: true,
   replyNotificationSoundAllowed: true,
+  analyticsConfigured: false,
 };
 
 function setup(extra: Partial<SettingsContextValue> = {}, query = '') {
@@ -59,6 +61,11 @@ describe('Sidebar', () => {
 
   it('shows the Langfuse tab when Langfuse is available to the user', () => {
     setup({ langfuseConnectionAccess: true });
+    expect(screen.getByText('Langfuse')).toBeInTheDocument();
+  });
+
+  it('shows the Langfuse tab with prompt access and no connection access', () => {
+    setup({ langfuseConnectionAccess: false, langfusePromptSyncAccess: true });
     expect(screen.getByText('Langfuse')).toBeInTheDocument();
   });
 

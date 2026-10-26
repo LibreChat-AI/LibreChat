@@ -11,12 +11,9 @@ import {
   supersedeConvoSnapshots,
   fetchConvoSnapshot,
   storeEndpointSettings,
-  addConversationToInfinitePages,
-  updateInfiniteConvoPage,
   findConversationInInfinite,
   removeConvoFromInfinitePages,
   groupConversations,
-  updateConvoFieldsInfinite,
   addConvoToAllQueries,
   collectPinnedConversations,
   upsertConvoInAllQueries,
@@ -28,10 +25,8 @@ import {
   isConversationUnseen,
   applyServerReplyStamp,
   removeConvoFromAllQueries,
-  addConversationToAllConversationsQueries,
   invalidateConversationLists,
 } from './convos';
-import { normalizeData } from './collection';
 
 jest.mock('date-fns', () => {
   const actual = jest.requireActual('date-fns');
@@ -415,173 +410,6 @@ describe('Conversation Utilities', () => {
     });
   });
 
-  describe('normalizeConversationData', () => {
-    it('normalizes the number of items on each page after data removal', () => {
-      // Create test data:
-      // Generates 15 conversation items, each with a unique conversationId and an updatedAt timestamp set to a different day.
-      // { conversationId: '1', updatedAt: new Date(Date.now() - 86400000 * i).toISOString() }
-      const conversations = Array.from({ length: 15 }, (_, i) => ({
-        conversationId: (i + 1).toString(),
-        updatedAt: new Date(Date.now() - 86400000 * i).toISOString(),
-      }));
-
-      // Paginate Data:
-      // Divides the 15 conversation items into pages, with each page containing up to 5 items (pageSize is set to 5). This results in 3 pages.
-      const pageSize = 5;
-      const totalPageNumber = Math.ceil(conversations.length / pageSize);
-
-      const paginatedData = Array.from({ length: totalPageNumber }, (_, index) => ({
-        conversations: conversations.slice(index * pageSize, (index + 1) * pageSize),
-        pages: totalPageNumber,
-        pageNumber: index + 1,
-        pageSize,
-      }));
-
-      const testData = { pages: paginatedData, pageParams: [null, 2, 3] };
-
-      // Removes one item from the first page, resulting in the first page having 4 items, while the second and third pages still have 5 items each.
-      testData.pages[0].conversations.splice(1, 1);
-      expect(testData.pages[0].conversations).toHaveLength(4);
-      expect(testData.pages[1].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations).toHaveLength(5);
-
-      // Normalize Data:
-      // Calls the normalizeData function to ensure that each page contains exactly 5 items, redistributing the items across the pages as needed.
-      const normalizedData = normalizeData(testData, 'conversations', pageSize);
-
-      // Verify Results:
-      // Asserts that the number of conversation data is 5 except for the last page,
-      // that the number of conversation data is 4 only for the last page,
-      // and that the conversation ids are in the expected order.
-      expect(normalizedData.pages[0].conversations).toHaveLength(5);
-      expect(normalizedData.pages[0].conversations[0].conversationId).toBe('1');
-      expect(normalizedData.pages[0].conversations[4].conversationId).toBe('6');
-
-      expect(normalizedData.pages[1].conversations).toHaveLength(5);
-      expect(normalizedData.pages[1].conversations[0].conversationId).toBe('7');
-      expect(normalizedData.pages[1].conversations[4].conversationId).toBe('11');
-
-      expect(normalizedData.pages[2].conversations).toHaveLength(4);
-      expect(normalizedData.pages[2].conversations[0].conversationId).toBe('12');
-      expect(normalizedData.pages[2].conversations[3].conversationId).toBe('15');
-    });
-
-    it('normalizes the number of items on each page after data addition', () => {
-      // Create test data:
-      // Generates 15 conversation items, each with a unique conversationId and an updatedAt timestamp set to a different day.
-      // { conversationId: '1', updatedAt: new Date(Date.now() - 86400000 * i).toISOString() }
-      const conversations = Array.from({ length: 15 }, (_, i) => ({
-        conversationId: (i + 1).toString(),
-        updatedAt: new Date(Date.now() - 86400000 * i).toISOString(),
-      }));
-
-      // Paginate Data:
-      // Divides the 15 conversation items into pages,
-      // with each page containing up to 5 items (pageSize is set to 5). This results in 3 pages.
-      const pageSize = 5;
-      const totalPageNumber = Math.ceil(conversations.length / pageSize);
-
-      const paginatedData = Array.from({ length: totalPageNumber }, (_, index) => ({
-        conversations: conversations.slice(index * pageSize, (index + 1) * pageSize),
-        pages: totalPageNumber,
-        pageNumber: index + 1,
-        pageSize,
-      }));
-
-      const testData = { pages: paginatedData, pageParams: [null, 2, 3] };
-
-      // Inserts a new conversation item at the beginning of the first page,
-      testData.pages[0].conversations.unshift({
-        conversationId: '16',
-        updatedAt: new Date().toISOString(),
-      });
-
-      // resulting in the first page having 6 items,
-      // while the second and third pages still have 5 items each.
-      expect(testData.pages[0].conversations).toHaveLength(6);
-      expect(testData.pages[1].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations[4].conversationId).toBe('15');
-      expect(testData.pages).toHaveLength(3);
-
-      const normalizedData = normalizeData(testData, 'conversations', pageSize);
-
-      // Verify Results:
-      // Asserts that after normalization, each page contains the correct number of items (5 items per page).
-      expect(normalizedData.pages[0].conversations).toHaveLength(5);
-      expect(normalizedData.pages[1].conversations).toHaveLength(5);
-      expect(normalizedData.pages[2].conversations).toHaveLength(5);
-      expect(normalizedData.pages).toHaveLength(3);
-
-      // Checks that the items are in the expected order, ensuring that the conversationId values are correctly distributed across the pages.
-
-      expect(normalizedData.pages[0].conversations[0].conversationId).toBe('16');
-      expect(normalizedData.pages[0].conversations[4].conversationId).toBe('4');
-
-      expect(normalizedData.pages[1].conversations[0].conversationId).toBe('5');
-      expect(normalizedData.pages[1].conversations[4].conversationId).toBe('9');
-
-      expect(normalizedData.pages[2].conversations[0].conversationId).toBe('10');
-      expect(normalizedData.pages[2].conversations[4].conversationId).toBe('14');
-      expect(normalizedData.pageParams).toHaveLength(3);
-    });
-
-    it('returns empty data when there is no data', () => {
-      const normalizedData = normalizeData(
-        { pages: [{ conversations: [], pageNumber: 1, pageSize: 5, pages: 1 }], pageParams: [] },
-        'conversations',
-        5,
-      );
-
-      expect(normalizedData.pages[0].conversations).toHaveLength(0);
-    });
-
-    it('does not normalize data when not needed', () => {
-      const normalizedData = normalizeData(
-        { pages: [{ conversations: ['1'], pageNumber: 1, pageSize: 5, pages: 1 }], pageParams: [] },
-        'conversations',
-        5,
-      );
-
-      expect(normalizedData.pages[0].conversations).toHaveLength(1);
-    });
-
-    it('deletes pages that have no data as a result of normalization', () => {
-      const conversations = Array.from({ length: 15 }, (_, i) => ({
-        conversationId: (i + 1).toString(),
-        updatedAt: new Date(Date.now() - 86400000 * i).toISOString(),
-      }));
-
-      const pageSize = 5;
-      const totalPageNumber = Math.ceil(conversations.length / pageSize);
-
-      const paginatedData = Array.from({ length: totalPageNumber }, (_, index) => ({
-        conversations: conversations.slice(index * pageSize, (index + 1) * pageSize),
-        pages: totalPageNumber,
-        pageNumber: index + 1,
-        pageSize,
-      }));
-
-      const testData = { pages: paginatedData, pageParams: [null, 2, 3] };
-
-      // Removes all data from the last page, resulting in the last page having 0 items.
-      testData.pages[2].conversations = [];
-      expect(testData.pages[0].conversations).toHaveLength(5);
-      expect(testData.pages[1].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations).toHaveLength(0);
-      expect(testData.pageParams).toHaveLength(3);
-
-      const normalizedData = normalizeData(testData, 'conversations', pageSize);
-
-      // Verify Results:
-      // Asserts that the last page is removed after normalization, leaving only the first and second pages.
-      expect(normalizedData.pages).toHaveLength(2);
-      expect(normalizedData.pages[0].conversations).toHaveLength(5);
-      expect(normalizedData.pages[1].conversations).toHaveLength(5);
-      expect(normalizedData.pageParams).toHaveLength(2);
-    });
-  });
-
   describe('InfiniteData helpers', () => {
     const makeConversation = (id: string, updatedAt?: string) => ({
       conversationId: id,
@@ -620,52 +448,6 @@ describe('Conversation Utilities', () => {
       });
     });
 
-    describe('updateInfiniteConvoPage', () => {
-      it('updates a conversation in InfiniteData', () => {
-        const data = {
-          pages: [makePage([makeConversation('1', '2023-01-01T00:00:00Z'), makeConversation('2')])],
-          pageParams: [],
-        };
-        const updater = (c: any) => ({ ...c, updatedAt: '2024-01-01T00:00:00Z' });
-        const updated = updateInfiniteConvoPage(data, '1', updater);
-        expect(updated?.pages[0].conversations[0].updatedAt).toBe('2024-01-01T00:00:00Z');
-      });
-
-      it('returns original data if conversation not found', () => {
-        const data = {
-          pages: [makePage([makeConversation('1')])],
-          pageParams: [],
-        };
-        const updater = (c: any) => ({ ...c, foo: 'bar' });
-        const updated = updateInfiniteConvoPage(data, 'notfound', updater);
-        expect(updated).toEqual(data);
-      });
-
-      it('returns undefined if data is undefined', () => {
-        expect(updateInfiniteConvoPage(undefined, '1', (c) => c)).toBeUndefined();
-      });
-    });
-
-    describe('addConversationToInfinitePages', () => {
-      it('adds a conversation to the first page', () => {
-        const data = {
-          pages: [makePage([makeConversation('1')])],
-          pageParams: [],
-        };
-        const newConvo = makeConversation('new');
-        const updated = addConversationToInfinitePages(data, newConvo as TConversation);
-        expect(updated.pages[0].conversations[0].conversationId).toBe('new');
-        expect(updated.pages[0].conversations[1].conversationId).toBe('1');
-      });
-
-      it('creates new InfiniteData if data is undefined', () => {
-        const newConvo = makeConversation('new');
-        const updated = addConversationToInfinitePages(undefined, newConvo as TConversation);
-        expect(updated.pages[0].conversations[0].conversationId).toBe('new');
-        expect(updated.pageParams).toEqual([undefined]);
-      });
-    });
-
     describe('removeConvoFromInfinitePages', () => {
       it('removes a conversation by id', () => {
         const data = {
@@ -691,57 +473,6 @@ describe('Conversation Utilities', () => {
 
       it('returns original data if data is undefined', () => {
         expect(removeConvoFromInfinitePages(undefined, '1')).toBeUndefined();
-      });
-    });
-
-    describe('updateConvoFieldsInfinite', () => {
-      it('updates fields and bumps to front if keepPosition is false', () => {
-        const data = {
-          pages: [
-            makePage([makeConversation('1'), makeConversation('2')]),
-            makePage([makeConversation('3')]),
-          ],
-          pageParams: [],
-        };
-        const updated = updateConvoFieldsInfinite(
-          data,
-          { conversationId: '2', title: 'new' },
-          false,
-        );
-        expect(updated?.pages[0].conversations[0].conversationId).toBe('2');
-        expect(updated?.pages[0].conversations[0].title).toBe('new');
-      });
-
-      it('updates fields and keeps position if keepPosition is true', () => {
-        const data = {
-          pages: [makePage([makeConversation('1'), makeConversation('2')])],
-          pageParams: [],
-        };
-        const updated = updateConvoFieldsInfinite(
-          data,
-          { conversationId: '2', title: 'stay' },
-          true,
-        );
-        expect(updated?.pages[0].conversations[1].title).toBe('stay');
-      });
-
-      it('returns original data if conversation not found', () => {
-        const data = {
-          pages: [makePage([makeConversation('1')])],
-          pageParams: [],
-        };
-        const updated = updateConvoFieldsInfinite(
-          data,
-          { conversationId: 'notfound', title: 'x' },
-          false,
-        );
-        expect(updated).toEqual(data);
-      });
-
-      it('returns original data if data is undefined', () => {
-        expect(
-          updateConvoFieldsInfinite(undefined, { conversationId: '1', title: 'x' }, false),
-        ).toBeUndefined();
       });
     });
 
@@ -1773,12 +1504,12 @@ describe('Conversation Utilities', () => {
         expect(data!.pages.length).toBe(0);
       });
 
-      it('addConversationToAllConversationsQueries works with multiple pages', () => {
+      it('addConvoToAllQueries works with multiple pages', () => {
         queryClient.setQueryData(['allConversations', 'other'], {
           pages: [{ conversations: [], nextCursor: null }],
           pageParams: [],
         });
-        addConversationToAllConversationsQueries(queryClient, convoB);
+        addConvoToAllQueries(queryClient, convoB);
 
         const mainData = queryClient.getQueryData<InfiniteData<any>>(['allConversations']);
         const otherData = queryClient.getQueryData<InfiniteData<any>>([
@@ -1806,7 +1537,7 @@ describe('Conversation Utilities', () => {
       });
     });
 
-    describe('addConversationToAllConversationsQueries with list facets', () => {
+    describe('addConvoToAllQueries with list facets', () => {
       const emptyPages = { pages: [{ conversations: [], nextCursor: null }], pageParams: [] };
       /** A row the endpoint and date facets can judge from its own fields. */
       const facetConvo = {
@@ -1822,7 +1553,7 @@ describe('Conversation Utilities', () => {
         const key = ['allConversations', { endpoints: ['google'] }];
         queryClient.setQueryData(key, emptyPages);
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(
           queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations,
@@ -1834,7 +1565,7 @@ describe('Conversation Utilities', () => {
         const key = ['allConversations', { updatedAfter: '2026-09-25T00:00:00.000Z' }];
         queryClient.setQueryData(key, emptyPages);
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(
           queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations,
@@ -1846,7 +1577,7 @@ describe('Conversation Utilities', () => {
         const key = ['allConversations', { updatedAfter: '2026-09-24T00:00:00.000Z' }];
         queryClient.setQueryData(key, emptyPages);
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(
           queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations[0]
@@ -1917,7 +1648,7 @@ describe('Conversation Utilities', () => {
         queryClient.setQueryData(key, emptyPages);
         const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(invalidate).toHaveBeenCalledWith(
           expect.objectContaining({ queryKey: key, refetchType: 'active' }),

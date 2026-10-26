@@ -1,5 +1,7 @@
 import { get } from 'lodash';
 import { SystemRoles } from 'librechat-data-provider';
+import type { RecordAuditEntry } from '~/admin/audit';
+import { recordSystemAuditEntry } from '~/admin/audit';
 import { isEnabled } from '~/utils';
 
 export type OpenIdRoleSyncClaimSource = 'access' | 'id' | 'userinfo';
@@ -311,4 +313,42 @@ export function selectOpenIdRole(
   }
 
   return { reason: 'no_matching_role' };
+}
+
+/**
+ * Records a `user.role_changed` entry when an IdP claim moved a user to a new
+ * role (OpenID admin-role claim or role sync). No-op when the role is unchanged.
+ * Fail-open, since it runs inside login and API authentication.
+ */
+export async function recordIdpRoleChange({
+  recordAuditEntry,
+  userId,
+  previousRole,
+  role,
+  source,
+  tenantId,
+}: {
+  recordAuditEntry?: RecordAuditEntry;
+  userId: string;
+  previousRole?: string | null;
+  role?: string | null;
+  source: 'openid_login' | 'remote_agent_oidc';
+  tenantId?: string;
+}): Promise<void> {
+  if (!role || role === previousRole) {
+    return;
+  }
+  const adminChange = role === SystemRoles.ADMIN || previousRole === SystemRoles.ADMIN;
+  await recordSystemAuditEntry(
+    recordAuditEntry,
+    {
+      action: 'user.role_changed',
+      severity: adminChange ? 'critical' : 'warning',
+      actor: { type: 'system', name: 'OpenID role sync' },
+      target: { type: 'user', id: userId },
+      metadata: { previousRole: previousRole ?? null, role, source },
+      tenantId,
+    },
+    '[openidRoleSync]',
+  );
 }

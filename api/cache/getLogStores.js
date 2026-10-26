@@ -1,4 +1,5 @@
 const { Keyv } = require('keyv');
+const { logger } = require('@librechat/data-schemas');
 const { Time, CacheKeys, ViolationTypes } = require('librechat-data-provider');
 const {
   logFile,
@@ -9,6 +10,8 @@ const {
   violationCache,
   userPrincipalsCache,
   registerShutdownTask,
+  auditCacheStores,
+  formatMemoryUsage,
 } = require('@librechat/api');
 
 /** No-op store for cache namespaces that are deliberately disabled. */
@@ -126,18 +129,20 @@ async function clearExpiredFromCache(cache) {
         const deleted = await cache.opts.store.delete(key);
         if (!deleted) {
           cacheConfig.DEBUG_MEMORY_CACHE &&
-            console.warn(`[Cache] Error deleting entry: ${key} from ${cache.opts.namespace}`);
+            logger.warn(`[Cache] Error deleting entry from ${cache.opts.namespace}`);
           continue;
         }
         cleared++;
       }
     } catch (error) {
       cacheConfig.DEBUG_MEMORY_CACHE &&
-        console.log(`[Cache] Error processing entry from ${cache.opts.namespace}:`, error);
+        logger.info(`[Cache] Error processing entry from ${cache.opts.namespace}`, {
+          error: error?.name,
+        });
       const deleted = await cache.opts.store.delete(key);
       if (!deleted) {
         cacheConfig.DEBUG_MEMORY_CACHE &&
-          console.warn(`[Cache] Error deleting entry: ${key} from ${cache.opts.namespace}`);
+          logger.warn(`[Cache] Error deleting entry from ${cache.opts.namespace}`);
         continue;
       }
       cleared++;
@@ -146,32 +151,13 @@ async function clearExpiredFromCache(cache) {
 
   if (cleared > 0) {
     cacheConfig.DEBUG_MEMORY_CACHE &&
-      console.log(
+      logger.info(
         `[Cache] Cleared ${cleared} entries older than ${ttl}ms from ${cache.opts.namespace}`,
       );
   }
 }
 
-const auditCache = () => {
-  const ttlStores = getTTLStores();
-  console.log('[Cache] Starting audit');
-
-  ttlStores.forEach((store) => {
-    if (!store?.opts?.store?.entries) {
-      return;
-    }
-
-    console.log(`[Cache] ${store.opts.namespace} entries:`, {
-      count: store.opts.store.size,
-      ttl: store.opts.ttl,
-      keys: Array.from(store.opts.store.keys()),
-      entriesWithTimestamps: Array.from(store.opts.store.entries()).map(([key, value]) => ({
-        key,
-        value,
-      })),
-    });
-  });
-};
+const auditCache = () => auditCacheStores(getTTLStores(), logger);
 
 /**
  * Clears expired entries from all TTL-enabled stores
@@ -203,13 +189,7 @@ if (!cacheConfig.USE_REDIS && !cacheConfig.CI) {
       const memory = process.memoryUsage();
       const totalSize = ttlStores.reduce((sum, store) => sum + (store.opts?.store?.size ?? 0), 0);
 
-      console.log('[Cache] Memory usage:', {
-        heapUsed: `${(memory.heapUsed / 1024 / 1024).toFixed(2)} MB`,
-        heapTotal: `${(memory.heapTotal / 1024 / 1024).toFixed(2)} MB`,
-        rss: `${(memory.rss / 1024 / 1024).toFixed(2)} MB`,
-        external: `${(memory.external / 1024 / 1024).toFixed(2)} MB`,
-        totalCacheEntries: totalSize,
-      });
+      logger.info(formatMemoryUsage(memory, totalSize));
 
       auditCache();
     }, Time.ONE_MINUTE);
@@ -221,11 +201,11 @@ if (!cacheConfig.USE_REDIS && !cacheConfig.CI) {
   // (see packages/api/src/app/shutdown.ts) rather than attaching a direct
   // signal handler — multiple competing handlers race the HTTP drain.
   registerShutdownTask('cache cleanup', async () => {
-    cacheConfig.DEBUG_MEMORY_CACHE && console.log('[Cache] Cleaning up and shutting down...');
+    cacheConfig.DEBUG_MEMORY_CACHE && logger.info('[Cache] Cleaning up and shutting down...');
     cleanupIntervals.forEach((interval) => clearInterval(interval));
     cleanupIntervals.clear();
     await clearAllExpiredFromCache();
-    cacheConfig.DEBUG_MEMORY_CACHE && console.log('[Cache] Final cleanup completed');
+    cacheConfig.DEBUG_MEMORY_CACHE && logger.info('[Cache] Final cleanup completed');
   });
 }
 
@@ -245,3 +225,4 @@ const getLogStores = (key) => {
 };
 
 module.exports = getLogStores;
+module.exports.auditCache = auditCache;

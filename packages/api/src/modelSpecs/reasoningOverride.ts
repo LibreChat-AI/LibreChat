@@ -1,12 +1,19 @@
 import {
+  Providers,
+  getModelReasoning,
+  effectiveModelReasoning,
+  hasExplicitReasoningEffort,
+  ReasoningEffort,
   isReasoningOverrideSupported,
   reasoningOverrideSchema,
   ReasoningParameterFormat,
   resolveReasoningSettingForTarget,
   type TEndpointsConfig,
   type TReasoningOverride,
+  type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
+import type { ReasoningCapabilityResult } from '~/types';
 
 export type ReasoningOverrideRequest =
   | { ok: true; reasoningOverride?: TReasoningOverride }
@@ -56,6 +63,8 @@ export type ReasoningOverrideInput = {
   parsedModel?: string | null;
   isAgent: boolean;
   endpointsConfig?: TEndpointsConfig;
+  /** Provider-reported efforts per OpenRouter model; absent while unknown. */
+  reasoningCapabilities?: TReasoningCapabilityMap;
   defaultParamsEndpoint?: string | null;
   appliedModelSpecPrivateFields?: ReadonlySet<string>;
   enforcedModelSpecFields?: ReadonlySet<string>;
@@ -87,6 +96,7 @@ export async function resolveReasoningOverride({
   parsedModel,
   isAgent,
   endpointsConfig,
+  reasoningCapabilities,
   defaultParamsEndpoint,
   appliedModelSpecPrivateFields = new Set(),
   enforcedModelSpecFields = new Set(),
@@ -111,6 +121,21 @@ export async function resolveReasoningOverride({
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 
+  const modelReasoning =
+    effectiveModel == null
+      ? undefined
+      : effectiveModelReasoning(
+          getModelReasoning(reasoningCapabilities, customEndpointKey, effectiveModel),
+          customParams?.paramDefinitions,
+        );
+  /** Auto sends no effort. For a model the provider lists without effort selection it is the one
+   *  valid override: it lets a caller clear an effort saved on another model. The disabled and
+   *  locked refusals above have already run. */
+  const clearsEffort =
+    modelReasoning === null &&
+    reasoningOverride.key === 'reasoning_effort' &&
+    reasoningOverride.value === ReasoningEffort.unset;
+
   const supportedSetting = resolveReasoningSettingForTarget({
     endpoint: effectiveEndpoint,
     model: effectiveModel,
@@ -119,9 +144,10 @@ export async function resolveReasoningOverride({
     paramDefinitions: customParams?.paramDefinitions,
     reasoningFormat: customParams?.reasoningFormat,
     blockedReasoningKeys: new Set([...appliedModelSpecPrivateFields, ...enforcedModelSpecFields]),
+    modelReasoning,
   });
 
-  if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
+  if (!clearsEffort && !isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 
@@ -153,10 +179,53 @@ export async function resolveReasoningOverride({
   };
 }
 
+/**
+ * The provider's per-model efforts, loaded only when the override is a non-Auto effort on an
+ * OpenRouter endpoint: any other target is validated without the catalog, so an
+ * unavailable OpenRouter never delays an unrelated request.
+ */
+async function loadCapabilitiesFor(
+  override: TReasoningOverride,
+  endpointOption: EndpointOption,
+  input: Omit<RequestReasoningOverrideInput, 'reasoningOverride' | 'loadReasoningCapabilities'>,
+  load?: (endpoint: string) => Promise<ReasoningCapabilityResult>,
+): Promise<TReasoningCapabilityMap | undefined> {
+  /** Auto sends no effort, so no catalog entry can change whether it is accepted. */
+  if (
+    load == null ||
+    override.key !== 'reasoning_effort' ||
+    override.value === ReasoningEffort.unset
+  ) {
+    return undefined;
+  }
+  const loadedAgent = await endpointOption.agent;
+  const endpointKey = input.isAgent
+    ? (loadedAgent?.provider ?? endpointOption.endpointType ?? input.endpointType ?? input.endpoint)
+    : input.endpoint;
+  const customParams = input.endpointsConfig?.[endpointKey]?.customParams;
+  const paramsEndpoint = customParams?.defaultParamsEndpoint ?? input.defaultParamsEndpoint;
+  /** Requests `resolveReasoningOverride` refuses regardless of the catalog fail without it. */
+  const locked =
+    input.appliedModelSpecPrivateFields?.has(override.key) === true ||
+    input.enforcedModelSpecFields?.has(override.key) === true;
+  if (
+    locked ||
+    customParams?.reasoningFormat === ReasoningParameterFormat.disabled ||
+    hasExplicitReasoningEffort(customParams?.paramDefinitions)
+  ) {
+    return undefined;
+  }
+  return paramsEndpoint === Providers.OPENROUTER
+    ? (await load(endpointKey)).capabilities
+    : undefined;
+}
+
 export type RequestReasoningOverrideInput = Omit<
   ReasoningOverrideInput,
-  'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase'
+  'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase' | 'reasoningCapabilities'
 > & {
+  /** Loads per-model efforts; called only for a request that carries an override. */
+  loadReasoningCapabilities?: (endpoint: string) => Promise<ReasoningCapabilityResult>;
   /** The raw request field; validated here, so the caller passes it unparsed. */
   reasoningOverride?: unknown;
 };
@@ -185,7 +254,7 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
       agentContinuationAdmission?: AgentContinuationAdmissionSource;
     };
   },
-  { reasoningOverride: raw, ...input }: RequestReasoningOverrideInput,
+  { reasoningOverride: raw, loadReasoningCapabilities, ...input }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
   const stripReplayedOverride = (): boolean => {
     delete req.body.reasoningOverride;
@@ -231,6 +300,12 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
   }
   const resolution = await resolveReasoningOverride({
     ...input,
+    reasoningCapabilities: await loadCapabilitiesFor(
+      request.reasoningOverride,
+      req.body.endpointOption,
+      input,
+      loadReasoningCapabilities,
+    ),
     reasoningOverride: request.reasoningOverride,
     endpointOption: req.body.endpointOption,
     reasoningOverrideBase: req.reasoningOverrideBase,

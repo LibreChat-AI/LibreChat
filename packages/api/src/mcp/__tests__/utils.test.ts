@@ -19,7 +19,6 @@ import {
   toCatalogConnectionConfig,
   applyRequestHeaders,
   hasRuntimeContextPlaceholders,
-  getRuntimeBodyPlaceholderFields,
   getMissingRuntimeBodyPlaceholderFields,
   isUserSourced,
   validateMCPServerConfig,
@@ -293,6 +292,28 @@ describe('redactServerSecrets', () => {
     expect(redacted.oauth?.client_secret).toBeUndefined();
     expect(redacted.oauth?.client_id).toBe('my-client');
     expect(redacted.oauth?.scope).toBe('read');
+  });
+
+  it('never returns the masked previews the admin config API stores beside the secrets', () => {
+    const config: ParsedServerConfig = {
+      type: 'sse',
+      url: 'https://example.com/mcp',
+      apiKey: {
+        source: 'admin',
+        authorization_type: 'bearer',
+        key: 'decrypted-at-runtime',
+        keyPreview: '...time',
+      },
+      oauth: {
+        client_id: 'cid',
+        client_secret: 'decrypted-oauth-secret',
+        client_secretPreview: '...cret',
+      },
+    };
+    const redacted = redactServerSecrets(config);
+    expect(redacted.apiKey).toEqual({ source: 'admin', authorization_type: 'bearer' });
+    expect(redacted.oauth).toEqual({ client_id: 'cid' });
+    expect(JSON.stringify(redacted)).not.toMatch(/time|cret/);
   });
 
   it('should strip both apiKey.key and oauth.client_secret simultaneously', () => {
@@ -910,7 +931,7 @@ describe('getMCPRequestScope', () => {
         headers: { 'X-Message': `\${${envName}}` },
       };
       expect(getMCPRequestScope(config).requestScoped).toBe(true);
-      expect(getRuntimeBodyPlaceholderFields(config)).toEqual(['messageId']);
+      expect(getMCPRequestScope(config).requiredBodyFields).toEqual(['messageId']);
     } finally {
       if (previous == null) {
         delete process.env[envName];
@@ -939,7 +960,7 @@ describe('getMCPRequestScope', () => {
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
     expect(getMCPRequestScope(config).requestScoped).toBe(false);
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);
     expect(requiresUserScopedConnection(config)).toBe(false);
@@ -957,7 +978,7 @@ describe('getMCPRequestScope', () => {
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
     expect(getMCPRequestScope(config).requestScoped).toBe(false);
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);
     expect(requiresUserScopedConnection(config)).toBe(false);
@@ -975,7 +996,7 @@ describe('getMissingRuntimeBodyPlaceholderFields', () => {
   } as const;
 
   it('returns the request body fields required by trusted runtime placeholders', () => {
-    expect(getRuntimeBodyPlaceholderFields(config)).toEqual([
+    expect(getMCPRequestScope(config).requiredBodyFields).toEqual([
       'messageId',
       'parentMessageId',
       'conversationId',

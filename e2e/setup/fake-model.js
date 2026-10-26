@@ -15,6 +15,7 @@ const { AIMessageChunk } = require('@langchain/core/messages');
 const { tryBindReplay } = require('./model-replay');
 const { runFileDeliveryResponses } = require('./run-files-model');
 const { createRunFileLifecycleResponses } = require('./run-files-lifecycle-model');
+const subagentHistory = require('../fixtures/subagent-history.cjs');
 
 const runFileLifecycle = createRunFileLifecycleResponses({
   findLastToolMessage,
@@ -32,6 +33,7 @@ const ASSERT_MANUAL_SKILL_MARKER = 'E2E_ASSERT_MANUAL_SKILL:';
 const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
+const REPORT_LLM_CONFIG_MARKER = 'E2E_REPORT_LLM_CONFIG';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
@@ -58,6 +60,41 @@ const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
 const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
 const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
 const MCP_LEGACY_ACTION_MARKER = 'E2E_LEGACY_ACTION';
+/** `E2E_CACHE_USAGE: 1h` or `5m`: the final usage reports Anthropic-style cache
+ *  writes (3000, of which 2000 are 1-hour for `1h`) and 500 cache reads, with
+ *  the TTL split on `response_metadata.usage` where the agents SDK leaves it. */
+const CACHE_USAGE_MARKER = 'E2E_CACHE_USAGE:';
+const CACHE_USAGE_WRITES = 3000;
+const CACHE_USAGE_READS = 500;
+
+function cacheUsageFields(messages, input_tokens, output_tokens) {
+  const ttl = getMarkerValue(getLatestUserText(messages), CACHE_USAGE_MARKER);
+  if (ttl !== '1h' && ttl !== '5m') {
+    return {
+      usage_metadata: { input_tokens, output_tokens, total_tokens: input_tokens + output_tokens },
+    };
+  }
+  const oneHour = ttl === '1h' ? 2000 : 0;
+  const cachedInput = input_tokens + CACHE_USAGE_WRITES + CACHE_USAGE_READS;
+  return {
+    usage_metadata: {
+      input_tokens: cachedInput,
+      output_tokens,
+      total_tokens: cachedInput + output_tokens,
+      input_token_details: { cache_creation: CACHE_USAGE_WRITES, cache_read: CACHE_USAGE_READS },
+    },
+    response_metadata: {
+      usage: {
+        cache_creation_input_tokens: CACHE_USAGE_WRITES,
+        cache_read_input_tokens: CACHE_USAGE_READS,
+        cache_creation: {
+          ephemeral_5m_input_tokens: CACHE_USAGE_WRITES - oneHour,
+          ephemeral_1h_input_tokens: oneHour,
+        },
+      },
+    },
+  };
+}
 const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
@@ -88,6 +125,7 @@ const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
 const TOOL_APPROVAL_RESTRICTED_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
 const TOOL_APPROVAL_REWRITE_MARKER = 'E2E_TOOL_APPROVAL_REWRITE:';
 const DEFERRED_HITL_MARKER = 'E2E_DEFERRED_HITL:';
+const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
@@ -150,6 +188,7 @@ const BACKGROUND_TOOL_NAME = 'slow_echo_mcp_e2e-memory';
 const DEFERRED_HITL_TOOL_NAME = BACKGROUND_TOOL_NAME;
 const DEFERRED_HITL_CONTROL_TOOL_NAME = 'recall_fact_mcp_e2e-memory';
 const TOOL_SEARCH_NAME = 'tool_search';
+const DEFERRED_OAUTH_TOOL_NAME = 'echo_mcp_e2e-oauth-deferred';
 const ASK_USER_QUESTION_NAME = 'ask_user_question';
 const CHECK_BACKGROUND_TASK_TOOL_NAME = 'check_background_task';
 const APPROVAL_TOOL_NAME = 'approval_probe_mcp_e2e-memory';
@@ -455,6 +494,29 @@ function agentContextAssertionResponses({ messages, text }) {
       }`,
     ],
   };
+}
+
+const SAMPLING_PARAM_KEYS = ['temperature', 'topP', 'topK', 'presencePenalty', 'frequencyPenalty'];
+
+/**
+ * Reports the provider request the primary agent resolved, before the fake
+ * model replaced it: the model, which sampling params survived (top level or
+ * `modelKwargs`), and the context budget left for input. Reads the graph's
+ * agent context because the hook's `agents` are the unresolved agent configs.
+ */
+function llmConfigReportResponses(graph) {
+  const agent = graph?.agentContexts?.values().next().value;
+  const clientOptions = agent?.clientOptions ?? {};
+  const modelKwargs = clientOptions.modelKwargs ?? {};
+  const sampling = SAMPLING_PARAM_KEYS.filter(
+    (key) => clientOptions[key] != null || modelKwargs[key] != null,
+  );
+  const report = {
+    model: clientOptions.model ?? clientOptions.modelName ?? null,
+    sampling,
+    maxContextTokens: agent?.maxContextTokens ?? null,
+  };
+  return { responses: [`E2E llm config: ${JSON.stringify(report)}`] };
 }
 
 function collectSystemPromptText(messages) {
@@ -964,7 +1026,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       text: '',
       message: new AIMessageChunk({
         content: '',
-        usage_metadata: { input_tokens, output_tokens, total_tokens: input_tokens + output_tokens },
+        ...cacheUsageFields(messages, input_tokens, output_tokens),
       }),
     });
   }
@@ -3024,6 +3086,59 @@ function deferredHitlInvocationResponse({ graph, messages, options, runManager }
   };
 }
 
+/**
+ * An `oauthPrompt: on_use` server must not hold the turn for sign-in: the model runs first,
+ * discovers the server's deferred tool, and only its call asks the user to sign in.
+ */
+function deferredOAuthInvocationResponse(messages) {
+  const label = getMarkerValue(getLatestUserText(messages), DEFERRED_OAUTH_MARKER);
+  if (!label) {
+    return null;
+  }
+
+  const searchCallId = `call_e2e_deferred_oauth_search_${label}`;
+  const echoCallId = `call_e2e_deferred_oauth_echo_${label}`;
+  const echoResult = findToolMessage(messages, echoCallId);
+  if (echoResult) {
+    return {
+      response: `E2E deferred OAuth tool returned ${label}: ${getContentText(echoResult.content)}`,
+    };
+  }
+
+  const searchResult = findToolMessage(messages, searchCallId);
+  if (searchResult) {
+    const searchOutput = getContentText(searchResult.content);
+    if (!searchOutput.includes(DEFERRED_OAUTH_TOOL_NAME)) {
+      return {
+        response: `E2E deferred OAuth failed ${label}: ${TOOL_SEARCH_NAME} did not find ${DEFERRED_OAUTH_TOOL_NAME}`,
+      };
+    }
+    return {
+      response: '',
+      toolCalls: [
+        {
+          id: echoCallId,
+          name: DEFERRED_OAUTH_TOOL_NAME,
+          args: { text: label },
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
+
+  return {
+    response: '',
+    toolCalls: [
+      {
+        id: searchCallId,
+        name: TOOL_SEARCH_NAME,
+        args: { query: DEFERRED_OAUTH_TOOL_NAME, max_results: 1 },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function validateHandoffTool(route, tool, toolName) {
   const failures = [];
   const expectedDescription = route.description ?? `Transfer control to agent '${route.to}'`;
@@ -3416,6 +3531,13 @@ function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames)
 }
 
 function resolveResponses({ graph, messages, text, toolNames }) {
+  const history = subagentHistory.responsesForText(text, {
+    getLatestUserText,
+    messageType,
+    getContentText,
+  });
+  if (history) return history;
+
   const lifecycle = runFileLifecycle.responsesForText(text);
   if (lifecycle) return lifecycle;
 
@@ -3598,6 +3720,10 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     };
   }
 
+  if (text.includes(REPORT_LLM_CONFIG_MARKER)) {
+    return llmConfigReportResponses(graph);
+  }
+
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {
     return {
       responses: [MOCK_REPLY],
@@ -3771,6 +3897,7 @@ module.exports = function fakeModelHook(run, context) {
         options: streamOptions,
         runManager,
       }) ??
+      deferredOAuthInvocationResponse(streamMessages) ??
       resolveInvocation?.(streamMessages, streamOptions, runManager) ??
       null,
     resolveOnStream: (streamMessages, streamOptions, runManager) =>

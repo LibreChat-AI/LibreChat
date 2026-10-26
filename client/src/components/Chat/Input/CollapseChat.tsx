@@ -23,7 +23,7 @@ const CollapseChat = ({
     : localize('com_ui_collapse_chat');
 
   return (
-    <div className="relative ml-auto items-end justify-end">
+    <div className="relative ms-auto items-end justify-end">
       <TooltipAnchor
         description={description}
         render={

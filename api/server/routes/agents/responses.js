@@ -25,7 +25,7 @@ const {
   getResponse,
   listModels,
 } = require('~/server/controllers/agents/responses');
-const { configMiddleware } = require('~/server/middleware');
+const { configMiddleware, requireTermsAcceptance } = require('~/server/middleware');
 const {
   checkAgentPermission,
   preAuthTenantMiddleware,
@@ -37,6 +37,7 @@ const router = express.Router();
 
 router.use(preAuthTenantMiddleware);
 router.use(requireRemoteAgentAuth);
+router.use(requireTermsAcceptance);
 router.use(configMiddleware);
 router.use(checkRemoteAgentsFeature);
 

@@ -71,6 +71,7 @@ export default function ExecuteCode({
   hideAttachments = false,
   onExpand,
   toolCallId,
+  stepId,
 }: {
   initialProgress: number;
   isSubmitting: boolean;
@@ -84,6 +85,7 @@ export default function ExecuteCode({
   hideAttachments?: boolean;
   onExpand?: () => void;
   toolCallId?: string;
+  stepId?: string;
 }) {
   const localize = useLocalize();
   const { lang = 'py', code } = useParseArgs(args) ?? ({} as ParsedArgs);
@@ -147,7 +149,12 @@ export default function ExecuteCode({
     <>
       <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
           <ProgressText
             phase={phase}
             onClick={toggleCode}
@@ -190,6 +197,7 @@ export default function ExecuteCode({
             {code && <CodeWindowHeader language={lang} code={code} />}
             {code && (
               <pre
+                dir="ltr"
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
                 className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
@@ -213,7 +221,7 @@ export default function ExecuteCode({
                   code && 'border-border-inset border-t',
                 )}
               >
-                <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
+                <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
                 <div

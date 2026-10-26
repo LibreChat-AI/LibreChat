@@ -431,7 +431,7 @@ const AgentGrid: React.FC<AgentGridProps> = ({
           aria-live="polite"
           aria-label={localize('com_agents_loading')}
         >
-          <Spinner className="text-text-primary h-6 w-6" />
+          <Spinner tone="primary" className="h-6 w-6" />
           <span className="sr-only">{localize('com_agents_loading')}</span>
         </div>
       )}

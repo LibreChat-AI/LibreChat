@@ -2,6 +2,22 @@
 
 The mock e2e profile is the safest default for generated tests. It starts LibreChat with `e2e/config/librechat.e2e.yaml`, injects an in-process fake LLM (via `LIBRECHAT_TEST_RUN_HOOK`), creates an authenticated e2e user, and avoids real provider credentials.
 
+## RUM privacy export regressions
+
+Run the real HyperDX/OpenTelemetry SDK export checks without a running LibreChat,
+database, collector, or model provider:
+
+```sh
+npx playwright test --config=e2e/playwright.config.rum.ts
+```
+
+The fixture bundles the production RUM adapter, records a synthetic DOM in Chromium,
+and inspects the actual OTLP requests (including gzip/protobuf replay batches). It
+checks proxy and direct-token modes, metadata/DOM URL redaction, and fresh and
+already-recording transitions to a two-factor URL containing a fake login token.
+Playwright traces are disabled so authentication-shaped test data is not retained in
+HAR/trace artifacts.
+
 ## Automatic title regressions
 
 The standard mock profile disables automatic titles. CI runs the title-enabled cases once on the first memory shard. To run them locally after building the app:
@@ -72,18 +88,30 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-Pull request CI runs the complete mock suite in memory mode across three shards, plus a
-focused Redis transport suite. The Redis suite covers streaming fidelity, steering,
+Pull request CI runs the complete mock suite in memory mode across ten shards, plus a
+focused Redis transport suite across two. The Redis suite covers streaming fidelity, steering,
 interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/3
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/10
 npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes across two shards per mode. Every shard keeps one worker so tests do not contend for its
+modes across ten shards per mode. Every shard keeps one worker so tests do not contend for its
 authenticated user and database.
+
+CI splits the complete suite by recorded duration rather than test count: each shard lists the
+suite, and `.github/scripts/playwright-shards.mjs plan` hands out whole spec files longest-first
+to the least-loaded shard using `e2e/timings.mock.json`. A spec with no recorded time is
+estimated from its test count, so new specs need nothing; refresh the timings when the shards
+drift apart. Each shard's report artifact carries a `results.json`, so download a recent run's
+`playwright-report-memory-*` artifacts and rebuild the file from them:
+
+```sh
+gh run download <run-id> --pattern 'playwright-report-memory-*' --dir /tmp/e2e-reports
+node .github/scripts/playwright-shards.mjs record --out e2e/timings.mock.json /tmp/e2e-reports
+```
 
 ## Property-based browser testing
 

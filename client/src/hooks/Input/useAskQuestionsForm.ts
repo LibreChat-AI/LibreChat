@@ -15,9 +15,17 @@ interface AskQuestionsFormState {
   step: number;
   text: Record<string, string>;
   selected: Record<string, string[]>;
+  /** The batch's arrival already placed focus. Moving it between the composer
+   *  popover and the chat card remounts it, and that is not a new arrival. */
+  arrivalFocused: boolean;
 }
 
-const EMPTY_FORM: AskQuestionsFormState = { step: 0, text: {}, selected: {} };
+const EMPTY_FORM: AskQuestionsFormState = {
+  step: 0,
+  text: {},
+  selected: {},
+  arrivalFocused: false,
+};
 
 /** Keyed by action id, so the composer popover and the chat card share one form. */
 const askQuestionsFormFamily = atomFamily((_actionId: string) =>
@@ -86,6 +94,14 @@ export default function useAskQuestionsForm(
     [questions.length, setState],
   );
 
+  const markArrivalFocused = useCallback(
+    () =>
+      setState((previous) =>
+        previous.arrivalFocused ? previous : { ...previous, arrivalFocused: true },
+      ),
+    [setState],
+  );
+
   const answers = useMemo(() => {
     const resolved = Object.create(null) as Record<string, string>;
     for (const question of questions) {
@@ -138,5 +154,7 @@ export default function useAskQuestionsForm(
     goToStep,
     submit,
     skip,
+    arrivalFocused: state.arrivalFocused,
+    markArrivalFocused,
   };
 }

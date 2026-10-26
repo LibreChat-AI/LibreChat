@@ -25,7 +25,6 @@ const normalizeSavedSpeechEngine = (
 
 // Static atoms without localStorage
 const staticAtoms = {
-  abortScroll: atom<boolean>({ key: 'abortScroll', default: false }),
   optionSettings: atom<TOptionSettings>({ key: 'optionSettings', default: {} }),
   currentSettingsView: atom<SettingsViews>({
     key: 'currentSettingsView',
@@ -59,7 +58,6 @@ const localStorageAtoms = {
   // Chat settings
   enterToSend: atomWithLocalStorage('enterToSend', true),
   maximizeChatSpace: atomWithLocalStorage('maximizeChatSpace', false),
-  chatDirection: atomWithLocalStorage('chatDirection', 'LTR'),
   autoExpandTools: atomWithLocalStorage(LocalStorageKeys.AUTO_EXPAND_TOOLS, false),
   saveDrafts: atomWithLocalStorage('saveDrafts', true),
   /**
@@ -67,7 +65,7 @@ const localStorageAtoms = {
    * "Show more" toggle. The clamp is visual only; the full text stays in
    * the DOM, copyable and searchable.
    */
-  collapseLongUserMessages: atomWithLocalStorage('collapseLongUserMessages', false),
+  collapseLongUserMessages: atomWithLocalStorage('collapseLongUserMessages', true),
   /**
    * Whether pasting a large block of text attaches it as a `.txt` file instead of
    * flooding the composer. The text still reaches the model in full.
@@ -79,7 +77,7 @@ const localStorageAtoms = {
   rememberDefaultFork: atomWithLocalStorage(LocalStorageKeys.REMEMBER_FORK_OPTION, false),
   saveBadgesState: atomWithLocalStorage('saveBadgesState', false),
   /** User preference for downscaling images before upload; ignored when the admin config sets it */
-  clientImageResize: atomWithLocalStorage('clientImageResize', false),
+  clientImageResize: atomWithLocalStorage('clientImageResize', true),
   /**
    * Whether copying a message also puts a rendered HTML version on the
    * clipboard, so apps that ignore Markdown (Teams, Outlook, Word) paste the

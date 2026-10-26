@@ -82,6 +82,51 @@ describe('ParentSubagentsProvider', () => {
     expect(result).toEqual(refreshed);
   });
 
+  it('reuses its parent index while chats match and owns discovery after navigation', () => {
+    mockUseParentSubagentsQuery.mockImplementation((conversationId: string) => ({
+      data: {
+        parentConversationId: conversationId,
+        children: conversationId === 'parent-conversation' ? [eventChild] : [],
+        childrenTruncated: false,
+      },
+      refetch: jest.fn(),
+    }));
+    let outer: ReturnType<typeof useParentSubagents> | undefined;
+    let panel: ReturnType<typeof useParentSubagents> | undefined;
+    const OuterProbe = () => {
+      outer = useParentSubagents();
+      return null;
+    };
+    const PanelProbe = () => {
+      panel = useParentSubagents();
+      return null;
+    };
+    const tree = (visibleConversation: string) => (
+      <ParentSubagentsProvider conversationId={visibleConversation} enabled>
+        <OuterProbe />
+        <ParentSubagentsProvider conversationId="parent-conversation" enabled>
+          <PanelProbe />
+        </ParentSubagentsProvider>
+      </ParentSubagentsProvider>
+    );
+    const view = renderProvider(tree('parent-conversation'));
+    expect(panel).toBe(outer);
+    expect(mockUseParentSubagentsQuery).toHaveBeenLastCalledWith(
+      'parent-conversation',
+      { enabled: false },
+      false,
+    );
+    view.rerender(tree('other-conversation'));
+    expect(panel?.conversationId).toBe('parent-conversation');
+    expect(panel?.byThreadId.get('event-thread')).toEqual(eventChild);
+    expect(outer?.conversationId).toBe('other-conversation');
+    expect(mockUseParentSubagentsQuery).toHaveBeenLastCalledWith(
+      'parent-conversation',
+      { enabled: true },
+      false,
+    );
+  });
+
   it('marks an active parent run for prompt discovery', () => {
     mockUseParentSubagentsQuery.mockReturnValue({ data: undefined, refetch: jest.fn() });
     renderProvider(

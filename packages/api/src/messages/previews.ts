@@ -9,12 +9,27 @@ import {
   hasToolCallPreview,
   toolCallPreviewsConfigSchema,
 } from 'librechat-data-provider';
-import type { TToolCallPreviewsConfig, ToolCallPreviewMarkers } from 'librechat-data-provider';
+import type {
+  Agents,
+  ToolCallPreviewMarkers,
+  TToolCallPreviewsConfig,
+} from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { AppConfigUserLike, GetAppConfigOptions } from '~/app/service';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 
-export type ToolCallPreviewLimits = Pick<TToolCallPreviewsConfig, 'outputChars' | 'argsChars'>;
+export type ToolCallPreviewLimits = Pick<TToolCallPreviewsConfig, 'outputChars' | 'argsChars'> &
+  Partial<Pick<TToolCallPreviewsConfig, 'attachmentWorkLimit'>>;
+
+type AttachmentWorkBudget = { remaining: number };
+
+const DEFAULT_ATTACHMENT_WORK_LIMIT: number = toolCallPreviewsConfigSchema.parse(
+  {},
+).attachmentWorkLimit;
+
+const attachmentWorkBudget = (limits: ToolCallPreviewLimits): AttachmentWorkBudget => ({
+  remaining: limits.attachmentWorkLimit ?? DEFAULT_ATTACHMENT_WORK_LIMIT,
+});
 
 /** Separates the kept start and end of an output preview. */
 export const TOOL_CALL_PREVIEW_ELISION = '\n…\n';
@@ -73,6 +88,9 @@ interface StoredToolCall extends ToolCallPreviewMarkers {
   args?: unknown;
   approval?: unknown;
   subagent_content?: unknown;
+  subagentAttachmentCalls?: Agents.SubagentAttachmentCall[];
+  agentId?: unknown;
+  subagentIdentity?: unknown;
 }
 
 interface StoredToolCallPart {
@@ -81,9 +99,10 @@ interface StoredToolCallPart {
   tool_call?: StoredToolCall;
 }
 
-/** A message as read for a client; only `content` is inspected. */
+/** A message as read for a client; `content` is previewed and `attachments` only read. */
 export interface PreviewableMessage {
   content?: unknown[] | null;
+  attachments?: unknown[] | null;
   /** Stamped onto each preview as `previewRevision`, so clients key fetched parts to it. */
   updatedAt?: Date | string | number | null;
 }
@@ -159,6 +178,249 @@ function hasPendingApproval(parts: unknown[]): boolean {
     }
   }
   return false;
+}
+
+/** The agent and step scope an attachment was saved with. */
+type AttachmentScope = { agentId?: string; stepId?: string };
+
+/** Each tool call id a message's attachments were saved under, with the scopes saved with it. */
+type AttachmentScopes = ReadonlyMap<string, readonly AttachmentScope[]>;
+
+/** The agent a stored subagent call ran, from its persisted identity. */
+const runAgentId = (toolCall: StoredToolCall): string | undefined => {
+  const identity = toolCall.subagentIdentity as { subagentAgentId?: unknown } | undefined;
+  return typeof identity?.subagentAgentId === 'string' ? identity.subagentAgentId : undefined;
+};
+
+type IndexedAttachmentCall = { call: Agents.SubagentAttachmentCall; order: number };
+
+interface AttachmentCallIndex {
+  first: IndexedAttachmentCall;
+  byAgent: Map<string | undefined, IndexedAttachmentCall>;
+  byStep: Map<string | undefined, IndexedAttachmentCall>;
+  byScope: Map<string | undefined, Map<string | undefined, IndexedAttachmentCall>>;
+}
+
+/** First call carrying every field the file scopes, with absent file fields as wildcards. */
+function firstAttachmentCall(
+  index: AttachmentCallIndex,
+  scope: AttachmentScope,
+): IndexedAttachmentCall | undefined {
+  if (scope.agentId == null) {
+    return scope.stepId == null ? index.first : index.byStep.get(scope.stepId);
+  }
+  return scope.stepId == null
+    ? index.byAgent.get(scope.agentId)
+    : index.byScope.get(scope.agentId)?.get(scope.stepId);
+}
+
+/** First compatible call, including calls missing a field the file carries. */
+function firstAgreeingAttachmentCall(
+  index: AttachmentCallIndex,
+  scope: AttachmentScope,
+): IndexedAttachmentCall | undefined {
+  if (scope.agentId == null && scope.stepId == null) {
+    return index.first;
+  }
+  let candidates: Array<IndexedAttachmentCall | undefined>;
+  if (scope.agentId == null) {
+    candidates = [index.byStep.get(scope.stepId), index.byStep.get(undefined)];
+  } else if (scope.stepId == null) {
+    candidates = [index.byAgent.get(scope.agentId), index.byAgent.get(undefined)];
+  } else {
+    candidates = [
+      index.byScope.get(scope.agentId)?.get(scope.stepId),
+      index.byScope.get(undefined)?.get(scope.stepId),
+      index.byScope.get(scope.agentId)?.get(undefined),
+      index.byScope.get(undefined)?.get(undefined),
+    ];
+  }
+  let first: IndexedAttachmentCall | undefined;
+  for (const candidate of candidates) {
+    if (candidate != null && (first == null || candidate.order < first.order)) {
+      first = candidate;
+    }
+  }
+  return first;
+}
+
+/**
+ * Tool calls anywhere in the parts, including inside nested subagent runs, that one of the
+ * message's attachments can belong to, with the agent and step scope a client checks it against.
+ * For each attachment scope only the first call matching it exactly and the first call agreeing
+ * with it are kept (the two a client can choose between), so a reused id, or an attachment with
+ * no scope to narrow it, does not grow the hint with the transcript. Indexing makes each scope
+ * a constant-time lookup rather than a scan for every child call.
+ */
+function nestedAttachmentCalls(
+  parts: unknown[],
+  wanted: AttachmentScopes,
+  ownerAgentId?: string,
+  budget?: AttachmentWorkBudget,
+): Agents.SubagentAttachmentCall[] | undefined {
+  const indexes = new Map<string, AttachmentCallIndex>();
+  const ordered: IndexedAttachmentCall[] = [];
+  /** Each level carries the agent of the run it belongs to, for parts that do not stamp one. */
+  const stack: Array<[unknown[], string | undefined]> = [[parts, ownerAgentId]];
+  while (stack.length > 0) {
+    const [current, levelOwner] = stack.pop() ?? [[], undefined];
+    for (const part of current) {
+      if (budget != null && budget.remaining-- <= 0) {
+        return undefined;
+      }
+      if (!isToolCallPart(part)) {
+        continue;
+      }
+      const { id, stepId, subagent_content } = part.tool_call;
+      if (typeof id === 'string' && wanted.has(id)) {
+        const owner = part.agentId ?? part.tool_call.agentId ?? levelOwner;
+        const agentId = typeof owner === 'string' ? owner : undefined;
+        const step = typeof stepId === 'string' ? stepId : undefined;
+        let index = indexes.get(id);
+        if (index?.byScope.get(agentId)?.has(step) !== true) {
+          const entry: IndexedAttachmentCall = {
+            call: {
+              id,
+              ...(agentId != null ? { agentId } : {}),
+              ...(step != null ? { stepId: step } : {}),
+            },
+            order: ordered.length,
+          };
+          ordered.push(entry);
+          if (index == null) {
+            index = { first: entry, byAgent: new Map(), byStep: new Map(), byScope: new Map() };
+            indexes.set(id, index);
+          }
+          if (!index.byAgent.has(agentId)) {
+            index.byAgent.set(agentId, entry);
+          }
+          if (!index.byStep.has(step)) {
+            index.byStep.set(step, entry);
+          }
+          const steps = index.byScope.get(agentId) ?? new Map();
+          steps.set(step, entry);
+          index.byScope.set(agentId, steps);
+        }
+      }
+      if (Array.isArray(subagent_content)) {
+        stack.push([subagent_content, runAgentId(part.tool_call)]);
+      }
+    }
+  }
+  const selected = new Set<IndexedAttachmentCall>();
+  for (const [id, index] of indexes) {
+    for (const scope of wanted.get(id) ?? []) {
+      if (budget != null && budget.remaining-- <= 0) {
+        return undefined;
+      }
+      const exact = firstAttachmentCall(index, scope);
+      const agreeing = firstAgreeingAttachmentCall(index, scope);
+      if (exact != null) {
+        selected.add(exact);
+      }
+      if (agreeing != null) {
+        selected.add(agreeing);
+      }
+    }
+  }
+  const calls: Agents.SubagentAttachmentCall[] = [];
+  for (const entry of ordered) {
+    if (selected.has(entry)) {
+      calls.push(entry.call);
+    }
+  }
+  return calls;
+}
+
+/** Deduplicates attachment scope tuples before any transcript is matched. */
+function attachmentToolCallIds(message: {
+  attachments?: readonly unknown[] | null;
+}): AttachmentScopes | undefined {
+  if (!Array.isArray(message.attachments) || message.attachments.length === 0) {
+    return undefined;
+  }
+  const scopes = new Map<string, AttachmentScope[]>();
+  const seen = new Map<string, Set<string>>();
+  for (const attachment of message.attachments) {
+    if (!isObject(attachment)) {
+      continue;
+    }
+    const { toolCallId, agentId, stepId } = attachment as {
+      toolCallId?: unknown;
+      agentId?: unknown;
+      stepId?: unknown;
+    };
+    if (typeof toolCallId !== 'string' || toolCallId === '') {
+      continue;
+    }
+    const scope: AttachmentScope = {
+      ...(typeof agentId === 'string' ? { agentId } : {}),
+      ...(typeof stepId === 'string' ? { stepId } : {}),
+    };
+    const key = JSON.stringify([scope.agentId, scope.stepId]);
+    const keys = seen.get(toolCallId) ?? new Set<string>();
+    if (keys.has(key)) {
+      continue;
+    }
+    keys.add(key);
+    seen.set(toolCallId, keys);
+    const entries = scopes.get(toolCallId) ?? [];
+    entries.push(scope);
+    scopes.set(toolCallId, entries);
+  }
+  return scopes.size > 0 ? scopes : undefined;
+}
+
+/** A file whose owner a client is resolving: the tool call it was saved under, with its scope. */
+export type AttachmentCallQuery = { toolCallId: string; agentId?: string; stepId?: string };
+
+/** A top-level subagent call and the child calls of its stored transcript the queried files name. */
+export type SubagentAttachmentCallsEntry = {
+  toolCallId: string;
+  stepId?: string;
+  agentId?: string;
+  calls: Agents.SubagentAttachmentCall[];
+};
+
+/**
+ * For each top-level subagent call in stored `content`, the child calls of its transcript that
+ * the queried files can belong to, chosen as a preview chooses `subagentAttachmentCalls`. Read
+ * from the transcript rather than the saved attachments, so a file that streamed before it was
+ * saved on the message resolves the same way.
+ */
+export function findSubagentAttachmentCalls(
+  content: unknown[],
+  files: ReadonlyArray<AttachmentCallQuery>,
+): SubagentAttachmentCallsEntry[] {
+  const wanted = attachmentToolCallIds({ attachments: files });
+  const entries: SubagentAttachmentCallsEntry[] = [];
+  if (wanted == null) {
+    return entries;
+  }
+  for (const part of content) {
+    if (!isToolCallPart(part) || !Array.isArray(part.tool_call.subagent_content)) {
+      continue;
+    }
+    const { id, stepId } = part.tool_call;
+    if (typeof id !== 'string' || id === '') {
+      continue;
+    }
+    const calls = nestedAttachmentCalls(
+      part.tool_call.subagent_content,
+      wanted,
+      runAgentId(part.tool_call),
+    );
+    if (calls == null || calls.length === 0) {
+      continue;
+    }
+    entries.push({
+      toolCallId: id,
+      ...(typeof stepId === 'string' && stepId !== '' ? { stepId } : {}),
+      ...(typeof part.agentId === 'string' && part.agentId !== '' ? { agentId: part.agentId } : {}),
+      calls,
+    });
+  }
+  return entries;
 }
 
 /** Cuts at `end` without splitting a surrogate pair. */
@@ -292,7 +554,11 @@ function canonicalDecimal(token: string): string {
   if (significant === '') {
     return '0';
   }
-  const trimmed = significant.replace(/0+$/, '');
+  let end = significant.length;
+  while (significant.charCodeAt(end - 1) === 48) {
+    end--;
+  }
+  const trimmed = significant.slice(0, end);
   const exponent =
     (exponentAt === -1 ? 0 : Number(unsigned.slice(exponentAt + 1))) -
     fraction.length +
@@ -444,12 +710,16 @@ export function previewToolCallOutput(
 /**
  * Returns the tool call with long content replaced by previews, or the same object when nothing
  * needed shortening. Only settled calls change: a call still waiting on output, approval or a
- * reader's answer keeps every field, since its card acts on them.
+ * reader's answer keeps every field, since its card acts on them. When the subagent transcript is
+ * left out, its tool calls that `attachmentIds` names stay on the call with their scope, so the
+ * files those calls saved still route to it before the transcript loads.
  */
 export function previewToolCall<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
   revision = '',
+  attachmentIds?: AttachmentScopes,
+  budget: AttachmentWorkBudget = attachmentWorkBudget(limits),
 ): T {
   if (!isAgentToolCall(toolCall) || !isSettled(toolCall) || !hasIdentity(toolCall)) {
     return toolCall;
@@ -462,10 +732,22 @@ export function previewToolCall<T extends StoredToolCall>(
   const outputPreview = previewToolCallOutput(toolCall, output, limits.outputChars);
   const argsPreview = previewToolCallArgs(toolCall.args, limits.argsChars);
   const subagentContent = toolCall.subagent_content;
-  const omitSubagentContent =
+  let omitSubagentContent =
     Array.isArray(subagentContent) &&
     subagentContent.length > 0 &&
     !hasPendingApproval(subagentContent);
+
+  let childCalls: Agents.SubagentAttachmentCall[] | undefined;
+  if (omitSubagentContent && attachmentIds != null) {
+    childCalls = nestedAttachmentCalls(
+      subagentContent as unknown[],
+      attachmentIds,
+      runAgentId(toolCall),
+      budget,
+    );
+    // Never omit a transcript with incomplete attachment ownership hints.
+    omitSubagentContent = childCalls != null;
+  }
 
   if (outputPreview === output && argsPreview == null && !omitSubagentContent) {
     return toolCall;
@@ -486,6 +768,9 @@ export function previewToolCall<T extends StoredToolCall>(
     delete next.subagent_content;
     next.subagentContentOmitted = true;
     next.subagentContentParts = (subagentContent as unknown[]).length;
+    if (childCalls != null && childCalls.length > 0) {
+      next.subagentAttachmentCalls = childCalls;
+    }
   }
   if (revision !== '') {
     next.previewRevision = revision;
@@ -501,9 +786,11 @@ function previewToolCallSafely<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
   revision: string,
+  attachmentIds: AttachmentScopes | undefined,
+  budget: AttachmentWorkBudget,
 ): T {
   try {
-    return previewToolCall(toolCall, limits, revision);
+    return previewToolCall(toolCall, limits, revision, attachmentIds, budget);
   } catch (error) {
     logger.warn('[toolCallPreviews] Sending a tool call in full; its preview failed', error);
     return toolCall;
@@ -515,7 +802,9 @@ export function previewContentToolCalls(
   content: unknown[],
   limits: ToolCallPreviewLimits,
   revision = '',
+  attachmentIds?: AttachmentScopes,
 ): unknown[] {
+  const budget = attachmentWorkBudget(limits);
   let result: unknown[] | undefined;
   /** First index of each identity; a repeat sends both calls whole (see `toolCallIdentity`). */
   const firstIndex = new Map<string, number>();
@@ -537,7 +826,7 @@ export function previewContentToolCalls(
       continue;
     }
     firstIndex.set(identity, i);
-    const toolCall = previewToolCallSafely(part.tool_call, limits, revision);
+    const toolCall = previewToolCallSafely(part.tool_call, limits, revision, attachmentIds, budget);
     if (toolCall === part.tool_call) {
       continue;
     }
@@ -566,7 +855,12 @@ export function previewMessagesToolCalls<T extends PreviewableMessage>(
     if (!Array.isArray(message?.content)) {
       continue;
     }
-    const content = previewContentToolCalls(message.content, limits, messageRevision(message));
+    const content = previewContentToolCalls(
+      message.content,
+      limits,
+      messageRevision(message),
+      attachmentToolCallIds(message),
+    );
     if (content === message.content) {
       continue;
     }
@@ -713,16 +1007,28 @@ export function withToolCallPreviews<T extends MessagesResult>(
 
 /**
  * Previews one message a mutation returns (an artifact edit's content, a branched response), so
- * a client that asked for previews merges a bounded copy into its conversation cache.
+ * a client that asked for previews merges a bounded copy into its conversation cache. A response
+ * that leaves out the stored `attachments` passes them separately: they only decide which
+ * subagent child calls the preview keeps as hints, and are not added to the response.
  */
 export function withMessageToolCallPreviews<T extends PreviewableMessage>(
   req: PreviewableResultRequest,
   message: T,
+  attachments?: unknown[] | null,
 ): T {
   if (message == null || !Array.isArray(message.content)) {
     return message;
   }
-  return withToolCallPreviews(req, { messages: [message] }).messages[0];
+  if (attachments == null || message.attachments != null) {
+    return withToolCallPreviews(req, { messages: [message] }).messages[0];
+  }
+  const withAttachments = { ...message, attachments };
+  const previewed = withToolCallPreviews(req, { messages: [withAttachments] }).messages[0];
+  if (previewed === withAttachments) {
+    return message;
+  }
+  const { attachments: _attachments, ...rest } = previewed;
+  return rest as T;
 }
 
 interface MessageWriteRequest {

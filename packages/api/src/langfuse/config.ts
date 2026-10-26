@@ -6,6 +6,7 @@ import {
   isLangfuseCentralMediaUploadDisabled,
   isLangfuseFanoutEnabled,
   isLangfuseTenantExportEnabled,
+  isLangfuseTraceAllowed,
   isLangfuseTraceSampled,
   isLangfuseTracingEnabled,
   usesLangfuseMultiTenantRouting,
@@ -250,6 +251,7 @@ export function buildLangfuseConfig({
   runId,
   tenantId,
   centralTraceExportEnabled = true,
+  isTemporary,
   user,
   traceContext,
 }: {
@@ -262,6 +264,8 @@ export function buildLangfuseConfig({
    * to drop the central pipeline while preserving tenant fanout when available.
    */
   centralTraceExportEnabled?: boolean;
+  /** Disables every destination unless `langfuse.trace.temporaryChats` opts in. */
+  isTemporary?: boolean;
   /** The requesting user, read only for the fields `langfuse.trace` allowlists. */
   user?: LangfuseTraceUser;
   /** Request values `langfuse.trace.conversationMetadataFields` may export. */
@@ -291,6 +295,7 @@ export function buildLangfuseConfig({
 
   if (
     !isLangfuseTracingEnabled() ||
+    !isLangfuseTraceAllowed(appConfig, isTemporary) ||
     (runId != null && !isLangfuseTraceSampled(traceIdForMessage(runId)))
   ) {
     langfuse.enabled = false;

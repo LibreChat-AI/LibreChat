@@ -187,6 +187,18 @@ function createServerConfig(url: string): ParsedServerConfig {
   };
 }
 
+/** Static headers keep the connection pooled per user instead of per request. */
+function createPooledConfig(url: string): ParsedServerConfig {
+  return {
+    type: 'streamable-http',
+    url,
+    source: 'yaml',
+    requiresOAuth: false,
+    initTimeout: 500,
+    headers: { 'X-Run-Id': 'static' },
+  };
+}
+
 function callEcho({
   manager,
   config,
@@ -229,6 +241,7 @@ describe('request-scoped MCP lifecycle integration', () => {
     manager = createManager();
     jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn(async () => ({
         allowedDomains: null,
         allowedAddresses: null,
@@ -540,6 +553,68 @@ describe('request-scoped MCP lifecycle integration', () => {
     expect(server.toolCallCount()).toBe(1);
     expect(new Set(server.observedRunIds())).toEqual(new Set(['recovery-run']));
   });
+
+  it('lets a pooled call outlive the turn that cleaned its context, keeping request-scoped servers closed', async () => {
+    const turn = createContext();
+    const callPooled = () =>
+      callEcho({
+        manager,
+        config: createPooledConfig(server.url),
+        requestScopedConnections: turn,
+        runId: 'run-1',
+        value: 'select 1',
+        serverName: 'pooled',
+      });
+    try {
+      await callPooled();
+      expect(server.toolCallCount()).toBe(1);
+      expect(turn.connections.size).toBe(0);
+
+      await cleanupMCPRequestContext(turn);
+      expect(turn.cleanupStarted).toBe(true);
+
+      // A detached child keeps the parent's context after the parent turn ends.
+      await expect(callPooled()).resolves.toBeDefined();
+      expect(server.toolCallCount()).toBe(2);
+      await expect(
+        callEcho({
+          manager,
+          config: createServerConfig(server.url),
+          requestScopedConnections: turn,
+          runId: 'run-1',
+          value: 'late',
+        }),
+      ).rejects.toThrow('Request-scoped connection context is closed');
+      expect(server.toolCallCount()).toBe(2);
+    } finally {
+      await manager.disconnectUserConnection(user.id, 'pooled').catch(() => undefined);
+      MCPConnection.clearCooldown('pooled');
+    }
+  });
+
+  it('creates a pooled connection on the first call after its turn cleaned the context', async () => {
+    const turn = createContext();
+    await cleanupMCPRequestContext(turn);
+    expect(turn.cleanupStarted).toBe(true);
+    try {
+      // A detached child's first call to a server its parent never used.
+      await expect(
+        callEcho({
+          manager,
+          config: createPooledConfig(server.url),
+          requestScopedConnections: turn,
+          runId: 'run-1',
+          value: 'select 1',
+          serverName: 'pooled-late',
+        }),
+      ).resolves.toBeDefined();
+      expect(server.toolCallCount()).toBe(1);
+      expect(turn.connections.size).toBe(0);
+    } finally {
+      await manager.disconnectUserConnection(user.id, 'pooled-late').catch(() => undefined);
+      MCPConnection.clearCooldown('pooled-late');
+    }
+  });
 });
 
 describe('operator requestHeaders integration', () => {
@@ -582,6 +657,7 @@ describe('operator requestHeaders integration', () => {
       })),
       getServerConfig: jest.fn(async () => createRequestHeadersConfig(server.url)),
       isAppServerConfig: jest.fn(async () => false),
+      isHiddenFromPrincipal: jest.fn(async () => false),
     } as unknown as MCPServersRegistry);
   });
 

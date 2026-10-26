@@ -150,7 +150,7 @@ const OGDialogTemplate: ForwardRefExoticComponent<
       <div className={cn('px-0 py-2', mainClassName)}>{main != null ? main : null}</div>
       <OGDialogFooter className={footerClassName}>
         {leftButtons != null ? (
-          <div className="mr-auto flex flex-row gap-2">{leftButtons}</div>
+          <div className="me-auto flex flex-row gap-2">{leftButtons}</div>
         ) : null}
         {showCancelButton && (
           <OGDialogClose asChild>

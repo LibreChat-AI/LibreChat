@@ -162,8 +162,9 @@ export type ChatFrame =
 
 /**
  * The body of the SSE `error` event: a bare message string (`handleError`),
- * `{ error, generationProtocolVersion }` from the agents stream route, or a
- * failed turn's partial request/response pair.
+ * `{ error, generationProtocolVersion }` from the agents stream route, or the
+ * error message `sendError` builds once headers are sent. No emitter sends a
+ * request/response pair here; a failed turn's pair arrives on `ChatFinalFrame`.
  */
 export type ChatErrorData =
   | string
@@ -174,8 +175,6 @@ export type ChatErrorData =
       error?: boolean | string | { message?: string };
       generationProtocolVersion?: number;
       conversation?: Partial<TConversation>;
-      requestMessage?: TMessage;
-      responseMessage?: TMessage;
     };
 
 /**
@@ -203,7 +202,11 @@ export type ChatEvent =
   | { type: 'context_usage'; data: TContextUsageEvent }
   /** AI SDK: `message-metadata`. */
   | { type: 'token_usage'; data: TTokenUsageEvent }
-  /** AI SDK: `tool-approval-request`. */
+  /**
+   * AI SDK: `tool-approval-request` for a `tool_approval` pause; an `ask_user_question` pause
+   * becomes a `data-ask-user-question` part. The decision travels on the resume request, so
+   * `approval-responded` and `output-denied` have no frame of their own.
+   */
   | { type: 'pending_action'; data: Agents.PendingAction }
   /** No AI SDK equivalent: steering. */
   | { type: 'steer_applied'; data: TSteerAppliedEvent }

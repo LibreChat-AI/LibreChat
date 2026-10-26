@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { LoneGroupContext, SoleToolContext } from '../../disclosure';
+import { LoneGroupContext, SoleToolContext, ToolContentRequestContext } from '../../disclosure';
 import BashCall from '../BashCall';
 import store from '~/store';
 
@@ -59,8 +59,7 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
   }) => (
     <div data-testid="progress-text" onClick={onClick}>
       {phase === 'running' ? inProgressText : finishedText}
-      {phase === 'failed' ? ' — tool failed' : ''}
-      {phase === 'failed' && verdict ? ` · ${verdict}` : ''}
+      {phase === 'failed' ? ` · ${verdict || 'tool failed'}` : ''}
     </div>
   ),
 }));
@@ -400,6 +399,34 @@ describe('BashCall sole tool disclosure', () => {
     expect(screen.getByText('hi')).toBeInTheDocument();
   });
 
+  it('requests the stored part for a bare panel it did not open itself', () => {
+    const renderLone = (lone: boolean, request: () => void) =>
+      render(
+        <RecoilRoot>
+          <ToolContentRequestContext.Provider value={request}>
+            <SoleToolContext.Provider value={false}>
+              <LoneGroupContext.Provider value={lone}>
+                <BashCall
+                  initialProgress={1}
+                  isSubmitting={false}
+                  args={{ command: 'echo hi' }}
+                  output="hi"
+                  runStepStatus="completed"
+                />
+              </LoneGroupContext.Provider>
+            </SoleToolContext.Provider>
+          </ToolContentRequestContext.Provider>
+        </RecoilRoot>,
+      );
+    const bareRequest = jest.fn();
+    renderLone(true, bareRequest);
+    expect(bareRequest).toHaveBeenCalled();
+
+    const rowRequest = jest.fn();
+    renderLone(false, rowRequest);
+    expect(rowRequest).not.toHaveBeenCalled();
+  });
+
   it('keeps its row while the only call is still running', () => {
     render(
       <RecoilRoot>
@@ -425,7 +452,7 @@ describe('BashCall sole tool disclosure', () => {
         </SoleToolContext.Provider>
       </RecoilRoot>,
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('tool failed');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('exit code 1');
   });
 
   it('keeps its row for a detached task whose dispatch step has closed', () => {
@@ -661,6 +688,21 @@ describe('BashCall exit status', () => {
       </RecoilRoot>,
     );
 
+  it('hides timeout executor guidance until details are opened', () => {
+    renderSettled(
+      'stdout:\nsleeping\n\n[terminated by SIGKILL][timed out]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects.',
+    );
+    expect(screen.queryByText(/Before retrying/)).not.toBeInTheDocument();
+  });
+
+  it('reveals the complete timeout trailer through details', () => {
+    renderSettled(
+      'stdout:\nsleeping\n\n[terminated by SIGKILL][timed out]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects.',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_details' }));
+    expect(screen.getByText(/Before retrying/)).toBeInTheDocument();
+  });
+
   it('does not read a trailer the sandbox command printed itself', () => {
     const { container } = renderSettled('stdout:\n[exit code: 1]', false);
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
@@ -670,12 +712,12 @@ describe('BashCall exit status', () => {
 
   it('fails the same output when the server marked it attached-workspace', () => {
     renderSettled('stdout:\n[exit code: 1]');
-    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 1$/);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/Ran command · exit code 1$/);
   });
 
   it('fails a non-zero exit even when the output matches no error pattern', () => {
     renderSettled('stdout:\n1 test failed\n\n[exit code: 2]');
-    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 2$/);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/Ran command · exit code 2$/);
   });
 
   it('keeps a zero exit successful even when stderr reads like an error', () => {
@@ -700,7 +742,7 @@ describe('BashCall exit status', () => {
     ['Command completed with no output.\n[terminated by SIGTERM]', 'terminated by SIGTERM'],
   ])('names the reason for a stopped command: %s', (output, reason) => {
     renderSettled(output);
-    expect(screen.getByTestId('progress-text')).toHaveTextContent(`tool failed · ${reason}`);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(`Ran command · ${reason}`);
   });
 
   it('keeps the text heuristic for sandbox output without an exit trailer', () => {
