@@ -11,20 +11,27 @@ const CACHE_ENTRY_VERSION = 1;
 const GLOBAL_LOCK_KEY = `${CacheKeys.TOOL_CACHE}:tools:global:write-lock`;
 
 const RELEASE_LOCK_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
+local released = 0
+for _, key in ipairs(KEYS) do
+  if redis.call('GET', key) == ARGV[1] then
+    released = released + redis.call('DEL', key)
+  end
 end
-return 0
+return released
 `;
 
 const CLAIM_OWNERSHIP_FENCE_SCRIPT = `
-local current = redis.call('GET', KEYS[1])
-if current and current ~= ARGV[1] then return 0 end
+for _, key in ipairs(KEYS) do
+  local current = redis.call('GET', key)
+  if current and current ~= ARGV[1] then return 0 end
+end
 local redisTime = redis.call('TIME')
 local now = (tonumber(redisTime[1]) * 1000) + math.floor(tonumber(redisTime[2]) / 1000)
 local ttl = tonumber(ARGV[2]) - now - tonumber(ARGV[3])
 if ttl <= 0 then return 0 end
-redis.call('PSETEX', KEYS[1], ttl, ARGV[1])
+for _, key in ipairs(KEYS) do
+  redis.call('PSETEX', key, ttl, ARGV[1])
+end
 return 1
 `;
 
@@ -294,6 +301,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
   const appWriteQueues = new Map<string, Promise<void>>();
   let globalQueue = Promise.resolve();
   let globalLockToken: string | undefined;
+  let globalLockFenceKey: string | undefined;
 
   const sharedRedis = (): boolean =>
     deps.ioredisClient != null &&
@@ -367,6 +375,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
   const globalCacheRawKey = rawKey(ToolCacheKeys.GLOBAL);
   /** Hashes to the same Redis Cluster slot as the unchanged legacy global catalog key. */
   const globalFenceKey = ownershipFenceKey('tools:global:write-fence', globalCacheRawKey);
+  const legacyGlobalFenceKey = `tools:global:write-fence:{${redisHashTag(globalCacheRawKey)}}`;
 
   async function withRedisLock<T>(
     lockKey: string,
@@ -405,6 +414,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
 
   async function withOwnershipFence<T>(
     fenceKey: string,
+    legacyFenceKey: string,
     token: string | undefined,
     leaseExpiresAt: number | undefined,
     operation: (fence?: OwnershipFence) => Promise<T>,
@@ -416,19 +426,35 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     if (fenceTtl <= 0) {
       throw new Error('Tool cache lock expired before ownership could be fenced');
     }
-    const claimed = await deps.keyvRedisClient!.eval(CLAIM_OWNERSHIP_FENCE_SCRIPT, {
-      keys: [fenceKey],
-      arguments: [token, String(leaseExpiresAt), String(LOCK_FENCE_SAFETY_MS)],
-    });
+    const redis = deps.keyvRedisClient!;
+    const args = [token, String(leaseExpiresAt), String(LOCK_FENCE_SAFETY_MS)];
+    let keys = [fenceKey, legacyFenceKey];
+    let claimed: unknown;
+    try {
+      claimed = await redis.eval(CLAIM_OWNERSHIP_FENCE_SCRIPT, { keys, arguments: args });
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      // Both rejections precede execution. Legacy writers cannot publish under
+      // the same key ACL, or when their fence cannot share the catalog's slot.
+      const denied = error.message.startsWith('NOPERM ');
+      const crossSlot =
+        calculateSlot(fenceKey) !== calculateSlot(legacyFenceKey) &&
+        (error.message === 'Redis catalog script keys must share one cluster slot' ||
+          error.message.startsWith('CROSSSLOT '));
+      if (!denied && !crossSlot) throw error;
+      keys = [fenceKey];
+      claimed = await redis.eval(CLAIM_OWNERSHIP_FENCE_SCRIPT, { keys, arguments: args });
+    }
     if (Number(claimed) !== 1) {
       throw new Error('Tool cache lock expired or was superseded before ownership could be fenced');
     }
     try {
-      return await operation({ key: fenceKey, token });
+      // Keep the legacy fence authoritative while old replicas can still claim it.
+      return await operation({ key: keys[keys.length - 1], token });
     } finally {
       try {
-        await deps.keyvRedisClient!.eval(RELEASE_LOCK_SCRIPT, {
-          keys: [fenceKey],
+        await redis.eval(RELEASE_LOCK_SCRIPT, {
+          keys,
           arguments: [token],
         });
       } catch (error) {
@@ -448,10 +474,11 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     const lockKey = `${CacheKeys.TOOL_CACHE}:tools:mcp-write-lock:${encodeURIComponent(userId)}:${encodeURIComponent(serverName)}`;
     const generationRawKey = rawKey(ToolCacheKeys.MCP_SERVER_GENERATION(userId, serverName));
     const fenceKey = ownershipFenceKey('tools:mcp:write-fence', generationRawKey);
+    const legacyFenceKey = `tools:mcp:write-fence:{${redisHashTag(generationRawKey)}}`;
     const locked = () =>
       withRedisLock(lockKey, GLOBAL_LOCK_TTL_MS, (token, leaseExpiresAt) =>
         requireOwnershipFence
-          ? withOwnershipFence(fenceKey, token, leaseExpiresAt, operation)
+          ? withOwnershipFence(fenceKey, legacyFenceKey, token, leaseExpiresAt, operation)
           : operation(),
       );
     const result = previous.then(locked, locked);
@@ -497,11 +524,11 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     if (!sharedRedis()) {
       return (await cache.set(ToolCacheKeys.GLOBAL, tools, ttl)) !== false;
     }
-    if (!globalLockToken) {
+    if (!globalLockToken || !globalLockFenceKey) {
       throw new Error('Global tool cache write requires lock ownership');
     }
     const written = await deps.keyvRedisClient!.eval(WRITE_GLOBAL_IF_OWNER_SCRIPT, {
-      keys: [globalFenceKey, globalCacheRawKey],
+      keys: [globalLockFenceKey, globalCacheRawKey],
       arguments: [globalLockToken, JSON.stringify(tools), String(Date.now() + ttl), String(ttl)],
     });
     if (Number(written) !== 1) {
@@ -515,11 +542,11 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       await cache.delete(ToolCacheKeys.GLOBAL);
       return;
     }
-    if (!globalLockToken) {
+    if (!globalLockToken || !globalLockFenceKey) {
       throw new Error('Global tool cache invalidation requires lock ownership');
     }
     const deleted = await deps.keyvRedisClient!.eval(DELETE_GLOBAL_IF_OWNER_SCRIPT, {
-      keys: [globalFenceKey, globalCacheRawKey],
+      keys: [globalLockFenceKey, globalCacheRawKey],
       arguments: [globalLockToken],
     });
     if (Number(deleted) !== 1) {
@@ -530,14 +557,22 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
   function runWithGlobalCacheLock<T>(operation: () => Promise<T>): Promise<T> {
     const locked = () =>
       withRedisLock(GLOBAL_LOCK_KEY, GLOBAL_LOCK_TTL_MS, async (token, leaseExpiresAt) => {
-        return withOwnershipFence(globalFenceKey, token, leaseExpiresAt, async (fence) => {
-          globalLockToken = fence?.token;
-          try {
-            return await operation();
-          } finally {
-            globalLockToken = undefined;
-          }
-        });
+        return withOwnershipFence(
+          globalFenceKey,
+          legacyGlobalFenceKey,
+          token,
+          leaseExpiresAt,
+          async (fence) => {
+            globalLockToken = fence?.token;
+            globalLockFenceKey = fence?.key;
+            try {
+              return await operation();
+            } finally {
+              globalLockToken = undefined;
+              globalLockFenceKey = undefined;
+            }
+          },
+        );
       });
     const result = globalQueue.then(locked, locked);
     globalQueue = result.then(
