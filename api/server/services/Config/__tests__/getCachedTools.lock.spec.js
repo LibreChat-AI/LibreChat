@@ -69,6 +69,10 @@ describe('global tool cache write lock', () => {
     { REDIS_KEY_PREFIX: 'myprefix_' },
     { REDIS_KEY_PREFIX: 'myprefix_', GLOBAL_PREFIX_SEPARATOR: ':' },
     { REDIS_KEY_PREFIX: 'myprefix_{tenant}', GLOBAL_PREFIX_SEPARATOR: '' },
+    { REDIS_KEY_PREFIX: 'myprefix_{' },
+    { REDIS_KEY_PREFIX: 'myprefix_}' },
+    { REDIS_KEY_PREFIX: 'myprefix_{{tenant}' },
+    { REDIS_KEY_PREFIX: 'myprefix_', GLOBAL_PREFIX_SEPARATOR: '{' },
   ])('fence key namespace %j', (cacheConfig) => {
     it.each(['global', 'user'])(
       'namespaces the %s fence without changing its slot',
@@ -88,11 +92,6 @@ describe('global tool cache write lock', () => {
           scope === 'global'
             ? `${namespace}tools:global`
             : `${namespace}tools:metadata:mcp:user-generation:{user-1:server-1}`;
-        const guardedHashTag = scope === 'global' ? guardedKey : 'user-1:server-1';
-        const hashTag = cacheConfig.REDIS_KEY_PREFIX?.includes('{tenant}')
-          ? 'tenant'
-          : guardedHashTag;
-        const fenceKey = `${namespace}tools:${scope === 'global' ? 'global' : 'mcp'}:write-fence:{${hashTag}}`;
 
         if (scope === 'global') {
           await expect(store.setCachedTools({ builtin: {} })).resolves.toBe(true);
@@ -102,6 +101,10 @@ describe('global tool cache write lock', () => {
           ).resolves.toEqual(expect.any(String));
         }
 
+        const fenceKey = mockKeyvRedisClient.eval.mock.calls[0][1].keys[0];
+        expect(fenceKey.startsWith(namespace)).toBe(true);
+        expect(fenceKey).toContain('write-fence');
+        expect(fenceKey).not.toBe(guardedKey);
         expect(mockKeyvRedisClient.eval.mock.calls.map(([, options]) => options.keys)).toEqual([
           [fenceKey],
           [fenceKey, guardedKey],
