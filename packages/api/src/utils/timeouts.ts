@@ -97,3 +97,12 @@ export function createSpeechBudget(
   const timeoutMs = getOutboundTimeoutMs(appConfig, 'speechMs');
   return () => outboundRequestBudget(timeoutMs, 'speechMs', signal);
 }
+
+/** Budget for one request under the configured (or default) `key` timeout. */
+export function configuredRequestBudget(
+  appConfig: Pick<AppConfig, 'timeouts'> | null | undefined,
+  key: OutboundTimeout,
+  signal?: AbortSignal,
+): ReturnType<typeof outboundRequestBudget> {
+  return outboundRequestBudget(getOutboundTimeoutMs(appConfig, key), key, signal);
+}

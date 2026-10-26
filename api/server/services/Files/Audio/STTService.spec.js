@@ -44,8 +44,7 @@ jest.mock('@librechat/api', () => ({
     field: finding.field,
   })),
   getBlockedUninspectableFileField: jest.fn(),
-  getOutboundTimeoutMs: jest.fn(() => 1000),
-  outboundRequestBudget: jest.fn(() => ({ timeout: 1000 })),
+  configuredRequestBudget: jest.fn(() => ({ timeout: 1000 })),
   contentFilterUninspectableResponse: jest.fn((field) => ({
     error: 'content_filter_uninspectable',
     source: 'file',

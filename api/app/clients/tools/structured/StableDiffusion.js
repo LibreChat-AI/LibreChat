@@ -9,8 +9,7 @@ const { Tool } = require('@librechat/agents/langchain/tools');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
 const {
   getBasePath,
-  getOutboundTimeoutMs,
-  outboundRequestBudget,
+  configuredRequestBudget,
   applySSRFSafeAgentIfDirect,
 } = require('@librechat/api');
 const paths = require('~/config/paths');
@@ -125,10 +124,7 @@ class StableDiffusionAPI extends Tool {
       const requestUrl = `${url}/sdapi/v1/txt2img`;
       const requestConfig = {
         ...(this.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect({}, requestUrl) : {}),
-        ...outboundRequestBudget(
-          getOutboundTimeoutMs(this.req?.config, 'imageGenerationMs'),
-          'imageGenerationMs',
-        ),
+        ...configuredRequestBudget(this.req?.config, 'imageGenerationMs'),
       };
       generationResponse = await axios.post(requestUrl, payload, requestConfig);
     } catch (error) {

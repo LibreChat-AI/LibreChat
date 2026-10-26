@@ -9,9 +9,8 @@ const {
   hasActiveFileFieldPolicy,
   genAzureEndpoint,
   getSafeErrorMetadata,
-  getOutboundTimeoutMs,
+  configuredRequestBudget,
   applyAxiosProxyConfig,
-  outboundRequestBudget,
   resolveConfigSecret,
   applySSRFSafeAgentIfDirect,
   contentFilterBlockResponse,
@@ -392,7 +391,7 @@ class STTService {
           sttSchema,
           { audioBuffer, audioFile, language },
           allowedAddresses,
-          outboundRequestBudget(getOutboundTimeoutMs(req.config, 'speechMs'), 'speechMs'),
+          configuredRequestBudget(req.config, 'speechMs'),
         );
       } catch (error) {
         const uninspectableField = getBlockedUninspectableFileField(req.config?.filters, [
