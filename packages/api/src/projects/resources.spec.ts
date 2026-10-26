@@ -248,6 +248,7 @@ describe('ChatProject resource hydration', () => {
     const methods = createMethods(mongoose);
     const stored = await File.create(
       file('repair', owner, {
+        embeddingOwnersComplete: true,
         source: 's3',
         storageKey: 'owner/repair',
         storageRegion: 'region',
