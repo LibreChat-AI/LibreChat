@@ -1,7 +1,7 @@
 import path from 'path';
 import axios from 'axios';
 import { ErrorTypes } from 'librechat-data-provider';
-import { checkUserKeyExpiry, loadServiceKey } from './key';
+import { checkUserKeyExpiry, isServiceKeyAvailable, loadServiceKey } from './key';
 import { readFileAsString } from './files';
 
 jest.mock('fs');
@@ -187,6 +187,25 @@ describe('loadServiceKey', () => {
 
     const result = await loadServiceKey(invalidBase64);
     expect(result).toBeNull();
+  });
+});
+
+describe('isServiceKeyAvailable', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('reads a key source once it has loaded, and retries one that failed', async () => {
+    const keyPath = '/secrets/remembered.json';
+    (readFileAsString as jest.Mock)
+      .mockRejectedValueOnce(new Error('ENOENT'))
+      .mockResolvedValueOnce({ content: JSON.stringify({ project_id: 'p' }), bytes: 16 });
+
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
+
+    expect(readFileAsString).toHaveBeenCalledTimes(2);
   });
 });
 

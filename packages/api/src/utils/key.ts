@@ -142,3 +142,24 @@ export function checkUserKeyExpiry(expiresAt: string, endpoint: string): void {
     throw new Error(errorMessage);
   }
 }
+
+/** Key sources that already loaded once in this process. */
+const availableServiceKeys = new Set<string>();
+
+/**
+ * Whether a Google service key loads from `keyPath`, for endpoint availability checks that run
+ * on every endpoints config read. A source that loaded once is remembered for the life of the
+ * process, so those reads stop re-reading, re-fetching and re-parsing the key; a failed load is
+ * not remembered and is retried on the next call.
+ */
+export async function isServiceKeyAvailable(keyPath: string): Promise<boolean> {
+  if (availableServiceKeys.has(keyPath)) {
+    return true;
+  }
+  const serviceKey = await loadServiceKey(keyPath);
+  if (serviceKey == null) {
+    return false;
+  }
+  availableServiceKeys.add(keyPath);
+  return true;
+}
