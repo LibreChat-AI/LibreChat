@@ -37,7 +37,7 @@ interface CachedAuthUserDoc {
   user: CachedAuthUser;
 }
 
-type CachedAuthUser = Omit<Partial<IUser>, '_id'> & {
+export type CachedAuthUser = Omit<Partial<IUser>, '_id'> & {
   _id?: string;
   id?: string;
 };

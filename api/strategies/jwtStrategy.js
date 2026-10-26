@@ -1,12 +1,14 @@
 const { logger, runAsSystem } = require('@librechat/data-schemas');
-const { SystemRoles } = require('librechat-data-provider');
+const { CacheKeys, SystemRoles } = require('librechat-data-provider');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const {
-  AGENT_TRIGGER_SCOPE,
+  loadJwtUser,
   isTokenRetired,
+  AGENT_TRIGGER_SCOPE,
   continueAfterBearerRetirement,
 } = require('@librechat/api');
-const { getUserById, updateUser } = require('~/models');
+const { getUserById, updateUser, isAgentTriggerPrincipalActive } = require('~/models');
+const getLogStores = require('~/cache/getLogStores');
 
 const AGENT_TRIGGER_ADMISSION_PATHS = ['/api/agents/chat/agents', '/api/agents/chat/steer/deliver'];
 
@@ -38,13 +40,12 @@ const jwtLogin = () =>
           done(null, false, { message: 'Agent trigger token is not valid for this endpoint' });
           return;
         }
-        const user = await runAsSystem(() =>
-          getUserById(
-            payload?.id,
-            '-password -__v -totpSecret -backupCodes +agentTriggerDeletionStartedAt',
-          ),
-        );
-        if (user?.agentTriggerDeletionStartedAt != null) {
+        const { user, deleting, remember } = await loadJwtUser(payload?.id, {
+          getUserById,
+          isPrincipalActive: isAgentTriggerPrincipalActive,
+          getCacheStore: () => getLogStores(CacheKeys.AUTH_USER_DOC),
+        });
+        if (deleting) {
           done(null, false, {
             message: 'Account deletion is in progress',
             code: 'ACCOUNT_DELETION_IN_PROGRESS',
@@ -63,10 +64,12 @@ const jwtLogin = () =>
               user.id = user._id.toString();
               /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
               user.idOnTheSource ??= null;
-              if (!user.role) {
+              const roleMissing = !user.role;
+              if (roleMissing) {
                 user.role = SystemRoles.USER;
                 await runAsSystem(() => updateUser(user.id, { role: user.role }));
               }
+              await remember(roleMissing);
               done(null, user);
             },
             isTokenRetired,
