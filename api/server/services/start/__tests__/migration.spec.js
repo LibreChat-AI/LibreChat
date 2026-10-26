@@ -32,9 +32,10 @@ describe('checkMigrations', () => {
     const done = checkMigrations();
     expect(mockWarnOnMissingSearchTokens).toHaveBeenCalledTimes(1);
 
+    expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledTimes(1);
+
     finishAgentCheck({});
     await done;
-    expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledTimes(1);
   });
 });
 

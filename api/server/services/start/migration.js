@@ -15,30 +15,31 @@ const { findRoleByIdentifier } = require('~/models');
 async function checkMigrations() {
   /** Started first so it overlaps the permission checks; it logs its own failures. */
   const searchTokens = warnOnMissingSearchTokens(mongoose.connection);
-  try {
-    const agentMigrationResult = await checkAgentPermissionsMigration({
+  /** Independent reads, so neither check waits on the other. */
+  await Promise.all([
+    checkAgentPermissionsMigration({
       mongoose,
       methods: {
         findRoleByIdentifier,
       },
       AgentModel: mongoose.models.Agent,
-    });
-    logAgentMigrationWarning(agentMigrationResult);
-  } catch (error) {
-    logger.error('[checkMigrations] Failed to check agent permissions migration:', error);
-  }
-  try {
-    const promptMigrationResult = await checkPromptPermissionsMigration({
+    })
+      .then(logAgentMigrationWarning)
+      .catch((error) => {
+        logger.error('[checkMigrations] Failed to check agent permissions migration:', error);
+      }),
+    checkPromptPermissionsMigration({
       mongoose,
       methods: {
         findRoleByIdentifier,
       },
       PromptGroupModel: mongoose.models.PromptGroup,
-    });
-    logPromptMigrationWarning(promptMigrationResult);
-  } catch (error) {
-    logger.error('[checkMigrations] Failed to check prompt permissions migration:', error);
-  }
+    })
+      .then(logPromptMigrationWarning)
+      .catch((error) => {
+        logger.error('[checkMigrations] Failed to check prompt permissions migration:', error);
+      }),
+  ]);
   await searchTokens;
 }
 

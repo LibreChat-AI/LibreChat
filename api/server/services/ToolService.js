@@ -26,6 +26,7 @@ const {
   buildWebSearchDynamicContext,
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
+  getReplayablePendingMCPOAuthStarts,
   getMCPServerNamesFromTools,
   createMCPOAuthDeferral,
   buildMCPAuthToolCall,
@@ -1422,20 +1423,15 @@ async function loadToolDefinitionsWrapper({
 
   /** OAuth discovery must not reconnect (or prompt for) a server whose
    *  definitions the collision filter deliberately rejected. */
-  for (const serverName of getMCPServerNamesFromTools(defsFilteredTools, mcpServerNames)) {
-    if (oauthDeferral.hasSignInDecision(serverName)) {
-      continue;
-    }
-
-    const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
-      flowManager,
-      userId: req.user.id,
-      serverName,
-    });
-    if (pendingOAuthStart) {
-      pendingOAuthServers.add(serverName);
-      pendingOAuthStarts.set(serverName, pendingOAuthStart);
-    }
+  const discoveredOAuthStarts = await getReplayablePendingMCPOAuthStarts({
+    flowManager,
+    userId: req.user.id,
+    serverNames: getMCPServerNamesFromTools(defsFilteredTools, mcpServerNames),
+    skip: (serverName) => oauthDeferral.hasSignInDecision(serverName),
+  });
+  for (const [serverName, pendingOAuthStart] of discoveredOAuthStarts) {
+    pendingOAuthServers.add(serverName);
+    pendingOAuthStarts.set(serverName, pendingOAuthStart);
   }
 
   if (pendingOAuthServers.size > 0 && (res || streamId)) {

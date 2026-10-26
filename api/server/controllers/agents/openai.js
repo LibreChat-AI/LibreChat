@@ -600,27 +600,25 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       const resolveLinkedInstructions = getLinkedInstructionsResolver();
       const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
       const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-      const accessibleSkillIds = skillsCapabilityEnabled
-        ? withDeploymentSkillIds(
-            await findAccessibleResources({
+      const [accessibleSkillIds, editableSkillIds, skillCreateAllowed] = await Promise.all([
+        skillsCapabilityEnabled
+          ? findAccessibleResources({
               userId: principal.userId,
               role: principal.role,
               resourceType: ResourceType.SKILL,
               requiredPermissions: PermissionBits.VIEW,
-            }),
-          )
-        : [];
-      const editableSkillIds = skillsCapabilityEnabled
-        ? await findAccessibleResources({
-            userId: principal.userId,
-            role: principal.role,
-            resourceType: ResourceType.SKILL,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : [];
-      const skillCreateAllowed = skillsCapabilityEnabled
-        ? await getSkillToolDeps().canCreateSkill({ req })
-        : false;
+            }).then(withDeploymentSkillIds)
+          : [],
+        skillsCapabilityEnabled
+          ? findAccessibleResources({
+              userId: principal.userId,
+              role: principal.role,
+              resourceType: ResourceType.SKILL,
+              requiredPermissions: PermissionBits.EDIT,
+            })
+          : [],
+        skillsCapabilityEnabled ? getSkillToolDeps().canCreateSkill({ req }) : false,
+      ]);
 
       const { skillStates, defaultActiveOnShare } = await loadSkillStates({
         userId: principal.userId,
