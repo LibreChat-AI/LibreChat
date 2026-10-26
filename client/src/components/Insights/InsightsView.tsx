@@ -886,22 +886,34 @@ export default function InsightsView() {
                   <KpiCard key={card.id} card={card} locale={locale} />
                 ))}
               </div>
-              <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,36.25rem),1fr))] gap-3">
-                <TopUsersTable rows={data.topUsers} localize={localize} locale={locale} />
-                <ChurnedUsersTable rows={data.churnedUsers} localize={localize} locale={locale} />
-              </div>
-              <LatestConversations
-                rows={data.latest.conversations}
-                search={searchInput}
-                activeSearch={search}
-                page={data.latest.page}
-                pages={data.latest.pages}
-                isFetching={insights.isFetching}
-                setPage={setPage}
-                setSearch={setSearchInput}
-                localize={localize}
-                locale={locale}
-              />
+              {(data.topUsers || data.churnedUsers) && (
+                <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,36.25rem),1fr))] gap-3">
+                  {data.topUsers && (
+                    <TopUsersTable rows={data.topUsers} localize={localize} locale={locale} />
+                  )}
+                  {data.churnedUsers && (
+                    <ChurnedUsersTable
+                      rows={data.churnedUsers}
+                      localize={localize}
+                      locale={locale}
+                    />
+                  )}
+                </div>
+              )}
+              {data.latest && (
+                <LatestConversations
+                  rows={data.latest.conversations}
+                  search={searchInput}
+                  activeSearch={search}
+                  page={data.latest.page}
+                  pages={data.latest.pages}
+                  isFetching={insights.isFetching}
+                  setPage={setPage}
+                  setSearch={setSearchInput}
+                  localize={localize}
+                  locale={locale}
+                />
+              )}
             </>
           )}
         </div>

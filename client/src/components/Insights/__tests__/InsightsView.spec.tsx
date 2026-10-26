@@ -2,10 +2,10 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { render, screen, waitFor } from '@testing-library/react';
-import type { TInsightsParams } from 'librechat-data-provider';
+import type { TInsightsParams, TInsightsResponse } from 'librechat-data-provider';
 import InsightsView from '../InsightsView';
 
-const insightsData = {
+const insightsData: TInsightsResponse = {
   agents: [
     { id: 'agent-1', name: 'Alpha' },
     { id: 'agent-2', name: 'Beta' },
@@ -13,7 +13,7 @@ const insightsData = {
   ],
   summary: { totalConversations: 4, totalUsers: 2, totalMessages: 8, totalTokens: 100 },
   daily: [],
-  latest: { conversations: [], page: 1, pages: 1 },
+  latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },
   topUsers: [],
   churnedUsers: [],
 };
@@ -82,6 +82,28 @@ describe('InsightsView agent selection', () => {
       error: null,
       params,
     }));
+  });
+
+  it('renders an aggregate-only response without detail tables or identity search', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        agents: insightsData.agents,
+        summary: insightsData.summary,
+        daily: insightsData.daily,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+    renderView();
+    expect(screen.getByText('com_insights_total_conversations')).toBeInTheDocument();
+    expect(screen.queryByText('com_insights_top_users')).not.toBeInTheDocument();
+    expect(screen.queryByText('com_insights_churned_users')).not.toBeInTheDocument();
+    expect(screen.queryByText('com_insights_latest_conversations')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('textbox', { name: 'com_insights_search_placeholder' }),
+    ).not.toBeInTheDocument();
   });
 
   it('filters names without changing selection and clears search on close', async () => {
