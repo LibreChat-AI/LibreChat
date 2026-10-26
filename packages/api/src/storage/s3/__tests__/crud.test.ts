@@ -48,6 +48,7 @@ jest.mock('@librechat/data-schemas', () => ({
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { deleteRagFile } from '~/files';
 import { logger } from '@librechat/data-schemas';
+import { createStoredUploadDelete } from '~/files/orphan';
 
 describe('S3 CRUD', () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -939,6 +940,43 @@ describe('S3 CRUD', () => {
       await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
       expect(onDelete.mock.calls).toEqual([[], ['rejected']]);
     });
+
+    it.each([FileSources.s3, FileSources.cloudfront])(
+      'deletes an unrecorded %s upload independently of vector rollback',
+      async (source) => {
+        const mockFile = {
+          filepath: 'images/user123/file.jpg',
+          user: 'user123',
+          file_id: 'failed-upload',
+          source,
+          embedded: true,
+          metadata: { embeddedEntities: ['agent-a'] },
+        } as TFile;
+        s3Mock.on(HeadObjectCommand).resolves({});
+        jest
+          .mocked(deleteRagFile)
+          .mockImplementationOnce(async ({ file }) => file.embedded !== true);
+        const { deleteFileFromS3 } = await import('../crud');
+        const failure = new Error('Vector deletion was not confirmed');
+        const vectors = jest.fn().mockRejectedValue(failure);
+        const remove = createStoredUploadDelete({
+          source,
+          getDeleteFile: (destination) =>
+            destination === FileSources.vectordb
+              ? vectors
+              : async (_req, file) => deleteFileFromS3(mockReq, { ...mockFile, ...file }),
+        });
+        await expect(remove(mockReq as never, { ...mockFile, source })).rejects.toBe(failure);
+        expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+        expect(deleteRagFile).toHaveBeenCalledWith({
+          userId: 'user123',
+          file: { ...mockFile, embedded: false },
+        });
+        expect(vectors).toHaveBeenCalledWith(mockReq, mockFile);
+        expect(mockFile.embedded).toBe(true);
+        expect(mockFile.metadata?.embeddedEntities).toEqual(['agent-a']);
+      },
+    );
 
     it('keeps the S3 object when vector cleanup returns false', async () => {
       const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
