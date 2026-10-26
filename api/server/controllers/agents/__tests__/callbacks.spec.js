@@ -37,6 +37,7 @@ jest.mock('@librechat/api', () => ({
   feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
   stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
+  normalizeCodeOutputPath: jest.requireActual('@librechat/api').normalizeCodeOutputPath,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -61,6 +62,7 @@ jest.mock('~/server/services/Files/Citations', () => ({
 
 jest.mock('~/server/services/Files/Code/process', () => ({
   processCodeOutput: jest.fn(),
+  publishSelectedCodeOutput: jest.fn(),
   /* `runPreviewFinalize` is the runtime pairing for `finalize` (defined
    * alongside processCodeOutput in process.js). The callback wires
    * the deferred render through it; reproduce the basic happy-path here so the
@@ -92,6 +94,7 @@ jest.mock('~/server/services/Files/Code/preflight', () => ({
       .map((file) => ({
         file,
         sessionId: file.storage_session_id ?? artifact.session_id,
+        preparedBuffer: Buffer.from('prepared'),
       })),
   ),
 }));
@@ -721,6 +724,148 @@ describe('createToolEndCallback', () => {
       write: jest.fn(),
     };
     artifactPromises = [];
+  });
+
+  it('publishes only the exact registered code paths as durable run artifacts', async () => {
+    const {
+      publishSelectedCodeOutput,
+      processCodeOutput,
+    } = require('~/server/services/Files/Code/process');
+    publishSelectedCodeOutput.mockResolvedValue({
+      file: {
+        file_id: 'published-file',
+        filename: 'r12.txt',
+        filepath: '/uploads/published-file',
+        type: 'text/plain',
+        conversationId: 'conversation-1',
+        messageId: 'run-1',
+        toolCallId: 'call-1',
+      },
+      selectionId: 'selection-1',
+    });
+    const selection = {
+      runId: 'run-1',
+      agentId: 'agent-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      ordinal: 3,
+      status: 'pending',
+      paths: [{ pathIndex: 0, outputPath: 'r12.txt', status: 'pending' }],
+    };
+    const outputSelectionRegistry = {
+      get: jest.fn(() => selection),
+      markPublished: jest.fn(),
+      markFailed: jest.fn(),
+    };
+    const toolEndCallback = createToolEndCallback({
+      req,
+      res,
+      artifactPromises,
+      outputSelectionRegistry,
+    });
+    await toolEndCallback(
+      {
+        output: {
+          name: 'bash_tool',
+          tool_call_id: 'call-1',
+          artifact: {
+            session_id: 'session-1',
+            output_paths: ['/mnt/data/r12.txt'],
+            files: [{ id: 'source-file', name: 'r12.txt', storage_session_id: 'session-1' }],
+          },
+        },
+      },
+      {
+        run_id: 'run-1',
+        thread_id: 'conversation-1',
+        executingAgentId: 'agent-1',
+        stepId: 'step-1',
+        codeExecutionContext: { baseUrl: 'https://code.invalid', executionProfile: 'default' },
+      },
+    );
+    await Promise.all(artifactPromises);
+
+    expect(publishSelectedCodeOutput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-1',
+        conversationId: 'conversation-1',
+        agentId: 'agent-1',
+        stepId: 'step-1',
+        toolCallId: 'call-1',
+        pathIndex: 0,
+        selectionOrdinal: 3,
+      }),
+    );
+    expect(outputSelectionRegistry.markPublished).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1', agentId: 'agent-1', toolCallId: 'call-1' }),
+      0,
+      'selection-1',
+      'published-file',
+    );
+    expect(processCodeOutput).not.toHaveBeenCalled();
+  });
+
+  it('rejects a selected publication failure without leaking an unhandled chain promise', async () => {
+    const { publishSelectedCodeOutput } = require('~/server/services/Files/Code/process');
+    publishSelectedCodeOutput.mockRejectedValueOnce(new Error('storage unavailable'));
+    const selection = {
+      runId: 'run-1',
+      agentId: 'agent-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      ordinal: 1,
+      status: 'pending',
+      paths: [{ pathIndex: 0, outputPath: 'r12.txt', status: 'pending' }],
+    };
+    const outputSelectionRegistry = {
+      get: jest.fn(() => selection),
+      markPublished: jest.fn(),
+      markFailed: jest.fn(),
+    };
+    const toolEndCallback = createToolEndCallback({
+      req,
+      res,
+      artifactPromises,
+      outputSelectionRegistry,
+    });
+    const unhandledRejection = jest.fn();
+    process.on('unhandledRejection', unhandledRejection);
+
+    try {
+      await expect(
+        toolEndCallback(
+          {
+            output: {
+              name: 'bash_tool',
+              tool_call_id: 'call-1',
+              artifact: {
+                session_id: 'session-1',
+                output_paths: ['r12.txt'],
+                files: [{ id: 'source-file', name: 'r12.txt', storage_session_id: 'session-1' }],
+              },
+            },
+          },
+          {
+            run_id: 'run-1',
+            thread_id: 'conversation-1',
+            executingAgentId: 'agent-1',
+            stepId: 'step-1',
+            codeExecutionContext: { baseUrl: 'https://code.invalid', executionProfile: 'default' },
+          },
+        ),
+      ).rejects.toThrow('storage unavailable');
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', unhandledRejection);
+    }
+
+    expect(publishSelectedCodeOutput).toHaveBeenCalledTimes(1);
+    expect(outputSelectionRegistry.markFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1', agentId: 'agent-1', toolCallId: 'call-1' }),
+      'publication',
+      'publication_error',
+    );
+    expect(unhandledRejection).not.toHaveBeenCalled();
   });
 
   it('preserves separate owners for final search artifacts with repeated tool-call IDs', async () => {

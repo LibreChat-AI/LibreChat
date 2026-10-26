@@ -39,9 +39,14 @@ const {
   collectToolCallIds,
   createToolTimingAdapter,
   stampCommandExecutor,
+  normalizeCodeOutputPath,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
-const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
+const {
+  processCodeOutput,
+  publishSelectedCodeOutput,
+  runPreviewFinalize,
+} = require('~/server/services/Files/Code/process');
 const { preflightCodeOutputBatch } = require('~/server/services/Files/Code/preflight');
 const { saveBase64Image } = require('~/server/services/Files/process');
 
@@ -74,19 +79,68 @@ async function enqueueCodeOutputBatch({
   artifactPromises,
   codeExecutionContext,
   processEntry,
+  onSelectedFailure,
 }) {
-  const entries = await preflightCodeOutputBatch({ req, artifact, codeExecutionContext });
+  const selectedOutputsRequested = artifact?.output_paths !== undefined;
+  let entries;
+  try {
+    entries = await preflightCodeOutputBatch({ req, artifact, codeExecutionContext });
+  } catch (error) {
+    if (selectedOutputsRequested) onSelectedFailure?.(error);
+    throw error;
+  }
   let persistenceChain = Promise.resolve();
+  const batchPromises = [];
   for (const entry of entries) {
     const current = persistenceChain
       .then(() => processEntry(entry))
-      .catch(() => {
+      .catch((error) => {
         logger.error('Error processing code output');
+        if (selectedOutputsRequested) {
+          onSelectedFailure?.(error);
+          throw error;
+        }
         return null;
       });
-    persistenceChain = current.then(() => undefined);
+    persistenceChain = current;
     artifactPromises.push(current);
+    batchPromises.push(current);
   }
+  if (selectedOutputsRequested) {
+    await Promise.all(batchPromises);
+  }
+}
+
+function resolveRegisteredCodeOutputSelection(outputSelectionRegistry, output, metadata) {
+  const identity = {
+    runId: metadata?.run_id,
+    agentId: metadata?.executingAgentId ?? metadata?.agentId ?? metadata?.agent_id,
+    stepId: metadata?.stepId,
+    toolCallId: output?.tool_call_id,
+  };
+  if (
+    !outputSelectionRegistry ||
+    typeof identity.runId !== 'string' ||
+    identity.runId.length === 0 ||
+    typeof identity.agentId !== 'string' ||
+    identity.agentId.length === 0 ||
+    typeof identity.stepId !== 'string' ||
+    identity.stepId.length === 0 ||
+    typeof identity.toolCallId !== 'string' ||
+    identity.toolCallId.length === 0
+  ) {
+    return undefined;
+  }
+  const selection = outputSelectionRegistry.get(identity);
+  if (
+    selection?.runId !== identity.runId ||
+    selection?.agentId !== identity.agentId ||
+    selection?.stepId !== identity.stepId ||
+    selection?.toolCallId !== identity.toolCallId
+  ) {
+    return undefined;
+  }
+  return { identity, selection };
 }
 
 class ModelEndHandler {
@@ -364,6 +418,7 @@ function getDefaultHandlers({
       `[getDefaultHandlers] Missing required options: res: ${!res}, aggregateContent: ${!aggregateContent}`,
     );
   }
+  const outputSelectionRegistry = toolExecuteOptions?.outputSelectionRegistry;
   const eventActivityPhases = {
     [GraphEvents.ON_RUN_STEP]: 'run_step',
     [GraphEvents.ON_RUN_STEP_DELTA]: 'run_step_delta',
@@ -492,6 +547,11 @@ function getDefaultHandlers({
           }
         }
         aggregateContent({ event, data });
+        outputSelectionRegistry?.restoreRunStep(
+          data,
+          metadata?.run_id,
+          metadata?.agent_id ?? metadata?.agentId,
+        );
         if (data?.stepDetails.type === StepTypes.TOOL_CALLS) {
           await emitForJob({ event, data });
           await maybeEmitSandboxStarting(emitForJob, data, metadata);
@@ -610,6 +670,11 @@ function getDefaultHandlers({
         }
         toolTiming.completed(data);
         aggregateContent({ event, data });
+        outputSelectionRegistry?.restoreCompleted(
+          data?.result,
+          metadata?.run_id,
+          metadata?.agent_id ?? metadata?.agentId,
+        );
         const stepId = data?.result?.id;
         const runStep = stepMap?.get(stepId);
         const toolCall = contentParts?.[runStep?.index]?.tool_call;
@@ -913,7 +978,14 @@ function writeAttachmentUpdate(res, streamId, attachment, expectedCreatedAt) {
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted attachments.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createToolEndCallback({ req, res, artifactPromises, streamId = null, jobCreatedAt }) {
+function createToolEndCallback({
+  req,
+  res,
+  artifactPromises,
+  outputSelectionRegistry,
+  streamId = null,
+  jobCreatedAt,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1073,8 +1145,16 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
       return;
     }
 
-    if (!output.artifact.files) {
+    const selectedOutputsRequested = output.artifact.output_paths !== undefined;
+    if (!output.artifact.files && !selectedOutputsRequested) {
       return;
+    }
+
+    const registeredSelection = selectedOutputsRequested
+      ? resolveRegisteredCodeOutputSelection(outputSelectionRegistry, output, metadata)
+      : undefined;
+    if (selectedOutputsRequested && !registeredSelection) {
+      throw new Error('The selected code output could not be bound to its run.');
     }
 
     const toolCallId = output.tool_call_id;
@@ -1083,22 +1163,70 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
       artifact: output.artifact,
       artifactPromises,
       codeExecutionContext: metadata.codeExecutionContext,
+      onSelectedFailure: () => {
+        if (registeredSelection) {
+          outputSelectionRegistry.markFailed(
+            registeredSelection.identity,
+            'publication',
+            'publication_error',
+          );
+        }
+      },
       processEntry: async ({ file, sessionId, preparedBuffer, downloadFallback }) => {
-        const result = await processCodeOutput({
-          req,
-          id: file.id,
-          name: file.name,
-          messageId: metadata.run_id,
-          toolCallId,
-          conversationId: metadata.thread_id,
-          session_id: sessionId,
-          codeApiBaseUrl: metadata.codeExecutionContext?.baseUrl,
-          executionProfile: metadata.codeExecutionContext?.executionProfile,
-          executionRouteKey: metadata.codeExecutionContext?.executionRouteKey,
-          bridgeWorkerId: metadata.codeExecutionContext?.bridgeWorkerId,
-          preparedBuffer,
-          downloadFallback,
-        });
+        let result;
+        if (selectedOutputsRequested && registeredSelection) {
+          const normalizedFilePath = normalizeCodeOutputPath(file.name);
+          const pathIndex = Array.isArray(output.artifact.output_paths)
+            ? output.artifact.output_paths.findIndex(
+                (candidate) => normalizeCodeOutputPath(candidate) === normalizedFilePath,
+              )
+            : -1;
+          const selectedPath = registeredSelection.selection.paths.find(
+            (path) => path.pathIndex === pathIndex,
+          );
+          if (pathIndex < 0 || !selectedPath || selectedPath.outputPath !== normalizedFilePath) {
+            throw new Error('A selected output did not match its registered path.');
+          }
+          result = await publishSelectedCodeOutput({
+            req,
+            file,
+            sessionId,
+            preparedBuffer,
+            runId: registeredSelection.identity.runId,
+            conversationId: metadata.thread_id,
+            agentId: registeredSelection.identity.agentId,
+            stepId: registeredSelection.identity.stepId,
+            toolCallId: registeredSelection.identity.toolCallId,
+            pathIndex,
+            selectionOrdinal: registeredSelection.selection.ordinal,
+            codeExecutionContext: metadata.codeExecutionContext,
+          });
+          if (!result?.file || !result.selectionId) {
+            throw new Error('The selected output could not be durably published.');
+          }
+          outputSelectionRegistry.markPublished(
+            registeredSelection.identity,
+            pathIndex,
+            result.selectionId,
+            result.file.file_id,
+          );
+        } else {
+          result = await processCodeOutput({
+            req,
+            id: file.id,
+            name: file.name,
+            messageId: metadata.run_id,
+            toolCallId,
+            conversationId: metadata.thread_id,
+            session_id: sessionId,
+            codeApiBaseUrl: metadata.codeExecutionContext?.baseUrl,
+            executionProfile: metadata.codeExecutionContext?.executionProfile,
+            executionRouteKey: metadata.codeExecutionContext?.executionRouteKey,
+            bridgeWorkerId: metadata.codeExecutionContext?.bridgeWorkerId,
+            preparedBuffer,
+            downloadFallback,
+          });
+        }
         const fileMetadata = addStatefulWorkspaceChange(
           result?.file ?? null,
           output.artifact,

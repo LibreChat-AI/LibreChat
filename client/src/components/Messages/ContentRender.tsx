@@ -99,6 +99,8 @@ const ContentRender = memo(function ContentRender({
   const { attachments, searchResults } = useAttachments({
     messageId: msg?.messageId,
     attachments: msg?.attachments,
+    content: msg?.content,
+    conversationId: msg?.conversationId,
   });
   const {
     edit,

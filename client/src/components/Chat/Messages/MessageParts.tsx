@@ -37,6 +37,8 @@ function MessageParts(props: TMessageProps) {
   const { attachments, searchResults } = useAttachments({
     messageId: message?.messageId,
     attachments: message?.attachments,
+    content: message?.content,
+    conversationId: message?.conversationId,
   });
   const {
     edit,

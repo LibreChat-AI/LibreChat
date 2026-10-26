@@ -30,6 +30,7 @@ import { ContentFilterError } from '../middleware/contentFilter';
 import { WorkspaceToolHttpError } from '../code/workspace';
 import { createAttachedWorkspaceBashTool, stampCommandExecutor } from '../code/command';
 import { createCodeApiUploadRegistry } from '~/utils';
+import { createRunArtifactSelectionRegistry } from './runArtifactSelection';
 
 function createMockTool(
   name: string,
@@ -306,6 +307,78 @@ describe('getAttachmentOwnership', () => {
 });
 
 describe('createToolExecuteHandler', () => {
+  it('keeps output_paths host-only and binds the exact finalized bash call', async () => {
+    const capturedArgs: unknown[] = [];
+    const capturedOutputs: Array<Record<string, unknown>> = [];
+    const contentParts = [
+      {
+        type: 'tool_call',
+        agentId: 'agent-1',
+        tool_call: { id: 'call-1', name: 'bash_tool' },
+      },
+    ];
+    const outputSelectionRegistry = createRunArtifactSelectionRegistry({
+      contentParts,
+      stepMap: new Map([['step-1', { index: 0 }]]),
+    });
+    outputSelectionRegistry.restoreRunStep(
+      {
+        id: 'step-1',
+        stepDetails: { tool_calls: [{ id: 'call-1', name: 'bash_tool', args: {} }] },
+      },
+      'run-1',
+      'agent-1',
+    );
+    const bashTool = {
+      name: 'bash_tool',
+      invoke: jest.fn(async (args: unknown) => {
+        capturedArgs.push(args);
+        return {
+          content: 'created final file',
+          artifact: {
+            session_id: 'session-1',
+            files: [{ id: 'source-1', name: 'r12.txt', storage_session_id: 'session-1' }],
+          },
+        };
+      }),
+    };
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [bashTool] as never[] }),
+      outputSelectionRegistry,
+      toolEndCallback: async (data) => {
+        capturedOutputs.push(data.output?.artifact as Record<string, unknown>);
+      },
+    });
+    const results = await new Promise<ToolExecuteResult[]>((resolve, reject) => {
+      void handler.handle('on_tool_execute', {
+        agentId: 'agent-1',
+        metadata: { run_id: 'run-1', thread_id: 'conversation-1' },
+        toolCalls: [
+          {
+            id: 'call-1',
+            stepId: 'step-1',
+            name: 'bash_tool',
+            args: { command: 'write final', output_paths: ['/mnt/data/r12.txt'] },
+          },
+        ],
+        resolve,
+        reject,
+      } as ToolExecuteBatchRequest);
+    });
+
+    expect(results[0]?.status).toBe('success');
+    expect(capturedArgs).toEqual([{ command: 'write final' }]);
+    expect(capturedOutputs[0]?.output_paths).toEqual(['r12.txt']);
+    expect(contentParts[0]?.tool_call.outputSelection).toMatchObject({
+      runId: 'run-1',
+      agentId: 'agent-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      ordinal: 1,
+      status: 'pending',
+    });
+  });
+
   describe('code execution session context passthrough', () => {
     it('passes session_id and _injected_files from codeSessionContext to toolCallConfig', async () => {
       const capturedConfigs: Record<string, unknown>[] = [];

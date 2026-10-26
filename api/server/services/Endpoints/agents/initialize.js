@@ -57,6 +57,7 @@ const {
   getMCPRequestContext,
   createSubagentCodeRouting,
   hasEntityEmbeddings,
+  createRunArtifactSelectionRegistry,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -280,10 +281,12 @@ const initializeClientWithProvider = async ({
   /** @type {Map<string, import('@librechat/api').ToolInputValidationError>} */
   const toolInputValidationErrors = new Map();
   const { contentParts, aggregateContent, stepMap } = createContentAggregator();
+  const outputSelectionRegistry = createRunArtifactSelectionRegistry({ contentParts, stepMap });
   const artifactToolEndCallback = createToolEndCallback({
     req,
     res,
     artifactPromises,
+    outputSelectionRegistry,
     streamId,
     jobCreatedAt,
   });
@@ -469,6 +472,14 @@ const initializeClientWithProvider = async ({
     if (trustedContext?.codeExecutionContext) {
       callbackMetadata.codeExecutionContext = trustedContext.codeExecutionContext;
     }
+    if (
+      data?.output?.artifact?.output_paths !== undefined &&
+      runFileBindings.session.isActive() &&
+      metadata.executionContext != null
+    ) {
+      await runFileBindings.deliverToolEnd(artifactToolEndCallback, data, callbackMetadata);
+      return artifactToolEndCallback(data, callbackMetadata);
+    }
     return runFileBindings.deliverToolEnd(artifactToolEndCallback, data, callbackMetadata);
   };
   /** @type {Map<string, import('@librechat/api').EndpointTokenConfig | undefined>} */
@@ -483,6 +494,7 @@ const initializeClientWithProvider = async ({
     runSignal: signal,
     foregroundRunId,
     attachedCommandStepIds: new Set(),
+    outputSelectionRegistry,
     ordinaryToolCancellation: ordinaryToolCancellationEnabled,
     backgroundCompletionResultMaxChars,
     loadTools: async (

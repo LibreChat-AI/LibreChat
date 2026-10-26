@@ -151,6 +151,12 @@ export type RunFileProvenance = {
   parentAgentId?: string;
   recipientAgentIds?: string[];
   sourceFileId: string;
+  /** Canonical output path for an explicitly selected final file. */
+  outputPath?: string;
+  /** Stable identity of this explicit selection within a run. */
+  selectionId?: string;
+  /** Dispatch order for explicit selections; absent on legacy artifacts. */
+  selectionOrdinal?: number;
   publishedAt: string;
   inputFileIds: string[];
 };

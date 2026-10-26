@@ -12,10 +12,16 @@
 
 import { useEffect } from 'react';
 import { RecoilRoot } from 'recoil';
-import { Tools } from 'librechat-data-provider';
 import { renderHook } from '@testing-library/react';
+import { ContentTypes, Tools } from 'librechat-data-provider';
 import { Provider as JotaiProvider, useSetAtom } from 'jotai';
-import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
+import type {
+  Agents,
+  TAttachment,
+  TFile,
+  TAttachmentMetadata,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 
 type AttachmentFixture = TFile & TAttachmentMetadata;
@@ -63,9 +69,13 @@ function makeNonFileAttachment(
 function setup({
   attachments,
   liveMap,
+  content,
+  conversationId,
 }: {
   attachments?: TAttachment[];
   liveMap?: Record<string, TAttachment[]>;
+  content?: TMessageContentParts[];
+  conversationId?: string;
 }) {
   const Seed = () => {
     const setMap = useSetAtom(messageAttachmentsMapAtom);
@@ -77,7 +87,7 @@ function setup({
     return null;
   };
 
-  return renderHook(() => useAttachments({ messageId, attachments }), {
+  return renderHook(() => useAttachments({ messageId, attachments, content, conversationId }), {
     wrapper: ({ children }: { children: ReactNode }) => (
       <RecoilRoot>
         <JotaiProvider>
@@ -95,6 +105,78 @@ describe('useAttachments', () => {
     const { result } = setup({ attachments: [db] });
     expect(result.current.attachments).toHaveLength(1);
     expect(result.current.attachments[0]).toBe(db);
+  });
+
+  it('renders the canonical selected output from a saved A-to-B-to-A sequence', () => {
+    const runArtifact = (fileId: string, ordinal: number, selectionId: string) =>
+      makeAttachment({
+        file_id: fileId,
+        filename: 'r12-selection.txt',
+        conversationId: 'conversation-1',
+        metadata: {
+          runFile: {
+            runId: 'run-1',
+            agentId: 'agent-1',
+            sourceFileId: `source-${ordinal}`,
+            outputPath: 'r12-selection.txt',
+            selectionOrdinal: ordinal,
+            selectionId,
+            publishedAt: new Date(ordinal).toISOString(),
+            inputFileIds: [],
+          },
+        },
+      });
+    const selectionPart = (
+      ordinal: number,
+      fileId: string,
+      selectionId: string,
+    ): TMessageContentParts =>
+      ({
+        type: ContentTypes.TOOL_CALL,
+        tool_call: {
+          id: `call-${ordinal}`,
+          name: 'bash_tool',
+          outputSelection: {
+            version: 1,
+            runId: 'run-1',
+            agentId: 'agent-1',
+            stepId: `step-${ordinal}`,
+            toolCallId: `call-${ordinal}`,
+            ordinal,
+            status: 'published',
+            paths: [
+              {
+                pathIndex: 0,
+                outputPath: 'r12-selection.txt',
+                status: 'published',
+                selectionId,
+                fileId,
+              },
+            ],
+          } satisfies Agents.OutputSelection,
+        },
+      }) as TMessageContentParts;
+    const physical = [
+      runArtifact('file-a1', 1, 'selection-1'),
+      runArtifact('file-b2', 2, 'selection-2'),
+      runArtifact('file-a3', 3, 'selection-3'),
+      makeAttachment({ file_id: 'legacy-file', filename: 'r12-selection.txt' }),
+    ];
+    const { result } = setup({
+      attachments: physical,
+      conversationId: 'conversation-1',
+      content: [
+        selectionPart(1, 'file-a1', 'selection-1'),
+        selectionPart(2, 'file-b2', 'selection-2'),
+        selectionPart(3, 'file-a1', 'selection-1'),
+      ],
+    });
+
+    expect(result.current.attachments.map((attachment) => attachment.file_id)).toEqual([
+      'file-a1',
+      'legacy-file',
+    ]);
+    expect(physical).toHaveLength(4);
   });
 
   it('returns live entries when no DB attachments exist (active SSE turn)', () => {

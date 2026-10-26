@@ -29,6 +29,8 @@ export interface CodeOutputArtifactFile extends FileContentInput {
 export interface CodeOutputArtifact {
   readonly session_id?: string;
   readonly files?: readonly CodeOutputArtifactFile[];
+  /** Host-only request to publish these final paths as chat attachments. */
+  readonly output_paths?: readonly string[];
 }
 
 export interface PreparedCodeOutput {
@@ -43,6 +45,8 @@ export interface PreparedCodeOutputEntry {
   readonly preparedBuffer?: Buffer;
   /** Skip a second download and use the existing code-output URL fallback. */
   readonly downloadFallback?: boolean;
+  /** Explicit final files must be persisted as immutable run artifacts. */
+  readonly durableRequired?: boolean;
 }
 
 export interface CodeOutputPreflightLimits {
@@ -106,6 +110,100 @@ function getConfiguredCountLimit(configured: number, fallback: number): number {
   return configured;
 }
 
+export class CodeOutputSelectionError extends Error {
+  readonly code: 'invalid_code_output_selection' | 'missing_code_output';
+
+  constructor(message: string, code: CodeOutputSelectionError['code']) {
+    super(message);
+    this.name = 'CodeOutputSelectionError';
+    this.code = code;
+  }
+}
+
+export function normalizeCodeOutputPath(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value === '' || value.includes('\\')) {
+    return undefined;
+  }
+  if (value.startsWith('/') && !value.startsWith('/mnt/data/')) {
+    return undefined;
+  }
+  const relative = value.startsWith('/mnt/data/') ? value.slice('/mnt/data/'.length) : value;
+  if (relative === '') {
+    return undefined;
+  }
+  const segments = relative.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return undefined;
+  }
+  return relative;
+}
+
+/** Applies the same unique, path-safe list contract at dispatch and publication. */
+export function normalizeCodeOutputPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new CodeOutputSelectionError(
+      'Final output paths must be an array of file paths.',
+      'invalid_code_output_selection',
+    );
+  }
+  const selectedPaths: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    const normalized = normalizeCodeOutputPath(candidate);
+    if (normalized === undefined || seen.has(normalized)) {
+      throw new CodeOutputSelectionError(
+        'Final output paths must be unique, valid paths under /mnt/data without traversal segments.',
+        'invalid_code_output_selection',
+      );
+    }
+    seen.add(normalized);
+    selectedPaths.push(normalized);
+  }
+  return selectedPaths;
+}
+
+function getSelectedCodeOutputFiles(
+  artifact: CodeOutputArtifact | null | undefined,
+): readonly CodeOutputArtifactFile[] {
+  const files = artifact?.files ?? [];
+  if (artifact?.output_paths === undefined) {
+    return files;
+  }
+  const selectedPaths = new Set(normalizeCodeOutputPaths(artifact.output_paths));
+  const matches = new Map<string, CodeOutputArtifactFile>();
+  for (const file of files) {
+    if (file.inherited === true) {
+      continue;
+    }
+    const normalized = normalizeCodeOutputPath(file.name);
+    if (normalized === undefined || !selectedPaths.has(normalized)) {
+      continue;
+    }
+    if (matches.has(normalized)) {
+      throw new CodeOutputSelectionError(
+        'A requested final output path matched more than one generated file.',
+        'invalid_code_output_selection',
+      );
+    }
+    matches.set(normalized, file);
+  }
+  for (const selectedPath of selectedPaths) {
+    if (!matches.has(selectedPath)) {
+      throw new CodeOutputSelectionError(
+        'A requested final output was not produced.',
+        'missing_code_output',
+      );
+    }
+  }
+  return files.filter((file) => {
+    if (file.inherited === true) {
+      return false;
+    }
+    const normalized = normalizeCodeOutputPath(file.name);
+    return normalized !== undefined && selectedPaths.has(normalized);
+  });
+}
+
 /**
  * LibreChat file-size configuration uses zero to mean unlimited. Generated
  * output inspection preserves that contract while still applying its
@@ -129,6 +227,8 @@ export function getBoundedCodeOutputByteLimit(
 export async function preflightCodeOutputBatch(
   input: PreflightCodeOutputBatchInput,
 ): Promise<PreparedCodeOutputEntry[]> {
+  const outputPathsRequested = input.artifact?.output_paths !== undefined;
+  const outputFiles = getSelectedCodeOutputFiles(input.artifact);
   const selectedFields = getSelectedContentFields(input.filters);
   const pii = input.filters?.files?.pii;
   const inspectionActive =
@@ -143,7 +243,7 @@ export async function preflightCodeOutputBatch(
   const fileSizeLimit = getBoundedCodeOutputByteLimit(input.limits.fileSizeLimit, maxBytes);
   const entries: PreparedCodeOutputEntry[] = [];
   let configuredCountExceeded = false;
-  for (const file of input.artifact?.files ?? []) {
+  for (const file of outputFiles) {
     if (file.inherited === true) {
       continue;
     }
@@ -158,6 +258,7 @@ export async function preflightCodeOutputBatch(
     entries.push({
       file,
       sessionId: file.storage_session_id ?? input.artifact?.session_id,
+      ...(outputPathsRequested ? { durableRequired: true } : {}),
     });
   }
   const inspectionCountExceeded = entries.length > CODE_OUTPUT_PREFLIGHT_MAX_COUNT;

@@ -64,6 +64,51 @@ describe('preflightCodeOutputBatch', () => {
     expect(result.every((entry) => entry.downloadFallback !== true)).toBe(true);
   });
 
+  it('preflights only requested final paths and requires every selected path to exist uniquely', async () => {
+    const prepare = jest.fn(async (input: PrepareCodeOutputInput) => prepared(input));
+    const selected = await preflightCodeOutputBatch({
+      artifact: {
+        ...artifact(3),
+        files: [
+          { id: 'a', name: '/mnt/data/report.txt' },
+          { id: 'b', name: '/mnt/data/intermediate.txt' },
+          { id: 'c', name: '/mnt/data/report-final.txt' },
+        ],
+        output_paths: ['/mnt/data/report-final.txt'],
+      },
+      limits,
+      prepare,
+    });
+
+    expect(selected.map((entry) => entry.file.id)).toEqual(['c']);
+    expect(selected[0]).toMatchObject({
+      durableRequired: true,
+      preparedBuffer: Buffer.from('safe'),
+    });
+    expect(prepare).toHaveBeenCalledTimes(1);
+    await expect(
+      preflightCodeOutputBatch({
+        artifact: {
+          ...artifact(2),
+          files: [
+            { id: 'a', name: '/mnt/data/report.txt' },
+            { id: 'b', name: '/mnt/data/report.txt' },
+          ],
+          output_paths: ['report.txt'],
+        },
+        limits,
+        prepare,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_code_output_selection' });
+    await expect(
+      preflightCodeOutputBatch({
+        artifact: { ...artifact(1), output_paths: ['missing.txt'] },
+        limits,
+        prepare,
+      }),
+    ).rejects.toMatchObject({ code: 'missing_code_output' });
+  });
+
   it('treats zero byte limits as unlimited within the hard transport ceiling', async () => {
     const prepare = jest.fn(async (input: PrepareCodeOutputInput) =>
       prepared(input, { buffer: Buffer.alloc(4) }),

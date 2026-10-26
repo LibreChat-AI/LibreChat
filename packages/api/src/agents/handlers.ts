@@ -53,6 +53,7 @@ import type {
   BackgroundToolWakeupRegistration,
   PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
+import type { OutputSelectionIdentity, RunArtifactSelectionRegistry } from './runArtifactSelection';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { InterruptibleToolBatchRequest } from './steering/tools';
@@ -151,6 +152,7 @@ import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
 import { SteerToolInterrupt, interruptedToolResult } from './steering/tools';
+import { hasCodeOutputSelectionRequest } from './runArtifactSelection';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -324,6 +326,8 @@ export interface ToolExecuteOptions {
   backgroundCompletionResultMaxChars?: number;
   /** Callback to process tool artifacts (code output files, file citations, etc.) */
   toolEndCallback?: ToolEndCallback;
+  /** Per-run selection state for explicitly published Code outputs. */
+  outputSelectionRegistry?: RunArtifactSelectionRegistry;
   /** Run steps whose call resolved to the attached-workspace `bash_tool`
    *  instance; the step-completed handler consumes them to stamp `executor`. */
   attachedCommandStepIds?: Set<string>;
@@ -833,6 +837,17 @@ function getCodeExecutionContext(
     return undefined;
   }
   return candidate as CodeExecutionContext;
+}
+
+function stripCodeOutputPaths(args: unknown): unknown {
+  if (args == null || typeof args !== 'object' || Array.isArray(args)) {
+    return args;
+  }
+  if (!Object.prototype.hasOwnProperty.call(args, 'output_paths')) {
+    return args;
+  }
+  const { output_paths: _outputPaths, ...invokeArgs } = args as Record<string, unknown>;
+  return invokeArgs;
 }
 
 function selectedWorkspaceId(
@@ -5653,6 +5668,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
     foregroundRunId,
     loadTools,
     toolEndCallback,
+    outputSelectionRegistry,
     attachedCommandStepIds,
     eventActorDetachedAction,
     persistBackgroundCodeResult,
@@ -5931,6 +5947,15 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
             const dispatchBackgroundToolCall = async (
               tc: ToolCallRequest,
             ): Promise<ToolExecuteResult> => {
+              if (
+                tc.name === 'bash_tool' &&
+                hasCodeOutputSelectionRequest({ id: tc.id, args: tc.args })
+              ) {
+                return errorResult(
+                  tc,
+                  'Explicit output selection requires foreground managed code execution.',
+                );
+              }
               /** A tool that failed to load must error immediately (matching the
                *  foreground path) — a synthetic "started" handle would tell the
                *  model a side effect is in flight that never executed. */
@@ -7247,6 +7272,67 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 const execute = async (
                   sandboxContext?: SandboxSessionContext,
                 ): Promise<ToolExecuteResult> => {
+                  const tool = toolMap.get(tc.name);
+                  let outputSelection: ReturnType<RunArtifactSelectionRegistry['assign']>;
+                  let outputSelectionIdentity: OutputSelectionIdentity | undefined;
+                  const outputSelectionRequest =
+                    tc.name === 'bash_tool' &&
+                    hasCodeOutputSelectionRequest({ id: tc.id, args: tc.args });
+                  if (outputSelectionRequest) {
+                    const codeExecutionContext = getCodeExecutionContext(mergedConfigurable);
+                    if (
+                      !tool ||
+                      tc.name !== 'bash_tool' ||
+                      isAttachedWorkspaceBashTool(tool) ||
+                      codeExecutionContext?.environmentType === 'attached' ||
+                      isBackgroundRequested(tc.args) ||
+                      !toolEndCallback
+                    ) {
+                      return errorResult(
+                        tc,
+                        'Explicit output selection requires foreground managed code execution with artifact publication support.',
+                      );
+                    }
+                    let runId: string | undefined;
+                    if (typeof metadata?.run_id === 'string') {
+                      runId = metadata.run_id;
+                    } else if (typeof configurable?.run_id === 'string') {
+                      runId = configurable.run_id;
+                    }
+                    if (
+                      !runId ||
+                      typeof agentId !== 'string' ||
+                      typeof tc.stepId !== 'string' ||
+                      !outputSelectionRegistry
+                    ) {
+                      return errorResult(
+                        tc,
+                        'The final output selection could not be bound to this run.',
+                      );
+                    }
+                    outputSelectionIdentity = {
+                      runId,
+                      agentId,
+                      stepId: tc.stepId,
+                      toolCallId: tc.id,
+                    };
+                    outputSelection = outputSelectionRegistry.assign({
+                      ...outputSelectionIdentity,
+                      call: tc,
+                    });
+                    if (!outputSelection) {
+                      return errorResult(
+                        tc,
+                        'The final output selection could not be bound to this run.',
+                      );
+                    }
+                    if (outputSelection.status === 'failed') {
+                      return errorResult(
+                        tc,
+                        'The final output selection contains an invalid path.',
+                      );
+                    }
+                  }
                   const isFileAuthoringCall = isHostFileAuthoringToolCall(
                     tc.name,
                     mergedConfigurable,
@@ -7256,6 +7342,13 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     typeof (tc.args as { path?: unknown }).path === 'string' &&
                     !(tc.args as { path: string }).path.startsWith(SKILL_FILE_PREFIX);
                   if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    if (outputSelectionIdentity != null) {
+                      outputSelectionRegistry?.markFailed(
+                        outputSelectionIdentity,
+                        'execution',
+                        'tool_interrupted',
+                      );
+                    }
                     return interruptedToolResult(tc.id);
                   }
                   let sandboxReadSucceeded = false;
@@ -7386,6 +7479,13 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       errorMessage: handlerResult.errorMessage,
                     });
                     if (filteredOutput != null) {
+                      if (outputSelectionIdentity != null) {
+                        outputSelectionRegistry?.markFailed(
+                          outputSelectionIdentity,
+                          'publication',
+                          'output_filtered',
+                        );
+                      }
                       /** The side effect already happened; only the returned
                        * content is being withheld. Emit execution identity so
                        * an applied action is never reclassified as actionless
@@ -7477,8 +7577,6 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
 
                     return handlerResult;
                   }
-
-                  const tool = toolMap.get(tc.name);
 
                   if (!tool) {
                     const missingToolResult: ToolExecuteResult = {
@@ -7637,9 +7735,20 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       normalizedArgs,
                     );
                     if (filtered != null) {
+                      if (outputSelectionIdentity != null) {
+                        outputSelectionRegistry?.markFailed(
+                          outputSelectionIdentity,
+                          'execution',
+                          'input_filtered',
+                        );
+                      }
                       return filtered;
                     }
-                    const result = await tool.invoke(normalizedArgs, {
+                    const toolInvokeArgs =
+                      outputSelection == null
+                        ? normalizedArgs
+                        : stripCodeOutputPaths(normalizedArgs);
+                    const result = await tool.invoke(toolInvokeArgs, {
                       toolCall: toolCallConfig,
                       configurable: mergedConfigurable,
                       metadata: { ...metadata, executingAgentId: agentId },
@@ -7653,7 +7762,37 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     } as Record<string, unknown>);
 
                     if (runSignal?.reason instanceof SteerToolInterrupt) {
+                      if (outputSelectionIdentity != null) {
+                        outputSelectionRegistry?.markFailed(
+                          outputSelectionIdentity,
+                          'execution',
+                          'tool_interrupted',
+                        );
+                      }
                       return interruptedToolResult(tc.id);
+                    }
+
+                    if (outputSelection != null && result.status === 'error') {
+                      outputSelectionRegistry?.markFailed(
+                        outputSelectionIdentity!,
+                        'execution',
+                        'tool_execution_error',
+                      );
+                    }
+                    let resultArtifact = result.artifact;
+                    if (outputSelection != null) {
+                      if (result.status === 'error') {
+                        resultArtifact = undefined;
+                      } else {
+                        resultArtifact = {
+                          ...(result.artifact != null &&
+                          typeof result.artifact === 'object' &&
+                          !Array.isArray(result.artifact)
+                            ? (result.artifact as Record<string, unknown>)
+                            : {}),
+                          output_paths: outputSelection.paths.map((path) => path.outputPath),
+                        };
+                      }
                     }
 
                     /* Only sandbox-bound calls carry a runtime session hint, so
@@ -7680,7 +7819,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       mergedConfigurable?.req as ServerRequest | undefined,
                       {
                         content: cleanedContent,
-                        artifact: result.artifact,
+                        artifact: resultArtifact,
                       },
                     );
                     if (filteredOutput != null) {
@@ -7721,7 +7860,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                             name: tc.name,
                             tool_call_id: tc.id,
                             content: cleanedContent,
-                            artifact: result.artifact,
+                            artifact: resultArtifact,
                           },
                         },
                         {
@@ -7742,13 +7881,20 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     return {
                       toolCallId: tc.id,
                       content: cleanedContent,
-                      artifact: result.artifact,
+                      artifact: resultArtifact,
                       status: result.status === 'error' ? ('error' as const) : ('success' as const),
                       ...(result.status === 'error' && {
                         errorMessage: getToolFailureFeedback(cleanedContent),
                       }),
                     };
                   } catch (toolError) {
+                    if (outputSelectionIdentity != null && outputSelection?.status !== 'failed') {
+                      outputSelectionRegistry?.markFailed(
+                        outputSelectionIdentity,
+                        'execution',
+                        'tool_execution_error',
+                      );
+                    }
                     if (toolError instanceof ContentFilterError) {
                       logger.error(`[ON_TOOL_EXECUTE] Tool ${tc.name} error`, {
                         name: toolError.name,

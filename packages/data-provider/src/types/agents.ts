@@ -86,6 +86,30 @@ export namespace Agents {
   /** A tool call inside a subagent transcript, with the scope its saved files may carry. */
   export type SubagentAttachmentCall = { id: string; agentId?: string; stepId?: string };
 
+  export type OutputSelectionStatus = 'pending' | 'published' | 'failed';
+  export type OutputSelectionFailureKind = 'selection' | 'publication' | 'execution';
+  export type OutputSelectionPath = {
+    pathIndex: number;
+    outputPath: string;
+    status: OutputSelectionStatus;
+    selectionId?: string;
+    fileId?: string;
+    failureKind?: OutputSelectionFailureKind;
+  };
+  /** Host-owned ordering for explicitly selected code outputs. */
+  export type OutputSelection = {
+    version: 1;
+    runId: string;
+    agentId: string;
+    stepId: string;
+    toolCallId: string;
+    ordinal: number;
+    status: OutputSelectionStatus;
+    paths: OutputSelectionPath[];
+    failureKind?: OutputSelectionFailureKind;
+    failureCode?: string;
+  };
+
   export type ToolCall = {
     /** Type ("tool_call") according to Assistants Tool Call Structure; optional literal
      *  form included to mirror langchain's ToolCall, whose `type` is optional. */
@@ -103,6 +127,8 @@ export namespace Agents {
     id?: string;
     /** Host run-step identity; unlike provider ids, this is unique across turns. */
     stepId?: string;
+    /** Optional, host-assigned identity for explicitly selected final files. */
+    outputSelection?: OutputSelection;
     /** If provided, the output of the tool call */
     output?: string;
     /** Host-owned durable receipt for a detached ordinary tool result.

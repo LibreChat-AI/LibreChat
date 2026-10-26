@@ -1133,6 +1133,25 @@ export function isFileAuthoringToolDefinition(def: LCTool | undefined): boolean 
  * intent of the original constant while keeping the per-agent gate
  * behavior introduced for tool-output references.
  */
+const CODE_OUTPUT_SELECTION_GUIDANCE =
+  '`output_paths` optionally names final files created by this command that should be attached to the conversation. Use paths under /mnt/data and include only files created by this command; omit it to keep the existing automatic delivery behavior.';
+
+function buildCodeExecutionBashSchema(): typeof BashExecutionToolDefinition.schema {
+  const schema = BashExecutionToolDefinition.schema;
+  return {
+    ...schema,
+    properties: {
+      ...schema.properties,
+      output_paths: {
+        type: 'array',
+        description:
+          'Optional paths under /mnt/data created by this command to attach as final outputs.',
+        items: { type: 'string' },
+      },
+    },
+  };
+}
+
 function createBashToolDef(
   enableToolOutputReferences: boolean,
   statefulSessions = false,
@@ -1156,7 +1175,7 @@ function createBashToolDef(
           workspaceEnvironment,
           workspaceNativeSandbox,
         )
-      : buildBashExecutionToolDescription(descriptionOpts),
+      : `${buildBashExecutionToolDescription(descriptionOpts)} ${CODE_OUTPUT_SELECTION_GUIDANCE}`,
     parameters: (workspaceTools
       ? buildAttachedWorkspaceBashSchema(
           workspaceCommandTimeoutMaxMs,
@@ -1164,7 +1183,7 @@ function createBashToolDef(
           workspaceLinkedWorktrees,
           workspaceCommandTimeoutDefaultMs,
         )
-      : BashExecutionToolDefinition.schema) as unknown as LCTool['parameters'],
+      : buildCodeExecutionBashSchema()) as unknown as LCTool['parameters'],
   }) as LCTool;
 }
 

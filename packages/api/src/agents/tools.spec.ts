@@ -688,6 +688,34 @@ describe('e2e skill assertion harness agreement', () => {
 });
 
 describe('registerCodeExecutionTools', () => {
+  it('advertises output selection only on the managed code execution schema', () => {
+    const findBash = (workspaceTools: boolean) =>
+      registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools,
+        ...(workspaceTools ? { workspaceOperations: new Set(['execute_command']) } : {}),
+      }).toolDefinitions.find((definition) => definition.name === 'bash_tool');
+    const managed = findBash(false);
+    const attached = findBash(true);
+    const managedProperties = (managed?.parameters as { properties?: Record<string, unknown> })
+      ?.properties;
+    const attachedProperties = (attached?.parameters as { properties?: Record<string, unknown> })
+      ?.properties;
+
+    expect(managedProperties?.output_paths).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect((managed?.parameters as { required?: string[] })?.required).not.toContain(
+      'output_paths',
+    );
+    expect(managed?.description).toContain('existing automatic delivery behavior');
+    expect(attachedProperties?.output_paths).toBeUndefined();
+    expect(attached?.description).not.toContain('`output_paths`');
+  });
+
   it('advertises selected named actions to the model', () => {
     const result = registerCodeExecutionTools({
       toolRegistry: undefined,

@@ -16,6 +16,7 @@ export * from './previews';
 export * from './errors';
 /* run steps */
 export * from './runSteps';
+export * from './runArtifacts';
 /* ui parts */
 export * from './parts';
 export * from './reasoning';

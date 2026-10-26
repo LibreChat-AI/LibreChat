@@ -1,4 +1,5 @@
 const path = require('path');
+const { createHash } = require('node:crypto');
 const { logger } = require('@librechat/data-schemas');
 const { getCodeBaseURL } = require('@librechat/agents');
 const {
@@ -42,6 +43,8 @@ const {
   CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
   CODE_OUTPUT_PREFLIGHT_MAX_COUNT,
   normalizeArtifactDeliveryFailure,
+  normalizeCodeOutputPath,
+  createRunArtifactPublisher,
   processCodeOutput: processCodeOutputWithDeps,
   resolveDownloadPath,
 } = require('@librechat/api');
@@ -56,7 +59,15 @@ const {
   getEndpointFileConfig,
 } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
-const { getFiles, updateFile, claimCodeFile, commitCodeFile } = require('~/models');
+const {
+  getFiles,
+  updateFile,
+  claimCodeFile,
+  commitCodeFile,
+  claimRunArtifactFile,
+  publishRunArtifactFile,
+  findRunArtifactFile,
+} = require('~/models');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getFileStorage } = require('~/server/services/Files/operations');
 const { convertImage } = require('~/server/services/Files/images/convert');
@@ -610,6 +621,135 @@ const processCodeOutput = (params) =>
     logAxiosError,
     logger,
   });
+
+const publishSelectedCodeOutput = async ({
+  req,
+  file,
+  sessionId,
+  preparedBuffer,
+  runId,
+  conversationId,
+  agentId,
+  stepId,
+  toolCallId,
+  pathIndex,
+  selectionOrdinal,
+  codeExecutionContext,
+  signal,
+}) => {
+  if (
+    !req?.user?.id ||
+    typeof runId !== 'string' ||
+    runId.trim() === '' ||
+    typeof conversationId !== 'string' ||
+    conversationId.trim() === '' ||
+    typeof agentId !== 'string' ||
+    agentId.trim() === '' ||
+    typeof stepId !== 'string' ||
+    stepId.trim() === '' ||
+    typeof toolCallId !== 'string' ||
+    toolCallId.trim() === '' ||
+    !Number.isSafeInteger(pathIndex) ||
+    pathIndex < 0 ||
+    (selectionOrdinal != null &&
+      (!Number.isSafeInteger(selectionOrdinal) || selectionOrdinal < 1)) ||
+    typeof file?.id !== 'string' ||
+    file.id.trim() === '' ||
+    typeof sessionId !== 'string' ||
+    sessionId.trim() === '' ||
+    !Buffer.isBuffer(preparedBuffer)
+  ) {
+    throw new Error('The selected code output is missing its trusted publication identity.');
+  }
+
+  const outputPath = normalizeCodeOutputPath(file.name);
+  if (!outputPath) {
+    throw new Error('The selected code output path is invalid.');
+  }
+  const executionId = `code:${stepId}:${toolCallId}`;
+  const selectionId = createHash('sha256')
+    .update(
+      JSON.stringify([
+        'librechat-code-output-selection:v1',
+        req.user.id,
+        req.user.tenantId ?? null,
+        conversationId,
+        runId,
+        agentId,
+        stepId,
+        toolCallId,
+        pathIndex,
+        outputPath,
+      ]),
+    )
+    .digest('hex');
+  const scope = {
+    userId: req.user.id,
+    tenantId: req.user.tenantId ?? null,
+    conversationId,
+    runId,
+    executionId,
+    agentId,
+    sourceFileId: file.id,
+  };
+  const provenance = {
+    runId,
+    executionId,
+    agentId,
+    sourceFileId: file.id,
+    outputPath,
+    selectionId,
+    ...(selectionOrdinal == null ? {} : { selectionOrdinal }),
+    publishedAt: new Date().toISOString(),
+    inputFileIds: [],
+  };
+  let committedPreview;
+  const publish = createRunArtifactPublisher({
+    claimRunArtifactFile,
+    publishRunArtifactFile,
+    findRunArtifactFile,
+    processCodeOutput: (input) => processCodeOutput({ ...input, req }),
+    prepare: async (_artifact, publishSignal) => {
+      publishSignal?.throwIfAborted();
+      return preparedBuffer;
+    },
+    discard: async (storedFile) => {
+      const strategy = getStrategyFunctions(storedFile.source ?? 'local');
+      if (typeof strategy.deleteFile !== 'function') {
+        throw new Error('The artifact storage does not support cleanup.');
+      }
+      await strategy.deleteFile(req, storedFile);
+    },
+    finalize: (result) => {
+      committedPreview = {
+        finalize: result.finalize,
+        fileId: result.file.file_id,
+        previewRevision: result.previewRevision,
+      };
+    },
+  });
+  try {
+    const artifact = {
+      id: file.id,
+      name: file.name,
+      sessionId,
+      ...(codeExecutionContext == null ? {} : { codeExecutionContext }),
+    };
+    const publishedFile = await publish({ scope, provenance, artifact, signal });
+    return {
+      file: publishedFile,
+      finalize: committedPreview?.finalize,
+      previewRevision: committedPreview?.previewRevision ?? publishedFile.previewRevision,
+      outputPath,
+      selectionId,
+    };
+  } catch (error) {
+    if (committedPreview) {
+      runPreviewFinalize(committedPreview);
+    }
+    throw error;
+  }
+};
 
 function getSessionFileInfo(ref, req, route = {}, signal) {
   return getCodeFileInfo({
@@ -1697,6 +1837,7 @@ module.exports = {
   checkIfActive,
   getSessionInfo,
   processCodeOutput,
+  publishSelectedCodeOutput,
   prepareCodeOutputForInspection,
   readWorkspaceFile,
   searchWorkspace,
