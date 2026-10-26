@@ -39,6 +39,7 @@ import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
 } from './types/scheduleConsent';
+import { partialWithoutDefaults } from './zod';
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
@@ -2767,7 +2768,7 @@ export const rateLimitSchema = z.object({
       userWindowInMinutes: z.number().optional(),
     })
     .optional(),
-  mcpApps: mcpAppRateLimitSchema.optional(),
+  mcpApps: mcpAppRateLimitSchema.unwrap().optional(),
   /** Requesting a change of the registered email; keyed by the authenticated user. */
   emailChange: z
     .object({
@@ -3464,7 +3465,7 @@ export const turnstileOptionsSchema = z
 
 export const turnstileSchema = z.object({
   siteKey: z.string(),
-  options: turnstileOptionsSchema.optional(),
+  options: turnstileOptionsSchema.unwrap().optional(),
 });
 
 export type TTurnstileConfig = z.infer<typeof turnstileSchema>;
@@ -4602,7 +4603,7 @@ export const configSchema = z.object({
       /** Milliseconds a started social login may take to reach its callback; defaults to `DEFAULT_OAUTH_STATE_TTL_MS`. */
       oauthStateTtlMs: z.number().int().min(60_000).max(3_600_000).optional(),
       /** OpenID discovery retries; an unset field falls back to its `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
-      openidDiscovery: openIdDiscoverySchema.partial().optional(),
+      openidDiscovery: partialWithoutDefaults(openIdDiscoverySchema).optional(),
     })
     .default({ socialLogins: defaultSocialLogins }),
   /** Changing the registered email address. An unset field falls back to its env var, then the
@@ -4669,7 +4670,7 @@ export const configSchema = z.object({
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
       [EModelEndpoint.azureAssistants]: assistantEndpointSchema.optional(),
       [EModelEndpoint.assistants]: assistantEndpointSchema.optional(),
-      [EModelEndpoint.agents]: agentsEndpointSchema.optional(),
+      [EModelEndpoint.agents]: agentsEndpointSchema.unwrap().optional(),
       [EModelEndpoint.custom]: customEndpointsSchema.optional(),
       [EModelEndpoint.bedrock]: bedrockEndpointSchema.optional(),
     })
