@@ -15,6 +15,7 @@ import type * as t from './types';
 import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
+import { setClientTimeouts } from './timeouts';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
 import * as mcp from './types/mcpServers';
@@ -445,7 +446,12 @@ export const getStartupConfig = (
     mcpCustomUserVars?: Record<string, { title: string; description: string }>;
   }
 > => {
-  return request.get(endpoints.config(options?.context));
+  return request
+    .get<config.TStartupConfig>(endpoints.config(options?.context))
+    .then((startupConfig) => {
+      setClientTimeouts(startupConfig?.clientTimeouts);
+      return startupConfig;
+    });
 };
 
 export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {

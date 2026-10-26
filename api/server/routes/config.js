@@ -24,6 +24,7 @@ const {
   resolveCodeWorkspaceInheritanceCapability,
   resolveCodeEnvironmentTransitionVersion,
   loadConversationListLimits,
+  getClientTimeouts,
   resolvePullRequestCapabilities,
   resolvePreLoginAppConfig,
   withSafePolicyLinks,
@@ -242,6 +243,7 @@ router.get('/', async function (req, res) {
         socialLogins: baseConfig?.registration?.socialLogins ?? defaultSocialLogins,
         turnstile: baseConfig?.turnstileConfig,
         rum: getRumConfig(baseConfig?.config?.telemetry),
+        clientTimeouts: getClientTimeouts(baseConfig?.config?.clientTimeouts),
       };
 
       const interfaceConfig = baseConfig?.interfaceConfig;
@@ -359,6 +361,7 @@ router.get('/', async function (req, res) {
       ...(codeEnvironmentTransitionVersion != null ? { codeEnvironmentTransitionVersion } : {}),
       ...(cloudFront ? { cloudFront } : {}),
       rum: getRumConfig(appConfig?.config?.telemetry),
+      clientTimeouts: getClientTimeouts(appConfig?.config?.clientTimeouts),
       fileUploadSseEnabled: isEnabled(process.env.FILE_UPLOAD_SSE_ENABLED),
       endpointsDropParamsMap: endpointsDropParamsMap,
     };

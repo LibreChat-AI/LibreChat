@@ -16,6 +16,15 @@ cache: true
 #     sessionReplay:
 #       enabled: false # Explicitly opt in to masked DOM/input recordings.
 
+# Client request deadlines in milliseconds (1 to 3600000). Every field is optional and defaults
+# to the value shown, which is the behavior when the block is absent. Raise a value when your
+# infrastructure legitimately needs longer.
+# clientTimeouts:
+#   refreshMs: 30000     # token refresh; on expiry the user is sent to login
+#   ttsMs: 60000         # time for the text-to-speech endpoint to start responding
+#   sharepointMs: 300000 # download of one SharePoint file
+#   cloudfrontMs: 15000  # CloudFront signed-cookie refresh
+
 # Chat Projects: the ceilings a single project may reach. Every field is optional and
 # defaults to the value shown, which is the behavior when the block is absent.
 projects:

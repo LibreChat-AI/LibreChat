@@ -1,4 +1,4 @@
-import { apiBaseUrl } from 'librechat-data-provider';
+import { apiBaseUrl, getClientTimeout } from 'librechat-data-provider';
 import type { TStartupConfig } from 'librechat-data-provider';
 
 type CloudFrontCookieRefreshConfig = NonNullable<
@@ -97,9 +97,6 @@ function getRefreshEndpoint(endpoint: string): string {
   return `${baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
 }
 
-/** A hung refresh would leave the shared promise pending and disable every later retry. */
-const COOKIE_REFRESH_TIMEOUT_MS = 15000;
-
 async function postCloudFrontCookieRefresh(endpoint: string): Promise<boolean> {
   const authorization = getAuthorizationHeader?.();
   const headers: Record<string, string> = {
@@ -112,7 +109,7 @@ async function postCloudFrontCookieRefresh(endpoint: string): Promise<boolean> {
   }
 
   const controller = new AbortController();
-  const abortTimer = setTimeout(() => controller.abort(), COOKIE_REFRESH_TIMEOUT_MS);
+  const abortTimer = setTimeout(() => controller.abort(), getClientTimeout('cloudfrontMs'));
   try {
     const response = await fetch(endpoint, {
       method: 'POST',

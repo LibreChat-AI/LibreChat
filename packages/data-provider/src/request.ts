@@ -5,6 +5,7 @@ import type * as t from './types';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
 import { persistTwoFactorSetupToken } from './twoFactor';
 import { setTokenHeader } from './headers-helpers';
+import { getClientTimeout } from './timeouts';
 import * as endpoints from './api-endpoints';
 
 async function _get<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
@@ -86,10 +87,8 @@ type AuthRecoveryWindow = Window & {
 };
 
 /** A hung refresh gates every API call through the deduped recovery promise, so it must reject. */
-const REFRESH_TOKEN_TIMEOUT_MS = 30_000;
-
 const refreshToken = (retry?: boolean): Promise<t.TRefreshTokenResponse | undefined> =>
-  _post(endpoints.refreshToken(retry), undefined, { timeout: REFRESH_TOKEN_TIMEOUT_MS });
+  _post(endpoints.refreshToken(retry), undefined, { timeout: getClientTimeout('refreshMs') });
 
 const SHARE_PAGE_PATH_REGEX = /^\/share\/[^/]+\/?$/;
 const SHARED_MESSAGES_PATH_REGEX = /^\/api\/share\/[^/]+$/;

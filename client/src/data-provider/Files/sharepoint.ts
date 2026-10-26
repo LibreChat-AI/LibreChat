@@ -1,8 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
+import { getClientTimeout } from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
-
-/** Upper bound for one file download (headers and body) before it is abandoned. */
-const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface SharePointFile {
   id: string;
@@ -52,7 +50,10 @@ export const useSharePointBatchDownload = (): UseMutationResult<
               `https://graph.microsoft.com/v1.0/drives/${file.driveId}/items/${file.itemId}/content`;
 
             const controller = new AbortController();
-            const abortTimer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+            const abortTimer = setTimeout(
+              () => controller.abort(),
+              getClientTimeout('sharepointMs'),
+            );
             let response: Response;
             let blob: Blob;
             try {

@@ -1,8 +1,8 @@
 import { useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, getSpeechText } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
+import { QueryKeys, getSpeechText, getClientTimeout } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import {
   useCustomAudioRef,
@@ -29,8 +29,6 @@ function timeoutPromise(ms: number, message?: string) {
 
 const promiseTimeoutMessage = 'Reader promise timed out';
 const maxPromiseTime = 15000;
-/** Longest the TTS endpoint may take to start responding before the fetch is abandoned. */
-const FETCH_HEADERS_TIMEOUT_MS = 60000;
 
 export default function StreamAudio({ index = 0 }) {
   const { token, user } = useAuthContext();
@@ -93,7 +91,7 @@ export default function StreamAudio({ index = 0 }) {
 
         logger.log('Fetching audio...', navigator.userAgent);
         const controller = new AbortController();
-        const abortTimer = setTimeout(() => controller.abort(), FETCH_HEADERS_TIMEOUT_MS);
+        const abortTimer = setTimeout(() => controller.abort(), getClientTimeout('ttsMs'));
         let response: Response;
         try {
           response = await fetch('/api/files/speech/tts', {
