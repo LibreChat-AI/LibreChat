@@ -6,6 +6,7 @@ import type { FileStorageDeletionObserver } from './dispatch';
 import { createDeleteFileWithSecondaryStorage, isMissingStorageError } from './storage';
 import { createFileProvisionRecovery } from './operations';
 import { dispatchFileDeletion } from './dispatch';
+import { createVectorFileDeleter } from './rag';
 
 const req: {
   user: { id: string; tenantId: string };
@@ -77,6 +78,29 @@ describe('createDeleteFileWithSecondaryStorage', () => {
     file.embedded = true;
     file.metadata = { codeEnvRef: { file_id: 'code-copy' } };
   });
+  it.each([FileSources.local, FileSources.vectordb])(
+    'retains the embedding snapshot and primary on unverified vector 404 (%s)',
+    async (source) => {
+      const { primary, vectors, remove, clearFileEmbeddings } = setup(source);
+      const httpClient = {
+        delete: jest.fn().mockRejectedValue({ response: { status: 404 } }),
+        get: jest.fn().mockRejectedValue({ response: { status: 404 } }),
+      };
+      const deleteVectors = createVectorFileDeleter({
+        baseUrl: 'https://rag.example',
+        httpClient,
+        generateToken: () => 'token',
+      });
+      (source === FileSources.vectordb ? primary : vectors).mockImplementation(deleteVectors);
+      const retained = { ...file, metadata: { ...file.metadata, embeddedEntities: ['agent-a'] } };
+      await expect(remove(req, retained)).rejects.toThrow('Vector deletion was not confirmed');
+      expect(clearFileEmbeddings).not.toHaveBeenCalled();
+      expect(retained.embedded).toBe(true);
+      expect(retained.metadata.embeddedEntities).toEqual(['agent-a']);
+      if (source === FileSources.local) expect(primary).not.toHaveBeenCalled();
+    },
+  );
+
   it('waits for both secondaries before deleting the primary with its provider client', async () => {
     const { primary, vectors, code, remove } = setup(FileSources.openai);
     let finishCode: () => void = () => {};

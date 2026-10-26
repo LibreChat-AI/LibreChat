@@ -12,6 +12,7 @@ jest.mock('~/crypto/jwt', () => ({
 
 jest.mock('axios', () => ({
   delete: jest.fn(),
+  get: jest.fn(),
   post: jest.fn(),
   interceptors: {
     request: { use: jest.fn(), eject: jest.fn() },
@@ -60,23 +61,19 @@ describe('deleteRagFile', () => {
         },
         data: ['file-123'],
       });
-      expect(mockedLogger.debug).toHaveBeenCalledWith(
-        '[deleteRagFile] Successfully deleted document file-123 from RAG API',
-      );
     });
 
-    it('should return true and log warning when document is not found (404)', async () => {
+    it('confirms absence through inventory rather than trusting a 404', async () => {
       const file = { file_id: 'file-not-found', embedded: true };
       const error = new Error('Not Found') as Error & { response?: { status?: number } };
       error.response = { status: 404 };
       mockedAxios.delete.mockRejectedValueOnce(error);
+      mockedAxios.get.mockResolvedValueOnce({ data: [] });
 
       const result = await deleteRagFile({ userId: 'user123', file });
 
       expect(result).toBe(true);
-      expect(mockedLogger.warn).toHaveBeenCalledWith(
-        '[deleteRagFile] Document file-not-found not found in RAG API, may have been deleted already',
-      );
+      expect(mockedAxios.get).toHaveBeenCalledWith('http://localhost:8000/ids', expect.any(Object));
     });
 
     it('should return false and log error on other errors', async () => {
@@ -89,8 +86,8 @@ describe('deleteRagFile', () => {
 
       expect(result).toBe(false);
       expect(mockedLogger.error).toHaveBeenCalledWith(
-        '[deleteRagFile] Error deleting document from RAG API:',
-        'Server Error',
+        '[deleteRagFile] Vector deletion was not confirmed',
+        { type: 'Error' },
       );
     });
   });
@@ -117,13 +114,13 @@ describe('deleteRagFile', () => {
   });
 
   describe('when RAG_API_URL is not configured', () => {
-    it('should skip RAG deletion and return true', async () => {
+    it('does not confirm deletion for an unconfigured store', async () => {
       delete process.env.RAG_API_URL;
       const file = { file_id: 'file-123', embedded: true };
 
       const result = await deleteRagFile({ userId: 'user123', file });
 
-      expect(result).toBe(true);
+      expect(result).toBe(false);
       expect(mockedAxios.delete).not.toHaveBeenCalled();
     });
   });
@@ -254,12 +251,102 @@ describe('createVectorFileDeleter receipts', () => {
     );
   });
 
-  it('confirms an already absent vector copy', async () => {
+  it('confirms an already absent vector copy through inventory', async () => {
     mockedAxios.delete.mockRejectedValueOnce({
       code: 'ERR_BAD_REQUEST',
       response: { status: 404 },
     });
+    mockedAxios.get.mockResolvedValueOnce({ data: [] });
     expect(await setup()(req, file)).toEqual({ deleted: true });
+  });
+
+  it('keeps legacy agent files until their embedding ownership has been recovered', async () => {
+    await expect(setup()(req, { ...file, context: 'agents' })).rejects.toThrow(
+      'ownership must be recorded',
+    );
+    expect(mockedAxios.delete).not.toHaveBeenCalled();
+  });
+
+  it('deletes every recorded namespace once, using the authenticated principal', async () => {
+    mockedAxios.delete.mockResolvedValue({ status: 200 });
+    const scoped = {
+      ...file,
+      user: 'untrusted-owner',
+      metadata: { embeddedEntities: ['agent-a', 'agent-b', 'agent-a', 'owner'] },
+    };
+    await expect(setup()(req, scoped)).resolves.toEqual({ deleted: true });
+    expect(mockedAxios.delete).toHaveBeenCalledTimes(3);
+    for (const entity_id of ['agent-a', 'agent-b', 'owner']) {
+      expect(mockedAxios.delete).toHaveBeenCalledWith(
+        'https://rag.example/documents',
+        expect.objectContaining({
+          params: { entity_id },
+          data: [file.file_id],
+          headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+        }),
+      );
+    }
+  });
+
+  it('does not mistake a wrong-namespace 404 for erasure', async () => {
+    mockedAxios.delete.mockRejectedValueOnce({ response: { status: 404 } });
+    mockedAxios.get.mockResolvedValueOnce({ data: [file.file_id] });
+    const scoped = { ...file, metadata: { embeddedEntities: ['agent-a'] } };
+    await expect(setup()(req, scoped)).rejects.toThrow('Vector deletion was not confirmed');
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://rag.example/ids',
+      expect.objectContaining({ params: { entity_id: 'agent-a' } }),
+    );
+  });
+
+  it.each([undefined, {}, { ids: [] }, [1]])(
+    'rejects an invalid inventory response: %j',
+    async (data) => {
+      mockedAxios.delete.mockRejectedValueOnce({ response: { status: 404 } });
+      mockedAxios.get.mockResolvedValueOnce({ data });
+      await expect(setup()(req, file)).rejects.toThrow('Vector deletion was not confirmed');
+    },
+  );
+
+  it('retains failure when the inventory check is unavailable', async () => {
+    mockedAxios.delete.mockRejectedValueOnce({ response: { status: 404 } });
+    mockedAxios.get.mockRejectedValueOnce({ response: { status: 404 } });
+    const error = await setup()(req, file).catch((error) => error);
+    expect(error.message).toBe('Vector deletion was not confirmed');
+    expect(error.response).toBeUndefined();
+  });
+
+  it('waits for every namespace and supports retry after partial deletion', async () => {
+    const scoped = { ...file, metadata: { embeddedEntities: ['agent-a', 'agent-b'] } };
+    mockedAxios.delete
+      .mockResolvedValueOnce({ status: 200 })
+      .mockRejectedValueOnce({ response: { status: 503 } });
+    await expect(setup()(req, scoped)).rejects.toThrow('Vector deletion was not confirmed');
+    mockedAxios.delete
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({ status: 200 });
+    mockedAxios.get.mockResolvedValueOnce({ data: [] });
+    await expect(setup()(req, scoped)).resolves.toEqual({ deleted: true });
+  });
+
+  it('does not issue a receipt before another namespace finishes', async () => {
+    let finish = () => {};
+    mockedAxios.delete.mockRejectedValueOnce({ response: { status: 403 } }).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = () => resolve({ status: 200 });
+      }),
+    );
+    let settled = false;
+    const deletion = setup()(req, { ...file, metadata: { embeddedEntities: ['a', 'b'] } }).catch(
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    finish();
+    await deletion;
+    expect(settled).toBe(true);
   });
 
   it('does not issue a receipt for an unconfigured store or a non-embedded file', async () => {
@@ -273,6 +360,6 @@ describe('createVectorFileDeleter receipts', () => {
     { response: { status: 500 } },
   ])('propagates failed requests without a deletion receipt', async (error) => {
     mockedAxios.delete.mockRejectedValueOnce(error);
-    await expect(setup()(req, file)).rejects.toBe(error);
+    await expect(setup()(req, file)).rejects.toThrow('Vector deletion was not confirmed');
   });
 });

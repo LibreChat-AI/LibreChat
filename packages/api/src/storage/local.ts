@@ -53,7 +53,9 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
       if (!isStrictlyWithin(userUploadDir, filePath)) {
         throw new Error(`Invalid file path: ${cleanFilepath}`);
       }
-      await deleteRagFile({ userId: ownerId, file });
+      if ((await deleteRagFile({ userId: ownerId, file })) === false) {
+        throw new Error('Vector deletion was not confirmed');
+      }
       await unlinkStoredFile(filePath);
       return;
     }
@@ -61,7 +63,9 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
     const parts = cleanFilepath.split(path.sep);
     const subfolder = parts[1];
     if (!subfolder && parts[0] === EModelEndpoint.agents) {
-      await deleteRagFile({ userId: ownerId, file });
+      if ((await deleteRagFile({ userId: ownerId, file })) === false) {
+        throw new Error('Vector deletion was not confirmed');
+      }
       logger.warn(`Agent File ${file.file_id} is missing filepath, may have been deleted already`);
       return;
     }
@@ -69,7 +73,9 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
     if (!subfolder || !isStrictlyWithin(path.join(publicPath, subfolder, ownerId), filePath)) {
       throw new Error('Invalid file path');
     }
-    await deleteRagFile({ userId: ownerId, file });
+    if ((await deleteRagFile({ userId: ownerId, file })) === false) {
+      throw new Error('Vector deletion was not confirmed');
+    }
     await unlinkStoredFile(filePath);
   };
 }

@@ -909,21 +909,22 @@ describe('S3 CRUD', () => {
       const { deleteFileFromS3 } = await import('../crud');
       await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
       expect(onDelete.mock.calls).toEqual([[]]);
-      expect(deleteRagFile).not.toHaveBeenCalled();
+      expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user123', file: mockFile });
     });
 
-    it('confirms DeleteObject before a later RAG cleanup denial', async () => {
+    it('keeps DeleteObject undispatched when RAG cleanup is denied', async () => {
       const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
       const onDelete = jest.fn();
       s3Mock.on(HeadObjectCommand).resolves({});
       const failure = Object.assign(new Error('RAG denied'), { status: 403 });
       jest.mocked(deleteRagFile).mockImplementationOnce(async () => {
-        expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+        expect(onDelete).not.toHaveBeenCalled();
         throw failure;
       });
       const { deleteFileFromS3 } = await import('../crud');
       await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
-      expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
     });
 
     it('reports a definitive DeleteObject denial', async () => {
@@ -937,6 +938,17 @@ describe('S3 CRUD', () => {
       const { deleteFileFromS3 } = await import('../crud');
       await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
       expect(onDelete.mock.calls).toEqual([[], ['rejected']]);
+    });
+
+    it('keeps the S3 object when vector cleanup returns false', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      s3Mock.on(HeadObjectCommand).resolves({});
+      jest.mocked(deleteRagFile).mockResolvedValueOnce(false);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile)).rejects.toThrow(
+        'Vector deletion was not confirmed',
+      );
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
     });
 
     it('uses the file owner for RAG cleanup when a different authorized user deletes', async () => {

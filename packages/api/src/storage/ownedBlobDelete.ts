@@ -32,12 +32,14 @@ export function createOwnedBlobFileDeleter({
       throw new Error('Invalid file path');
     }
 
+    if ((await deleteRagFile({ userId: ownerId, file })) === false) {
+      throw new Error('Vector deletion was not confirmed');
+    }
     try {
       await deleteBlob(blobPath);
     } catch (error) {
       if (!isMissing(error)) throw error;
     }
-    await deleteRagFile({ userId: ownerId, file });
   };
 }
 

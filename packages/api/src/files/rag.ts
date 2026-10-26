@@ -1,8 +1,9 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
+import { FileContext } from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import { generateShortLivedToken } from '~/crypto/jwt';
-import { isMissingStorageError } from './storage';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 interface DeleteRagFileParams {
   /** The user ID. Required for authentication. If not provided, the function returns false and logs an error. */
@@ -11,6 +12,8 @@ interface DeleteRagFileParams {
   file: {
     file_id: string;
     embedded?: boolean;
+    context?: string;
+    metadata?: { embeddedEntities?: string[] };
   };
 }
 
@@ -25,39 +28,21 @@ interface DeleteRagFileParams {
  * @returns Returns true if deletion was successful or skipped, false if there was an error.
  */
 export async function deleteRagFile({ userId, file }: DeleteRagFileParams): Promise<boolean> {
-  if (!file.embedded || !process.env.RAG_API_URL) {
-    return true;
-  }
-
+  if (!file.embedded) return true;
   if (!userId) {
     logger.error('[deleteRagFile] No user ID provided');
     return false;
   }
-
-  const jwtToken = generateShortLivedToken(userId);
-
   try {
-    await axios.delete(`${process.env.RAG_API_URL}/documents`, {
-      headers: {
-        Authorization: `Bearer ${jwtToken}`,
-        'Content-Type': 'application/json',
-        accept: 'application/json',
-      },
-      data: [file.file_id],
-    });
-    logger.debug(`[deleteRagFile] Successfully deleted document ${file.file_id} from RAG API`);
-    return true;
+    const deleted = await createVectorFileDeleter({
+      baseUrl: process.env.RAG_API_URL,
+      httpClient: axios,
+      generateToken: generateShortLivedToken,
+    })({ user: { id: userId } }, file);
+    return deleted?.deleted === true;
   } catch (error) {
-    const axiosError = error as { response?: { status?: number }; message?: string };
-    if (axiosError.response?.status === 404) {
-      logger.warn(
-        `[deleteRagFile] Document ${file.file_id} not found in RAG API, may have been deleted already`,
-      );
-      return true;
-    } else {
-      logger.error('[deleteRagFile] Error deleting document from RAG API:', axiosError.message);
-      return false;
-    }
+    logger.error('[deleteRagFile] Vector deletion was not confirmed', getSafeErrorMetadata(error));
+    return false;
   }
 }
 
@@ -118,25 +103,58 @@ export function createVectorFileDeleter({
   generateToken,
 }: {
   baseUrl?: string;
-  httpClient: Pick<AxiosInstance, 'delete'>;
+  httpClient: Pick<AxiosInstance, 'delete' | 'get'>;
   generateToken: (userId: string) => string;
 }): (
   req: { user: { id: string } },
-  file: { file_id: string; embedded?: boolean },
+  file: DeleteRagFileParams['file'],
 ) => Promise<{ deleted: true } | undefined> {
   return async (req, file) => {
     if (!file.embedded || !baseUrl) return undefined;
-    try {
-      await httpClient.delete(`${baseUrl}/documents`, {
-        headers: {
-          Authorization: `Bearer ${generateToken(req.user.id)}`,
-          'Content-Type': 'application/json',
-          accept: 'application/json',
-        },
-        data: [file.file_id],
+    if (!req.user.id) throw new Error('Invalid vector deletion principal');
+    const entities = file.metadata?.embeddedEntities;
+    if (
+      entities != null &&
+      (!Array.isArray(entities) || entities.some((id) => typeof id !== 'string' || !id))
+    ) {
+      throw new Error('Invalid file embedding snapshot');
+    }
+    if (file.context === FileContext.agents && !entities?.length) {
+      throw new Error('Agent vector ownership must be recorded before deletion');
+    }
+    const headers = {
+      Authorization: `Bearer ${generateToken(req.user.id)}`,
+      'Content-Type': 'application/json',
+      accept: 'application/json',
+    };
+    // Legacy user embeddings have no namespace metadata. Never infer an agent from the request.
+    const namespaces = entities?.length ? [...new Set(entities)] : [undefined];
+    const results = await Promise.allSettled(
+      namespaces.map(async (entity_id) => {
+        const config = { headers, ...(entity_id ? { params: { entity_id } } : {}) };
+        try {
+          await httpClient.delete(`${baseUrl}/documents`, { ...config, data: [file.file_id] });
+        } catch (error) {
+          // A 404 can mean a wrong scope. Only a successful inventory can establish absence,
+          // including when a prior attempt removed just some of the namespaces.
+          if (getSafeErrorMetadata(error).status !== 404) throw error;
+          const { data } = await httpClient.get<string[]>(`${baseUrl}/ids`, config);
+          if (
+            !Array.isArray(data) ||
+            data.some((id) => typeof id !== 'string') ||
+            data.includes(file.file_id)
+          ) {
+            throw new Error('Vector absence was not confirmed');
+          }
+        }
+      }),
+    );
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') {
+      // Do not expose a provider 404 to generic storage cleanup, which forgives missing blobs.
+      throw new Error('Vector deletion was not confirmed', {
+        cause: getSafeErrorMetadata(failure.reason),
       });
-    } catch (error) {
-      if (!isMissingStorageError(error)) throw error;
     }
     return { deleted: true };
   };
