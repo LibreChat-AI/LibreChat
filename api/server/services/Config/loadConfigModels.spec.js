@@ -44,7 +44,7 @@ const exampleConfig = {
         apiKey: 'user_provided',
         baseURL: 'https://api.groq.com/openai/v1/',
         models: {
-          default: ['llama2-70b-4096', 'mixtral-8x7b-32768'],
+          default: ['openai/gpt-oss-120b'],
           fetch: false,
         },
       },
