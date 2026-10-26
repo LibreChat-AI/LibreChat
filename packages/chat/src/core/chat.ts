@@ -471,6 +471,8 @@ export class Chat {
   private releaseState?: () => void;
   private active?: ActiveRequest;
   private disposed = false;
+  /** Set while the chat writes the state, whose own report of that write the chat announces itself. */
+  private writing = false;
   /**
    * The conversation this chat runs under: its id, until the server names the one it created for
    * a chat started under `new`. Every later turn addresses that one.
@@ -529,7 +531,11 @@ export class Chat {
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     if (!this.releaseState && this.init.state.subscribe) {
-      this.releaseState = this.init.state.subscribe(() => this.notify());
+      this.releaseState = this.init.state.subscribe(() => {
+        if (!this.writing) {
+          this.notify();
+        }
+      });
     }
     return () => {
       this.listeners.delete(listener);
@@ -609,10 +615,10 @@ export class Chat {
           if (!active.controller.signal.aborted) {
             const before = this.messages;
             const written = typeof optimistic === 'function' ? optimistic(before) : optimistic;
-            active.optimistic = { before, written };
-            this.write(written);
-            /** The rows as the state committed them, which a store may copy on the way in. */
-            active.optimistic.written = this.messages;
+            /** The rows as the state committed them, read before a subscriber can write more. */
+            this.write(written, (committed) => {
+              active.optimistic = { before, written: committed };
+            });
           }
         });
       }
@@ -907,12 +913,22 @@ export class Chat {
     active.finish();
   }
 
-  /** Every write below is the chat's own; a disposed chat owns none of the shared state. */
-  private write(messages: TMessage[]): void {
+  /**
+   * Every write below is the chat's own; a disposed chat owns none of the shared state. `commit`
+   * reads the list the state committed before anyone is told of it, including a store that
+   * reports its own writes.
+   */
+  private write(messages: TMessage[], commit?: (committed: TMessage[]) => void): void {
     if (this.disposed) {
       return;
     }
-    this.init.state.replaceMessages(messages);
+    this.writing = true;
+    try {
+      this.init.state.replaceMessages(messages);
+    } finally {
+      this.writing = false;
+    }
+    commit?.(this.messages);
     this.notify();
   }
 

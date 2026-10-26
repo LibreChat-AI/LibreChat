@@ -1117,6 +1117,70 @@ describe('Chat attachments and reported conversations', () => {
     },
   );
 
+  it.each([
+    ['over a plain state', false],
+    ['over a store that reports its own writes', true],
+  ])(
+    'keeps a row a listener appended on the optimistic write when a replaced start rolls back, %s',
+    async (_label, viaStore) => {
+      const earlier: TMessage = { ...placeholder, messageId: 'earlier-1', text: 'Earlier' };
+      const external: TMessage = { ...placeholder, messageId: 'external-1', text: 'External' };
+      const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
+      const state = createState([earlier]);
+      const storeListeners = new Set<() => void>();
+      if (viaStore) {
+        const replaceMessages = state.replaceMessages.bind(state);
+        state.replaceMessages = (messages: TMessage[]) => {
+          replaceMessages(messages);
+          storeListeners.forEach((listener) => listener());
+        };
+        state.subscribe = (listener: () => void) => {
+          storeListeners.add(listener);
+          return () => storeListeners.delete(listener);
+        };
+      }
+      let attachedWith: string[] = [];
+      const { chat } = setup(
+        {
+          state,
+          prepareRequest: jest.fn(() => ({
+            payload,
+            messages: (current: TMessage[]) => [...current, userMessage, placeholder],
+          })),
+        },
+        {
+          sendMessages: jest.fn(async () => ({
+            status: 'replaced' as const,
+            generationProtocolVersion: 2,
+            conversationId: 'convo-1',
+            streamId: 'stream-2',
+            generationCreatedAt: 200,
+          })),
+          reconnectToStream: jest.fn(async () => {
+            attachedWith = chat.messages.map((m) => m.messageId);
+            return stream;
+          }),
+        },
+      );
+      const append = () => {
+        const current = state.messages;
+        if (
+          current.some((m) => m.messageId === placeholder.messageId) &&
+          !current.includes(external)
+        ) {
+          state.replaceMessages([...current, external]);
+        }
+      };
+      chat.subscribe(append);
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push(finalEvent({ requestMessage: null, responseMessage: null }));
+      await sent;
+
+      expect(attachedWith).toEqual(['earlier-1', 'external-1']);
+    },
+  );
+
   it('reports an error the generation itself sent on an attachment as terminal', async () => {
     const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
     const { chat, onFinish } = replacing(stream);
