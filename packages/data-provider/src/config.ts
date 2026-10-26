@@ -2714,6 +2714,12 @@ export const outboundTimeoutsSchema = z.object({
   imageFetchMs: outboundTimeoutMs,
 });
 
+/** Retention for the write-only GENERAL violation log kept per user. */
+export const violationLogSchema = z.object({
+  /** Newest entries kept per user; older ones are dropped on the next append. */
+  maxEntries: z.number().int().positive().optional(),
+});
+
 export type TOutboundTimeouts = z.infer<typeof outboundTimeoutsSchema>;
 
 export const rateLimitSchema = z.object({
@@ -4642,6 +4648,7 @@ export const configSchema = z.object({
     })
     .optional(),
   timeouts: outboundTimeoutsSchema.optional(),
+  violationLog: violationLogSchema.optional(),
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),

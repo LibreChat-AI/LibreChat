@@ -557,6 +557,10 @@ registration:
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
 #   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
 
+# Newest violations kept per user in the general violation log.
+# violationLog:
+#   maxEntries: 100
+
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
 #   mcpApps:

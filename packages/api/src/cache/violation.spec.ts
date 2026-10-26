@@ -37,4 +37,12 @@ describe('violation helpers', () => {
     expect(entries).toHaveLength(MAX_VIOLATION_LOG_ENTRIES);
     expect(entries[entries.length - 1]).toBe(MAX_VIOLATION_LOG_ENTRIES + 4);
   });
+
+  it('honors a configured retention', async () => {
+    const store = makeStore<number[]>();
+    for (let i = 0; i < 10; i++) {
+      await appendViolationLog(store, 'u', i, 3);
+    }
+    expect(await store.get('u')).toEqual([7, 8, 9]);
+  });
 });

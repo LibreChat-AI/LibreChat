@@ -1,4 +1,4 @@
-import { withKeyLock, createSingleFlight } from './keylock';
+import { withKeyLock, createSingleFlight, raceWithTimeout } from './keylock';
 
 describe('withKeyLock', () => {
   it('serializes read-modify-write cycles on one key without losing updates', async () => {
@@ -40,5 +40,25 @@ describe('createSingleFlight', () => {
     expect(onError).toHaveBeenCalledWith('[Test] sweep failed', expect.any(Error));
     tick();
     expect(task).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('raceWithTimeout', () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('returns the work result and leaves no timer pending', async () => {
+    jest.useFakeTimers();
+    const log = { error: jest.fn() };
+    await expect(raceWithTimeout(Promise.resolve('ok'), 1000, log, '[T]')).resolves.toBe('ok');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('logs and resolves undefined when the work outlives the budget', async () => {
+    jest.useFakeTimers();
+    const log = { error: jest.fn() };
+    const result = raceWithTimeout(new Promise<string>(() => undefined), 1000, log, '[T]');
+    jest.advanceTimersByTime(1000);
+    await expect(result).resolves.toBeUndefined();
+    expect(log.error).toHaveBeenCalledTimes(1);
   });
 });

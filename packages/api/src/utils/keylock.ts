@@ -40,3 +40,27 @@ export function createSingleFlight(
       });
   };
 }
+
+/**
+ * Resolves with `work`, or with `undefined` after `ms` (logging the timeout). The timer is
+ * always cleared, so a settled race never leaves it pending.
+ */
+export async function raceWithTimeout<T>(
+  work: Promise<T>,
+  ms: number,
+  log: { error: (message: string, error: unknown) => void },
+  label: string,
+): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => {
+      log.error(`${label} error:`, new Error(`${label} timeout`));
+      resolve(undefined);
+    }, ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

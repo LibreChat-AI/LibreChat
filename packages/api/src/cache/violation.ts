@@ -7,8 +7,9 @@ export interface ViolationStore<T> {
 }
 
 /**
- * Newest entries kept per user in the GENERAL violation log. The log is write-only
- * file storage that is rewritten whole on every append, so it must not grow forever.
+ * Default for the newest entries kept per user in the GENERAL violation log, overridable
+ * by `violationLog.maxEntries`. The log is write-only file storage that is rewritten whole
+ * on every append, so it must not grow forever.
  */
 export const MAX_VIOLATION_LOG_ENTRIES = 100;
 
@@ -36,10 +37,11 @@ export function appendViolationLog<T>(
   store: ViolationStore<T[]>,
   key: string,
   entry: T,
+  maxEntries: number = MAX_VIOLATION_LOG_ENTRIES,
 ): Promise<void> {
   return withKeyLock(`violation:log:${key}`, async () => {
     const entries = (await store.get(key)) ?? [];
     entries.push(entry);
-    await store.set(key, entries.slice(-MAX_VIOLATION_LOG_ENTRIES));
+    await store.set(key, entries.slice(-maxEntries));
   });
 }

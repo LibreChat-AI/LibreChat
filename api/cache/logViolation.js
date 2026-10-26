@@ -34,7 +34,7 @@ const logViolation = async (req, res, type, errorMessage, score = 1) => {
 
   await banViolation(req, res, errorMessage);
   delete errorMessage.user_id;
-  await appendViolationLog(logs, key, errorMessage);
+  await appendViolationLog(logs, key, errorMessage, req.config?.violationLog?.maxEntries);
 };
 
 module.exports = logViolation;
