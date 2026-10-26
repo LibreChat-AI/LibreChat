@@ -126,10 +126,12 @@ describe('global tool cache write lock', () => {
         expect(fenceKey).not.toBe(guardedKey);
         const fallback = restricted || calculateSlot(legacyFenceKey) !== calculateSlot(guardedKey);
         const claimKeys = fallback ? [fenceKey] : [fenceKey, legacyFenceKey];
-        const ownershipKey = fallback ? fenceKey : legacyFenceKey;
         const calls = [[fenceKey, legacyFenceKey]];
         if (fallback) calls.push(claimKeys);
-        calls.push([ownershipKey, guardedKey], claimKeys);
+        calls.push(
+          fallback ? [fenceKey, guardedKey] : [fenceKey, guardedKey, legacyFenceKey],
+          claimKeys,
+        );
         expect(mockKeyvRedisClient.eval.mock.calls.map(([, options]) => options.keys)).toEqual(
           calls,
         );
@@ -240,8 +242,9 @@ describe('global tool cache write lock', () => {
       expect.stringContaining("redis.call('GET', KEYS[1])"),
       expect.objectContaining({
         keys: [
-          `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
+          `${CacheKeys.TOOL_CACHE}:tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
           `${CacheKeys.TOOL_CACHE}:tools:global`,
+          `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
         ],
       }),
     );
@@ -261,8 +264,9 @@ describe('global tool cache write lock', () => {
           expect.stringContaining("redis.call('PSETEX', KEYS[2]"),
           expect.objectContaining({
             keys: [
-              `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
+              `${CacheKeys.TOOL_CACHE}:tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
               `${CacheKeys.TOOL_CACHE}:tools:global`,
+              `tools:global:write-fence:{${CacheKeys.TOOL_CACHE}:tools:global}`,
             ],
             arguments: [
               expect.any(String),
@@ -433,10 +437,11 @@ describe('global tool cache write lock', () => {
       expect.stringContaining("redis.call('EXISTS', KEYS[2])"),
       expect.objectContaining({
         keys: [
-          `tools:mcp:write-fence:{user-1:server-1}`,
+          `${CacheKeys.TOOL_CACHE}:tools:mcp:write-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-legacy-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-generation:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:mcp:user:{user-1:server-1}:v2:config-current`,
+          `tools:mcp:write-fence:{user-1:server-1}`,
         ],
       }),
     );

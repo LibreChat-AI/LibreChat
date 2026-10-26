@@ -45,7 +45,7 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
   const userLock = `${prefix}::${CacheKeys.TOOL_CACHE}:tools:mcp-write-lock:${userId}:${serverName}`;
   const legacyUserFence = `tools:mcp:write-fence:{${userId}:${serverName}}`;
   const namespacedUserFence = `${prefix}::${CacheKeys.TOOL_CACHE}:tools:mcp:write-fence:{${userId}:${serverName}}`;
-  const keys = [
+  const keys = new Set([
     globalKey,
     globalLock,
     legacyGlobalFence,
@@ -54,7 +54,7 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     userLock,
     legacyUserFence,
     namespacedUserFence,
-  ];
+  ]);
   let redis: RedisTestClient;
 
   beforeAll(async () => {
@@ -63,20 +63,19 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
   });
 
   afterEach(async () => {
-    await Promise.all(keys.map((key) => redis.del(key)));
+    await Promise.all([...keys].map((key) => redis.del(key)));
   });
 
   afterAll(() => redis.disconnect());
 
-  function createStore(
-    legacy: boolean,
-    get = async (key: string) => {
-      const raw = await redis.get(`${prefix}::${CacheKeys.TOOL_CACHE}:${key}`);
-      return raw == null ? null : JSON.parse(raw).value;
-    },
-  ) {
+  function createStore(legacy: boolean, get?: CatalogCache['get'], deployment = prefix) {
     const cache: CatalogCache = {
-      get,
+      get:
+        get ??
+        (async (key: string) => {
+          const raw = await redis.get(`${deployment}::${CacheKeys.TOOL_CACHE}:${key}`);
+          return raw == null ? null : JSON.parse(raw).value;
+        }),
       set: async () => {
         throw new Error('Expected an atomic Redis write');
       },
@@ -86,13 +85,18 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
     };
     const client: NonNullable<CatalogStoreDeps['keyvRedisClient']> = {
       eval: async (script, options) => {
-        const scriptKeys = options.keys.map((key) => {
-          if (!legacy) return key;
-          if (key === namespacedGlobalFence) return legacyGlobalFence;
-          if (key === namespacedUserFence) return legacyUserFence;
-          return key;
-        });
-        if (legacy && script.includes("redis.call('TIME')")) {
+        options.keys.forEach((key) => keys.add(key));
+        const scriptKeys = [
+          ...new Set(
+            options.keys.map((key) => {
+              if (!legacy) return key;
+              if (key === namespacedGlobalFence) return legacyGlobalFence;
+              if (key === namespacedUserFence) return legacyUserFence;
+              return key;
+            }),
+          ),
+        ];
+        if (legacy && script.includes("local current = redis.call('GET', KEYS[1])")) {
           return redis.eval(
             CLAIM_SCRIPT,
             1,
@@ -100,7 +104,7 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
             ...options.arguments,
           );
         }
-        if (legacy && script.includes("redis.call('DEL'")) {
+        if (legacy && script.includes('return released')) {
           return redis.eval(
             RELEASE_SCRIPT,
             1,
@@ -112,13 +116,15 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
       },
     };
     const store = createMCPCatalogStore({
-      cacheConfig: { REDIS_KEY_PREFIX: prefix },
+      cacheConfig: { REDIS_KEY_PREFIX: deployment },
       getCache: () => cache,
       ioredisClient: {
-        set: (key, value, mode, ttl, condition) =>
-          redis.set(`${prefix}::${key}`, value, mode, ttl, condition),
+        set: (key, value, mode, ttl, condition) => {
+          keys.add(`${deployment}::${key}`);
+          return redis.set(`${deployment}::${key}`, value, mode, ttl, condition);
+        },
         eval: (script, count, key, token) =>
-          redis.eval(legacy ? RELEASE_SCRIPT : script, count, `${prefix}::${key}`, token),
+          redis.eval(legacy ? RELEASE_SCRIPT : script, count, `${deployment}::${key}`, token),
       },
       keyvRedisClient: client,
     });
@@ -180,6 +186,136 @@ describeRedis('MCP catalog fence compatibility (real Redis)', () => {
       }
       expect(await redis.get(legacyUserFence)).toBeNull();
       expect(await redis.get(namespacedUserFence)).toBeNull();
+    },
+  );
+
+  it('isolates deployments sharing user/server IDs and releases only its own barrier entry', async () => {
+    const otherPrefix = `${prefix}-other`;
+    const entered = [barrier(), barrier()];
+    const resume = [barrier(), barrier()];
+    const stores = [prefix, otherPrefix].map((deployment, index) => {
+      let reads = 0;
+      return createStore(
+        false,
+        async () => {
+          if (++reads === 2) {
+            entered[index].release();
+            await resume[index].ready;
+          }
+          return null;
+        },
+        deployment,
+      );
+    });
+    const first = stores[0].getMCPToolsCacheGeneration({ userId, serverName });
+    await entered[0].ready;
+    const second = stores[1].getMCPToolsCacheGeneration({ userId, serverName });
+    const secondSettled = second.catch((error: Error) => error);
+    const enteredOrRejected = Promise.race([
+      entered[1].ready.then(() => 'entered'),
+      secondSettled.then(() => 'settled'),
+    ]);
+    try {
+      await expect(enteredOrRejected).resolves.toBe('entered');
+      const barrierBefore = JSON.parse((await redis.get(legacyUserFence))!);
+      expect(Object.keys(barrierBefore.owners)).toHaveLength(2);
+      const firstToken = await redis.get(namespacedUserFence);
+      const otherFence = `${otherPrefix}::${CacheKeys.TOOL_CACHE}:tools:mcp:write-fence:{${userId}:${serverName}}`;
+      const secondToken = await redis.get(otherFence);
+      expect(firstToken).not.toBe(secondToken);
+      expect(await redis.pttl(legacyUserFence)).toBeGreaterThan(0);
+      // Losing one deployment's lock must still reject its own competing writer.
+      await redis.del(userLock);
+      await expect(
+        createStore(false).getMCPToolsCacheGeneration({ userId, serverName }),
+      ).rejects.toThrow('superseded');
+      resume[0].release();
+      await expect(first).resolves.toEqual(expect.any(String));
+      const barrierAfter = JSON.parse((await redis.get(legacyUserFence))!);
+      expect(Object.keys(barrierAfter.owners)).toEqual([secondToken]);
+      expect(await redis.get(otherFence)).toBe(secondToken);
+      // The remaining deployment still excludes old writers after its peer exits.
+      expect(
+        Number(
+          await redis.eval(
+            CLAIM_SCRIPT,
+            1,
+            legacyUserFence,
+            'old-replica',
+            String(Date.now() + 30_000),
+            '1000',
+          ),
+        ),
+      ).toBe(0);
+      resume[1].release();
+      await expect(secondSettled).resolves.toEqual(expect.any(String));
+      expect(await redis.get(legacyUserFence)).toBeNull();
+      const otherGeneration = `${otherPrefix}::${CacheKeys.TOOL_CACHE}:${ToolCacheKeys.MCP_SERVER_GENERATION(userId, serverName)}`;
+      expect(await redis.get(generationKey)).not.toBeNull();
+      expect(await redis.get(otherGeneration)).not.toBeNull();
+      expect(await redis.get(otherFence)).toBeNull();
+    } finally {
+      resume.forEach((pause) => pause.release());
+      await Promise.allSettled([first, second]);
+    }
+  });
+
+  it('preserves longer peer leases and prunes expired compatibility owners', async () => {
+    const owner = 'peer';
+    const expired = 'expired';
+    const deadline = Date.now() + 60_000;
+    const value = {
+      protocol: 'librechat:mcp-catalog-fence:v1',
+      owners: { [owner]: deadline, [expired]: 1 },
+    };
+    await redis.set(legacyUserFence, JSON.stringify(value), 'PX', 60_000);
+    await expect(
+      createStore(false).getMCPToolsCacheGeneration({ userId, serverName }),
+    ).resolves.toEqual(expect.any(String));
+    expect(JSON.parse((await redis.get(legacyUserFence))!).owners).toEqual({ [owner]: deadline });
+    expect(await redis.pttl(legacyUserFence)).toBeGreaterThan(50_000);
+  });
+
+  it.each(['generation', 'migration'] as const)(
+    'rejects a delayed user %s after its compatibility lease is replaced',
+    async (operation) => {
+      const entered = barrier();
+      const resume = barrier();
+      const rawKey = (key: string) => `${prefix}::${CacheKeys.TOOL_CACHE}:${key}`;
+      let reads = 0;
+      const store = createStore(false, async (key) => {
+        if (++reads === 2) {
+          entered.release();
+          await resume.ready;
+        }
+        const raw = await redis.get(rawKey(key));
+        return raw == null ? null : JSON.parse(raw).value;
+      });
+      const legacyTools = rawKey(ToolCacheKeys.MCP_SERVER(userId, serverName));
+      const migratedTools = rawKey(ToolCacheKeys.MCP_SERVER(userId, serverName, 'config'));
+      keys.add(legacyTools);
+      keys.add(migratedTools);
+      await redis.set(
+        legacyTools,
+        JSON.stringify({ value: tools('legacy'), expires: Date.now() + 60_000 }),
+      );
+      const write =
+        operation === 'generation'
+          ? store.getMCPToolsCacheGeneration({ userId, serverName })
+          : store.getCachedTools({ userId, serverName, configGeneration: 'config' });
+      const settled = write.catch((error: Error) => error);
+      await entered.ready;
+      try {
+        await redis.set(legacyUserFence, 'old-replica', 'PX', 30_000);
+      } finally {
+        resume.release();
+        await expect(settled).resolves.toMatchObject({
+          message: expect.stringContaining('ownership was lost'),
+        });
+      }
+      expect(await redis.get(generationKey)).toBeNull();
+      expect(await redis.get(migratedTools)).toBeNull();
+      expect(await redis.get(legacyUserFence)).toBe('old-replica');
     },
   );
 

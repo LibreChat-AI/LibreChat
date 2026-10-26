@@ -8,6 +8,7 @@ const GLOBAL_LOCK_TTL_MS = 30_000;
 const LOCK_FENCE_SAFETY_MS = 1_000;
 const LOCK_RETRY_MS = 25;
 const CACHE_ENTRY_VERSION = 1;
+const LEGACY_FENCE_BARRIER = 'librechat:mcp-catalog-fence:v1';
 const GLOBAL_LOCK_KEY = `${CacheKeys.TOOL_CACHE}:tools:global:write-lock`;
 
 const RELEASE_LOCK_SCRIPT = `
@@ -21,22 +22,70 @@ return released
 `;
 
 const CLAIM_OWNERSHIP_FENCE_SCRIPT = `
-for _, key in ipairs(KEYS) do
-  local current = redis.call('GET', key)
-  if current and current ~= ARGV[1] then return 0 end
+local current = redis.call('GET', KEYS[1])
+if current and current ~= ARGV[1] then return 0 end
+local owners = {}
+if KEYS[2] then
+  local legacy = redis.call('GET', KEYS[2])
+  if legacy then
+    local decoded, barrier = pcall(cjson.decode, legacy)
+    if not decoded or type(barrier) ~= 'table' or barrier['protocol'] ~= '${LEGACY_FENCE_BARRIER}'
+      or type(barrier['owners']) ~= 'table' then return 0 end
+    owners = barrier['owners']
+  end
 end
 local redisTime = redis.call('TIME')
 local now = (tonumber(redisTime[1]) * 1000) + math.floor(tonumber(redisTime[2]) / 1000)
-local ttl = tonumber(ARGV[2]) - now - tonumber(ARGV[3])
+local deadline = tonumber(ARGV[2]) - tonumber(ARGV[3])
+local ttl = deadline - now
 if ttl <= 0 then return 0 end
-for _, key in ipairs(KEYS) do
-  redis.call('PSETEX', key, ttl, ARGV[1])
+local barrierTtl = ttl
+for owner, expires in pairs(owners) do
+  if expires <= now then owners[owner] = nil
+  else barrierTtl = math.max(barrierTtl, expires - now) end
+end
+owners[ARGV[1]] = deadline
+redis.call('PSETEX', KEYS[1], ttl, ARGV[1])
+if KEYS[2] then
+  redis.call('PSETEX', KEYS[2], barrierTtl, cjson.encode({protocol='${LEGACY_FENCE_BARRIER}', owners=owners}))
 end
 return 1
 `;
 
+const RELEASE_OWNERSHIP_FENCE_SCRIPT = `
+local released = 0
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  released = redis.call('DEL', KEYS[1])
+end
+if not KEYS[2] then return released end
+local decoded, barrier = pcall(cjson.decode, redis.call('GET', KEYS[2]) or '')
+if not decoded or type(barrier) ~= 'table' or barrier['protocol'] ~= '${LEGACY_FENCE_BARRIER}'
+  or type(barrier['owners']) ~= 'table' or not barrier['owners'][ARGV[1]] then return released end
+barrier['owners'][ARGV[1]] = nil
+local redisTime = redis.call('TIME')
+local now = (tonumber(redisTime[1]) * 1000) + math.floor(tonumber(redisTime[2]) / 1000)
+local ttl = 0
+for owner, expires in pairs(barrier['owners']) do
+  if expires <= now then barrier['owners'][owner] = nil
+  else ttl = math.max(ttl, expires - now) end
+end
+if ttl == 0 then redis.call('DEL', KEYS[2])
+else redis.call('PSETEX', KEYS[2], ttl, cjson.encode(barrier)) end
+return released
+`;
+
+function legacyOwnershipCheck(index: number, rejected: number): string {
+  return `
+if KEYS[${index}] then
+  local decoded, barrier = pcall(cjson.decode, redis.call('GET', KEYS[${index}]) or '')
+  if not decoded or type(barrier) ~= 'table' or barrier['protocol'] ~= '${LEGACY_FENCE_BARRIER}'
+    or type(barrier['owners']) ~= 'table' or not barrier['owners'][ARGV[1]] then return ${rejected} end
+end`;
+}
+
 const CREATE_GENERATION_IF_OWNER_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
+${legacyOwnershipCheck(3, -1)}
 if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
 redis.call('PSETEX', KEYS[2], ARGV[4], cjson.encode({value=ARGV[2], expires=tonumber(ARGV[3])}))
 return 1
@@ -44,6 +93,7 @@ return 1
 
 const MIGRATE_USER_TOOLS_IF_OWNER_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
+${legacyOwnershipCheck(5, -1)}
 if redis.call('EXISTS', KEYS[2]) == 1 or redis.call('EXISTS', KEYS[4]) == 1 then return 0 end
 local rawGeneration = redis.call('GET', KEYS[3])
 if rawGeneration then
@@ -83,6 +133,7 @@ return 1
 
 const WRITE_GLOBAL_IF_OWNER_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+${legacyOwnershipCheck(3, 0)}
 local decoded, tools = pcall(cjson.decode, ARGV[2])
 if not decoded then return redis.error_reply('Invalid global tools catalog') end
 redis.call('PSETEX', KEYS[2], ARGV[4], cjson.encode({value=tools, expires=tonumber(ARGV[3])}))
@@ -120,6 +171,7 @@ return 1
 
 const DELETE_GLOBAL_IF_OWNER_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+${legacyOwnershipCheck(3, 0)}
 redis.call('DEL', KEYS[2])
 return 1
 `;
@@ -205,6 +257,13 @@ interface AppToolsEntry {
 interface OwnershipFence {
   key: string;
   token: string;
+  legacyKey?: string;
+}
+
+function ownershipKeys(fence: OwnershipFence, ...keys: string[]): string[] {
+  const result = [fence.key, ...keys];
+  if (fence.legacyKey) result.push(fence.legacyKey);
+  return result;
 }
 
 export interface MCPCatalogStore {
@@ -302,6 +361,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
   let globalQueue = Promise.resolve();
   let globalLockToken: string | undefined;
   let globalLockFenceKey: string | undefined;
+  let globalLockLegacyFenceKey: string | undefined;
 
   const sharedRedis = (): boolean =>
     deps.ioredisClient != null &&
@@ -449,11 +509,12 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       throw new Error('Tool cache lock expired or was superseded before ownership could be fenced');
     }
     try {
-      // Keep the legacy fence authoritative while old replicas can still claim it.
-      return await operation({ key: keys[keys.length - 1], token });
+      // Ownership stays deployment-scoped. The shared barrier excludes old writers
+      // without making current deployments contend with each other.
+      return await operation({ key: fenceKey, token, legacyKey: keys[1] });
     } finally {
       try {
-        await redis.eval(RELEASE_LOCK_SCRIPT, {
+        await redis.eval(RELEASE_OWNERSHIP_FENCE_SCRIPT, {
           keys,
           arguments: [token],
         });
@@ -528,7 +589,10 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       throw new Error('Global tool cache write requires lock ownership');
     }
     const written = await deps.keyvRedisClient!.eval(WRITE_GLOBAL_IF_OWNER_SCRIPT, {
-      keys: [globalLockFenceKey, globalCacheRawKey],
+      keys: ownershipKeys(
+        { key: globalLockFenceKey, token: globalLockToken, legacyKey: globalLockLegacyFenceKey },
+        globalCacheRawKey,
+      ),
       arguments: [globalLockToken, JSON.stringify(tools), String(Date.now() + ttl), String(ttl)],
     });
     if (Number(written) !== 1) {
@@ -546,7 +610,10 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
       throw new Error('Global tool cache invalidation requires lock ownership');
     }
     const deleted = await deps.keyvRedisClient!.eval(DELETE_GLOBAL_IF_OWNER_SCRIPT, {
-      keys: [globalLockFenceKey, globalCacheRawKey],
+      keys: ownershipKeys(
+        { key: globalLockFenceKey, token: globalLockToken, legacyKey: globalLockLegacyFenceKey },
+        globalCacheRawKey,
+      ),
       arguments: [globalLockToken],
     });
     if (Number(deleted) !== 1) {
@@ -565,11 +632,13 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
           async (fence) => {
             globalLockToken = fence?.token;
             globalLockFenceKey = fence?.key;
+            globalLockLegacyFenceKey = fence?.legacyKey;
             try {
               return await operation();
             } finally {
               globalLockToken = undefined;
               globalLockFenceKey = undefined;
+              globalLockLegacyFenceKey = undefined;
             }
           },
         );
@@ -633,7 +702,12 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
           }
           const toolsTtl = Time.TWELVE_HOURS;
           const written = await deps.keyvRedisClient!.eval(MIGRATE_USER_TOOLS_IF_OWNER_SCRIPT, {
-            keys: [fence.key, rawKey(legacyFenceKey), rawKey(generationKey), rawKey(toolsKey)],
+            keys: ownershipKeys(
+              fence,
+              rawKey(legacyFenceKey),
+              rawKey(generationKey),
+              rawKey(toolsKey),
+            ),
             arguments: [
               fence.token,
               publicationGeneration,
@@ -731,7 +805,7 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
           throw new Error('Tool publication generation creation requires lock ownership');
         }
         const created = await deps.keyvRedisClient!.eval(CREATE_GENERATION_IF_OWNER_SCRIPT, {
-          keys: [fence.key, rawKey(key)],
+          keys: ownershipKeys(fence, rawKey(key)),
           arguments: [
             fence.token,
             generation,
