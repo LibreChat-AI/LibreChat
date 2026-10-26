@@ -23,6 +23,7 @@ import type {
 } from '~/types/file';
 import type { IChatProjectDocument } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { fileContentUpdate } from './fileContent';
 import { escapeRegExp } from '~/utils/string';
 import logger from '../config/winston';
 
@@ -599,6 +600,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       object: 'file',
       source: file.source ?? FileSources.local,
       embedded: false,
+      embeddingOwnersComplete: true,
       usage: 1,
       llmDeliveryPath: file.llmDeliveryPath ?? 'none',
       metadata: {
@@ -1190,6 +1192,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const File = mongoose.models.File as Model<IMongoFile>;
     const tenantFilter = data.tenantId ? { tenantId: data.tenantId } : { tenantId: null };
     const insertData = {
+      embeddingOwnersComplete: true,
       file_id: data.file_id,
       user: data.user,
       ...(data.tenantId ? { tenantId: data.tenantId } : {}),
@@ -1258,7 +1261,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
               }
             : {}),
         },
-        fileData,
+        { ...fileContentUpdate(fileData), $setOnInsert: { embeddingOwnersComplete: true } },
         { new: true, upsert: true },
       ).lean<IMongoFile>();
     } catch (error) {
@@ -1297,7 +1300,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const File = mongoose.models.File as Model<IMongoFile>;
     const { file_id, ...update } = data;
     const updateOperation = {
-      $set: update,
+      ...fileContentUpdate(update),
       $unset: { expiresAt: '' },
     };
     const query: FilterQuery<IMongoFile> = extraFilter ? { file_id, ...extraFilter } : { file_id };
@@ -1443,7 +1446,11 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       $and: [{ tenantId: data.tenantId ?? null }],
       updatedAt: data.updatedAt ?? { $exists: false },
       $or: [
-        { embedded: true, 'metadata.embeddedEntities': data.embeddedEntities ?? null },
+        {
+          embedded: true,
+          embeddingOwnersComplete: true,
+          'metadata.embeddedEntities': data.embeddedEntities ?? null,
+        },
         { embedded: false, 'metadata.embeddedEntities': { $exists: false } },
       ],
     };

@@ -168,6 +168,8 @@ export type TFile = {
   temp_file_id?: string;
   bytes: number;
   embedded: boolean;
+  /** Every vector namespace has been tracked since this record was inserted. */
+  embeddingOwnersComplete?: boolean;
   filename: string;
   filepath: string;
   object: 'file';

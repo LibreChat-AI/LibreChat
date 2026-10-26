@@ -46,7 +46,7 @@ describe('deleteRagFile', () => {
 
   describe('when file is embedded and RAG_API_URL is configured', () => {
     it('should delete the document from RAG API successfully', async () => {
-      const file = { file_id: 'file-123', embedded: true };
+      const file = { file_id: 'file-123', embedded: true, embeddingOwnersComplete: true };
       mockedAxios.delete.mockResolvedValueOnce({ status: 200 });
 
       const result = await deleteRagFile({ userId: 'user123', file });
@@ -64,7 +64,7 @@ describe('deleteRagFile', () => {
     });
 
     it('confirms absence through inventory rather than trusting a 404', async () => {
-      const file = { file_id: 'file-not-found', embedded: true };
+      const file = { file_id: 'file-not-found', embedded: true, embeddingOwnersComplete: true };
       const error = new Error('Not Found') as Error & { response?: { status?: number } };
       error.response = { status: 404 };
       mockedAxios.delete.mockRejectedValueOnce(error);
@@ -77,7 +77,7 @@ describe('deleteRagFile', () => {
     });
 
     it('should return false and log error on other errors', async () => {
-      const file = { file_id: 'file-error', embedded: true };
+      const file = { file_id: 'file-error', embedded: true, embeddingOwnersComplete: true };
       const error = new Error('Server Error') as Error & { response?: { status?: number } };
       error.response = { status: 500 };
       mockedAxios.delete.mockRejectedValueOnce(error);
@@ -116,7 +116,7 @@ describe('deleteRagFile', () => {
   describe('when RAG_API_URL is not configured', () => {
     it('does not confirm deletion for an unconfigured store', async () => {
       delete process.env.RAG_API_URL;
-      const file = { file_id: 'file-123', embedded: true };
+      const file = { file_id: 'file-123', embedded: true, embeddingOwnersComplete: true };
 
       const result = await deleteRagFile({ userId: 'user123', file });
 
@@ -127,7 +127,7 @@ describe('deleteRagFile', () => {
 
   describe('userId handling', () => {
     it('should return false when no userId is provided', async () => {
-      const file = { file_id: 'file-123', embedded: true };
+      const file = { file_id: 'file-123', embedded: true, embeddingOwnersComplete: true };
 
       const result = await deleteRagFile({ userId: '', file });
 
@@ -137,7 +137,7 @@ describe('deleteRagFile', () => {
     });
 
     it('should return false when userId is undefined', async () => {
-      const file = { file_id: 'file-123', embedded: true };
+      const file = { file_id: 'file-123', embedded: true, embeddingOwnersComplete: true };
 
       const result = await deleteRagFile({ userId: undefined as unknown as string, file });
 
@@ -231,7 +231,7 @@ describe('hasEntityEmbeddings', () => {
 
 describe('createVectorFileDeleter receipts', () => {
   beforeEach(() => jest.clearAllMocks());
-  const file = { file_id: 'retained-file', embedded: true };
+  const file = { file_id: 'retained-file', embedded: true, embeddingOwnersComplete: true };
   const req = { user: { id: 'owner' } };
   const setup = (baseUrl: string | undefined = 'https://rag.example') => {
     const remove = createVectorFileDeleter({
@@ -261,11 +261,26 @@ describe('createVectorFileDeleter receipts', () => {
   });
 
   it('keeps legacy agent files until their embedding ownership has been recovered', async () => {
-    await expect(setup()(req, { ...file, context: 'agents' })).rejects.toThrow(
-      'ownership must be recorded',
-    );
+    await expect(
+      setup()(req, { ...file, context: 'agents', embeddingOwnersComplete: undefined }),
+    ).rejects.toThrow('ownership must be recorded');
     expect(mockedAxios.delete).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, false])(
+    'rejects partially adopted legacy ownership (%s)',
+    async (embeddingOwnersComplete) => {
+      const legacy = {
+        ...file,
+        context: 'agents',
+        embeddingOwnersComplete,
+        metadata: { embeddedEntities: ['agent-a'] },
+      };
+      await expect(setup()(req, legacy)).rejects.toThrow('Complete vector ownership');
+      expect(mockedAxios.delete).not.toHaveBeenCalled();
+      expect(mockedAxios.get).not.toHaveBeenCalled();
+    },
+  );
 
   it('deletes every recorded namespace once, using the authenticated principal', async () => {
     mockedAxios.delete.mockResolvedValue({ status: 200 });

@@ -56,7 +56,12 @@ describe('withStoredUploadCleanup', () => {
         },
       ),
     ).rejects.toBe(failure);
-    expect(deleteFile).toHaveBeenCalledWith(req, { ...stored, user: 'u1', tenantId: 't1' });
+    expect(deleteFile).toHaveBeenCalledWith(req, {
+      ...stored,
+      user: 'u1',
+      tenantId: 't1',
+      embeddingOwnersComplete: true,
+    });
   });
 
   it('deletes without a record lookup when the failure precedes the record write', async () => {

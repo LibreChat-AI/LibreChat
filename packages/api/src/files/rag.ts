@@ -1,6 +1,5 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
-import { FileContext } from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import { generateShortLivedToken } from '~/crypto/jwt';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -13,6 +12,7 @@ interface DeleteRagFileParams {
     file_id: string;
     embedded?: boolean;
     context?: string;
+    embeddingOwnersComplete?: boolean;
     metadata?: { embeddedEntities?: string[] };
   };
 }
@@ -119,8 +119,8 @@ export function createVectorFileDeleter({
     ) {
       throw new Error('Invalid file embedding snapshot');
     }
-    if (file.context === FileContext.agents && !entities?.length) {
-      throw new Error('Agent vector ownership must be recorded before deletion');
+    if (file.embeddingOwnersComplete !== true) {
+      throw new Error('Complete vector ownership must be recorded before deletion');
     }
     const headers = {
       Authorization: `Bearer ${generateToken(req.user.id)}`,

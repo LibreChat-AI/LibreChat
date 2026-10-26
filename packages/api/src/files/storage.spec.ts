@@ -21,6 +21,7 @@ const file = {
   user: 'owner',
   tenantId: 'tenant-a',
   embedded: true,
+  embeddingOwnersComplete: true,
   metadata: { codeEnvRef: { file_id: 'code-copy' } },
 };
 
@@ -98,6 +99,42 @@ describe('createDeleteFileWithSecondaryStorage', () => {
       expect(retained.embedded).toBe(true);
       expect(retained.metadata.embeddedEntities).toEqual(['agent-a']);
       if (source === FileSources.local) expect(primary).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([FileSources.local, FileSources.vectordb])(
+    'retains a partially adopted legacy file and its unknown agent-b vectors (%s)',
+    async (source) => {
+      const { primary, vectors, remove, clearFileEmbeddings, isFileStorageClean } = setup(source);
+      const copies = new Set(['agent-a', 'agent-b']);
+      const httpClient = {
+        delete: jest.fn().mockImplementation(async () => {
+          copies.delete('agent-a');
+          return { status: 200 };
+        }),
+        get: jest.fn().mockResolvedValue({ data: [] }),
+      };
+      const deleteVectors = createVectorFileDeleter({
+        baseUrl: 'https://rag.example',
+        httpClient,
+        generateToken: () => 'token',
+      });
+      (source === FileSources.vectordb ? primary : vectors).mockImplementation(deleteVectors);
+      const legacy = {
+        ...file,
+        embeddingOwnersComplete: false,
+        metadata: { ...file.metadata, embeddedEntities: ['agent-a'] },
+      };
+      await expect(remove(req, legacy)).rejects.toThrow('Complete vector ownership');
+      expect([...copies]).toEqual(['agent-a', 'agent-b']);
+      expect(httpClient.delete).not.toHaveBeenCalled();
+      expect(clearFileEmbeddings).not.toHaveBeenCalled();
+      if (source === FileSources.local) {
+        expect(isFileStorageClean).not.toHaveBeenCalled();
+        expect(primary).not.toHaveBeenCalled();
+      }
+      expect(legacy.metadata.embeddedEntities).toEqual(['agent-a']);
+      expect(legacy.embedded).toBe(true);
     },
   );
 

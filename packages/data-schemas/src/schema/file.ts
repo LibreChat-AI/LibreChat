@@ -75,6 +75,10 @@ const file: Schema<IMongoFile> = new Schema(
     embedded: {
       type: Boolean,
     },
+    embeddingOwnersComplete: {
+      type: Boolean,
+      default: undefined,
+    },
     type: {
       type: String,
       required: true,
