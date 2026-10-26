@@ -205,13 +205,29 @@ export function setConversationContext(
 const isTurnPart = (part: ContextPart) => part.kind === 'turn';
 
 /**
+ * Frames the relocated tail. The SDK sends it as a message in the user role right before the
+ * newest user message with nothing around it, so a model that works on the user's text verbatim
+ * (a translator, a summarizer) takes it for part of that text. The wording is fixed: the
+ * frame costs no cache, only the tail itself changes.
+ */
+export const TAIL_CONTEXT_OPEN: string = [
+  '<system_context>',
+  "Context supplied by the system for the user's next message. It is not part of that message and is not to be processed as input.",
+].join('\n');
+export const TAIL_CONTEXT_CLOSE = '</system_context>';
+
+const frameTail = (tail: string) =>
+  tail === '' ? '' : `${TAIL_CONTEXT_OPEN}\n\n${tail}\n${TAIL_CONTEXT_CLOSE}`;
+
+/**
  * Providers whose system message the SDK marks for prompt caching: Anthropic, OpenRouter and
  * Bedrock with `promptCache: true`. There `conversation_instructions` gets its own breakpoint
  * after `instructions`, and a summary of the conversation is a stable message of its own, while
- * Anthropic and OpenRouter relocate a non-empty `additional_instructions` right before the last
- * user message, a position that shifts every turn. Elsewhere the SDK appends the block to the
- * system text, which gains nothing. The prompt prefix stability tests run the SDK against this
- * predicate for every provider. Not verified on a real Bedrock endpoint.
+ * a non-empty `additional_instructions` is relocated right before the last user message, a
+ * position that shifts every turn, so that it does not sit in front of the cached history.
+ * Elsewhere the SDK appends the block to the system text, which gains nothing. The prompt prefix
+ * stability tests run the SDK against this predicate for every provider. Not verified on a real
+ * Bedrock endpoint.
  */
 export function sdkCachesConversationBlock(
   provider: string | undefined,
@@ -252,14 +268,16 @@ function currentTail(agent: ContextAgent): string {
  *   every part but the per-turn ones goes to `conversation_instructions`, which the SDK keeps
  *   right after `instructions` with its own cache breakpoint and never moves; the per-turn
  *   parts stay in `additional_instructions`, which it relocates next to the newest user
- *   message for some providers.
+ *   message for some providers. With `frameTail` that text is wrapped in a fixed frame saying
+ *   that the system supplied it, since it then reaches the model in the user role.
  */
 export function assembleSystemPrompt(
   agent: ContextAgent,
   {
     stableContext = false,
     conversationBlock = false,
-  }: { stableContext?: boolean; conversationBlock?: boolean } = {},
+    frameTail: framed = false,
+  }: { stableContext?: boolean; conversationBlock?: boolean; frameTail?: boolean } = {},
 ): {
   instructions: string;
   conversation_instructions: string;
@@ -294,8 +312,13 @@ export function assembleSystemPrompt(
     };
   }
   const additional = [tail, mapText(ContextPartKeys.runtimePrefix)].join('\n').trim();
+  const asTail = framed ? frameTail : (text: string) => text;
   if (!conversationBlock || additional === '') {
-    return { instructions, conversation_instructions: '', additional_instructions: additional };
+    return {
+      instructions,
+      conversation_instructions: '',
+      additional_instructions: asTail(additional),
+    };
   }
 
   const isStable = (part: ContextPart) => !isTurnPart(part);
@@ -308,9 +331,11 @@ export function assembleSystemPrompt(
   return {
     instructions,
     conversation_instructions: stable,
-    additional_instructions: joinBlocks([
-      assembleAdditionalInstructions(agent, isTurnPart)?.trim() ?? '',
-      mapText(ContextPartKeys.runtimePrefix, isTurnPart),
-    ]),
+    additional_instructions: asTail(
+      joinBlocks([
+        assembleAdditionalInstructions(agent, isTurnPart)?.trim() ?? '',
+        mapText(ContextPartKeys.runtimePrefix, isTurnPart),
+      ]),
+    ),
   };
 }

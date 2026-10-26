@@ -41,7 +41,7 @@ import type { ContextEntry, TurnContextMessage } from '../turnContext';
 import { createHistoryContextUpdates, AGENT_TEMPORAL_INSTRUCTIONS_KEY } from '../contextUpdates';
 import { prependContextText } from '../client';
 import { planTurnContext } from '../turnContext';
-import { ContextPartKeys, contributeContext } from '../systemParts';
+import { ContextPartKeys, contributeContext, TAIL_CONTEXT_OPEN } from '../systemParts';
 import { createRun } from '../run';
 
 jest.setTimeout(30000);
@@ -578,6 +578,17 @@ describe('per-turn context in additional_instructions', () => {
           expect(carrierIndexes(turn, index)).toEqual([expected]);
           expect(JSON.stringify(turn.messages)).not.toContain(STATIC_ADDITIONAL);
           expect(roleOf(turn.messages[turn.messages.length - 1])).toBe('user');
+        });
+      });
+
+      it('frames the moved tail as system-supplied context, in the same words every turn', () => {
+        turns.forEach((turn, index) => {
+          const carrier = JSON.stringify(turn.messages[carrierIndexes(turn, index)[0]]);
+          const opening = JSON.stringify(TAIL_CONTEXT_OPEN).slice(1, -1);
+          expect(carrier).toContain(opening);
+          expect(carrier).toContain('</system_context>');
+          expect(carrier.indexOf(opening)).toBeLessThan(carrier.indexOf(perTurn(index)[0]));
+          expect(JSON.stringify(turn.system)).not.toContain('system_context');
         });
       });
 
