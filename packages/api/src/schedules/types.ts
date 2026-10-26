@@ -193,7 +193,7 @@ export interface ScheduleEngineDeps {
   /** Loads the owning user (id + tenant) or null when deleted/disabled. */
   getUserContext: (userId: string | Types.ObjectId) => Promise<ScheduleUserContext | null>;
   /** Whether the balance feature gates this user and they are out of credits. */
-  isOutOfBalance: (user: ScheduleUserContext) => Promise<boolean>;
+  isOutOfBalance: (user: ScheduleUserContext, agentId?: string) => Promise<boolean>;
   /** Live agent access for the owner: 'missing' (deleted) vs 'forbidden' (ACL revoked). */
   agentAccess: (
     agentId: string,

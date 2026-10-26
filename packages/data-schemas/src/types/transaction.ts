@@ -14,4 +14,6 @@ export interface TransactionData {
   messageId?: string;
   inputTokenCount?: number;
   rateDetail?: Record<string, number>;
+  agentId?: string;
+  rootAgentId?: string;
 }

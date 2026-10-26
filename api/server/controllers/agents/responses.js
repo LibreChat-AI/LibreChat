@@ -28,6 +28,7 @@ const {
   injectSkillPrimes,
   extractManualSkills,
   recordCollectedUsage,
+  applyAgentBillingMode,
   createSubagentUsageSink,
   getTransactionsConfig,
   resolveAgentTokenConfig,
@@ -1403,6 +1404,7 @@ const executeResponse = async (envelope, { req, res }) => {
 
         // Record token usage against balance
         const balanceConfig = getBalanceConfig(appConfig);
+        const billingBalance = applyAgentBillingMode(balanceConfig, agent?.billing_mode);
         const transactionsConfig = getTransactionsConfig(appConfig);
         execution.track(
           recordCollectedUsage(
@@ -1424,7 +1426,7 @@ const executeResponse = async (envelope, { req, res }) => {
               collectedUsage,
               context: 'message',
               messageId: responseId,
-              balance: balanceConfig,
+              balance: billingBalance,
               transactions: transactionsConfig,
               model: primaryConfig.model || agent.model_parameters?.model,
               endpointTokenConfig: primaryConfig.endpointTokenConfig,
@@ -1642,6 +1644,7 @@ const executeResponse = async (envelope, { req, res }) => {
 
         // Record token usage against balance
         const balanceConfig = getBalanceConfig(appConfig);
+        const billingBalance = applyAgentBillingMode(balanceConfig, agent?.billing_mode);
         const transactionsConfig = getTransactionsConfig(appConfig);
         execution.track(
           recordCollectedUsage(
@@ -1663,7 +1666,7 @@ const executeResponse = async (envelope, { req, res }) => {
               collectedUsage,
               context: 'message',
               messageId: responseId,
-              balance: balanceConfig,
+              balance: billingBalance,
               transactions: transactionsConfig,
               model: primaryConfig.model || agent.model_parameters?.model,
               endpointTokenConfig: primaryConfig.endpointTokenConfig,
