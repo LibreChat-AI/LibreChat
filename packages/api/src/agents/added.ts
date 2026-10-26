@@ -23,9 +23,9 @@ import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { getCustomEndpointConfig } from '~/app/config';
 import { mapWithConcurrency } from '~/utils/promise';
-import { getLookupConcurrency } from '~/utils/concurrency';
 
 const { mcp_all, mcp_delimiter } = Constants;
 

@@ -18,8 +18,8 @@ import {
   type CanonicalFileInspectionFile,
 } from '~/protection/files';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
-import { collectReachableAgents } from '../traversal';
 import { getLookupConcurrency } from '~/utils/concurrency';
+import { collectReachableAgents } from '../traversal';
 import { getEdgeParticipants } from '../edges';
 
 type ResumeMessage = StoredMessageContentInput & {

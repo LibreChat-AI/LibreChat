@@ -31,10 +31,10 @@ import { ContentFilterError, isContentFilterError } from '~/middleware/contentFi
 import { getCodeExecutionRouteKey, type CodeExecutionContext } from './execution';
 import { assertSkillFileContentAllowed } from '~/skills/protection';
 import { createSkillContentDigest } from './compatibility';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { extractInvokedSkillsFromPayload } from './run';
 import { resolveDownloadPath } from '~/storage/path';
 import { mapWithConcurrency } from '~/utils/promise';
-import { getLookupConcurrency } from '~/utils/concurrency';
 import { SKILL_FILE_PREFIX } from './skills';
 
 const MAX_INSPECTABLE_SKILL_FILE_BYTES = 10 * 1024 * 1024;
