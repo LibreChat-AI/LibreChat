@@ -142,6 +142,8 @@ const addTitle = async (
     );
   } catch (error) {
     logger.error('Error generating title:', error);
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 

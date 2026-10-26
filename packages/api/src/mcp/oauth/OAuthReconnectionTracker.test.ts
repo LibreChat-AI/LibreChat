@@ -547,4 +547,22 @@ describe('OAuthReconnectTracker', () => {
       expect(tracker.isStillReconnecting(anotherUserId, serverName)).toBe(true);
     });
   });
+
+  describe('failed entry retention', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('drops failed entries that were never retried once retention passes', () => {
+      jest.useFakeTimers();
+      tracker.setFailed(userId, serverName);
+      expect(tracker.getStats().usersWithFailedServers).toBe(1);
+
+      jest.advanceTimersByTime(25 * 60 * 60 * 1000);
+      tracker.setFailed('other-user', serverName);
+
+      expect(tracker.isFailed(userId, serverName)).toBe(false);
+      expect(tracker.getStats().usersWithFailedServers).toBe(1);
+    });
+  });
 });

@@ -1,7 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import { CacheKeys, Time, ViolationTypes } from 'librechat-data-provider';
 import { standardCache, cacheConfig, instrumentIORedisClient, ioredisClient } from '~/cache';
-import { isEnabled, math } from '~/utils';
+import { isEnabled, math, withKeyLock } from '~/utils';
 
 const { USE_REDIS } = cacheConfig;
 
@@ -95,7 +95,7 @@ export interface ViolationInfo {
  * the actual request processing lifecycle.
  *
  * When Redis is available, uses atomic INCR to prevent race conditions.
- * Falls back to non-atomic get/set for in-memory cache.
+ * Falls back to per-key serialized get/set for in-memory cache.
  *
  * @param userId - The user's ID
  * @returns Object with `allowed` (boolean), `pendingRequests` (current count), and `limit`
@@ -151,21 +151,23 @@ export async function checkAndIncrementPendingRequest(
   }
 
   const key = buildMemoryKey(userId);
-  const pendingRequests = +((await cache.get(key)) ?? 0);
+  return withKeyLock(`pending:${key}`, async () => {
+    const pendingRequests = +((await cache.get(key)) ?? 0);
 
-  if (pendingRequests >= limit) {
+    if (pendingRequests >= limit) {
+      logger.debug(
+        `[concurrency] User ${userId} exceeded concurrent limit: ${pendingRequests}/${limit}`,
+      );
+      return { allowed: false, pendingRequests, limit };
+    }
+
+    await cache.set(key, pendingRequests + 1, Time.ONE_MINUTE);
     logger.debug(
-      `[concurrency] User ${userId} exceeded concurrent limit: ${pendingRequests}/${limit}`,
+      `[concurrency] User ${userId} incremented pending requests: ${pendingRequests + 1}/${limit}`,
     );
-    return { allowed: false, pendingRequests, limit };
-  }
 
-  await cache.set(key, pendingRequests + 1, Time.ONE_MINUTE);
-  logger.debug(
-    `[concurrency] User ${userId} incremented pending requests: ${pendingRequests + 1}/${limit}`,
-  );
-
-  return { allowed: true, pendingRequests: pendingRequests + 1, limit };
+    return { allowed: true, pendingRequests: pendingRequests + 1, limit };
+  });
 }
 
 /**
@@ -176,7 +178,7 @@ export async function checkAndIncrementPendingRequest(
  * operation that should not interrupt the main flow if cache operations fail.
  *
  * When Redis is available, uses atomic DECR to prevent race conditions.
- * Falls back to non-atomic get/set for in-memory cache.
+ * Falls back to per-key serialized get/set for in-memory cache.
  *
  * @param userId - The user's ID
  */
@@ -215,15 +217,19 @@ export async function decrementPendingRequest(userId: string): Promise<void> {
     }
 
     const key = buildMemoryKey(userId);
-    const currentReq = +((await cache.get(key)) ?? 0);
+    await withKeyLock(`pending:${key}`, async () => {
+      const currentReq = +((await cache.get(key)) ?? 0);
 
-    if (currentReq >= 1) {
-      await cache.set(key, currentReq - 1, Time.ONE_MINUTE);
-      logger.debug(`[concurrency] User ${userId} decremented pending requests: ${currentReq - 1}`);
-    } else {
-      await cache.delete(key);
-      logger.debug(`[concurrency] User ${userId} pending requests cleared (was ${currentReq})`);
-    }
+      if (currentReq >= 1) {
+        await cache.set(key, currentReq - 1, Time.ONE_MINUTE);
+        logger.debug(
+          `[concurrency] User ${userId} decremented pending requests: ${currentReq - 1}`,
+        );
+      } else {
+        await cache.delete(key);
+        logger.debug(`[concurrency] User ${userId} pending requests cleared (was ${currentReq})`);
+      }
+    });
   } catch (error) {
     logger.error('[concurrency] Error decrementing pending request:', error);
   }

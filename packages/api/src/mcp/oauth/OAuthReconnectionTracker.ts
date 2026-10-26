@@ -5,7 +5,12 @@ interface FailedMeta {
 
 const COOLDOWN_SCHEDULE_MS = [5 * 60 * 1000, 10 * 60 * 1000, 20 * 60 * 1000, 30 * 60 * 1000];
 
+/** Failed entries untouched this long are dropped so pairs that never retry do not accumulate. */
+const FAILED_RETENTION_MS = 24 * 60 * 60 * 1000;
+const FAILED_PRUNE_INTERVAL_MS = 60 * 1000;
+
 export class OAuthReconnectionTracker {
+  private lastFailedPrune = 0;
   private failedMeta: Map<string, Map<string, FailedMeta>> = new Map();
   /** Map of userId -> Set of serverNames that are actively reconnecting */
   private active: Map<string, Set<string>> = new Map();
@@ -63,7 +68,25 @@ export class OAuthReconnectionTracker {
     return false;
   }
 
+  private pruneFailed(now: number): void {
+    if (now - this.lastFailedPrune < FAILED_PRUNE_INTERVAL_MS) {
+      return;
+    }
+    this.lastFailedPrune = now;
+    for (const [userId, userMap] of this.failedMeta) {
+      for (const [serverName, meta] of userMap) {
+        if (now - meta.lastFailedAt >= FAILED_RETENTION_MS) {
+          userMap.delete(serverName);
+        }
+      }
+      if (userMap.size === 0) {
+        this.failedMeta.delete(userId);
+      }
+    }
+  }
+
   public setFailed(userId: string, serverName: string): void {
+    this.pruneFailed(Date.now());
     if (!this.failedMeta.has(userId)) {
       this.failedMeta.set(userId, new Map());
     }
