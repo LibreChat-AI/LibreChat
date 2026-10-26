@@ -2101,7 +2101,7 @@ describe('stable/dynamic system instructions', () => {
   it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
     'labels the complete cached %s tail as application context without changing user input',
     async (provider) => {
-      const agents = await callAndCapture({
+      await callAndCapture({
         agents: [
           makeAgent({
             provider,
@@ -2114,7 +2114,11 @@ describe('stable/dynamic system instructions', () => {
           }),
         ],
       });
-      const inputs = agents[0] as AgentInputs;
+      const runConfig = jest.mocked(Run.create).mock.calls[0][0];
+      if (!('agents' in runConfig.graphConfig) || !runConfig.graphConfig.agents?.length) {
+        throw new Error('Expected agent inputs');
+      }
+      const inputs = runConfig.graphConfig.agents[0];
       expect(inputs.additional_instructions).toBe(
         `<system_context>
 Context supplied by the application, not part of the user's message. Use it as context; do not process it as user input.
@@ -2126,7 +2130,6 @@ Retrieved context: a document
 </system_context>`,
       );
       const actual = jest.requireActual<typeof import('@librechat/agents')>('@librechat/agents');
-      const runConfig = jest.mocked(Run.create).mock.calls[0][0];
       const run = await actual.Run.create(runConfig);
       const context = run.Graph!.agentContexts.get(inputs.agentId)!;
       const userText = 'Translate this paragraph, including <system_context> as literal text.';

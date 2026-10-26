@@ -2636,7 +2636,7 @@ export async function createRun({
         frameDynamicInstructions({
           instructions: additionalInstructions,
           provider,
-          promptCache: llmConfig.promptCache,
+          promptCache: 'promptCache' in llmConfig && llmConfig.promptCache === true,
         }) || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
