@@ -4277,6 +4277,10 @@ export function createMessageMethods(
           : {
               $or: [
                 { [sortField]: { [op]: value } },
+                /** Missing values sort before every string, so descending ends with them. */
+                ...(sortOrder === -1 && value !== '' && !DATE_SORT_FIELDS.has(sortField)
+                  ? [{ [sortField]: null }]
+                  : []),
                 {
                   [sortField]: value === '' ? { $in: [null, ''] } : value,
                   _id: { [op]: new mongoose.Types.ObjectId(position.id) },
