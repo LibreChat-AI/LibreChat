@@ -973,7 +973,7 @@ function formatMessageCursor(value: unknown, id: unknown): string {
 /** Accepts both the compound cursor and the legacy bare sort value from older clients. */
 function parseMessageCursor(cursor: string): { value: string; id?: string } {
   const split = cursor.lastIndexOf('|');
-  if (split > 0 && OBJECT_ID_PATTERN.test(cursor.slice(split + 1))) {
+  if (split >= 0 && OBJECT_ID_PATTERN.test(cursor.slice(split + 1))) {
     return { value: cursor.slice(0, split), id: cursor.slice(split + 1) };
   }
   return { value: cursor };
@@ -4277,7 +4277,10 @@ export function createMessageMethods(
           : {
               $or: [
                 { [sortField]: { [op]: value } },
-                { [sortField]: value, _id: { [op]: new mongoose.Types.ObjectId(position.id) } },
+                {
+                  [sortField]: value === '' ? { $in: [null, ''] } : value,
+                  _id: { [op]: new mongoose.Types.ObjectId(position.id) },
+                },
               ],
             };
       queryFilter.$and = [...(queryFilter.$and ?? []), after];

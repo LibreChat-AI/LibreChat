@@ -112,6 +112,36 @@ describe('getMessagesByCursor', () => {
     expect(new Set(seen)).toEqual(new Set(seeded));
   });
 
+  it('pages past rows with a missing sort value without skips', async () => {
+    const conversationId = uuid();
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const rows = Array.from({ length: 5 }, (_, index) => ({
+      messageId: `blank-${index}-${uuid()}`,
+      conversationId,
+      user: 'user-1',
+      text: 'x',
+      isCreatedByUser: false,
+      createdAt: at,
+      updatedAt: at,
+    }));
+    await mongoose.models.Message.collection.insertMany(rows);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const result = await methods.getMessagesByCursor(
+        { conversationId, user: 'user-1' },
+        { sortField: 'endpoint', sortOrder: 1, limit: 2, cursor },
+      );
+      seen.push(...result.messages.map((message) => message.messageId));
+      if (result.nextCursor == null) {
+        break;
+      }
+      cursor = result.nextCursor;
+    }
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen)).toEqual(new Set(rows.map((row) => row.messageId)));
+  });
+
   it('still honors a legacy bare timestamp cursor', async () => {
     const conversationId = uuid();
     const newer = new Date('2026-02-01T00:00:00.000Z');
