@@ -950,6 +950,7 @@ export interface MessageMethods {
       sortOrder?: 1 | -1;
       limit?: number;
       cursor?: string | null;
+      select?: string;
     },
   ): Promise<{ messages: IMessage[]; nextCursor: string | null }>;
   searchMessages(
