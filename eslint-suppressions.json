@@ -550,9 +550,6 @@
     }
   },
   "client/src/components/Chat/Subagents/SubagentConversation.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
     "shadcn/require-static-classes": {
       "count": 1
     }
@@ -645,9 +642,6 @@
   "client/src/components/Endpoints/Settings/Assistants.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    },
-    "shadcn/require-static-classes": {
-      "count": 4
     }
   },
   "client/src/components/Endpoints/Settings/Examples.tsx": {
@@ -934,7 +928,7 @@
   },
   "client/src/components/Prompts/fields/PromptName.tsx": {
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 8
     }
   },
   "client/src/components/Prompts/forms/CreatePromptForm.tsx": {
@@ -1184,19 +1178,6 @@
       "count": 8
     }
   },
-  "client/src/components/SidePanel/Builder/AssistantPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Builder/AssistantSelect.tsx": {
-    "shadcn/no-restyle": {
-      "count": 7
-    }
-  },
   "client/src/components/SidePanel/Builder/Retrieval.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -1249,7 +1230,7 @@
   },
   "client/src/components/SidePanel/Parameters/DynamicDropdown.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Parameters/DynamicInput.tsx": {
@@ -1421,7 +1402,7 @@
   },
   "client/src/routes/Root.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/routes/RouteErrorBoundary.tsx": {
@@ -1455,11 +1436,6 @@
   },
   "packages/client/src/components/Badge.tsx": {
     "design/disabled-recipe": {
-      "count": 1
-    }
-  },
-  "packages/client/src/components/Combobox.tsx": {
-    "shadcn/no-inline-styles": {
       "count": 1
     }
   },

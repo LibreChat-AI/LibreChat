@@ -1044,16 +1044,25 @@ const jsonTruncateFormat: winston.Logform.FormatWrap = winston.format(
         return obj.map((item) => truncateObject(item));
       }
 
-      // We know this is an object at this point
-      const objectRecord = obj as Record<string, unknown>;
-      const newObj: Record<string, unknown> = {};
-      Object.entries(objectRecord).forEach(([key, value]) => {
+      const objectRecord = obj as Record<string | symbol, unknown>;
+      const newObj: Record<string | symbol, unknown> = {};
+      // Only the log record carries transport symbols; nested values stay JSON-shaped.
+      const keys = obj === info ? Reflect.ownKeys(objectRecord) : Object.keys(objectRecord);
+      for (const key of keys) {
+        if (typeof key === 'symbol') {
+          newObj[key] = objectRecord[key];
+          continue;
+        }
+        if (!Object.prototype.propertyIsEnumerable.call(objectRecord, key)) {
+          continue;
+        }
+        const value = objectRecord[key];
         if (typeof value === 'string') {
           newObj[key] = truncateLongStrings(value, CONSOLE_JSON_STRING_LENGTH);
         } else {
           newObj[key] = truncateObject(value);
         }
-      });
+      }
       return newObj;
     };
 

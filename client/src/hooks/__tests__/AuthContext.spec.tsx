@@ -1271,3 +1271,91 @@ describe('AuthContextProvider: read-aloud cache at every session end', () => {
     expect(getCachedTTSAudio('departing')).toBeDefined();
   });
 });
+
+describe('AuthContextProvider: browser setup destination', () => {
+  const destination = '/code/setup/browser-attempt';
+  const authenticated = { token: 'auth-token', user: { id: 'setup-user', role: 'USER' } };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    capturedAuthContext = undefined;
+    window.history.replaceState({}, '', `/login?redirect_to=${encodeURIComponent(destination)}`);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    sessionStorage.clear();
+    clearTwoFactorSetupToken();
+    mockApiBaseUrl.mockReturnValue('');
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('returns password sign-in to the setup without approving it', () => {
+    renderProvider();
+    act(() => mockCapturedLoginOptions.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('retains the destination through the normal 2FA challenge', () => {
+    renderProvider();
+    act(() => mockCapturedLoginOptions.onSuccess({ twoFAPending: true, tempToken: 'challenge' }));
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    window.history.replaceState({}, '', '/login/2fa?tempToken=challenge');
+    act(() =>
+      capturedAuthContext?.completeAuthentication(authenticated.token, authenticated.user as never),
+    );
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('retains the destination through mandatory 2FA enrollment and reload', () => {
+    const first = renderProvider();
+    act(() =>
+      mockCapturedLoginOptions.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }),
+    );
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    first.unmount();
+    window.history.replaceState({}, '', '/login/2fa/setup');
+    renderProvider();
+    act(() =>
+      capturedAuthContext?.completeAuthentication(authenticated.token, authenticated.user as never),
+    );
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+  });
+
+  it.each(['OAuth', 'OIDC'])('returns %s silent refresh to the stored setup destination', () => {
+    sessionStorage.setItem(SESSION_KEY, destination);
+    window.history.replaceState({}, '', '/');
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+
+  it('keeps the exact setup destination when refreshing under a basename', () => {
+    mockApiBaseUrl.mockReturnValue('/librechat');
+    window.history.replaceState({}, '', `/librechat${destination}`);
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess(authenticated));
+    act(() => jest.advanceTimersByTime(100));
+    expect(mockNavigate).toHaveBeenLastCalledWith(destination, { replace: true });
+  });
+
+  it('preserves the setup destination through refresh-enforced enrollment under a basename', () => {
+    mockApiBaseUrl.mockReturnValue('/librechat');
+    window.history.replaceState({}, '', `/librechat${destination}`);
+    renderProviderLive();
+    const options = mockRefreshMutate.mock.calls[0][1] as { onSuccess: (data: unknown) => void };
+    act(() => options.onSuccess({ twoFASetupRequired: true, tempToken: 'enrollment' }));
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(destination);
+    expect(mockNavigate).toHaveBeenLastCalledWith('/login/2fa/setup', { replace: true });
+  });
+});

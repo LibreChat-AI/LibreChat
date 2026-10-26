@@ -23,10 +23,14 @@ interface Props {
   description?: string;
 }
 
+const ARTIFACTS_CUSTOM_DOCS_URL =
+  'https://www.librechat.ai/docs/features/artifacts#custom-instructions';
+
 const ARTIFACT_MODES: Array<{
   value: string;
   labelKey: TranslationKeys;
   infoKey?: TranslationKeys;
+  docs?: { url: string; labelKey: TranslationKeys };
 }> = [
   {
     value: ArtifactModes.DEFAULT,
@@ -42,6 +46,7 @@ const ARTIFACT_MODES: Array<{
     value: ArtifactModes.CUSTOM,
     labelKey: 'com_ui_artifacts_mode_custom',
     infoKey: 'com_ui_artifacts_mode_custom_info',
+    docs: { url: ARTIFACTS_CUSTOM_DOCS_URL, labelKey: 'com_ui_artifacts_mode_custom_docs' },
   },
 ];
 
@@ -71,7 +76,23 @@ function ArtifactsConfig({ value, onChange }: ArtifactsConfigProps) {
         aria-labelledby="artifacts-mode-label"
       />
       {active?.infoKey ? (
-        <p className="text-text-secondary text-sm leading-relaxed">{localize(active.infoKey)}</p>
+        <p className="text-text-secondary text-sm leading-relaxed">
+          {localize(active.infoKey)}
+          {active.docs ? (
+            <>
+              {' '}
+              <a
+                href={active.docs.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={localize(active.docs.labelKey)}
+                className="text-link hover:text-link-hover underline"
+              >
+                {localize('com_ui_learn_more')}
+              </a>
+            </>
+          ) : null}
+        </p>
       ) : null}
     </div>
   );

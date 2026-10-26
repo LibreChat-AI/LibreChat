@@ -22,6 +22,8 @@ export * from './mcp/mcpConfig';
 export * from './mcp/capabilities';
 export * from './mcp/authority';
 export * from './mcp/registry/MCPServersRegistry';
+export * from './mcp/registry/policy';
+export { reportStoredMCPTombstones } from './mcp/registry/hidden';
 export * from './mcp/MCPManager';
 export * from './mcp/connection';
 export * from './mcp/toolsChanged';
@@ -56,6 +58,7 @@ export * from './utils';
 export { default as Tokenizer, countTokens } from './utils/tokenizer';
 export type { EncodingName } from './utils/tokenizer';
 export * from './db/utils';
+export * from './db/migration';
 /* HTML */
 export * from './html';
 /* OAuth */

@@ -46,6 +46,8 @@ export interface ISubagentTaskControlReceipt {
 
 // @ts-ignore
 export interface IMessage extends Document {
+  /** Public content capture version and expected terminal watermark; never a transcript. */
+  subagentContent?: { version: 1; throughSequence?: number; deleted?: boolean };
   messageId: string;
   conversationId: string;
   user: string;
@@ -106,7 +108,7 @@ export interface IMessage extends Document {
   /** Server-private bounded rendering projection derived once at child settlement. */
   subagentActivityProjection?: {
     taskId: string;
-    version: 1;
+    version: 1 | 2;
     activityJson: string;
     truncated: boolean;
   };

@@ -50,17 +50,16 @@ export async function resolveSocialUser(lookup: SocialUserLookup): Promise<Login
 }
 
 /**
- * Creates a social first-login user through `createUserOnce`. A new account goes through
- * `finishNewUser`; an account a concurrent first login created is admitted like a found account
- * and goes through `refreshExistingUser` with the config its login continues under, as any
- * account the login finds does. A failure throws the coded `AUTH_FAILED` error `socialLogin`
- * hands to its passport callback, with the reason (`AUTH_FAILED` or the email-domain policy)
- * as its message.
+ * Creates a social first-login user through `createUserOnce`, which admits it under the config of
+ * the role it is created with. A new account goes through `finishNewUser` with that config; an
+ * account a concurrent first login created is admitted like a found account and goes through
+ * `refreshExistingUser` with the config its login continues under, as any account the login
+ * finds does. A failure throws the coded `AUTH_FAILED` error `socialLogin` hands to its passport
+ * callback, with the reason (`AUTH_FAILED` or the email-domain policy) as its message.
  */
 export async function provisionSocialUser({
   lookup,
   newUser,
-  appConfig,
   getAppConfig,
   getBalanceConfig,
   createUserIfAbsent,
@@ -70,18 +69,16 @@ export async function provisionSocialUser({
 }: {
   lookup: SocialUserLookup;
   newUser: NewUserData;
-  appConfig: AppConfig;
   getAppConfig: GetAppConfig;
   getBalanceConfig: GetBalanceConfig;
   createUserIfAbsent: CreateUserIfAbsent;
   findBalanceByUser: FindBalanceByUser;
-  finishNewUser: (user: UserRecord) => Promise<UserRecord>;
+  finishNewUser: (user: UserRecord, appConfig: AppConfig) => Promise<UserRecord>;
   refreshExistingUser: (user: UserRecord, appConfig: AppConfig) => Promise<void>;
 }): Promise<UserRecord> {
   const result = await createUserOnce({
     newUser,
     email: newUser.email,
-    appConfig,
     getAppConfig,
     getBalanceConfig,
     strategyName: `${lookup.provider}Login`,
@@ -92,7 +89,7 @@ export async function provisionSocialUser({
   if (result.error !== null) {
     throw Object.assign(new Error(result.error), { code: ErrorTypes.AUTH_FAILED });
   }
-  if (result.created) return finishNewUser(result.user);
+  if (result.created) return finishNewUser(result.user, result.appConfig);
 
   await refreshExistingUser(result.user, result.appConfig);
   return result.user;

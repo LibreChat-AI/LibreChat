@@ -152,6 +152,16 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: String,
     },
     metadata: { type: mongoose.Schema.Types.Mixed },
+    subagentContent: {
+      type: {
+        version: { type: Number, enum: [1], required: true },
+        throughSequence: Number,
+        deleted: { type: Boolean, default: undefined },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
     subagentTranscript: {
       type: {
         taskId: { type: String, required: true },
@@ -165,7 +175,7 @@ const messageSchema: Schema<IMessage> = new Schema(
     subagentActivityProjection: {
       type: {
         taskId: { type: String, required: true },
-        version: { type: Number, enum: [1], required: true },
+        version: { type: Number, enum: [1, 2], required: true },
         activityJson: { type: String, required: true },
         truncated: { type: Boolean, required: true },
       },

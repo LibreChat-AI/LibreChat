@@ -367,9 +367,16 @@ const chevronButtonClasses = cn(
   'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
 );
 
-function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivElement> }) {
+function MessageNav({
+  scrollableRef,
+  conversationId: renderedConversationId,
+}: {
+  scrollableRef: React.RefObject<HTMLDivElement>;
+  conversationId?: string | null;
+}) {
   const localize = useLocalize();
-  const { conversationId } = useMessagesConversation();
+  const { conversationId: contextConversationId } = useMessagesConversation();
+  const conversationId = renderedConversationId ?? contextConversationId;
   const { isSubmitting } = useMessagesSubmission();
   const { data: messages } = useGetMessagesByConvoId(
     conversationId ?? '',

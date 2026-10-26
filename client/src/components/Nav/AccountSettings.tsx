@@ -2,7 +2,7 @@ import { useState, memo, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { useSetRecoilState } from 'recoil';
 import * as Menu from '@ariakit/react/menu';
-import { GearIcon, DropdownMenuSeparator, Avatar } from '@librechat/client';
+import { GearIcon, Avatar } from '@librechat/client';
 import {
   Archive,
   ChevronRight,
@@ -19,8 +19,8 @@ import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog
 import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import { useGetStartupConfig } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { openInNewTab, policyUrls } from '~/utils';
 import { settingsOpenAtom } from './Settings';
-import { openInNewTab } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -72,7 +72,9 @@ function HelpSubmenu({
           <Keyboard className="icon-md" aria-hidden="true" />
           {localize('com_shortcut_keyboard_shortcuts')}
         </Menu.MenuItem>
-        {showLegalDivider && (hasTos || hasPrivacy) && <DropdownMenuSeparator />}
+        {showLegalDivider && (hasTos || hasPrivacy) && (
+          <Menu.MenuSeparator className="bg-surface-hover -mx-1 my-1 h-px border-0" />
+        )}
         {hasTos && (
           <Menu.MenuItem
             onClick={() => openInNewTab(termsOfServiceURL)}
@@ -100,6 +102,7 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
   const localize = useLocalize();
   const { user, logout } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
+  const { privacyPolicyUrl, termsOfServiceUrl } = policyUrls(startupConfig);
   const setShowSettings = useSetAtom(settingsOpenAtom);
   const setShowFiles = useSetAtom(showFilesDialogAtom);
   const setFilesDialogTrigger = useSetAtom(filesDialogTriggerAtom);
@@ -145,11 +148,11 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
         <div className="text-text-secondary ms-3 me-2 py-2 text-sm" role="note">
           {user?.email ?? localize('com_nav_user')}
         </div>
-        <DropdownMenuSeparator />
+        <Menu.MenuSeparator className="bg-surface-hover -mx-1 my-1 h-px border-0" />
         <HelpSubmenu
           helpAndFaqURL={startupConfig?.helpAndFaqURL}
-          termsOfServiceURL={startupConfig?.interface?.termsOfService?.externalUrl}
-          privacyPolicyURL={startupConfig?.interface?.privacyPolicy?.externalUrl}
+          termsOfServiceURL={termsOfServiceUrl}
+          privacyPolicyURL={privacyPolicyUrl}
           onShowShortcuts={() => setShowShortcutsDialog(true)}
         />
         <Menu.MenuItem onClick={() => setShowArchived(true)} className="select-item text-sm">
@@ -179,7 +182,7 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
           <GearIcon className="icon-md" aria-hidden="true" />
           {localize('com_nav_settings')}
         </Menu.MenuItem>
-        <DropdownMenuSeparator />
+        <Menu.MenuSeparator className="bg-surface-hover -mx-1 my-1 h-px border-0" />
         <Menu.MenuItem onClick={() => logout()} className="select-item text-sm">
           <LogOut className="icon-md" aria-hidden="true" />
           {localize('com_nav_log_out')}

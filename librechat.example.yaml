@@ -2,7 +2,7 @@
 # https://www.librechat.ai/docs/configuration/librechat_yaml
 
 # Configuration version (required)
-version: 1.3.17
+version: 1.3.18
 
 # Cache settings: Set to true to enable caching
 cache: true
@@ -752,6 +752,11 @@ actions:
 
 # Definition of custom endpoints
 endpoints:
+  # (optional) How long the admin config catalog reuses a scope's model lists while its endpoint
+  # config is unchanged, in milliseconds. Defaults to 120000 (two minutes), at most 3600000 (one
+  # hour); 0 resolves them on every read (a fetched list may still come from the two-minute
+  # model-list cache). Only librechat.yaml sets it.
+  # catalogModelsTtlMs: 120000
   # assistants:
   #   disableBuilder: false # Disable Assistants Builder Interface by setting to `true`
   #   pollIntervalMs: 3000  # Polling interval for checking assistant updates
@@ -1099,6 +1104,14 @@ endpoints:
   #           # subject: 'provider-specific-service-principal-subject'
   #           userId: '507f1f77bcf86cd799439011'
   #           tenantId: 'tenant-id'
+
+  # (optional) Title settings under `endpoints.all` apply to every endpoint one field at a
+  # time: a field set here wins over the endpoint's own value, and a field left out keeps it.
+  # `titleEndpoint` and `titleModel` are one choice, taken together from the first of `all`,
+  # the endpoint's block, or its custom endpoint entry that sets either.
+  # all:
+  #   titleConvo: true
+  #   titleMethod: completion
 
   # (optional) Custom request headers for the built-in OpenAI / Google endpoints.
   # Forwarded on every request to the provider (or an AI gateway / reverse proxy
@@ -1511,6 +1524,14 @@ endpoints:
 # # https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/assistants_endpoint
 
 # Web Search Configuration (optional)
+# Keys and URLs are usually `${ENV_VAR}` references. A literal value, or a key saved
+# through the admin config API (encrypted at rest), is used as a system credential.
+# A key reaches a URL written in config only when both are set in the same place
+# (this file, or one admin config profile), and a later profile that changes, blanks
+# or removes that URL without storing the key again drops it. An environment key or
+# a user's own key never reaches a URL written in config. Reference both from the
+# environment, or set both together. The admin config API asks for a stored key
+# again when a write changes or removes the URL beside it.
 # webSearch:
 #   # Jina Reranking Configuration
 #   jinaApiKey: '${JINA_API_KEY}'  # Your Jina API key

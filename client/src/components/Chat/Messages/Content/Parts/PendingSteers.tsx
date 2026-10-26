@@ -12,7 +12,7 @@ import {
   useSteerRecovery,
 } from '@librechat/chat/react';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useGetMessagesByConvoId } from '~/data-provider';
@@ -162,7 +162,7 @@ function PendingSteers({ conversationId, index = 0, fullWidth = false }: Pending
               files={steer.files}
               steerId={steer.steerId}
               createdAt={steer.createdAt}
-              receiptState={receiptState}
+              receiptState={steer.status === 'failed' ? null : receiptState}
             />
             {steer.status === 'failed' ? (
               <div className="-mt-2 mb-2 flex flex-wrap items-center justify-end gap-3 text-xs">

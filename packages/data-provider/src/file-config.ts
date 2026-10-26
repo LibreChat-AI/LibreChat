@@ -566,6 +566,8 @@ const assistantsFileConfig = {
 };
 
 export const fileConfig = {
+  retainedFileCleanup: false,
+  vectorDeletionConcurrency: 4,
   endpoints: {
     [EModelEndpoint.assistants]: assistantsFileConfig,
     [EModelEndpoint.azureAssistants]: assistantsFileConfig,
@@ -636,7 +638,7 @@ export type TDefaultLLMDeliveryPath = z.infer<typeof DefaultLLMDeliveryPath>;
 
 export const defaultLLMDeliveryPathSchema = z.object({
   fallback: DefaultLLMDeliveryPath.optional(),
-  overrides: z.record(DefaultLLMDeliveryPath).optional(),
+  overrides: z.record(z.string(), DefaultLLMDeliveryPath).optional(),
 });
 export type TDefaultLLMDeliveryPathConfig = z.infer<typeof defaultLLMDeliveryPathSchema>;
 type TDeliveryPathOverrides = NonNullable<TDefaultLLMDeliveryPathConfig['overrides']>;
@@ -659,7 +661,12 @@ const skillFileConfigSchema = z.object({
 });
 
 export const fileConfigSchema = z.object({
-  endpoints: z.record(endpointFileConfigSchema).optional(),
+  /** Enable only after every replica and rollback target reads retained file destinations. */
+  retainedFileCleanup: z.boolean().optional(),
+  /** UTC cutoff chosen after all legacy writers and rollback targets are retired. */
+  vectorOwnershipTrackingStart: z.string().datetime().optional(),
+  vectorDeletionConcurrency: z.number().int().min(1).max(16).optional(),
+  endpoints: z.record(z.string(), endpointFileConfigSchema).optional(),
   skills: skillFileConfigSchema.optional(),
   serverFileSizeLimit: z.number().min(0).optional(),
   avatarSizeLimit: z.number().min(0).optional(),
@@ -1269,6 +1276,17 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
   };
   if (!dynamic) {
     return mergedConfig;
+  }
+
+  if (dynamic.retainedFileCleanup !== undefined) {
+    mergedConfig.retainedFileCleanup = dynamic.retainedFileCleanup;
+  }
+
+  if (dynamic.vectorOwnershipTrackingStart !== undefined) {
+    mergedConfig.vectorOwnershipTrackingStart = dynamic.vectorOwnershipTrackingStart;
+  }
+  if (dynamic.vectorDeletionConcurrency !== undefined) {
+    mergedConfig.vectorDeletionConcurrency = dynamic.vectorDeletionConcurrency;
   }
 
   if (dynamic.defaultLLMDeliveryPath !== undefined) {

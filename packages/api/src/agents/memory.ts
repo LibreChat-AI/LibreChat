@@ -76,13 +76,18 @@ function normalizeMemoryLLMConfig(llmConfig?: Partial<LLMConfig>): SanitizedMemo
 export const memoryInstructions =
   'Persistent memory is available across conversations within the current memory scope. Saved memories, if any, are shown below. No entries shown here does not mean memory is unavailable. Use memory tools only if provided; claim a memory was saved or deleted only after the action is confirmed.';
 
-export function formatMemoryContext(memory: string | undefined): string | undefined {
+export function formatMemoryContext(
+  memory: string | undefined,
+  { announceEmpty = true }: { announceEmpty?: boolean } = {},
+): string | undefined {
   if (memory == null) {
     return undefined;
   }
-  return memory
-    ? `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`
-    : memoryInstructions;
+  if (!memory) {
+    /** An empty store is announced only when the model can use memory: nothing else tells it so. */
+    return announceEmpty ? memoryInstructions : undefined;
+  }
+  return `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`;
 }
 
 export const SET_MEMORY_TOOL_NAME = 'set_memory';

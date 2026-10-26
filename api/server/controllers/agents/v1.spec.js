@@ -220,6 +220,121 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     };
   });
 
+  describe('tool_options HTTP validation', () => {
+    test.each([
+      ['key length', { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' } }],
+      [
+        'entry count',
+        Object.fromEntries(
+          Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' }]),
+        ),
+      ],
+      [
+        'key bytes',
+        Object.fromEntries(
+          Array.from({ length: 129 }, (_, i) => [
+            `${i}`.padEnd(256, 'é'),
+            { approval_mode: 'ask' },
+          ]),
+        ),
+      ],
+    ])(
+      'rejects excess %s over POST and PATCH without changing persisted data',
+      async (_label, tool_options) => {
+        const existing = await Agent.create({
+          id: `agent_${uuidv4()}`,
+          name: 'Unchanged',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: mockReq.user.id,
+          tool_options: { web_search: { approval_mode: 'ask' } },
+        });
+        const before = await Agent.findById(existing._id).lean();
+        const app = express();
+        app.use(express.json({ limit: '3mb' }));
+        app.use((req, _res, next) => {
+          req.user = mockReq.user;
+          req.config = {};
+          next();
+        });
+        app.post('/api/agents', createAgentHandler);
+        app.patch('/api/agents/:id', updateAgentHandler);
+
+        for (const response of [
+          await request(app).post('/api/agents').send({
+            name: 'Rejected',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            tool_options,
+          }),
+          await request(app)
+            .patch(`/api/agents/${existing.id}`)
+            .send({ name: 'Rejected', tool_options }),
+        ]) {
+          expect(response.status).toBe(400);
+          expect(response.body).toMatchObject({
+            error: 'Invalid request data',
+            details: [expect.objectContaining({ path: ['tool_options'] })],
+          });
+        }
+        expect(await Agent.countDocuments()).toBe(1);
+        expect(await Agent.findById(existing._id).lean()).toEqual(before);
+      },
+    );
+  });
+
+  describe('inference input boundary', () => {
+    test.each(['modelKwargs', 'configuration', 'fallbacks', 'apiKey', 'callbacks'])(
+      'rejects %s on creation without persisting or disclosing its value',
+      async (key) => {
+        mockReq.body = {
+          name: 'Rejected settings',
+          provider: 'openAI',
+          model: 'gpt-4o-mini',
+          model_parameters: { temperature: 0.2, [key]: { value: 'submitted-secret' } },
+        };
+        await createAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(await Agent.countDocuments()).toBe(0);
+        expect(JSON.stringify(mockRes.json.mock.calls)).not.toContain('submitted-secret');
+      },
+    );
+
+    test('preserves configured Bedrock region and reasoning controls on creation', async () => {
+      mockReq.config = { endpoints: { bedrock: { availableRegions: ['us-west-2'] } } };
+      mockReq.body = {
+        name: 'Bedrock inference',
+        provider: 'bedrock',
+        model: 'moonshot.kimi',
+        model_parameters: { region: 'us-west-2', reasoning_effort: 'low' },
+      };
+      await createAgentHandler(mockReq, mockRes);
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const stored = await Agent.findOne({ name: 'Bedrock inference' }).lean();
+      expect(stored.model_parameters).toEqual({ region: 'us-west-2', reasoning_effort: 'low' });
+    });
+
+    test('rejects an unsafe partial update using the existing provider and retains stored settings', async () => {
+      const existing = await Agent.create({
+        id: 'agent_inference_boundary',
+        name: 'Existing',
+        author: mockReq.user.id,
+        provider: 'openAI',
+        model: 'gpt-4o-mini',
+        model_parameters: { temperature: 0.2 },
+      });
+      mockReq.params.id = existing.id;
+      mockReq.body = {
+        model_parameters: { configuration: { baseURL: 'https://unchecked.invalid' } },
+      };
+      await updateAgentHandler(mockReq, mockRes);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      const after = await Agent.findOne({ id: existing.id }).lean();
+      expect(after.model_parameters).toEqual({ temperature: 0.2 });
+    });
+  });
+
   describe('agent machine allowlist authorization', () => {
     test.each(['create', 'update', 'duplicate', 'restore'])(
       '%s refuses machine references outside the principal-scoped configuration',
@@ -1294,7 +1409,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(createdAgent.model_parameters).toBeDefined();
       // Valid numbers should be preserved
       expect(createdAgent.model_parameters.temperature).toBe(0.7);
-      expect(createdAgent.model_parameters.topP).toBe(0);
+      expect(createdAgent.model_parameters.top_p).toBe(0);
       // Empty strings should be removed
       expect(createdAgent.model_parameters.max_tokens).toBeUndefined();
       expect(createdAgent.model_parameters.maxContextTokens).toBeUndefined();
@@ -1303,12 +1418,12 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       // Verify in database
       const agentInDb = await Agent.findOne({ id: createdAgent.id });
       expect(agentInDb.model_parameters.temperature).toBe(0.7);
-      expect(agentInDb.model_parameters.topP).toBe(0);
+      expect(agentInDb.model_parameters.top_p).toBe(0);
       expect(agentInDb.model_parameters.max_tokens).toBeUndefined();
       expect(agentInDb.model_parameters.maxContextTokens).toBeUndefined();
     });
 
-    test('should drop non-numeric strings and coerce numeric strings in model_parameters', async () => {
+    test('should reject corrupt numeric model_parameters without persisting them', async () => {
       // Regression test for #12920: a stray placeholder string ("System") persisted
       // into max_tokens was forwarded to the provider, causing a 400
       const dataWithCorruptModelParams = {
@@ -1327,17 +1442,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       await createAgentHandler(mockReq, mockRes);
 
-      expect(mockRes.status).toHaveBeenCalledWith(201);
-
-      const createdAgent = mockRes.json.mock.calls[0][0];
-      expect(createdAgent.model_parameters.max_tokens).toBeUndefined();
-      expect(createdAgent.model_parameters.maxContextTokens).toBe(256000);
-      expect(createdAgent.model_parameters.fileTokenLimit).toBe(256000);
-      expect(createdAgent.model_parameters.useResponsesApi).toBe(true);
-
-      const agentInDb = await Agent.findOne({ id: createdAgent.id });
-      expect(agentInDb.model_parameters.max_tokens).toBeUndefined();
-      expect(agentInDb.model_parameters.maxContextTokens).toBe(256000);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(await Agent.countDocuments()).toBe(0);
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: 'Invalid request data' }),
+      );
     });
 
     test('should handle invalid avatar format', async () => {
@@ -1990,7 +2099,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       );
     });
 
-    test('should sanitize corrupt numeric model_parameters on update', async () => {
+    test('should reject corrupt numeric updates and preserve the existing agent', async () => {
       mockReq.user.id = existingAgentAuthorId.toString();
       mockReq.params.id = existingAgentId;
       mockReq.body = {
@@ -2004,16 +2113,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       await updateAgentHandler(mockReq, mockRes);
 
-      expect(mockRes.json).toHaveBeenCalled();
-
-      const updatedAgent = mockRes.json.mock.calls[0][0];
-      expect(updatedAgent.model_parameters.max_tokens).toBeUndefined();
-      expect(updatedAgent.model_parameters.maxContextTokens).toBe(256000);
-      expect(updatedAgent.model_parameters.temperature).toBe(0.7);
-
+      expect(mockRes.status).toHaveBeenCalledWith(400);
       const agentInDb = await Agent.findOne({ id: existingAgentId });
-      expect(agentInDb.model_parameters.max_tokens).toBeUndefined();
-      expect(agentInDb.model_parameters.maxContextTokens).toBe(256000);
+      expect(agentInDb.name).not.toBe('Healed Agent');
+      expect(agentInDb.model_parameters?.maxContextTokens).not.toBe(256000);
     });
 
     test('should reject update with unauthorized fields (mass assignment protection)', async () => {

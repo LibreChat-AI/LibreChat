@@ -1,0 +1,22 @@
+{
+  "name": "@librechat/code",
+  "version": "0.1.0-librechat.a3207a75",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    "./browser-enrollment": {
+      "types": "./browser-enrollment-protocol.ts",
+      "default": "./browser-enrollment-protocol.js"
+    }
+  },
+  "librechatUpstream": {
+    "repository": "https://github.com/LibreChat-AI/code-interpreter",
+    "commit": "a3207a75c8327ba1c9526eff8b06f3588f3739ed",
+    "path": "packages/code/src/browser-enrollment-protocol.ts",
+    "sha256": "1ecf23023f7cf482eb140dc327b2400331f18d1c50f04ba037afca6186b97a99"
+  },
+  "scripts": {
+    "build": "node generate.mjs"
+  }
+}

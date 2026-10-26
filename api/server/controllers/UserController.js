@@ -167,7 +167,10 @@ const createMCPServerCleanup = (userId) => ({
   findMCPServerOAuthTokenUserIds: db.findMCPServerOAuthTokenUserIds,
   findMCPServerViewerEntries: db.findMCPServerViewerEntries,
   mcpOAuth: {
-    getServerConfig: (serverName) => getMCPServersRegistry().getServerConfig(serverName, userId),
+    getServerConfig: (serverName) =>
+      getMCPServersRegistry().getServerConfig(serverName, userId, undefined, undefined, {
+        includeHidden: true,
+      }),
     getUserPrincipals: (candidateId) => db.getUserPrincipals({ userId: candidateId }),
     resolveAllowlists: (candidateId) =>
       getMCPServersRegistry().resolveAllowlists({ userId: candidateId }),

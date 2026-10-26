@@ -8,9 +8,11 @@ import type {
 } from './types/traces';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
+import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
+import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
@@ -94,6 +96,28 @@ export function getLangfuseSessionLink(
   return request.get(endpoints.adminLangfuseSessionLink(conversationId));
 }
 
+export function updateLangfusePromptSync(
+  payload: t.TUpdateLangfusePromptSyncRequest,
+): Promise<t.TLangfuseConnectionStatus> {
+  return request.put(endpoints.adminLangfusePromptSync(), payload);
+}
+
+export function getLangfusePrompts(
+  params: t.TLangfusePromptListParams = {},
+): Promise<t.TLangfusePromptListResponse> {
+  return request.get(endpoints.adminLangfusePrompts(params));
+}
+
+export function getLangfusePrompt(
+  params: t.TLangfusePromptGetParams,
+): Promise<t.TLangfusePromptGetResponse> {
+  return request.get(endpoints.adminLangfusePrompt(params.name, params.version));
+}
+
+export function syncLangfusePrompts(): Promise<t.TLangfusePromptSyncResult> {
+  return request.post(endpoints.adminLangfuseSyncPrompts(), {});
+}
+
 export function revokeUserKey(name: string): Promise<unknown> {
   return request.delete(endpoints.revokeUserKey(name));
 }
@@ -104,6 +128,38 @@ export function revokeAllUserKeys(): Promise<unknown> {
 
 export function deleteUser(payload?: t.TDeleteUserRequest): Promise<unknown> {
   return request.deleteWithOptions(endpoints.deleteUser(), { data: payload });
+}
+
+function parseCodeSetupAttempt(attemptId: string, data: unknown): CodeSetupAttempt {
+  const attempt = codeSetupAttemptSchema.parse(data);
+  if (attempt.attemptId !== attemptId) {
+    throw new Error('Code setup response does not match the requested attempt');
+  }
+  return attempt;
+}
+
+export async function getCodeSetupAttempt(attemptId: string): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(attemptId, await request.get(endpoints.codeSetupAttempt(attemptId)));
+}
+
+export async function approveCodeSetupAttempt(
+  attemptId: string,
+  payload: CodeSetupApprovalRequest,
+): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(
+    attemptId,
+    await request.post(
+      endpoints.codeSetupApprove(attemptId),
+      codeSetupApprovalRequestSchema.parse(payload),
+    ),
+  );
+}
+
+export async function denyCodeSetupAttempt(attemptId: string): Promise<CodeSetupAttempt> {
+  return parseCodeSetupAttempt(
+    attemptId,
+    await request.post(endpoints.codeSetupDeny(attemptId), {}),
+  );
 }
 
 export function getCodeEnvironments(): Promise<t.TCodeEnvironmentsResponse> {
@@ -1198,6 +1254,29 @@ export function getSubagentThread(
   return request.get(endpoints.subagentThread(parentConversationId, threadId, taskId, cursor));
 }
 
+export function getSubagentTaskContent(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  afterSequence?: number,
+  cursor?: string,
+): Promise<t.SubagentTaskContentResponse> {
+  return request.get(
+    endpoints.subagentTaskContent(parentConversationId, threadId, taskId, afterSequence, cursor),
+  );
+}
+
+export function getSubagentControlReceipt(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  invocationId: string,
+): Promise<t.SubagentControlResponse> {
+  return request.get(
+    endpoints.subagentControlReceipt(parentConversationId, threadId, taskId, invocationId),
+  );
+}
+
 export function controlSubagentTask(
   parentConversationId: string,
   threadId: string,
@@ -1263,6 +1342,13 @@ export function getPromptGroups(
 
 export function getPromptGroup(id: string): Promise<t.TPromptGroup> {
   return request.get(endpoints.getPromptGroup(id));
+}
+
+export function resolvePromptGroup(
+  id: string,
+  version?: number,
+): Promise<t.TResolvedPromptResponse> {
+  return request.get(endpoints.resolvePromptGroup(id, version));
 }
 
 export function createPrompt(payload: t.TCreatePrompt): Promise<t.TCreatePromptResponse> {

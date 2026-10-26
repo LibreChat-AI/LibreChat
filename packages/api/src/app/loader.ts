@@ -1,23 +1,19 @@
 import axios from 'axios';
 import yaml from 'js-yaml';
-import { Providers } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
 import {
   configSchema,
-  paramSettings,
   EModelEndpoint,
   EImageOutputType,
   getMaxSubagents,
   setMaxSubagents,
-  agentParamSettings,
-  validateSettingDefinitions,
 } from 'librechat-data-provider';
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
+import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { ZodIssue } from 'zod';
+import { checkConfigPolicyLinks } from './interface';
+import { expandCustomEndpoint } from './params';
 import { checkConfigTheme } from './theme';
-
-type CustomParams = NonNullable<TEndpoint['customParams']>;
-type CustomParamDefinition = NonNullable<CustomParams['paramDefinitions']>[number];
 
 export type CustomConfigLoadMode = 'startup' | 'reload';
 
@@ -44,44 +40,38 @@ export class ConfigReloadError extends Error {
   }
 }
 
-const OPENROUTER_PROMPT_CACHE_DEFAULT = {
-  key: 'promptCache',
-  default: true,
-};
+/**
+ * Why librechat.yaml did not load again: `CONFIG_INVALID` when the loader refused the file
+ * (missing, unreadable or not fetched, unparseable, or failing `configSchema`, whose issues it
+ * lists by location), `LOAD_FAILED` when anything else failed, such as building the config from
+ * a file that loaded. The instance keeps its last good config.
+ */
+export type ConfigLoadFailure =
+  | { code: 'CONFIG_INVALID'; issues: ConfigOverrideIssue[] }
+  | { code: 'LOAD_FAILED' };
 
-function includesOpenRouter(value: string | undefined): boolean {
-  return typeof value === 'string' && value.toLowerCase().includes(Providers.OPENROUTER);
+export type ConfigLoadResult = { ok: true } | { ok: false; error: ConfigLoadFailure };
+
+function toLoadIssue(segments: string[], code: string): ConfigOverrideIssue {
+  return { path: segments.join('.'), segments, code };
 }
 
-function isOpenRouterEndpoint(endpoint: TEndpoint): boolean {
-  return includesOpenRouter(endpoint.name) || includesOpenRouter(endpoint.baseURL);
-}
-
-function shouldPreserveCustomParams(customParams: CustomParams | undefined): boolean {
-  const defaultEndpoint = customParams?.defaultParamsEndpoint;
-  return (
-    !!defaultEndpoint && defaultEndpoint !== 'custom' && defaultEndpoint !== Providers.OPENROUTER
-  );
-}
-
-function addOpenRouterDefaults(endpoint: TEndpoint): void {
-  if (!isOpenRouterEndpoint(endpoint) || shouldPreserveCustomParams(endpoint.customParams)) {
-    return;
+/**
+ * Locations and zod codes only, since schema messages can echo the file's values; an
+ * unrecognized key is reported at its own location.
+ */
+export function getConfigLoadFailure(error: unknown): ConfigLoadFailure {
+  if (!(error instanceof ConfigReloadError)) {
+    return { code: 'LOAD_FAILED' };
   }
-
-  const customParams: CustomParams = endpoint.customParams ?? {
-    defaultParamsEndpoint: 'custom',
-  };
-  const paramDefinitions = customParams.paramDefinitions ?? [];
-  const hasPromptCache = paramDefinitions.some((param) => param.key === 'promptCache');
-
-  endpoint.customParams = {
-    ...customParams,
-    defaultParamsEndpoint: Providers.OPENROUTER,
-    paramDefinitions: hasPromptCache
-      ? paramDefinitions
-      : [...paramDefinitions, OPENROUTER_PROMPT_CACHE_DEFAULT],
-  };
+  const issues = (error.validationErrors ?? []).flatMap((issue) => {
+    const segments = issue.path.map(String);
+    if (issue.code !== 'unrecognized_keys') {
+      return [toLoadIssue(segments, issue.code)];
+    }
+    return issue.keys.map((key) => toLoadIssue([...segments, key], issue.code));
+  });
+  return { code: 'CONFIG_INVALID', issues };
 }
 
 function getConfiguredMaxSubagents(config: unknown): number | undefined {
@@ -99,60 +89,18 @@ function getConfiguredMaxSubagents(config: unknown): number | undefined {
   return typeof agents.maxSubagents === 'number' ? agents.maxSubagents : undefined;
 }
 
-function parseCustomParams(endpointName: string | undefined, customParams: CustomParams): void {
-  const paramEndpoint = customParams.defaultParamsEndpoint ?? 'custom';
-  customParams.defaultParamsEndpoint = paramEndpoint;
-  const paramDefinitions = customParams.paramDefinitions ?? [];
-  customParams.paramDefinitions = paramDefinitions;
-
-  const validEndpoints = new Set([
-    ...Object.keys(paramSettings),
-    ...Object.keys(agentParamSettings),
-  ]);
-  if (!validEndpoints.has(paramEndpoint)) {
-    throw new Error(
-      `defaultParamsEndpoint of "${endpointName}" endpoint is invalid. ` +
-        `Valid options are ${Array.from(validEndpoints).join(', ')}`,
-    );
-  }
-
-  const regularParams = paramSettings[paramEndpoint] ?? [];
-  const agentParams = agentParamSettings[paramEndpoint] ?? [];
-  const defaultParams = regularParams.concat(agentParams);
-  const defaultParamsMap = new Map(
-    defaultParams.map((param) => [param.key, param as CustomParamDefinition]),
-  );
-  const invalidKeys = paramDefinitions
-    .map((param) => param.key)
-    .filter((key) => !defaultParamsMap.has(key));
-  if (invalidKeys.length > 0) {
-    throw new Error(
-      `paramDefinitions of "${endpointName}" endpoint contains invalid key(s). ` +
-        `Valid parameter keys are ${Array.from(defaultParamsMap.keys()).join(', ')}`,
-    );
-  }
-
-  const parsedDefinitions = paramDefinitions.map((param) => ({
-    ...defaultParamsMap.get(param.key),
-    ...param,
-    optionType: 'custom',
-  })) as CustomParamDefinition[];
-  customParams.paramDefinitions = parsedDefinitions;
-
-  try {
-    validateSettingDefinitions(
-      parsedDefinitions as Parameters<typeof validateSettingDefinitions>[0],
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Custom parameter definitions for "${endpointName}" endpoint is malformed: ${message}`,
-    );
-  }
-}
-
 function isRemoteConfigPath(configPath: string): boolean {
   return /^https?:\/\//.test(configPath);
+}
+
+function reportPolicyLinkCheck(configPath: string, dropped: string[]): void {
+  if (dropped.length === 0) {
+    return;
+  }
+  logger.warn(
+    `Ignoring policy links in ${configPath} that are not http(s), mailto:, tel: or relative URLs; no link is published for them:\n` +
+      dropped.map((path) => `- ${path}`).join('\n'),
+  );
 }
 
 function reportThemeCheck(configPath: string, errors: string[], warnings: string[]): void {
@@ -261,11 +209,14 @@ export function createCustomConfigLoader({
       const themeCheck = checkConfigTheme(loadedConfig);
       loadedConfig = themeCheck.config;
       reportThemeCheck(configPath, themeCheck.errors, themeCheck.warnings);
+      const linkCheck = checkConfigPolicyLinks(loadedConfig);
+      loadedConfig = linkCheck.config;
+      reportPolicyLinkCheck(configPath, linkCheck.dropped);
 
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
       const result = configSchema.strict().safeParse(loadedConfig);
       if (
-        result.error?.errors.some(
+        result.error?.issues.some(
           (error) => error.path != null && error.path.includes('imageOutputType'),
         )
       ) {
@@ -282,7 +233,7 @@ export function createCustomConfigLoader({
       if (!result.success) {
         const message = `Invalid custom config file at ${configPath}:\n${JSON.stringify(result.error, null, 2)}`;
         logger.error(message);
-        const speechError = result.error.errors.find(
+        const speechError = result.error.issues.find(
           (error) =>
             error.code === 'unrecognized_keys' &&
             (error.message?.includes('stt') || error.message?.includes('tts')),
@@ -300,12 +251,12 @@ export function createCustomConfigLoader({
             'CONFIG_BYPASS_VALIDATION is enabled. Continuing with default configuration despite validation errors.',
           );
           if (mode === 'reload') {
-            throw new ConfigReloadError(message, result.error, result.error.errors);
+            throw new ConfigReloadError(message, result.error, result.error.issues);
           }
           return null;
         }
         if (mode === 'reload') {
-          throw new ConfigReloadError(message, result.error, result.error.errors);
+          throw new ConfigReloadError(message, result.error, result.error.issues);
         }
 
         logger.error(
@@ -315,14 +266,9 @@ export function createCustomConfigLoader({
       }
 
       const customConfig = loadedConfig as TCustomConfig;
-      const customEndpoints = (customConfig.endpoints?.custom ?? []) as TEndpoint[];
-      for (const endpoint of customEndpoints) {
-        addOpenRouterDefaults(endpoint);
-      }
-      for (const endpoint of customEndpoints) {
-        if (endpoint.customParams) {
-          parseCustomParams(endpoint.name, endpoint.customParams);
-        }
+      /** Expanded copies are discarded: AppService serves them, and the config stays as written. */
+      for (const endpoint of (customConfig.endpoints?.custom ?? []) as TEndpoint[]) {
+        expandCustomEndpoint(endpoint);
       }
       if (result.data.modelSpecs) {
         customConfig.modelSpecs = result.data.modelSpecs;

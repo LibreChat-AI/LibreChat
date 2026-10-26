@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo } from 'react';
 import { atom, useAtom } from 'jotai';
 import type { PrimitiveAtom } from 'jotai';
+import type { useToolCallPartQuery } from '~/data-provider/Messages/queries';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 
 export type ReasoningDisclosures = Map<number, PrimitiveAtom<boolean | undefined>>;
@@ -108,3 +109,10 @@ export function useToolExpansion(canExpand: boolean) {
   useToolContentRequest(expanded);
   return [expanded, setOverride] as const;
 }
+
+export type ToolContentQuery = typeof useToolCallPartQuery;
+
+/** Undefined uses normal message access; null keeps a nested transcript view-only. */
+export const ToolContentQueryContext = createContext<ToolContentQuery | null | undefined>(
+  undefined,
+);
