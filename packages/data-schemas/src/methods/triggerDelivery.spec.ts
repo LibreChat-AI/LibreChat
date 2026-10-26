@@ -56,14 +56,19 @@ beforeAll(async () => {
   const uri = new URL(mongoServer.getUri());
   uri.searchParams.set('readPreference', 'secondaryPreferred');
   await mongoose.connect(uri.href);
-  expect(mongoose.connection.getClient().options.readPreference?.mode).toBe('secondaryPreferred');
   Delivery = createAgentTriggerDeliveryModel(mongoose);
   LaneSequence = createAgentTriggerLaneSequenceModel(mongoose);
   UserPurge = createAgentTriggerUserPurgeModel(mongoose);
   User = createUserModel(mongoose);
   createConversationModel(mongoose);
   createMessageModel(mongoose);
-  await Promise.all([Delivery.init(), LaneSequence.init(), UserPurge.init(), User.init()]);
+  // Secondary-read connections disable Mongoose's automatic index creation.
+  await Promise.all([
+    Delivery.createIndexes(),
+    LaneSequence.createIndexes(),
+    UserPurge.createIndexes(),
+    User.createIndexes(),
+  ]);
   methods = createAgentTriggerDeliveryMethods(mongoose, {
     releaseBatchProjections: createMessageMethods(mongoose).releaseBackgroundToolResultClaims,
   });
@@ -5501,6 +5506,7 @@ describe('agent trigger delivery methods', () => {
   });
 
   it('serializes account deletion against action admission on each delivery row', async () => {
+    expect(mongoose.connection.getClient().options.readPreference?.mode).toBe('secondaryPreferred');
     const user = new mongoose.Types.ObjectId();
     const fenceStartedAt = new Date(START);
     await User.create({
