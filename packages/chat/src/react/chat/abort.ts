@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useStore } from 'jotai';
-import { submissionByIndex, useClearSubmissions } from '@librechat/chat/react';
 import type { TSubmission } from 'librechat-data-provider';
+import { submissionByIndex, useClearSubmissions } from '../submission';
 
 /**
  * Identity-guarded post-abort cleanup: the abort HTTP response can resolve
@@ -11,7 +11,10 @@ import type { TSubmission } from 'librechat-data-provider';
  * finalizes empty. Capture the submission before the abort round-trip and
  * only clear when it is still the current one.
  */
-export function useAbortCleanup(index: string | number) {
+export function useAbortCleanup(index: string | number): {
+  captureSubmission: () => TSubmission | null;
+  clearSubmissionsUnlessReplaced: (captured: TSubmission | null) => void;
+} {
   const jotaiStore = useStore();
   const clearAllSubmissions = useClearSubmissions();
 

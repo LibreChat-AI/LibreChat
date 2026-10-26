@@ -1,6 +1,7 @@
 import { useCallback, useState, useEffect, useRef, memo } from 'react';
 import { useAtom } from 'jotai';
 import { useForm } from 'react-hook-form';
+import { ChatProvider } from '@librechat/chat/react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { pxToRem, useRemScale, useMediaQuery } from '@librechat/client';
 import type { ReactNode } from 'react';
@@ -25,7 +26,6 @@ import { ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
 import SidePanelNav from '~/components/SidePanel/Nav';
-import { ChatProvider } from '~/hooks/Chat/provider';
 import { createResizeMeasure } from './resize';
 import { useLocalize } from '~/hooks';
 import Sidebar from './Sidebar';

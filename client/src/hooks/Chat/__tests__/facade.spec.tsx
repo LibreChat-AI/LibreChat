@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tan
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import type { JotaiStore } from 'test/harness';
-import { createMessagesSubscription } from '../cache';
+import { createMessageCache } from '~/Providers/ChatHostContext';
 import { IsolatedAtomStore } from 'test/harness';
 import { getMappingOptions } from '../outcomes';
 
@@ -76,10 +76,14 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
 /** Serves `contract` subscribed to the provided query cache, as `useChatHelpers` serves it. */
 function CachedChat({ contract, children }: { contract: ChatContract; children: React.ReactNode }) {
   const queryClient = useQueryClient();
-  const value = React.useMemo(
-    () => ({ ...contract, ...createMessagesSubscription(queryClient, contract.messagesKey) }),
-    [contract, queryClient],
-  );
+  const value = React.useMemo(() => {
+    const cache = createMessageCache(queryClient);
+    return {
+      ...contract,
+      subscribeMessages: (onChange: () => void) => cache.subscribe(contract.messagesKey, onChange),
+      getMessagesRevision: () => cache.revision(contract.messagesKey),
+    };
+  }, [contract, queryClient]);
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
 

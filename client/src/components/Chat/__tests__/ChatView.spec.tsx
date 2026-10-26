@@ -32,6 +32,7 @@ jest.mock('~/data-provider', () => ({
  */
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
+  useChatHelpers: () => ({ conversation: mockConversation() }),
   useQueueDrain: jest.fn(),
   useQueuedTurnReveal: jest.fn(),
 }));
@@ -40,11 +41,6 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => (key === 'com_ui_new_chat' ? 'New chat' : key),
   useAddedResponse: () => ({}),
   useScrollbarGutterSeed: jest.fn(),
-}));
-
-jest.mock('~/hooks/Chat/useChatHelpers', () => ({
-  __esModule: true,
-  default: () => ({ conversation: mockConversation() }),
 }));
 
 jest.mock('~/hooks/SSE', () => ({

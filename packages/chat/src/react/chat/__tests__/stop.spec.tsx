@@ -1,68 +1,66 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { Constants } from 'librechat-data-provider';
 import { useAtomValue, useSetAtom, getDefaultStore } from 'jotai';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import {
-  stopRequestedByConvoId,
-  drainAfterAbortByIndex,
-  resetQueueFamilies,
-  runEndByIndex,
-} from '@librechat/chat/react';
+import type { TSubmission, TConversation } from 'librechat-data-provider';
+import type { DrainAfterAbort, RunEnd } from '../../../core';
+import type { ChatHost, ChatMessageCache } from '../host';
 import {
   resetSteerFamilies,
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
-  submissionByIndex,
-  clearSubmissions,
-} from '@librechat/chat/react';
-import type { TSubmission, TConversation } from 'librechat-data-provider';
-import type { DrainAfterAbort, RunEnd } from '@librechat/chat';
-import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
-import { usePaneConversationState } from '~/routes/ChatSettings';
-import useChatHelpers from '../useChatHelpers';
+} from '../../steer/atoms';
+import {
+  runEndByIndex,
+  resetQueueFamilies,
+  stopRequestedByConvoId,
+  drainAfterAbortByIndex,
+} from '../../steer/queue';
+import { submissionByIndex, clearSubmissions } from '../../submission';
+import { ChatHostProvider } from '../host';
 import { useAbortCleanup } from '../abort';
-import store from '~/store';
+import useChatHelpers from '../helpers';
 
-/** The contract's tool outcome rules are the app's; these specs map no tool parts. */
-const noToolOutcomes = () => ({});
-
-const mockAbortMutateAsync = jest.fn();
+const mockAbortStream = jest.fn();
 const mockConvertSteersToQueued = jest.fn();
 
-jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: undefined }),
-  useAbortStreamMutation: () => ({ mutateAsync: mockAbortMutateAsync }),
-  supportsGenerationProtocolV2: (value: unknown) =>
-    value != null &&
-    typeof value === 'object' &&
-    (value as { generationProtocolVersion?: unknown }).generationProtocolVersion === 2,
+jest.mock('../../steering/useSteerConvert', () => ({
+  __esModule: true,
+  default: () => mockConvertSteersToQueued,
 }));
 
-jest.mock('~/hooks/Messages/useLatestMessage', () => ({
+const noop = () => undefined;
+const noLiveAttachments = {};
+const turns = { ask: jest.fn(), regenerate: jest.fn() };
+const cache: ChatMessageCache = {
+  read: () => undefined,
+  write: noop,
+  subscribe: () => noop,
+  revision: () => 0,
+  refetchMessages: jest.fn(),
+  refetchActiveJobs: jest.fn(),
+  refetchStreamStatus: jest.fn(),
+};
+
+/** A host with no app behind it: one fixed pane conversation and the abort under test. */
+const createHost = (conversation: TConversation | null): ChatHost => ({
+  usePaneConversation: () => ({ conversation, setConversation: noop }),
+  useNewConversation: () => noop,
+  useTurns: () => turns,
   useLatestMessage: () => null,
   useLatestMessageId: () => null,
-}));
-
-jest.mock('~/hooks/Chat/useChatFunctions', () => ({
-  __esModule: true,
-  default: () => ({ ask: jest.fn(), regenerate: jest.fn() }),
-}));
-
-jest.mock('~/hooks/useNewConvo', () => ({
-  __esModule: true,
-  default: () => ({ newConversation: jest.fn() }),
-}));
-
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useSteerConvert: () => mockConvertSteersToQueued,
-}));
+  useSetSiblingIdx: () => noop,
+  useAbortStream: () => mockAbortStream,
+  useMessageCache: () => cache,
+  useLiveAttachments: () => noLiveAttachments,
+  useFeedbackEnabled: () => false,
+  getMappingOptions: () => ({}),
+});
 
 const INDEX = 0;
-/** The pane conversation comes from the app's pane store, as the host supplies it. */
-const paneSettings = { ...defaultChatSettings, usePaneConversationState };
 const OTHER_INDEX = 1;
 
 const submission = (id: string) =>
@@ -94,15 +92,10 @@ function setup() {
   }
 
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <RecoilRoot
-      initializeState={({ set }) => {
-        // clearAllSubmissions iterates the registered conversation keys.
-        set(store.conversationKeysAtom, [INDEX, OTHER_INDEX]);
-      }}
-    >
+    <>
       <Harness />
       {children}
-    </RecoilRoot>
+    </>
   );
   renderHook(() => null, { wrapper });
   return { handles, current };
@@ -218,40 +211,28 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(INDEX));
       return null;
     }
-    const queryClient = new QueryClient();
+    getDefaultStore().set(submissionByIndex(INDEX), stoppedSubmission);
+    /** Arm interrupt & send so the abort response writes the drain signal. */
+    getDefaultStore().set(drainAfterAbortByIndex(INDEX), {
+      conversationId,
+      generationCreatedAt: 41,
+    });
+    if (generationCreatedAt != null) {
+      getDefaultStore().set(
+        activeGenerationCreatedAtByConvoId(conversationId),
+        generationCreatedAt,
+      );
+      getDefaultStore().set(activeGenerationProtocolVersionByConvoId(conversationId), 2);
+    }
+    const host = createHost({ conversationId, endpoint: 'agents' } as TConversation);
     const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <QueryClientProvider client={queryClient}>
-        <RecoilRoot
-          initializeState={({ set }) => {
-            set(store.conversationKeysAtom, [INDEX]);
-            getDefaultStore().set(submissionByIndex(INDEX), stoppedSubmission);
-            set(store.conversationByIndex(INDEX), {
-              conversationId,
-              endpoint: 'agents',
-            } as TConversation);
-            // Arm interrupt & send so the abort response writes the drain signal.
-            getDefaultStore().set(drainAfterAbortByIndex(INDEX), {
-              conversationId,
-              generationCreatedAt: 41,
-            });
-            if (generationCreatedAt != null) {
-              getDefaultStore().set(
-                activeGenerationCreatedAtByConvoId(conversationId),
-                generationCreatedAt,
-              );
-              getDefaultStore().set(activeGenerationProtocolVersionByConvoId(conversationId), 2);
-            }
-          }}
-        >
-          <RunEndProbe />
-          <ChatSettingsContext.Provider value={paneSettings}>
-            {children}
-          </ChatSettingsContext.Provider>
-        </RecoilRoot>
-      </QueryClientProvider>
+      <ChatHostProvider host={host}>
+        <RunEndProbe />
+        {children}
+      </ChatHostProvider>
     );
     return {
-      ...renderHook(() => useChatHelpers(INDEX, undefined, noToolOutcomes), { wrapper }),
+      ...renderHook(() => useChatHelpers(INDEX), { wrapper }),
       stoppedSubmission,
       setDrainAfterAbort: (value: DrainAfterAbort | false) => setDrainAfterAbort?.(value),
     };
@@ -260,7 +241,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   beforeEach(() => {
     observed.runEnd = null;
     observed.drainAfterAbort = false;
-    mockAbortMutateAsync.mockReset();
+    mockAbortStream.mockReset();
     mockConvertSteersToQueued.mockReset();
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
   });
@@ -272,7 +253,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   it.each([String(Constants.NEW_CONVO), 'convo-held'])(
     'keeps the stopped submission attached for terminal reconciliation in %s',
     async (conversationId) => {
-      mockAbortMutateAsync.mockResolvedValue({
+      mockAbortStream.mockResolvedValue({
         success: true,
         aborted: 'convo-resolved',
         generationProtocolVersion: 2,
@@ -291,7 +272,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
 
   it('keeps chips on the new composer while waiting for FINAL to drain', async () => {
     const pendingSteers = [{ steerId: 's1', text: 'leftover words' }];
-    mockAbortMutateAsync.mockResolvedValue({
+    mockAbortStream.mockResolvedValue({
       success: true,
       aborted: 'convo-resolved',
       pendingSteers,
@@ -303,7 +284,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       await result.current.stopGenerating();
     });
 
-    expect(mockAbortMutateAsync).toHaveBeenCalledWith({
+    expect(mockAbortStream).toHaveBeenCalledWith({
       conversationId: String(Constants.NEW_CONVO),
       generationCreatedAt: 41,
     });
@@ -324,7 +305,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
 
   it('prefers the response resolved id over the client-held id for an existing conversation', async () => {
     const pendingSteers = [{ steerId: 's2', text: 'other leftover' }];
-    mockAbortMutateAsync.mockResolvedValue({
+    mockAbortStream.mockResolvedValue({
       success: true,
       aborted: 'convo-resolved',
       pendingSteers,
@@ -345,21 +326,21 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   });
 
   it('fences abort to the attached generation epoch', async () => {
-    mockAbortMutateAsync.mockResolvedValue({ success: true, aborted: 'convo-held' });
+    mockAbortStream.mockResolvedValue({ success: true, aborted: 'convo-held' });
 
     const { result } = setupStop('convo-held', 41);
     await act(async () => {
       await result.current.stopGenerating();
     });
 
-    expect(mockAbortMutateAsync).toHaveBeenCalledWith({
+    expect(mockAbortStream).toHaveBeenCalledWith({
       conversationId: 'convo-held',
       generationCreatedAt: 41,
     });
   });
 
   it('does not arm a run-end drain when abort targets a replaced generation', async () => {
-    mockAbortMutateAsync.mockRejectedValue({
+    mockAbortStream.mockRejectedValue({
       response: {
         status: 409,
         data: { code: 'RUN_REPLACED', generationProtocolVersion: 2 },
@@ -382,7 +363,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       await result.current.stopGenerating();
     });
 
-    expect(mockAbortMutateAsync).not.toHaveBeenCalled();
+    expect(mockAbortStream).not.toHaveBeenCalled();
     expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
     expect(observed.runEnd).toBeNull();
     expect(observed.drainAfterAbort).toEqual({
@@ -392,7 +373,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   });
 
   it('waits for SSE reconciliation when abort persistence fails', async () => {
-    mockAbortMutateAsync.mockResolvedValue({
+    mockAbortStream.mockResolvedValue({
       success: true,
       aborted: 'convo-held',
       persistenceFailed: true,
@@ -404,7 +385,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       await result.current.stopGenerating();
     });
 
-    expect(mockAbortMutateAsync).toHaveBeenCalledWith({
+    expect(mockAbortStream).toHaveBeenCalledWith({
       conversationId: 'convo-held',
       generationCreatedAt: 41,
     });
@@ -417,7 +398,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   });
 
   it('does not release the abort-drain queue when natural completion already settled the run', async () => {
-    mockAbortMutateAsync.mockResolvedValue({
+    mockAbortStream.mockResolvedValue({
       success: false,
       settled: true,
       code: 'RUN_ALREADY_SETTLED',
@@ -440,7 +421,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   });
 
   it('keeps Stop when another Stop already aborted the run', async () => {
-    mockAbortMutateAsync.mockResolvedValue({
+    mockAbortStream.mockResolvedValue({
       success: false,
       settled: true,
       code: 'RUN_ALREADY_SETTLED',
@@ -462,7 +443,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
 
   it('does not let a late abort response clear another conversation epoch', async () => {
     let resolveAbort: ((value: unknown) => void) | undefined;
-    mockAbortMutateAsync.mockReturnValue(
+    mockAbortStream.mockReturnValue(
       new Promise((resolve) => {
         resolveAbort = resolve;
       }),
@@ -493,7 +474,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   });
 
   it('does not release the armed queue for an unknown abort outcome', async () => {
-    mockAbortMutateAsync.mockRejectedValue({ response: { status: 503 } });
+    mockAbortStream.mockRejectedValue({ response: { status: 503 } });
     const { result } = setupStop('convo-held');
 
     await act(async () => {
@@ -509,7 +490,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   });
 
   it('releases the armed queue only when abort authoritatively returns 404', async () => {
-    mockAbortMutateAsync.mockRejectedValue({ response: { status: 404 } });
+    mockAbortStream.mockRejectedValue({ response: { status: 404 } });
     const { result } = setupStop('convo-held');
 
     await act(async () => {
@@ -524,7 +505,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
   });
 
   it('falls back to the client-held id when the response carries no resolved id', async () => {
-    mockAbortMutateAsync.mockResolvedValue({
+    mockAbortStream.mockResolvedValue({
       success: true,
       pendingSteers: [],
       generationProtocolVersion: 2,

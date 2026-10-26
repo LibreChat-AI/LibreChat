@@ -5,18 +5,13 @@ import { useChatActions } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
-import { ChatProvider, ChatSessionProvider } from '../provider';
+import { ChatSessionProvider } from '../provider';
 
 const mockUseChatHelpers = jest.fn();
 const mockUseAdaptiveSSE = jest.fn();
 const mockUseResumeOnLoad = jest.fn();
 const mockUseQueueDrain = jest.fn();
 const mockRevealQueuedTurn = jest.fn();
-
-jest.mock('../useChatHelpers', () => ({
-  __esModule: true,
-  default: (index?: number, paramId?: string) => mockUseChatHelpers(index, paramId),
-}));
 
 jest.mock('~/hooks/SSE', () => ({
   useAdaptiveSSE: (...args: unknown[]) => mockUseAdaptiveSSE(...args),
@@ -25,6 +20,7 @@ jest.mock('~/hooks/SSE', () => ({
 
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
+  useChatHelpers: (index?: number, paramId?: string) => mockUseChatHelpers(index, paramId),
   useQueuedTurnReveal: () => mockRevealQueuedTurn,
   useQueueDrain: (...args: unknown[]) => mockUseQueueDrain(...args),
 }));
@@ -66,40 +62,6 @@ const contract: ChatContract = {
   setFilesLoading: noop,
   feedbackEnabled: false,
 };
-
-const renderUnder = (props: { index?: number; conversationId?: string }) => {
-  const queryClient = new QueryClient();
-  return renderHook(() => useChatActions(), {
-    wrapper: ({ children }) => (
-      <QueryClientProvider client={queryClient}>
-        <ChatProvider {...props}>{children}</ChatProvider>
-      </QueryClientProvider>
-    ),
-  });
-};
-
-describe('ChatProvider', () => {
-  beforeEach(() => {
-    mockUseChatHelpers.mockReset();
-    mockUseChatHelpers.mockReturnValue(contract);
-  });
-
-  it('serves the pane contract it builds to the facade below it', async () => {
-    const { result } = renderUnder({ index: 1, conversationId: 'convo-1' });
-
-    expect(mockUseChatHelpers).toHaveBeenCalledWith(1, 'convo-1');
-    expect(result.current.id).toBe('convo-1');
-    expect(result.current.status).toBe('ready');
-    await result.current.stop();
-    expect(contract.stopGenerating).toHaveBeenCalledTimes(1);
-  });
-
-  it('builds the root pane by default', () => {
-    renderUnder({});
-
-    expect(mockUseChatHelpers).toHaveBeenCalledWith(0, undefined);
-  });
-});
 
 describe('ChatSessionProvider', () => {
   beforeEach(() => {
