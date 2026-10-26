@@ -890,12 +890,24 @@ function toIssuePath(path: readonly PropertyKey[]): IssuePath {
 }
 
 /**
- * A union reports one issue at its own path; the branch whose failures are fewest, then
- * deepest, is the shape the value was written for, so its issues locate the actual fault.
+ * Unwrap record-key failures and select the closest union branch by issue count, then depth.
+ * Nested issues have relative paths, so each wrapper's path is prepended before recursing.
  */
-function expandUnionIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
+function expandSchemaIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
   return issues.flatMap((issue) => {
-    if (issue.code !== 'invalid_union' || depth >= MAX_MERGE_DEPTH) {
+    if (depth >= MAX_MERGE_DEPTH) {
+      return [issue];
+    }
+    if (issue.code === 'invalid_key') {
+      return expandSchemaIssues(
+        issue.issues.map((keyIssue) => ({
+          ...keyIssue,
+          path: [...issue.path, ...keyIssue.path],
+        })),
+        depth + 1,
+      );
+    }
+    if (issue.code !== 'invalid_union') {
       return [issue];
     }
     const branches = (issue.errors as SchemaIssue[][]).map((branch) =>
@@ -908,7 +920,7 @@ function expandUnionIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
       const depthOf = (list: SchemaIssue[]) => Math.max(0, ...list.map((i) => i.path.length));
       return branch.length === best.length && depthOf(branch) > depthOf(best) ? branch : best;
     }, undefined);
-    return closest && closest.length > 0 ? expandUnionIssues(closest, depth + 1) : [issue];
+    return closest && closest.length > 0 ? expandSchemaIssues(closest, depth + 1) : [issue];
   });
 }
 
@@ -1249,7 +1261,7 @@ export function getConfigOverrideIssues(
       reportInput: true,
     });
     const shapeIssues = findShapeIssues(schema, merged[section], []);
-    const schemaIssues = result.success ? [] : expandUnionIssues(result.error.issues);
+    const schemaIssues = result.success ? [] : expandSchemaIssues(result.error.issues);
     if (result.success && shapeIssues.length === 0) {
       validSections.add(section);
     }
