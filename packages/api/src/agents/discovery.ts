@@ -502,6 +502,9 @@ export async function discoverConnectedAgents(
         }),
       ),
     );
+    /** Stage every loaded config before collecting edges, so a sibling referenced by
+     *  another member of the level is not queued a second time. */
+    const loadedAgents: Array<Agent | null> = [];
     for (let index = 0; index < level.length; index++) {
       const agentId = level[index];
       const outcome = outcomes[index];
@@ -513,7 +516,9 @@ export async function discoverConnectedAgents(
         markSkipped(agentId);
         continue;
       }
-      const agent = applyLoaded(agentId, outcome.loaded);
+      loadedAgents.push(applyLoaded(agentId, outcome.loaded));
+    }
+    for (const agent of loadedAgents) {
       if (agent?.edges?.length) {
         collectEdges(agent.edges);
       }

@@ -19,7 +19,6 @@ import {
 } from '~/protection/files';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
 import { collectReachableAgents } from '../traversal';
-import { mapWithConcurrency } from '~/utils/promise';
 import { getEdgeParticipants } from '../edges';
 
 const RESUME_AGENT_LOAD_CONCURRENCY = 4;
@@ -184,48 +183,54 @@ export async function getResumeAgentSnapshot({
       const { agent, includeLegacyChain } = pending[index];
       const children: ResumeSnapshotAgent[] = [];
       const referencedIds = getReferencedAgentIds(agent, subagentsEnabled, includeLegacyChain);
-      /** Fetch unseen references together, then fold results in reference order so
-       *  the node limit, de-duplication and first-error semantics match a serial walk. */
-      const unseenIds = [...new Set(referencedIds)].filter((id) => !byId.has(id));
-      const fetched = new Map<string, { agent: Agent | null } | { error: unknown }>();
-      await mapWithConcurrency(unseenIds, RESUME_AGENT_LOAD_CONCURRENCY, async (id) => {
-        try {
-          let loaded: Agent | null;
-          try {
-            loaded = await getAgent({ id });
-          } catch {
-            throw new ContentTraversalLimitError();
+      /** Fetch one small chunk of unseen references together, then fold it in reference
+       *  order, so the node limit, de-duplication and first-error semantics match a serial
+       *  walk and an over-budget graph stops fetching after at most one chunk. */
+      for (let start = 0; start < referencedIds.length; start += RESUME_AGENT_LOAD_CONCURRENCY) {
+        const chunk = referencedIds.slice(start, start + RESUME_AGENT_LOAD_CONCURRENCY);
+        const unseenIds = [...new Set(chunk)].filter((id) => !byId.has(id));
+        const fetched = new Map<string, { agent: Agent | null } | { error: unknown }>();
+        await Promise.all(
+          unseenIds.map(async (id) => {
+            try {
+              let loaded: Agent | null;
+              try {
+                loaded = await getAgent({ id });
+              } catch {
+                throw new ContentTraversalLimitError();
+              }
+              if (loaded && canAccessAgent && !(await canAccessAgent(loaded))) {
+                loaded = null;
+              }
+              fetched.set(id, { agent: loaded });
+            } catch (error) {
+              fetched.set(id, { error });
+            }
+          }),
+        );
+        for (const id of chunk) {
+          let child = byId.get(id);
+          if (!child) {
+            const outcome = fetched.get(id);
+            if (!outcome) {
+              continue;
+            }
+            if ('error' in outcome) {
+              throw outcome.error;
+            }
+            const loaded = outcome.agent;
+            if (!loaded) {
+              continue;
+            }
+            if (byId.size >= MAX_SUBAGENT_GRAPH_NODES) {
+              throw new ContentTraversalLimitError();
+            }
+            child = { ...loaded, subagentAgentConfigs: [] };
+            byId.set(id, child);
+            pending.push({ agent: child, includeLegacyChain: false });
           }
-          if (loaded && canAccessAgent && !(await canAccessAgent(loaded))) {
-            loaded = null;
-          }
-          fetched.set(id, { agent: loaded });
-        } catch (error) {
-          fetched.set(id, { error });
+          children.push(child);
         }
-      });
-      for (const id of referencedIds) {
-        let child = byId.get(id);
-        if (!child) {
-          const outcome = fetched.get(id);
-          if (!outcome) {
-            continue;
-          }
-          if ('error' in outcome) {
-            throw outcome.error;
-          }
-          const loaded = outcome.agent;
-          if (!loaded) {
-            continue;
-          }
-          if (byId.size >= MAX_SUBAGENT_GRAPH_NODES) {
-            throw new ContentTraversalLimitError();
-          }
-          child = { ...loaded, subagentAgentConfigs: [] };
-          byId.set(id, child);
-          pending.push({ agent: child, includeLegacyChain: false });
-        }
-        children.push(child);
       }
       agent.subagentAgentConfigs = children;
     }

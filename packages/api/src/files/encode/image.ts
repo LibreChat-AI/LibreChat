@@ -168,13 +168,9 @@ export async function encodeAndFormatImages(
   }
 
   const detail = params.imageDetail ?? req.body.imageDetail ?? ImageDetail.auto;
-  const settled = await Promise.allSettled(promises);
   const formattedImages: ImageEntry[] = [];
-  for (const outcome of settled) {
-    if (outcome.status === 'rejected') {
-      throw outcome.reason;
-    }
-    formattedImages.push(outcome.value);
+  for (const entry of promises) {
+    formattedImages.push(await entry);
   }
   let configuredFileSizeLimit: number | undefined;
   if (req.config?.fileConfig) {

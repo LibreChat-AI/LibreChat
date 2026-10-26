@@ -95,6 +95,20 @@ describe('encodeAndFormatImages', () => {
     ).rejects.toBeInstanceOf(AttachmentStorageError);
   });
 
+  it('surfaces an early storage failure without waiting for a stalled later read', async () => {
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      if (key === 'stalled') {
+        return new Promise(() => undefined);
+      }
+      throw new Error('first failed');
+    });
+    const files = ['early', 'stalled'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    await expect(encodeAndFormatImages(makeReq(), files, {}, deps)).rejects.toBeInstanceOf(
+      AttachmentStorageError,
+    );
+  });
+
   it('returns an empty result without acquiring a strategy for absent files', async () => {
     await expect(encodeAndFormatImages(makeReq(), undefined, {}, deps)).resolves.toEqual({
       files: [],

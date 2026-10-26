@@ -607,7 +607,7 @@ describe('resolveModelSpecSkillIds', () => {
     });
   });
 
-  it('resolves configured names sequentially to avoid query bursts', async () => {
+  it('resolves configured names concurrently and keeps configured order', async () => {
     const firstId = new Types.ObjectId();
     const secondId = new Types.ObjectId();
     const order: string[] = [];
@@ -643,13 +643,13 @@ describe('resolveModelSpecSkillIds', () => {
     });
 
     await Promise.resolve();
-    expect(order).toEqual(['start:first']);
+    expect(order).toEqual(['start:first', 'start:second', 'end:second']);
 
     releaseFirst();
     const result = await promise;
 
     expect(result.map((id) => id.toString())).toEqual([firstId.toString(), secondId.toString()]);
-    expect(order).toEqual(['start:first', 'end:first', 'start:second', 'end:second']);
+    expect(order).toEqual(['start:first', 'start:second', 'end:second', 'end:first']);
   });
 
   it('returns [] when no skill lookup is available', async () => {

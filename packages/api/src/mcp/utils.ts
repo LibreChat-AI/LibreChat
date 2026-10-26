@@ -30,6 +30,9 @@ export function validateMCPServerConfig(config: unknown): ParsedServerConfig {
   return config;
 }
 
+/** Bound on concurrent per-server catalog lookups when assembling an ephemeral agent's tools. */
+export const MCP_CATALOG_LOOKUP_CONCURRENCY = 4;
+
 /**
  * Prefix of the lazily-expanded MCP placeholder `mcp_all<delim><server>`,
  * pushed into an agent's `tools` for overlay/user-connection servers whose
@@ -40,9 +43,6 @@ export function validateMCPServerConfig(config: unknown): ParsedServerConfig {
  * literally named `mcp_all` cannot be addressed individually anywhere in the
  * pipeline. Kept here as the one definition of the prefix.
  */
-/** Bound on concurrent per-server catalog lookups when assembling an ephemeral agent's tools. */
-export const MCP_CATALOG_LOOKUP_CONCURRENCY = 4;
-
 export const MCP_ALL_PLACEHOLDER_PREFIX: string = `${Constants.mcp_all}${Constants.mcp_delimiter}`;
 
 /** Whether a tool entry is the lazily-expanded `mcp_all` placeholder. */
