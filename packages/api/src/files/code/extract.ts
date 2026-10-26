@@ -302,15 +302,15 @@ const renderOfficeHtml = async (
   buffer: Buffer,
   name: string,
   mimeType: string,
-  fileShell = false,
+  { fileShell = false, pdfShell = false }: { fileShell?: boolean; pdfShell?: boolean } = {},
 ): Promise<string | null> => {
   const render = (): Promise<string | null> => {
     if (!fileShell) {
-      return bufferToOfficeHtml(buffer, name, mimeType);
+      return bufferToOfficeHtml(buffer, name, mimeType, { pdfShell });
     }
     return officeHtmlBucket(name, mimeType) === 'docx'
-      ? wordDocToHtml(buffer, { fileShell })
-      : pptxToHtml(buffer, { fileShell });
+      ? wordDocToHtml(buffer, { fileShell, pdfShell })
+      : pptxToHtml(buffer, { fileShell, pdfShell });
   };
   try {
     const html = await officeHtmlLimit(() =>
@@ -383,9 +383,12 @@ export async function extractCodeArtifactText(
      * text gate keep the artifact off the panel and fall back to the
      * regular download UI, matching what PPTX already does. */
     if (hasOfficeHtmlPath(name, mimeType)) {
-      const fileShell =
-        buffer.length > INLINE_OFFICE_BYTES && isShellEligible(name, mimeType, officePreview);
-      return await renderOfficeHtml(buffer, name, mimeType, fileShell);
+      const shellEligible = isShellEligible(name, mimeType, officePreview);
+      const fileShell = buffer.length > INLINE_OFFICE_BYTES && shellEligible;
+      return await renderOfficeHtml(buffer, name, mimeType, {
+        fileShell,
+        pdfShell: shellEligible,
+      });
     }
     if (category === 'other') {
       return null;

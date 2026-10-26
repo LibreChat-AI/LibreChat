@@ -560,6 +560,11 @@ export const OFFICE_DOC_DATA_SLOT =
 
 export const isOfficeFileShell = (html: string): boolean => html.includes(OFFICE_FILE_SHELL_MARKER);
 
+/** Present in a shell whose slot the viewer fills with a PDF (converted server-side), not the source file. */
+export const OFFICE_PDF_SHELL_MARKER = '<meta name="lc-doc-format" content="pdf">';
+
+export const isOfficePdfShell = (html: string): boolean => html.includes(OFFICE_PDF_SHELL_MARKER);
+
 export const fillOfficeFileShell = (html: string, base64: string): string =>
   html.replace(
     OFFICE_DOC_DATA_SLOT,

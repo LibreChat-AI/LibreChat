@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
+import { fillOfficeFileShell, isOfficeFileShell, isOfficePdfShell } from 'librechat-data-provider';
 import {
   _resetLibreOfficeProbeCache,
   buildPdfEmbedDocument,
@@ -14,6 +15,7 @@ import {
   probeLibreOfficeBinary,
   tryLibreOfficePreview,
 } from './libreoffice';
+import { officeFileToPdf } from './pdfPreview';
 
 /* Detect whether the host has a LibreOffice binary so the integration
  * tests below can conditionally engage. Most CI runners don't have
@@ -215,6 +217,33 @@ describe('libreoffice (env gating + wrapper)', () => {
     });
   });
 
+  describe('buildPdfEmbedDocument (file shell)', () => {
+    it('emits both markers and an empty data slot instead of the PDF block', () => {
+      const html = buildPdfEmbedDocument('', { fileShell: true });
+      expect(isOfficeFileShell(html)).toBe(true);
+      expect(isOfficePdfShell(html)).toBe(true);
+      expect(html).toContain(
+        '<script id="lc-doc-data" type="application/octet-stream;base64"></script>',
+      );
+      expect(html).not.toContain('id="lc-pdf-data"');
+      expect(html).toContain('pdf-data-unavailable');
+    });
+
+    it('is filled by fillOfficeFileShell', () => {
+      const filled = fillOfficeFileShell(buildPdfEmbedDocument('', { fileShell: true }), 'QUJD');
+      expect(filled).toContain('base64">QUJD</script>');
+    });
+
+    it('leaves non-shell output free of shell markers', () => {
+      const html = buildPdfEmbedDocument('QUJD');
+      expect(isOfficeFileShell(html)).toBe(false);
+      expect(isOfficePdfShell(html)).toBe(false);
+      expect(html).toContain(
+        '<script id="lc-pdf-data" type="application/octet-stream;base64">QUJD</script>',
+      );
+    });
+  });
+
   describe('tryLibreOfficePreview (gating + fallthrough contract)', () => {
     it('returns null when the env flag is unset (default behavior)', async () => {
       delete process.env.OFFICE_PREVIEW_LIBREOFFICE;
@@ -380,5 +409,34 @@ describe('libreoffice integration (skipped unless LibreOffice is on $PATH)', () 
       expect(out).toBeNull();
     },
     35_000,
+  );
+
+  itIfLibreOffice(
+    'returns a PDF shell over the output cap only when pdfShell is set',
+    async () => {
+      process.env.OFFICE_PREVIEW_LIBREOFFICE = 'true';
+      _resetLibreOfficeProbeCache();
+      const buf = readFixture('sample.pptx');
+      const shell = await tryLibreOfficePreview(buf, 'pptx', 1000, { pdfShell: true });
+      expect(shell).not.toBeNull();
+      expect(isOfficePdfShell(shell!)).toBe(true);
+      expect(await tryLibreOfficePreview(buf, 'pptx', 1000)).toBeNull();
+    },
+    70_000,
+  );
+
+  itIfLibreOffice(
+    'officeFileToPdf converts a PPTX and declines non-office files or a closed flag',
+    async () => {
+      const pptx = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      process.env.OFFICE_PREVIEW_LIBREOFFICE = 'true';
+      _resetLibreOfficeProbeCache();
+      const pdf = await officeFileToPdf(readFixture('sample.pptx'), 'deck.pptx', pptx);
+      expect(pdf!.subarray(0, 4).toString('ascii')).toBe('%PDF');
+      expect(await officeFileToPdf(Buffer.from('a,b'), 'a.csv', 'text/csv')).toBeNull();
+      process.env.OFFICE_PREVIEW_LIBREOFFICE = 'false';
+      expect(await officeFileToPdf(readFixture('sample.pptx'), 'deck.pptx', pptx)).toBeNull();
+    },
+    70_000,
   );
 });

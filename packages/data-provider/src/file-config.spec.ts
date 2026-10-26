@@ -22,6 +22,8 @@ import {
   supportedMimeTypes,
   OFFICE_FILE_SHELL_MARKER,
   OFFICE_DOC_DATA_SLOT,
+  OFFICE_PDF_SHELL_MARKER,
+  isOfficePdfShell,
   fillOfficeFileShell,
   isOfficeFileShell,
   mergeFileConfig,
@@ -2261,6 +2263,14 @@ describe('office file shell', () => {
     const filled = fillOfficeFileShell(twice, 'QQ==');
     expect(filled.split('QQ==')).toHaveLength(2);
     expect(filled.endsWith(OFFICE_DOC_DATA_SLOT)).toBe(true);
+  });
+});
+
+describe('office pdf shell', () => {
+  it('recognizes a PDF shell by its marker', () => {
+    const html = `<html><head>${OFFICE_FILE_SHELL_MARKER}${OFFICE_PDF_SHELL_MARKER}</head></html>`;
+    expect(isOfficePdfShell(html)).toBe(true);
+    expect(isOfficePdfShell(`<html><head>${OFFICE_FILE_SHELL_MARKER}</head></html>`)).toBe(false);
   });
 });
 

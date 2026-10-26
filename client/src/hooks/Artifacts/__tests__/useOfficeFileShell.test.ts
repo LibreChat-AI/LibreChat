@@ -3,6 +3,7 @@ import {
   fillOfficeFileShell,
   OFFICE_DOC_DATA_SLOT,
   OFFICE_FILE_SHELL_MARKER,
+  OFFICE_PDF_SHELL_MARKER,
 } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
 import useOfficeFileShell from '../useOfficeFileShell';
@@ -44,7 +45,7 @@ describe('useOfficeFileShell', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.content).toBe(fillOfficeFileShell(shell, 'QUJD'));
     expect(mockRefetch).toHaveBeenCalledTimes(1);
-    expect(mockUseFilePreviewBlob).toHaveBeenCalledWith('user-1', 'file-1', undefined);
+    expect(mockUseFilePreviewBlob).toHaveBeenCalledWith('user-1', 'file-1', undefined, undefined);
   });
 
   it('passes the share id so shared viewers use the share-scoped route', async () => {
@@ -52,7 +53,18 @@ describe('useOfficeFileShell', () => {
     mockRefetch.mockResolvedValue({ data: new Blob(['ABC']) });
     const { result } = renderHook(() => useOfficeFileShell(shellArtifact));
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(mockUseFilePreviewBlob).toHaveBeenCalledWith('user-1', 'file-1', 'share-9');
+    expect(mockUseFilePreviewBlob).toHaveBeenCalledWith('user-1', 'file-1', 'share-9', undefined);
+  });
+
+  it('requests the converted PDF for a PDF shell', async () => {
+    mockRefetch.mockResolvedValue({ data: new Blob(['ABC']) });
+    const pdfShell = shell.replace('</head>', `${OFFICE_PDF_SHELL_MARKER}</head>`);
+    const { result } = renderHook(() =>
+      useOfficeFileShell({ ...shellArtifact, content: pdfShell }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(mockUseFilePreviewBlob).toHaveBeenCalledWith('user-1', 'file-1', undefined, 'pdf');
+    expect(result.current.content).toBe(fillOfficeFileShell(pdfShell, 'QUJD'));
   });
 
   it('keeps the stored shell when the fetch fails', async () => {

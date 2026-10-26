@@ -54,18 +54,27 @@ const mockOfficeHtml = jest.fn(
   async (_buffer: Buffer, _name: string, _mime: string) => null as string | null,
 );
 const mockShellRender = jest.fn(
-  async (_buffer: Buffer, _options: { fileShell?: boolean }) => null as string | null,
+  async (_buffer: Buffer, _options: { fileShell?: boolean; pdfShell?: boolean }) =>
+    null as string | null,
 );
+const mockInlineOptions = jest.fn((_options?: { pdfShell?: boolean }) => undefined);
 jest.mock('~/files/documents/html', () => {
   const actual =
     jest.requireActual<typeof import('~/files/documents/html')>('~/files/documents/html');
   return {
-    pptxToHtml: (buffer: Buffer, options: { fileShell?: boolean }) =>
+    pptxToHtml: (buffer: Buffer, options: { fileShell?: boolean; pdfShell?: boolean }) =>
       mockShellRender(buffer, options),
-    wordDocToHtml: (buffer: Buffer, options: { fileShell?: boolean }) =>
+    wordDocToHtml: (buffer: Buffer, options: { fileShell?: boolean; pdfShell?: boolean }) =>
       mockShellRender(buffer, options),
-    bufferToOfficeHtml: (buffer: Buffer, name: string, mime: string) =>
-      mockOfficeHtml(buffer, name, mime),
+    bufferToOfficeHtml: (
+      buffer: Buffer,
+      name: string,
+      mime: string,
+      options?: { pdfShell?: boolean },
+    ) => {
+      mockInlineOptions(options);
+      return mockOfficeHtml(buffer, name, mime);
+    },
     officeHtmlBucket: actual.officeHtmlBucket,
   };
 });
@@ -901,8 +910,20 @@ describe('office preview shell routing', () => {
     const buffer = Buffer.alloc(INLINE_CAP + 1);
     const text = await extractCodeArtifactText(buffer, name, mime, category, on);
     expect(text).toBe('<html>shell</html>');
-    expect(mockShellRender).toHaveBeenCalledWith(buffer, { fileShell: true });
+    expect(mockShellRender).toHaveBeenCalledWith(buffer, { fileShell: true, pdfShell: true });
     expect(mockOfficeHtml).not.toHaveBeenCalled();
+  });
+
+  it('lets a deck under the inline cap fall back to a PDF shell when enabled', async () => {
+    mockInlineOptions.mockClear();
+    await extractCodeArtifactText(Buffer.alloc(INLINE_CAP), pptx, pptxMime, 'presentation', on);
+    expect(mockInlineOptions).toHaveBeenCalledWith({ pdfShell: true });
+    mockInlineOptions.mockClear();
+    await extractCodeArtifactText(Buffer.alloc(INLINE_CAP), pptx, pptxMime, 'presentation', {
+      enabled: false,
+      fileSizeLimit: LIMIT,
+    });
+    expect(mockInlineOptions).toHaveBeenCalledWith({ pdfShell: false });
   });
 
   it('renders a shell for a 4 MB deck', async () => {

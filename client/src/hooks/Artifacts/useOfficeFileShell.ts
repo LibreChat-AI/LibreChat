@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { fillOfficeFileShell, isOfficeFileShell } from 'librechat-data-provider';
+import { fillOfficeFileShell, isOfficeFileShell, isOfficePdfShell } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
 import { useFilePreviewBlob } from '~/data-provider';
 import { useShareContext } from '~/Providers';
@@ -25,16 +25,18 @@ export default function useOfficeFileShell(artifact: Artifact | null): {
   isLoading: boolean;
 } {
   const { shareId } = useShareContext();
+  const stored = artifact?.content;
+  const preview = stored != null && isOfficePdfShell(stored) ? 'pdf' : undefined;
   const { refetch } = useFilePreviewBlob(
     artifact?.download?.user,
     artifact?.download?.file_id,
     shareId,
+    preview,
   );
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
   const [filled, setFilled] = useState<FilledShell | null>(null);
 
-  const stored = artifact?.content;
   const isShell =
     stored != null && artifact?.download?.file_id != null && isOfficeFileShell(stored);
 
