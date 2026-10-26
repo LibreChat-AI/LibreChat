@@ -361,12 +361,10 @@ describe('failed embedded upload rollback', () => {
       const local = createLocalFileDeleter({ deleteRagFile, logger });
       const remove = createStoredUploadDelete({
         source,
-        getDeleteFile: (destination) =>
-          destination === FileSources.vectordb
-            ? vectors
-            : source === FileSources.local
-              ? local
-              : blob,
+        getDeleteFile: (destination) => {
+          if (destination === FileSources.vectordb) return vectors;
+          return source === FileSources.local ? local : blob;
+        },
       });
       const recordExists = jest.fn().mockResolvedValue(false);
       const failure = new Error('embedding unavailable');

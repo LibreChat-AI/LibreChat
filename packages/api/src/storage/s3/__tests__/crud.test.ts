@@ -964,7 +964,7 @@ describe('S3 CRUD', () => {
           getDeleteFile: (destination) =>
             destination === FileSources.vectordb
               ? vectors
-              : async (_req, file) => deleteFileFromS3(mockReq, { ...mockFile, ...file }),
+              : async (_req, file) => deleteFileFromS3(mockReq, { ...mockFile, ...file, source }),
         });
         await expect(remove(mockReq as never, { ...mockFile, source })).rejects.toBe(failure);
         expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
