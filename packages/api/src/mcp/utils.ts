@@ -30,9 +30,6 @@ export function validateMCPServerConfig(config: unknown): ParsedServerConfig {
   return config;
 }
 
-/** Bound on concurrent per-server catalog lookups when assembling an ephemeral agent's tools. */
-export const MCP_CATALOG_LOOKUP_CONCURRENCY = 4;
-
 /**
  * Prefix of the lazily-expanded MCP placeholder `mcp_all<delim><server>`,
  * pushed into an agent's `tools` for overlay/user-connection servers whose

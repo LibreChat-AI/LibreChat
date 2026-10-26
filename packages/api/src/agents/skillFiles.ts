@@ -34,11 +34,11 @@ import { createSkillContentDigest } from './compatibility';
 import { extractInvokedSkillsFromPayload } from './run';
 import { resolveDownloadPath } from '~/storage/path';
 import { mapWithConcurrency } from '~/utils/promise';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { SKILL_FILE_PREFIX } from './skills';
 
 const MAX_INSPECTABLE_SKILL_FILE_BYTES = 10 * 1024 * 1024;
 /** Bounds buffered bytes in flight: at most this many files of up to the cap above. */
-const SKILL_FILE_INSPECTION_CONCURRENCY = 4;
 const SKILL_FILE_CONTENT_FIELDS = ['file_text'] as const;
 const FILE_CONTENT_FIELDS = ['content', 'extracted_text'] as const;
 
@@ -444,40 +444,44 @@ async function executePrimeSkillFiles(
   }
 
   if (inspectBundledFileContent) {
-    await mapWithConcurrency(skillFiles, SKILL_FILE_INSPECTION_CONCURRENCY, async (file) => {
-      signal?.throwIfAborted();
-      if (file.bytes > MAX_INSPECTABLE_SKILL_FILE_BYTES) {
-        throwIfStoredSkillFileMustBeInspectable(req);
-        return;
-      }
-      try {
-        const strategy = getStrategyFunctions(file.source);
-        if (!strategy.getDownloadStream) {
-          throwIfStoredSkillFileMustBeInspectable(req);
-          logger.warn('[primeSkillFiles] No download stream for stored skill file');
-          return;
-        }
-        const sourceStream = await strategy.getDownloadStream(req, resolveDownloadPath(file), {
-          signal,
-        });
-        const buffer = await bufferSkillFileStream(sourceStream, signal);
-        if (buffer == null) {
+    await mapWithConcurrency(
+      skillFiles,
+      getLookupConcurrency(req.config, 'skillFileInspections'),
+      async (file) => {
+        signal?.throwIfAborted();
+        if (file.bytes > MAX_INSPECTABLE_SKILL_FILE_BYTES) {
           throwIfStoredSkillFileMustBeInspectable(req);
           return;
         }
-        assertStoredSkillFileAllowed(file, buffer, req);
-        inspectedBuffers.set(file, buffer);
-      } catch (error) {
-        if (isAbortError(error)) {
-          throw error;
+        try {
+          const strategy = getStrategyFunctions(file.source);
+          if (!strategy.getDownloadStream) {
+            throwIfStoredSkillFileMustBeInspectable(req);
+            logger.warn('[primeSkillFiles] No download stream for stored skill file');
+            return;
+          }
+          const sourceStream = await strategy.getDownloadStream(req, resolveDownloadPath(file), {
+            signal,
+          });
+          const buffer = await bufferSkillFileStream(sourceStream, signal);
+          if (buffer == null) {
+            throwIfStoredSkillFileMustBeInspectable(req);
+            return;
+          }
+          assertStoredSkillFileAllowed(file, buffer, req);
+          inspectedBuffers.set(file, buffer);
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
+          if (isContentFilterError(error)) {
+            throw error;
+          }
+          throwIfStoredSkillFileMustBeInspectable(req);
+          logger.error('[primeSkillFiles] Failed to inspect bundled file before use');
         }
-        if (isContentFilterError(error)) {
-          throw error;
-        }
-        throwIfStoredSkillFileMustBeInspectable(req);
-        logger.error('[primeSkillFiles] Failed to inspect bundled file before use');
-      }
-    });
+      },
+    );
   }
 
   /* Cache-hit path: every skillFile carries a `codeEnvRef` from the

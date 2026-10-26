@@ -19,9 +19,8 @@ import {
 } from '~/protection/files';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
 import { collectReachableAgents } from '../traversal';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { getEdgeParticipants } from '../edges';
-
-const RESUME_AGENT_LOAD_CONCURRENCY = 4;
 
 type ResumeMessage = StoredMessageContentInput & {
   id?: string;
@@ -64,6 +63,7 @@ interface ResumeAgentSnapshotInput {
   subagentsEnabled: boolean;
   getAgent: (filter: { id: string }) => Promise<Agent | null>;
   canAccessAgent?: (agent: Agent) => Promise<boolean>;
+  appConfig?: Pick<AppConfig, 'concurrency'>;
 }
 
 type GetResumeMessages = (filter: {
@@ -154,6 +154,7 @@ export async function getResumeAgentSnapshot({
   subagentsEnabled,
   getAgent,
   canAccessAgent,
+  appConfig,
 }: ResumeAgentSnapshotInput): Promise<ResumeSnapshotAgent[]> {
   const primary: ResumeSnapshotAgent = {
     ...primaryAgent,
@@ -163,6 +164,7 @@ export async function getResumeAgentSnapshot({
     },
     subagentAgentConfigs: [],
   };
+  const resumeLoadConcurrency = getLookupConcurrency(appConfig, 'resumeAgentLoads');
   const roots: ResumeSnapshotAgent[] = [primary];
   const byId = new Map<string, ResumeSnapshotAgent>([[primary.id, primary]]);
 
@@ -186,8 +188,8 @@ export async function getResumeAgentSnapshot({
       /** Fetch one small chunk of unseen references together, then fold it in reference
        *  order, so the node limit, de-duplication and first-error semantics match a serial
        *  walk and an over-budget graph stops fetching after at most one chunk. */
-      for (let start = 0; start < referencedIds.length; start += RESUME_AGENT_LOAD_CONCURRENCY) {
-        const chunk = referencedIds.slice(start, start + RESUME_AGENT_LOAD_CONCURRENCY);
+      for (let start = 0; start < referencedIds.length; start += resumeLoadConcurrency) {
+        const chunk = referencedIds.slice(start, start + resumeLoadConcurrency);
         const unseenIds = [...new Set(chunk)].filter((id) => !byId.has(id));
         const fetched = new Map<string, { agent: Agent | null } | { error: unknown }>();
         await Promise.all(

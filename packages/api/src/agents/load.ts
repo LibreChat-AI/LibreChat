@@ -19,7 +19,6 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
-  MCP_CATALOG_LOOKUP_CONCURRENCY,
   requiresEphemeralUserConnection,
   filterChatSelectableMCPServers,
   validateMCPServerConfig,
@@ -31,6 +30,7 @@ import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { getCustomEndpointConfig } from '~/app/config';
 import { mapWithConcurrency } from '~/utils/promise';
+import { getLookupConcurrency } from '~/utils/concurrency';
 
 const { mcp_all, mcp_delimiter } = Constants;
 type ModelParametersWithPromptPrefix = AgentModelParameters & { promptPrefix?: string | null };
@@ -133,7 +133,7 @@ export async function loadEphemeralAgent(
   if (mcpServers.size > 0) {
     const serverToolKeys = await mapWithConcurrency(
       [...mcpServers],
-      MCP_CATALOG_LOOKUP_CONCURRENCY,
+      getLookupConcurrency(req.config, 'mcpCatalogLookups'),
       async (mcpServer): Promise<string[]> => {
         /** Address durable catalogs by the effective request overlay; request-scoped
          *  overlays still expand fresh through `mcp_all`. */

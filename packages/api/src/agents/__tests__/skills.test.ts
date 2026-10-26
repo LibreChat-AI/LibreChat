@@ -652,6 +652,26 @@ describe('resolveModelSpecSkillIds', () => {
     expect(order).toEqual(['start:first', 'start:second', 'end:second', 'end:first']);
   });
 
+  it('resolves names one at a time when concurrency.skillNameLookups is 1', async () => {
+    const ids = [new Types.ObjectId(), new Types.ObjectId()];
+    const order: string[] = [];
+    const getSkillByName = jest.fn(async (name: string) => {
+      order.push(`start:${name}`);
+      await Promise.resolve();
+      order.push(`end:${name}`);
+      return { _id: ids[name === 'first' ? 0 : 1], name, body: 'body', author: userObjectId };
+    });
+
+    await resolveModelSpecSkillIds({
+      names: ['first', 'second'],
+      accessibleSkillIds: ids,
+      getSkillByName,
+      appConfig: { concurrency: { skillNameLookups: 1 } },
+    });
+
+    expect(order).toEqual(['start:first', 'end:first', 'start:second', 'end:second']);
+  });
+
   it('returns [] when no skill lookup is available', async () => {
     const result = await resolveModelSpecSkillIds({
       names: ['known-skill'],

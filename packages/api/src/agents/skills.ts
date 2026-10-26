@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { SkillsScope, isEphemeralAgentId, resolveAgentSkillsScope } from 'librechat-data-provider';
 import { formatSkillCatalog, SkillToolDefinition, ReadFileToolDefinition } from '@librechat/agents';
@@ -13,6 +14,7 @@ import type { Types } from 'mongoose';
 import { getSkillToolDefinition, isSkillToolAvailable, registerCodeExecutionTools } from './tools';
 import { createSkillContentDigest } from './compatibility';
 import { mapWithConcurrency } from '~/utils/promise';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { logAxiosError } from '~/utils';
 
 /**
@@ -110,7 +112,6 @@ const CATALOG_PAGE_SIZE = 100;
 const SKILL_CATALOG_MAX_ENTRY_CHARS = 250;
 /** Hard ceiling on skill names a model spec can request by config. */
 const MAX_MODEL_SPEC_SKILLS = SKILL_CATALOG_LIMIT;
-const SKILL_NAME_LOOKUP_CONCURRENCY = 8;
 /**
  * Hard ceiling on skill names resolved per request via `$` popover or
  * `always-apply`. The popover realistically surfaces only a few per turn;
@@ -252,6 +253,8 @@ export interface ResolveModelSpecSkillIdsParams {
   accessibleSkillIds: Types.ObjectId[];
   /** DB lookup: name → skill doc constrained to the user's accessible IDs. */
   getSkillByName?: TGetSkillByName;
+  /** Source of the `concurrency` bounds; defaults apply when absent. */
+  appConfig?: Pick<AppConfig, 'concurrency'>;
 }
 
 /**
@@ -264,6 +267,7 @@ export async function resolveModelSpecSkillIds({
   names,
   accessibleSkillIds,
   getSkillByName,
+  appConfig,
 }: ResolveModelSpecSkillIdsParams): Promise<Types.ObjectId[]> {
   if (!names.length || accessibleSkillIds.length === 0 || !getSkillByName) {
     return [];
@@ -293,7 +297,7 @@ export async function resolveModelSpecSkillIds({
 
   const resolved = await mapWithConcurrency(
     boundedNames,
-    SKILL_NAME_LOOKUP_CONCURRENCY,
+    getLookupConcurrency(appConfig, 'skillNameLookups'),
     async (name): Promise<Types.ObjectId | null> => {
       try {
         const skill = await getSkillByName(name, accessibleSkillIds, {

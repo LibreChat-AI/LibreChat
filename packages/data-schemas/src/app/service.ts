@@ -224,6 +224,7 @@ export const AppService = async (params?: {
     timeouts: config.timeouts,
     violationLog: config.violationLog,
     messages: config.messages,
+    concurrency: config.concurrency,
     mcpSettings,
     mcpAppSandbox,
     fileStrategy,
