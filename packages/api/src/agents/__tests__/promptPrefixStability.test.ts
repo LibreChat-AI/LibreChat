@@ -432,7 +432,8 @@ describe('prompt prefix stability', () => {
       it('keeps tools and system identical across the turns of a conversation', () => {
         for (const turn of turns.slice(1)) {
           expect(JSON.stringify(turn.tools)).toBe(JSON.stringify(turns[0].tools));
-          expect(JSON.stringify(turn.system)).toBe(JSON.stringify(turns[0].system));
+          /** A checkpoint may come and go with the room left by the message checkpoints. */
+          expect(serialize(turn.system)).toBe(serialize(turns[0].system));
         }
         expect(JSON.stringify(turns[0].tools)).toContain('lookup_order');
         for (const turn of turns) {
@@ -503,7 +504,8 @@ const MOVES_TAIL = PROVIDERS.filter(
   ({ name }) =>
     name.includes('anthropic with') ||
     name.includes('openrouter with') ||
-    name.includes('Anthropic protocol'),
+    name.includes('Anthropic protocol') ||
+    name.includes('bedrock with'),
 );
 
 async function playConversation(providerCase: ProviderCase, variant: AgentVariant) {
@@ -574,10 +576,18 @@ describe('per-turn context in additional_instructions', () => {
         turns.forEach((turn, index) => {
           /** The SDK places the tail after the only message of a one-message OpenRouter request. */
           const alone = index === 0 && providerCase.provider === Providers.OPENROUTER;
-          const expected = alone ? turn.messages.length - 1 : turn.messages.length - 2;
+          /** Converse needs alternating roles, so the tail shares the newest user message. */
+          const shared = providerCase.provider === Providers.BEDROCK;
+          const expected = alone || shared ? turn.messages.length - 1 : turn.messages.length - 2;
           expect(carrierIndexes(turn, index)).toEqual([expected]);
           expect(JSON.stringify(turn.messages)).not.toContain(STATIC_ADDITIONAL);
           expect(roleOf(turn.messages[turn.messages.length - 1])).toBe('user');
+          if (shared) {
+            const carrier = JSON.stringify(turn.messages[expected]);
+            expect(carrier.indexOf(perTurn(index)[0])).toBeLessThan(
+              carrier.indexOf(`Question ${index + 1}`),
+            );
+          }
         });
       });
 
@@ -664,4 +674,123 @@ describe('stableContext off', () => {
       });
     },
   );
+});
+
+describe('Bedrock Converse prompt caching', () => {
+  const bedrock = PROVIDERS.find(({ name }) => name.startsWith('bedrock with'))!;
+  /** Claude models on Bedrock take at most four checkpoints across tools, system and messages. */
+  const MAX_CHECKPOINTS = 4;
+  const CHECKPOINT = { cachePoint: { type: 'default', ttl: '1h' } };
+
+  type Block = Record<string, unknown>;
+  const blocksOf = (message: unknown): Block[] => {
+    const content = (message as { content?: unknown }).content;
+    return Array.isArray(content) ? (content as Block[]) : [];
+  };
+  const isCheckpoint = (block: Block) => 'cachePoint' in block;
+  const systemBlocks = (turn: Captured) => turn.system as Block[];
+  const toolEntries = (turn: Captured) => (turn.tools as { tools: Block[] }).tools;
+  const checkpointCount = (turn: Captured) =>
+    toolEntries(turn).filter(isCheckpoint).length +
+    systemBlocks(turn).filter(isCheckpoint).length +
+    turn.messages.reduce<number>(
+      (sum, message) => sum + blocksOf(message).filter(isCheckpoint).length,
+      0,
+    );
+  const markedMessages = (turn: Captured) =>
+    turn.messages.flatMap((message, index) =>
+      blocksOf(message).some(isCheckpoint) ? [index] : [],
+    );
+
+  describe('with per-turn memory and RAG context', () => {
+    let turns: Captured[];
+
+    beforeAll(async () => {
+      turns = await playConversation(bedrock, { rag: true, memory: true, declareVolatile: true });
+    });
+
+    it('stays within the checkpoint limit with every checkpoint of the same default type and TTL', () => {
+      for (const turn of turns) {
+        expect(checkpointCount(turn)).toBeLessThanOrEqual(MAX_CHECKPOINTS);
+        const all = [
+          ...toolEntries(turn),
+          ...systemBlocks(turn),
+          ...turn.messages.flatMap(blocksOf),
+        ].filter(isCheckpoint);
+        expect(all.length).toBeGreaterThanOrEqual(3);
+        for (const block of all) {
+          expect(block).toEqual(CHECKPOINT);
+        }
+      }
+    });
+
+    it('closes the tools and the stable system text with a checkpoint, and puts nothing volatile after them', () => {
+      for (const [index, turn] of turns.entries()) {
+        const tools = toolEntries(turn);
+        expect(isCheckpoint(tools[tools.length - 1])).toBe(true);
+        expect(tools.filter(isCheckpoint)).toHaveLength(1);
+
+        const system = systemBlocks(turn);
+        expect(system[0].text).toContain('You are a careful support assistant.');
+        expect(system[1]).toEqual(CHECKPOINT);
+        /** The conversation block follows, with a checkpoint of its own only while one is left. */
+        expect(JSON.stringify(system.slice(2))).toContain(RUNTIME_CONTEXT_MARKER);
+        for (const text of perTurn(index)) {
+          expect(JSON.stringify(system)).not.toContain(text);
+        }
+      }
+    });
+
+    it('ends the history in front of the tail and the whole request with a checkpoint', () => {
+      turns.forEach((turn, index) => {
+        const last = turn.messages.length - 1;
+        expect(markedMessages(turn)).toContain(last);
+        expect(roleOf(turn.messages[last])).toBe('user');
+        for (const message of turn.messages) {
+          const blocks = blocksOf(message);
+          const position = blocks.findIndex(isCheckpoint);
+          if (position >= 0) {
+            /** A checkpoint closes a content block: it is the last block of its message. */
+            expect(position).toBe(blocks.length - 1);
+          }
+        }
+        if (index >= 1) {
+          /** The assistant message that ends the stable history carries the other one. */
+          expect(markedMessages(turn)).toEqual([last - 1, last]);
+          expect(roleOf(turn.messages[last - 1])).toBe('assistant');
+        }
+      });
+    });
+
+    it('sends tools, system and the history before the tail byte-identical between turns, checkpoints included', () => {
+      for (let i = 1; i < turns.length; i++) {
+        expect(JSON.stringify(turns[i].tools)).toBe(JSON.stringify(turns[0].tools));
+        expect(JSON.stringify(systemBlocks(turns[i]).slice(0, 2))).toBe(
+          JSON.stringify(systemBlocks(turns[0]).slice(0, 2)),
+        );
+        expect(serialize(turns[i].system)).toBe(serialize(turns[0].system));
+        const previous = turns[i - 1].messages;
+        const stable = previous.slice(0, previous.length - 1);
+        expect(serialize(turns[i].messages.slice(0, stable.length))).toBe(serialize(stable));
+      }
+    });
+  });
+
+  describe('without stableContext', () => {
+    it('keeps the date-stamped runtime context out of the system message and the history in front of it', async () => {
+      const turns = await playConversation(bedrock, { stableContext: false });
+      turns.forEach((turn, index) => {
+        expect(JSON.stringify(turn.system)).not.toContain('Conversation Date & Time:');
+        const last = JSON.stringify(turn.messages[turn.messages.length - 1]);
+        expect(last).toContain('Conversation Date & Time:');
+        expect(checkpointCount(turn)).toBeLessThanOrEqual(MAX_CHECKPOINTS);
+        if (index >= 1) {
+          expect(serialize(turn.system)).toBe(serialize(turns[0].system));
+          const previous = turns[index - 1].messages;
+          const stable = previous.slice(0, previous.length - 1);
+          expect(serialize(turn.messages.slice(0, stable.length))).toBe(serialize(stable));
+        }
+      });
+    });
+  });
 });
