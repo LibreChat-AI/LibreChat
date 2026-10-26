@@ -72,7 +72,7 @@ export type {
   MinutePickerProps,
   TimeColumnProps,
 } from './TimePicker';
-export { default as OGDialogTemplate } from './OGDialogTemplate';
+export { default as OGDialogTemplate, default as DialogTemplate } from './OGDialogTemplate';
 export { default as AnimatedSearchInput } from './AnimatedSearchInput';
 export { default as VirtualizedDataTable } from './DataTable/DataTable';
 export type {
