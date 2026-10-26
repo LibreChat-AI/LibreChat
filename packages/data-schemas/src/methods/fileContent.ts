@@ -5,6 +5,7 @@ export function fileContentUpdate(data: object): {
 } {
   const update: Record<string, unknown> = { ...data };
   delete update.embeddingOwnersComplete;
+  delete update.embeddingOwnersTrackedAt;
   const metadata = update.metadata;
   let owners: string[] | undefined;
   if (metadata !== undefined) {

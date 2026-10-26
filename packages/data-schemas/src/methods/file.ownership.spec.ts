@@ -28,6 +28,7 @@ const claim = {
   tenantId: data.tenantId,
   token: 'search',
 };
+const ownershipTrackingStart = '2020-01-01T00:00:00.000Z';
 const read = () => File.findOne({ file_id: data.file_id }).lean();
 
 beforeAll(async () => {
@@ -50,6 +51,7 @@ afterAll(async () => {
 it('marks only a newly inserted file as completely tracked', async () => {
   const file = await methods.createFile(data, true);
   expect(file?.embeddingOwnersComplete).toBe(true);
+  expect(file?.embeddingOwnersTrackedAt).toBeInstanceOf(Date);
   await methods.updateFile({ ...data, metadata: { destinationChosen: true } });
   expect((await read())?.embeddingOwnersComplete).toBe(true);
 });
@@ -85,6 +87,7 @@ it('keeps partial legacy adoption incomplete through provisioning and refuses re
   expect(
     await methods.clearFileEmbeddings({
       ...claim,
+      ownershipTrackingStart,
       updatedAt: file?.updatedAt,
       embeddedEntities: ['agent-a', 'agent-c'],
     }),
@@ -107,6 +110,7 @@ it('preserves complete tracking across additive provisioning and verified cleanu
   expect(
     await methods.clearFileEmbeddings({
       ...claim,
+      ownershipTrackingStart,
       updatedAt: file?.updatedAt,
       embeddedEntities: ['agent-a', 'agent-b'],
     }),
@@ -158,3 +162,78 @@ it.each(['create', 'update', 'output'] as const)(
     expect(current?.embeddingOwnersComplete).toBe(true);
   },
 );
+
+it('never trusts an overlap-era marker after an old writer loses an owner', async () => {
+  const original = await methods.createFile(
+    { ...data, embedded: true, metadata: { embeddedEntities: ['agent-a'] } },
+    true,
+  );
+  await methods.addFileEmbeddedEntity({ file_id: data.file_id, entityId: 'agent-b' });
+  // Reproduce the old binary's whole-metadata replacement, bypassing the new writer.
+  await File.collection.updateOne(
+    { file_id: data.file_id },
+    { $set: { metadata: original?.metadata } },
+  );
+  const damaged = await read();
+  expect(damaged?.metadata?.embeddedEntities).toEqual(['agent-a']);
+  expect(damaged?.embeddingOwnersComplete).toBe(true);
+  await File.collection.updateOne(
+    { file_id: data.file_id },
+    { $set: { embeddingOwnersTrackedAt: new Date('2026-10-19') } },
+  );
+  const afterDrain = '2026-10-20T00:00:00.000Z';
+  expect(
+    await methods.clearFileEmbeddings({
+      ...claim,
+      ownershipTrackingStart: afterDrain,
+      updatedAt: damaged?.updatedAt,
+      embeddedEntities: ['agent-a'],
+    }),
+  ).toBe(false);
+  expect(
+    await methods.clearFileEmbeddings({
+      ...claim,
+      updatedAt: damaged?.updatedAt,
+      embeddedEntities: ['agent-a'],
+    }),
+  ).toBe(false);
+  expect((await read())?.embedded).toBe(true);
+});
+
+it('cannot upgrade an overlap-era timestamp through content or output payloads', async () => {
+  const old = new Date('2019-01-01');
+  await File.create({ ...data, embeddingOwnersComplete: true, embeddingOwnersTrackedAt: old });
+  await methods.createFile({ ...data, embeddingOwnersTrackedAt: new Date() }, true);
+  await methods.updateFile({ ...data, embeddingOwnersTrackedAt: new Date() });
+  expect(await storage.acquireFileProvision(claim)).toBe(true);
+  const file = { ...data, user: user.toString(), embeddingOwnersTrackedAt: new Date() };
+  expect(await storage.commitFileProvision({ claim, output: { file } })).toBe(true);
+  expect((await read())?.embeddingOwnersTrackedAt).toEqual(old);
+});
+
+it.each([undefined, 'bad-date', '2999-01-01T00:00:00.000Z'])(
+  'leaves erasure disabled for an unset or inactive cutoff: %s',
+  async (ownershipTrackingStart) => {
+    const file = await methods.createFile({ ...data, embedded: true }, true);
+    expect(
+      await methods.clearFileEmbeddings({
+        ...claim,
+        ownershipTrackingStart,
+        updatedAt: file?.updatedAt,
+      }),
+    ).toBe(false);
+    expect((await read())?.embedded).toBe(true);
+  },
+);
+
+it('rejects boolean-only markers left by the prior implementation', async () => {
+  await File.create({ ...data, embedded: true, embeddingOwnersComplete: true });
+  const file = await read();
+  expect(
+    await methods.clearFileEmbeddings({
+      ...claim,
+      ownershipTrackingStart,
+      updatedAt: file?.updatedAt,
+    }),
+  ).toBe(false);
+});

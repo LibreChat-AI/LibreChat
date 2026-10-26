@@ -757,6 +757,11 @@ export async function deleteFileFromS3(
   }
 
   const params = { Bucket: bucketName, Key: key };
+  const ragParams = {
+    userId: ownerId,
+    file,
+    ...(req.config?.fileConfig ? { fileConfig: req.config.fileConfig } : {}),
+  };
 
   try {
     try {
@@ -767,7 +772,7 @@ export async function deleteFileFromS3(
       if ((headErr as { name?: string }).name === 'NotFound') {
         logger.warn(`[deleteFileFromS3] File does not exist: ${key}`);
         onDelete?.('confirmed');
-        if ((await deleteRagFile({ userId: ownerId, file })) === false) {
+        if ((await deleteRagFile(ragParams)) === false) {
           throw new Error('Vector deletion was not confirmed');
         }
         return;
@@ -775,7 +780,7 @@ export async function deleteFileFromS3(
       throw headErr;
     }
 
-    if ((await deleteRagFile({ userId: ownerId, file })) === false) {
+    if ((await deleteRagFile(ragParams)) === false) {
       throw new Error('Vector deletion was not confirmed');
     }
     await dispatchFileDeletion(onDelete, () => s3.send(new DeleteObjectCommand(params)));
@@ -786,7 +791,7 @@ export async function deleteFileFromS3(
 
     if ((error as { name?: string }).name === 'NoSuchKey') {
       onDelete?.('confirmed');
-      if ((await deleteRagFile({ userId: ownerId, file })) === false) {
+      if ((await deleteRagFile(ragParams)) === false) {
         throw new Error('Vector deletion was not confirmed');
       }
       return;

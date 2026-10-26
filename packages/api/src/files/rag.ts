@@ -1,18 +1,24 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
+import type { TFileConfig } from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
+import { createConcurrencyLimiter } from '~/utils/promise';
 import { generateShortLivedToken } from '~/crypto/jwt';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 interface DeleteRagFileParams {
   /** The user ID. Required for authentication. If not provided, the function returns false and logs an error. */
   userId: string;
+  fileConfig?: Pick<TFileConfig, 'vectorOwnershipTrackingStart' | 'vectorDeletionConcurrency'>;
   /** The file object. Must have `embedded` and `file_id` properties. */
   file: {
     file_id: string;
     embedded?: boolean;
     context?: string;
     embeddingOwnersComplete?: boolean;
+    embeddingOwnersTrackedAt?: Date | string;
+    /** Internal rollback descriptor, never persisted on File. */
+    unrecordedUpload?: true;
     metadata?: { embeddedEntities?: string[] };
   };
 }
@@ -27,7 +33,11 @@ interface DeleteRagFileParams {
  * @param params.file - The file object. Must have `embedded` and `file_id` properties.
  * @returns Returns true if deletion was successful or skipped, false if there was an error.
  */
-export async function deleteRagFile({ userId, file }: DeleteRagFileParams): Promise<boolean> {
+export async function deleteRagFile({
+  userId,
+  file,
+  fileConfig,
+}: DeleteRagFileParams): Promise<boolean> {
   if (!file.embedded) return true;
   if (!userId) {
     logger.error('[deleteRagFile] No user ID provided');
@@ -38,6 +48,8 @@ export async function deleteRagFile({ userId, file }: DeleteRagFileParams): Prom
       baseUrl: process.env.RAG_API_URL,
       httpClient: axios,
       generateToken: generateShortLivedToken,
+      ownershipTrackingStart: fileConfig?.vectorOwnershipTrackingStart,
+      namespaceConcurrency: fileConfig?.vectorDeletionConcurrency,
     })({ user: { id: userId } }, file);
     return deleted?.deleted === true;
   } catch (error) {
@@ -101,14 +113,19 @@ export function createVectorFileDeleter({
   baseUrl,
   httpClient,
   generateToken,
+  namespaceConcurrency = 4,
+  ownershipTrackingStart,
 }: {
   baseUrl?: string;
   httpClient: Pick<AxiosInstance, 'delete' | 'get'>;
   generateToken: (userId: string) => string;
+  namespaceConcurrency?: number;
+  ownershipTrackingStart?: string;
 }): (
   req: { user: { id: string } },
   file: DeleteRagFileParams['file'],
 ) => Promise<{ deleted: true } | undefined> {
+  const limit = createConcurrencyLimiter(namespaceConcurrency);
   return async (req, file) => {
     if (!file.embedded || !baseUrl) return undefined;
     if (!req.user.id) throw new Error('Invalid vector deletion principal');
@@ -122,6 +139,24 @@ export function createVectorFileDeleter({
     if (file.embeddingOwnersComplete !== true) {
       throw new Error('Complete vector ownership must be recorded before deletion');
     }
+    if (file.unrecordedUpload !== true) {
+      const start = ownershipTrackingStart == null ? NaN : Date.parse(ownershipTrackingStart);
+      const tracked = file.embeddingOwnersTrackedAt;
+      let trackedAt = NaN;
+      if (tracked instanceof Date) trackedAt = tracked.getTime();
+      else if (typeof tracked === 'string') trackedAt = Date.parse(tracked);
+      const now = Date.now();
+      // Old writers can preserve the boolean while dropping owners. Exclude the overlap era.
+      if (
+        !Number.isFinite(start) ||
+        start > now ||
+        !Number.isFinite(trackedAt) ||
+        trackedAt < start ||
+        trackedAt > now
+      ) {
+        throw new Error('Vector ownership predates the safe writer rollout');
+      }
+    }
     const headers = {
       Authorization: `Bearer ${generateToken(req.user.id)}`,
       'Content-Type': 'application/json',
@@ -130,24 +165,26 @@ export function createVectorFileDeleter({
     // Unscoped embeds can live in RAG's public scope even when metadata records a user ID.
     const namespaces = [...new Set(entities ?? []), undefined];
     const results = await Promise.allSettled(
-      namespaces.map(async (entity_id) => {
-        const config = { headers, ...(entity_id ? { params: { entity_id } } : {}) };
-        try {
-          await httpClient.delete(`${baseUrl}/documents`, { ...config, data: [file.file_id] });
-        } catch (error) {
-          // A 404 can mean a wrong scope. Only a successful inventory can establish absence,
-          // including when a prior attempt removed just some of the namespaces.
-          if (getSafeErrorMetadata(error).status !== 404) throw error;
-          const { data } = await httpClient.get<string[]>(`${baseUrl}/ids`, config);
-          if (
-            !Array.isArray(data) ||
-            data.some((id) => typeof id !== 'string') ||
-            data.includes(file.file_id)
-          ) {
-            throw new Error('Vector absence was not confirmed');
+      namespaces.map((entity_id) =>
+        limit(async () => {
+          const config = { headers, ...(entity_id ? { params: { entity_id } } : {}) };
+          try {
+            await httpClient.delete(`${baseUrl}/documents`, { ...config, data: [file.file_id] });
+          } catch (error) {
+            // A 404 can mean a wrong scope. Only a successful inventory can establish absence,
+            // including when a prior attempt removed just some of the namespaces.
+            if (getSafeErrorMetadata(error).status !== 404) throw error;
+            const { data } = await httpClient.get<string[]>(`${baseUrl}/ids`, config);
+            if (
+              !Array.isArray(data) ||
+              data.some((id) => typeof id !== 'string') ||
+              data.includes(file.file_id)
+            ) {
+              throw new Error('Vector absence was not confirmed');
+            }
           }
-        }
-      }),
+        }),
+      ),
     );
     const failure = results.find((result) => result.status === 'rejected');
     if (failure?.status === 'rejected') {

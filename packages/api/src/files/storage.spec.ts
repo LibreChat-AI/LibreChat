@@ -10,10 +10,15 @@ import { createVectorFileDeleter } from './rag';
 
 const req: {
   user: { id: string; tenantId: string };
-  config: { fileConfig: { retainedFileCleanup?: boolean } };
+  config: { fileConfig: { retainedFileCleanup?: boolean; vectorOwnershipTrackingStart?: string } };
 } = {
   user: { id: 'owner', tenantId: 'tenant-a' },
-  config: { fileConfig: { retainedFileCleanup: true } },
+  config: {
+    fileConfig: {
+      retainedFileCleanup: true,
+      vectorOwnershipTrackingStart: '2026-10-19T00:00:00.000Z',
+    },
+  },
 };
 const client = { provider: 'openai' };
 const file = {
@@ -22,6 +27,7 @@ const file = {
   tenantId: 'tenant-a',
   embedded: true,
   embeddingOwnersComplete: true,
+  embeddingOwnersTrackedAt: '2026-10-20T00:00:00.000Z',
   metadata: { codeEnvRef: { file_id: 'code-copy' } },
 };
 
@@ -89,6 +95,7 @@ describe('createDeleteFileWithSecondaryStorage', () => {
       };
       const deleteVectors = createVectorFileDeleter({
         baseUrl: 'https://rag.example',
+        ownershipTrackingStart: req.config.fileConfig.vectorOwnershipTrackingStart,
         httpClient,
         generateToken: () => 'token',
       });
@@ -116,6 +123,7 @@ describe('createDeleteFileWithSecondaryStorage', () => {
       };
       const deleteVectors = createVectorFileDeleter({
         baseUrl: 'https://rag.example',
+        ownershipTrackingStart: req.config.fileConfig.vectorOwnershipTrackingStart,
         httpClient,
         generateToken: () => 'token',
       });
@@ -135,6 +143,32 @@ describe('createDeleteFileWithSecondaryStorage', () => {
       }
       expect(legacy.metadata.embeddedEntities).toEqual(['agent-a']);
       expect(legacy.embedded).toBe(true);
+    },
+  );
+
+  it.each([FileSources.local, FileSources.vectordb])(
+    'keeps the primary and metadata when an old writer damages overlap-era ownership (%s)',
+    async (source) => {
+      const { primary, vectors, remove, clearFileEmbeddings } = setup(source);
+      const httpClient = { delete: jest.fn(), get: jest.fn() };
+      const erase = createVectorFileDeleter({
+        baseUrl: 'https://rag.example',
+        httpClient,
+        generateToken: () => 'token',
+        ownershipTrackingStart: req.config.fileConfig.vectorOwnershipTrackingStart,
+      });
+      (source === FileSources.vectordb ? primary : vectors).mockImplementation(erase);
+      const damaged = {
+        ...file,
+        embeddingOwnersTrackedAt: '2026-10-18T00:00:00.000Z',
+        metadata: { ...file.metadata, embeddedEntities: ['agent-a'] },
+      };
+      await expect(remove(req, damaged)).rejects.toThrow('safe writer rollout');
+      expect(httpClient.delete).not.toHaveBeenCalled();
+      expect(clearFileEmbeddings).not.toHaveBeenCalled();
+      if (source === FileSources.local) expect(primary).not.toHaveBeenCalled();
+      expect(damaged.embedded).toBe(true);
+      expect(damaged.metadata.embeddedEntities).toEqual(['agent-a']);
     },
   );
 
@@ -460,6 +494,7 @@ describe('createDeleteFileWithSecondaryStorage', () => {
         tenantId: retained.tenantId,
         updatedAt: undefined,
         embeddedEntities: ['namespace'],
+        ownershipTrackingStart: req.config.fileConfig.vectorOwnershipTrackingStart,
       });
       expect(primary.mock.invocationCallOrder[0]).toBeLessThan(
         clearFileEmbeddings.mock.invocationCallOrder[0],
@@ -531,6 +566,7 @@ describe('createDeleteFileWithSecondaryStorage', () => {
       tenantId: 'tenant-a',
       updatedAt: undefined,
       embeddedEntities: ['agent-a', 'agent-b'],
+      ownershipTrackingStart: req.config.fileConfig.vectorOwnershipTrackingStart,
     });
     expect(retained.embedded).toBe(false);
     expect(retained.metadata).toEqual({

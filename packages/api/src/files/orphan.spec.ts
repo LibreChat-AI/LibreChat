@@ -61,6 +61,7 @@ describe('withStoredUploadCleanup', () => {
       user: 'u1',
       tenantId: 't1',
       embeddingOwnersComplete: true,
+      unrecordedUpload: true,
     });
   });
 

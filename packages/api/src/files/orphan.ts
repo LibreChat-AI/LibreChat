@@ -16,6 +16,7 @@ export type StoredUploadRef = {
   /** Whether a vector copy exists; the delete strategies remove it only when this is set. */
   embedded?: boolean;
   embeddingOwnersComplete?: boolean;
+  unrecordedUpload?: true;
   /** Secondary-copy references, such as a code environment ref, that delete strategies read. */
   metadata?: Record<string, unknown>;
 };
@@ -64,6 +65,7 @@ export async function withStoredUploadCleanup<T>(
           ...stored,
           // This rollback describes only the current upload, not a legacy file record.
           embeddingOwnersComplete: true,
+          unrecordedUpload: true,
         };
         await resolveDeleteFile()?.(req as never, ref);
       }
