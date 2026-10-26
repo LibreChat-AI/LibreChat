@@ -4,6 +4,8 @@ import {
   listContextParts,
   contributeContext,
   assembleSystemPrompt,
+  TAIL_CONTEXT_OPEN,
+  TAIL_CONTEXT_CLOSE,
   assembleAdditionalInstructions,
   sdkCachesConversationBlock,
 } from './systemParts';
@@ -216,6 +218,61 @@ describe('assembleSystemPrompt', () => {
       instructions: 'Base',
       conversation_instructions: 'Artifacts\nStarted at',
       additional_instructions: 'Changes every turn',
+    });
+  });
+
+  describe('frameTail', () => {
+    const volatileAgent = (): ContextAgent => {
+      const agent: ContextAgent = { instructions: 'Base' };
+      contributeContext(agent, ContextPartKeys.artifacts, 'Artifacts');
+      contributeContext(agent, ContextPartKeys.memory, 'Memory');
+      return agent;
+    };
+
+    it('frames the per-turn tail the SDK relocates, and only that', () => {
+      const prompt = assembleSystemPrompt(volatileAgent(), {
+        stableContext,
+        conversationBlock: true,
+        frameTail: true,
+      });
+      expect(prompt.conversation_instructions).toBe('Artifacts');
+      expect(prompt.additional_instructions).toBe(
+        `${TAIL_CONTEXT_OPEN}\n\nMemory\n${TAIL_CONTEXT_CLOSE}`,
+      );
+      expect(TAIL_CONTEXT_OPEN).toMatch(/^<system_context>\n.*not part of that message/);
+    });
+
+    it('frames the whole tail of an isolated child that has no conversation block', () => {
+      const prompt = assembleSystemPrompt(volatileAgent(), { stableContext, frameTail: true });
+      expect(prompt.additional_instructions).toBe(
+        `${TAIL_CONTEXT_OPEN}\n\nArtifacts\n\nMemory\n${TAIL_CONTEXT_CLOSE}`,
+      );
+    });
+
+    it('adds nothing when the tail is empty, and is the same text every turn', () => {
+      const agent: ContextAgent = { instructions: 'Base' };
+      contributeContext(agent, ContextPartKeys.artifacts, 'Artifacts');
+      expect(
+        assembleSystemPrompt(agent, { stableContext, conversationBlock: true, frameTail: true })
+          .additional_instructions,
+      ).toBe('');
+      const first = assembleSystemPrompt(volatileAgent(), {
+        stableContext,
+        conversationBlock: true,
+        frameTail: true,
+      }).additional_instructions;
+      expect(first.startsWith(TAIL_CONTEXT_OPEN)).toBe(true);
+      expect(first.endsWith(TAIL_CONTEXT_CLOSE)).toBe(true);
+    });
+
+    it('leaves the text as it was without frameTail or without stableContext', () => {
+      expect(
+        assembleSystemPrompt(volatileAgent(), { stableContext, conversationBlock: true })
+          .additional_instructions,
+      ).toBe('Memory');
+      expect(
+        assembleSystemPrompt(volatileAgent(), { frameTail: true }).additional_instructions,
+      ).toBe('Artifacts\n\nMemory');
     });
   });
 

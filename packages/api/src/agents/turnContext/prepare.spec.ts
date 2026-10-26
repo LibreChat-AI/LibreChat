@@ -1,5 +1,6 @@
 import type { ContextEntry } from './registry';
 import type { TurnContextDb, TurnContextRequest } from './prepare';
+import { memoryInstructions } from '../memory';
 import {
   prepareTurnContext,
   applyHistoryUpdates,
@@ -118,6 +119,50 @@ describe('prepareTurnContext', () => {
       conversationId: 'c1',
       anchor: prepared?.plan.anchor,
     });
+  });
+});
+
+describe('prepareTurnContext memory', () => {
+  const EMPTY = { withKeys: '', withoutKeys: '' };
+  const MEMORY_AGENT = { enabled: true, provider: 'openAI', model: 'gpt-4' };
+  const anchored = async ({
+    memories,
+    inlineTools = false,
+    memory,
+  }: {
+    memories?: { withKeys?: string; withoutKeys?: string };
+    inlineTools?: boolean;
+    memory?: { agent?: typeof MEMORY_AGENT };
+  }) => {
+    const primary = { ...agent(), ...(inlineTools ? { memoryToolsRegistered: true } : {}) };
+    const prepared = await prepareTurnContext({
+      req: request({ config: { ...ON, ...(memory ? { memory } : {}) } }),
+      agent: primary,
+      allAgents: [{ agent: primary }],
+      orderedMessages: history(),
+      memories,
+      conversationId: 'c1',
+      anchorPromise: Promise.resolve(null),
+    });
+    return prepared?.plan.anchor?.find(({ key }) => key === 'memory')?.value;
+  };
+
+  it('anchors no memory notice for an agent that cannot use memory while the store is empty', async () => {
+    expect(await anchored({ memories: EMPTY })).toBeUndefined();
+  });
+
+  it('anchors the notice for an agent with memory tools, or when automatic extraction is on', async () => {
+    expect(await anchored({ memories: EMPTY, inlineTools: true })).toBe(memoryInstructions);
+    expect(await anchored({ memories: EMPTY, memory: { agent: MEMORY_AGENT } })).toBe(
+      memoryInstructions,
+    );
+  });
+
+  it('anchors saved memories for any agent', async () => {
+    const withoutKeys = '1. Likes tea.';
+    expect(await anchored({ memories: { withKeys: '', withoutKeys } })).toBe(
+      `${memoryInstructions}\n\n# Existing memory about the user:\n${withoutKeys}`,
+    );
   });
 });
 
