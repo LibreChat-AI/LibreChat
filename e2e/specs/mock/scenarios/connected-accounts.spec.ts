@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page, Route } from '@playwright/test';
+import { accountButton } from './ui-scale.helpers';
 
 /**
  * The Connected Accounts row in Settings > Account. The mock config has no pull request OAuth
@@ -36,7 +37,7 @@ async function mockConnection(page: Page, initial: Status) {
 
 async function openConnectedAccounts(page: Page) {
   await page.goto('/c/new', { timeout: 10000 });
-  await page.getByTestId('nav-user').click();
+  await (await accountButton(page)).click();
   await page.getByRole('menuitem', { name: 'Settings' }).click();
   const settings = page.getByRole('dialog', { name: /Settings/ });
   await settings.getByRole('tab', { name: 'Account' }).click();
@@ -138,9 +139,11 @@ test.describe('connected accounts', () => {
 
     const popup = page.waitForEvent('popup');
     await row.getByRole('button', { name: 'Connect GitHub' }).click();
-    await (await popup).waitForEvent('close');
 
     await expect(row.getByRole('alert')).toHaveText("Couldn't start connecting. Try again.");
+    /** The blank window opened in the click is closed rather than left behind. */
+    const opened = await popup;
+    await expect.poll(() => opened.isClosed()).toBe(true);
     await expect(row.getByRole('button', { name: 'Connect GitHub' })).toHaveText('Connect');
   });
 });
