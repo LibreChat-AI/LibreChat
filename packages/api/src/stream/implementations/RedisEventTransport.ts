@@ -17,13 +17,25 @@ import { registerChunkPublicationCapability } from '~/stream/internal/chunkPubli
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { PUBLISH_REPLAY_LUA, READ_REPLAY_LUA } from '../internal/replay';
+import { cacheConfig } from '~/cache/cacheConfig';
 
 /**
- * Redis key prefixes for pub/sub channels
+ * Redis key prefixes for pub/sub channels.
+ *
+ * ioredis `keyPrefix` applies to key operations but NOT to pub/sub channels.
+ * When `REDIS_CHANNEL_PREFIX` is set, channels are prefixed manually so they
+ * match per-tenant Redis ACL channel patterns (e.g. `&<prefix>:*`).
  */
+const CHANNEL_PREFIX = cacheConfig.REDIS_CHANNEL_PREFIX
+  ? `${cacheConfig.REDIS_CHANNEL_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`
+  : '';
+const CHANNEL_EVENTS_RE = new RegExp(
+  `^${CHANNEL_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}stream:\\{([^}]+)\\}:events$`,
+);
+
 const CHANNELS = {
-  /** Main event channel: stream:{streamId}:events (hash tag for cluster compatibility) */
-  events: (streamId: string) => `stream:{${streamId}}:events`,
+  /** Main event channel: <prefix>stream:{streamId}:events (hash tag for cluster compatibility) */
+  events: (streamId: string) => `${CHANNEL_PREFIX}stream:{${streamId}}:events`,
 };
 
 /**
@@ -893,7 +905,7 @@ export class RedisEventTransport implements IEventTransport {
    * Handle incoming pub/sub message with reordering support for Redis Cluster
    */
   private handleMessage(channel: string, message: string): void {
-    const match = channel.match(/^stream:\{([^}]+)\}:events$/);
+    const match = channel.match(CHANNEL_EVENTS_RE);
     if (!match) {
       return;
     }

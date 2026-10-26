@@ -228,6 +228,8 @@ export class SubagentTaskOwnerUnavailableError extends Error {
 export interface RedisSubagentTaskControlTransportOptions {
   /** Separates pub/sub channels for deployments sharing one Redis service. */
   namespace?: string;
+  /** Prefix prepended to every pub/sub channel name (e.g. for Redis ACL matching). */
+  channelPrefix?: string;
   instanceId?: string;
   requestTimeoutMs?: number;
   retryDelayMs?: number;
@@ -714,6 +716,7 @@ function parseResponse(value: unknown): RoutedResponse | undefined {
 export class RedisSubagentTaskControlTransport implements SubagentTaskControlTransport {
   private readonly instanceId: string;
   private readonly namespaceHash: string;
+  private readonly channelPrefix: string;
   private readonly requestTimeoutMs: number;
   private readonly retryDelayMs: number;
   private readonly registrationHeartbeatMs: number;
@@ -742,6 +745,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   ) {
     this.instanceId = options.instanceId?.trim() || randomUUID();
     this.namespaceHash = shortHash(options.namespace?.trim() || 'default');
+    this.channelPrefix = options.channelPrefix || '';
     this.requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
     this.retryDelayMs = Math.min(
       positiveInteger(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS),
@@ -1430,7 +1434,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   }
 
   private channel(instanceId: string): string {
-    return `subagent-task-control:${this.namespaceHash}:${instanceId}`;
+    return `${this.channelPrefix}subagent-task-control:${this.namespaceHash}:${instanceId}`;
   }
 
   private assertScope(scopeId: string): void {

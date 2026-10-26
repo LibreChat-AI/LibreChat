@@ -12,8 +12,33 @@ if (REDIS_KEY_PREFIX_VAR && REDIS_KEY_PREFIX) {
   throw new Error('Only either REDIS_KEY_PREFIX_VAR or REDIS_KEY_PREFIX can be set.');
 }
 
+// Optional prefix for Redis pub/sub channel names. ioredis keyPrefix applies to key
+// operations but NOT to pub/sub channels, so a separate prefix is needed when Redis
+// ACLs restrict channel patterns (e.g. per-tenant &<prefix>:* channel ACL rules).
+// When set, channels like `stream:{<id>}:events` become `<prefix>::stream:{<id>}:events`,
+// mirroring how REDIS_KEY_PREFIX produces `<prefix>::<key>`.
+const REDIS_CHANNEL_PREFIX = process.env.REDIS_CHANNEL_PREFIX || '';
+
 const USE_REDIS = isEnabled(process.env.USE_REDIS);
-if (USE_REDIS && !process.env.REDIS_URI) {
+
+// ─── Sentinel configuration (opt-in) ───────────────────────────
+// When REDIS_SENTINEL_ENABLED is true, LibreChat connects via Redis Sentinel
+// for automatic master discovery and failover. When false (or unset), the
+// existing REDIS_URI single-host connection is used unchanged.
+const REDIS_SENTINEL_ENABLED = isEnabled(process.env.REDIS_SENTINEL_ENABLED ?? 'false');
+if (REDIS_SENTINEL_ENABLED) {
+  if (!process.env.REDIS_SENTINEL_HOSTS || process.env.REDIS_SENTINEL_HOSTS.trim() === '') {
+    throw new Error('REDIS_SENTINEL_ENABLED is true but REDIS_SENTINEL_HOSTS is not set.');
+  }
+  if (
+    !process.env.REDIS_SENTINEL_MASTER_NAME ||
+    process.env.REDIS_SENTINEL_MASTER_NAME.trim() === ''
+  ) {
+    throw new Error('REDIS_SENTINEL_ENABLED is true but REDIS_SENTINEL_MASTER_NAME is not set.');
+  }
+}
+
+if (USE_REDIS && !REDIS_SENTINEL_ENABLED && !process.env.REDIS_URI) {
   throw new Error('USE_REDIS is enabled but REDIS_URI is not set.');
 }
 
@@ -54,27 +79,46 @@ if (FORCED_IN_MEMORY_CACHE_NAMESPACES.length > 0) {
 const VIOLATION_SCORE_TTL_MS = math(process.env.VIOLATION_SCORE_TTL, Time.ONE_HOUR);
 const VIOLATION_SCORE_TTL = VIOLATION_SCORE_TTL_MS > 0 ? VIOLATION_SCORE_TTL_MS : undefined;
 
-/** Helper function to safely read Redis CA certificate from file
- * @returns {string|null} The contents of the CA certificate file, or null if not set or on error
+/** Helper function to safely read Redis TLS material (CA certificate, client
+ * certificate, or client key) from a file path given via an environment variable.
+ * @returns {string|null} The contents of the TLS file, or null if not set or on error
  */
-const getRedisCA = (): string | null => {
-  const caPath = process.env.REDIS_CA;
-  if (!caPath) {
+const getRedisTLSFile = (envVar: string, label: string): string | null => {
+  const filePath = process.env[envVar];
+  if (!filePath) {
     return null;
   }
 
   try {
-    if (existsSync(caPath)) {
-      return readFileSync(caPath, 'utf8');
+    if (existsSync(filePath)) {
+      return readFileSync(filePath, 'utf8');
     } else {
-      logger.warn(`Redis CA certificate file not found: ${caPath}`);
+      logger.warn(`Redis ${label} file not found: ${filePath}`);
       return null;
     }
   } catch (error) {
-    logger.error(`Failed to read Redis CA certificate file '${caPath}':`, error);
+    logger.error(`Failed to read Redis ${label} file '${filePath}':`, error);
     return null;
   }
 };
+
+/** Read the CA certificate file referenced by REDIS_CA, if any.
+ * @returns {string|null} The contents of the CA certificate file, or null if not set or on error
+ */
+const getRedisCA = (): string | null => getRedisTLSFile('REDIS_CA', 'CA certificate');
+
+// Opt-in mTLS client authentication: when either REDIS_TLS_CERT or
+// REDIS_TLS_KEY is set, both must point to readable files or the process
+// fails to start — never silently downgrading an explicit mTLS setup.
+// When neither is set (the default), client certificates are not used and
+// the existing behaviour (server CA verification only) is fully preserved.
+const redisTlsCert = getRedisTLSFile('REDIS_TLS_CERT', 'client certificate');
+const redisTlsKey = getRedisTLSFile('REDIS_TLS_KEY', 'client key');
+if ((process.env.REDIS_TLS_CERT || process.env.REDIS_TLS_KEY) && (!redisTlsCert || !redisTlsKey)) {
+  throw new Error(
+    'REDIS_TLS_CERT and REDIS_TLS_KEY must both be set to readable files to enable TLS client authentication.',
+  );
+}
 
 const cacheConfig: {
   FORCED_IN_MEMORY_CACHE_NAMESPACES: string[];
@@ -84,7 +128,12 @@ const cacheConfig: {
   REDIS_USERNAME: string | undefined;
   REDIS_PASSWORD: string | undefined;
   REDIS_CA: string | null;
+  /** Contents of the TLS client certificate file (mTLS), or null when unset */
+  REDIS_TLS_CERT: string | null;
+  /** Contents of the TLS client key file (mTLS), or null when unset */
+  REDIS_TLS_KEY: string | null;
   REDIS_KEY_PREFIX: string;
+  REDIS_CHANNEL_PREFIX: string;
   GLOBAL_PREFIX_SEPARATOR: string;
   REDIS_MAX_LISTENERS: number;
   REDIS_PING_INTERVAL: number;
@@ -109,6 +158,16 @@ const cacheConfig: {
   REDIS_USE_ALTERNATIVE_DNS_LOOKUP: boolean;
   /** Enable redis cluster without the need of multiple URIs */
   USE_REDIS_CLUSTER: boolean;
+  /** Opt-in: connect via Redis Sentinel for automatic master discovery and failover */
+  REDIS_SENTINEL_ENABLED: boolean;
+  /** Comma-separated Sentinel node addresses (host:port) */
+  REDIS_SENTINEL_HOSTS: string | undefined;
+  /** Sentinel master group name (e.g. 'mymaster') */
+  REDIS_SENTINEL_MASTER_NAME: string | undefined;
+  /** Password for Sentinel auth (if Sentinel requires auth) */
+  REDIS_SENTINEL_PASSWORD: string | undefined;
+  /** TLS for Sentinel connections */
+  REDIS_SENTINEL_TLS_ENABLED: boolean;
   /**
    * Force cluster-safe (key-by-key) deletion even when connecting as a single-node Redis instance.
    * Needed for managed services like ElastiCache Serverless that present a single endpoint
@@ -161,7 +220,10 @@ const cacheConfig: {
   REDIS_USERNAME: process.env.REDIS_USERNAME,
   REDIS_PASSWORD: process.env.REDIS_PASSWORD,
   REDIS_CA: getRedisCA(),
+  REDIS_TLS_CERT: redisTlsCert,
+  REDIS_TLS_KEY: redisTlsKey,
   REDIS_KEY_PREFIX: process.env[REDIS_KEY_PREFIX_VAR ?? ''] || REDIS_KEY_PREFIX || '',
+  REDIS_CHANNEL_PREFIX,
   GLOBAL_PREFIX_SEPARATOR: '::',
   REDIS_MAX_LISTENERS: math(process.env.REDIS_MAX_LISTENERS, 40),
   REDIS_PING_INTERVAL: math(process.env.REDIS_PING_INTERVAL, 0),
@@ -186,6 +248,16 @@ const cacheConfig: {
   REDIS_USE_ALTERNATIVE_DNS_LOOKUP: isEnabled(process.env.REDIS_USE_ALTERNATIVE_DNS_LOOKUP),
   /** Enable redis cluster without the need of multiple URIs */
   USE_REDIS_CLUSTER: isEnabled(process.env.USE_REDIS_CLUSTER ?? 'false'),
+  /** Opt-in: connect via Redis Sentinel for automatic master discovery and failover */
+  REDIS_SENTINEL_ENABLED,
+  /** Comma-separated Sentinel node addresses (host:port) */
+  REDIS_SENTINEL_HOSTS: process.env.REDIS_SENTINEL_HOSTS,
+  /** Sentinel master group name (e.g. 'mymaster') */
+  REDIS_SENTINEL_MASTER_NAME: process.env.REDIS_SENTINEL_MASTER_NAME,
+  /** Password for Sentinel auth (if Sentinel requires auth) */
+  REDIS_SENTINEL_PASSWORD: process.env.REDIS_SENTINEL_PASSWORD,
+  /** TLS for Sentinel connections */
+  REDIS_SENTINEL_TLS_ENABLED: isEnabled(process.env.REDIS_SENTINEL_TLS_ENABLED ?? 'false'),
   /**
    * Force cluster-safe (key-by-key) deletion even when connecting as a single-node Redis instance.
    * Needed for managed services like ElastiCache Serverless that present a single endpoint

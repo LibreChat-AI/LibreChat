@@ -349,8 +349,15 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     return closingBrace > openingBrace + 1 ? key.slice(openingBrace + 1, closingBrace) : key;
   };
   const globalCacheRawKey = rawKey(ToolCacheKeys.GLOBAL);
+  /** Prefixes a key with the deployment-wide Redis key prefix (without the TOOL_CACHE namespace). */
+  const withDeploymentPrefix = (key: string): string =>
+    deps.cacheConfig.REDIS_KEY_PREFIX
+      ? `${deps.cacheConfig.REDIS_KEY_PREFIX}${deps.cacheConfig.GLOBAL_PREFIX_SEPARATOR ?? '::'}${key}`
+      : key;
   /** Hashes to the same Redis Cluster slot as the unchanged legacy global catalog key. */
-  const globalFenceKey = `tools:global:write-fence:{${redisHashTag(globalCacheRawKey)}}`;
+  const globalFenceKey = withDeploymentPrefix(
+    `tools:global:write-fence:{${redisHashTag(globalCacheRawKey)}}`,
+  );
 
   async function withRedisLock<T>(
     lockKey: string,
@@ -431,7 +438,9 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     const previous = userQueues.get(scope) ?? Promise.resolve();
     const lockKey = `${CacheKeys.TOOL_CACHE}:tools:mcp-write-lock:${encodeURIComponent(userId)}:${encodeURIComponent(serverName)}`;
     const generationRawKey = rawKey(ToolCacheKeys.MCP_SERVER_GENERATION(userId, serverName));
-    const fenceKey = `tools:mcp:write-fence:{${redisHashTag(generationRawKey)}}`;
+    const fenceKey = withDeploymentPrefix(
+      `tools:mcp:write-fence:{${redisHashTag(generationRawKey)}}`,
+    );
     const locked = () =>
       withRedisLock(lockKey, GLOBAL_LOCK_TTL_MS, (token, leaseExpiresAt) =>
         requireOwnershipFence

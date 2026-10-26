@@ -137,6 +137,9 @@ async function configureSubagentTaskRouting(config) {
   });
   const transport = new RedisSubagentTaskControlTransport(publisher, subscriber, {
     namespace: cacheConfig.REDIS_KEY_PREFIX,
+    channelPrefix: cacheConfig.REDIS_CHANNEL_PREFIX
+      ? `${cacheConfig.REDIS_CHANNEL_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`
+      : '',
   });
   try {
     await subagentThreadTaskStore.configureTaskControlTransport(transport);
