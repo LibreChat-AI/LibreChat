@@ -33,9 +33,8 @@ const logViolation = async (req, res, type, errorMessage, score = 1) => {
   errorMessage.date = new Date().toISOString();
 
   await banViolation(req, res, errorMessage);
-  const { user_id: _userId, ...logEntry } = errorMessage;
   delete errorMessage.user_id;
-  await appendViolationLog(logs, key, logEntry);
+  await appendViolationLog(logs, key, errorMessage);
 };
 
 module.exports = logViolation;
