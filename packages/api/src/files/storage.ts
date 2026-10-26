@@ -61,7 +61,7 @@ export function isMissingStorageError(error: unknown): boolean {
   );
 }
 
-function readEmbeddedEntities(value: unknown): string[] | undefined {
+export function readEmbeddedEntities(value: unknown): string[] | undefined {
   if (value == null) return undefined;
   if (
     !Array.isArray(value) ||

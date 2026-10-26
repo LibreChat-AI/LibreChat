@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
 import type { AxiosInstance } from 'axios';
+import { isMissingStorageError, readEmbeddedEntities } from './storage';
 import { generateShortLivedToken } from '~/crypto/jwt';
-import { isMissingStorageError } from './storage';
 
 interface DeleteRagFileParams {
   /** The user ID. Required for authentication. If not provided, the function returns false and logs an error. */
@@ -111,7 +111,21 @@ export async function hasEntityEmbeddings({
   return Array.isArray(data) && data.some(([chunk]) => chunk?.metadata?.user_id === entity_id);
 }
 
-/** A skipped or failed request must never be reported as a removed vector copy. */
+/**
+ * A skipped or failed request must never be reported as a removed vector copy.
+ *
+ * rag_api deletes with `delete_scoped(ids, owners)` where the owner set is the
+ * token's user plus any `entity_id` the caller names. Chunks embedded under an
+ * entity, which is every agent knowledge-base file, are therefore outside an
+ * unscoped delete's reach: it matches nothing, answers 404, and the chunks
+ * survive. The owners are the file's `metadata.embeddedEntities`, a set that
+ * grows when a record is shared (a duplicated agent embeds its own copy), so one
+ * scoped request is sent per recorded entity: each also covers the user's own
+ * copy, and none is skipped. For those files a missing document stops counting
+ * as success: anything other than a 2xx means the chunks may still be there.
+ * Files with no recorded entity keep the previous behaviour exactly, including
+ * its tolerance of a missing document. See #14988.
+ */
 export function createVectorFileDeleter({
   baseUrl,
   httpClient,
@@ -122,22 +136,44 @@ export function createVectorFileDeleter({
   generateToken: (userId: string) => string;
 }): (
   req: { user: { id: string } },
-  file: { file_id: string; embedded?: boolean },
+  file: { file_id: string; embedded?: boolean; metadata?: { embeddedEntities?: string[] } },
 ) => Promise<{ deleted: true } | undefined> {
   return async (req, file) => {
     if (!file.embedded || !baseUrl) return undefined;
-    try {
-      await httpClient.delete(`${baseUrl}/documents`, {
-        headers: {
-          Authorization: `Bearer ${generateToken(req.user.id)}`,
-          'Content-Type': 'application/json',
-          accept: 'application/json',
-        },
-        data: [file.file_id],
-      });
-    } catch (error) {
-      if (!isMissingStorageError(error)) throw error;
-    }
+    const entities = [...new Set(readEmbeddedEntities(file.metadata?.embeddedEntities) ?? [])];
+    const owners: Array<string | undefined> = entities.length > 0 ? entities : [undefined];
+    const deleteOwned = async (entityId?: string): Promise<void> => {
+      try {
+        await httpClient.delete(`${baseUrl}/documents`, {
+          headers: {
+            Authorization: `Bearer ${generateToken(req.user.id)}`,
+            'Content-Type': 'application/json',
+            accept: 'application/json',
+          },
+          /* The entity travels as a query parameter, never in the body: an older
+           * rag_api ignores a parameter it does not declare, so a new client
+           * stays inert against it rather than breaking. */
+          ...(entityId ? { params: { entity_id: entityId } } : {}),
+          data: [file.file_id],
+        });
+      } catch (error) {
+        /* A missing document means the chunks are gone for a user-owned file,
+         * but means the opposite for an entity-owned one: the delete matched
+         * nothing under that owner, so the chunks are still there. */
+        if (!entityId && isMissingStorageError(error)) {
+          return;
+        }
+        logger.warn(
+          `Error deleting vectors for file ${file.file_id}${
+            entityId ? ` scoped to entity ${entityId}` : ''
+          }; its embedded chunks may remain`,
+        );
+        throw error;
+      }
+    };
+    const settled = await Promise.allSettled(owners.map(deleteOwned));
+    const failed = settled.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
     return { deleted: true };
   };
 }
