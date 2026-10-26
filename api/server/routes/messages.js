@@ -121,7 +121,7 @@ async function rejectSubagentThreadWrite(req, res, conversationId) {
   return true;
 }
 
-router.get('/', async (req, res) => {
+router.get('/', configMiddleware, async (req, res) => {
   try {
     const user = req.user.id ?? '';
     const {
@@ -133,7 +133,7 @@ router.get('/', async (req, res) => {
       messageId,
       search,
     } = req.query;
-    const pageSize = parseMessagesPageSize(pageSizeRaw);
+    const pageSize = parseMessagesPageSize(pageSizeRaw, req.config?.messages?.maxPageSize);
 
     let response;
     const sortField = ['endpoint', 'createdAt', 'updatedAt'].includes(sortBy)

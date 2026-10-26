@@ -73,6 +73,7 @@ export interface AppConfig {
   timeouts?: TCustomConfig['timeouts'];
   /** Violation log retention; unset keeps the server default */
   violationLog?: TCustomConfig['violationLog'];
+  messages?: TCustomConfig['messages'];
   skillDeletion?: {
     finalizationEnabled?: boolean;
     sweepIntervalMs?: number;

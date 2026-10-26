@@ -223,6 +223,7 @@ export const AppService = async (params?: {
     githubCompare: config.githubCompare,
     timeouts: config.timeouts,
     violationLog: config.violationLog,
+    messages: config.messages,
     mcpSettings,
     mcpAppSandbox,
     fileStrategy,

@@ -4658,6 +4658,12 @@ export const configSchema = z.object({
     .optional(),
   timeouts: outboundTimeoutsSchema.optional(),
   violationLog: violationLogSchema.optional(),
+  messages: z
+    .object({
+      /** Largest `pageSize` accepted by `GET /api/messages`. Defaults to 1000. */
+      maxPageSize: z.number().int().min(1).max(10000).optional(),
+    })
+    .optional(),
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),

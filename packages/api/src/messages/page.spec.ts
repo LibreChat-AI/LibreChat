@@ -15,4 +15,9 @@ describe('parseMessagesPageSize', () => {
   it('clamps oversized values to the cap', () => {
     expect(parseMessagesPageSize('1000000')).toBe(MAX_MESSAGES_PAGE_SIZE);
   });
+
+  it('honors a configured ceiling', () => {
+    expect(parseMessagesPageSize('5000', 2000)).toBe(2000);
+    expect(parseMessagesPageSize('50', 2000)).toBe(50);
+  });
 });

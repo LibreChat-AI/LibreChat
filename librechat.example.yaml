@@ -561,6 +561,10 @@ registration:
 # violationLog:
 #   maxEntries: 100
 
+# Largest pageSize accepted when reading a conversation's messages.
+# messages:
+#   maxPageSize: 1000 # default: 1000
+
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
 #   mcpApps:
