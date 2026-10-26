@@ -3,6 +3,7 @@ import {
   outboundTimeoutMessage,
   getOutboundTimeout,
   getOutboundTimeoutMs,
+  toolRequestBudget,
   outboundRequestBudget,
   DEFAULT_OUTBOUND_TIMEOUTS_MS,
 } from './timeouts';
@@ -125,5 +126,14 @@ describe('logAxiosError on a budget overrun', () => {
     expect(error).not.toHaveBeenCalled();
     warn.mockRestore();
     error.mockRestore();
+  });
+});
+
+describe('toolRequestBudget', () => {
+  it('defaults to the tools budget and honors the configured one', () => {
+    expect(toolRequestBudget().timeout).toBe(DEFAULT_OUTBOUND_TIMEOUTS_MS.toolsMs);
+    const budget = toolRequestBudget({ toolsMs: 2_000 });
+    expect(budget.timeout).toBe(2_000);
+    expect(budget.timeoutErrorMessage).toBe(outboundTimeoutMessage('toolsMs', 2_000));
   });
 });

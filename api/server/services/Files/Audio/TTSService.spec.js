@@ -8,6 +8,9 @@ jest.mock('@librechat/api', () => ({
   capSpeechInput: jest.requireActual('@librechat/api').capSpeechInput,
   pipeSegment: jest.fn(),
   pipeToResponse: jest.fn(),
+  abortOnClose: jest.requireActual('@librechat/api').abortOnClose,
+  outboundRequestBudget: jest.requireActual('@librechat/api').outboundRequestBudget,
+  getOutboundTimeoutMs: jest.requireActual('@librechat/api').getOutboundTimeoutMs,
 }));
 jest.mock('librechat-data-provider', () => ({
   /** Real constants: `validateTTSInput` comes from the built `@librechat/api`, which reads them. */
@@ -116,7 +119,12 @@ describe('TTSService input cap', () => {
     const service = new TTSService();
     jest.spyOn(service, 'getVoice').mockResolvedValue('alloy');
     const ttsRequest = jest.spyOn(service, 'ttsRequest').mockResolvedValue({ data: {} });
-    const res = { status: jest.fn().mockReturnThis(), send: jest.fn(), setHeader: jest.fn() };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+      setHeader: jest.fn(),
+      once: jest.fn(),
+    };
 
     await service.processTextToSpeech(
       {
@@ -136,7 +144,12 @@ describe('TTSService input cap', () => {
   it('refuses a non-text body before calling any provider', async () => {
     const service = new TTSService();
     const ttsRequest = jest.spyOn(service, 'ttsRequest');
-    const res = { status: jest.fn().mockReturnThis(), send: jest.fn(), setHeader: jest.fn() };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+      setHeader: jest.fn(),
+      once: jest.fn(),
+    };
 
     await service.processTextToSpeech(
       {

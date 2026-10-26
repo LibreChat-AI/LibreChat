@@ -1,8 +1,10 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
 import type { TFileConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { AxiosInstance } from 'axios';
 import { createConcurrencyLimiter } from '~/utils/promise';
+import { outboundRequestBudget, getOutboundTimeoutMs } from '~/utils/timeouts';
 import { generateShortLivedToken } from '~/crypto/jwt';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
@@ -122,7 +124,7 @@ export function createVectorFileDeleter({
   namespaceConcurrency?: number;
   ownershipTrackingStart?: string;
 }): (
-  req: { user: { id: string } },
+  req: { user: { id: string }; config?: Pick<AppConfig, 'timeouts'> },
   file: DeleteRagFileParams['file'],
 ) => Promise<{ deleted: true } | undefined> {
   const limit = createConcurrencyLimiter(namespaceConcurrency);
@@ -173,6 +175,7 @@ export function createVectorFileDeleter({
               ...config,
               headers: headers(),
               data: [file.file_id],
+              ...outboundRequestBudget(getOutboundTimeoutMs(req.config, 'ragMs'), 'ragMs'),
             });
           } catch (error) {
             // A 404 can mean a wrong scope. Only a successful inventory can establish absence,
@@ -181,6 +184,7 @@ export function createVectorFileDeleter({
             const { data } = await httpClient.get<string[]>(`${baseUrl}/ids`, {
               ...config,
               headers: headers(),
+              ...outboundRequestBudget(getOutboundTimeoutMs(req.config, 'ragMs'), 'ragMs'),
             });
             if (
               !Array.isArray(data) ||

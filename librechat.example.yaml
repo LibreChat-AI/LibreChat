@@ -569,6 +569,9 @@ registration:
 #   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
 #   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
+#   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
+#   speechMs: 300000 # each text-to-speech or speech-to-text provider request
+#   imageGenerationMs: 300000 # each Stable Diffusion image generation request
 
 # Newest violations kept per user in the general violation log.
 # violationLog:

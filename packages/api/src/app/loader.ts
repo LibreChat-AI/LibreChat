@@ -11,6 +11,7 @@ import {
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
 import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { ZodIssue } from 'zod';
+import { SERVICE_REQUEST_TIMEOUT_MS } from '~/utils/timeouts';
 import { checkConfigPolicyLinks } from './interface';
 import { expandCustomEndpoint } from './params';
 import { checkConfigTheme } from './theme';
@@ -123,7 +124,13 @@ export function createCustomConfigLoader({
   defaultConfigPath,
   loadLocal,
   redactConfig,
-  fetchRemote = async (configPath: string): Promise<unknown> => (await axios.get(configPath)).data,
+  fetchRemote = async (configPath: string): Promise<unknown> =>
+    (
+      await axios.get(configPath, {
+        timeout: SERVICE_REQUEST_TIMEOUT_MS,
+        signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
+      })
+    ).data,
 }: CustomConfigLoaderOptions): (
   printConfig?: boolean,
   options?: CustomConfigLoadOptions,

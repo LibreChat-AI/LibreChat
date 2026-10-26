@@ -7,8 +7,11 @@ const {
   resolveConfigSecret,
   applySSRFSafeAgentIfDirect,
   pipeSegment,
+  abortOnClose,
   pipeToResponse,
   capSpeechInput,
+  outboundRequestBudget,
+  getOutboundTimeoutMs,
 } = require('@librechat/api');
 const {
   TTSProviders,
@@ -262,10 +265,17 @@ class TTSService {
    * @param {string} options.voice - The voice to use.
    * @param {boolean} [options.stream=true] - Whether to use streaming.
    * @param {string[]} [allowedAddresses] - Section-level SSRF exemption list of host:port pairs.
+   * @param {import('axios').AxiosRequestConfig} [requestOptions] - Timeout and abort options for the request.
    * @returns {Promise<Object>} The axios response object.
    * @throws {Error} If the provider is invalid or the request fails.
    */
-  async ttsRequest(provider, ttsSchema, { input, voice, stream = true }, allowedAddresses) {
+  async ttsRequest(
+    provider,
+    ttsSchema,
+    { input, voice, stream = true },
+    allowedAddresses,
+    requestOptions,
+  ) {
     const strategy = this.providerStrategies[provider];
     if (!strategy) {
       throw new Error('Invalid provider');
@@ -275,7 +285,7 @@ class TTSService {
 
     [data, headers].forEach(this.removeUndefined.bind(this));
 
-    const options = { headers, responseType: stream ? 'stream' : 'arraybuffer' };
+    const options = { headers, responseType: stream ? 'stream' : 'arraybuffer', ...requestOptions };
 
     applyAxiosProxyConfig(options, url);
     applySSRFSafeAgentIfDirect(options, url, allowedAddresses);
@@ -315,6 +325,11 @@ class TTSService {
       const ttsSchema = appConfig?.speech?.tts?.[provider];
       const allowedAddresses = appConfig?.speech?.tts?.allowedAddresses;
       const voice = await this.getVoice(ttsSchema, requestVoice);
+      const requestOptions = outboundRequestBudget(
+        getOutboundTimeoutMs(appConfig, 'speechMs'),
+        'speechMs',
+        abortOnClose(res),
+      );
 
       if (text.length < 4096) {
         const response = await this.ttsRequest(
@@ -322,6 +337,7 @@ class TTSService {
           ttsSchema,
           { input: text, voice },
           allowedAddresses,
+          requestOptions,
         );
         pipeToResponse(response.data, res, (error) =>
           logAxiosError({ message: '[TTS] Audio stream failed:', error }),
@@ -342,6 +358,7 @@ class TTSService {
               stream: true,
             },
             allowedAddresses,
+            requestOptions,
           );
 
           logger.debug(`[textToSpeech] user: ${req?.user?.id} | writing audio stream`);
@@ -393,6 +410,8 @@ class TTSService {
     const ttsSchema = appConfig?.speech?.tts?.[provider];
     const allowedAddresses = appConfig?.speech?.tts?.allowedAddresses;
     const voice = await this.getVoice(ttsSchema, req.body.voice);
+    const closeSignal = abortOnClose(res);
+    const speechTimeoutMs = getOutboundTimeoutMs(appConfig, 'speechMs');
 
     let shouldContinue = true;
 
@@ -431,6 +450,7 @@ class TTSService {
                 stream: true,
               },
               allowedAddresses,
+              outboundRequestBudget(speechTimeoutMs, 'speechMs', closeSignal),
             );
 
             if (!shouldContinue) {
