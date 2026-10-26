@@ -1,5 +1,5 @@
 import { v4 } from 'uuid';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep';
 import {
   Constants,
   ContentTypes,

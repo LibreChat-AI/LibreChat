@@ -1,6 +1,9 @@
 import { useMutation } from '@tanstack/react-query';
 import type { UseMutationResult } from '@tanstack/react-query';
 
+/** Upper bound for one file download (headers and body) before it is abandoned. */
+const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface SharePointFile {
   id: string;
   name: string;
@@ -48,17 +51,26 @@ export const useSharePointBatchDownload = (): UseMutationResult<
               file.downloadUrl ||
               `https://graph.microsoft.com/v1.0/drives/${file.driveId}/items/${file.itemId}/content`;
 
-            const response = await fetch(downloadUrl, {
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-              },
-            });
+            const controller = new AbortController();
+            const abortTimer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+            let response: Response;
+            let blob: Blob;
+            try {
+              response = await fetch(downloadUrl, {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                },
+                signal: controller.signal,
+              });
 
-            if (!response.ok) {
-              throw new Error(`${response.status} ${response.statusText}`);
+              if (!response.ok) {
+                throw new Error(`${response.status} ${response.statusText}`);
+              }
+
+              blob = await response.blob();
+            } finally {
+              clearTimeout(abortTimer);
             }
-
-            const blob = await response.blob();
             const contentType =
               response.headers.get('content-type') || getMimeTypeFromFileName(file.name);
 

@@ -41,6 +41,9 @@ import {
   fetchStreamStatus,
   genTitleQueryKey,
   queueTitleGeneration,
+  markTitleGenerationProcessed,
+  isTitleGenerationProcessed,
+  clearTitleGenerationState,
   useActiveJobs,
   resetActiveJobsGrace,
   extendActiveJobsGrace,
@@ -278,5 +281,14 @@ describe('title fetch retry policy — failure cap', () => {
     for (let i = 0; i < 5; i++) {
       expect(retryPredicate(i, authErr)).toBe(false);
     }
+  });
+});
+
+describe('clearTitleGenerationState', () => {
+  it('forgets processed conversations so the next session starts clean', () => {
+    markTitleGenerationProcessed('convo-clear');
+    expect(isTitleGenerationProcessed('convo-clear')).toBe(true);
+    clearTitleGenerationState();
+    expect(isTitleGenerationProcessed('convo-clear')).toBe(false);
   });
 });

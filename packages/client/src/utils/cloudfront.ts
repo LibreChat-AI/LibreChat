@@ -97,6 +97,9 @@ function getRefreshEndpoint(endpoint: string): string {
   return `${baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
 }
 
+/** A hung refresh would leave the shared promise pending and disable every later retry. */
+const COOKIE_REFRESH_TIMEOUT_MS = 15000;
+
 async function postCloudFrontCookieRefresh(endpoint: string): Promise<boolean> {
   const authorization = getAuthorizationHeader?.();
   const headers: Record<string, string> = {
@@ -108,19 +111,26 @@ async function postCloudFrontCookieRefresh(endpoint: string): Promise<boolean> {
     headers.Authorization = authorization;
   }
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    credentials: 'include',
-    headers,
-    body: '{}',
-  });
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), COOKIE_REFRESH_TIMEOUT_MS);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: '{}',
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    return false;
+    if (!response.ok) {
+      return false;
+    }
+
+    const payload = (await response.json()) as CloudFrontCookieRefreshResponse;
+    return payload.ok === true;
+  } finally {
+    clearTimeout(abortTimer);
   }
-
-  const payload = (await response.json()) as CloudFrontCookieRefreshResponse;
-  return payload.ok === true;
 }
 
 export function refreshCloudFrontCookiesOnce(): Promise<boolean> {

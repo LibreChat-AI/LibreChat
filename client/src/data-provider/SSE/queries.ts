@@ -64,6 +64,14 @@ export function queueTitleGeneration(conversationId: string) {
   }
 }
 
+/** Drops all module-level title state; called when a session ends so the next account starts clean. */
+export function clearTitleGenerationState() {
+  titleQueue.clear();
+  processedTitles.clear();
+  deferredTitles.clear();
+  queueListeners.forEach((listener) => listener());
+}
+
 export function isTitleGenerationProcessed(conversationId: string): boolean {
   return processedTitles.has(conversationId);
 }

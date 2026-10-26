@@ -85,8 +85,11 @@ type AuthRecoveryWindow = Window & {
   __librechatAuthRecovery?: AuthRecoveryState;
 };
 
+/** A hung refresh gates every API call through the deduped recovery promise, so it must reject. */
+const REFRESH_TOKEN_TIMEOUT_MS = 30_000;
+
 const refreshToken = (retry?: boolean): Promise<t.TRefreshTokenResponse | undefined> =>
-  _post(endpoints.refreshToken(retry));
+  _post(endpoints.refreshToken(retry), undefined, { timeout: REFRESH_TOKEN_TIMEOUT_MS });
 
 const SHARE_PAGE_PATH_REGEX = /^\/share\/[^/]+\/?$/;
 const SHARED_MESSAGES_PATH_REGEX = /^\/api\/share\/[^/]+$/;
