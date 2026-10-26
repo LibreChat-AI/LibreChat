@@ -127,8 +127,8 @@ export function createVectorFileDeleter({
       'Content-Type': 'application/json',
       accept: 'application/json',
     };
-    // Legacy user embeddings have no namespace metadata. Never infer an agent from the request.
-    const namespaces = entities?.length ? [...new Set(entities)] : [undefined];
+    // Unscoped embeds can live in RAG's public scope even when metadata records a user ID.
+    const namespaces = [...new Set(entities ?? []), undefined];
     const results = await Promise.allSettled(
       namespaces.map(async (entity_id) => {
         const config = { headers, ...(entity_id ? { params: { entity_id } } : {}) };
