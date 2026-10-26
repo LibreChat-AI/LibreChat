@@ -22,8 +22,9 @@ import type { ServerRequest } from '~/types/http';
 import type { RecordAuditEntry } from './audit';
 import type { CascadeStep } from './cascade';
 import { createAdminAuditEmitter, diffRolePermissions, configTarget } from './audit';
+import { cascadeStep, runCascade, invalidatingConfigStore } from './cascade';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { cascadeStep, runCascade } from './cascade';
+import { getActivePartition } from './partition';
 import { parsePagination } from './pagination';
 
 const systemRoleValues = new Set<string>(Object.values(SystemRoles));
@@ -119,19 +120,37 @@ interface RoleMemberParams extends RoleNameParams {
 
 export type RoleListItem = { _id: Types.ObjectId | string; name: string; description?: string };
 
+/**
+ * Role ids are names every tenant reuses, so every role operation here addresses the role of the
+ * caller's tenant partition and what it holds there (members, profile, grants and ACL entries):
+ * the active tenant's, or for an admin without a tenant only the platform-level ones, never each
+ * tenant's own role of the same name. The routes wire the data-schemas methods that keep to that
+ * partition, and a member added or removed by id must be a user of it too.
+ */
 export interface AdminRolesDeps {
+  /** The roles of the caller's tenant partition (`listRoles`). */
   listRoles: (options?: { limit?: number; offset?: number }) => Promise<RoleListItem[]>;
   countRoles: () => Promise<number>;
+  /**
+   * The role of exactly this name in the caller's tenant partition, read as stored
+   * (`getPartitionRole`); a missing system role is created there.
+   */
   getRoleByName: (name: string, fields?: string | string[] | null) => Promise<IRole | null>;
   createRoleByName: (roleData: Partial<IRole>) => Promise<IRole>;
-  updateRoleByName: (name: string, updates: Partial<IRole>) => Promise<IRole | null>;
+  /** With `options.id`, updates only the role document with that `_id`. */
+  updateRoleByName: (
+    name: string,
+    updates: Partial<IRole>,
+    options?: { id?: string },
+  ) => Promise<IRole | null>;
   updateAccessPermissions: (
     name: string,
     perms: Record<string, Record<string, boolean>>,
     roleData?: IRole,
   ) => Promise<void>;
   /** With `options.id`, deletes only the role that still has that `_id`, so a role recreated
-   * under the same name is never removed by a request that targeted the original. */
+   * under the same name is never removed by a request that targeted the original. Reassigns the
+   * role's members in the caller's partition to USER. */
   deleteRoleByName: (name: string, options?: { id?: string }) => Promise<IRole | null>;
   findUser: (
     criteria: FilterQuery<IUser>,
@@ -143,7 +162,9 @@ export interface AdminRolesDeps {
     data: Partial<IUser>,
     expectedState?: Record<string, unknown>,
   ) => Promise<IUser | null>;
+  /** Moves the role's members in the caller's partition to `newRole` (a rename's migration). */
   updateUsersByRole: (oldRole: string, newRole: string) => Promise<void>;
+  /** The ids of the role's members in the caller's partition. */
   findUserIdsByRole: (roleName: string) => Promise<string[]>;
   /** With `fromRole`, only users whose role is still that one change. */
   updateUsersRoleByIds: (
@@ -161,15 +182,16 @@ export interface AdminRolesDeps {
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
   ) => Promise<ConfigRecord | null>;
-  /** Removes all ACL entries scoped to this principal. */
+  /** Removes the role's ACL entries in the caller's partition (`deletePrincipalAclEntries`). */
   deleteAclEntries: (filter: {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
   }) => Promise<void>;
   /** Drops cached prompt group access IDs; role deletion can remove PROMPTGROUP grants. */
   invalidatePromptGroupAccessContext?: () => Promise<void>;
-  /** Removes all system capability grants held by this principal and returns
-   * the removed grants so each can be audited. */
+  /** Removes the system capability grants this principal holds in one scope (exactly
+   * `tenantId`, or platform-level ones without it) and returns the removed grants so each can be
+   * audited. */
   deleteGrantsForPrincipal: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
@@ -235,7 +257,8 @@ export interface AdminRolesDeps {
     toPrincipalId: string,
     options?: { ids?: readonly string[] },
   ) => Promise<string[]>;
-  /** Clears merged-config caches keyed by role name after a rename moved a profile. */
+  /** Clears the merged-config caches (on every instance, with Redis) once a rename moved a
+   * profile, or a deletion removed or restored one, before the response, as config writes do. */
   invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
   /** Optional audit emission for role mutations and the grants removed by the
    * role-deletion cascade. Failure is logged unless `auditFailClosed` is set. */
@@ -255,6 +278,20 @@ function memberChangeSeverity(...roles: Array<string | undefined>): AuditSeverit
 
 function roleTarget(name: string) {
   return { type: 'role', id: name, name };
+}
+
+/**
+ * Whether a user belongs to the caller's tenant partition, the one a role name addresses. Outside
+ * a tenant a user is found by id in any tenant, but a tenant user's `role` names that tenant's own
+ * role, so the platform role's member routes never change it.
+ */
+function isPartitionUser(user: Pick<IUser, 'tenantId'>): boolean {
+  return (user.tenantId || undefined) === getActivePartition();
+}
+
+/** The document a role was read as, so a write changes that role and no other of its name. */
+function roleIdentity(role: Pick<IRole, '_id'>): { id: string } | undefined {
+  return role._id != null ? { id: String(role._id) } : undefined;
 }
 
 /** What a role rename moved to the new name along with the role. */
@@ -357,9 +394,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         severity: 'warning',
         target: { type: PrincipalType.ROLE, id: roleName, name: roleName },
         metadata: { capability: grant.capability },
-        /** Scope each entry to the removed grant's own tenant: a platform
-         * admin's role deletion can remove tenant-scoped grants, and those
-         * removals must land in the affected tenant's chain, not the caller's. */
+        /** Scope each entry to the removed grant's own tenant, so a removal
+         * always lands in the chain of the tenant whose grant it was. */
         tenantId: grant.tenantId,
       });
     }
@@ -478,7 +514,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
     }
     try {
-      await updateRoleByName(newName, revert);
+      await updateRoleByName(newName, revert, roleIdentity(existing));
     } catch (revertError) {
       logger.error(
         `[adminRoles] CRITICAL: rename rollback failed — role "${currentName}" is still named "${newName}"`,
@@ -648,7 +684,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     let role: IRole | null;
     try {
       const updates: Partial<IRole> = { name: newName, ...extraUpdates };
-      role = await updateRoleByName(currentName, updates);
+      role = await updateRoleByName(currentName, updates, roleIdentity(existing));
     } catch (error) {
       await rollbackMigratedUsers(migratedIds, currentName, newName);
       throw error;
@@ -759,7 +795,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return res.status(200).json({ role });
       }
 
-      const role = await updateRoleByName(name, updates);
+      const role = await updateRoleByName(name, updates, roleIdentity(existing));
       if (!role) {
         return res.status(404).json({ error: 'Role not found' });
       }
@@ -779,10 +815,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
   }
 
   /**
-   * The re-fetch via `getRoleByName` after `updateAccessPermissions` depends on the
-   * callee having written the updated document to the role cache. If the cache layer
-   * is refactored to stop writing from within `updateAccessPermissions`, this handler
-   * must be updated to perform an explicit uncached DB read.
+   * The re-fetch via `getRoleByName` after `updateAccessPermissions` reads the role as
+   * stored (`getPartitionRole` reads no cache), so it returns what the update wrote.
    */
   async function updateRolePermissionsHandler(req: ServerRequest, res: Response) {
     try {
@@ -887,16 +921,21 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       const grantSnapshot = findGrantsForPrincipal
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
         : null;
+      const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
+        invalidatingConfigStore(
+          { deleteConfig, restoreConfig },
+          { invalidateConfigCaches, tenantId, logPrefix: '[adminRoles]' },
+        );
       const configStep = cascadeStep(
         'config',
-        () => deleteConfig(PrincipalType.ROLE, name),
-        restoreConfig
+        () => removeProfile(PrincipalType.ROLE, name),
+        restoreProfile
           ? async (config) => {
               if (!config) {
                 return;
               }
               /** Insert-only: an override written after the snapshot is kept. */
-              const restored = await restoreConfig(config);
+              const restored = await restoreProfile(config);
               if (!restored) {
                 logger.warn('[adminRoles] config restore skipped, override exists:', name);
               }
@@ -1107,7 +1146,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
 
       const user = await findUser({ _id: userId });
-      if (!user) {
+      if (!user || !isPartitionUser(user)) {
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -1194,7 +1233,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
 
       const user = await findUser({ _id: userId });
-      if (!user) {
+      if (!user || !isPartitionUser(user)) {
         return res.status(404).json({ error: 'User not found' });
       }
 

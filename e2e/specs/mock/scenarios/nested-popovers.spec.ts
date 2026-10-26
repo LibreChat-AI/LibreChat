@@ -9,9 +9,9 @@ import { openSidebar } from './sidebar';
  * A modal OGDialog parks `pointer-events: none` on the body, so a menu portaled out of it inherits
  * `none` unless it turns pointer events back on for itself. DropdownPopup does that with a class,
  * not an inline style, and its menu must still take a real mouse pick while the dialog is open.
- * The Select's check indicator draws its box at the icon size role, so a theme that resizes icons
- * resizes the box with the glyph inside it. The Select under test is the agent code tool's execution
- * environment picker, which renders inside the tool's modal dialog.
+ * A field Dropdown's check glyph draws at the icon size role, so a theme that resizes icons resizes
+ * the check. The Dropdown under test is the agent code tool's execution environment picker, which
+ * renders inside the tool's modal dialog.
  */
 
 /** Names an icon size apart from the default, so a box still drawn at a fixed size shows. */
@@ -125,10 +125,12 @@ async function openEnvironmentSelect(page: Page) {
   await trigger.click();
   const listbox = page.getByRole('listbox');
   await expect(listbox).toBeVisible();
-  /** The list zooms in, so a box read before the animation settles is scaled. */
-  await listbox.evaluate((element) =>
-    Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished)),
-  );
+  /** The list zooms in from 0.95, so a box read before the transition settles is scaled. The
+   *  transition only starts once Ariakit marks the list entered, so wait for that first. */
+  await expect(listbox).toHaveAttribute('data-enter');
+  await expect
+    .poll(() => listbox.evaluate((element) => getComputedStyle(element).scale))
+    .toMatch(/^(1|none)$/);
 }
 
 test.afterEach(async ({ page }) => {
@@ -136,20 +138,15 @@ test.afterEach(async ({ page }) => {
   agentId = undefined;
 });
 
-/** The checked option's indicator box is `expected` square and its glyph fills it exactly. */
+/** The checked option's check glyph is `expected` square, so it follows the icon size role. */
 async function expectIndicator(page: Page, expected: string) {
   const checked = page.getByRole('option', { selected: true });
-  const box = checked.locator('> span').first();
   const glyph = checked.locator('svg');
   await expect(glyph).toBeVisible();
-  const [boxRect, glyphRect] = await Promise.all([box.boundingBox(), glyph.boundingBox()]);
-  expect(boxRect).not.toBeNull();
+  const glyphRect = await glyph.boundingBox();
   expect(glyphRect).not.toBeNull();
-  expect(`${boxRect?.width}px`).toBe(expected);
-  expect(`${boxRect?.height}px`).toBe(expected);
-  /** The glyph sits inside its box rather than spilling past it. */
-  expect(glyphRect?.width).toBe(boxRect?.width);
-  expect(glyphRect?.x).toBe(boxRect?.x);
+  expect(`${glyphRect?.width}px`).toBe(expected);
+  expect(`${glyphRect?.height}px`).toBe(expected);
 }
 
 test.describe('popovers inside a modal dialog', () => {
@@ -202,6 +199,31 @@ test.describe('popovers inside a modal dialog', () => {
     await expectIndicator(page, '20px');
   });
 
+  /** The dialog traps focus in its own DOM, so a list portaled out of it could not take the
+   *  keyboard. The list renders inside the dialog and the arrow keys and Enter pick from it. */
+  test('the execution environment Dropdown takes a keyboard pick inside the tool dialog @scenario:code-environment-keyboard-pick', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page);
+    await openEnvironmentSelect(page);
+
+    const dialog = page.getByRole('dialog');
+    const listbox = page.getByRole('listbox');
+    await expect(dialog).toContainText('E2E managed runtime');
+    expect(await listbox.evaluate((element) => element.closest('[role="dialog"]') != null)).toBe(
+      true,
+    );
+    await expect(listbox).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(listbox).toBeHidden();
+    const trigger = dialog.getByTestId('code-environment-id');
+    await expect(trigger).toHaveText('E2E managed runtime');
+    await expect(trigger).toBeFocused();
+    await expect(dialog).toBeVisible();
+  });
+
   /** The Settings dialog is a Headless UI panel, not an OGDialog; before it declared a dialog
    *  level its popover lists painted behind it (berry-13/LibreChat#249). Hit testing alone cannot
    *  show that: the open list sets `pointer-events: none` on the body, so the panel is skipped and
@@ -237,7 +259,9 @@ test.describe('popovers inside a modal dialog', () => {
     await expect(page.getByTestId('default-stateful-workspace')).toHaveText(
       'Conversation workspace',
     );
-    await expect(page.getByRole('dialog').getByRole('heading', { name: 'Settings' })).toBeVisible();
+    /** Mobile shows the open section's title in place of "Settings", so the control staying on
+     *  screen is what shows the dialog stayed open. */
+    await expect(page.getByTestId('default-stateful-workspace')).toBeVisible();
   });
 });
 
@@ -251,20 +275,38 @@ const REFERENCE_LIST_THEME = {
   },
 } as const;
 
-/** The open list's width floor and scroll cap, as the browser computed them, with the room the
- *  popper leaves between its trigger and the viewport's edge, and the list's drawn box. */
+/** The open list's width floor and scroll cap, as the browser computed them, with the trigger's
+ *  width and the room the popover leaves between its trigger and its boundary, and the list's
+ *  drawn box. Inside a dialog that boundary is the dialog, since the list renders in it. */
 async function listBounds(page: Page) {
   return page.getByRole('listbox').evaluate((element) => {
     const style = getComputedStyle(element);
-    const { top, bottom } = element.getBoundingClientRect();
+    const { top, bottom, width } = element.getBoundingClientRect();
     return {
+      width,
       minWidth: style.minWidth,
       maxHeight: style.maxHeight,
-      available: parseFloat(style.getPropertyValue('--radix-select-content-available-height')),
+      anchor: parseFloat(style.getPropertyValue('--popover-anchor-width')),
+      available: parseFloat(style.getPropertyValue('--popover-available-height')),
       top,
       bottom,
     };
   });
+}
+
+/** The list takes the `roleMinWidth` floor and is at least its trigger wide, and caps at `roleMaxHeight` or the
+ *  room it has, whichever is smaller. A `none` role leaves only the room. */
+function expectListRoles(
+  bounds: Awaited<ReturnType<typeof listBounds>>,
+  roleMinWidth: number,
+  roleMaxHeight: number | 'none',
+) {
+  expect(bounds.anchor).toBeGreaterThan(0);
+  expect(bounds.minWidth).toBe(`${roleMinWidth}px`);
+  expect(bounds.width).toBeGreaterThanOrEqual(Math.max(roleMinWidth, bounds.anchor) - 0.5);
+  const cap =
+    roleMaxHeight === 'none' ? bounds.available : Math.min(roleMaxHeight, bounds.available);
+  expect(bounds.maxHeight).toBe(`${cap}px`);
 }
 
 /** Tall enough that the list's own cap, not the viewport, decides its height. */
@@ -296,9 +338,7 @@ test.describe('Select list size roles', () => {
     await useTheme(page);
     await useTallWindow(page);
     await openEnvironmentSelect(page);
-    const bounds = await listBounds(page);
-    expect(bounds.available).toBeGreaterThan(384);
-    expect(bounds).toMatchObject({ minWidth: '128px', maxHeight: '384px' });
+    expectListRoles(await listBounds(page), 128, 384);
   });
 
   test('the ClickHouse theme sizes the list by its trigger and caps it at the available height @scenario:select-list-size-clickhouse', async ({
@@ -308,9 +348,7 @@ test.describe('Select list size roles', () => {
     await useTheme(page, clickHouseTheme);
     await useTallWindow(page);
     await openEnvironmentSelect(page);
-    const bounds = await listBounds(page);
-    expect(bounds.available).toBeGreaterThan(384);
-    expect(bounds).toMatchObject({ minWidth: '0px', maxHeight: `${bounds.available}px` });
+    expectListRoles(await listBounds(page), 0, 'none');
   });
 
   test('a theme that sets both list roles resizes the list @scenario:select-list-size-reference', async ({
@@ -320,7 +358,7 @@ test.describe('Select list size roles', () => {
     await useTheme(page, REFERENCE_LIST_THEME);
     await useTallWindow(page);
     await openEnvironmentSelect(page);
-    expect(await listBounds(page)).toMatchObject({ minWidth: '192px', maxHeight: '320px' });
+    expectListRoles(await listBounds(page), 192, 320);
   });
 
   test('the default list never grows past a short phone screen @scenario:select-list-fits-short-phone', async ({

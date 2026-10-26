@@ -1,3 +1,4 @@
+import { ContentTypes, SteerEvents } from 'librechat-data-provider';
 import type {
   SubagentContentAppendResult,
   SubagentContentMethods,
@@ -779,4 +780,58 @@ it('does not open a payload cursor when the caller already has the committed hea
     value: { revision: 5000, throughSequence: 9999, events: [] },
   });
   expect(stream).not.toHaveBeenCalled();
+});
+
+it('journals applied steering in its reserved slot before later normalized SDK steps', async () => {
+  const { methods } = memoryStorage();
+  const journal = journalFor(methods);
+  const step = (id: string, index: number) =>
+    update('run_step', {
+      id,
+      index,
+      stepDetails: { type: 'message_creation', message_creation: { message_id: id } },
+    });
+  journal.record(step('before', 0), 0);
+  journal.record(
+    update('message_delta', {
+      id: 'before',
+      delta: { content: [{ type: 'text', text: 'Before' }] },
+    }),
+    1,
+  );
+  const applied = {
+    steerId: 'control',
+    clientSteerId: 'invocation',
+    index: 1,
+    part: {
+      type: ContentTypes.STEER,
+      steer: 'Actual guidance',
+      steerId: 'control',
+      clientSteerId: 'invocation',
+      createdAt: 42,
+    },
+    responseMessageId: 'task:assistant',
+    conversationId: 'child',
+  };
+  journal.record({ phase: 'steer_applied', data: applied }, 2);
+  journal.record(step('after', 2), 3);
+  journal.record(
+    update('message_delta', { id: 'after', delta: { content: [{ type: 'text', text: 'After' }] } }),
+    4,
+  );
+  await journal.close();
+  const snapshot = await readSubagentContent(methods, scope);
+  expect(snapshot.ok).toBe(true);
+  if (!snapshot.ok) return;
+  expect(snapshot.value.content).toEqual([
+    expect.objectContaining({ type: 'text', text: 'Before' }),
+    applied.part,
+    expect.objectContaining({ type: 'text', text: 'After' }),
+  ]);
+  expect(snapshot.value.runSteps.map(({ index }) => index)).toEqual([0, 2]);
+  const suffix = await readSubagentContent(methods, scope, 1);
+  expect(suffix.ok && suffix.value.events[0]).toEqual({
+    sequence: 2,
+    frame: { event: SteerEvents.ON_STEER_APPLIED, data: applied },
+  });
 });

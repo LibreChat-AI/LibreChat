@@ -141,6 +141,8 @@ export interface AppConfig {
   endpoints?: {
     /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
     allowedAddresses?: string[];
+    /** How long the admin config catalog reuses a scope's model lists, in milliseconds */
+    catalogModelsTtlMs?: number;
     /** OpenAI endpoint configuration */
     openAI?: Partial<TEndpoint>;
     /** Google endpoint configuration */

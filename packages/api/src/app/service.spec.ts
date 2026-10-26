@@ -5,6 +5,7 @@ import {
   getTenantId,
   tenantStorage,
   SYSTEM_TENANT_ID,
+  BASE_CONFIG_PRINCIPAL_ID,
 } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
@@ -16,6 +17,8 @@ import {
 } from './service';
 import { loadCustomEndpointsConfig } from '~/endpoints/custom/config';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { expandCustomEndpoint } from './params';
+import { ConfigReloadError } from './loader';
 
 /** Extends AppConfig with mock fields used by merge behavior tests. */
 /** `version` is a plain string section, so a test can mark which override layer it read. */
@@ -238,6 +241,23 @@ describe('createAppConfigService', () => {
 
       expect(config.endpoints?.custom).toEqual([]);
       expect(config.modelSpecs).toBeUndefined();
+    });
+
+    it('keeps the other added endpoints when another tenant owns every spec', async () => {
+      const deps = createDeps({
+        loadBaseConfig: jest.fn().mockResolvedValue({
+          endpoints: { custom: [{ name: 'ClickHouse', tenantId: 'dwh-org' }] },
+          modelSpecs: {
+            list: [{ name: 'dwh-spec', preset: { endpoint: 'ClickHouse' } }],
+            addedEndpoints: ['agents', 'ClickHouse'],
+          },
+        }),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ role: 'USER', tenantId: 'other-org' });
+
+      expect(config.modelSpecs).toEqual({ list: [], addedEndpoints: ['agents'] });
     });
 
     describe('tenant isolation invariants', () => {
@@ -1766,6 +1786,105 @@ describe('createAppConfigService', () => {
     });
   });
 
+  describe('reloadBaseConfig', () => {
+    const invalidFile = () =>
+      new ConfigReloadError('Invalid custom config file', undefined, [
+        { code: 'unrecognized_keys', keys: ['bogusTopLevelKey'], path: [], message: 'bogus' },
+        {
+          code: 'invalid_type',
+          expected: 'string',
+          received: 'number',
+          path: ['interface', 'customWelcome'],
+          message: 'Expected string, received number',
+        },
+      ]);
+
+    it('loads librechat.yaml again after a clear and reports it loaded', async () => {
+      const deps = createDeps();
+      const { getAppConfig, clearAppConfigCache, reloadBaseConfig } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      const next = { ...initial, interfaceConfig: { modelSelect: false } };
+      deps.loadBaseConfig.mockResolvedValueOnce(next);
+
+      await clearAppConfigCache();
+      await expect(reloadBaseConfig()).resolves.toEqual({ ok: true });
+
+      expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload');
+      expect(await getAppConfig({ baseOnly: true })).toEqual(next);
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports a refused file by location and zod code, keeping the last good config', async () => {
+      jest.spyOn(logger, 'error').mockReturnValue(logger);
+      const deps = createDeps();
+      const { getAppConfig, clearAppConfigCache, reloadBaseConfig } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      deps.loadBaseConfig.mockRejectedValueOnce(invalidFile());
+
+      await clearAppConfigCache();
+      const result = await reloadBaseConfig();
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: 'CONFIG_INVALID',
+          issues: [
+            { path: 'bogusTopLevelKey', segments: ['bogusTopLevelKey'], code: 'unrecognized_keys' },
+            {
+              path: 'interface.customWelcome',
+              segments: ['interface', 'customWelcome'],
+              code: 'invalid_type',
+            },
+          ],
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain('Expected string');
+      expect(deps._cache._store.get('app_config:_BASE_')).toBe(initial);
+      expect(await getAppConfig({ baseOnly: true })).toBe(initial);
+    });
+
+    it('loads again and reports the failure when a read already restored the last good config', async () => {
+      jest.spyOn(logger, 'error').mockReturnValue(logger);
+      const deps = createDeps();
+      const { getAppConfig, clearAppConfigCache, reloadBaseConfig } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      deps.loadBaseConfig.mockRejectedValue(invalidFile());
+
+      await clearAppConfigCache();
+      expect(await getAppConfig({ baseOnly: true })).toBe(initial);
+      const result = await reloadBaseConfig();
+
+      expect(result).toMatchObject({ ok: false, error: { code: 'CONFIG_INVALID' } });
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(3);
+    });
+
+    it('reports a failure to build the config from a file that loaded as LOAD_FAILED', async () => {
+      jest.spyOn(logger, 'error').mockReturnValue(logger);
+      const deps = createDeps();
+      const { getAppConfig, clearAppConfigCache, reloadBaseConfig } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      deps.loadBaseConfig.mockRejectedValueOnce(new Error('AppService failed: secret detail'));
+
+      await clearAppConfigCache();
+      const result = await reloadBaseConfig();
+
+      expect(result).toEqual({ ok: false, error: { code: 'LOAD_FAILED' } });
+      expect(await getAppConfig({ baseOnly: true })).toBe(initial);
+    });
+
+    it('resolves with the failure instead of rejecting when there is no last good config', async () => {
+      jest.spyOn(logger, 'error').mockReturnValue(logger);
+      const deps = createDeps();
+      deps.loadBaseConfig.mockRejectedValueOnce(invalidFile());
+      const { reloadBaseConfig } = createAppConfigService(deps);
+
+      await expect(reloadBaseConfig()).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'CONFIG_INVALID' },
+      });
+    });
+  });
+
   describe('clearOverrideCache', () => {
     it('clears all override caches when no tenantId is provided', async () => {
       const deps = createDeps({
@@ -2053,5 +2172,1110 @@ describe('message App budget reader composition', () => {
     a.initialize(jest.fn().mockResolvedValue({}));
     expect(await a.getBudget()).toBeUndefined();
     await expect(b.getBudget()).rejects.toThrow('not been initialized');
+  });
+});
+
+describe('what getAppConfig derives again for the parts profiles write', () => {
+  type Yaml = NonNullable<Parameters<typeof AppService>[0]>['config'];
+  const spec = (name: string, endpoint: string) => ({
+    name,
+    label: name,
+    preset: { endpoint, model: 'm' },
+  });
+  const profile = (overrides: Record<string, unknown>, tombstones: string[] = []) => ({
+    principalType: PrincipalType.ROLE,
+    principalId: 'USER',
+    priority: 10,
+    isActive: true,
+    overrides,
+    tombstones,
+  });
+  function serviceOver(
+    yaml: Record<string, unknown>,
+    layers: ReturnType<typeof profile>[],
+    options: { rederiveEndpoints?: boolean } = {},
+  ) {
+    return createAppConfigService(
+      createDeps({
+        loadBaseConfig: () =>
+          AppService({ config: structuredClone(yaml) as Yaml, expandCustomEndpoint }),
+        getApplicableConfigs: jest.fn().mockResolvedValue(layers),
+        ...options,
+      }),
+    );
+  }
+  const specControls = (config: AppConfig) => {
+    const { modelSelect, parameters, presets } = config.interfaceConfig ?? {};
+    return { modelSelect, parameters, presets };
+  };
+  const ON = { modelSelect: true, parameters: true, presets: true };
+  const OFF = { modelSelect: false, parameters: false, presets: false };
+
+  it('turns the spec-dependent interface controls off for a profile that adds specs', async () => {
+    const added = await serviceOver({}, [
+      profile({ modelSpecs: { list: [spec('s', 'openAI')] } }),
+    ]).getAppConfig({ role: 'USER' });
+    const withEndpoints = await serviceOver({}, [
+      profile({ modelSpecs: { list: [spec('s', 'openAI')], addedEndpoints: ['openAI'] } }),
+    ]).getAppConfig({ role: 'USER' });
+    const explicit = await serviceOver({}, [
+      profile({ modelSpecs: { list: [spec('s', 'openAI')] }, interface: { parameters: true } }),
+    ]).getAppConfig({ role: 'USER' });
+
+    expect(specControls(await serviceOver({}, []).getAppConfig({ role: 'USER' }))).toEqual(ON);
+    expect(specControls(added)).toEqual(OFF);
+    expect(specControls(withEndpoints)).toEqual({ ...OFF, modelSelect: true });
+    expect(specControls(explicit)).toEqual({ ...OFF, parameters: true });
+  });
+
+  it('turns them back on when a profile removes every spec librechat.yaml serves', async () => {
+    const yaml = { modelSpecs: { list: [spec('s', 'openAI')] } };
+    const tombstoned = await serviceOver(yaml, [profile({}, ['modelSpecs'])]).getAppConfig({
+      role: 'USER',
+    });
+    const emptied = await serviceOver(yaml, [profile({ modelSpecs: { list: [] } })]).getAppConfig({
+      role: 'USER',
+    });
+
+    expect(specControls(await serviceOver(yaml, []).getAppConfig({ role: 'USER' }))).toEqual(OFF);
+    expect(specControls(tombstoned)).toEqual(ON);
+    expect(specControls(emptied)).toEqual(ON);
+  });
+
+  it('derives a control a profile unsets from the specs it is served', async () => {
+    const yaml = {
+      interface: { parameters: true, presets: true },
+      modelSpecs: { list: [spec('s', 'openAI')] },
+    };
+    const unset = await serviceOver(yaml, [profile({}, ['interface.parameters'])]).getAppConfig({
+      role: 'USER',
+    });
+    const unsetWithoutSpecs = await serviceOver(yaml, [
+      profile({}, ['interface.parameters', 'modelSpecs']),
+    ]).getAppConfig({ role: 'USER' });
+
+    expect(specControls(await serviceOver(yaml, []).getAppConfig({ role: 'USER' }))).toEqual({
+      modelSelect: false,
+      parameters: true,
+      presets: true,
+    });
+    expect(specControls(unset)).toEqual({ modelSelect: false, parameters: false, presets: true });
+    expect(specControls(unsetWithoutSpecs)).toEqual(ON);
+  });
+
+  describe('a control one profile sets and another tombstones', () => {
+    const above = (tombstones: string[]) => ({ ...profile({}, tombstones), priority: 20 });
+    const served = async (yaml: Record<string, unknown>, layers: ReturnType<typeof profile>[]) =>
+      specControls(await serviceOver(yaml, layers).getAppConfig({ role: 'USER' }));
+    const withSpecs = { modelSpecs: { list: [spec('s', 'openAI')] } };
+
+    it('derives it from the specs served once a higher profile tombstones it', async () => {
+      const hidden = profile({ interface: { parameters: false, presets: false } });
+      const shown = profile({ interface: { parameters: true } });
+      const tombstone = above(['interface.parameters', 'interface.presets']);
+
+      expect(await served({}, [hidden])).toEqual({ ...ON, parameters: false, presets: false });
+      expect(await served({}, [hidden, tombstone])).toEqual(ON);
+      expect(await served(withSpecs, [shown])).toEqual({ ...OFF, parameters: true });
+      expect(await served(withSpecs, [shown, above(['interface.parameters'])])).toEqual(OFF);
+    });
+
+    it('derives it where a profile tombstones a control librechat.yaml leaves unset', async () => {
+      expect(await served({}, [profile({}, ['interface.parameters'])])).toEqual(ON);
+      expect(await served(withSpecs, [profile({}, ['interface.modelSelect'])])).toEqual(OFF);
+    });
+
+    it('keeps what a higher profile sets over a lower tombstone of it', async () => {
+      const tombstone = profile({}, ['interface.parameters']);
+      const sets = (parameters: boolean) => ({
+        ...profile({ interface: { parameters } }),
+        priority: 20,
+      });
+
+      expect(await served({}, [tombstone, sets(false)])).toEqual({ ...ON, parameters: false });
+      expect(await served(withSpecs, [tombstone, sets(true)])).toEqual({
+        ...OFF,
+        parameters: true,
+      });
+      expect(
+        await served({ ...withSpecs, interface: { parameters: true } }, [tombstone, sets(true)]),
+      ).toEqual({ ...OFF, parameters: true });
+    });
+
+    it('follows the specs the profiles leave, added then tombstoned or the reverse', async () => {
+      const adds = (priority: number) => ({
+        ...profile({ modelSpecs: { list: [spec('s2', 'openAI')] } }),
+        priority,
+      });
+      const tombstone = (priority: number) => ({ ...profile({}, ['modelSpecs']), priority });
+
+      expect(await served({}, [adds(10), tombstone(20)])).toEqual(ON);
+      expect(await served(withSpecs, [tombstone(10), adds(20)])).toEqual(OFF);
+    });
+  });
+
+  it("turns them back on when tenant scoping hides the only endpoint a profile's specs use", async () => {
+    const yaml = {
+      endpoints: {
+        custom: [
+          {
+            name: 'TenantOnly',
+            tenantId: 'tenant-a',
+            apiKey: 'k',
+            baseURL: 'https://t',
+            models: { default: ['m'] },
+          },
+        ],
+      },
+    };
+    const service = serviceOver(yaml, [
+      profile({ modelSpecs: { list: [spec('s', 'TenantOnly')] } }),
+    ]);
+
+    const owner = await service.getAppConfig({ role: 'USER', tenantId: 'tenant-a' });
+    const other = await service.getAppConfig({ role: 'USER', tenantId: 'tenant-b' });
+
+    expect(specControls(owner)).toEqual(OFF);
+    expect(other.modelSpecs).toBeUndefined();
+    expect(specControls(other)).toEqual(ON);
+  });
+
+  it('expands the parameters a profile writes, and OpenRouter defaults for an endpoint only it defines', async () => {
+    const gateway = {
+      name: 'Gateway',
+      apiKey: 'gateway-key',
+      baseURL: 'https://gateway.example.com/v1',
+      models: { default: ['m1'] },
+      customParams: {
+        defaultParamsEndpoint: 'anthropic',
+        paramDefinitions: [{ key: 'temperature', default: 0.2 }],
+      },
+    };
+    const service = serviceOver({ endpoints: { custom: [gateway] } }, [
+      profile({
+        endpoints: {
+          custom: [
+            { name: 'Gateway', customParams: { defaultParamsEndpoint: 'openAI' } },
+            {
+              ...gateway,
+              name: 'Router',
+              baseURL: 'https://openrouter.ai/api/v1',
+              customParams: undefined,
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const base = await service.getAppConfig({ baseOnly: true });
+    const config = await service.getAppConfig({ role: 'USER' });
+    const served = (name: string) => config.endpoints?.custom?.find((entry) => entry.name === name);
+
+    expect(base.config.endpoints?.custom?.[0]?.customParams).toEqual(gateway.customParams);
+    expect(served('Gateway')?.customParams?.defaultParamsEndpoint).toBe('openAI');
+    expect(served('Gateway')?.customParams?.paramDefinitions?.[0]).toMatchObject({
+      key: 'temperature',
+      default: 0.2,
+      optionType: 'custom',
+      component: 'slider',
+    });
+    expect(served('Router')?.customParams).toMatchObject({
+      defaultParamsEndpoint: 'openrouter',
+      paramDefinitions: [expect.objectContaining({ key: 'promptCache', default: true })],
+    });
+  });
+
+  it('derives Vertex AI a profile writes only when the service re-derives endpoints', async () => {
+    const yaml = {
+      endpoints: {
+        anthropic: {
+          vertex: { projectId: 'yaml-project', region: 'us-east5', models: ['claude-sonnet-4-6'] },
+        },
+      },
+    };
+    const layers = [
+      profile({ endpoints: { anthropic: { vertex: { models: ['claude-opus-4-6'] } } } }),
+    ];
+    const served = async (rederiveEndpoints: boolean) => {
+      const service = serviceOver(yaml, layers, { rederiveEndpoints });
+      expect(service.rederiveEndpoints).toBe(rederiveEndpoints);
+      return (await service.getAppConfig({ role: 'USER' })).endpoints?.anthropic?.models;
+    };
+
+    expect(await served(false)).toEqual(['claude-sonnet-4-6']);
+    expect(await served(true)).toEqual(['claude-opus-4-6']);
+  });
+
+  describe('Vertex AI settings a profile references a variable in', () => {
+    const saved = { ...process.env };
+    const yaml = {
+      endpoints: {
+        anthropic: { vertex: { projectId: '${GCP_PROJECT}', models: ['claude-sonnet-4-6'] } },
+      },
+    };
+    const vertexOf = async (vertex: Record<string, unknown>) =>
+      (
+        await serviceOver(yaml, [profile({ endpoints: { anthropic: { vertex } } })], {
+          rederiveEndpoints: true,
+        }).getAppConfig({ role: 'USER' })
+      ).endpoints?.anthropic?.vertexConfig;
+    beforeEach(() => {
+      process.env.OPENAI_API_KEY = 'sk-deployment-openai-key';
+      process.env.GCP_PROJECT = 'yaml-gcp-project';
+    });
+    afterEach(() => {
+      process.env = { ...saved };
+    });
+
+    it('never resolves a credential into the derived vertexConfig a read returns', async () => {
+      const vertexConfig = await vertexOf({
+        projectId: '${OPENAI_API_KEY}',
+        deploymentName: '${OPENAI_API_KEY}',
+        models: ['claude-opus-4-6'],
+      });
+
+      expect(vertexConfig?.modelNames).toEqual(['claude-opus-4-6']);
+      expect(JSON.stringify(vertexConfig)).not.toContain('sk-deployment-openai-key');
+      /** The reference resolves to nothing, as an unset variable: librechat.yaml's value stays. */
+      expect(vertexConfig?.projectId).toBe('yaml-gcp-project');
+      expect(vertexConfig?.deploymentName).toBeUndefined();
+      expect(vertexConfig?.modelDeploymentMap).toEqual({ 'claude-opus-4-6': 'claude-opus-4-6' });
+    });
+
+    it("resolves the variables librechat.yaml's own Vertex AI settings reference", async () => {
+      const vertexConfig = await vertexOf({
+        deploymentName: '${GCP_PROJECT}',
+        models: ['claude-opus-4-6'],
+      });
+
+      expect(vertexConfig?.projectId).toBe('yaml-gcp-project');
+      expect(vertexConfig?.modelDeploymentMap).toEqual({ 'claude-opus-4-6': 'yaml-gcp-project' });
+    });
+  });
+
+  /**
+   * Every part the merge derives again, judged on what the layers leave: for each way a layer
+   * changes its inputs (a set, an unset, a tombstone of the path and of each object above it, a
+   * higher layer recreating what such a tombstone removed, the Base profile on either side, tenant
+   * scoping), the served part is what startup derives from the librechat.yaml the layers leave
+   * (`as`), or, where no librechat.yaml loads to it, the value given (`expected`).
+   */
+  describe('each derived part follows what the layers leave', () => {
+    type Layer = ReturnType<typeof profile>;
+    type Yaml = Record<string, unknown>;
+    type Probe = (config: AppConfig) => unknown;
+    interface Cell {
+      change: string;
+      layers: Layer[];
+      as?: Yaml;
+      expected?: unknown;
+      yaml?: Yaml;
+      rederiveEndpoints?: boolean;
+      tenantId?: string;
+    }
+    const base = (overrides: Yaml = {}, tombstones: string[] = []): Layer => ({
+      ...profile(overrides, tombstones),
+      principalId: BASE_CONFIG_PRINCIPAL_ID,
+      priority: 0,
+    });
+    const role = (overrides: Yaml = {}, tombstones: string[] = []): Layer =>
+      profile(overrides, tombstones);
+    const above = (overrides: Yaml = {}, tombstones: string[] = []): Layer => ({
+      ...profile(overrides, tombstones),
+      principalId: 'ADMIN',
+      priority: 20,
+    });
+    /** `yaml` with `value` at a dotted path, or without what is there for `undefined`. */
+    const at = (yaml: Yaml, path: string, value?: unknown): Yaml => {
+      const [key, ...rest] = path.split('.');
+      const next = { ...yaml };
+      if (rest.length > 0) {
+        next[key] = at((yaml[key] as Yaml | undefined) ?? {}, rest.join('.'), value);
+      } else if (value === undefined) {
+        delete next[key];
+      } else {
+        next[key] = value;
+      }
+      return next;
+    };
+    const write = (path: string, value: unknown): Yaml => at({}, path, value);
+
+    const AZURE = 'endpoints.azureOpenAI';
+    const GROUPS = `${AZURE}.groups`;
+    const ASSISTANTS = `${AZURE}.assistants`;
+    const ANTHROPIC = 'endpoints.anthropic';
+    const VERTEX = `${ANTHROPIC}.vertex`;
+    const MODELS = `${ANTHROPIC}.models`;
+    const CUSTOM = 'endpoints.custom';
+    const AGENTS = 'endpoints.agents';
+    const east = {
+      group: 'east',
+      apiKey: 'east-key',
+      instanceName: 'east',
+      version: '2024-10-21',
+      deploymentName: 'gpt-4o',
+      assistants: true,
+      models: { 'gpt-4o': true },
+    };
+    const west = {
+      group: 'west',
+      apiKey: 'west-key',
+      instanceName: 'west',
+      version: '2024-10-21',
+      deploymentName: 'gpt-5',
+      models: { 'gpt-5': true },
+    };
+    const yamlVertex = {
+      projectId: 'yaml-project',
+      region: 'us-east5',
+      models: ['claude-sonnet-4-6'],
+    };
+    const profileVertex = { projectId: 'profile-project', models: ['claude-opus-4-6'] };
+    /** Loads only with a default deployment name: the model name is not one path segment. */
+    const namedVertex = { ...yamlVertex, models: { 'Claude Team': true } };
+    const gateway = {
+      name: 'Gateway',
+      apiKey: 'gateway-key',
+      baseURL: 'https://gateway.example.com/v1',
+      models: { default: ['m1'] },
+      customParams: {
+        defaultParamsEndpoint: 'anthropic',
+        paramDefinitions: [{ key: 'temperature', default: 0.2 }],
+      },
+    };
+    const openAIGateway = {
+      ...gateway,
+      customParams: { ...gateway.customParams, defaultParamsEndpoint: 'openAI' },
+    };
+    const router = {
+      name: 'Router',
+      apiKey: 'router-key',
+      baseURL: 'https://openrouter.ai/api/v1',
+      models: { default: ['m1'] },
+    };
+    const YAML: Yaml = {
+      endpoints: {
+        azureOpenAI: { assistants: true, groups: [east] },
+        anthropic: { models: ['claude-direct'], vertex: yamlVertex },
+        custom: [gateway],
+      },
+      memory: { disabled: true },
+      modelSpecs: { list: [spec('s', 'openAI')] },
+    };
+    const tenantOnly = {
+      name: 'TenantOnly',
+      tenantId: 'tenant-a',
+      apiKey: 'tenant-key',
+      baseURL: 'https://tenant.example.com/v1',
+      models: { default: ['m1'] },
+    };
+    const TENANT_YAML: Yaml = {
+      endpoints: { custom: [tenantOnly] },
+      modelSpecs: { list: [spec('s', 'TenantOnly')] },
+    };
+
+    const azure: Probe = ({ endpoints }) => {
+      const served = endpoints?.azureOpenAI;
+      return {
+        azureAssistants: endpoints?.azureAssistants != null,
+        azure: served && {
+          groups:
+            served.groupMap &&
+            Object.fromEntries(
+              Object.entries(served.groupMap).map(([name, group]) => [
+                name,
+                { instanceName: group?.instanceName, keyed: group?.apiKey != null },
+              ]),
+            ),
+          modelGroupMap: served.modelGroupMap,
+          models: served.modelNames,
+          assistantModels: served.assistantModels,
+          assistantGroups: served.assistantGroups,
+          assistants: Boolean(served.assistants),
+        },
+      };
+    };
+    const NO_GROUP = {
+      azureAssistants: false,
+      azure: {
+        groups: {},
+        modelGroupMap: {},
+        models: [],
+        assistantModels: [],
+        assistantGroups: [],
+        assistants: false,
+      },
+    };
+    const anthropic: Probe = ({ endpoints }) => {
+      const served = endpoints?.anthropic;
+      const vertexConfig = served?.vertexConfig;
+      return {
+        models: served?.models,
+        vertex: vertexConfig && {
+          modelNames: vertexConfig.modelNames,
+          projectId: vertexConfig.projectId,
+          region: vertexConfig.region,
+        },
+      };
+    };
+    const customParams: Probe = ({ endpoints }) =>
+      Object.fromEntries(
+        (endpoints?.custom ?? []).map((entry) => [entry.name, entry.customParams ?? null]),
+      );
+    const agents: Probe = ({ endpoints }) =>
+      endpoints?.agents && { capabilities: endpoints.agents.capabilities };
+    const specsServed: Probe = (config) => ({
+      list: config.modelSpecs?.list?.map(({ name, preset }) => [name, preset?.endpoint]),
+      addedEndpoints: config.modelSpecs?.addedEndpoints,
+      controls: specControls(config),
+    });
+    const SPECS = 'modelSpecs';
+    const OPENAI = 'endpoints.openAI';
+    /** Specs on the custom endpoint and on each built-in endpoint a layer may tombstone. */
+    const SPEC_YAML = at(at(YAML, OPENAI, { titleModel: 'gpt-4o-mini' }), SPECS, {
+      list: [
+        spec('g', 'Gateway'),
+        spec('o', 'openAI'),
+        spec('az', 'azureOpenAI'),
+        spec('an', 'anthropic'),
+      ],
+      addedEndpoints: ['Gateway', 'openAI'],
+    });
+    /**
+     * Startup keeps an `addedEndpoints` name whose endpoint is gone; a custom endpoint the layers
+     * remove also leaves it (`keyedTombstones`), and the other names stay.
+     */
+    const withoutGateway = (yaml: Yaml): Yaml => at(yaml, `${SPECS}.addedEndpoints`, ['openAI']);
+    /** Specs only on the custom endpoint, so removing it leaves none. */
+    const GATEWAY_SPECS = at(YAML, SPECS, { list: [spec('g', 'Gateway')] });
+    const onSpecs = (cell: Cell): Cell => ({ yaml: SPEC_YAML, ...cell });
+    /**
+     * A built-in endpoint's specs stay when a layer tombstones its settings, as startup keeps
+     * them for a librechat.yaml without them: the endpoint is still offered.
+     */
+    const builtInSpecCells = (
+      [
+        [OPENAI, write(`${OPENAI}.titleModel`, 'gpt-4o'), { titleModel: 'gpt-4o' }],
+        [AZURE, write(GROUPS, [west]), { groups: [west] }],
+        [ANTHROPIC, write(`${ANTHROPIC}.titleModel`, 'claude-x'), { titleModel: 'claude-x' }],
+      ] as const
+    ).flatMap(([path, recreate, recreated]): Cell[] =>
+      [
+        { change: `tombstone of ${path}`, layers: [role({}, [path])], as: at(SPEC_YAML, path) },
+        {
+          change: `Base's tombstone of ${path}, unset by the profile above`,
+          layers: [base({}, [path]), role()],
+          as: at(SPEC_YAML, path),
+        },
+        {
+          change: `${path} recreated by a profile after Base tombstones it`,
+          layers: [base({}, [path]), role(recreate)],
+          as: at(SPEC_YAML, path, recreated),
+        },
+      ].map(onSpecs),
+    );
+
+    const matrix: Array<[string, Probe, Cell[]]> = [
+      [
+        'Azure groups and assistants (the groupMap, model lists and the Azure Assistants endpoint)',
+        azure,
+        [
+          {
+            change: 'set by Base',
+            layers: [base(write(GROUPS, [west]))],
+            as: at(YAML, GROUPS, [east, west]),
+          },
+          {
+            change: 'set by a profile over Base, merged by group',
+            layers: [
+              base(write(GROUPS, [west])),
+              role(write(GROUPS, [{ group: 'west', models: { 'gpt-5-mini': true } }])),
+            ],
+            as: at(YAML, GROUPS, [
+              east,
+              { ...west, models: { 'gpt-5': true, 'gpt-5-mini': true } },
+            ]),
+          },
+          {
+            change: 'set by Base, unset by the profile above',
+            layers: [base(write(GROUPS, [west])), role()],
+            as: at(YAML, GROUPS, [east, west]),
+          },
+          { change: 'tombstone of the path', layers: [role({}, [GROUPS])], expected: NO_GROUP },
+          {
+            change: "a profile's tombstone of the path over Base's groups",
+            layers: [base(write(GROUPS, [west])), role({}, [GROUPS])],
+            expected: NO_GROUP,
+          },
+          {
+            change: 'tombstone of the endpoint',
+            layers: [role({}, [AZURE])],
+            as: at(YAML, AZURE),
+          },
+          {
+            change: 'tombstone of endpoints',
+            layers: [role({}, ['endpoints'])],
+            as: at(YAML, 'endpoints'),
+          },
+          {
+            change: 'recreated by a profile after Base tombstones the endpoint',
+            layers: [base({}, [AZURE]), role(write(`${AZURE}.titleModel`, 'gpt-4o'))],
+            expected: NO_GROUP,
+          },
+          {
+            change: 'recreated by a profile after Base tombstones endpoints',
+            layers: [base({}, ['endpoints']), role(write(`${AZURE}.titleModel`, 'gpt-4o'))],
+            expected: NO_GROUP,
+          },
+          {
+            change: 'recreated by the layer that tombstones the endpoint',
+            layers: [role(write(`${AZURE}.titleModel`, 'gpt-4o'), [AZURE])],
+            expected: NO_GROUP,
+          },
+          {
+            change: "recreated over a lower profile's groups by a higher profile's tombstone",
+            layers: [
+              role(write(GROUPS, [west])),
+              above(write(`${AZURE}.titleModel`, 'x'), [AZURE]),
+            ],
+            expected: NO_GROUP,
+          },
+          {
+            change: 'recreated with assistants on after a tombstone of the endpoint',
+            layers: [base({}, [AZURE]), role(write(ASSISTANTS, true))],
+            expected: NO_GROUP,
+          },
+          {
+            change: 'recreated with groups after a tombstone of the endpoint',
+            layers: [base({}, [AZURE]), role(write(GROUPS, [west]))],
+            as: at(YAML, AZURE, { groups: [west] }),
+          },
+          {
+            change: 'recreated with groups after a tombstone of endpoints',
+            layers: [base({}, ['endpoints']), role(write(GROUPS, [west]))],
+            as: at(at(YAML, 'endpoints'), AZURE, { groups: [west] }),
+          },
+          {
+            change: 'groups Base tombstones, set again by a profile',
+            layers: [base({}, [GROUPS]), role(write(GROUPS, [west]))],
+            as: at(YAML, AZURE, { groups: [west] }),
+          },
+          {
+            change: 'assistants turned off',
+            layers: [role(write(ASSISTANTS, false))],
+            as: at(YAML, ASSISTANTS, false),
+          },
+          {
+            change: 'assistants tombstoned',
+            layers: [role({}, [ASSISTANTS])],
+            as: at(YAML, ASSISTANTS),
+          },
+          {
+            change: 'assistants Base turns off, tombstoned by a profile',
+            layers: [base(write(ASSISTANTS, false)), role({}, [ASSISTANTS])],
+            as: at(YAML, ASSISTANTS),
+          },
+          {
+            change: 'assistants Base tombstones, turned on by a profile',
+            layers: [base({}, [ASSISTANTS]), role(write(ASSISTANTS, true))],
+            as: YAML,
+          },
+          {
+            change: 'switch off: a profile sets groups (inert)',
+            layers: [role(write(GROUPS, [west]))],
+            rederiveEndpoints: false,
+            as: YAML,
+          },
+          {
+            change: 'switch off: tombstone of the path (inert)',
+            layers: [role({}, [GROUPS])],
+            rederiveEndpoints: false,
+            as: YAML,
+          },
+          {
+            change: 'switch off: tombstone of the endpoint (Azure Assistants not derived)',
+            layers: [role({}, [AZURE])],
+            rederiveEndpoints: false,
+            expected: { azure: undefined, azureAssistants: true },
+          },
+          {
+            change: 'switch off: recreated by a profile after Base tombstones the endpoint',
+            layers: [base({}, [AZURE]), role(write(`${AZURE}.titleModel`, 'gpt-4o'))],
+            rederiveEndpoints: false,
+            expected: { ...NO_GROUP, azureAssistants: true },
+          },
+        ],
+      ],
+      [
+        'Vertex AI and the Anthropic models (vertexConfig, endpoints.anthropic.models)',
+        anthropic,
+        [
+          {
+            change: 'set by a profile',
+            layers: [role(write(`${VERTEX}.models`, ['claude-opus-4-6']))],
+            as: at(YAML, `${VERTEX}.models`, ['claude-opus-4-6']),
+          },
+          {
+            change: 'set by Base, unset by the profile above',
+            layers: [base(write(`${VERTEX}.models`, ['claude-opus-4-6'])), role()],
+            as: at(YAML, `${VERTEX}.models`, ['claude-opus-4-6']),
+          },
+          {
+            change: 'turned off',
+            layers: [role(write(`${VERTEX}.enabled`, false))],
+            as: at(YAML, `${VERTEX}.enabled`, false),
+          },
+          {
+            change: 'turned off by Base, tombstoned by a profile',
+            layers: [base(write(`${VERTEX}.enabled`, false)), role({}, [`${VERTEX}.enabled`])],
+            as: YAML,
+          },
+          { change: 'tombstone of the path', layers: [role({}, [VERTEX])], as: at(YAML, VERTEX) },
+          {
+            change: 'tombstone of one of its settings',
+            layers: [role({}, [`${VERTEX}.models`])],
+            as: at(YAML, `${VERTEX}.models`),
+          },
+          {
+            change: 'tombstone of a setting it does not load without (off)',
+            yaml: at(YAML, VERTEX, { ...namedVertex, deploymentName: 'claude-deploy' }),
+            layers: [role({}, [`${VERTEX}.deploymentName`])],
+            expected: { models: ['claude-direct'], vertex: undefined },
+          },
+          {
+            change: 'tombstone of the endpoint',
+            layers: [role({}, [ANTHROPIC])],
+            as: at(YAML, ANTHROPIC),
+          },
+          {
+            change: 'tombstone of endpoints',
+            layers: [role({}, ['endpoints'])],
+            as: at(YAML, 'endpoints'),
+          },
+          {
+            change: 'recreated without Vertex AI after Base tombstones the endpoint',
+            layers: [base({}, [ANTHROPIC]), role(write(`${ANTHROPIC}.titleModel`, 'claude-x'))],
+            as: at(YAML, ANTHROPIC, { titleModel: 'claude-x' }),
+          },
+          {
+            change: 'recreated with Vertex AI after Base tombstones the endpoint',
+            layers: [base({}, [ANTHROPIC]), role(write(VERTEX, profileVertex))],
+            as: at(YAML, ANTHROPIC, { vertex: { ...profileVertex, region: 'us-east5' } }),
+          },
+          {
+            change: 'recreated with Vertex AI after Base tombstones endpoints',
+            layers: [base({}, ['endpoints']), role(write(VERTEX, profileVertex))],
+            as: at(at(YAML, 'endpoints'), VERTEX, { ...profileVertex, region: 'us-east5' }),
+          },
+          {
+            change: "models a profile sets, over Vertex AI's",
+            layers: [role(write(MODELS, ['claude-x']))],
+            expected: {
+              models: ['claude-x'],
+              vertex: { ...yamlVertex, modelNames: yamlVertex.models, models: undefined },
+            },
+          },
+          {
+            change: 'models Base sets, tombstoned by a profile',
+            layers: [base(write(MODELS, ['claude-x'])), role({}, [MODELS])],
+            as: YAML,
+          },
+          {
+            change: 'models Base tombstones, set by a profile',
+            layers: [base({}, [MODELS]), role(write(MODELS, ['claude-y']))],
+            expected: {
+              models: ['claude-y'],
+              vertex: { ...yamlVertex, modelNames: yamlVertex.models, models: undefined },
+            },
+          },
+          {
+            change: 'models Base sets, then the endpoint tombstoned and Vertex AI recreated',
+            layers: [
+              base(write(MODELS, ['claude-x'])),
+              role(write(VERTEX, profileVertex), [ANTHROPIC]),
+            ],
+            as: at(YAML, ANTHROPIC, { vertex: { ...profileVertex, region: 'us-east5' } }),
+          },
+          {
+            change: 'models Base sets, then endpoints tombstoned',
+            layers: [base(write(MODELS, ['claude-x'])), role({}, ['endpoints'])],
+            as: at(YAML, 'endpoints'),
+          },
+          {
+            change: 'models Base sets, then Vertex AI tombstoned',
+            layers: [base(write(MODELS, ['claude-x'])), role({}, [VERTEX])],
+            as: at(at(YAML, VERTEX), MODELS, ['claude-x']),
+          },
+          {
+            change: 'switch off: a profile sets Vertex AI (inert)',
+            layers: [role(write(`${VERTEX}.models`, ['claude-opus-4-6']))],
+            rederiveEndpoints: false,
+            as: YAML,
+          },
+        ],
+      ],
+      [
+        'custom endpoint parameters (each endpoint served with its customParams expanded)',
+        customParams,
+        [
+          {
+            change: 'set by a profile',
+            layers: [
+              role(
+                write(CUSTOM, [
+                  { name: 'Gateway', customParams: { defaultParamsEndpoint: 'openAI' } },
+                ]),
+              ),
+            ],
+            as: at(YAML, CUSTOM, [openAIGateway]),
+          },
+          {
+            change: 'set by Base, unset by the profile above',
+            layers: [
+              base(
+                write(CUSTOM, [
+                  { name: 'Gateway', customParams: { defaultParamsEndpoint: 'openAI' } },
+                ]),
+              ),
+              role(),
+            ],
+            as: at(YAML, CUSTOM, [openAIGateway]),
+          },
+          {
+            change: 'an endpoint only a profile defines',
+            layers: [role(write(CUSTOM, [router]))],
+            as: at(YAML, CUSTOM, [gateway, router]),
+          },
+          { change: 'tombstone of the list', layers: [role({}, [CUSTOM])], as: at(YAML, CUSTOM) },
+          {
+            change: 'tombstone of endpoints',
+            layers: [role({}, ['endpoints'])],
+            as: at(YAML, 'endpoints'),
+          },
+          {
+            change: 'recreated by a profile after Base tombstones the list',
+            layers: [base({}, [CUSTOM]), role(write(CUSTOM, [router]))],
+            as: at(YAML, CUSTOM, [router]),
+          },
+          {
+            change: 'recreated by a profile after Base tombstones endpoints',
+            layers: [base({}, ['endpoints']), role(write(CUSTOM, [openAIGateway]))],
+            as: at(at(YAML, 'endpoints'), CUSTOM, [openAIGateway]),
+          },
+          {
+            change: "a lower profile's parameters under a higher profile's tombstone of the list",
+            layers: [role(write(CUSTOM, [openAIGateway])), above({}, [CUSTOM])],
+            as: at(YAML, CUSTOM),
+          },
+          {
+            change: "tenant scoping: the tenant's own endpoint",
+            yaml: at(TENANT_YAML, 'modelSpecs'),
+            layers: [
+              role(
+                write(CUSTOM, [
+                  { name: 'TenantOnly', customParams: { defaultParamsEndpoint: 'anthropic' } },
+                ]),
+              ),
+            ],
+            tenantId: 'tenant-a',
+            as: at(at(TENANT_YAML, 'modelSpecs'), CUSTOM, [
+              { ...tenantOnly, customParams: { defaultParamsEndpoint: 'anthropic' } },
+            ]),
+          },
+          {
+            change: "tenant scoping: another tenant's endpoint stays hidden",
+            yaml: at(TENANT_YAML, 'modelSpecs'),
+            layers: [
+              role(
+                write(CUSTOM, [
+                  { name: 'TenantOnly', customParams: { defaultParamsEndpoint: 'anthropic' } },
+                ]),
+              ),
+            ],
+            tenantId: 'tenant-b',
+            as: at(TENANT_YAML, 'modelSpecs'),
+          },
+        ],
+      ],
+      [
+        'the agents endpoint and its memory capability',
+        agents,
+        [
+          {
+            change: 'memory turned on',
+            layers: [role(write('memory.disabled', false))],
+            as: at(YAML, 'memory', { disabled: false }),
+          },
+          {
+            change: 'memory Base turns on, unset by the profile above',
+            layers: [base(write('memory.disabled', false)), role()],
+            as: at(YAML, 'memory', { disabled: false }),
+          },
+          {
+            change: 'memory Base turns on, memory.disabled tombstoned by a profile',
+            layers: [base(write('memory.disabled', false)), role({}, ['memory.disabled'])],
+            as: at(YAML, 'memory', {}),
+          },
+          {
+            change: 'memory tombstoned',
+            layers: [role({}, ['memory'])],
+            as: at(YAML, 'memory'),
+          },
+          {
+            change: 'memory Base turns on, tombstoned by a profile',
+            layers: [base(write('memory.disabled', false)), role({}, ['memory'])],
+            as: at(YAML, 'memory'),
+          },
+          {
+            change: 'memory Base tombstones, turned on by a profile',
+            layers: [base({}, ['memory']), role(write('memory.disabled', false))],
+            as: at(YAML, 'memory', { disabled: false }),
+          },
+          {
+            change: 'capabilities set',
+            layers: [role(write(`${AGENTS}.capabilities`, ['memory', 'tools']))],
+            as: at(YAML, `${AGENTS}.capabilities`, ['memory', 'tools']),
+          },
+          {
+            change: 'capabilities Base sets, tombstoned by a profile',
+            layers: [
+              base(write(`${AGENTS}.capabilities`, ['tools'])),
+              role({}, [`${AGENTS}.capabilities`]),
+            ],
+            as: YAML,
+          },
+          {
+            change: 'tombstone of the agents endpoint',
+            layers: [role({}, [AGENTS])],
+            as: YAML,
+          },
+          {
+            change: 'tombstone of endpoints',
+            layers: [role({}, ['endpoints'])],
+            as: at(YAML, 'endpoints'),
+          },
+          {
+            change: 'recreated by a profile after Base tombstones the agents endpoint',
+            layers: [base({}, [AGENTS]), role(write(`${AGENTS}.disableBuilder`, true))],
+            as: at(YAML, AGENTS, { disableBuilder: true }),
+          },
+          {
+            change: 'memory turned on by a profile after Base tombstones endpoints',
+            layers: [base({}, ['endpoints']), role(write('memory.disabled', false))],
+            as: at(at(YAML, 'endpoints'), 'memory', { disabled: false }),
+          },
+        ],
+      ],
+      [
+        'the interface controls model specs decide (modelSelect, parameters, presets)',
+        specControls,
+        [
+          {
+            change: 'set by a profile',
+            layers: [role(write('interface.parameters', true))],
+            as: at(YAML, 'interface', { parameters: true }),
+          },
+          {
+            change: 'set by Base, unset by the profile above',
+            layers: [base(write('interface.parameters', true)), role()],
+            as: at(YAML, 'interface', { parameters: true }),
+          },
+          {
+            change: 'set by Base, tombstoned by a profile',
+            layers: [base(write('interface.parameters', true)), role({}, ['interface.parameters'])],
+            as: YAML,
+          },
+          {
+            change: 'tombstone of the interface',
+            layers: [role({}, ['interface'])],
+            as: YAML,
+          },
+          {
+            change: 'tombstone of the interface without specs',
+            layers: [role({}, ['interface', 'modelSpecs'])],
+            as: at(YAML, 'modelSpecs'),
+          },
+          {
+            change: 'set by Base, the interface tombstoned by a profile',
+            layers: [base(write('interface.parameters', true)), role({}, ['interface'])],
+            as: YAML,
+          },
+          {
+            change: 'recreated by a profile after Base tombstones the interface',
+            layers: [base({}, ['interface']), role(write('interface.customWelcome', 'hi'))],
+            as: YAML,
+          },
+          {
+            change: 'set by a profile after Base tombstones the interface',
+            layers: [base({}, ['interface']), role(write('interface.parameters', true))],
+            as: at(YAML, 'interface', { parameters: true }),
+          },
+          {
+            change: 'specs tombstoned',
+            layers: [role({}, ['modelSpecs'])],
+            as: at(YAML, 'modelSpecs'),
+          },
+          {
+            change: 'the spec list tombstoned',
+            layers: [role({}, ['modelSpecs.list'])],
+            as: at(YAML, 'modelSpecs'),
+          },
+          {
+            change: 'specs Base tombstones, added again by a profile',
+            layers: [
+              base({}, ['modelSpecs']),
+              role(write('modelSpecs.list', [spec('s2', 'openAI')])),
+            ],
+            as: YAML,
+          },
+          {
+            change: "tenant scoping: the tenant's own specs",
+            yaml: TENANT_YAML,
+            layers: [role(write('interface.customWelcome', 'hi'))],
+            tenantId: 'tenant-a',
+            as: TENANT_YAML,
+          },
+          {
+            change: "tenant scoping: specs of another tenant's endpoint",
+            yaml: TENANT_YAML,
+            layers: [role(write('interface.customWelcome', 'hi'))],
+            tenantId: 'tenant-b',
+            as: TENANT_YAML,
+          },
+          {
+            change: "tenant scoping: specs of another tenant's endpoint, the interface tombstoned",
+            yaml: TENANT_YAML,
+            layers: [role({}, ['interface'])],
+            tenantId: 'tenant-b',
+            as: TENANT_YAML,
+          },
+        ],
+      ],
+      [
+        'model specs once the endpoints they name are removed (the specs served, addedEndpoints, the controls they decide)',
+        specsServed,
+        [
+          ...[
+            {
+              change: 'tombstone of endpoints.custom',
+              layers: [role({}, [CUSTOM])],
+              as: withoutGateway(at(SPEC_YAML, CUSTOM)),
+            },
+            {
+              change: "Base's tombstone of endpoints.custom, unset by the profile above",
+              layers: [base({}, [CUSTOM]), role()],
+              as: withoutGateway(at(SPEC_YAML, CUSTOM)),
+            },
+            {
+              change: 'endpoints.custom Base adds to, tombstoned by a profile',
+              layers: [base(write(CUSTOM, [router])), role({}, [CUSTOM])],
+              as: withoutGateway(at(SPEC_YAML, CUSTOM)),
+            },
+            {
+              change:
+                "a profile's own endpoint and its spec under a higher profile's tombstone of endpoints.custom",
+              layers: [
+                role({
+                  ...write(CUSTOM, [router]),
+                  ...write(`${SPECS}.list`, [spec('r', 'Router'), spec('o', 'openAI')]),
+                }),
+                above({}, [CUSTOM]),
+              ],
+              as: at(withoutGateway(at(SPEC_YAML, CUSTOM)), `${SPECS}.list`, [
+                spec('r', 'Router'),
+                spec('o', 'openAI'),
+              ]),
+            },
+            {
+              change: 'endpoints.custom recreated by a profile after Base tombstones it',
+              layers: [base({}, [CUSTOM]), role(write(CUSTOM, [gateway]))],
+              as: SPEC_YAML,
+            },
+            {
+              change: 'endpoints.custom recreated by the layer that tombstones it',
+              layers: [role(write(CUSTOM, [gateway]), [CUSTOM])],
+              as: SPEC_YAML,
+            },
+            {
+              change: 'endpoints.custom a lower profile tombstones, recreated by a higher profile',
+              layers: [role({}, [CUSTOM]), above(write(CUSTOM, [gateway]))],
+              as: SPEC_YAML,
+            },
+            {
+              change: 'tombstone of endpoints',
+              layers: [role({}, ['endpoints'])],
+              as: withoutGateway(at(SPEC_YAML, 'endpoints')),
+            },
+            {
+              change: "Base's tombstone of endpoints, unset by the profile above",
+              layers: [base({}, ['endpoints']), role()],
+              as: withoutGateway(at(SPEC_YAML, 'endpoints')),
+            },
+            {
+              change: 'endpoints.custom recreated by a profile after Base tombstones endpoints',
+              layers: [base({}, ['endpoints']), role(write(CUSTOM, [gateway]))],
+              as: at(at(SPEC_YAML, 'endpoints'), CUSTOM, [gateway]),
+            },
+            {
+              change:
+                'endpoints.custom recreated by a higher profile after a lower one tombstones endpoints',
+              layers: [role({}, ['endpoints']), above(write(CUSTOM, [gateway]))],
+              as: at(at(SPEC_YAML, 'endpoints'), CUSTOM, [gateway]),
+            },
+            {
+              change: 'switch off: tombstone of endpoints.custom',
+              layers: [role({}, [CUSTOM])],
+              rederiveEndpoints: false,
+              as: withoutGateway(at(SPEC_YAML, CUSTOM)),
+            },
+            ...builtInSpecCells,
+          ].map(onSpecs),
+          /**
+           * Where no spec is left, none is served and the controls follow, as for tenant
+           * scoping: startup derives them from librechat.yaml's list before it skips specs, so
+           * these compare with librechat.yaml left without the specs startup would skip.
+           */
+          {
+            change: 'tombstone of endpoints.custom, leaving no spec',
+            yaml: GATEWAY_SPECS,
+            layers: [role({}, [CUSTOM])],
+            as: at(at(GATEWAY_SPECS, CUSTOM), SPECS),
+          },
+          {
+            change: "Base's tombstone of endpoints, leaving no spec",
+            yaml: GATEWAY_SPECS,
+            layers: [base({}, ['endpoints']), role()],
+            as: at(at(GATEWAY_SPECS, 'endpoints'), SPECS),
+          },
+          {
+            change:
+              'endpoints.custom Base tombstones, recreated by a profile: the spec served again',
+            yaml: GATEWAY_SPECS,
+            layers: [base({}, [CUSTOM]), role(write(CUSTOM, [gateway]))],
+            as: GATEWAY_SPECS,
+          },
+        ],
+      ],
+    ];
+
+    describe.each(matrix)('%s', (_output, probe, cells) => {
+      it.each(cells.map((cell): [string, Cell] => [cell.change, cell]))(
+        '%s',
+        async (_change, cell) => {
+          const read = async (yaml: Yaml, layers: Layer[]) =>
+            probe(
+              await serviceOver(yaml, layers, {
+                rederiveEndpoints: cell.rederiveEndpoints ?? true,
+              }).getAppConfig({ role: 'USER', tenantId: cell.tenantId }),
+            );
+          const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+          const served = await read(cell.yaml ?? YAML, cell.layers);
+          const expected = cell.as ? await read(cell.as, []) : cell.expected;
+          warn.mockRestore();
+
+          expect(served).toEqual(expected);
+        },
+      );
+    });
   });
 });

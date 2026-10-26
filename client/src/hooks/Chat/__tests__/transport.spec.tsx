@@ -34,6 +34,7 @@ import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettin
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { ChatContext, useChatContext } from '~/Providers/ChatContext';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
+import { usePaneConversation } from '~/routes/ChatSettings';
 import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
 import useChatHelpers from '~/hooks/Chat/useChatHelpers';
@@ -92,6 +93,7 @@ function createFakeTransport(overrides: Partial<Transport> = {}) {
 
 const chatSettings = {
   ...defaultChatSettings,
+  usePaneConversation,
   auth: { token: 'test-token', isAuthenticated: true },
 };
 

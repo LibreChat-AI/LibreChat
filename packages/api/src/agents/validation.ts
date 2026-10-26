@@ -21,6 +21,7 @@ import type {
   AgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
+import { getToolOptionsLimitError } from './options';
 
 /**
  * Permissive Request alias used by {@link validateAgentModel}. Accepts either
@@ -174,8 +175,14 @@ export const toolOptionsSchema: z.ZodObject<
 
 /** Agent tool options - map of tool_id to tool options */
 export const agentToolOptionsSchema: z.ZodOptional<
-  z.ZodRecord<z.ZodString, typeof toolOptionsSchema>
-> = z.record(z.string(), toolOptionsSchema).optional();
+  z.ZodEffects<z.ZodRecord<z.ZodString, typeof toolOptionsSchema>>
+> = z
+  .record(z.string(), toolOptionsSchema)
+  .superRefine((options, ctx) => {
+    const message = getToolOptionsLimitError(options);
+    if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+  })
+  .optional();
 
 /**
  * Subagent spawning configuration for an agent. `agent_ids` and `graphs` are
@@ -525,35 +532,7 @@ export const agentBaseSchema: z.ZodObject<
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     tool_resources: typeof agentToolResourcesSchema;
-    tool_options: z.ZodOptional<
-      z.ZodRecord<
-        z.ZodString,
-        z.ZodObject<
-          {
-            defer_loading: z.ZodOptional<z.ZodBoolean>;
-            allowed_callers: z.ZodOptional<
-              z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>
-            >;
-            run_in_background: z.ZodOptional<z.ZodBoolean>;
-            describe_intent: z.ZodOptional<z.ZodBoolean>;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          },
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          }
-        >
-      >
-    >;
+    tool_options: typeof agentToolOptionsSchema;
     subagents: typeof agentSubagentsSchema;
     support_contact: z.ZodOptional<
       z.ZodObject<
@@ -708,35 +687,7 @@ export const agentCreateSchema: z.ZodObject<
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     tool_resources: typeof agentToolResourcesSchema;
-    tool_options: z.ZodOptional<
-      z.ZodRecord<
-        z.ZodString,
-        z.ZodObject<
-          {
-            defer_loading: z.ZodOptional<z.ZodBoolean>;
-            allowed_callers: z.ZodOptional<
-              z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>
-            >;
-            run_in_background: z.ZodOptional<z.ZodBoolean>;
-            describe_intent: z.ZodOptional<z.ZodBoolean>;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          },
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          }
-        >
-      >
-    >;
+    tool_options: typeof agentToolOptionsSchema;
     subagents: typeof agentSubagentsSchema;
     support_contact: z.ZodOptional<
       z.ZodObject<
@@ -847,35 +798,7 @@ export const agentUpdateSchema: z.ZodObject<
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     tool_resources: typeof agentToolResourcesSchema;
-    tool_options: z.ZodOptional<
-      z.ZodRecord<
-        z.ZodString,
-        z.ZodObject<
-          {
-            defer_loading: z.ZodOptional<z.ZodBoolean>;
-            allowed_callers: z.ZodOptional<
-              z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>
-            >;
-            run_in_background: z.ZodOptional<z.ZodBoolean>;
-            describe_intent: z.ZodOptional<z.ZodBoolean>;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          },
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          }
-        >
-      >
-    >;
+    tool_options: typeof agentToolOptionsSchema;
     subagents: typeof agentSubagentsSchema;
     support_contact: z.ZodOptional<
       z.ZodObject<

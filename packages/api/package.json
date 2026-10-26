@@ -1,6 +1,6 @@
 {
   "name": "@librechat/api",
-  "version": "1.7.53",
+  "version": "1.7.54",
   "type": "commonjs",
   "description": "MCP services for LibreChat",
   "main": "dist/index.cjs",
@@ -109,7 +109,7 @@
     "@aws-sdk/cloudfront-signer": "^3.1036.0",
     "@aws-sdk/credential-providers": "^3.1045.0",
     "@aws-sdk/s3-request-presigner": "^3.758.0",
-    "@azure/identity": "^4.13.1",
+    "@azure/identity": "^4.14.0",
     "@azure/storage-blob": "^12.30.0",
     "@keyv/redis": "5.1.6",
     "@librechat/agents": "^4.0.6",
@@ -165,7 +165,7 @@
     "re2js": "^2.8.6",
     "sanitize-html": "^2.18.1",
     "sharp": "^0.35.5",
-    "undici": "^7.29.0",
+    "undici": "^7.30.1",
     "yauzl": "^3.2.1",
     "zod": "^3.22.4"
   },

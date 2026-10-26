@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { useSetRecoilState } from 'recoil';
 import { useStore, useSetAtom } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
 import { buildRecoveryPreset } from '@librechat/chat';
@@ -12,7 +11,6 @@ import {
   pendingReasoningOverrideFamily,
 } from '@librechat/chat/react';
 import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
-import type { SetterOrUpdater } from 'recoil';
 import type { EventHandlerContext } from './handlers';
 import type { ConvoGenerator } from '~/common';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
@@ -27,7 +25,6 @@ import { useLiveAnnouncer } from '~/Providers';
 import useTurnHandlers from './opening';
 import useAbortHandlers from './abort';
 import useFinalHandler from './final';
-import store from '~/store';
 
 /** Skill caches refreshed when a chat turn authors a skill via `create_file`/`edit_file`. */
 const SKILL_QUERY_KEYS = [
@@ -45,10 +42,10 @@ export type EventHandlerParams = {
   setCompleted: React.Dispatch<React.SetStateAction<Set<unknown>>>;
   setMessages: (messages: TMessage[]) => void;
   getMessages: () => TMessage[] | undefined;
-  setIsSubmitting: SetterOrUpdater<boolean>;
-  setConversation?: SetterOrUpdater<TConversation | null>;
+  setIsSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
+  setConversation?: React.Dispatch<React.SetStateAction<TConversation | null>>;
   newConversation?: ConvoGenerator;
-  setShowStopButton: SetterOrUpdater<boolean>;
+  setShowStopButton: React.Dispatch<React.SetStateAction<boolean>>;
 };
 
 export default function useEventHandlers({
@@ -66,7 +63,6 @@ export default function useEventHandlers({
   const reasoningStore = useStore();
   const { announcePolite } = useLiveAnnouncer();
   const applyAgentTemplate = useApplyAgentTemplate();
-  const setAbortScroll = useSetRecoilState(store.abortScroll);
   /** Cleared on every terminal path below: the elapsed anchor must not outlive
    *  its generation, or a later externally-started run attached at this index
    *  would inherit a stale baseline. Navigation teardown deliberately does not
@@ -234,7 +230,6 @@ export default function useEventHandlers({
     setConversation,
     setIsSubmitting,
     setShowStopButton,
-    setAbortScroll,
     setSubmissionStart,
     announcePolite,
     lastAnnouncementTimeRef,

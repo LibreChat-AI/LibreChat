@@ -4,6 +4,8 @@ export * from './rebinding';
 export * from './overrides';
 export * from './invalidation';
 export * from './loader';
+export { expandCustomEndpoint } from './params';
+export * from './report';
 export * from './config';
 export * from './metrics';
 export * from './permissions';

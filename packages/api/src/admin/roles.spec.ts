@@ -442,8 +442,9 @@ describe('createAdminRolesHandlers', () => {
   describe('updateRole', () => {
     it('updates role and returns 200', async () => {
       const role = mockRole({ name: 'senior-editor' });
+      const existing = mockRole({ _id: new Types.ObjectId() } as Partial<IRole>);
       const deps = createDeps({
-        getRoleByName: jest.fn().mockResolvedValueOnce(mockRole()).mockResolvedValueOnce(null),
+        getRoleByName: jest.fn().mockResolvedValueOnce(existing).mockResolvedValueOnce(null),
         updateRoleByName: jest.fn().mockResolvedValue(role),
       });
       const handlers = createAdminRolesHandlers(deps);
@@ -456,7 +457,12 @@ describe('createAdminRolesHandlers', () => {
 
       expect(status).toHaveBeenCalledWith(200);
       expect(json).toHaveBeenCalledWith({ role });
-      expect(deps.updateRoleByName).toHaveBeenCalledWith('editor', { name: 'senior-editor' });
+      /** The rename writes the role document it read, not another tenant's of that name. */
+      expect(deps.updateRoleByName).toHaveBeenCalledWith(
+        'editor',
+        { name: 'senior-editor' },
+        { id: String(existing._id) },
+      );
     });
 
     it('writes and audits nothing when the description already matches', async () => {
@@ -493,7 +499,7 @@ describe('createAdminRolesHandlers', () => {
 
       await handlers.updateRole(req, res);
 
-      expect(deps.updateRoleByName).toHaveBeenCalledWith('editor', { name: 'trimmed' });
+      expect(deps.updateRoleByName).toHaveBeenCalledWith('editor', { name: 'trimmed' }, undefined);
     });
 
     it('migrates users before renaming role', async () => {
@@ -579,10 +585,11 @@ describe('createAdminRolesHandlers', () => {
       expect(status).toHaveBeenCalledWith(200);
       expect(json).toHaveBeenCalledWith({ role });
       expect(deps.updateUsersByRole).toHaveBeenCalledWith('editor', 'senior-editor');
-      expect(deps.updateRoleByName).toHaveBeenCalledWith('editor', {
-        name: 'senior-editor',
-        description: 'Updated desc',
-      });
+      expect(deps.updateRoleByName).toHaveBeenCalledWith(
+        'editor',
+        { name: 'senior-editor', description: 'Updated desc' },
+        undefined,
+      );
     });
 
     it('returns 403 when renaming a system role', async () => {
@@ -1400,8 +1407,7 @@ describe('createAdminRolesHandlers', () => {
     it('scopes each cascade audit entry to the removed grant’s own tenant', async () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({
-        // a platform admin (no tenantId) deletes a role holding both a
-        // platform-level grant and a tenant-scoped one
+        // each removed grant names its own scope, whatever the caller's
         deleteGrantsForPrincipal: jest
           .fn()
           .mockResolvedValue([
