@@ -106,3 +106,17 @@ export function createConcurrencyLimiter(
       }
     });
 }
+
+/**
+ * Maps `items` through `fn` with at most `concurrency` calls in flight.
+ * Results keep input order. The first rejection rejects the whole call, like
+ * `Promise.all`; calls already started are not cancelled.
+ */
+export function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const limit = createConcurrencyLimiter(concurrency);
+  return Promise.all(items.map((item, index) => limit(() => fn(item, index))));
+}

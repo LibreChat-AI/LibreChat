@@ -12,6 +12,7 @@ import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Types } from 'mongoose';
 import { getSkillToolDefinition, isSkillToolAvailable, registerCodeExecutionTools } from './tools';
 import { createSkillContentDigest } from './compatibility';
+import { mapWithConcurrency } from '~/utils/promise';
 import { logAxiosError } from '~/utils';
 
 /**
@@ -109,6 +110,7 @@ const CATALOG_PAGE_SIZE = 100;
 const SKILL_CATALOG_MAX_ENTRY_CHARS = 250;
 /** Hard ceiling on skill names a model spec can request by config. */
 const MAX_MODEL_SPEC_SKILLS = SKILL_CATALOG_LIMIT;
+const SKILL_NAME_LOOKUP_CONCURRENCY = 8;
 /**
  * Hard ceiling on skill names resolved per request via `$` popover or
  * `always-apply`. The popover realistically surfaces only a few per turn;
@@ -289,23 +291,25 @@ export async function resolveModelSpecSkillIds({
     boundedNames = uniqueNames.slice(0, MAX_MODEL_SPEC_SKILLS);
   }
 
-  const resolved: Array<Types.ObjectId | null> = [];
-  for (const name of boundedNames) {
-    try {
-      const skill = await getSkillByName(name, accessibleSkillIds, {
-        preferModelInvocable: true,
-      });
-      if (!skill) {
-        logger.warn('[resolveModelSpecSkillIds] Requested skill not found or not accessible');
-        resolved.push(null);
-        continue;
+  const resolved = await mapWithConcurrency(
+    boundedNames,
+    SKILL_NAME_LOOKUP_CONCURRENCY,
+    async (name): Promise<Types.ObjectId | null> => {
+      try {
+        const skill = await getSkillByName(name, accessibleSkillIds, {
+          preferModelInvocable: true,
+        });
+        if (!skill) {
+          logger.warn('[resolveModelSpecSkillIds] Requested skill not found or not accessible');
+          return null;
+        }
+        return skill._id;
+      } catch {
+        logger.warn('[resolveModelSpecSkillIds] Failed to resolve a requested skill');
+        return null;
       }
-      resolved.push(skill._id);
-    } catch {
-      logger.warn('[resolveModelSpecSkillIds] Failed to resolve a requested skill');
-      resolved.push(null);
-    }
-  }
+    },
+  );
 
   const seenIds = new Set<string>();
   return resolved.filter((id): id is Types.ObjectId => {

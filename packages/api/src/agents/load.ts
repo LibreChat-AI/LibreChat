@@ -19,6 +19,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
+  MCP_CATALOG_LOOKUP_CONCURRENCY,
   requiresEphemeralUserConnection,
   filterChatSelectableMCPServers,
   validateMCPServerConfig,
@@ -29,6 +30,7 @@ import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
 import { getCustomEndpointConfig } from '~/app/config';
+import { mapWithConcurrency } from '~/utils/promise';
 
 const { mcp_all, mcp_delimiter } = Constants;
 type ModelParametersWithPromptPrefix = AgentModelParameters & { promptPrefix?: string | null };
@@ -128,29 +130,26 @@ export async function loadEphemeralAgent(
     tools.push(ASK_USER_QUESTION_TOOL_NAME);
   }
 
-  const addedServers = new Set<string>();
   if (mcpServers.size > 0) {
-    for (const mcpServer of mcpServers) {
-      if (addedServers.has(mcpServer)) {
-        continue;
-      }
-      /** Address durable catalogs by the effective request overlay; request-scoped
-       *  overlays still expand fresh through `mcp_all`. */
-      const rawOverlayConfig = req.config?.mcpConfig?.[mcpServer];
-      const overlayConfig = rawOverlayConfig
-        ? validateMCPServerConfig(rawOverlayConfig)
-        : undefined;
-      const serverTools =
-        overlayConfig && requiresEphemeralUserConnection(overlayConfig)
-          ? null
-          : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
-      if (!serverTools) {
-        tools.push(`${mcp_all}${mcp_delimiter}${mcpServer}`);
-        addedServers.add(mcpServer);
-        continue;
-      }
-      tools.push(...Object.keys(serverTools));
-      addedServers.add(mcpServer);
+    const serverToolKeys = await mapWithConcurrency(
+      [...mcpServers],
+      MCP_CATALOG_LOOKUP_CONCURRENCY,
+      async (mcpServer): Promise<string[]> => {
+        /** Address durable catalogs by the effective request overlay; request-scoped
+         *  overlays still expand fresh through `mcp_all`. */
+        const rawOverlayConfig = req.config?.mcpConfig?.[mcpServer];
+        const overlayConfig = rawOverlayConfig
+          ? validateMCPServerConfig(rawOverlayConfig)
+          : undefined;
+        const serverTools =
+          overlayConfig && requiresEphemeralUserConnection(overlayConfig)
+            ? null
+            : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
+        return serverTools ? Object.keys(serverTools) : [`${mcp_all}${mcp_delimiter}${mcpServer}`];
+      },
+    );
+    for (const keys of serverToolKeys) {
+      tools.push(...keys);
     }
   }
 

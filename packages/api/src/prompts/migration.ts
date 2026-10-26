@@ -51,9 +51,11 @@ export async function checkPromptPermissionsMigration({
       await ensureRequiredCollectionsExist(db);
     }
 
-    const ownerRole = await methods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_OWNER);
-    const viewerRole = await methods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_VIEWER);
-    const editorRole = await methods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_EDITOR);
+    const [ownerRole, viewerRole, editorRole] = await Promise.all([
+      methods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_OWNER),
+      methods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_VIEWER),
+      methods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_EDITOR),
+    ]);
 
     if (!ownerRole || !viewerRole || !editorRole) {
       logger.warn(
@@ -66,21 +68,21 @@ export async function checkPromptPermissionsMigration({
       };
     }
 
-    let globalPromptGroupIds = new Set<string>();
-    if (db) {
-      const project = await db
-        .collection('projects')
-        .findOne({ name: GLOBAL_PROJECT_NAME }, { projection: { promptGroupIds: 1 } });
-      globalPromptGroupIds = new Set(
-        (project?.promptGroupIds || []).map((id: { toString(): string }) => id.toString()),
-      );
-    }
-
     const AclEntry = mongoose.model('AclEntry');
-    const migratedGroupIds = await AclEntry.distinct('resourceId', {
-      resourceType: ResourceType.PROMPTGROUP,
-      principalType: PrincipalType.USER,
-    });
+    const [project, migratedGroupIds] = await Promise.all([
+      db
+        ? db
+            .collection('projects')
+            .findOne({ name: GLOBAL_PROJECT_NAME }, { projection: { promptGroupIds: 1 } })
+        : Promise.resolve(null),
+      AclEntry.distinct('resourceId', {
+        resourceType: ResourceType.PROMPTGROUP,
+        principalType: PrincipalType.USER,
+      }),
+    ]);
+    const globalPromptGroupIds = new Set<string>(
+      (project?.promptGroupIds || []).map((id: { toString(): string }) => id.toString()),
+    );
 
     const promptGroupsToMigrate = (await PromptGroupModel.find({
       _id: { $nin: migratedGroupIds },
