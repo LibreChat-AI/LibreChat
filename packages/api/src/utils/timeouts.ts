@@ -7,6 +7,7 @@ export const DEFAULT_OUTBOUND_TIMEOUTS_MS = {
   actionsMs: 300_000,
   moderationMs: 10_000,
   imageFetchMs: 30_000,
+  imageGenMs: 600_000,
 } as const;
 
 export type OutboundTimeout = keyof typeof DEFAULT_OUTBOUND_TIMEOUTS_MS;

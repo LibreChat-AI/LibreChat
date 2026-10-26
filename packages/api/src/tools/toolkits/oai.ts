@@ -1,6 +1,8 @@
+import type { AppConfig } from '@librechat/data-schemas';
 import type { Dispatcher } from 'undici';
 import type { ExtendedJsonSchema } from '../registry/schema';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
+import { getOutboundTimeoutMs } from '~/utils/timeouts';
 
 /** Default descriptions for image generation tool  */
 const DEFAULT_IMAGE_GEN_DESCRIPTION =
@@ -165,38 +167,28 @@ export const oaiToolkit: {
 } as const;
 
 type ImageGenClientOptions = {
-  timeout?: number;
+  timeout: number;
   maxRetries?: number;
-  fetchOptions?: { dispatcher: Dispatcher };
+  fetchOptions: { dispatcher: Dispatcher };
 };
 
-const parseInteger = (value?: string): number | undefined => {
-  if (value == null || value.trim() === '') {
-    return undefined;
-  }
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
-};
-
-/** OpenAI client options for `image_gen_oai`; unset or invalid values keep the client defaults. */
-export function getImageGenClientOptions(): ImageGenClientOptions {
-  const options: ImageGenClientOptions = {};
-  const maxRetries = parseInteger(process.env.IMAGE_GEN_OAI_MAX_RETRIES);
-  if (maxRetries != null && maxRetries >= 0) {
-    options.maxRetries = maxRetries;
-  }
-
-  const timeout = parseInteger(process.env.IMAGE_GEN_OAI_TIMEOUT_MS);
-  if (timeout == null || timeout <= 0) {
-    const dispatcher = getProxyDispatcher();
-    return dispatcher ? { ...options, fetchOptions: { dispatcher } } : options;
-  }
-
+/** OpenAI client options for `image_gen_oai`, bounded by `timeouts.imageGenMs`. */
+export function getImageGenClientOptions(
+  appConfig?: Pick<AppConfig, 'timeouts'> | null,
+): ImageGenClientOptions {
+  const timeout = getOutboundTimeoutMs(appConfig, 'imageGenMs');
   /** undici's default 300 s headers/body timeouts would otherwise end a longer request first */
   const transport = { headersTimeout: timeout, bodyTimeout: timeout };
-  options.timeout = timeout;
-  options.fetchOptions = {
-    dispatcher: getProxyDispatcher(undefined, transport) ?? getDirectDispatcher(transport),
+  const options: ImageGenClientOptions = {
+    timeout,
+    fetchOptions: {
+      dispatcher: getProxyDispatcher(undefined, transport) ?? getDirectDispatcher(transport),
+    },
   };
+  const retries = process.env.IMAGE_GEN_OAI_MAX_RETRIES?.trim();
+  const maxRetries = retries ? Number(retries) : Number.NaN;
+  if (Number.isSafeInteger(maxRetries) && maxRetries >= 0) {
+    options.maxRetries = maxRetries;
+  }
   return options;
 }

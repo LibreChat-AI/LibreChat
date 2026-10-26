@@ -275,7 +275,6 @@ describe('OpenAIImageTools - client timeout and retries', () => {
     originalEnv = { ...process.env };
 
     process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
-    delete process.env.IMAGE_GEN_OAI_TIMEOUT_MS;
     delete process.env.IMAGE_GEN_OAI_MAX_RETRIES;
 
     OpenAI.mockImplementation(() => ({
@@ -291,35 +290,32 @@ describe('OpenAIImageTools - client timeout and retries', () => {
     process.env = originalEnv;
   });
 
-  const createTools = () =>
-    createOpenAIImageTools({
+  const generate = async (config) => {
+    const [imageGenTool] = createOpenAIImageTools({
       isAgent: true,
       override: false,
-      req: { user: { id: 'test-user' } },
+      req: { user: { id: 'test-user' }, config },
     });
+    await imageGenTool.func({ prompt: 'test prompt' });
+    return OpenAI.mock.calls[0][0];
+  };
 
-  it('should pass IMAGE_GEN_OAI_TIMEOUT_MS and IMAGE_GEN_OAI_MAX_RETRIES to the OpenAI client', async () => {
-    process.env.IMAGE_GEN_OAI_TIMEOUT_MS = '1800000';
+  it('should pass timeouts.imageGenMs and IMAGE_GEN_OAI_MAX_RETRIES to the OpenAI client', async () => {
     process.env.IMAGE_GEN_OAI_MAX_RETRIES = '0';
 
-    const [imageGenTool] = createTools();
-    await imageGenTool.func({ prompt: 'test prompt' });
+    const clientConfig = await generate({ timeouts: { imageGenMs: 1800000 } });
 
-    expect(OpenAI).toHaveBeenCalledWith(
-      expect.objectContaining({
-        timeout: 1800000,
-        maxRetries: 0,
-        fetchOptions: { dispatcher: expect.anything() },
-      }),
-    );
+    expect(clientConfig).toMatchObject({
+      timeout: 1800000,
+      maxRetries: 0,
+      fetchOptions: { dispatcher: expect.anything() },
+    });
   });
 
-  it('should keep the OpenAI client defaults when the env vars are unset', async () => {
-    const [imageGenTool] = createTools();
-    await imageGenTool.func({ prompt: 'test prompt' });
+  it('should use the default budget and client retries when unset', async () => {
+    const clientConfig = await generate(undefined);
 
-    const [clientConfig] = OpenAI.mock.calls[0];
-    expect(clientConfig).not.toHaveProperty('timeout');
+    expect(clientConfig.timeout).toBe(600000);
     expect(clientConfig).not.toHaveProperty('maxRetries');
   });
 });

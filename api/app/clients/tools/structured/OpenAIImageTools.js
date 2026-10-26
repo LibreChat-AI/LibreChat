@@ -128,7 +128,7 @@ function createOpenAIImageTools(fields = {}) {
         throw new Error('Missing required field: prompt');
       }
       /** @type {OpenAI} */
-      const openai = new OpenAI({ ...closureConfig, ...getImageGenClientOptions() });
+      const openai = new OpenAI({ ...closureConfig, ...getImageGenClientOptions(req?.config) });
       let output_format = imageOutputType;
       if (
         background === 'transparent' &&

@@ -2707,6 +2707,8 @@ export const outboundTimeoutsSchema = z.object({
   moderationMs: outboundTimeoutMs,
   /** Fetching a stored image by URL to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
+  /** Each `image_gen_oai` generation request. */
+  imageGenMs: outboundTimeoutMs,
 });
 
 export type TOutboundTimeouts = z.infer<typeof outboundTimeoutsSchema>;
