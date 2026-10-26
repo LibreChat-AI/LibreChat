@@ -34,6 +34,7 @@ const {
   createToolCallPartHandler,
   createSubagentAttachmentCallsHandler,
   rejectToolCallPreviewWrites,
+  parseMessagesPageSize,
   withMessageToolCallPreviews,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
@@ -132,8 +133,7 @@ router.get('/', async (req, res) => {
       messageId,
       search,
     } = req.query;
-    const parsedPageSize = parseInt(pageSizeRaw, 10);
-    const pageSize = Number.isFinite(parsedPageSize) && parsedPageSize > 0 ? parsedPageSize : 25;
+    const pageSize = parseMessagesPageSize(pageSizeRaw);
 
     let response;
     const sortField = ['endpoint', 'createdAt', 'updatedAt'].includes(sortBy)

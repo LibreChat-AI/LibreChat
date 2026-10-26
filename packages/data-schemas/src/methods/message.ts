@@ -960,6 +960,24 @@ export interface MessageMethods {
   deleteMessages(filter: FilterQuery<IMessage>): Promise<DeleteResult>;
 }
 
+const DATE_SORT_FIELDS = new Set(['createdAt', 'updatedAt']);
+const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
+
+/** Encodes the last row of a page as `<sortValue>|<_id>`; dates use ISO strings so milliseconds survive. */
+function formatMessageCursor(value: unknown, id: unknown): string {
+  const sortValue = value instanceof Date ? value.toISOString() : String(value ?? '');
+  return id == null ? sortValue : `${sortValue}|${String(id)}`;
+}
+
+/** Accepts both the compound cursor and the legacy bare sort value from older clients. */
+function parseMessageCursor(cursor: string): { value: string; id?: string } {
+  const split = cursor.lastIndexOf('|');
+  if (split > 0 && OBJECT_ID_PATTERN.test(cursor.slice(split + 1))) {
+    return { value: cursor.slice(0, split), id: cursor.slice(split + 1) };
+  }
+  return { value: cursor };
+}
+
 /** The agent-ownership rule shared by background-tool settling and claiming:
  * `agentId` on the part wins, then `tool_call.agentId`, and a part without
  * agent identity belongs to any caller (single-agent runs). `field: null`
@@ -4247,16 +4265,29 @@ export function createMessageMethods(
   ) {
     const Message = mongoose.models.Message as Model<IMessage>;
     const { sortField = 'createdAt', sortOrder = -1, limit = 25, cursor, select } = options;
-    const queryFilter = { ...filter };
-    if (cursor) {
-      queryFilter[sortField] = sortOrder === 1 ? { $gt: cursor } : { $lt: cursor };
+    const queryFilter: FilterQuery<IMessage> = { ...filter };
+    const position = cursor ? parseMessageCursor(cursor) : null;
+    if (position != null) {
+      const op = sortOrder === 1 ? '$gt' : '$lt';
+      const value = DATE_SORT_FIELDS.has(sortField) ? new Date(position.value) : position.value;
+      const after: FilterQuery<IMessage> =
+        position.id == null
+          ? { [sortField]: { [op]: value } }
+          : {
+              $or: [
+                { [sortField]: { [op]: value } },
+                { [sortField]: value, _id: { [op]: new mongoose.Types.ObjectId(position.id) } },
+              ],
+            };
+      queryFilter.$and = [...(queryFilter.$and ?? []), after];
     }
     const query = Message.find(queryFilter);
     if (select) {
       query.select(select);
     }
+    /** `_id` makes the order total, so a page boundary inside a run of equal sort values is stable. */
     const messages = await query
-      .sort({ [sortField]: sortOrder })
+      .sort({ [sortField]: sortOrder, _id: sortOrder })
       .limit(limit + 1)
       .lean<IMessage[]>();
 
@@ -4264,9 +4295,7 @@ export function createMessageMethods(
     if (messages.length > limit) {
       messages.pop();
       const last = messages[messages.length - 1];
-      const cursorValue =
-        sortField === 'createdAt' ? last.createdAt : last[sortField as keyof IMessage];
-      nextCursor = String(cursorValue ?? '');
+      nextCursor = formatMessageCursor(last[sortField as keyof IMessage], last._id);
     }
     return { messages, nextCursor };
   }
