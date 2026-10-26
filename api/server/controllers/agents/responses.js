@@ -24,6 +24,7 @@ const {
   createSafeUser,
   initializeAgent,
   loadSkillStates,
+  loadSkillAccess,
   getBalanceConfig,
   injectSkillPrimes,
   extractManualSkills,
@@ -855,25 +856,14 @@ const executeResponse = async (envelope, { req, res }) => {
       const resolveLinkedInstructions = getLinkedInstructionsResolver();
       const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
       const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-      const [accessibleSkillIds, editableSkillIds, skillCreateAllowed] = await Promise.all([
-        skillsCapabilityEnabled
-          ? findAccessibleResources({
-              userId: principal.userId,
-              role: principal.role,
-              resourceType: ResourceType.SKILL,
-              requiredPermissions: PermissionBits.VIEW,
-            }).then(withDeploymentSkillIds)
-          : [],
-        skillsCapabilityEnabled
-          ? findAccessibleResources({
-              userId: principal.userId,
-              role: principal.role,
-              resourceType: ResourceType.SKILL,
-              requiredPermissions: PermissionBits.EDIT,
-            })
-          : [],
-        skillsCapabilityEnabled ? getSkillToolDeps().canCreateSkill({ req }) : false,
-      ]);
+      const { accessibleSkillIds, editableSkillIds, skillCreateAllowed } = await loadSkillAccess(
+        { enabled: skillsCapabilityEnabled, userId: principal.userId, role: principal.role },
+        {
+          findAccessibleResources,
+          withDeploymentSkillIds,
+          canCreateSkill: () => getSkillToolDeps().canCreateSkill({ req }),
+        },
+      );
 
       const { skillStates, defaultActiveOnShare } = await loadSkillStates({
         userId: principal.userId,
