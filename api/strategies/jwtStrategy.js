@@ -4,6 +4,7 @@ const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
 const {
   loadJwtUser,
   isTokenRetired,
+  getAuthUserDocCacheMode,
   AGENT_TRIGGER_SCOPE,
   continueAfterBearerRetirement,
 } = require('@librechat/api');
@@ -42,6 +43,7 @@ const jwtLogin = () =>
         }
         const { user, deleting, remember } = await loadJwtUser(payload?.id, {
           getUserById,
+          cacheMode: getAuthUserDocCacheMode(),
           isPrincipalActive: isAgentTriggerPrincipalActive,
           getCacheStore: () => getLogStores(CacheKeys.AUTH_USER_DOC),
         });

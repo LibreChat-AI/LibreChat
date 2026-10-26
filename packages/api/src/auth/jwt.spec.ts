@@ -1,11 +1,7 @@
 import type { IUser } from '@librechat/data-schemas';
+import type { AuthUserDocCacheMode } from './userDocCache';
 import { buildAuthUserDocReverseIndexKey } from './userDocCache';
-import { cacheConfig } from '~/cache/cacheConfig';
 import { JWT_USER_PROJECTION, loadJwtUser } from './jwt';
-
-const ORIGINAL_MODE = process.env.AUTH_USER_CACHE_MODE;
-const ORIGINAL_USE_REDIS = cacheConfig.USE_REDIS;
-const ORIGINAL_FORCED = [...cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES];
 
 function makeStore() {
   const values = new Map<string, unknown>();
@@ -24,42 +20,25 @@ function makeUser(overrides: Partial<IUser> = {}): IUser {
   return { _id: 'user-1', role: 'USER', email: 'a@example.com', ...overrides } as unknown as IUser;
 }
 
-function makeDeps(user: IUser | null, active = true) {
+function makeDeps(
+  user: IUser | null,
+  { active = true, cacheMode = 'on' as AuthUserDocCacheMode } = {},
+) {
   const store = makeStore();
   return {
     store,
     deps: {
-      getUserById: jest.fn(async () => user),
+      cacheMode,
+      getUserById: jest.fn(async (): Promise<IUser | null> => user),
       isPrincipalActive: jest.fn(async () => active),
       getCacheStore: () => store,
     },
   };
 }
 
-function enableCache(on: boolean) {
-  if (on) {
-    process.env.AUTH_USER_CACHE_MODE = 'on';
-    cacheConfig.USE_REDIS = true;
-    cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES = [];
-  } else {
-    delete process.env.AUTH_USER_CACHE_MODE;
-  }
-}
-
 describe('loadJwtUser', () => {
-  afterEach(() => {
-    if (ORIGINAL_MODE === undefined) {
-      delete process.env.AUTH_USER_CACHE_MODE;
-    } else {
-      process.env.AUTH_USER_CACHE_MODE = ORIGINAL_MODE;
-    }
-    cacheConfig.USE_REDIS = ORIGINAL_USE_REDIS;
-    cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES = [...ORIGINAL_FORCED];
-  });
-
   it('reads the user every request while the cache is off', async () => {
-    enableCache(false);
-    const { deps, store } = makeDeps(makeUser());
+    const { deps, store } = makeDeps(makeUser(), { cacheMode: 'off' });
 
     const first = await loadJwtUser('user-1', deps);
     await first.remember(false);
@@ -71,14 +50,14 @@ describe('loadJwtUser', () => {
   });
 
   it('serves a request burst from the cache and still reads the deletion fence', async () => {
-    enableCache(true);
     const { deps, store } = makeDeps(makeUser());
 
     const first = await loadJwtUser('user-1', deps);
     await first.remember(false);
     const second = await loadJwtUser('user-1', deps);
 
-    expect(deps.getUserById).toHaveBeenCalledTimes(1);
+    /** The miss reads twice (the second confirms the cache write); the hit reads none. */
+    expect(deps.getUserById).toHaveBeenCalledTimes(2);
     expect(deps.isPrincipalActive).toHaveBeenCalledTimes(1);
     expect(second.user).toMatchObject({ _id: 'user-1', role: 'USER' });
     expect(second.deleting).toBe(false);
@@ -87,7 +66,6 @@ describe('loadJwtUser', () => {
   });
 
   it('falls back to the database when a cached principal is no longer active', async () => {
-    enableCache(true);
     const { deps } = makeDeps(makeUser());
     await (await loadJwtUser('user-1', deps)).remember(false);
 
@@ -106,7 +84,6 @@ describe('loadJwtUser', () => {
   });
 
   it('never caches a fenced user', async () => {
-    enableCache(true);
     const { deps, store } = makeDeps(
       makeUser({ agentTriggerDeletionStartedAt: new Date('2026-10-01T00:00:00.000Z') }),
     );
@@ -119,7 +96,6 @@ describe('loadJwtUser', () => {
   });
 
   it('evicts instead of caching when the caller wrote to the user', async () => {
-    enableCache(true);
     const { deps, store } = makeDeps(makeUser({ role: undefined }));
 
     await (await loadJwtUser('user-1', deps)).remember(true);
@@ -127,5 +103,33 @@ describe('loadJwtUser', () => {
 
     expect(store.set).not.toHaveBeenCalled();
     expect(deps.getUserById).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops its own cache write when the user changed after the database read', async () => {
+    const { deps, store } = makeDeps(makeUser());
+    const lookup = await loadJwtUser('user-1', deps);
+
+    /** A credential change commits and evicts between the read and the cache write. */
+    deps.getUserById.mockResolvedValueOnce(
+      makeUser({ credentialsChangedAt: new Date('2026-10-26T00:00:00.000Z') } as Partial<IUser>),
+    );
+    await lookup.remember(false);
+
+    expect(store.set).toHaveBeenCalled();
+    const next = await loadJwtUser('user-1', deps);
+    expect(deps.getUserById).toHaveBeenCalledTimes(3);
+    expect(next.user).toMatchObject({ _id: 'user-1' });
+    expect(deps.isPrincipalActive).not.toHaveBeenCalled();
+  });
+
+  it('evicts its own cache write when the confirming read fails', async () => {
+    const { deps } = makeDeps(makeUser());
+    const lookup = await loadJwtUser('user-1', deps);
+
+    deps.getUserById.mockRejectedValueOnce(new Error('connection reset'));
+    await expect(lookup.remember(false)).resolves.toBeUndefined();
+
+    await loadJwtUser('user-1', deps);
+    expect(deps.isPrincipalActive).not.toHaveBeenCalled();
   });
 });
