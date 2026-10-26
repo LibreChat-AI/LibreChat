@@ -12,12 +12,13 @@ import {
 export const JWT_USER_PROJECTION =
   '-password -__v -totpSecret -backupCodes +agentTriggerDeletionStartedAt';
 
+/** What a cache hit reads to prove the cached document is still the stored one. */
+export const JWT_USER_FRESHNESS_PROJECTION = '_id updatedAt +agentTriggerDeletionStartedAt';
+
 export interface JwtUserLookupDeps {
   /** Resolved by the caller, e.g. from `getAuthUserDocCacheMode()`. */
   cacheMode: AuthUserDocCacheMode;
   getUserById: (userId: string, fieldsToSelect: string) => Promise<IUser | null>;
-  /** Fresh fence read, so a cached document never outlives an account deletion. */
-  isPrincipalActive: (userId: string) => Promise<boolean>;
   getCacheStore: () => AuthUserDocCacheStore;
 }
 
@@ -34,38 +35,33 @@ export interface JwtUserLookup {
 
 const noop = async (): Promise<void> => undefined;
 
+function toTime(value: unknown): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  const time = new Date(value as string | number | Date).getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
 /**
- * Caches a document read from the database, then reads it again: a user mutation that
- * committed after the first read may already have run its eviction, so the write just made
- * would serve the old document. When the second read differs, or fails, the entry is evicted.
- * A mutation committing after the second read evicts the written entry itself.
+ * A cached document is served only while the stored user has the same `updatedAt` and no
+ * deletion fence. Every user mutation that can change authentication or authorization bumps
+ * `updatedAt`, so a document cached from a read that raced a mutation (even one published
+ * after that mutation's eviction) is never served: the next hit sees the newer stamp.
  */
-async function cacheUnlessChanged(
-  store: AuthUserDocCacheStore,
-  cacheKey: string,
-  userId: string,
-  user: IUser,
-  snapshot: string,
-  getUserById: JwtUserLookupDeps['getUserById'],
-): Promise<void> {
-  await setCachedAuthUserDoc(store, cacheKey, user);
-  let current: IUser | null = null;
-  try {
-    current = await runAsSystem(() => getUserById(userId, JWT_USER_PROJECTION));
-  } catch {
-    current = null;
+function isCachedDocCurrent(cached: CachedAuthUser, stored: IUser | null): boolean {
+  if (!stored || stored.agentTriggerDeletionStartedAt != null) {
+    return false;
   }
-  if (!current || JSON.stringify(current) !== snapshot) {
-    await invalidateCachedAuthUserDoc(store, { userId, cacheKey });
-  }
+  return toTime(cached.updatedAt) === toTime(stored.updatedAt);
 }
 
 /**
  * Loads the user for a local JWT bearer, serving request bursts from the auth user document
- * cache when the caller's cache mode is on. Every user mutation evicts that cache through the
- * reverse index, and a cache hit still reads the deletion fence fresh; a hit whose principal is
- * no longer active falls back to the database read, so missing users and fenced users are told
- * apart exactly as without the cache.
+ * cache when the caller's cache mode is on. A cache hit still makes one small read of the
+ * stored `updatedAt` and deletion fence, replacing the full document read; when either
+ * differs from the cached document, the full read runs as without the cache, so missing and
+ * fenced users are told apart exactly as before.
  */
 export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Promise<JwtUserLookup> {
   const cacheKey =
@@ -76,16 +72,21 @@ export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Prom
 
   if (store && cacheKey) {
     const cached = await getCachedAuthUserDoc(store, cacheKey);
-    if (cached && (await runAsSystem(() => deps.isPrincipalActive(userId)))) {
-      return {
-        user: cached,
-        deleting: false,
-        remember: async (userChanged) => {
-          if (userChanged) {
-            await invalidateCachedAuthUserDoc(store, { userId, cacheKey });
-          }
-        },
-      };
+    if (cached) {
+      const stored = await runAsSystem(() =>
+        deps.getUserById(userId, JWT_USER_FRESHNESS_PROJECTION),
+      );
+      if (isCachedDocCurrent(cached, stored)) {
+        return {
+          user: cached,
+          deleting: false,
+          remember: async (userChanged) => {
+            if (userChanged) {
+              await invalidateCachedAuthUserDoc(store, { userId, cacheKey });
+            }
+          },
+        };
+      }
     }
   }
 
@@ -94,8 +95,6 @@ export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Prom
   if (!user || deleting || !store || !cacheKey) {
     return { user, deleting, remember: noop };
   }
-  /** Taken before the caller decorates the document for `req.user`. */
-  const snapshot = JSON.stringify(user);
   return {
     user,
     deleting,
@@ -104,7 +103,7 @@ export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Prom
         await invalidateCachedAuthUserDoc(store, { userId, cacheKey });
         return;
       }
-      await cacheUnlessChanged(store, cacheKey, userId, user, snapshot, deps.getUserById);
+      await setCachedAuthUserDoc(store, cacheKey, user);
     },
   };
 }

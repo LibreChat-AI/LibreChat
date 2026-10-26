@@ -30,7 +30,6 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/models', () => ({
   getUserById: jest.fn(),
   updateUser: jest.fn(),
-  isAgentTriggerPrincipalActive: jest.fn(),
 }));
 
 jest.mock('~/cache/getLogStores', () => jest.fn());

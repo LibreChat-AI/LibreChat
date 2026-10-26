@@ -8,7 +8,7 @@ const {
   AGENT_TRIGGER_SCOPE,
   continueAfterBearerRetirement,
 } = require('@librechat/api');
-const { getUserById, updateUser, isAgentTriggerPrincipalActive } = require('~/models');
+const { getUserById, updateUser } = require('~/models');
 const getLogStores = require('~/cache/getLogStores');
 
 const AGENT_TRIGGER_ADMISSION_PATHS = ['/api/agents/chat/agents', '/api/agents/chat/steer/deliver'];
@@ -44,7 +44,6 @@ const jwtLogin = () =>
         const { user, deleting, remember } = await loadJwtUser(payload?.id, {
           getUserById,
           cacheMode: getAuthUserDocCacheMode(),
-          isPrincipalActive: isAgentTriggerPrincipalActive,
           getCacheStore: () => getLogStores(CacheKeys.AUTH_USER_DOC),
         });
         if (deleting) {
