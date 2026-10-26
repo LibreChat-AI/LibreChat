@@ -10,7 +10,7 @@ export function parseMessagesPageSize(
   const parsed =
     typeof raw === 'string' || typeof raw === 'number' ? parseInt(String(raw), 10) : NaN;
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_MESSAGES_PAGE_SIZE;
+    return Math.min(DEFAULT_MESSAGES_PAGE_SIZE, maxPageSize);
   }
   return Math.min(parsed, maxPageSize);
 }

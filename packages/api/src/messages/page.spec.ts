@@ -19,5 +19,6 @@ describe('parseMessagesPageSize', () => {
   it('honors a configured ceiling', () => {
     expect(parseMessagesPageSize('5000', 2000)).toBe(2000);
     expect(parseMessagesPageSize('50', 2000)).toBe(50);
+    expect(parseMessagesPageSize(undefined, 10)).toBe(10);
   });
 });
