@@ -1,59 +1,28 @@
-const mockWarnOnMissingSearchTokens = jest.fn();
-const mockCheckAgentPermissionsMigration = jest.fn();
-const mockCheckPromptPermissionsMigration = jest.fn();
+const mockCheckStartupMigrations = jest.fn();
+const mockRunAsSystem = jest.fn((fn) => fn());
 
 jest.mock('@librechat/data-schemas', () => ({
-  logger: { error: jest.fn() },
-  runAsSystem: (fn) => fn(),
-  warnOnMissingSearchTokens: (...args) => mockWarnOnMissingSearchTokens(...args),
+  runAsSystem: (fn) => mockRunAsSystem(fn),
 }));
 jest.mock('@librechat/api', () => ({
-  logAgentMigrationWarning: jest.fn(),
-  logPromptMigrationWarning: jest.fn(),
-  checkAgentPermissionsMigration: (...args) => mockCheckAgentPermissionsMigration(...args),
-  checkPromptPermissionsMigration: (...args) => mockCheckPromptPermissionsMigration(...args),
+  checkStartupMigrations: (...args) => mockCheckStartupMigrations(...args),
 }));
 jest.mock('~/models', () => ({ findRoleByIdentifier: jest.fn() }));
 
-const { logger } = require('@librechat/data-schemas');
+const mongoose = require('mongoose');
+const { findRoleByIdentifier } = require('~/models');
 const { checkMigrations } = require('../migration');
 
-describe('checkMigrations', () => {
-  it('starts the search token probe while the permission checks are still running', async () => {
-    let finishAgentCheck;
-    mockCheckAgentPermissionsMigration.mockReturnValue(
-      new Promise((resolve) => {
-        finishAgentCheck = resolve;
-      }),
-    );
-    mockCheckPromptPermissionsMigration.mockResolvedValue({});
-    mockWarnOnMissingSearchTokens.mockResolvedValue(undefined);
-
-    const done = checkMigrations();
-    expect(mockWarnOnMissingSearchTokens).toHaveBeenCalledTimes(1);
-
-    expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledTimes(1);
-
-    finishAgentCheck({});
-    await done;
-  });
-});
-
-it('labels permission check failures and still awaits the search probe', async () => {
-  const agentError = new Error('Agent check failed');
-  const promptError = new Error('Prompt check failed');
-  mockCheckAgentPermissionsMigration.mockRejectedValueOnce(agentError);
-  mockCheckPromptPermissionsMigration.mockRejectedValueOnce(promptError);
-  mockWarnOnMissingSearchTokens.mockResolvedValueOnce(undefined);
+it('runs the startup checks as the system with the app models', async () => {
+  mockCheckStartupMigrations.mockResolvedValueOnce(undefined);
 
   await expect(checkMigrations()).resolves.toBeUndefined();
 
-  expect(logger.error).toHaveBeenCalledWith(
-    '[checkMigrations] Failed to check agent permissions migration:',
-    agentError,
-  );
-  expect(logger.error).toHaveBeenCalledWith(
-    '[checkMigrations] Failed to check prompt permissions migration:',
-    promptError,
-  );
+  expect(mockRunAsSystem).toHaveBeenCalledTimes(1);
+  expect(mockCheckStartupMigrations).toHaveBeenCalledWith({
+    mongoose,
+    methods: { findRoleByIdentifier },
+    AgentModel: mongoose.models.Agent,
+    PromptGroupModel: mongoose.models.PromptGroup,
+  });
 });
