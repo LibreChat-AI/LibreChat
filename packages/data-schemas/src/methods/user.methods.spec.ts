@@ -1939,6 +1939,48 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('updateUserPlugins', () => {
+    test('keeps concurrent installs made from the same stale snapshot', async () => {
+      const user = await User.create({
+        name: 'Test User',
+        email: 'test@example.com',
+        provider: 'local',
+        plugins: ['existing'],
+      });
+      const userId = user._id?.toString() ?? '';
+      const staleSnapshot = ['existing'];
+
+      await Promise.all([
+        methods.updateUserPlugins(userId, staleSnapshot, 'alpha', 'install'),
+        methods.updateUserPlugins(userId, staleSnapshot, 'beta', 'install'),
+        methods.updateUserPlugins(userId, staleSnapshot, 'alpha', 'install'),
+      ]);
+
+      const stored = await User.findById(userId).lean();
+      expect([...(stored?.plugins ?? [])].sort()).toEqual(['alpha', 'beta', 'existing']);
+    });
+
+    test('uninstall removes only the target plugin, ignoring the stale snapshot', async () => {
+      const user = await User.create({
+        name: 'Test User',
+        email: 'test@example.com',
+        provider: 'local',
+        plugins: ['alpha', 'beta', 'gamma'],
+      });
+      const userId = user._id?.toString() ?? '';
+
+      const updated = await methods.updateUserPlugins(userId, ['alpha'], 'alpha', 'uninstall');
+
+      expect(updated?.plugins).toEqual(['beta', 'gamma']);
+    });
+
+    test('returns null for an unknown user', async () => {
+      const fakeId = new mongoose.Types.ObjectId().toString();
+      const result = await methods.updateUserPlugins(fakeId, [], 'alpha', 'install');
+      expect(result).toBeNull();
+    });
+  });
+
   describe('toggleUserMemories', () => {
     test('should enable memories for user', async () => {
       const user = await User.create({
