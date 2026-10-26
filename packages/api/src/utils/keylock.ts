@@ -24,7 +24,8 @@ export function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
  */
 export function createSingleFlight(
   task: () => Promise<unknown>,
-  onError: (error: unknown) => void,
+  log: { error: (message: string, error: unknown) => void },
+  label: string,
 ): () => void {
   let running = false;
   return () => {
@@ -33,7 +34,7 @@ export function createSingleFlight(
     }
     running = true;
     task()
-      .catch(onError)
+      .catch((error) => log.error(`${label} failed`, error))
       .finally(() => {
         running = false;
       });

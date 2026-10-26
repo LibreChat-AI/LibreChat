@@ -30,13 +30,14 @@ describe('createSingleFlight', () => {
         }),
     );
     const onError = jest.fn();
-    const tick = createSingleFlight(task, onError);
+    const tick = createSingleFlight(task, { error: onError }, '[Test] sweep');
     tick();
     tick();
     expect(task).toHaveBeenCalledTimes(1);
     release();
     await new Promise((resolve) => setImmediate(resolve));
     expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith('[Test] sweep failed', expect.any(Error));
     tick();
     expect(task).toHaveBeenCalledTimes(2);
   });

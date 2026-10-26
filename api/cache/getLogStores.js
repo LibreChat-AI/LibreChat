@@ -177,9 +177,7 @@ if (!cacheConfig.USE_REDIS && !cacheConfig.CI) {
 
   // Clear expired entries every 30 seconds
   const cleanup = setInterval(
-    createSingleFlight(clearAllExpiredFromCache, (error) =>
-      logger.error('[Cache] Expired entry sweep failed', error),
-    ),
+    createSingleFlight(clearAllExpiredFromCache, logger, '[Cache] Expired entry sweep'),
     Time.THIRTY_SECONDS,
   );
 
