@@ -13,6 +13,12 @@ export type InsightsAccessUser = {
   idOnTheSource?: string | null;
 };
 
+/** Eligibility only: detailed inspection also requires the effective YAML setting. */
+export type InsightsAccess = {
+  agents: TInsightsAgent[];
+  detailAgentIds: string[];
+};
+
 export type InsightsAgentAccessDeps = {
   getAgents: (
     filter: Record<string, unknown>,
@@ -41,50 +47,92 @@ const toChoice = (agent: AgentRecord): TInsightsAgent => ({
   name: agent.name?.trim() || agent.id,
 });
 
-export function createInsightsAgentAccessResolver(deps: InsightsAgentAccessDeps) {
-  return async (user: InsightsAccessUser): Promise<TInsightsAgent[]> => {
+const sortChoices = (agents: AgentRecord[]): TInsightsAgent[] =>
+  agents.map(toChoice).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+
+function createAccessResolver(deps: InsightsAgentAccessDeps, includeEditableAgents: boolean) {
+  return async (user: InsightsAccessUser): Promise<InsightsAccess> => {
     const tenantFilter = user.tenantId
       ? { tenantId: user.tenantId }
       : { tenantId: { $exists: false } };
-    const agentsPromise = deps.getAgents(tenantFilter, '_id id name tenantId');
-
     if (user.role === SystemRoles.ADMIN) {
-      return (await agentsPromise)
-        .map(toChoice)
-        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      const agents = sortChoices(await deps.getAgents(tenantFilter, '_id id name tenantId'));
+      return { agents, detailAgentIds: agents.map((agent) => agent.id) };
     }
 
-    const principals = await deps.getUserPrincipals({
+    const principalsPromise = deps.getUserPrincipals({
       userId: user.id,
       role: user.role,
       idOnTheSource: user.idOnTheSource,
     });
-    const [agents, hasGlobalAccess] = await Promise.all([
-      agentsPromise,
-      deps.hasCapabilityForPrincipals({
-        principals,
-        capability: SystemCapabilities.READ_INSIGHTS,
-        tenantId: user.tenantId,
-      }),
+    const [agents, principals, hasGlobalAccess] = await Promise.all([
+      deps.getAgents(tenantFilter, '_id id name tenantId'),
+      principalsPromise,
+      principalsPromise.then((principals) =>
+        deps.hasCapabilityForPrincipals({
+          principals,
+          capability: SystemCapabilities.READ_INSIGHTS,
+          tenantId: user.tenantId,
+        }),
+      ),
     ]);
 
-    let accessibleAgents = agents;
-    if (!hasGlobalAccess && agents.length > 0) {
-      const privatePrincipals = principals.filter(
-        (principal) => principal.principalType !== PrincipalType.PUBLIC,
-      );
-      const resourceIds = await deps.findAccessibleResources(
+    if (hasGlobalAccess) {
+      const choices = sortChoices(agents);
+      return { agents: choices, detailAgentIds: choices.map((agent) => agent.id) };
+    }
+    const privatePrincipals = principals.filter(
+      (principal) => principal.principalType !== PrincipalType.PUBLIC,
+    );
+    if (agents.length === 0 || privatePrincipals.length === 0) {
+      return { agents: [], detailAgentIds: [] };
+    }
+
+    const candidates = agents.map((agent) => agent._id);
+    const [detailResources, editableResources] = await Promise.all([
+      deps.findAccessibleResources(
         privatePrincipals,
         ResourceType.AGENT,
         PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
-        agents.map((agent) => agent._id),
-      );
-      const allowed = new Set(resourceIds.map((id) => id.toString()));
-      accessibleAgents = agents.filter((agent) => allowed.has(agent._id.toString()));
-    }
-
-    return accessibleAgents
-      .map(toChoice)
-      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+        candidates,
+      ),
+      includeEditableAgents
+        ? deps.findAccessibleResources(
+            privatePrincipals,
+            ResourceType.AGENT,
+            PermissionBits.VIEW | PermissionBits.EDIT,
+            candidates,
+          )
+        : Promise.resolve([]),
+    ]);
+    const detailIds = new Set(detailResources.map(String));
+    const editableIds = new Set(editableResources.map(String));
+    const detailAgentIds: string[] = [];
+    const choices = sortChoices(
+      agents.filter((agent) => {
+        if (detailIds.has(String(agent._id))) {
+          detailAgentIds.push(agent.id);
+          return true;
+        }
+        return editableIds.has(String(agent._id));
+      }),
+    );
+    return { agents: choices, detailAgentIds: detailAgentIds.sort() };
   };
+}
+
+/** Resolve aggregate access separately from existing inspection eligibility. */
+export function createInsightsAccessResolver(
+  deps: InsightsAgentAccessDeps,
+): (user: InsightsAccessUser) => Promise<InsightsAccess> {
+  return createAccessResolver(deps, true);
+}
+
+/** Preserve the existing route contract until the separate eligibility is enforced there. */
+export function createInsightsAgentAccessResolver(
+  deps: InsightsAgentAccessDeps,
+): (user: InsightsAccessUser) => Promise<TInsightsAgent[]> {
+  const resolveAccess = createAccessResolver(deps, false);
+  return async (user: InsightsAccessUser): Promise<TInsightsAgent[]> =>
+    (await resolveAccess(user)).agents;
 }
