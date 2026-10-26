@@ -37,7 +37,12 @@ function createScopedInsightsMethods() {
   const methods = createInsightsMethods(mongoose);
   return {
     getInsights: (options: Parameters<typeof methods.getInsights>[0]) =>
-      methods.getInsights({ ...options, agents: selectedAgents, agentIds: ['agent-a'] }),
+      methods.getInsights({
+        ...options,
+        showDetails: true,
+        agents: selectedAgents,
+        agentIds: ['agent-a'],
+      }),
   };
 }
 
@@ -66,6 +71,109 @@ beforeEach(async () => {
 });
 
 describe('Insights methods', () => {
+  it('returns the same aggregate totals without querying detail, identities or first-message text', async () => {
+    const now = new Date();
+    const userId = new mongoose.Types.ObjectId();
+    const privateValue = 'private-content-sentinel';
+    await mongoose.models.User.collection.insertOne({
+      _id: userId,
+      tenantId: 'tenant-a',
+      name: privateValue,
+      email: `${privateValue}@example.com`,
+    });
+    await fixtures.conversations.insertOne({
+      conversationId: privateValue,
+      user: userId.toString(),
+      tenantId: 'tenant-a',
+      initial_agent_id: 'agent-a',
+      createdAt: now,
+      updatedAt: now,
+      isTemporary: false,
+    });
+    await fixtures.messages.insertMany([
+      {
+        messageId: 'prompt',
+        conversationId: privateValue,
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        createdAt: now,
+        isCreatedByUser: true,
+        isTemporary: false,
+        text: privateValue,
+        tokenCount: 3,
+      },
+      {
+        messageId: 'response',
+        model: 'agent-a',
+        conversationId: privateValue,
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        createdAt: now,
+        isCreatedByUser: false,
+        isTemporary: false,
+        text: privateValue,
+        tokenCount: 5,
+      },
+    ]);
+    const methods = createInsightsMethods(mongoose);
+    const options = {
+      tenantId: 'tenant-a',
+      range: '7d' as const,
+      agents: selectedAgents,
+      agentIds: ['agent-a'],
+    };
+    const detailed = await methods.getInsights({ ...options, showDetails: true });
+    const userFind = jest.spyOn(mongoose.models.User, 'find');
+    const conversationAggregate = jest.spyOn(mongoose.models.Conversation, 'aggregate');
+    const messageAggregate = jest.spyOn(mongoose.models.Message, 'aggregate');
+    const aggregate = await methods.getInsights({
+      ...options,
+      showDetails: false,
+      search: privateValue,
+      page: 50,
+      pageSize: 50,
+    });
+    expect(aggregate).toEqual({
+      agents: detailed.agents,
+      summary: detailed.summary,
+      daily: detailed.daily,
+    });
+    expect(aggregate.summary).toEqual({
+      totalUsers: 1,
+      totalConversations: 1,
+      totalMessages: 2,
+      totalTokens: 8,
+    });
+    expect(Object.keys(aggregate).sort()).toEqual(['agents', 'daily', 'summary']);
+    expect(JSON.stringify(aggregate)).not.toContain(privateValue);
+    expect(userFind).not.toHaveBeenCalled();
+    expect(conversationAggregate).toHaveBeenCalledTimes(1);
+    expect(messageAggregate).toHaveBeenCalledTimes(3);
+    const pipelines = [...conversationAggregate.mock.calls, ...messageAggregate.mock.calls];
+    const serialized = JSON.stringify(pipelines);
+    expect(serialized).not.toContain('matchedIdentity');
+    expect(serialized).not.toContain('firstMessage');
+    expect(serialized).not.toContain('"$first"');
+    expect(serialized).not.toContain('"$limit"');
+  });
+
+  it('omits detail sections for an empty aggregate result', async () => {
+    const result = await createInsightsMethods(mongoose).getInsights({
+      showDetails: false,
+      tenantId: 'tenant-a',
+      agentIds: ['agent-a'],
+    });
+    expect(result.summary).toEqual({
+      totalUsers: 0,
+      totalConversations: 0,
+      totalMessages: 0,
+      totalTokens: 0,
+    });
+    expect(result).not.toHaveProperty('topUsers');
+    expect(result).not.toHaveProperty('churnedUsers');
+    expect(result).not.toHaveProperty('latest');
+  });
+
   it('counts active users from prompts and all messages for top users within the tenant', async () => {
     const now = new Date();
     const activeAt = new Date(now.getTime() - 24 * 60 * 60 * 1000);

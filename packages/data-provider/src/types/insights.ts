@@ -61,10 +61,13 @@ export type TInsightsSummary = {
   totalTokens: number;
 };
 
-export type TInsightsResponse = {
+export type TInsightsAggregateResponse = {
   agents: TInsightsAgent[];
   summary: TInsightsSummary;
   daily: TInsightsDailyPoint[];
+};
+
+export type TInsightsDetailSections = {
   topUsers: TInsightsUser[];
   churnedUsers: TInsightsChurnedUser[];
   latest: {
@@ -74,6 +77,9 @@ export type TInsightsResponse = {
     pages: number;
   };
 };
+
+export type TInsightsDetailedResponse = TInsightsAggregateResponse & TInsightsDetailSections;
+export type TInsightsResponse = TInsightsAggregateResponse & Partial<TInsightsDetailSections>;
 
 export type TInsightsAccessResponse = {
   access: boolean;

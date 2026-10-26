@@ -4,10 +4,12 @@ import {
   INSIGHTS_SEARCH_MIN_LENGTH,
 } from 'librechat-data-provider';
 import type {
+  TInsightsAggregateResponse,
   TInsightsAgent,
   TInsightsChurnedUser,
   TInsightsConversation,
   TInsightsDailyPoint,
+  TInsightsDetailedResponse,
   TInsightsParams,
   TInsightsResponse,
   TInsightsUser,
@@ -18,12 +20,19 @@ import type { IConversation, IMessage, IUser } from '~/types';
 export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
   agents?: TInsightsAgent[];
+  showDetails?: boolean;
 };
 
 export type InsightsResult = TInsightsResponse;
 
 export type InsightsMethods = {
-  getInsights: (options?: InsightsOptions) => Promise<InsightsResult>;
+  getInsights(
+    options?: InsightsOptions & { showDetails?: true },
+  ): Promise<TInsightsDetailedResponse>;
+  getInsights(
+    options: InsightsOptions & { showDetails: false },
+  ): Promise<TInsightsAggregateResponse>;
+  getInsights(options?: InsightsOptions): Promise<InsightsResult>;
 };
 
 type CountResult = { total: number };
@@ -285,10 +294,18 @@ const toUser = (
 };
 
 export function createInsightsMethods(mongoose: typeof import('mongoose')): InsightsMethods {
+  async function getInsights(
+    options?: InsightsOptions & { showDetails?: true },
+  ): Promise<TInsightsDetailedResponse>;
+  async function getInsights(
+    options: InsightsOptions & { showDetails: false },
+  ): Promise<TInsightsAggregateResponse>;
+  async function getInsights(options?: InsightsOptions): Promise<InsightsResult>;
   async function getInsights(options: InsightsOptions = {}): Promise<InsightsResult> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const Message = mongoose.models.Message as Model<IMessage>;
     const User = mongoose.models.User as Model<IUser>;
+    const showDetails = options.showDetails !== false;
     const page = Math.max(1, Math.floor(options.page ?? 1));
     const pageSize = Math.min(50, Math.max(5, Math.floor(options.pageSize ?? 10)));
     const agentIds = [...new Set(options.agentIds ?? [])].sort((a, b) => a.localeCompare(b));
@@ -314,7 +331,8 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const messagePipeline = messageScope(messageMatch, agentIds, options.tenantId);
 
     const requestedSearch = options.search?.trim().slice(0, INSIGHTS_SEARCH_MAX_LENGTH) ?? '';
-    const search = requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH ? requestedSearch : '';
+    const search =
+      showDetails && requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH ? requestedSearch : '';
     const searchRegex = search ? new RegExp(escapeRegex(search), 'i') : undefined;
     const searchedConversationPipeline: PipelineStage[] = searchRegex
       ? [
@@ -378,21 +396,23 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         { $project: { _id: 0, date: '$_id', conversations: 1 } },
         { $sort: { date: 1 } },
       ]),
-      Conversation.aggregate<RecentConversation>([
-        ...searchedConversationPipeline,
-        { $sort: { createdAt: -1, _id: -1 } },
-        { $skip: (page - 1) * pageSize },
-        { $limit: pageSize },
-        {
-          $project: {
-            _id: 0,
-            conversationId: 1,
-            agentId: '$insightsAgentId',
-            date: '$createdAt',
-            userId: '$user',
-          },
-        },
-      ]),
+      showDetails
+        ? Conversation.aggregate<RecentConversation>([
+            ...searchedConversationPipeline,
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $skip: (page - 1) * pageSize },
+            { $limit: pageSize },
+            {
+              $project: {
+                _id: 0,
+                conversationId: 1,
+                agentId: '$insightsAgentId',
+                date: '$createdAt',
+                userId: '$user',
+              },
+            },
+          ])
+        : Promise.resolve([] as RecentConversation[]),
       searchRegex
         ? Conversation.aggregate<CountResult>([
             ...searchedConversationPipeline,
@@ -432,30 +452,65 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         { $project: { _id: 0, date: '$_id', users: 1 } },
         { $sort: { date: 1 } },
       ]),
-      Message.aggregate<MessageSummary>([
-        ...messagePipeline,
-        { $group: { _id: '$user', messages: { $sum: 1 } } },
-        { $sort: { messages: -1, _id: 1 } },
-        { $limit: 8 },
-      ]),
-      Message.aggregate<ChurnedUserActivity>([
-        ...messageScope(
-          {
-            ...tenant,
-            isTemporary: { $ne: true },
-            isCreatedByUser: true,
-            user: { $nin: [null, ''] },
-            createdAt: { $gte: churnedActivityFrom, $lte: to },
-          },
-          agentIds,
-          options.tenantId,
-        ),
-        { $group: { _id: '$user', lastSeen: { $max: '$createdAt' } } },
-        { $match: { lastSeen: { $gte: churnedActivityFrom, $lte: churnedCutoff } } },
-        { $sort: { lastSeen: -1, _id: 1 } },
-        { $limit: churnedUserLimit },
-      ]),
+      showDetails
+        ? Message.aggregate<MessageSummary>([
+            ...messagePipeline,
+            { $group: { _id: '$user', messages: { $sum: 1 } } },
+            { $sort: { messages: -1, _id: 1 } },
+            { $limit: 8 },
+          ])
+        : Promise.resolve([] as MessageSummary[]),
+      showDetails
+        ? Message.aggregate<ChurnedUserActivity>([
+            ...messageScope(
+              {
+                ...tenant,
+                isTemporary: { $ne: true },
+                isCreatedByUser: true,
+                user: { $nin: [null, ''] },
+                createdAt: { $gte: churnedActivityFrom, $lte: to },
+              },
+              agentIds,
+              options.tenantId,
+            ),
+            { $group: { _id: '$user', lastSeen: { $max: '$createdAt' } } },
+            { $match: { lastSeen: { $gte: churnedActivityFrom, $lte: churnedCutoff } } },
+            { $sort: { lastSeen: -1, _id: 1 } },
+            { $limit: churnedUserLimit },
+          ])
+        : Promise.resolve([] as ChurnedUserActivity[]),
     ]);
+
+    const days = new Map<string, TInsightsDailyPoint>();
+    const firstDay = dateKey(from, timeZone);
+    const lastDay = dateKey(to, timeZone);
+    for (let key = firstDay; key <= lastDay; key = addCalendarDaysToKey(key, 1)) {
+      addDay(days, key);
+    }
+    for (const row of conversationDays) addDay(days, row.date).conversations = row.conversations;
+    for (const row of messageDays) {
+      const day = addDay(days, row.date);
+      day.messages = row.messages;
+      day.totalTokens = row.totalTokens;
+    }
+    for (const row of dailyUsers) addDay(days, row.date).users = row.users;
+    const totalConversations = conversationDays.reduce(
+      (total, row) => total + row.conversations,
+      0,
+    );
+    const aggregate: TInsightsAggregateResponse = {
+      agents: options.agents ?? [],
+      summary: {
+        totalUsers: userCount[0]?.total ?? 0,
+        totalConversations,
+        totalMessages: messageDays.reduce((total, row) => total + row.messages, 0),
+        totalTokens: messageDays.reduce((total, row) => total + row.totalTokens, 0),
+      },
+      daily: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)),
+    };
+    if (!showDetails) {
+      return aggregate;
+    }
 
     const latestConversationOwners = latestRows
       .filter(
@@ -580,24 +635,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const firstByConversation = new Map(
       firstMessages.map((message) => [conversationOwnerKey(message._id), message.text]),
     );
-    const days = new Map<string, TInsightsDailyPoint>();
-    const firstDay = dateKey(from, timeZone);
-    const lastDay = dateKey(to, timeZone);
-    for (let key = firstDay; key <= lastDay; key = addCalendarDaysToKey(key, 1)) {
-      addDay(days, key);
-    }
-    for (const row of conversationDays) addDay(days, row.date).conversations = row.conversations;
-    for (const row of messageDays) {
-      const day = addDay(days, row.date);
-      day.messages = row.messages;
-      day.totalTokens = row.totalTokens;
-    }
-    for (const row of dailyUsers) addDay(days, row.date).users = row.users;
-
-    const totalConversations = conversationDays.reduce(
-      (total, row) => total + row.conversations,
-      0,
-    );
     const matchingConversations = searchRegex
       ? (searchedConversationCount[0]?.total ?? 0)
       : totalConversations;
@@ -609,14 +646,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     );
 
     return {
-      agents: options.agents ?? [],
-      summary: {
-        totalUsers: userCount[0]?.total ?? 0,
-        totalConversations,
-        totalMessages: messageDays.reduce((total, row) => total + row.messages, 0),
-        totalTokens: messageDays.reduce((total, row) => total + row.totalTokens, 0),
-      },
-      daily: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)),
+      ...aggregate,
       topUsers: topMessageUsers.map((row) =>
         toUser(row._id, topConversationCountsByUser.get(row._id) ?? 0, users, row),
       ),
