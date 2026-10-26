@@ -1,3 +1,4 @@
+import { isMemoryAgentEnabled } from '@librechat/data-schemas';
 import { EModelEndpoint, formatPromptTimestamp } from 'librechat-data-provider';
 import type { ContextAgent } from '../systemParts';
 import { AGENT_TEMPORAL_INSTRUCTIONS_KEY, hasConversationDateContext } from '../contextUpdates';
@@ -75,6 +76,7 @@ export interface SnapshotRequest {
   body?: { timezone?: string } | null;
   config?: {
     endpoints?: { [EModelEndpoint.agents]?: { promptMessageTimestamps?: boolean } };
+    memory?: Parameters<typeof isMemoryAgentEnabled>[0];
   } | null;
 }
 
@@ -107,6 +109,10 @@ export function createSendSnapshot({
       memories != null
         ? formatMemoryContext(
             agentHasInlineMemoryTools(agent) ? memories.withKeys : memories.withoutKeys,
+            {
+              announceEmpty:
+                agentHasInlineMemoryTools(agent) || isMemoryAgentEnabled(req.config?.memory),
+            },
           )
         : undefined,
     rag: rag ?? undefined,
