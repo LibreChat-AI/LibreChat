@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import { CREDENTIAL_RETIREMENT_INCOMPLETE_CODE } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { PasswordResetUpdate } from './passwordResetUpdate';
 import type { TokenRetirementSignals } from './twoFactor';
@@ -69,7 +70,8 @@ export const PASSWORD_RESET_USER_FIELDS: string =
   'email _id name username emailChangedAt credentialsChangedAt';
 
 /** The password changed but a credential minted during the change may still be accepted. */
-export const CREDENTIAL_RETIREMENT_INCOMPLETE = 'CREDENTIAL_RETIREMENT_INCOMPLETE';
+export const CREDENTIAL_RETIREMENT_INCOMPLETE: typeof CREDENTIAL_RETIREMENT_INCOMPLETE_CODE =
+  CREDENTIAL_RETIREMENT_INCOMPLETE_CODE;
 
 export function createResetPasswordController(deps: PasswordResetControllerDeps) {
   /** Runs whether or not the reset could re-date its cutoff: the password has changed either way. */
