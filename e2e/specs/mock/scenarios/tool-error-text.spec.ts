@@ -54,7 +54,7 @@ const httpError = (status) =>
     response: { status, data: 'Wolfram|Alpha did not understand ${SECRET}' },
   });
 (async () => {
-  const tool = new WolframAlphaAPI();
+  const tool = new WolframAlphaAPI({});
   const out = {};
   axios.get = () => Promise.reject(httpError(501));
   out.uninterpretable = await tool._call({ input: '${SECRET}' });
@@ -114,6 +114,7 @@ test.describe('approved tool error text', () => {
       { cwd: apiRoot },
     );
     expect(result.status, result.output).toBe(0);
-    expect(result.output).toMatch(/Tests:.*\b2 passed/);
+    /** Jest may color the summary, so match the count alone. */
+    expect(result.output).toMatch(/\b2 passed\b/);
   });
 });

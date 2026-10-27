@@ -23,7 +23,8 @@ function runControllerTests(pattern: string): void {
     { cwd: apiRoot },
   );
   expect(result.status, result.output).toBe(0);
-  expect(result.output).toMatch(/Tests:.*\b1 passed/);
+  /** Jest may color the summary, so match the count alone. */
+  expect(result.output).toMatch(/\b1 passed\b/);
 }
 
 test.describe('generation error text', () => {
