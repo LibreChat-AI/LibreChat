@@ -34,6 +34,10 @@ afterEach(async () => {
   await mongoose.models.Session.deleteMany({});
 });
 
+/** The routes write `null` to clear a field; the method types its update without it. */
+const writeUser = (userId: string, update: object, expectedState: object = {}) =>
+  methods.updateUser(userId, update as Partial<IUser>, expectedState);
+
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 async function createUser(overrides: Partial<IUser> = {}): Promise<string> {
@@ -85,7 +89,7 @@ describe('password reset ordering', () => {
           await tick();
         }
         const filter = 'email' in expectedState ? {} : expectedState;
-        return methods.updateUser(id, update, filter) as Promise<{ email: string } | null>;
+        return writeUser(id, update, filter) as Promise<{ email: string } | null>;
       },
     };
 
@@ -123,35 +127,43 @@ describe('opt-in two-factor confirmation', () => {
 
   function createDeps(overrides: Partial<OptInConfirmationDependencies> = {}) {
     const minted: number[] = [];
+    const rotated: string[] = [];
     const deps: OptInConfirmationDependencies = {
       getUserById: (id, projection) =>
         methods.getUserById(id, projection) as Promise<StoredTwoFactorAccount | null>,
       getTOTPSecret: async (stored) => (stored ? 'plain-secret' : null),
       verifyTOTP: async (_secret, token) => token === '123456',
       updateUser: (id, update, expectedState) =>
-        methods.updateUser(id, update, expectedState) as Promise<StoredTwoFactorAccount | null>,
-      deleteAllUserSessions: ({ userId }) => methods.deleteAllUserSessions({ userId }),
+        writeUser(id, update, expectedState) as Promise<StoredTwoFactorAccount | null>,
+      findSession: (query, options) => methods.findSession(query, options),
+      deleteAllUserSessions: (query, options) => methods.deleteAllUserSessions(query, options),
       clearCloudFrontCookies: jest.fn(),
-      setAuthTokens: async (id) => {
+      setAuthTokens: async (_id, _res, session) => {
         minted.push(Date.now());
-        await methods.createSession(String(id));
+        rotated.push(session._id.toString());
         return `token-${minted.length}`;
       },
       ...overrides,
     };
-    return { deps, minted };
+    return { deps, minted, rotated };
   }
 
-  function createReq(userId: string, bearerIssuedAtMs?: number) {
+  type OptInReq = Request<Record<string, string>, object, { token?: string }> & {
+    user: { id: string };
+    cookies: { refreshToken?: string };
+  };
+
+  /** The confirming tab: an access token plus the refresh session it was issued with. */
+  async function createReq(userId: string, bearerIssuedAtMs?: number): Promise<OptInReq> {
+    const { refreshToken } = await methods.createSession(userId);
     const bearer =
       bearerIssuedAtMs == null ? undefined : jwt.sign({ issuedAtMs: bearerIssuedAtMs }, 'secret');
     return {
       user: { id: userId },
       body: { token: '123456' },
+      cookies: { refreshToken },
       headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
-    } as unknown as Request<Record<string, string>, object, { token?: string }> & {
-      user: { id: string };
-    };
+    } as unknown as OptInReq;
   }
 
   it('stamps enrollment, revokes every earlier session, and hands back one minted after both', async () => {
@@ -160,10 +172,15 @@ describe('opt-in two-factor confirmation', () => {
     await methods.createSession(userId);
     const preEnrollment = { issuedAtMs: Date.now() };
     await tick();
-    const { deps, minted } = createDeps();
+    const { deps, minted, rotated } = createDeps();
     const res = createRes();
+    const req = await createReq(userId);
+    const caller = await methods.findSession(
+      { userId, refreshToken: req.cookies.refreshToken as string },
+      { lean: true },
+    );
 
-    await createOptInTwoFactorConfirmation(deps)(createReq(userId), res as unknown as Response);
+    await createOptInTwoFactorConfirmation(deps)(req, res as unknown as Response);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
@@ -177,7 +194,9 @@ describe('opt-in two-factor confirmation', () => {
     expect(stored?.pendingTotpSecret).toBeNull();
     expect(isTokenRetired(preEnrollment, stored)).toBe(true);
     expect(isTokenRetired({ issuedAtMs: minted[0] }, stored)).toBe(false);
+    expect(rotated).toEqual([String(caller?._id)]);
     expect(await mongoose.models.Session.countDocuments({ user: userId })).toBe(1);
+    expect(await mongoose.models.Session.exists({ _id: caller?._id })).toBeTruthy();
   });
 
   it('retires a credential minted while the promoting write is in flight', async () => {
@@ -190,12 +209,12 @@ describe('opt-in two-factor confirmation', () => {
           mintedAt = Date.now();
           await tick();
         }
-        return methods.updateUser(id, update, expectedState) as Promise<StoredTwoFactorAccount>;
+        return writeUser(id, update, expectedState) as Promise<StoredTwoFactorAccount>;
       },
     });
 
     await createOptInTwoFactorConfirmation(deps)(
-      createReq(userId),
+      await createReq(userId),
       createRes() as unknown as Response,
     );
 
@@ -211,7 +230,7 @@ describe('opt-in two-factor confirmation', () => {
     const { deps } = createDeps();
 
     await createOptInTwoFactorConfirmation(deps)(
-      createReq(userId),
+      await createReq(userId),
       createRes() as unknown as Response,
     );
 
@@ -223,7 +242,7 @@ describe('opt-in two-factor confirmation', () => {
     const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
     const { deps } = createDeps({
       verifyTOTP: async () => {
-        await methods.updateUser(userId, {
+        await writeUser(userId, {
           pendingTotpSecret: null,
           credentialsChangedAt: new Date(),
         });
@@ -232,7 +251,10 @@ describe('opt-in two-factor confirmation', () => {
     });
     const res = createRes();
 
-    await createOptInTwoFactorConfirmation(deps)(createReq(userId), res as unknown as Response);
+    await createOptInTwoFactorConfirmation(deps)(
+      await createReq(userId),
+      res as unknown as Response,
+    );
 
     expect(res.status).toHaveBeenCalledWith(400);
     const stored = await mongoose.models.User.findById(userId).lean<IUser>();
@@ -251,7 +273,10 @@ describe('opt-in two-factor confirmation', () => {
     };
     const res = createRes();
 
-    await createOptInTwoFactorConfirmation(deps)(createReq(userId), res as unknown as Response);
+    await createOptInTwoFactorConfirmation(deps)(
+      await createReq(userId),
+      res as unknown as Response,
+    );
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
@@ -268,7 +293,7 @@ describe('opt-in two-factor confirmation', () => {
     const res = createRes();
 
     await createOptInTwoFactorConfirmation(deps)(
-      createReq(userId, bearerIssuedAtMs),
+      await createReq(userId, bearerIssuedAtMs),
       res as unknown as Response,
     );
 
@@ -285,7 +310,7 @@ describe('opt-in two-factor confirmation', () => {
     const res = createRes();
 
     await createOptInTwoFactorConfirmation(deps)(
-      createReq(userId, Date.now()),
+      await createReq(userId, Date.now()),
       res as unknown as Response,
     );
 
@@ -297,17 +322,39 @@ describe('opt-in two-factor confirmation', () => {
     const { deps, minted } = createDeps();
     const res = createRes();
 
-    await createOptInTwoFactorConfirmation(deps)(createReq(userId), res as unknown as Response);
+    await createOptInTwoFactorConfirmation(deps)(
+      await createReq(userId),
+      res as unknown as Response,
+    );
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(minted).toHaveLength(0);
     expect((await readCutoffs(userId))?.twoFactorEnrolledAt).toBeFalsy();
   });
 
+  it('refuses an access token that comes without its refresh session', async () => {
+    const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
+    await methods.createSession(userId);
+    const { deps, minted } = createDeps();
+    const req = await createReq(userId);
+    await methods.deleteSession({ refreshToken: req.cookies.refreshToken as string });
+    const withoutCookie = { ...req, cookies: {} } as OptInReq;
+    const res = createRes();
+
+    await createOptInTwoFactorConfirmation(deps)(req, res as unknown as Response);
+    await createOptInTwoFactorConfirmation(deps)(withoutCookie, res as unknown as Response);
+
+    expect(res.status).toHaveBeenNthCalledWith(1, 401);
+    expect(res.status).toHaveBeenNthCalledWith(2, 401);
+    expect(minted).toHaveLength(0);
+    expect((await readCutoffs(userId))?.twoFactorEnrolledAt).toBeFalsy();
+    expect(await mongoose.models.Session.countDocuments({ user: userId })).toBe(1);
+  });
+
   it('refuses a token that does not verify without writing', async () => {
     const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
     const { deps } = createDeps();
-    const req = createReq(userId);
+    const req = await createReq(userId);
     req.body.token = '000000';
     const res = createRes();
 

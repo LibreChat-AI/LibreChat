@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const cookies = require('cookie');
 const api = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { deleteSession, findUser } = require('~/models');
@@ -15,6 +16,7 @@ const { refreshOpenIDSession } = require('./OpenIDSessionRefresh');
 
 module.exports = api.createOpenIDRefreshRecoveryService({
   jwt,
+  cookies,
   logger,
   findOpenIDUser: api.findOpenIDUser,
   findUser,

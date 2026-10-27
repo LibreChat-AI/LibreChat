@@ -1,6 +1,5 @@
 import jwt from 'jsonwebtoken';
 import { createHash } from 'node:crypto';
-import type { Request, Response } from 'express';
 import type { TokenIssuance, TokenRetirementSignals } from '../twoFactor';
 import type { SessionOpenIDTokens } from './types';
 import { isTokenRetired } from '../twoFactor';
@@ -80,46 +79,4 @@ export function isOpenIDSessionRetired({
     return isTokenRetired({ issuedAtMs: lastRefreshedAt }, user);
   }
   return isTokenRetired({}, user);
-}
-
-export interface RetiredOpenIDSessionRefusalDependencies {
-  clearOpenIDAuthTokens: (
-    req: Request,
-    res: Response,
-    userId: string,
-    tenantId: string | undefined,
-  ) => void;
-  warn: (message: string) => void;
-}
-
-/**
- * Ends a retired OpenID session before any refresh path can spend its grant: the server-side
- * tokens and every session cookie are cleared, so the browser has to sign in with the IdP again.
- * Resolves to the refusal it sent, or `undefined` when the session may be refreshed.
- */
-export function createRetiredOpenIDSessionRefusal(deps: RetiredOpenIDSessionRefusalDependencies) {
-  return (
-    req: Request & { session?: { openidTokens?: SessionOpenIDTokens } },
-    res: Response,
-    parsedCookies: OpenIDSessionRetirementInput['parsedCookies'],
-    user: OpenIDSessionRetirementInput['user'] & { tenantId?: string },
-    refreshToken?: string,
-  ): Response | undefined => {
-    const retired = isOpenIDSessionRetired({
-      parsedCookies,
-      sessionTokens: req.session?.openidTokens,
-      user,
-      jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
-      refreshToken,
-    });
-    if (!retired) {
-      return undefined;
-    }
-    const userId = user._id.toString();
-    deps.warn(
-      `[refreshController] OpenID session predates enrollment or password reset: userId=${userId}`,
-    );
-    deps.clearOpenIDAuthTokens(req, res, userId, user.tenantId);
-    return res.status(403).send('Invalid OpenID refresh token');
-  };
 }

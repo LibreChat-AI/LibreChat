@@ -162,4 +162,40 @@ test.describe('opt-in two-factor enrollment', () => {
       await other.dispose();
     }
   });
+  test('an access token without its refresh session cannot enroll or obtain a session @scenario:optin-2fa-requires-refresh-session', async ({
+    playwright,
+    baseURL,
+  }) => {
+    const owner = await newClient(playwright, baseURL);
+    const bearerOnly = await newClient(playwright, baseURL);
+    const email = await registerUser(owner);
+    try {
+      const ownerSession = await signIn(owner, email);
+      const enable = await bearerOnly.post('/api/auth/2fa/enable', {
+        headers: bearer(ownerSession.token),
+      });
+      expect(enable.ok()).toBeTruthy();
+      const { otpauthUrl } = (await enable.json()) as { otpauthUrl: string };
+      const secret = new URL(otpauthUrl).searchParams.get('secret') ?? '';
+
+      const confirm = await bearerOnly.post('/api/auth/2fa/confirm', {
+        headers: bearer(ownerSession.token),
+        data: { token: totp(secret) },
+      });
+
+      expect(confirm.status()).toBe(401);
+      expect(await confirm.text()).not.toContain('"token"');
+      expect(await isAuthorized(owner, ownerSession.token)).toBe(true);
+      expect(await refreshedToken(owner)).toBeTruthy();
+      await withMongo(async (db) => {
+        const user = await db.collection('users').findOne({ email });
+        expect(user?.twoFactorEnabled).not.toBe(true);
+        expect(user?.twoFactorEnrolledAt).toBeFalsy();
+      });
+    } finally {
+      await deleteUserByEmail(email);
+      await owner.dispose();
+      await bearerOnly.dispose();
+    }
+  });
 });

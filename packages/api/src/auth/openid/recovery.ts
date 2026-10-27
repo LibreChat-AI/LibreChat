@@ -20,11 +20,13 @@ import type {
 } from './types';
 import type { TokenResult } from './flight';
 import {
+  createOpenIDSessionRetiredError,
   createOpenIDRefreshOwnershipError,
   isOpenIDRefreshOwnershipError,
   reloadOpenIDSessionIfPersisted,
   toOpenIDLogArgument,
 } from './errors';
+import { isOpenIDSessionRetired } from './reuseCredential';
 
 type FindUser = (...args: Array<string | object | undefined>) => Promise<OpenIDUser | null>;
 
@@ -127,6 +129,7 @@ export interface OpenIDRefreshRecoveryService {
 
 export interface OpenIDRefreshRecoveryDeps {
   jwt: { decode: (token: string) => OpenIDClaims | string | null };
+  cookies: { parse: (header: string) => Record<string, string> };
   logger: Pick<OpenIDLogger, 'debug' | 'warn'>;
   findOpenIDUser: (args: FindOpenIDUserArgs) => Promise<{
     user?: OpenIDUser | null;
@@ -231,6 +234,7 @@ export function createOpenIDRefreshRecoveryService(
 ): OpenIDRefreshRecoveryService {
   const {
     jwt,
+    cookies,
     logger,
     findOpenIDUser,
     findUser,
@@ -411,6 +415,30 @@ export function createOpenIDRefreshRecoveryService(
     return identity;
   }
 
+  /**
+   * Refuses to extend a session established before a password reset or an enrollment.
+   * `openIdJwtStrategy` already refuses that session's bearers; spending its refresh grant would
+   * mint a fresh one dated after the cutoff. The caller ends the session on this error.
+   */
+  function assertOpenIDSessionCurrent(req: OpenIDRequest, user: OpenIDUser, refreshToken?: string) {
+    if (user._id == null) {
+      return;
+    }
+    const retired = isOpenIDSessionRetired({
+      parsedCookies: req.headers?.cookie ? cookies.parse(req.headers.cookie) : {},
+      sessionTokens: req.session?.openidTokens,
+      user: { ...user, _id: user._id },
+      jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
+      refreshToken,
+    });
+    if (retired) {
+      logger.warn(
+        `[refreshController] OpenID session predates enrollment or password reset: userId=${user._id.toString()}`,
+      );
+      throw createOpenIDSessionRetiredError();
+    }
+  }
+
   async function refreshOpenIDUser({
     req,
     res,
@@ -421,6 +449,7 @@ export function createOpenIDRefreshRecoveryService(
     assertLeaseOwned,
     deferPublication = false,
   }: RefreshOpenIDUserArgs): Promise<OpenIDRefreshResolution> {
+    assertOpenIDSessionCurrent(req, user);
     const previousSessionTokens = deferPublication ? req.session?.openidTokens : undefined;
     const hadSessionTokens = Boolean(req.session && 'openidTokens' in req.session);
     const identityContext = seedRefreshSession({
@@ -455,6 +484,7 @@ export function createOpenIDRefreshRecoveryService(
     bridgedRefreshToken,
     bridgeUser,
   }: RecoverOpenIDRefreshBridgeInput): Promise<SharedOpenIDRefreshResult> {
+    assertOpenIDSessionCurrent(req, bridgeUser, refreshToken);
     const userId = bridgeUser._id.toString();
     const key = createRefreshTokenBridgeFlightKey({
       oldRefreshToken: refreshToken,

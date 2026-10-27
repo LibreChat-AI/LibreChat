@@ -1,6 +1,5 @@
 import jwt from 'jsonwebtoken';
-import type { Request, Response } from 'express';
-import { createRetiredOpenIDSessionRefusal, isOpenIDSessionRetired } from './reuseCredential';
+import { isOpenIDSessionRetired } from './reuseCredential';
 
 const SECRET = 'refresh-secret';
 const resetAt = new Date('2026-01-01T00:00:00.000Z');
@@ -52,53 +51,5 @@ describe('isOpenIDSessionRetired', () => {
       ),
     };
     expect(retired({ parsedCookies, refreshToken: 'spent-refresh' })).toBe(true);
-  });
-});
-
-describe('createRetiredOpenIDSessionRefusal', () => {
-  const createRes = () => {
-    const res = { status: jest.fn(), send: jest.fn() };
-    res.status.mockReturnValue(res);
-    res.send.mockReturnValue(res);
-    return res;
-  };
-
-  beforeEach(() => {
-    process.env.JWT_REFRESH_SECRET = SECRET;
-  });
-
-  it('clears the session and refuses a retired refresh', () => {
-    const clearOpenIDAuthTokens = jest.fn();
-    const refuse = createRetiredOpenIDSessionRefusal({ clearOpenIDAuthTokens, warn: jest.fn() });
-    const req = { session: {} } as Request;
-    const res = createRes();
-
-    const result = refuse(
-      req,
-      res as unknown as Response,
-      identityCookie(resetAt.getTime() - 1),
-      user,
-    );
-
-    expect(result).toBe(res);
-    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-1', 'tenant-1');
-    expect(res.status).toHaveBeenCalledWith(403);
-  });
-
-  it('lets a session established after the cutoff through untouched', () => {
-    const clearOpenIDAuthTokens = jest.fn();
-    const refuse = createRetiredOpenIDSessionRefusal({ clearOpenIDAuthTokens, warn: jest.fn() });
-    const res = createRes();
-
-    const result = refuse(
-      { session: {} } as Request,
-      res as unknown as Response,
-      identityCookie(resetAt.getTime() + 1),
-      user,
-    );
-
-    expect(result).toBeUndefined();
-    expect(clearOpenIDAuthTokens).not.toHaveBeenCalled();
-    expect(res.status).not.toHaveBeenCalled();
   });
 });

@@ -276,18 +276,37 @@ export function createEnrollmentControllers(
   };
 }
 
-export type OptInConfirmationDependencies = Pick<
-  EnrollmentControllerDependencies,
-  | 'getUserById'
-  | 'getTOTPSecret'
-  | 'verifyTOTP'
-  | 'updateUser'
-  | 'deleteAllUserSessions'
-  | 'clearCloudFrontCookies'
-  | 'setAuthTokens'
->;
+/** The refresh session the confirming tab holds, rotated rather than replaced. */
+export interface RotatableSession {
+  _id: { toString(): string };
+  expiration: Date;
+}
 
-type OptInRequest = Request<Record<string, string>, object, SetupBody> & { user?: { id: string } };
+export interface OptInConfirmationDependencies
+  extends Pick<
+    EnrollmentControllerDependencies,
+    'getUserById' | 'getTOTPSecret' | 'verifyTOTP' | 'updateUser' | 'clearCloudFrontCookies'
+  > {
+  findSession: (
+    query: { userId: string; refreshToken: string },
+    options: { lean: false },
+  ) => Promise<RotatableSession | null>;
+  deleteAllUserSessions: (
+    query: { userId: string },
+    options?: { excludeCurrentSession: boolean; currentSessionId: string },
+  ) => Promise<object>;
+  setAuthTokens: (
+    userId: UserDocumentId,
+    res: Response,
+    session: RotatableSession,
+    req: Request,
+  ) => Promise<string>;
+}
+
+type OptInRequest = Request<Record<string, string>, object, SetupBody> & {
+  user?: { id: string };
+  cookies?: { refreshToken?: string };
+};
 
 const OPT_IN_CONFIRMATION_PROJECTION = `+totpSecret +pendingTotpSecret +pendingBackupCodes _id provider tenantId orgId storageRegion ${TOKEN_RETIREMENT_FIELDS}`;
 
@@ -295,11 +314,11 @@ const OPT_IN_CONFIRMATION_PROJECTION = `+totpSecret +pendingTotpSecret +pendingB
  * Confirms an opt-in enrollment from account settings and rotates the session around it.
  *
  * A session minted before enrollment was only ever accepted because the account had no second
- * factor, so promotion retires it exactly as the required finalize step does: the write stamps
- * `twoFactorEnrolledAt`, every stored session is revoked, and the caller gets the one session
- * minted after both. The promotion is conditioned on the secret it verified, so a password reset
- * that cleared the staged secret first leaves nothing to promote, and a reset that lands after the
- * bearer was accepted withdraws the session minted here.
+ * factor, so promotion retires it as the required finalize step does: the write stamps
+ * `twoFactorEnrolledAt`, every other stored session is revoked, and the refresh session the request
+ * came from is rotated so its credentials postdate both. The promotion is conditioned on the secret
+ * it verified, so a password reset that cleared the staged secret first leaves nothing to promote,
+ * and a reset that lands after the bearer was accepted withdraws the session rotated here.
  */
 export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependencies) {
   const isCallerRetiredByReset = (
@@ -331,6 +350,18 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
         return res.status(400).json({ message: '2FA setup is not available for this user' });
       }
 
+      /**
+       * Only the refresh session the request belongs to survives, rotated in place. An access token
+       * on its own proves no such session, so it cannot trade enrollment for a long-lived one.
+       */
+      const refreshToken = req.cookies?.refreshToken;
+      const session = refreshToken
+        ? await deps.findSession({ userId, refreshToken }, { lean: false })
+        : null;
+      if (!session || !(session.expiration > new Date())) {
+        return res.status(401).json({ message: 'Sign in again to enable 2FA' });
+      }
+
       const secret = await deps.getTOTPSecret(secretSource);
       if (!(await deps.verifyTOTP(secret, req.body?.token ?? ''))) {
         return res.status(400).json({ message: 'Invalid token.' });
@@ -358,8 +389,11 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
       await restampRetirementCutoff('twoFactorEnrolledAt', userId, enrolledAt, (cutoff, expected) =>
         deps.updateUser(userId, cutoff, expected),
       );
-      await deps.deleteAllUserSessions({ userId });
-      const authToken = await deps.setAuthTokens(user._id, res, null, req);
+      await deps.deleteAllUserSessions(
+        { userId },
+        { excludeCurrentSession: true, currentSessionId: session._id.toString() },
+      );
+      const authToken = await deps.setAuthTokens(user._id, res, session, req);
       const withdraw = () => withdrawMintedSession(res, user, userId, deps);
       const current = await recheckMintedCredential(
         () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),

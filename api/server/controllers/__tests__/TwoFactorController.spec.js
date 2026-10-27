@@ -8,6 +8,8 @@ const mockGetTOTPSecret = jest.fn();
 const mockVerifyTOTP = jest.fn();
 const mockDeleteAllUserSessions = jest.fn();
 const mockSetAuthTokens = jest.fn();
+const mockFindSession = jest.fn();
+const CALLER_SESSION = { _id: 'session-1', expiration: new Date(Date.now() + 3_600_000) };
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -32,6 +34,7 @@ jest.mock('~/models', () => ({
   getUserById: (...args) => mockGetUserById(...args),
   updateUser: (...args) => mockUpdateUser(...args),
   deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
+  findSession: (...args) => mockFindSession(...args),
 }));
 
 const {
@@ -65,6 +68,14 @@ beforeEach(() => {
   mockVerifyTOTP.mockResolvedValue(true);
   mockDeleteAllUserSessions.mockResolvedValue({ deletedCount: 2 });
   mockSetAuthTokens.mockResolvedValue('rotated-token');
+  mockFindSession.mockResolvedValue(CALLER_SESSION);
+});
+
+const confirmRequest = (cookies = { refreshToken: 'caller-refresh' }) => ({
+  user: { id: 'user1' },
+  body: { token: '123456' },
+  headers: {},
+  cookies,
 });
 
 /** Any write that moves the pending or live credentials strands an in-flight required enrollment. */
@@ -93,7 +104,7 @@ describe('required-enrollment nonce cleanup', () => {
     mockUpdateUser.mockResolvedValue({ _id: 'user1' });
     const res = createRes();
 
-    await confirm2FA({ user: { id: 'user1' }, body: { token: '123456' }, headers: {} }, res);
+    await confirm2FA(confirmRequest(), res);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockUpdateUser.mock.calls[0][1]).toMatchObject({
@@ -114,12 +125,25 @@ describe('required-enrollment nonce cleanup', () => {
     mockUpdateUser.mockResolvedValue({ _id: 'user1' });
     const res = createRes();
 
-    await confirm2FA({ user: { id: 'user1' }, body: { token: '123456' }, headers: {} }, res);
+    await confirm2FA(confirmRequest(), res);
 
     const [, promotion, guard] = mockUpdateUser.mock.calls[0];
     expect(promotion.twoFactorEnrolledAt).toBeInstanceOf(Date);
     expect(guard).toEqual({ pendingTotpSecret: 'encrypted-secret' });
-    expect(mockDeleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user1' });
+    expect(mockFindSession).toHaveBeenCalledWith(
+      { userId: 'user1', refreshToken: 'caller-refresh' },
+      { lean: false },
+    );
+    expect(mockDeleteAllUserSessions).toHaveBeenCalledWith(
+      { userId: 'user1' },
+      { excludeCurrentSession: true, currentSessionId: 'session-1' },
+    );
+    expect(mockSetAuthTokens).toHaveBeenCalledWith(
+      'user1',
+      res,
+      CALLER_SESSION,
+      expect.any(Object),
+    );
     expect(mockDeleteAllUserSessions.mock.invocationCallOrder[0]).toBeLessThan(
       mockSetAuthTokens.mock.invocationCallOrder[0],
     );
@@ -149,6 +173,28 @@ describe('required-enrollment nonce cleanup', () => {
       totpSecret: null,
       ...CLEARED_NONCES,
     });
+  });
+});
+
+describe('confirm2FA session binding', () => {
+  it.each([
+    ['no refresh cookie', {}, null],
+    ['a refresh cookie without a stored session', { refreshToken: 'stolen' }, null],
+  ])('refuses an access token with %s', async (_label, cookies, session) => {
+    mockGetUserById.mockResolvedValue({
+      _id: 'user1',
+      twoFactorEnabled: false,
+      pendingTotpSecret: 'encrypted-secret',
+    });
+    mockFindSession.mockResolvedValue(session);
+    const res = createRes();
+
+    await confirm2FA(confirmRequest(cookies), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockDeleteAllUserSessions).not.toHaveBeenCalled();
+    expect(mockSetAuthTokens).not.toHaveBeenCalled();
   });
 });
 

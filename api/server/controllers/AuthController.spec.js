@@ -1325,12 +1325,12 @@ describe('refreshController – OpenID path', () => {
   };
 
   /** A retired session is ended outright: the IdP grant would mint a bearer the strategy refuses. */
-  const expectRetiredOpenIDSessionRefused = () => {
+  const expectRetiredOpenIDSessionRefused = (tenantId) => {
     expect(setCloudFrontAuthCookies).not.toHaveBeenCalled();
     expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
     expect(setOpenIDAuthTokens).not.toHaveBeenCalled();
-    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', 'tenant-1');
-    expect(res.send).toHaveBeenCalledWith('Invalid OpenID refresh token');
+    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', tenantId);
+    expect(res.send).toHaveBeenCalledWith({ code: 'OPENID_SESSION_MISSING' });
   };
 
   it('ends a session whose identity cookie was minted before enrollment', async () => {
@@ -1340,8 +1340,8 @@ describe('refreshController – OpenID path', () => {
 
     await refreshController(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expectRetiredOpenIDSessionRefused();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expectRetiredOpenIDSessionRefused('tenant-1');
   });
 
   it('ends a session whose identity cookie was minted in the resetting millisecond', async () => {
@@ -1351,8 +1351,8 @@ describe('refreshController – OpenID path', () => {
 
     await refreshController(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expectRetiredOpenIDSessionRefused();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expectRetiredOpenIDSessionRefused('tenant-1');
   });
 
   it('ends a stale session minted before a password reset instead of spending its grant', async () => {
@@ -1371,8 +1371,8 @@ describe('refreshController – OpenID path', () => {
 
     await refreshController(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expectRetiredOpenIDSessionRefused();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expectRetiredOpenIDSessionRefused(undefined);
   });
 
   it('dates a session without an identity cookie by its last server-side rotation', async () => {
@@ -1389,8 +1389,8 @@ describe('refreshController – OpenID path', () => {
 
     await refreshController(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    expectRetiredOpenIDSessionRefused();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expectRetiredOpenIDSessionRefused(undefined);
   });
 
   it('refreshes a session without an identity cookie rotated after the reset', async () => {
@@ -1789,7 +1789,7 @@ describe('refreshController – OpenID path', () => {
     expect(res.status).toHaveBeenCalledWith(403);
   });
 
-  it('ends the session instead of recovering through a bridge when a reset lands during the grant', async () => {
+  it('refuses bridge recovery when a reset lands during the failed grant', async () => {
     setOpenIDReuseCookies(makeSignedReuseCookie(Date.now() - 1_000));
     req.session = {};
     const bridgeUser = {
@@ -1803,12 +1803,13 @@ describe('refreshController – OpenID path', () => {
       .mockResolvedValueOnce(bridgeUser)
       .mockResolvedValueOnce({ ...bridgeUser, credentialsChangedAt: new Date() });
     openIdClient.refreshTokenGrant.mockRejectedValueOnce(new Error('invalid_grant'));
+    getRefreshTokenBridge.mockResolvedValueOnce('bridged-refresh');
 
     await refreshController(req, res);
 
-    expect(getRefreshTokenBridge).not.toHaveBeenCalled();
+    expect(getRefreshTokenBridge).toHaveBeenCalled();
     expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
-    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', 'tenant-1');
+    expect(setOpenIDAuthTokens).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.send).toHaveBeenCalledWith('Invalid OpenID refresh token');
   });
