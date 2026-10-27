@@ -1,3 +1,4 @@
+import type { MCPOAuthCleanupDependencies } from './cleanup';
 import type { ParsedServerConfig } from '~/mcp/types';
 import {
   cleanupMCPServerOAuth,
@@ -308,9 +309,19 @@ describe('cleanupMCPServerOAuth', () => {
             revokeOAuthToken,
           },
           tokenStorage: {
-            deleteUserTokens: jest.fn(async ({ userId, serverName, deleteToken }) => {
-              await deleteToken({ userId, type: 'mcp_oauth', identifier: `mcp:${serverName}` });
-            }),
+            deleteUserTokens: jest.fn(
+              async ({
+                userId,
+                serverName,
+                deleteToken,
+              }: {
+                userId: string;
+                serverName: string;
+                deleteToken: (filter: Record<string, string>) => Promise<void>;
+              }) => {
+                await deleteToken({ userId, type: 'mcp_oauth', identifier: `mcp:${serverName}` });
+              },
+            ),
             getClientInfoAndMetadata: jest.fn(async () => ({
               clientInfo: { client_id: 'client' },
               clientMetadata: {
@@ -327,12 +338,12 @@ describe('cleanupMCPServerOAuth', () => {
               credential_set_id: 'generation-1',
             })),
             assertCredentialSetBinding: jest.fn(),
-          },
+          } as unknown as MCPOAuthCleanupDependencies['tokenStorage'],
           findToken,
           deleteTokens,
           getServerConfig: jest.fn(),
           isRegisteredOAuthServer: jest.fn(),
-        },
+        } satisfies MCPOAuthCleanupDependencies,
       };
     };
     const params = {
@@ -390,7 +401,7 @@ describe('cleanupMCPServerOAuth', () => {
 
 describe('cleanupDeletedMCPServerOAuthUsers', () => {
   it('fences ACL-named viewers without a token and passes the teardown mode through', async () => {
-    const fenceAndDisconnectUser = jest.fn(async () => undefined);
+    const fenceAndDisconnectUser = jest.fn(async (_userId: string) => undefined);
     const uninstallOAuthMCP = jest.fn(async () => undefined);
     const getUserPrincipals = jest.fn(async (_userId: string) => []);
     const retainFence = jest.fn();
