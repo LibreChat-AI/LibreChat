@@ -435,12 +435,17 @@ export function useComposerReasoning({
      the level elsewhere (the Parameters panel). It replaces the branch level the way a composer
      pick does; otherwise the inherited level would silently outrank the edit. */
   const configuredScope = `${reasoningStateKey}\u0000${targetFingerprint ?? ''}`;
-  const previousConfigured = useRef({ scope: configuredScope, value: configuredValue });
+  const previousConfigured = useRef<{ scope: string; value: unknown } | null>(null);
   useEffect(() => {
+    /* While the capabilities load the setting is hidden, which says nothing about the configured
+       value: keep the last one seen, or its reappearance would read as an edit. */
+    if (setting == null) {
+      return;
+    }
     const previous = previousConfigured.current;
     previousConfigured.current = { scope: configuredScope, value: configuredValue };
     if (
-      setting == null ||
+      previous == null ||
       configuredValue == null ||
       previous.scope !== configuredScope ||
       Object.is(previous.value, configuredValue)

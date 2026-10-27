@@ -1,6 +1,6 @@
 import React from 'react';
+import { useSteering } from '@librechat/chat/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
-import { useSteering, submissionByIndex } from '@librechat/chat/react';
 import { claimQueuedIntent, releaseQueuedIntent } from '@librechat/chat';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { useQueueDrain, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
@@ -48,13 +48,7 @@ import {
   pendingSteersByConvoId,
   resetSteerFamilies,
 } from '@librechat/chat/react';
-import type {
-  TFile,
-  TMessage,
-  TSubmission,
-  TConversation,
-  CodeApprovalMode,
-} from 'librechat-data-provider';
+import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
 import type { QueuedMessage } from '@librechat/chat';
 import type { ExtendedFile } from '~/common';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
@@ -4298,96 +4292,6 @@ describe('useSteering', () => {
         reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       });
       expect(result.current.pendingReasoning).toBeUndefined();
-    });
-
-    it('queues a turn on the running level when nothing new is picked', () => {
-      const { result } = setupWithContext();
-      const running = { key: 'reasoning_effort', value: ReasoningEffort.high } as const;
-      act(() => {
-        contextStore.set(submissionByIndex(0), {
-          conversation: agentsConversation,
-          userMessage: { reasoningOverride: running },
-        } as unknown as TSubmission);
-      });
-
-      act(() => {
-        result.current.steering.queueFromComposer('think about this next');
-      });
-
-      expect(result.current.queue[0]).toMatchObject({
-        text: 'think about this next',
-        reasoningOverride: running,
-      });
-      expect(result.current.pendingReasoning).toBeUndefined();
-    });
-
-    it('does not carry the running level onto a turn queued for another target', () => {
-      const { result } = setupWithContext({
-        conversation: { ...agentsConversation, spec: 'enforced-spec' },
-      });
-      act(() => {
-        contextStore.set(submissionByIndex(0), {
-          conversation: agentsConversation,
-          userMessage: {
-            reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
-          },
-        } as unknown as TSubmission);
-      });
-
-      act(() => {
-        result.current.steering.queueFromComposer('under the new spec');
-      });
-
-      expect(result.current.queue[0]?.text).toBe('under the new spec');
-      expect(result.current.queue[0]?.reasoningOverride).toBeUndefined();
-    });
-
-    it('keeps a level picked for a queued turn on the turns queued after it', () => {
-      const low = { key: 'reasoning_effort', value: ReasoningEffort.low } as const;
-      const { result } = setupWithContext({}, undefined, low);
-      act(() => {
-        contextStore.set(submissionByIndex(0), {
-          conversation: agentsConversation,
-          userMessage: {
-            reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
-          },
-        } as unknown as TSubmission);
-      });
-
-      act(() => {
-        result.current.steering.queueFromComposer('first, lighter');
-      });
-      act(() => {
-        result.current.steering.queueFromComposer('second, still lighter');
-      });
-
-      expect(result.current.queue.map((item) => item.reasoningOverride)).toEqual([low, low]);
-    });
-
-    it('keeps a level picked under a new target on the turns queued after it', () => {
-      const low = { key: 'reasoning_effort', value: ReasoningEffort.low } as const;
-      const { result } = setupWithContext(
-        { conversation: { ...agentsConversation, spec: 'other-spec' } },
-        undefined,
-        low,
-      );
-      act(() => {
-        contextStore.set(submissionByIndex(0), {
-          conversation: agentsConversation,
-          userMessage: {
-            reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
-          },
-        } as unknown as TSubmission);
-      });
-
-      act(() => {
-        result.current.steering.queueFromComposer('first on the new spec');
-      });
-      act(() => {
-        result.current.steering.queueFromComposer('second on the new spec');
-      });
-
-      expect(result.current.queue.map((item) => item.reasoningOverride)).toEqual([low, low]);
     });
 
     /* The interrupt-and-steer chord promises to keep the partial answer. With

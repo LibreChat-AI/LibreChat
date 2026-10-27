@@ -1,7 +1,7 @@
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import { Constants } from 'librechat-data-provider';
-import type { TMessage, TConversation } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import type { PrimitiveAtom, createStore } from 'jotai';
 import type { Family } from './steer/family';
 
@@ -14,18 +14,6 @@ export const getReasoningStateKey = (
   conversationId == null || conversationId === '' || conversationId === Constants.NEW_CONVO
     ? `${Constants.NEW_CONVO}:${index}`
     : conversationId;
-
-/** What a reasoning level was chosen for: the spec, endpoint, model and agent. A level does not
- *  carry across a change of any of them. */
-export const getReasoningTarget = (
-  conversation:
-    | Partial<Pick<TConversation, 'spec' | 'endpoint' | 'model' | 'agent_id'>>
-    | null
-    | undefined,
-): string =>
-  [conversation?.spec, conversation?.endpoint, conversation?.model, conversation?.agent_id]
-    .map((part) => part ?? '')
-    .join('\u0000');
 
 /** One-shot reasoning selection owned by the composer for its next full turn. */
 export const pendingReasoningOverrideFamily: Family<

@@ -1,8 +1,11 @@
 import { expect, test } from '@playwright/test';
 import type { Page, Request } from '@playwright/test';
+import type { TMessage } from 'librechat-data-provider';
 import {
+  fetchJson,
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
+  getAccessToken,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -40,6 +43,20 @@ async function send(page: Page, text: string) {
   return (request.postDataJSON() as { reasoningOverride?: unknown }).reasoningOverride;
 }
 
+/** The level the server recorded on each user turn, oldest first. */
+async function savedLevels(page: Page) {
+  const conversationId = new URL(page.url()).pathname.split('/c/')[1];
+  const messages = await fetchJson<TMessage[]>(
+    page,
+    `/api/messages/${encodeURIComponent(conversationId)}`,
+    await getAccessToken(page),
+  );
+  return messages
+    .filter((message) => message.isCreatedByUser === true)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+    .map((message) => message.reasoningOverride?.value ?? null);
+}
+
 test.describe('composer thinking level', () => {
   test('Thinking level holds for the rest of the conversation @scenario:thinking-level-holds-for-the-conversation', async ({
     page,
@@ -50,8 +67,10 @@ test.describe('composer thinking level', () => {
     expect(await send(page, 'first')).toEqual({ key: 'effort', value: 'medium' });
     await expect(trigger(page)).toHaveAccessibleName('Thinking: Medium');
 
-    expect(await send(page, 'second')).toEqual({ key: 'effort', value: 'medium' });
+    /* Nothing new picked: the server runs and records the branch's level. */
+    expect(await send(page, 'second')).toBeUndefined();
     await expect(trigger(page)).toHaveAccessibleName('Thinking: Medium');
+    expect(await savedLevels(page)).toEqual(['medium', 'medium']);
   });
 
   test('Thinking level survives a reload of the conversation @scenario:thinking-level-survives-reload', async ({
@@ -64,7 +83,8 @@ test.describe('composer thinking level', () => {
 
     await page.reload();
     await expect(trigger(page)).toHaveAccessibleName('Thinking: High');
-    expect(await send(page, 'after-reload')).toEqual({ key: 'effort', value: 'high' });
+    await send(page, 'after-reload');
+    expect(await savedLevels(page)).toEqual(['high', 'high']);
   });
 
   test('Picking another level replaces it for later messages @scenario:thinking-level-changes-with-a-new-pick', async ({
@@ -77,7 +97,8 @@ test.describe('composer thinking level', () => {
     await pick(page, 'Low');
     expect(await send(page, 'low')).toEqual({ key: 'effort', value: 'low' });
     await expect(trigger(page)).toHaveAccessibleName('Thinking: Low');
-    expect(await send(page, 'still-low')).toEqual({ key: 'effort', value: 'low' });
+    await send(page, 'still-low');
+    expect(await savedLevels(page)).toEqual(['medium', 'low', 'low']);
   });
 
   test('Thinking popover opens on the Auto toggle in Auto @scenario:thinking-popover-focuses-auto-toggle', async ({

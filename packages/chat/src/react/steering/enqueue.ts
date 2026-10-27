@@ -24,7 +24,6 @@ export type EnqueueOptions = {
   quotes?: string[];
   manualSkills?: string[];
   reasoningOverride?: TMessage['reasoningOverride'];
-  reasoningTarget?: string;
   /** Set when the files were ALREADY queued/steered: their TTL was
    *  held when they first entered the queue (or at the steer 202). */
   skipUsageMark?: boolean;
@@ -142,7 +141,6 @@ export default function useQueueEnqueue({
         ...(options?.reasoningOverride != null && {
           reasoningOverride: options.reasoningOverride,
         }),
-        ...(options?.reasoningTarget != null && { reasoningTarget: options.reasoningTarget }),
         ...(options?.front && { priority: true }),
       };
       jotaiStore.set(queuedMessagesByConvoId(queueKey), (prev) => insertQueuedMessage(prev, item));

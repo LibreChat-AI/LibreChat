@@ -6,10 +6,14 @@ import { Constants } from 'librechat-data-provider';
 import { getAppendParentMessageId } from '@librechat/chat';
 import { queuedMessagesByConvoId } from '@librechat/chat/react';
 import { Button, TooltipAnchor, useMediaQuery } from '@librechat/client';
-import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
+import type {
+  TMessage,
+  TConversation,
+  SettingDefinition,
+  TReasoningOverride,
+} from 'librechat-data-provider';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 import Effort, { effortRank, resolveEffortLabel } from './Effort';
-import { getBranchReasoning } from '~/hooks/Chat/ask/reasoning';
 import { useGetStartupConfig } from '~/data-provider';
 import { useChatContext } from '~/Providers';
 import { cn, getModelSpec } from '~/utils';
@@ -248,6 +252,30 @@ function ThinkingControl({
  *
  * Split in two so the control's hooks are never behind that early return.
  */
+/**
+ * The level a branch runs at, by the server's rule: the override on the nearest user message at or
+ * above `fromMessageId` that carries one.
+ */
+function getBranchReasoning(
+  messages: TMessage[],
+  fromMessageId: string,
+): TMessage['reasoningOverride'] {
+  const byId = new Map<string, TMessage>();
+  for (const message of messages) {
+    byId.set(message.messageId, message);
+  }
+  const visited = new Set<string>();
+  let current = byId.get(fromMessageId);
+  while (current != null && !visited.has(current.messageId)) {
+    visited.add(current.messageId);
+    if (current.isCreatedByUser === true && current.reasoningOverride != null) {
+      return current.reasoningOverride;
+    }
+    current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
+  }
+  return undefined;
+}
+
 interface ThinkingProps {
   index: number;
   disabled: boolean;
@@ -270,13 +298,20 @@ function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
       ? conversation.conversationId
       : Constants.NEW_CONVO;
   const queued = useAtomValue(queuedMessagesByConvoId(queueKey));
-  const lastQueued = queued[queued.length - 1];
-  /* Read where the next turn will attach, the same place the send and queue paths inherit from,
-     so the button names the level the next message will actually carry: the last queued turn
-     while any wait, otherwise the branch the composer extends. */
+  /* The server runs a turn without its own pick at the level its branch last ran at, so the
+     button names that level: the latest pick still waiting in the queue, otherwise the one the
+     branch the composer extends carries. */
+  const queuedReasoning = useMemo(() => {
+    for (let i = queued.length - 1; i >= 0; i--) {
+      if (queued[i].reasoningOverride != null) {
+        return queued[i].reasoningOverride;
+      }
+    }
+    return undefined;
+  }, [queued]);
   const branchReasoning = useMemo(() => {
-    if (lastQueued != null) {
-      return lastQueued.reasoningOverride;
+    if (queuedReasoning != null) {
+      return queuedReasoning;
     }
     const messages = getMessages(conversation?.conversationId) ?? [];
     const latestMessage = messages.find((message) => message.messageId === latestMessageId);
@@ -284,7 +319,7 @@ function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
       messages,
       getAppendParentMessageId({ latestMessage: latestMessage ?? null, currentMessages: messages }),
     );
-  }, [conversation?.conversationId, getMessages, lastQueued, latestMessageId]);
+  }, [conversation?.conversationId, getMessages, latestMessageId, queuedReasoning]);
   const reasoning = useComposerReasoning({
     conversation: conversation ?? null,
     index,

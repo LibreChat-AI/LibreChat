@@ -974,6 +974,43 @@ describe('useComposerReasoning: OpenRouter per-model efforts', () => {
     };
   });
 
+  it('keeps the branch level when the capabilities reload, not mistaking it for an edit', async () => {
+    const high = { key: 'reasoning_effort', value: ReasoningEffort.high } as TReasoningOverride;
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    const store = createStore();
+    const storeWrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={store}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const configured = { ...conversation, reasoning_effort: ReasoningEffort.low } as TConversation;
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation: configured,
+          index: 0,
+          enabled: true,
+          branchReasoning: high,
+        }),
+      { wrapper: storeWrapper },
+    );
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+
+    mockCapabilities = undefined;
+    mockCapabilitiesLoading = true;
+    rendered.rerender();
+    expect(rendered.result.current).toBeNull();
+
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    mockCapabilitiesLoading = false;
+    rendered.rerender();
+
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+    expect(
+      store.get(pendingReasoningOverrideFamily(getReasoningStateKey('openrouter-conversation', 0))),
+    ).toBeUndefined();
+  });
+
   it('offers no control while the capabilities are still loading', () => {
     mockCapabilitiesLoading = true;
 

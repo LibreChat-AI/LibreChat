@@ -20,12 +20,10 @@ import type {
   TConversation,
   TMessage,
   TSubmission,
-  TModelSpec,
   TReasoningOverride,
   TEphemeralAgent,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { ChatSettings } from '~/hooks/Chat/contract';
 import type { ExtendedFile } from '~/common';
 import {
   activeUsageResponseIdFamily,
@@ -191,8 +189,6 @@ function renderAsk(
     reasoningOverride?: TReasoningOverride;
     agentId?: string;
     files?: Map<string, ExtendedFile>;
-    spec?: string;
-    config?: Partial<ChatSettings['config']>;
   } = {},
 ) {
   const setMessages = jest.fn();
@@ -209,18 +205,11 @@ function renderAsk(
   if (options.agentId != null) {
     immutableConversation.agent_id = options.agentId;
   }
-  if (options.spec != null) {
-    immutableConversation.spec = options.spec;
-  }
   const reasoningStore = createStore();
   reasoningStore.set(pendingReasoningOverrideFamily(conversationId), options.reasoningOverride);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <ChatSettingsContext.Provider
-      value={{
-        ...defaultChatSettings,
-        config: { ...defaultChatSettings.config, ...options.config },
-        getEphemeralAgent: mockGetEphemeralAgent,
-      }}
+      value={{ ...defaultChatSettings, getEphemeralAgent: mockGetEphemeralAgent }}
     >
       <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
     </ChatSettingsContext.Provider>
@@ -698,76 +687,6 @@ describe('useChatFunctions ask', () => {
     expect(submission.userMessage.reasoningOverride).toEqual(override);
     expect(reasoningStore.get(pendingReasoningOverrideFamily('conversation-1'))).toBeUndefined();
   });
-  describe('the level a branch runs at', () => {
-    const high = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
-    const ranHigh = () => [
-      { ...userMessage('user-1'), reasoningOverride: high },
-      assistantMessage('assistant-1', 'user-1'),
-    ];
-    const submitted = (setSubmission: jest.Mock) =>
-      (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage.reasoningOverride;
-
-    it('carries the last picked level onto a turn with nothing newly picked', () => {
-      const { result, setSubmission, reasoningStore } = renderAsk(ranHigh());
-
-      act(() => {
-        result.current.ask({ text: 'And again' });
-      });
-
-      expect(submitted(setSubmission)).toEqual(high);
-      expect(reasoningStore.get(pendingReasoningOverrideFamily('conversation-1'))).toBeUndefined();
-    });
-
-    it('replaces the branch level with a newly picked one', () => {
-      const low = { key: 'reasoning_effort', value: 'low' } as TReasoningOverride;
-      const { result, setSubmission } = renderAsk(ranHigh(), 'conversation-1', {
-        reasoningOverride: low,
-      });
-
-      act(() => {
-        result.current.ask({ text: 'Lighter now' });
-      });
-
-      expect(submitted(setSubmission)).toEqual(low);
-    });
-
-    it('does not inherit a level for a field an enforced model spec now fixes', () => {
-      const { result, setSubmission } = renderAsk(ranHigh(), 'conversation-1', {
-        spec: 'locked-effort',
-        config: {
-          modelSpecsEnforced: true,
-          modelSpecs: [
-            {
-              name: 'locked-effort',
-              label: 'Locked effort',
-              preset: { endpoint: 'openAI', reasoning_effort: 'low' },
-            } as TModelSpec,
-          ],
-        },
-      });
-
-      act(() => {
-        result.current.ask({ text: 'Under the enforced spec' });
-      });
-
-      expect(submitted(setSubmission)).toBeUndefined();
-    });
-
-    it('leaves a branch whose last user turn picked nothing on the default', () => {
-      const { result, setSubmission } = renderAsk([
-        ...ranHigh(),
-        userMessage('user-2', 'assistant-1'),
-        assistantMessage('assistant-2', 'user-2'),
-      ]);
-
-      act(() => {
-        result.current.ask({ text: 'Default please' });
-      });
-
-      expect(submitted(setSubmission)).toBeUndefined();
-    });
-  });
-
   it('keeps a staged override for an ephemeral agent resolved from its encoded target', () => {
     const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
     const { result, setSubmission } = renderAsk([], 'conversation-1', {

@@ -65,7 +65,6 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       feedbackEnabled: startupConfig != null && ui?.feedback !== false,
       canRenameRunningChat: supportsConversationTitleOwnership(startupConfig),
       modelSpecs: startupConfig?.modelSpecs?.list,
-      modelSpecsEnforced: startupConfig?.modelSpecs?.enforce === true,
       queuedSendLockTimeoutMs: ui?.queuedSendLockTimeoutMs,
       queuedTurnReconciliationTimeoutMs: ui?.queuedTurnReconciliationTimeoutMs,
       steerArmConfirmationTimeoutMs: ui?.steerArmConfirmationTimeoutMs,

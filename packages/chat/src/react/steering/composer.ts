@@ -8,7 +8,6 @@ import {
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '../composer';
-import { queuedMessagesByConvoId } from '../steer/queue';
 import { markComposerFilesTaken } from '../../core';
 import { useSteerHost } from '../steer/host';
 
@@ -22,22 +21,12 @@ export interface ComposerTake {
  *  submission instead of the next one. */
 export default function useComposerTake<File extends ComposerFile>({
   conversationId,
-  queueKey,
   reasoningStateKey,
-  reasoningTarget,
-  liveReasoningOverride,
   files,
   setFiles,
 }: {
   conversationId: string;
-  queueKey: string;
   reasoningStateKey: string;
-  /** What the conversation targets now; recorded on each queued item. */
-  reasoningTarget: string;
-  /** The level the running turn carries, when it ran on the current target: a queued turn with
-   *  nothing newly picked keeps the level of the turn it will follow, as a direct send keeps its
-   *  branch's level. */
-  liveReasoningOverride?: TMessage['reasoningOverride'];
   files?: Map<string, File>;
   setFiles?: ComposerFileSetter<File>;
 }): ComposerTake {
@@ -95,39 +84,22 @@ export default function useComposerTake<File extends ComposerFile>({
   const takeComposerContext = useCallback((): QueuedMessageContext => {
     const quotes = reasoningStore.get(pendingQuotesByConvoId(conversationId));
     const manualSkills = reasoningStore.get(pendingManualSkillsByConvoId(conversationId));
-    const pendingReasoning = reasoningStore.get(pendingReasoningOverrideFamily(reasoningStateKey));
-    /* The turn this one will follow is the last one queued, or the running turn when none is. */
-    const queued = reasoningStore.get(queuedMessagesByConvoId(queueKey));
-    const lastQueued = queued[queued.length - 1];
-    let inherited = liveReasoningOverride;
-    if (lastQueued != null) {
-      inherited =
-        lastQueued.reasoningTarget === reasoningTarget ? lastQueued.reasoningOverride : undefined;
-    }
-    const reasoningOverride = pendingReasoning ?? inherited;
+    const reasoningOverride = reasoningStore.get(pendingReasoningOverrideFamily(reasoningStateKey));
     if (quotes.length > 0) {
       reasoningStore.set(pendingQuotesByConvoId(conversationId), []);
     }
     if (manualSkills.length > 0) {
       reasoningStore.set(pendingManualSkillsByConvoId(conversationId), []);
     }
-    if (pendingReasoning != null) {
+    if (reasoningOverride != null) {
       reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), undefined);
     }
     return {
       ...(quotes.length > 0 && { quotes }),
       ...(manualSkills.length > 0 && { manualSkills }),
       ...(reasoningOverride != null && { reasoningOverride }),
-      reasoningTarget,
     };
-  }, [
-    conversationId,
-    reasoningTarget,
-    liveReasoningOverride,
-    queueKey,
-    reasoningStateKey,
-    reasoningStore,
-  ]);
+  }, [conversationId, reasoningStateKey, reasoningStore]);
 
   /** Quotes-only drain for composer-origin steers: the excerpts ride the steer
    *  POST into the live run, while manual skill picks stay staged: a skill

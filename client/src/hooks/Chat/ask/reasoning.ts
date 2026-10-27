@@ -10,7 +10,6 @@ import {
 import type {
   Agent,
   TMessage,
-  TModelSpec,
   TConversation,
   TEndpointsConfig,
   TReasoningCapabilitiesResponse,
@@ -119,54 +118,4 @@ export function resolveSubmittedReasoning({
     capabilitiesData == null &&
     usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '');
   return { reasoningOverride: undefined, restoreStaged };
-}
-
-/**
- * The level a branch runs at: the override on the nearest user message at or above
- * `fromMessageId`. A composer pick rides on every later turn of the branch, so the nearest user
- * message holds the current choice, and one without an override means none was made.
- */
-export function getBranchReasoning(
-  messages: TMessage[] | undefined,
-  fromMessageId: string | null | undefined,
-): TMessage['reasoningOverride'] {
-  if (messages == null || messages.length === 0 || fromMessageId == null) {
-    return undefined;
-  }
-  const byId = new Map<string, TMessage>();
-  for (const message of messages) {
-    byId.set(message.messageId, message);
-  }
-  const visited = new Set<string>();
-  let current = byId.get(fromMessageId);
-  while (current != null && !visited.has(current.messageId)) {
-    if (current.isCreatedByUser === true) {
-      return current.reasoningOverride ?? undefined;
-    }
-    visited.add(current.messageId);
-    current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
-  }
-  return undefined;
-}
-
-/**
- * Whether an enforced model spec fixes `key` for this conversation. The server refuses an override
- * for such a field, so a level inherited from before the spec was enforced must not be sent.
- */
-export function isReasoningKeyEnforced({
-  modelSpecs,
-  enforced,
-  specName,
-  key,
-}: {
-  modelSpecs?: TModelSpec[];
-  enforced?: boolean;
-  specName?: string | null;
-  key: string;
-}): boolean {
-  if (enforced !== true || specName == null || specName === '') {
-    return false;
-  }
-  const preset = modelSpecs?.find((spec) => spec.name === specName)?.preset;
-  return preset != null && Object.prototype.hasOwnProperty.call(preset, key);
 }
