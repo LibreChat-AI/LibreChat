@@ -1,7 +1,7 @@
 import { logger } from '@librechat/data-schemas';
-import { getAppConfigOptionsFromUser } from '~/app/service';
 import type { AppConfigUserLike } from '~/app/service';
 import type { ToolCallPreviewDeps } from './previews';
+import { getAppConfigOptionsFromUser } from '~/app/service';
 
 export const DEFAULT_MESSAGES_PAGE_SIZE = 25;
 /** Default ceiling, matching the search page ceiling; `messages.maxPageSize` overrides it. */
