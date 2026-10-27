@@ -1,7 +1,7 @@
 const express = require('express');
 const {
   createInsightsAccessHandler,
-  createInsightsAgentAccessResolver,
+  createInsightsAccessResolver,
   createInsightsConfigResolver,
   createInsightsHandler,
   isEnabled,
@@ -12,7 +12,7 @@ const db = require('~/models');
 const router = express.Router();
 const isInsightsEnabled = () => isEnabled(process.env.ENABLE_INSIGHTS);
 const resolveInsightsConfig = createInsightsConfigResolver(isInsightsEnabled);
-const getAccessibleAgents = createInsightsAgentAccessResolver({
+const getInsightsAccess = createInsightsAccessResolver({
   getAgents: db.getAgents,
   getUserPrincipals: db.getUserPrincipals,
   hasCapabilityForPrincipals: db.hasCapabilityForPrincipals,
@@ -20,12 +20,12 @@ const getAccessibleAgents = createInsightsAgentAccessResolver({
 });
 
 router.use(requireJwtAuth, strictConfigMiddleware);
-router.get('/access', createInsightsAccessHandler({ resolveInsightsConfig, getAccessibleAgents }));
+router.get('/access', createInsightsAccessHandler({ resolveInsightsConfig, getInsightsAccess }));
 router.get(
   '/',
   createInsightsHandler({
     resolveInsightsConfig,
-    getAccessibleAgents,
+    getInsightsAccess,
     getInsights: db.getInsights,
   }),
 );

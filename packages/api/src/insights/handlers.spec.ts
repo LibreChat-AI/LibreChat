@@ -27,7 +27,8 @@ const emptyInsights: TInsightsResponse = {
 
 const insightsEnabled = jest.fn(() => ({ enabled: true, showDetails: true }));
 const insightsDisabled = jest.fn(() => ({ enabled: false, showDetails: false }));
-const getAccessibleAgents = jest.fn().mockResolvedValue(agents);
+const fullAccess = { agents, detailAgentIds: agents.map((agent) => agent.id) };
+const getInsightsAccess = jest.fn().mockResolvedValue(fullAccess);
 
 const createResponse = () => {
   const status = jest.fn();
@@ -50,7 +51,7 @@ const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyI
   getInsights,
   handler: createInsightsHandler({
     resolveInsightsConfig: insightsEnabled,
-    getAccessibleAgents,
+    getInsightsAccess,
     getInsights,
   }),
 });
@@ -58,13 +59,13 @@ const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyI
 describe('Insights handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    getAccessibleAgents.mockResolvedValue(agents);
+    getInsightsAccess.mockResolvedValue(fullAccess);
   });
 
   it('returns access when at least one agent is accessible', async () => {
     const handler = createInsightsAccessHandler({
       resolveInsightsConfig: insightsEnabled,
-      getAccessibleAgents,
+      getInsightsAccess,
     });
     const { response, json } = createResponse();
 
@@ -74,10 +75,10 @@ describe('Insights handlers', () => {
   });
 
   it('returns 403 from the access endpoint when no agent is accessible', async () => {
-    getAccessibleAgents.mockResolvedValueOnce([]);
+    getInsightsAccess.mockResolvedValueOnce({ agents: [], detailAgentIds: [] });
     const handler = createInsightsAccessHandler({
       resolveInsightsConfig: insightsEnabled,
-      getAccessibleAgents,
+      getInsightsAccess,
     });
     const { response, status } = createResponse();
 
@@ -89,7 +90,7 @@ describe('Insights handlers', () => {
   it('returns 404 from the access endpoint when Insights is disabled', async () => {
     const handler = createInsightsAccessHandler({
       resolveInsightsConfig: insightsDisabled,
-      getAccessibleAgents,
+      getInsightsAccess,
     });
     const { response, status, json } = createResponse();
 
@@ -97,14 +98,14 @@ describe('Insights handlers', () => {
 
     expect(status).toHaveBeenCalledWith(404);
     expect(json).toHaveBeenCalledWith({ message: 'Not found' });
-    expect(getAccessibleAgents).not.toHaveBeenCalled();
+    expect(getInsightsAccess).not.toHaveBeenCalled();
   });
 
   it('returns 404 without resolving access when Insights is disabled', async () => {
     const getInsights = jest.fn();
     const handler = createInsightsHandler({
       resolveInsightsConfig: insightsDisabled,
-      getAccessibleAgents,
+      getInsightsAccess,
       getInsights,
     });
     const { response, status } = createResponse();
@@ -112,7 +113,7 @@ describe('Insights handlers', () => {
     await handler(createRequest(), response);
 
     expect(status).toHaveBeenCalledWith(404);
-    expect(getAccessibleAgents).not.toHaveBeenCalled();
+    expect(getInsightsAccess).not.toHaveBeenCalled();
     expect(getInsights).not.toHaveBeenCalled();
   });
 
@@ -277,6 +278,77 @@ describe('Insights handlers', () => {
     const { response, status } = createResponse();
     await handler(createRequest({ enabled: 'true', showDetails: 'true' }), response);
     expect(status).toHaveBeenCalledWith(404);
+    expect(getInsights).not.toHaveBeenCalled();
+  });
+
+  it('returns access to aggregate-only agents without disclosing inspection eligibility', async () => {
+    getInsightsAccess.mockResolvedValueOnce({ agents, detailAgentIds: [] });
+    const handler = createInsightsAccessHandler({
+      resolveInsightsConfig: insightsEnabled,
+      getInsightsAccess,
+    });
+    const { response, json } = createResponse();
+    await handler(createRequest(), response);
+    expect(json).toHaveBeenCalledWith({ access: true });
+  });
+
+  it.each([
+    [['agent-a'], true],
+    [['agent-b'], false],
+    [['agent-a', 'agent-b'], false],
+    [undefined, false],
+  ] as const)('limits detail to eligible selected agents %p', async (selected, expectedDetail) => {
+    getInsightsAccess.mockResolvedValueOnce({ agents, detailAgentIds: ['agent-a'] });
+    const { handler, getInsights } = createDashboardHandler();
+    const { response, json } = createResponse();
+    await handler(
+      createRequest({
+        ...(selected ? { agentIds: [...selected] } : {}),
+        search: 'private identity',
+        page: '20',
+        pageSize: '50',
+        showDetails: 'true',
+      }),
+      response,
+    );
+
+    expect(getInsights).toHaveBeenCalledWith(
+      expect.objectContaining({
+        showDetails: expectedDetail,
+        agentIds: selected ? [...selected] : ['agent-a', 'agent-b'],
+        search: expectedDetail ? 'private identity' : undefined,
+        page: expectedDetail ? 20 : 1,
+        pageSize: expectedDetail ? 50 : 10,
+      }),
+    );
+    expect(json).toHaveBeenCalledWith(
+      expectedDetail
+        ? emptyInsights
+        : {
+            agents,
+            summary: emptyInsights.summary,
+            daily: emptyInsights.daily,
+          },
+    );
+    expect(getInsightsAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a dashboard request without statistics eligibility before querying data', async () => {
+    getInsightsAccess.mockResolvedValueOnce({ agents: [], detailAgentIds: [] });
+    const { handler, getInsights } = createDashboardHandler();
+    const { response, status } = createResponse();
+    await handler(createRequest(), response);
+    expect(status).toHaveBeenCalledWith(403);
+    expect(getInsights).not.toHaveBeenCalled();
+  });
+
+  it('does not query statistics when access resolution fails', async () => {
+    getInsightsAccess.mockRejectedValueOnce(new Error('private ACL error'));
+    const { handler, getInsights } = createDashboardHandler();
+    const { response, status, json } = createResponse();
+    await handler(createRequest(), response);
+    expect(status).toHaveBeenCalledWith(500);
+    expect(json).toHaveBeenCalledWith({ message: 'Failed to load insights' });
     expect(getInsights).not.toHaveBeenCalled();
   });
 

@@ -3,7 +3,7 @@ const request = require('supertest');
 
 const mockCreateInsightsAccessHandler = jest.fn(() => (_req, res) => res.json({ access: true }));
 const mockCreateInsightsHandler = jest.fn(() => (_req, res) => res.json({ summary: {} }));
-const mockGetAccessibleAgents = jest.fn();
+const mockGetInsightsAccess = jest.fn();
 const mockGetInsights = jest.fn();
 let mockResolverCreateCount = 0;
 let mockAccessHandlerDeps;
@@ -15,9 +15,9 @@ jest.mock('@librechat/api', () => ({
     [mockAccessHandlerDeps] = args;
     return mockCreateInsightsAccessHandler(...args);
   },
-  createInsightsAgentAccessResolver: () => {
+  createInsightsAccessResolver: () => {
     mockResolverCreateCount += 1;
-    return mockGetAccessibleAgents;
+    return mockGetInsightsAccess;
   },
   createInsightsHandler: (...args) => {
     [mockDashboardHandlerDeps] = args;
@@ -75,10 +75,10 @@ describe('Insights routes', () => {
   it('uses one shared agent access resolver for both handlers', () => {
     expect(mockResolverCreateCount).toBe(1);
     expect(mockAccessHandlerDeps).toEqual(
-      expect.objectContaining({ getAccessibleAgents: mockGetAccessibleAgents }),
+      expect.objectContaining({ getInsightsAccess: mockGetInsightsAccess }),
     );
     expect(mockDashboardHandlerDeps).toEqual(
-      expect.objectContaining({ getAccessibleAgents: mockGetAccessibleAgents }),
+      expect.objectContaining({ getInsightsAccess: mockGetInsightsAccess }),
     );
   });
 });

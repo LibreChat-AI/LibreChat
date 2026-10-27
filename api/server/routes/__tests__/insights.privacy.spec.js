@@ -1,15 +1,15 @@
 const express = require('express');
 const request = require('supertest');
+const { Types } = require('mongoose');
+const { PermissionBits, PrincipalType } = require('librechat-data-provider');
 
 const mockGetAppConfig = jest.fn();
-const mockGetAccessibleAgents = jest.fn();
+const mockGetAgents = jest.fn();
+const mockGetUserPrincipals = jest.fn();
+const mockHasGlobalAccess = jest.fn();
+const mockFindAccessibleResources = jest.fn();
 const mockGetInsights = jest.fn();
 let mockUser;
-
-jest.mock('@librechat/api', () => ({
-  ...jest.requireActual('@librechat/api'),
-  createInsightsAgentAccessResolver: () => mockGetAccessibleAgents,
-}));
 
 jest.mock('~/server/services/Config', () => ({
   getAppConfig: (...args) => mockGetAppConfig(...args),
@@ -28,16 +28,20 @@ jest.mock('~/server/middleware', () => ({
 }));
 
 jest.mock('~/models', () => ({
-  findAccessibleResources: jest.fn(),
-  getAgents: jest.fn(),
+  findAccessibleResources: (...args) => mockFindAccessibleResources(...args),
+  getAgents: (...args) => mockGetAgents(...args),
   getInsights: (...args) => mockGetInsights(...args),
-  getUserPrincipals: jest.fn(),
-  hasCapabilityForPrincipals: jest.fn(),
+  getUserPrincipals: (...args) => mockGetUserPrincipals(...args),
+  hasCapabilityForPrincipals: (...args) => mockHasGlobalAccess(...args),
 }));
 
 const insightsRouter = require('../insights');
 const savedEnableInsights = process.env.ENABLE_INSIGHTS;
 const agents = [{ id: 'agent-a', name: 'Alpha' }];
+const records = [
+  { _id: new Types.ObjectId(), ...agents[0], tenantId: 'tenant-a' },
+  { _id: new Types.ObjectId(), id: 'agent-b', name: 'Beta', tenantId: 'tenant-a' },
+];
 const privateValue = 'private-content-sentinel';
 const detailed = {
   agents,
@@ -70,8 +74,18 @@ describe('Insights API privacy', () => {
     mockGetAppConfig.mockResolvedValue({
       interfaceConfig: { insights: { enabled: true, showDetails: false } },
     });
-    mockGetAccessibleAgents.mockResolvedValue(agents);
-    mockGetInsights.mockResolvedValue(detailed);
+    mockGetAgents.mockResolvedValue([records[0]]);
+    mockGetUserPrincipals.mockResolvedValue([
+      { principalType: PrincipalType.USER, principalId: 'user-id' },
+    ]);
+    mockHasGlobalAccess.mockResolvedValue(false);
+    mockFindAccessibleResources.mockImplementation(async (_principals, _type, required) =>
+      required === (PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS) ? [records[0]._id] : [],
+    );
+    mockGetInsights.mockImplementation(async (options) => ({
+      ...detailed,
+      agents: options.agents,
+    }));
   });
 
   afterAll(() => {
@@ -120,7 +134,7 @@ describe('Insights API privacy', () => {
       });
       const response = await request(createApp()).get(path);
       expect(response.status).toBe(404);
-      expect(mockGetAccessibleAgents).not.toHaveBeenCalled();
+      expect(mockGetAgents).not.toHaveBeenCalled();
       expect(mockGetInsights).not.toHaveBeenCalled();
     },
   );
@@ -147,7 +161,7 @@ describe('Insights API privacy', () => {
     expect(response.status).toBe(500);
     expect(response.text).not.toContain(privateValue);
     expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
-    expect(mockGetAccessibleAgents).not.toHaveBeenCalled();
+    expect(mockGetAgents).not.toHaveBeenCalled();
     expect(mockGetInsights).not.toHaveBeenCalled();
   });
 
@@ -169,4 +183,150 @@ describe('Insights API privacy', () => {
     expect(mockGetInsights).toHaveBeenCalledWith(expect.objectContaining({ showDetails: true }));
     expect(response.body).toEqual(detailed);
   });
+
+  it.each(
+    [PrincipalType.USER, PrincipalType.GROUP, PrincipalType.ROLE].flatMap((type) =>
+      [3, 15].map((permBits) => [type, permBits]),
+    ),
+  )(
+    'enables numbers-only access through %s grant %s even when YAML allows detail',
+    async (type, permBits) => {
+      mockGetAppConfig.mockResolvedValue({
+        interfaceConfig: { insights: { enabled: true, showDetails: true } },
+      });
+      const principal = {
+        principalType: type,
+        principalId: type === PrincipalType.USER ? mockUser.id : 'shared-principal',
+      };
+      mockGetUserPrincipals.mockResolvedValue([principal, { principalType: PrincipalType.PUBLIC }]);
+      mockFindAccessibleResources.mockImplementation(async (_principals, _type, required) =>
+        (permBits & required) === required ? [records[0]._id] : [],
+      );
+      const app = createApp();
+
+      const access = await request(app).get('/api/insights/access');
+      expect(access.status).toBe(200);
+      expect(access.body).toEqual({ access: true });
+      const response = await request(app).get('/api/insights').query({
+        showDetails: 'true',
+        search: privateValue,
+        page: 20,
+        pageSize: 50,
+      });
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ agents, summary: detailed.summary, daily: detailed.daily });
+      expect(response.text).not.toContain(privateValue);
+      expect(mockGetInsights).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentIds: ['agent-a'],
+          showDetails: false,
+          search: undefined,
+          page: 1,
+          pageSize: 10,
+        }),
+      );
+      expect(mockFindAccessibleResources).toHaveBeenCalledWith(
+        [principal],
+        'agent',
+        PermissionBits.VIEW | PermissionBits.EDIT,
+        [records[0]._id],
+      );
+    },
+  );
+
+  it.each([
+    [PrincipalType.USER, PermissionBits.VIEW],
+    [PrincipalType.PUBLIC, PermissionBits.VIEW | PermissionBits.EDIT],
+  ])(
+    'denies statistics through %s grant %s without an eligible non-public grant',
+    async (type, permBits) => {
+      mockGetUserPrincipals.mockResolvedValue([
+        { principalType: type, principalId: 'principal-id' },
+      ]);
+      mockFindAccessibleResources.mockImplementation(async (_principals, _type, required) =>
+        (permBits & required) === required ? [records[0]._id] : [],
+      );
+      for (const path of ['/api/insights/access', '/api/insights']) {
+        const response = await request(createApp()).get(path);
+        expect(response.status).toBe(403);
+      }
+      expect(mockGetInsights).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [['agent-a'], true],
+    [['agent-b'], false],
+    [['agent-a', 'agent-b'], false],
+    [undefined, false],
+  ])('applies inspection eligibility to selected agents %p', async (selected, expectedDetail) => {
+    mockGetAppConfig.mockResolvedValue({
+      interfaceConfig: { insights: { enabled: true, showDetails: true } },
+    });
+    mockGetAgents.mockResolvedValue(records);
+    mockFindAccessibleResources.mockImplementation(async (_principals, _type, required) =>
+      required === (PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS)
+        ? [records[0]._id]
+        : [records[1]._id],
+    );
+    const response = await request(createApp())
+      .get('/api/insights')
+      .query(selected ? { agentIds: selected } : {});
+
+    expect(response.status).toBe(200);
+    expect(mockGetInsights).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentIds: selected ?? ['agent-a', 'agent-b'],
+        showDetails: expectedDetail,
+      }),
+    );
+    expect(Object.hasOwn(response.body, 'latest')).toBe(expectedDetail);
+    if (!expectedDetail) {
+      expect(Object.keys(response.body).sort()).toEqual(['agents', 'daily', 'summary']);
+      expect(response.text).not.toContain(privateValue);
+    }
+    expect(response.body).not.toHaveProperty('detailAgentIds');
+  });
+
+  it.each(['ADMIN', 'global-reader'])(
+    'retains separately authorized detail for %s when YAML allows it',
+    async (role) => {
+      mockUser.role = role;
+      mockHasGlobalAccess.mockResolvedValue(role === 'global-reader');
+      mockGetAppConfig.mockResolvedValue({
+        interfaceConfig: { insights: { enabled: true, showDetails: true } },
+      });
+      const response = await request(createApp()).get('/api/insights');
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual(detailed);
+      expect(mockFindAccessibleResources).not.toHaveBeenCalled();
+    },
+  );
+
+  it('bounds ACL lookups to the authenticated tenant and rejects another agent', async () => {
+    mockFindAccessibleResources.mockResolvedValue([records[1]._id]);
+    const response = await request(createApp())
+      .get('/api/insights')
+      .query({ agentIds: ['agent-b'], tenantId: 'tenant-b' });
+    expect(response.status).toBe(403);
+    expect(mockGetAgents).toHaveBeenCalledWith({ tenantId: 'tenant-a' }, '_id id name tenantId');
+    expect(mockFindAccessibleResources).toHaveBeenCalledWith(
+      expect.any(Array),
+      'agent',
+      PermissionBits.VIEW | PermissionBits.EDIT,
+      [records[0]._id],
+    );
+    expect(mockGetInsights).not.toHaveBeenCalled();
+  });
+
+  it.each(['/api/insights/access', '/api/insights'])(
+    'does not broaden access after an ACL error on %s',
+    async (path) => {
+      mockFindAccessibleResources.mockRejectedValue(new Error(privateValue));
+      const response = await request(createApp()).get(path);
+      expect(response.status).toBe(500);
+      expect(response.text).not.toContain(privateValue);
+      expect(mockGetInsights).not.toHaveBeenCalled();
+    },
+  );
 });

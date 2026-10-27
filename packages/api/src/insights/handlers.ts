@@ -4,10 +4,11 @@ import {
   INSIGHTS_SEARCH_MIN_LENGTH,
   INSIGHTS_AGENT_ID_MAX_LENGTH,
 } from 'librechat-data-provider';
-import type { TInsightsAgent, TInsightsParams } from 'librechat-data-provider';
+import type { TInsightsParams } from 'librechat-data-provider';
 import type { InsightsMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { InsightsConfigResolver } from './config';
+import type { InsightsAccess } from './access';
 import type { ServerRequest } from '~/types';
 import { toAggregateInsightsResponse } from './privacy';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -15,12 +16,12 @@ import { getSafeErrorMetadata } from '~/utils/errors';
 type InsightsHandlerDeps = {
   resolveInsightsConfig: InsightsConfigResolver;
   getInsights: InsightsMethods['getInsights'];
-  getAccessibleAgents: (user: NonNullable<ServerRequest['user']>) => Promise<TInsightsAgent[]>;
+  getInsightsAccess: (user: NonNullable<ServerRequest['user']>) => Promise<InsightsAccess>;
 };
 
 type InsightsAccessHandlerDeps = Pick<
   InsightsHandlerDeps,
-  'resolveInsightsConfig' | 'getAccessibleAgents'
+  'resolveInsightsConfig' | 'getInsightsAccess'
 >;
 
 const firstQueryValue = (value: unknown): string | undefined => {
@@ -69,7 +70,7 @@ const timeZoneValue = (value: unknown): string | undefined => {
 
 export function createInsightsAccessHandler({
   resolveInsightsConfig,
-  getAccessibleAgents,
+  getInsightsAccess,
 }: InsightsAccessHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
@@ -82,7 +83,7 @@ export function createInsightsAccessHandler({
         res.status(401).json({ message: 'Authentication required' });
         return;
       }
-      const agents = await getAccessibleAgents(req.user);
+      const { agents } = await getInsightsAccess(req.user);
       if (agents.length === 0) {
         res.status(403).json({ message: 'Forbidden' });
         return;
@@ -99,11 +100,11 @@ export function createInsightsAccessHandler({
 export function createInsightsHandler({
   resolveInsightsConfig,
   getInsights,
-  getAccessibleAgents,
+  getInsightsAccess,
 }: InsightsHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
-      const { enabled, showDetails } = resolveInsightsConfig(req);
+      const { enabled, showDetails: configuredShowDetails } = resolveInsightsConfig(req);
       if (!enabled) {
         res.status(404).json({ message: 'Not found' });
         return;
@@ -113,7 +114,7 @@ export function createInsightsHandler({
         return;
       }
 
-      const agents = await getAccessibleAgents(req.user);
+      const { agents, detailAgentIds } = await getInsightsAccess(req.user);
       if (agents.length === 0) {
         res.status(403).json({ message: 'Forbidden' });
         return;
@@ -130,6 +131,10 @@ export function createInsightsHandler({
         return;
       }
       const agentIds = requestedAgentIds.length > 0 ? requestedAgentIds : [...authorizedAgentIds];
+      const inspectableAgents = new Set(detailAgentIds);
+      // A combined result must not include detail from an aggregate-only agent.
+      const showDetails =
+        configuredShowDetails && agentIds.every((id) => inspectableAgents.has(id));
 
       const page = showDetails ? positiveInteger(req.query.page, 1) : 1;
       const pageSize = showDetails
