@@ -169,8 +169,17 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   const reasoningStateKey = getReasoningStateKey(conversationId, index);
   const sendLockTimeoutMs = queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const pendingReasoningOverride = useAtomValue(pendingReasoningOverrideFamily(reasoningStateKey));
-  const liveReasoningOverride = useAtomValue(submissionByIndex(index))?.userMessage
-    ?.reasoningOverride;
+  const liveSubmission = useAtomValue(submissionByIndex(index));
+  /* A level belongs to the target it ran on: once the conversation moves to another spec, model
+     or agent, a queued turn does not inherit it, as a composer pick is dropped on the same change. */
+  const liveConversation = liveSubmission?.conversation;
+  const inheritReasoning =
+    liveConversation != null &&
+    liveConversation.spec === conversation?.spec &&
+    liveConversation.endpoint === conversation?.endpoint &&
+    liveConversation.model === conversation?.model &&
+    liveConversation.agent_id === conversation?.agent_id;
+  const liveReasoningOverride = liveSubmission?.userMessage?.reasoningOverride;
   const { applyQueuedTurnReceipts, finishQueuedTurnEnqueue } = useQueuedTurnReceipts({
     conversationId,
     queueKey,
@@ -265,6 +274,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     conversationId,
     queueKey,
     reasoningStateKey,
+    inheritReasoning,
     liveReasoningOverride,
     files,
     setFiles,

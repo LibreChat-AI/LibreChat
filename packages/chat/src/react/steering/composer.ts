@@ -24,6 +24,7 @@ export default function useComposerTake<File extends ComposerFile>({
   conversationId,
   queueKey,
   reasoningStateKey,
+  inheritReasoning,
   liveReasoningOverride,
   files,
   setFiles,
@@ -31,6 +32,8 @@ export default function useComposerTake<File extends ComposerFile>({
   conversationId: string;
   queueKey: string;
   reasoningStateKey: string;
+  /** Whether the conversation still targets what the running turn ran on, so its level applies. */
+  inheritReasoning: boolean;
   /** The level the running turn carries: a queued turn with nothing newly picked keeps the level
    *  of the turn it will follow, as a direct send keeps its branch's level. */
   liveReasoningOverride?: TMessage['reasoningOverride'];
@@ -95,9 +98,11 @@ export default function useComposerTake<File extends ComposerFile>({
     /* The turn this one will follow is the last one queued, or the running turn when none is. */
     const queued = reasoningStore.get(queuedMessagesByConvoId(queueKey));
     const lastQueued = queued[queued.length - 1];
-    const reasoningOverride =
-      pendingReasoning ??
-      (lastQueued != null ? lastQueued.reasoningOverride : liveReasoningOverride);
+    let inherited: TMessage['reasoningOverride'];
+    if (inheritReasoning) {
+      inherited = lastQueued != null ? lastQueued.reasoningOverride : liveReasoningOverride;
+    }
+    const reasoningOverride = pendingReasoning ?? inherited;
     if (quotes.length > 0) {
       reasoningStore.set(pendingQuotesByConvoId(conversationId), []);
     }
@@ -112,7 +117,14 @@ export default function useComposerTake<File extends ComposerFile>({
       ...(manualSkills.length > 0 && { manualSkills }),
       ...(reasoningOverride != null && { reasoningOverride }),
     };
-  }, [conversationId, liveReasoningOverride, queueKey, reasoningStateKey, reasoningStore]);
+  }, [
+    conversationId,
+    inheritReasoning,
+    liveReasoningOverride,
+    queueKey,
+    reasoningStateKey,
+    reasoningStore,
+  ]);
 
   /** Quotes-only drain for composer-origin steers: the excerpts ride the steer
    *  POST into the live run, while manual skill picks stay staged: a skill

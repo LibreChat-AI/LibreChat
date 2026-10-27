@@ -4305,6 +4305,7 @@ describe('useSteering', () => {
       const running = { key: 'reasoning_effort', value: ReasoningEffort.high } as const;
       act(() => {
         contextStore.set(submissionByIndex(0), {
+          conversation: agentsConversation,
           userMessage: { reasoningOverride: running },
         } as unknown as TSubmission);
       });
@@ -4320,11 +4321,33 @@ describe('useSteering', () => {
       expect(result.current.pendingReasoning).toBeUndefined();
     });
 
+    it('does not carry the running level onto a turn queued for another target', () => {
+      const { result } = setupWithContext({
+        conversation: { ...agentsConversation, spec: 'enforced-spec' },
+      });
+      act(() => {
+        contextStore.set(submissionByIndex(0), {
+          conversation: agentsConversation,
+          userMessage: {
+            reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+          },
+        } as unknown as TSubmission);
+      });
+
+      act(() => {
+        result.current.steering.queueFromComposer('under the new spec');
+      });
+
+      expect(result.current.queue[0]?.text).toBe('under the new spec');
+      expect(result.current.queue[0]?.reasoningOverride).toBeUndefined();
+    });
+
     it('keeps a level picked for a queued turn on the turns queued after it', () => {
       const low = { key: 'reasoning_effort', value: ReasoningEffort.low } as const;
       const { result } = setupWithContext({}, undefined, low);
       act(() => {
         contextStore.set(submissionByIndex(0), {
+          conversation: agentsConversation,
           userMessage: {
             reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
           },
