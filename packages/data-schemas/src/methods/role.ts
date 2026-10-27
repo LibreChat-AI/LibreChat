@@ -741,17 +741,18 @@ export function createRoleMethods(
       throw new Error(`Cannot delete system role: ${roleName}`);
     }
     const Role = mongoose.models.Role;
-    const role = {
-      name: roleName,
-      ...tenantPartitionFilter('deleteRoleByName'),
-      ...(options?.id ? { _id: options.id } : {}),
-    };
-    /** A role recreated under this name has another `_id`: leave it and its members alone. */
-    if (options?.id && !(await Role.exists(role))) {
-      return null;
-    }
-    const isStillTargeted = async () => !options?.id || (await Role.exists(role)) != null;
+    const partitioned = { name: roleName, ...tenantPartitionFilter('deleteRoleByName') };
     try {
+      /** The role this call targets, by `_id`: the one named, or the one it was told. A role
+       * recreated under this name has another `_id`, so it and its members are left alone. */
+      const target = options?.id
+        ? await Role.exists({ ...partitioned, _id: options.id })
+        : await Role.exists(partitioned);
+      if (!target) {
+        return null;
+      }
+      const role = { ...partitioned, _id: target._id };
+      const isStillTargeted = async () => (await Role.exists(role)) != null;
       const reassignedUserIds = await reassignMembersToUser(roleName, isStillTargeted);
       let deleted: IRole | null;
       try {

@@ -1064,7 +1064,10 @@ describe('deleteRoleByName', () => {
     expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
   });
 
-  it('never moves the members of a role recreated under the name mid-delete', async () => {
+  it.each([
+    ['given', true],
+    ['resolved', false],
+  ])('never moves the members of a role recreated mid-delete (id %s)', async (_label, withId) => {
     const original = await createRoleByName({ name: 'editor' });
     const alice = await User.create({
       name: 'Alice',
@@ -1098,7 +1101,7 @@ describe('deleteRoleByName', () => {
 
     let caught: unknown;
     try {
-      await deleteRoleByName('editor', { id: String(original._id) });
+      await deleteRoleByName('editor', withId ? { id: String(original._id) } : undefined);
     } catch (error) {
       caught = error;
     } finally {
