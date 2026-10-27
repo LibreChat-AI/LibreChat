@@ -109,6 +109,20 @@ describe('encodeAndFormatImages', () => {
     );
   });
 
+  it('surfaces a later failure without waiting for an earlier pending read', async () => {
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      if (key === 'slow') {
+        return new Promise(() => undefined);
+      }
+      throw new Error('later failed');
+    });
+    const files = ['slow', 'fails'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    await expect(encodeAndFormatImages(makeReq(), files, {}, deps)).rejects.toBeInstanceOf(
+      AttachmentStorageError,
+    );
+  });
+
   it('returns an empty result without acquiring a strategy for absent files', async () => {
     await expect(encodeAndFormatImages(makeReq(), undefined, {}, deps)).resolves.toEqual({
       files: [],

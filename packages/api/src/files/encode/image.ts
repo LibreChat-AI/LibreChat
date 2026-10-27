@@ -168,10 +168,7 @@ export async function encodeAndFormatImages(
   }
 
   const detail = params.imageDetail ?? req.body.imageDetail ?? ImageDetail.auto;
-  const formattedImages: ImageEntry[] = [];
-  for (const entry of promises) {
-    formattedImages.push(await entry);
-  }
+  const formattedImages = await Promise.all(promises);
   let configuredFileSizeLimit: number | undefined;
   if (req.config?.fileConfig) {
     const fileConfig = mergeFileConfig(req.config.fileConfig);
