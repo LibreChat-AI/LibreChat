@@ -1,35 +1,11 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
-import type { Agents, TMessage, TEphemeralAgent, TPendingSteer } from 'librechat-data-provider';
+import type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
+import type { Agents, TMessage, TEphemeralAgent } from 'librechat-data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
-export interface AbortStreamParams {
-  /** The stream ID to abort (if known) */
-  streamId?: string;
-  /** The conversation ID to abort (backend will look up the job) */
-  conversationId?: string;
-  /** Exact generation epoch returned by start/status. Prevents a stale tab
-   * from aborting a newer turn that reused the conversation-scoped stream id. */
-  generationCreatedAt?: number;
-}
-
-export interface AbortStreamResponse {
-  generationProtocolVersion?: number;
-  success: boolean;
-  aborted?: string;
-  /** Stop lost to an ordinary terminal transition; no abort FINAL was emitted. */
-  settled?: boolean;
-  code?: 'RUN_ALREADY_SETTLED' | string;
-  streamId?: string;
-  terminalStatus?: 'complete' | 'error' | 'aborted';
-  error?: string;
-  /** The worker stopped, but its terminal state could not be made durable.
-   * The client must not infer a safe queue-drain boundary from this ACK. */
-  persistenceFailed?: boolean;
-  /** Steers that never reached an injection boundary; restored as queued chips. */
-  pendingSteers?: TPendingSteer[];
-}
+export type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
 
 /**
  * Abort an ongoing generation stream.

@@ -24,7 +24,7 @@ export default function ClockFormatSelector() {
         options={options}
         onChange={(value) => setClockFormat(value as ClockFormatPreference)}
         testId="clock-format-selector"
-        sizeClasses="z-50 w-[150px]"
+        sizeClasses="w-[150px]"
         className="z-50"
         aria-labelledby={labelId}
       />

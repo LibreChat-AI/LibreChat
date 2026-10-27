@@ -1268,6 +1268,65 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
 
   /** The error row's own path announces the persisted turn; a finalized live
    *  row stands in for it, so it is announced the same way. */
+  it('finalizes a partial row when the bounded error identity is the live response', async () => {
+    const announceSettledTurn = jest.fn(async () => undefined);
+    const { saved, deps: d } = deps({ 'live-response': [partialSummaryRow()] });
+
+    await expect(
+      settleExistingRowsBeforeErrorTurn(
+        { compact: true },
+        { ...d, errorMessageId: 'live-response', announceSettledTurn },
+      ),
+    ).resolves.toEqual({ covered: true });
+
+    expect(d.getMessages).toHaveBeenCalledTimes(1);
+    expect(d.getMessages).toHaveBeenCalledWith(
+      { user: 'user-1', messageId: 'live-response', conversationId: 'conversation-1' },
+      undefined,
+    );
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      messageId: 'live-response',
+      unfinished: false,
+      error: true,
+    });
+    expect(announceSettledTurn).toHaveBeenCalledWith('live-response');
+  });
+
+  it('propagates persistence failures when finalizing the bounded live identity', async () => {
+    const outage = new Error('database unavailable');
+    const { deps: d } = deps({ 'live-response': [partialSummaryRow()] });
+    const announceSettledTurn = jest.fn();
+    await expect(
+      settleExistingRowsBeforeErrorTurn(
+        { compact: true },
+        {
+          ...d,
+          errorMessageId: 'live-response',
+          saveFinalizedTurn: async () => {
+            throw outage;
+          },
+          announceSettledTurn,
+        },
+      ),
+    ).rejects.toBe(outage);
+    expect(announceSettledTurn).not.toHaveBeenCalled();
+  });
+
+  it('writes under the bounded live identity when its response has not persisted', async () => {
+    const { saved, deps: d } = deps({});
+
+    await expect(
+      settleExistingRowsBeforeErrorTurn(
+        { compact: true },
+        { ...d, errorMessageId: 'live-response' },
+      ),
+    ).resolves.toEqual({ covered: false, errorRowMessageId: 'live-response' });
+
+    expect(d.getMessages).toHaveBeenCalledTimes(1);
+    expect(saved).toHaveLength(0);
+  });
+
   it('announces the live row it finalized', async () => {
     const announceSettledTurn = jest.fn(async () => undefined);
     const { deps: d } = deps({ 'live-response': [partialSummaryRow()] });

@@ -1,5 +1,6 @@
 import type { ConfigDraft, ConfigRecord } from '@librechat/data-schemas';
 import type { Response } from 'express';
+import type { ConfigReloadReport } from '~/app/invalidation';
 import type { ServerRequest } from '~/types/http';
 
 process.env.CREDS_KEY =
@@ -472,6 +473,7 @@ describe('createAdminConfigHandlers', () => {
       expect(res.statusCode).toBe(400);
       expect(res.body).toEqual({
         error: 'Process-backed MCP servers can only be configured in librechat.yaml',
+        code: 'PROCESS_MCP_CONFIG',
       });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
@@ -493,6 +495,7 @@ describe('createAdminConfigHandlers', () => {
       expect(res.statusCode).toBe(400);
       expect(res.body).toEqual({
         error: 'Langfuse request headers can only be configured in librechat.yaml',
+        code: 'LANGFUSE_HEADERS_CONFIG',
       });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
@@ -516,6 +519,7 @@ describe('createAdminConfigHandlers', () => {
       expect(res.statusCode).toBe(400);
       expect(res.body).toEqual({
         error: 'Langfuse request headers can only be configured in librechat.yaml',
+        code: 'LANGFUSE_HEADERS_CONFIG',
       });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
@@ -623,6 +627,9 @@ describe('createAdminConfigHandlers', () => {
       expect(res.body).toEqual({
         message: 'No actionable override sections provided',
         revision: null,
+        config: null,
+        applied: [],
+        skipped: [{ path: 'langfuse', segments: ['langfuse'], reason: 'dedicated_section' }],
       });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
@@ -670,7 +677,7 @@ describe('createAdminConfigHandlers', () => {
       await handlers.upsertConfigOverrides(req, res);
 
       expect(res.statusCode).toBe(403);
-      expect(res.body).toEqual({ error: 'Insufficient permissions' });
+      expect(res.body).toEqual({ error: 'Insufficient permissions', code: 'FORBIDDEN' });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
 
@@ -853,7 +860,7 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.unsetConfigField).toHaveBeenCalledWith(
         'role',
         'admin',
-        ['interface.modelSelect'],
+        [{ segments: ['interface', 'modelSelect'] }],
         undefined,
         {
           expectedRevision: undefined,
@@ -875,7 +882,7 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.unsetConfigField).toHaveBeenCalledWith(
         'role',
         'admin',
-        ['interface.mcpServers.placeholder'],
+        [{ segments: ['interface', 'mcpServers', 'placeholder'] }],
         undefined,
         {
           expectedRevision: undefined,
@@ -942,7 +949,7 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.unsetConfigField).toHaveBeenCalledWith(
         'role',
         'admin',
-        ['skillSync.github.enabled'],
+        [{ segments: ['skillSync', 'github', 'enabled'] }],
         undefined,
         {
           expectedRevision: undefined,
@@ -964,7 +971,7 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.unsetConfigField).toHaveBeenCalledWith(
         'role',
         'admin',
-        ['interface.modelSelect'],
+        [{ segments: ['interface', 'modelSelect'] }],
         undefined,
         {
           expectedRevision: undefined,
@@ -983,7 +990,19 @@ describe('createAdminConfigHandlers', () => {
       await handlers.deleteConfigField(req, res);
 
       expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ message: 'No actionable field path provided', revision: null });
+      expect(res.body).toEqual({
+        message: 'No actionable field path provided',
+        revision: null,
+        config: null,
+        applied: [],
+        skipped: [
+          {
+            path: 'langfuse.enabled',
+            segments: ['langfuse', 'enabled'],
+            reason: 'dedicated_section',
+          },
+        ],
+      });
       expect(deps.unsetConfigField).not.toHaveBeenCalled();
     });
 
@@ -1127,7 +1146,19 @@ describe('createAdminConfigHandlers', () => {
       await handlers.tombstoneConfigField(req, res);
 
       expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ message: 'No actionable field path provided', revision: null });
+      expect(res.body).toEqual({
+        message: 'No actionable field path provided',
+        revision: null,
+        config: null,
+        applied: [],
+        skipped: [
+          {
+            path: 'langfuse.enabled',
+            segments: ['langfuse', 'enabled'],
+            reason: 'dedicated_section',
+          },
+        ],
+      });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
 
@@ -1296,6 +1327,7 @@ describe('createAdminConfigHandlers', () => {
       expect(res.statusCode).toBe(400);
       expect(res.body).toEqual({
         error: 'Process-backed MCP servers can only be configured in librechat.yaml',
+        code: 'PROCESS_MCP_CONFIG',
       });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
@@ -1316,6 +1348,7 @@ describe('createAdminConfigHandlers', () => {
         expect(res.statusCode).toBe(400);
         expect(res.body).toEqual({
           error: 'Langfuse request headers can only be configured in librechat.yaml',
+          code: 'LANGFUSE_HEADERS_CONFIG',
         });
       }
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
@@ -1372,7 +1405,19 @@ describe('createAdminConfigHandlers', () => {
       await handlers.patchConfigField(req, res);
 
       expect(res.statusCode).toBe(200);
-      expect(res.body).toEqual({ message: 'No actionable field entries provided', revision: null });
+      expect(res.body).toEqual({
+        message: 'No actionable field entries provided',
+        revision: null,
+        config: null,
+        applied: [],
+        skipped: [
+          {
+            path: 'langfuse.enabled',
+            segments: ['langfuse', 'enabled'],
+            reason: 'dedicated_section',
+          },
+        ],
+      });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
 
@@ -1988,6 +2033,7 @@ describe('createAdminConfigHandlers', () => {
         body: { ops: [{ op: 'set', fieldPath: 'interface.modelSelect', value: false }] },
       },
     },
+    { name: 'reloadConfig', reqOverrides: {} },
   ];
 
   describe('upsertConfigOverrides: scope-lifecycle auth (ASSIGN_CONFIGS)', () => {
@@ -2762,7 +2808,7 @@ describe('createAdminConfigHandlers', () => {
       const req = mockReq({
         params: { principalType: 'role', principalId: 'admin' },
         body: {
-          overrides: { registration: { oauthStateTtlMs: 5 }, interface: { modelSelect: false } },
+          overrides: { githubCompare: { timeoutMs: 0 }, interface: { modelSelect: false } },
         },
       });
       const res = mockRes();
@@ -2775,9 +2821,10 @@ describe('createAdminConfigHandlers', () => {
         code: 'CONFIG_OVERRIDE_INVALID',
         issues: [
           {
-            path: 'registration.oauthStateTtlMs',
-            segments: ['registration', 'oauthStateTtlMs'],
+            path: 'githubCompare.timeoutMs',
+            segments: ['githubCompare', 'timeoutMs'],
             code: 'too_small',
+            params: { minimum: 1, inclusive: true, exact: false, type: 'number' },
           },
         ],
       });
@@ -2785,18 +2832,19 @@ describe('createAdminConfigHandlers', () => {
     });
 
     it('validates a whole-document write on the base its retained tombstones leave', async () => {
-      const base = {
-        config: {
-          cloudfront: { domain: 'https://cdn.example.com', imageSigning: 'cookies' },
-        },
-      };
-      const body = { overrides: { cloudfront: { requireSignedAccess: true } } };
+      /** A reset refill needs a whole interval; only a stored tombstone of the mode lifts that. */
+      const base = { config: { balance: { refillMode: 'reset' } } };
+      const body = { overrides: { balance: { refillIntervalValue: 1.5 } } };
       const params = { principalType: 'role', principalId: 'admin' };
 
       const kept = createHandlers({ getAppConfig: jest.fn().mockResolvedValue(base) });
       const keptRes = mockRes();
       await kept.handlers.upsertConfigOverrides(mockReq({ params, body }), keptRes);
-      expect(keptRes.statusCode).toBe(201);
+      expect(keptRes.statusCode).toBe(400);
+      expect(keptRes.body?.issues).toEqual([
+        expect.objectContaining({ path: 'balance.refillIntervalValue', code: 'custom' }),
+      ]);
+      expect(kept.deps.writeConfigDocument).not.toHaveBeenCalled();
 
       const tombstoned = createHandlers({
         getAppConfig: jest.fn().mockResolvedValue(base),
@@ -2804,16 +2852,13 @@ describe('createAdminConfigHandlers', () => {
           _id: 'c1',
           configVersion: 1,
           overrides: {},
-          tombstones: ['cloudfront.imageSigning'],
+          tombstones: ['balance.refillMode'],
         }),
       });
       const tombstonedRes = mockRes();
       await tombstoned.handlers.upsertConfigOverrides(mockReq({ params, body }), tombstonedRes);
-      expect(tombstonedRes.statusCode).toBe(400);
-      expect(tombstonedRes.body?.issues).toEqual([
-        expect.objectContaining({ path: 'cloudfront.requireSignedAccess' }),
-      ]);
-      expect(tombstoned.deps.writeConfigDocument).not.toHaveBeenCalled();
+      expect(tombstonedRes.statusCode).toBe(200);
+      expect(tombstoned.deps.writeConfigDocument).toHaveBeenCalledTimes(1);
     });
 
     it('accepts a partial section whose provided fields are valid', async () => {
@@ -2822,7 +2867,7 @@ describe('createAdminConfigHandlers', () => {
         params: { principalType: 'role', principalId: 'admin' },
         body: {
           overrides: {
-            registration: { oauthStateTtlMs: 120_000 },
+            registration: { allowedDomains: ['example.com'] },
             mcpServers: { github: { timeout: 5000 } },
             endpoints: { custom: [{ name: 'groq', apiKey: 'sk-test' }] },
           },
@@ -2952,7 +2997,7 @@ describe('createAdminConfigHandlers', () => {
         body: {
           entries: [
             { fieldPath: 'interface.customWelcome', value: 'hi' },
-            { fieldPath: 'registration.oauthStateTtlMs', value: 'soon' },
+            { fieldPath: 'githubCompare.timeoutMs', value: 'soon' },
           ],
         },
       });
@@ -2962,7 +3007,12 @@ describe('createAdminConfigHandlers', () => {
 
       expect(res.statusCode).toBe(400);
       expect(res.body?.issues).toEqual([
-        expect.objectContaining({ path: 'registration.oauthStateTtlMs' }),
+        {
+          path: 'githubCompare.timeoutMs',
+          segments: ['githubCompare', 'timeoutMs'],
+          code: 'invalid_type',
+          params: { expected: 'number', received: 'string' },
+        },
       ]);
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
@@ -3128,7 +3178,7 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.unsetConfigField).toHaveBeenCalledWith(
         'role',
         '__base__',
-        ['turnstileConfig.siteKey'],
+        [{ segments: ['turnstileConfig', 'siteKey'] }],
         undefined,
         { expectedRevision: undefined },
       );
@@ -3188,7 +3238,7 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.unsetConfigField).toHaveBeenCalledWith(
         'role',
         'editor',
-        ['ocr.apiKey', 'ocr.apiKeyPreview'],
+        [{ segments: ['ocr', 'apiKey'] }, { segments: ['ocr', 'apiKeyPreview'] }],
         undefined,
         { expectedRevision: undefined },
       );
@@ -3519,9 +3569,15 @@ describe('createAdminConfigHandlers', () => {
       await handlers.deleteConfigField(mockReq({ params, query: { fieldPath: 'paths' } }), res);
 
       expect(res.statusCode).toBe(200);
-      expect(deps.unsetConfigField).toHaveBeenCalledWith('role', 'admin', ['paths'], undefined, {
-        expectedRevision: undefined,
-      });
+      expect(deps.unsetConfigField).toHaveBeenCalledWith(
+        'role',
+        'admin',
+        [{ segments: ['paths'] }],
+        undefined,
+        {
+          expectedRevision: undefined,
+        },
+      );
     });
 
     it('does not let a section-scoped manager remove a value under an unknown section', async () => {
@@ -4201,6 +4257,15 @@ describe('createAdminConfigHandlers', () => {
       expect(res.body).toEqual({
         message: 'No actionable field entries provided',
         revision: storedRevision,
+        config: expect.objectContaining({ revision: storedRevision }),
+        applied: [],
+        skipped: [
+          {
+            path: 'interface.prompts',
+            segments: ['interface', 'prompts'],
+            reason: 'interface_permission',
+          },
+        ],
       });
       expect(deps.writeConfigDocument).not.toHaveBeenCalled();
     });
@@ -4505,6 +4570,207 @@ describe('createAdminConfigHandlers', () => {
       expect(getAppConfig).toHaveBeenCalledWith(
         expect.objectContaining({ bypassOverrideCache: true }),
       );
+    });
+  });
+
+  describe('reloadConfig', () => {
+    const admin = { id: 'u1', role: 'ADMIN', _id: { toString: () => 'u1' } };
+    const target = { type: 'config', id: 'librechat.yaml', name: 'librechat.yaml' };
+
+    it('clears the config caches before answering, writes nothing and audits the reload', async () => {
+      let release: () => void = () => undefined;
+      const reloadConfigCaches = jest.fn(
+        () =>
+          new Promise<ConfigReloadReport>(
+            (resolve) => (release = () => resolve({ cleared: true, broadcast: 'sent' })),
+          ),
+      );
+      const invalidateConfigCaches = jest.fn().mockResolvedValue(undefined);
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const { handlers, deps } = createHandlers({
+        reloadConfigCaches,
+        invalidateConfigCaches,
+        recordAuditEntry,
+      });
+      const res = mockRes();
+
+      const reloading = handlers.reloadConfig(mockReq({ user: admin }), res);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reloadConfigCaches).toHaveBeenCalledWith();
+      expect(res.status).not.toHaveBeenCalled();
+      release();
+      await reloading;
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, broadcast: true });
+      expect(invalidateConfigCaches).not.toHaveBeenCalled();
+      expect(deps.writeConfigDocument).not.toHaveBeenCalled();
+      expect(deps.hasConfigCapability).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'u1', tenantId: undefined }),
+        null,
+        'manage',
+      );
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'config.reloaded',
+          target,
+          metadata: { broadcast: 'sent' },
+        }),
+      );
+      expect(recordAuditEntry.mock.calls[0][0].outcome).toBeUndefined();
+    });
+
+    it('refuses a tenant admin with broad manage, since the reload reaches every tenant', async () => {
+      const reloadConfigCaches = jest.fn().mockResolvedValue({ cleared: true, broadcast: 'sent' });
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const { handlers } = createHandlers({ reloadConfigCaches, recordAuditEntry });
+      const res = mockRes();
+
+      await handlers.reloadConfig(mockReq({ user: { ...admin, tenantId: 'tenant-a' } }), res);
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toEqual({ error: expect.any(String), code: 'FORBIDDEN' });
+      expect(reloadConfigCaches).not.toHaveBeenCalled();
+      expect(recordAuditEntry).not.toHaveBeenCalled();
+    });
+
+    it('answers 422 CONFIG_RELOAD_INVALID with the issue locations when librechat.yaml is refused', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const issues = [
+        { path: 'bogusTopLevelKey', segments: ['bogusTopLevelKey'], code: 'unrecognized_keys' },
+      ];
+      const report: ConfigReloadReport = {
+        cleared: true,
+        loaded: { ok: false, error: { code: 'CONFIG_INVALID', issues } },
+        broadcast: 'skipped',
+      };
+      const { handlers } = createHandlers({
+        reloadConfigCaches: jest.fn().mockResolvedValue(report),
+        recordAuditEntry,
+      });
+      const res = mockRes();
+
+      await handlers.reloadConfig(mockReq(), res);
+
+      expect(res.statusCode).toBe(422);
+      expect(res.body).toEqual({
+        error: expect.any(String),
+        code: 'CONFIG_RELOAD_INVALID',
+        issues,
+      });
+      expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'config.reloaded',
+          outcome: 'failure',
+          target,
+          metadata: { code: 'CONFIG_RELOAD_INVALID', broadcast: 'skipped' },
+        }),
+      );
+    });
+
+    it('answers broadcast: false when there is no pub/sub to tell other instances', async () => {
+      const { handlers } = createHandlers({
+        reloadConfigCaches: jest.fn().mockResolvedValue({ cleared: true, broadcast: 'none' }),
+      });
+      const res = mockRes();
+
+      await handlers.reloadConfig(mockReq(), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, broadcast: false });
+    });
+
+    it.each([
+      {
+        name: 'the publish to the other instances failed',
+        report: { cleared: true, broadcast: 'failed' },
+        status: 503,
+        code: 'CONFIG_RELOAD_BROADCAST_FAILED',
+      },
+      {
+        name: 'a clear on this instance failed',
+        report: { cleared: false, broadcast: 'sent' },
+        status: 500,
+        code: 'CONFIG_RELOAD_FAILED',
+      },
+      {
+        name: 'both failed',
+        report: { cleared: false, broadcast: 'failed' },
+        status: 500,
+        code: 'CONFIG_RELOAD_FAILED',
+      },
+      {
+        name: 'building the config from the loaded file failed',
+        report: {
+          cleared: true,
+          loaded: { ok: false, error: { code: 'LOAD_FAILED' } },
+          broadcast: 'skipped',
+        },
+        status: 500,
+        code: 'CONFIG_RELOAD_FAILED',
+      },
+    ])(
+      'answers $status $code and audits a failure when $name',
+      async ({ report, status, code }) => {
+        const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+        const { handlers } = createHandlers({
+          reloadConfigCaches: jest.fn().mockResolvedValue(report),
+          recordAuditEntry,
+        });
+        const res = mockRes();
+
+        await handlers.reloadConfig(mockReq(), res);
+
+        expect(res.statusCode).toBe(status);
+        expect(res.body).toEqual({ error: expect.any(String), code });
+        expect(res.body).not.toHaveProperty('success');
+        expect(recordAuditEntry).toHaveBeenCalledTimes(1);
+        expect(recordAuditEntry).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: 'config.reloaded',
+            outcome: 'failure',
+            target,
+            metadata: { code, broadcast: report.broadcast },
+          }),
+        );
+      },
+    );
+
+    it('refuses a section-scoped manager, and answers 501 without the reload dependency', async () => {
+      const reloadConfigCaches = jest.fn().mockResolvedValue({ cleared: true, broadcast: 'sent' });
+      const scoped = createHandlers({
+        reloadConfigCaches,
+        hasConfigCapability: jest.fn(
+          async (_user: unknown, section: string | null) => section != null,
+        ),
+      });
+      const forbidden = mockRes();
+      await scoped.handlers.reloadConfig(mockReq(), forbidden);
+      const unconfigured = mockRes();
+      await createHandlers({
+        invalidateConfigCaches: jest.fn().mockResolvedValue(undefined),
+      }).handlers.reloadConfig(mockReq(), unconfigured);
+
+      expect(forbidden.statusCode).toBe(403);
+      expect(forbidden.body).toEqual({ error: 'Insufficient permissions', code: 'FORBIDDEN' });
+      expect(reloadConfigCaches).not.toHaveBeenCalled();
+      expect(unconfigured.statusCode).toBe(501);
+    });
+
+    it('answers 500 without echoing the failure, and audits nothing, when the reload throws', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const { handlers } = createHandlers({
+        reloadConfigCaches: jest.fn().mockRejectedValue(new Error('redis://secret@host down')),
+        recordAuditEntry,
+      });
+      const res = mockRes();
+
+      await handlers.reloadConfig(mockReq(), res);
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toEqual({ error: 'Failed to reload config' });
+      expect(recordAuditEntry).not.toHaveBeenCalled();
     });
   });
 

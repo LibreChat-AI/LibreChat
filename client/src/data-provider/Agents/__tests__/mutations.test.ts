@@ -5,6 +5,8 @@ import { dataService, PermissionBits, QueryKeys } from 'librechat-data-provider'
 import type { Agent, AgentListResponse, GraphEdge } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
+  useCreateAgentMutation,
+  useUpdateAgentAction,
   useDeleteAgentMutation,
   useDuplicateAgentMutation,
   useUpdateAgentMutation,
@@ -16,6 +18,8 @@ jest.mock('librechat-data-provider', () => {
     ...actual,
     dataService: {
       ...actual.dataService,
+      createAgent: jest.fn(),
+      updateAgentAction: jest.fn(),
       deleteAgent: jest.fn(),
       updateAgent: jest.fn(),
       duplicateAgent: jest.fn(),
@@ -257,4 +261,146 @@ describe('useDuplicateAgentMutation', () => {
     /** The untouched source row keeps its own ACL flag. */
     expect(listRes?.data[1]).toMatchObject({ id: sourceId, isEditable: false });
   });
+});
+
+describe('authored agent selector caches', () => {
+  const listKey = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT, mine: 1 }];
+  const seed = (client: QueryClient) =>
+    client.setQueryData(listKey, {
+      object: 'list',
+      data: [createAgent('agent_owned')],
+      first_id: 'agent_owned',
+      last_id: 'agent_owned',
+      has_more: false,
+    } satisfies AgentListResponse);
+
+  it('updates the filtered option after a rename', async () => {
+    const client = new QueryClient();
+    seed(client);
+    jest
+      .mocked(dataService.updateAgent)
+      .mockResolvedValue({ ...createAgent('agent_owned'), name: 'Renamed' });
+    const { result } = renderHook(() => useUpdateAgentMutation(), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: 'agent_owned', data: { name: 'Renamed' } });
+    });
+    expect(client.getQueryData<AgentListResponse>(listKey)?.data[0].name).toBe('Renamed');
+    client.clear();
+  });
+
+  it('removes a deleted agent from the filtered options', async () => {
+    const client = new QueryClient();
+    seed(client);
+    jest.mocked(dataService.deleteAgent).mockResolvedValue();
+    const { result } = renderHook(() => useDeleteAgentMutation(), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: 'agent_owned' });
+    });
+    expect(client.getQueryData<AgentListResponse>(listKey)?.data).toEqual([]);
+    client.clear();
+  });
+});
+
+describe('agent mutation callback invariants', () => {
+  it('calls create success once with absent list caches', async () => {
+    const client = new QueryClient();
+    const onSuccess = jest.fn();
+    jest.mocked(dataService.createAgent).mockResolvedValue(createAgent('new'));
+    const { result } = renderHook(() => useCreateAgentMutation({ onSuccess }), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({
+        name: 'new',
+        provider: 'openAI',
+        model: 'test-model',
+        model_parameters: createAgent('new').model_parameters,
+      });
+    });
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    client.clear();
+  });
+
+  it('calls update success once with absent list caches', async () => {
+    const client = new QueryClient();
+    const onSuccess = jest.fn();
+    jest.mocked(dataService.updateAgent).mockResolvedValue(createAgent('owned'));
+    const { result } = renderHook(() => useUpdateAgentMutation({ onSuccess }), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: 'owned', data: { name: 'new' } });
+    });
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    client.clear();
+  });
+
+  it('calls delete success once with absent list caches', async () => {
+    const client = new QueryClient();
+    const onSuccess = jest.fn();
+    jest.mocked(dataService.deleteAgent).mockResolvedValue();
+    const { result } = renderHook(() => useDeleteAgentMutation({ onSuccess }), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: 'owned' });
+    });
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    client.clear();
+  });
+
+  it('returns shared agents for deletion fallback instead of the authored subset', async () => {
+    const client = new QueryClient();
+    const onSuccess = jest.fn();
+    const shared = createAgent('shared');
+    for (const params of [
+      { requiredPermission: PermissionBits.EDIT },
+      { requiredPermission: PermissionBits.EDIT, mine: 1 },
+    ]) {
+      client.setQueryData([QueryKeys.agents, params], {
+        object: 'list',
+        data: params.mine ? [createAgent('owned')] : [createAgent('owned'), shared],
+        first_id: 'owned',
+        last_id: 'shared',
+        has_more: false,
+      });
+    }
+    jest.mocked(dataService.deleteAgent).mockResolvedValue();
+    const { result } = renderHook(() => useDeleteAgentMutation({ onSuccess }), {
+      wrapper: createWrapper(client),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: 'owned' });
+    });
+    expect(onSuccess.mock.calls.at(-1)?.[2]).toEqual([shared]);
+    client.clear();
+  });
+});
+
+it('calls action update success once with absent list caches', async () => {
+  const client = new QueryClient();
+  const onSuccess = jest.fn();
+  jest
+    .mocked(dataService.updateAgentAction)
+    .mockResolvedValue([
+      createAgent('owned'),
+      { agent_id: 'owned', action_id: 'action', version: 1, metadata: { domain: 'example.com' } },
+    ]);
+  const { result } = renderHook(() => useUpdateAgentAction({ onSuccess }), {
+    wrapper: createWrapper(client),
+  });
+  await act(async () => {
+    await result.current.mutateAsync({
+      agent_id: 'owned',
+      action_id: 'action',
+      metadata: { domain: 'example.com' },
+      functions: [],
+    });
+  });
+  expect(onSuccess).toHaveBeenCalledTimes(1);
+  client.clear();
 });

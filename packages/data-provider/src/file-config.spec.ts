@@ -2263,3 +2263,27 @@ describe('retained file cleanup rollout', () => {
     expect(mergeFileConfig({ retainedFileCleanup: false }).retainedFileCleanup).toBe(false);
   });
 });
+
+describe('vector erasure rollout and concurrency settings', () => {
+  it('leaves ownership trust disabled until an operator sets the post-upgrade cutoff', () => {
+    expect(mergeFileConfig(undefined).vectorOwnershipTrackingStart).toBeUndefined();
+    expect(mergeFileConfig(undefined).vectorDeletionConcurrency).toBe(4);
+    const config = fileConfigSchema.parse({
+      vectorOwnershipTrackingStart: '2026-10-26T21:00:00.000Z',
+      vectorDeletionConcurrency: 2,
+    });
+    expect(mergeFileConfig(config)).toEqual(expect.objectContaining(config));
+  });
+  it.each(['not-a-date', '', '2026-10-26'])(
+    'rejects a non-UTC rollout cutoff: %j',
+    (vectorOwnershipTrackingStart) => {
+      expect(fileConfigSchema.safeParse({ vectorOwnershipTrackingStart }).success).toBe(false);
+    },
+  );
+  it.each([0, -1, 1.5, 17])(
+    'rejects unsafe namespace concurrency: %s',
+    (vectorDeletionConcurrency) => {
+      expect(fileConfigSchema.safeParse({ vectorDeletionConcurrency }).success).toBe(false);
+    },
+  );
+});

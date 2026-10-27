@@ -1014,6 +1014,122 @@ describe('MCP record-key tombstones', () => {
   });
 });
 
+describe('keyed tombstones of custom endpoints', () => {
+  const HIDE = 'endpoints.custom["My \\"Gateway\\" v1.2"]';
+  const own = { name: 'gw', baseURL: 'https://gw.example.com', headers: { A: 'a', B: 'b' } };
+
+  async function stored(): Promise<ConfigRecord | null> {
+    return methods.findConfigByPrincipal(PrincipalType.ROLE, 'admin');
+  }
+
+  it('hides an entry on a document with no array, storing the canonical keyed path as is', async () => {
+    const result = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'endpoints.custom["My \\u0022Gateway\\u0022 v1.2"]',
+      10,
+    );
+
+    expect(result.tombstones).toEqual([HIDE]);
+    expect(result.overrides).toEqual({});
+    const raw = await mongoose.models.Config.collection.findOne({ principalId: 'admin' });
+    expect(raw?.tombstones).toEqual([HIDE]);
+  });
+
+  it('removes a path inside an entry an earlier write created, and keeps the rest of it', async () => {
+    await methods.patchConfigFields(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {
+      'endpoints.custom': [own],
+    });
+
+    const result = await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'endpoints.custom["gw"].headers.A',
+    );
+
+    expect(result.overrides).toEqual({
+      endpoints: { custom: [{ ...own, headers: { B: 'b' } }] },
+    });
+    expect(result.tombstones).toEqual(['endpoints.custom["gw"].headers.A']);
+  });
+
+  it('clears the hide of an entry the profile writes again, keeping the tombstones inside it', async () => {
+    await methods.tombstoneConfigField(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, [
+      'endpoints.custom["gw"]',
+      'endpoints.custom["gw"].headers.A',
+      'endpoints.custom["other"]',
+    ]);
+
+    const result = await methods.patchConfigFields(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      { 'endpoints.custom': [{ name: 'gw', titleModel: 'x' }] },
+    );
+
+    expect(result.tombstones).toEqual([
+      'endpoints.custom["gw"].headers.A',
+      'endpoints.custom["other"]',
+    ]);
+  });
+
+  it('unsets an entry by key, and the collection with every keyed tombstone under it', async () => {
+    await methods.patchConfigFields(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {
+      'endpoints.custom': [own, { name: 'kept', baseURL: 'https://kept' }],
+    });
+    await methods.tombstoneConfigField(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, [
+      'endpoints.custom["gw"].headers.A',
+      'endpoints.custom["yaml"]',
+      'memory.agent',
+    ]);
+
+    const entry = await methods.unsetConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      'endpoints.custom["gw"]',
+    );
+    expect(entry!.overrides).toEqual({
+      endpoints: { custom: [{ name: 'kept', baseURL: 'https://kept' }] },
+    });
+    expect(entry!.tombstones).toEqual(['endpoints.custom["yaml"]', 'memory.agent']);
+
+    const collection = await methods.unsetConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      'endpoints.custom',
+    );
+    expect(collection!.overrides).toEqual({});
+    expect(collection!.tombstones).toEqual(['memory.agent']);
+  });
+
+  it('counts a document holding only keyed tombstones as not empty', async () => {
+    await methods.tombstoneConfigField(
+      PrincipalType.ROLE,
+      'admin',
+      PrincipalModel.ROLE,
+      'endpoints.custom["gw"]',
+    );
+
+    const deleted = await methods.deleteConfig(PrincipalType.ROLE, 'admin', undefined, {
+      expectEmpty: true,
+    });
+
+    expect(deleted).toBeNull();
+    expect((await stored())?.tombstones).toEqual(['endpoints.custom["gw"]']);
+  });
+
+  it('refuses a malformed keyed path, or one after an array not merged by key', async () => {
+    for (const path of ['endpoints.custom["gw"', 'modelSpecs.list["a"]']) {
+      await expect(
+        methods.tombstoneConfigField(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, path),
+      ).rejects.toMatchObject({ code: 'CONFIG_PATH_INVALID', reason: 'keyed_path' });
+    }
+    expect(await stored()).toBeNull();
+  });
+});
+
 describe('deleteConfig', () => {
   it('deletes and returns the config', async () => {
     await methods.upsertConfig(PrincipalType.ROLE, 'admin', PrincipalModel.ROLE, {}, 10);

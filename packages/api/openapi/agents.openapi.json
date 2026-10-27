@@ -156,10 +156,10 @@
             "in": "query",
             "name": "limit",
             "schema": {
+              "default": 20,
               "type": "integer",
               "minimum": 1,
-              "maximum": 100,
-              "default": 20
+              "maximum": 100
             }
           },
           {
@@ -295,11 +295,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The agent id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The agent id"
             },
-            "required": true
+            "required": true,
+            "description": "The agent id"
           }
         ],
         "responses": {
@@ -423,11 +424,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The agent id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The agent id"
             },
-            "required": true
+            "required": true,
+            "description": "The agent id"
           }
         ],
         "requestBody": {
@@ -561,11 +563,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The agent id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The agent id"
             },
-            "required": true
+            "required": true,
+            "description": "The agent id"
           }
         ],
         "responses": {
@@ -691,11 +694,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The agent id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The agent id"
             },
-            "required": true
+            "required": true,
+            "description": "The agent id"
           }
         ],
         "requestBody": {
@@ -858,11 +862,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The agent id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The agent id"
             },
-            "required": true
+            "required": true,
+            "description": "The agent id"
           }
         ],
         "responses": {
@@ -988,20 +993,22 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The agent id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The agent id"
             },
-            "required": true
+            "required": true,
+            "description": "The agent id"
           },
           {
             "in": "path",
             "name": "fileId",
-            "description": "The file id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The file id"
             },
-            "required": true
+            "required": true,
+            "description": "The file id"
           }
         ],
         "responses": {
@@ -1128,10 +1135,10 @@
             "in": "query",
             "name": "limit",
             "schema": {
+              "default": 20,
               "type": "integer",
               "minimum": 1,
-              "maximum": 100,
-              "default": 20
+              "maximum": 100
             }
           },
           {
@@ -1401,11 +1408,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The skill id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The skill id"
             },
-            "required": true
+            "required": true,
+            "description": "The skill id"
           }
         ],
         "responses": {
@@ -1529,11 +1537,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The skill id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The skill id"
             },
-            "required": true
+            "required": true,
+            "description": "The skill id"
           }
         ],
         "requestBody": {
@@ -1674,11 +1683,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The skill id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The skill id"
             },
-            "required": true
+            "required": true,
+            "description": "The skill id"
           }
         ],
         "responses": {
@@ -1804,11 +1814,12 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The skill id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The skill id"
             },
-            "required": true
+            "required": true,
+            "description": "The skill id"
           }
         ],
         "responses": {
@@ -1934,20 +1945,22 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The skill id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The skill id"
             },
-            "required": true
+            "required": true,
+            "description": "The skill id"
           },
           {
             "in": "path",
             "name": "relativePath",
-            "description": "The file path within the skill",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The file path within the skill"
             },
-            "required": true
+            "required": true,
+            "description": "The file path within the skill"
           }
         ],
         "responses": {
@@ -2071,20 +2084,22 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The skill id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The skill id"
             },
-            "required": true
+            "required": true,
+            "description": "The skill id"
           },
           {
             "in": "path",
             "name": "relativePath",
-            "description": "The file path within the skill",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The file path within the skill"
             },
-            "required": true
+            "required": true,
+            "description": "The file path within the skill"
           }
         ],
         "responses": {
@@ -2215,20 +2230,22 @@
           {
             "in": "path",
             "name": "id",
-            "description": "The skill id",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The skill id"
             },
-            "required": true
+            "required": true,
+            "description": "The skill id"
           },
           {
             "in": "path",
             "name": "relativePath",
-            "description": "The file path within the skill",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "The file path within the skill"
             },
-            "required": true
+            "required": true,
+            "description": "The file path within the skill"
           }
         ],
         "requestBody": {
@@ -2360,14 +2377,6 @@
     }
   },
   "components": {
-    "securitySchemes": {
-      "oidcBearer": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT",
-        "description": "An OIDC access token, sent as a bearer token."
-      }
-    },
     "schemas": {
       "AgentCreateRequest": {
         "type": "object",
@@ -2391,33 +2400,40 @@
             ]
           },
           "avatar": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "filepath": {
-                "type": "string"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "filepath": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filepath",
+                  "source"
+                ]
               },
-              "source": {
-                "type": "string"
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "filepath",
-              "source"
             ]
           },
           "model_parameters": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {}
           },
           "tools": {
+            "default": [],
             "type": "array",
             "items": {
               "type": "string"
-            },
-            "default": []
+            }
           },
           "skills": {
             "type": "array",
@@ -2531,12 +2547,12 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
           },
           "code_environment_ids": {
+            "maxItems": 128,
             "type": "array",
             "items": {
               "type": "string",
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            },
-            "maxItems": 128
+            }
           },
           "code_workspace_id": {
             "anyOf": [
@@ -2656,6 +2672,9 @@
           },
           "tool_options": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {
               "type": "object",
               "properties": {
@@ -2696,7 +2715,8 @@
                 },
                 "approval_revision": {
                   "type": "string",
-                  "format": "uuid"
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                 }
               }
             }
@@ -2737,12 +2757,12 @@
                       "minLength": 1
                     },
                     "agent_ids": {
+                      "minItems": 1,
+                      "maxItems": 32,
                       "type": "array",
                       "items": {
                         "type": "string"
-                      },
-                      "minItems": 1,
-                      "maxItems": 32
+                      }
                     },
                     "edges": {
                       "type": "array",
@@ -2755,11 +2775,11 @@
                                 "type": "string"
                               },
                               {
+                                "minItems": 1,
                                 "type": "array",
                                 "items": {
                                   "type": "string"
-                                },
-                                "minItems": 1
+                                }
                               }
                             ]
                           },
@@ -2769,11 +2789,11 @@
                                 "type": "string"
                               },
                               {
+                                "minItems": 1,
                                 "type": "array",
                                 "items": {
                                   "type": "string"
-                                },
-                                "minItems": 1
+                                }
                               }
                             ]
                           },
@@ -2833,7 +2853,8 @@
                   },
                   {
                     "type": "string",
-                    "format": "email"
+                    "format": "email",
+                    "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
                   }
                 ]
               }
@@ -2872,6 +2893,9 @@
           },
           "model_parameters": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {}
           },
           "tools": {
@@ -2988,19 +3012,23 @@
             ]
           },
           "code_environment_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "code_environment_ids": {
+            "maxItems": 128,
             "type": "array",
             "items": {
               "type": "string",
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            },
-            "maxItems": 128
+            }
           },
           "code_workspace_id": {
             "anyOf": [
@@ -3023,24 +3051,28 @@
             ]
           },
           "git_identity": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254
+                  }
+                },
+                "required": [
+                  "name",
+                  "email"
+                ]
               },
-              "email": {
-                "type": "string",
-                "maxLength": 254
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "name",
-              "email"
             ]
           },
           "artifacts": {
@@ -3123,6 +3155,9 @@
           },
           "tool_options": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {
               "type": "object",
               "properties": {
@@ -3163,7 +3198,8 @@
                 },
                 "approval_revision": {
                   "type": "string",
-                  "format": "uuid"
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                 }
               }
             }
@@ -3204,12 +3240,12 @@
                       "minLength": 1
                     },
                     "agent_ids": {
+                      "minItems": 1,
+                      "maxItems": 32,
                       "type": "array",
                       "items": {
                         "type": "string"
-                      },
-                      "minItems": 1,
-                      "maxItems": 32
+                      }
                     },
                     "edges": {
                       "type": "array",
@@ -3222,11 +3258,11 @@
                                 "type": "string"
                               },
                               {
+                                "minItems": 1,
                                 "type": "array",
                                 "items": {
                                   "type": "string"
-                                },
-                                "minItems": 1
+                                }
                               }
                             ]
                           },
@@ -3236,11 +3272,11 @@
                                 "type": "string"
                               },
                               {
+                                "minItems": 1,
                                 "type": "array",
                                 "items": {
                                   "type": "string"
-                                },
-                                "minItems": 1
+                                }
                               }
                             ]
                           },
@@ -3300,7 +3336,8 @@
                   },
                   {
                     "type": "string",
-                    "format": "email"
+                    "format": "email",
+                    "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
                   }
                 ]
               }
@@ -3363,6 +3400,9 @@
           },
           "model_parameters": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {}
           },
           "tools": {
@@ -3479,19 +3519,23 @@
             ]
           },
           "code_environment_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "code_environment_ids": {
+            "maxItems": 128,
             "type": "array",
             "items": {
               "type": "string",
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            },
-            "maxItems": 128
+            }
           },
           "code_workspace_id": {
             "anyOf": [
@@ -3514,24 +3558,28 @@
             ]
           },
           "git_identity": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254
+                  }
+                },
+                "required": [
+                  "name",
+                  "email"
+                ]
               },
-              "email": {
-                "type": "string",
-                "maxLength": 254
+              {
+                "type": "null"
               }
-            },
-            "required": [
-              "name",
-              "email"
             ]
           },
           "artifacts": {
@@ -3614,6 +3662,9 @@
           },
           "tool_options": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {
               "type": "object",
               "properties": {
@@ -3654,7 +3705,8 @@
                 },
                 "approval_revision": {
                   "type": "string",
-                  "format": "uuid"
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                 }
               }
             }
@@ -3783,7 +3835,8 @@
                   },
                   {
                     "type": "string",
-                    "format": "email"
+                    "format": "email",
+                    "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
                   }
                 ]
               }
@@ -3807,15 +3860,18 @@
           },
           "version": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9007199254740991
           },
           "createdAt": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
           },
           "updatedAt": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
           }
         },
         "required": [
@@ -3825,6 +3881,206 @@
           "version",
           "createdAt",
           "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "AgentFile": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string",
+            "const": "agent.file"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "purposes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "filename",
+          "bytes",
+          "mime_type",
+          "purposes",
+          "created_at"
+        ]
+      },
+      "SkillFrontmatterValue": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          },
+          {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          }
+        ]
+      },
+      "SkillCreateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "displayTitle": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "frontmatter": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          },
+          "category": {
+            "type": "string"
+          },
+          "alwaysApply": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "SkillUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "displayTitle": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "alwaysApply": {
+            "type": "boolean"
+          },
+          "body": {
+            "type": "string"
+          },
+          "frontmatter": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "expectedVersion"
+        ],
+        "additionalProperties": false,
+        "minProperties": 2
+      },
+      "SkillFile": {
+        "type": "object",
+        "properties": {
+          "relativePath": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "relativePath",
+          "filename",
+          "mimeType",
+          "bytes"
+        ]
+      },
+      "SkillFileUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 1048576,
+            "description": "The file content. The accepted maximum is 1 MiB (1,048,576 bytes) of UTF-8-encoded content. The limit is measured in bytes, not characters, so non-ASCII content reaches it at fewer characters."
+          }
+        },
+        "required": [
+          "content"
         ],
         "additionalProperties": false
       },
@@ -3857,12 +4113,16 @@
             "type": "boolean"
           },
           "after": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "minLength": 1,
-            "maxLength": 512
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3892,50 +4152,6 @@
           "deleted"
         ],
         "additionalProperties": false
-      },
-      "AgentFile": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "object": {
-            "type": "string",
-            "const": "agent.file"
-          },
-          "filename": {
-            "type": "string"
-          },
-          "bytes": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "mime_type": {
-            "type": "string"
-          },
-          "purposes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "created_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "object",
-          "filename",
-          "bytes",
-          "mime_type",
-          "purposes",
-          "created_at"
-        ]
       },
       "AgentFileList": {
         "type": "object",
@@ -3999,13 +4215,9 @@
                     "path": {
                       "type": "array",
                       "items": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "number"
-                          }
+                        "type": [
+                          "string",
+                          "number"
                         ]
                       }
                     },
@@ -4033,34 +4245,6 @@
         ],
         "additionalProperties": false
       },
-      "SkillFrontmatterValue": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "number"
-          },
-          {
-            "type": "boolean"
-          },
-          {
-            "type": "null"
-          },
-          {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SkillFrontmatterValue"
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/SkillFrontmatterValue"
-            }
-          }
-        ]
-      },
       "Skill": {
         "type": "object",
         "properties": {
@@ -4085,11 +4269,13 @@
           },
           "version": {
             "type": "integer",
-            "exclusiveMinimum": 0
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
           },
           "fileCount": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9007199254740991
           },
           "disableModelInvocation": {
             "type": "boolean"
@@ -4105,17 +4291,22 @@
           },
           "createdAt": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
           },
           "updatedAt": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
           },
           "body": {
             "type": "string"
           },
           "frontmatter": {
             "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
             "additionalProperties": {
               "$ref": "#/components/schemas/SkillFrontmatterValue"
             }
@@ -4165,11 +4356,13 @@
                 },
                 "version": {
                   "type": "integer",
-                  "exclusiveMinimum": 0
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
                 },
                 "fileCount": {
                   "type": "integer",
-                  "minimum": 0
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 },
                 "disableModelInvocation": {
                   "type": "boolean"
@@ -4185,11 +4378,13 @@
                 },
                 "createdAt": {
                   "type": "string",
-                  "format": "date-time"
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
                 },
                 "updatedAt": {
                   "type": "string",
-                  "format": "date-time"
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
                 }
               },
               "required": [
@@ -4234,103 +4429,6 @@
           "after"
         ]
       },
-      "SkillCreateRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "displayTitle": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "body": {
-            "type": "string"
-          },
-          "frontmatter": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/SkillFrontmatterValue"
-            }
-          },
-          "category": {
-            "type": "string"
-          },
-          "alwaysApply": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "name",
-          "description",
-          "body"
-        ],
-        "additionalProperties": false
-      },
-      "SkillUpdateRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "displayTitle": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "category": {
-            "type": "string"
-          },
-          "alwaysApply": {
-            "type": "boolean"
-          },
-          "body": {
-            "type": "string"
-          },
-          "frontmatter": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/SkillFrontmatterValue"
-            }
-          },
-          "expectedVersion": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          }
-        },
-        "required": [
-          "expectedVersion"
-        ],
-        "additionalProperties": false,
-        "minProperties": 2
-      },
-      "SkillFile": {
-        "type": "object",
-        "properties": {
-          "relativePath": {
-            "type": "string"
-          },
-          "filename": {
-            "type": "string"
-          },
-          "mimeType": {
-            "type": "string"
-          },
-          "bytes": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "relativePath",
-          "filename",
-          "mimeType",
-          "bytes"
-        ]
-      },
       "SkillFileList": {
         "type": "object",
         "properties": {
@@ -4364,7 +4462,8 @@
           },
           "bytes": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9007199254740991
           },
           "content": {
             "type": "string"
@@ -4381,20 +4480,6 @@
           "isBinary"
         ]
       },
-      "SkillFileUpdateRequest": {
-        "type": "object",
-        "properties": {
-          "content": {
-            "type": "string",
-            "maxLength": 1048576,
-            "description": "The file content. The accepted maximum is 1 MiB (1,048,576 bytes) of UTF-8-encoded content. The limit is measured in bytes, not characters, so non-ASCII content reaches it at fewer characters."
-          }
-        },
-        "required": [
-          "content"
-        ],
-        "additionalProperties": false
-      },
       "SkillFileUpdated": {
         "type": "object",
         "properties": {
@@ -4403,7 +4488,8 @@
           },
           "bytes": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 9007199254740991
           }
         },
         "required": [
@@ -4510,6 +4596,14 @@
           "message"
         ],
         "additionalProperties": false
+      }
+    },
+    "securitySchemes": {
+      "oidcBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "An OIDC access token, sent as a bearer token."
       }
     }
   }

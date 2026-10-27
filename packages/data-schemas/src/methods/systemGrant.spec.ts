@@ -843,7 +843,7 @@ describe('systemGrant methods', () => {
       );
     });
 
-    it('moves only platform-level grants when no tenant is given, unlike the delete cascade', async () => {
+    it('moves only platform-level grants when no tenant is given, as the delete cascade removes them', async () => {
       await grant('editor', SystemCapabilities.READ_USERS, 'tenant-a');
       await grant('editor', SystemCapabilities.READ_CONFIGS);
       await grant('writer', SystemCapabilities.READ_USERS, 'tenant-a');
@@ -1113,7 +1113,7 @@ describe('systemGrant methods', () => {
       expect(caps).toEqual([SystemCapabilities.READ_GROUPS, SystemCapabilities.READ_USERS]);
     });
 
-    it('without tenantId deletes all grants across all tenants', async () => {
+    it("without tenantId deletes only platform-level grants, never a tenant's own role's", async () => {
       await methods.grantCapability({
         principalType: PrincipalType.ROLE,
         principalId: 'temp-role',
@@ -1126,13 +1126,18 @@ describe('systemGrant methods', () => {
         tenantId: 'tenant-a',
       });
 
-      await methods.deleteGrantsForPrincipal(PrincipalType.ROLE, 'temp-role');
+      const found = await methods.findGrantsForPrincipal(PrincipalType.ROLE, 'temp-role');
+      const removed = await methods.deleteGrantsForPrincipal(PrincipalType.ROLE, 'temp-role');
 
-      const remaining = await SystemGrant.countDocuments({
+      expect(found.map((g) => g.capability)).toEqual([SystemCapabilities.READ_USERS]);
+      expect(removed.map((g) => g.capability)).toEqual([SystemCapabilities.READ_USERS]);
+      const remaining = await SystemGrant.find({
         principalType: PrincipalType.ROLE,
         principalId: 'temp-role',
-      });
-      expect(remaining).toBe(0);
+      }).lean();
+      expect(remaining.map((g) => [g.capability, g.tenantId])).toEqual([
+        [SystemCapabilities.READ_CONFIGS, 'tenant-a'],
+      ]);
     });
   });
 
