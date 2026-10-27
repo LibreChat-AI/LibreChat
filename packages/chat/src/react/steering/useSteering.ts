@@ -263,6 +263,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   });
   const composer = useComposerTake({
     conversationId,
+    queueKey,
     reasoningStateKey,
     liveReasoningOverride,
     files,

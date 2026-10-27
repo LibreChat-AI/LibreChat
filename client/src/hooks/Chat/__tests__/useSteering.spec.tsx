@@ -4320,6 +4320,27 @@ describe('useSteering', () => {
       expect(result.current.pendingReasoning).toBeUndefined();
     });
 
+    it('keeps a level picked for a queued turn on the turns queued after it', () => {
+      const low = { key: 'reasoning_effort', value: ReasoningEffort.low } as const;
+      const { result } = setupWithContext({}, undefined, low);
+      act(() => {
+        contextStore.set(submissionByIndex(0), {
+          userMessage: {
+            reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+          },
+        } as unknown as TSubmission);
+      });
+
+      act(() => {
+        result.current.steering.queueFromComposer('first, lighter');
+      });
+      act(() => {
+        result.current.steering.queueFromComposer('second, still lighter');
+      });
+
+      expect(result.current.queue.map((item) => item.reasoningOverride)).toEqual([low, low]);
+    });
+
     /* The interrupt-and-steer chord promises to keep the partial answer. With
        reasoning staged it cannot steer, and aborting would break that promise,
        so it declines like its disabled menu row instead of interrupting. */

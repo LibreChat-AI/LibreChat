@@ -8,6 +8,7 @@ import {
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '../composer';
+import { queuedMessagesByConvoId } from '../steer/queue';
 import { markComposerFilesTaken } from '../../core';
 import { useSteerHost } from '../steer/host';
 
@@ -21,15 +22,17 @@ export interface ComposerTake {
  *  submission instead of the next one. */
 export default function useComposerTake<File extends ComposerFile>({
   conversationId,
+  queueKey,
   reasoningStateKey,
   liveReasoningOverride,
   files,
   setFiles,
 }: {
   conversationId: string;
+  queueKey: string;
   reasoningStateKey: string;
-  /** The level the running turn carries: a queued turn with nothing newly picked keeps it, as a
-   *  direct send keeps its branch's level. */
+  /** The level the running turn carries: a queued turn with nothing newly picked keeps the level
+   *  of the turn it will follow, as a direct send keeps its branch's level. */
   liveReasoningOverride?: TMessage['reasoningOverride'];
   files?: Map<string, File>;
   setFiles?: ComposerFileSetter<File>;
@@ -89,7 +92,12 @@ export default function useComposerTake<File extends ComposerFile>({
     const quotes = reasoningStore.get(pendingQuotesByConvoId(conversationId));
     const manualSkills = reasoningStore.get(pendingManualSkillsByConvoId(conversationId));
     const pendingReasoning = reasoningStore.get(pendingReasoningOverrideFamily(reasoningStateKey));
-    const reasoningOverride = pendingReasoning ?? liveReasoningOverride;
+    /* The turn this one will follow is the last one queued, or the running turn when none is. */
+    const queued = reasoningStore.get(queuedMessagesByConvoId(queueKey));
+    const lastQueued = queued[queued.length - 1];
+    const reasoningOverride =
+      pendingReasoning ??
+      (lastQueued != null ? lastQueued.reasoningOverride : liveReasoningOverride);
     if (quotes.length > 0) {
       reasoningStore.set(pendingQuotesByConvoId(conversationId), []);
     }
@@ -104,7 +112,7 @@ export default function useComposerTake<File extends ComposerFile>({
       ...(manualSkills.length > 0 && { manualSkills }),
       ...(reasoningOverride != null && { reasoningOverride }),
     };
-  }, [conversationId, liveReasoningOverride, reasoningStateKey, reasoningStore]);
+  }, [conversationId, liveReasoningOverride, queueKey, reasoningStateKey, reasoningStore]);
 
   /** Quotes-only drain for composer-origin steers: the excerpts ride the steer
    *  POST into the live run, while manual skill picks stay staged: a skill
