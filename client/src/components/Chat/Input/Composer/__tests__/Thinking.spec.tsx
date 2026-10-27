@@ -1,7 +1,10 @@
 import React, { createRef } from 'react';
+import { getDefaultStore } from 'jotai';
 import { ReasoningEffort } from 'librechat-data-provider';
+import { queuedMessagesByConvoId } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
+import type { QueuedMessage } from '@librechat/chat';
 import type * as ReasoningModule from '../../Reasoning';
 import { effortRank, leanFor } from '../Effort';
 import Thinking from '../Thinking';
@@ -24,10 +27,11 @@ const mockChatContext = React.createContext<{ conversation: TConversation | null
 
 jest.mock('../../Reasoning', () => ({
   ReasoningControl: jest.requireActual<typeof ReasoningModule>('../../Reasoning').ReasoningControl,
-  useComposerReasoning: () => ({
+  useComposerReasoning: ({ branchReasoning }: { branchReasoning?: TReasoningOverride }) => ({
     setting: mockSetting,
     value:
       mockPendingOverride ??
+      branchReasoning ??
       ({
         key: mockSetting.key,
         value: mockConversation[mockSetting.key as keyof TConversation] ?? mockSetting.default,
@@ -293,6 +297,25 @@ describe('Thinking', () => {
     fireEvent.click(screen.getByTestId('composer-thinking-button'));
 
     await waitFor(() => expect(screen.getByRole('radio', { name: 'Low' })).toHaveFocus());
+  });
+
+  it('names the level the last queued turn will run at', () => {
+    const store = getDefaultStore();
+    store.set(queuedMessagesByConvoId('convo-1'), [
+      {
+        id: 'queued-1',
+        text: 'next',
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      } as QueuedMessage,
+    ]);
+    try {
+      renderInComposer();
+      expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName(
+        'com_ui_composer_thinking_value:High',
+      );
+    } finally {
+      store.set(queuedMessagesByConvoId('convo-1'), []);
+    }
   });
 
   it('does not carry a remembered level across model settings', () => {
