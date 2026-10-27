@@ -34,6 +34,7 @@ import {
   filterSectionsByReadAccess,
   filterConfigDocForReadAccess,
 } from './config';
+import { getConfigPartition, getActivePartition, runInPartition } from './partition';
 import { redactConfigSecrets, redactResolvedConfigSecrets } from './secrets';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
@@ -62,17 +63,24 @@ export interface AdminConfigReadDeps {
   resolveConfigLayers?: (options: ResolveConfigLayersOptions) => Promise<ResolvedConfigLayers>;
   /** Whether the principal exists in the caller's tenant partition (`principalExists`). */
   principalExists?: (principalType: PrincipalType, principalId: string) => Promise<boolean>;
-  /** A user of the caller's tenant partition, with what principal resolution reads of them. */
-  findPartitionUser?: (
-    userId: string,
-  ) => Promise<{ id: string; role?: string; idOnTheSource?: string | null } | null>;
-  /** The principals a user resolves to: the user, their role and their groups. */
+  /**
+   * A user the caller addresses by id (`findPrincipalUser`), with what principal resolution reads
+   * of them and the tenant that holds them: inside a tenant only that tenant's users, outside one
+   * any tenant's, as group and user profiles are addressed.
+   */
+  findPrincipalUser?: (userId: string) => Promise<{
+    id: string;
+    role?: string;
+    idOnTheSource?: string | null;
+    tenantId?: string;
+  } | null>;
+  /** The principals a user resolves to in the active tenant: the user, their role and groups. */
   getUserPrincipals?: (params: {
     userId: string;
     role?: string | null;
     idOnTheSource?: string | null;
   }) => Promise<ResolvedPrincipal[]>;
-  /** Base and the principals' active documents, from the caller's tenant partition. */
+  /** Base and the principals' active documents, from the active tenant partition. */
   getApplicableConfigs?: (
     principals: Array<{ principalType: string; principalId?: string }>,
   ) => Promise<ConfigRecord[]>;
@@ -167,10 +175,22 @@ export function createAdminConfigReadHandlers(deps: AdminConfigReadDeps): {
     hasCapability,
     resolveConfigLayers,
     principalExists,
-    findPartitionUser,
+    findPrincipalUser,
     getUserPrincipals,
     getApplicableConfigs,
   } = deps;
+
+  /** The Base document of one tenant partition, active or not; none for Base itself. */
+  function readBase(isBase: boolean, tenantId: string | undefined): Promise<ConfigRecord | null> {
+    if (isBase) {
+      return Promise.resolve(null);
+    }
+    return runInPartition(tenantId, () =>
+      findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID, {
+        includeInactive: true,
+      }),
+    );
+  }
 
   /**
    * GET /resolved/:principalType/:principalId — what a profile resolves to over librechat.yaml
@@ -178,6 +198,10 @@ export function createAdminConfigReadHandlers(deps: AdminConfigReadDeps): {
    * what the merge does not apply of it. The profile's other principals vary per user and are
    * left out; `GET /effective` resolves a user. A principal with no document resolves to Base,
    * unless it does not exist in the caller's tenant (404 `PRINCIPAL_NOT_FOUND`).
+   *
+   * It resolves in the partition the profile merges in, as writes judge it (`resolveWriteScope`):
+   * the caller's, or for a group or user profile a caller without a tenant reads from a tenant,
+   * that tenant's librechat.yaml and Base, read once the document names it.
    */
   async function getResolvedConfig(req: ServerRequest, res: Response): Promise<Response> {
     try {
@@ -200,12 +224,9 @@ export function createAdminConfigReadHandlers(deps: AdminConfigReadDeps): {
       }
 
       const isBase = isBaseConfigPrincipal({ principalType, principalId });
-      const [base, target] = await Promise.all([
-        isBase
-          ? null
-          : findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID, {
-              includeInactive: true,
-            }),
+      const activePartition = getActivePartition();
+      const [activeBase, target] = await Promise.all([
+        readBase(isBase, activePartition),
         findConfigByPrincipal(principalType, principalId, { includeInactive: true }),
       ]);
       if (
@@ -216,9 +237,11 @@ export function createAdminConfigReadHandlers(deps: AdminConfigReadDeps): {
       ) {
         return principalNotFoundResponse(res);
       }
+      const partition = target ? getConfigPartition(target) : activePartition;
+      const base = partition === activePartition ? activeBase : await readBase(isBase, partition);
       const records = [base, target].filter((record): record is ConfigRecord => record != null);
       const resolution = await resolveConfigLayers({
-        tenantId: user.tenantId,
+        tenantId: partition,
         configs: records.filter((record) => record.isActive),
       });
       const body: AdminResolvedConfigResponse = {
@@ -236,8 +259,12 @@ export function createAdminConfigReadHandlers(deps: AdminConfigReadDeps): {
   /**
    * GET /effective?userId= — what one user's requests resolve to: Base, then the active profiles
    * of their role, groups and their own, in merge order. Needs `read:users` and `read:groups`
-   * besides config read access, since it shows the user's role and group memberships. A user who
-   * is not in the caller's tenant answers 404 `USER_NOT_FOUND`.
+   * besides config read access, since it shows the user's role and group memberships. A user the
+   * caller cannot address answers 404 `USER_NOT_FOUND`: inside a tenant, one of another tenant.
+   *
+   * It resolves in the user's own tenant, as their requests do: their role and groups, that
+   * tenant's documents, librechat.yaml as it resolves it. Inside a tenant that is the caller's;
+   * a caller without a tenant reads a tenant's user there.
    */
   async function getEffectiveConfig(req: ServerRequest, res: Response): Promise<Response> {
     try {
@@ -259,30 +286,33 @@ export function createAdminConfigReadHandlers(deps: AdminConfigReadDeps): {
       }
       if (
         !resolveConfigLayers ||
-        !findPartitionUser ||
+        !findPrincipalUser ||
         !getUserPrincipals ||
         !getApplicableConfigs
       ) {
         return res.status(501).json({ error: 'Effective config is not available' });
       }
 
-      const target = await findPartitionUser(userId);
+      const target = await findPrincipalUser(userId);
       if (!target) {
         return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
       }
-      const principals = await getUserPrincipals({
-        userId: target.id,
-        role: target.role ?? null,
-        idOnTheSource: target.idOnTheSource ?? null,
+      const partition = getConfigPartition(target);
+      const { named, records } = await runInPartition(partition, async () => {
+        const principals = await getUserPrincipals({
+          userId: target.id,
+          role: target.role ?? null,
+          idOnTheSource: target.idOnTheSource ?? null,
+        });
+        const resolvedNamed = principals.flatMap((principal) => {
+          const id = toPrincipalId(principal);
+          return id == null
+            ? []
+            : [{ principalType: principal.principalType as PrincipalType, principalId: id }];
+        });
+        return { named: resolvedNamed, records: await getApplicableConfigs(resolvedNamed) };
       });
-      const named = principals.flatMap((principal) => {
-        const id = toPrincipalId(principal);
-        return id == null
-          ? []
-          : [{ principalType: principal.principalType as PrincipalType, principalId: id }];
-      });
-      const records = await getApplicableConfigs(named);
-      const resolution = await resolveConfigLayers({ tenantId: user.tenantId, configs: records });
+      const resolution = await resolveConfigLayers({ tenantId: partition, configs: records });
       const body: AdminEffectiveConfigResponse = {
         userId: target.id,
         principals: named,

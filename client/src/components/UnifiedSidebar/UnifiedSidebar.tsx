@@ -17,16 +17,17 @@ import {
   DRAWER_UNPAINTED,
 } from './constants';
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
-import { ChatContext, ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
 import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
+import { ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
-import { useChatHelpers, useLocalize } from '~/hooks';
 import SidePanelNav from '~/components/SidePanel/Nav';
+import { ChatProvider } from '~/hooks/Chat/provider';
 import { createResizeMeasure } from './resize';
+import { useLocalize } from '~/hooks';
 import Sidebar from './Sidebar';
 import { cn } from '~/utils';
 
@@ -36,17 +37,16 @@ function getInitialWidth(): number {
 }
 
 /**
- * Isolates useChatHelpers Recoil subscriptions from the sidebar layout.
- * Atom changes (e.g. during streaming) only re-render this component
- * and the active panel — not the sidebar shell, resize logic, or icon strip.
- * This works because Recoil subscriptions don't propagate to parent components.
+ * Isolates the root pane's chat contract subscriptions from the sidebar layout.
+ * Atom changes (e.g. during streaming) only re-render `ChatProvider` and the
+ * active panel, not the sidebar shell, resize logic, or icon strip, because
+ * atom subscriptions don't propagate to parent components.
  */
 function SidebarChatProvider({ children }: { children: ReactNode }) {
-  const chatHelpers = useChatHelpers(0);
   const sidebarFormMethods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
   return (
     <ChatFormProvider {...sidebarFormMethods}>
-      <ChatContext.Provider value={chatHelpers}>{children}</ChatContext.Provider>
+      <ChatProvider index={0}>{children}</ChatProvider>
     </ChatFormProvider>
   );
 }

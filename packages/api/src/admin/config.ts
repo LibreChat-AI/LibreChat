@@ -16,9 +16,7 @@ import {
 import {
   logger,
   getAtPath,
-  getTenantId,
   unsetAtPath,
-  tenantStorage,
   isPlainRecord,
   isDotFreePath,
   isSegmentPrefix,
@@ -64,7 +62,6 @@ import {
   MAX_CONFIG_PATH_DEPTH,
   getDefaultConfigPriority,
   BASE_CONFIG_PRINCIPAL_ID,
-  SYSTEM_TENANT_ID,
   isConfigRevisionConflict,
   ConfigRevisionConflictError,
   isConfigOverrideStateEmpty,
@@ -177,6 +174,7 @@ import {
   isWebSearchBindingPath,
   getWebSearchReentryIssues,
 } from './binding';
+import { getConfigPartition, getActivePartition, runInPartition } from './partition';
 import { buildAdminConfigMeta, getCatalogModelsTtlMs } from './meta';
 import { createAdminAuditEmitter, configTarget } from './audit';
 import { DEFAULT_OVERRIDE_CACHE_TTL } from '~/app/service';
@@ -1450,21 +1448,6 @@ type FloorOutcome<T> = ConfigMutationOutcome<T> & { base?: ConfigRecord | null }
 interface WriteScope {
   tenantId: string | undefined;
   activeTenantId: string | undefined;
-}
-
-/** The tenant partition a stored document belongs to; `null` and `''` are tenantless. */
-function getConfigPartition(record: Pick<ConfigRecord, 'tenantId'>): string | undefined {
-  return record.tenantId || undefined;
-}
-
-/**
- * The partition the config store reads and writes role documents in for this request
- * (`tenantPartition`): the active tenant's, or the deployment's own outside a tenant and under
- * the system context.
- */
-function getActivePartition(): string | undefined {
-  const tenantId = getTenantId();
-  return tenantId && tenantId !== SYSTEM_TENANT_ID ? tenantId : undefined;
 }
 
 /**
@@ -3061,11 +3044,9 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
    * Base is read in that tenant's context; the partition rules themselves stay the store's.
    */
   function readActiveBase(tenantId: string | undefined): Promise<ConfigRecord | null> {
-    const read = () => findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID);
-    if (tenantId === getActivePartition()) {
-      return read();
-    }
-    return tenantStorage.run({ ...tenantStorage.getStore(), tenantId }, read);
+    return runInPartition(tenantId, () =>
+      findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID),
+    );
   }
 
   /**

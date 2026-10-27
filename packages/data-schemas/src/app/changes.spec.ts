@@ -414,6 +414,25 @@ describe('applyConfigChange: rename', () => {
     );
   });
 
+  it.each([
+    ['an unsafe name', '$where'],
+    ['a reserved name', '__proto__'],
+    ['a name past the length limit', 'k'.repeat(257)],
+  ])(
+    'refuses %s for an entry of a collection merged by key, as the admin route does',
+    (_label, to) => {
+      const stored = deepFreeze(
+        state({ endpoints: { custom: [endpoint('a')] } }, ['endpoints.custom["a"].headers.X']),
+      );
+
+      const refused = errorOf(() =>
+        applyConfigChange(stored, { op: 'rename', segments: CUSTOM, from: 'a', to }),
+      );
+
+      expect(isConfigEntryError(refused) && refused.reason).toBe('invalid_entry');
+    },
+  );
+
   it('lets a renamed entry be edited by its new name later in the same batch', () => {
     const { state: next, changed } = applyConfigChanges(
       state({ endpoints: { custom: [endpoint('old', { apiKey: 'v3:cipher' })] } }),

@@ -24,7 +24,6 @@
   "com_ui_pr_deletions": "{{0}} lines removed",
   "com_ui_pr_label": "PR #{{0}}",
   "com_ui_pr_label_gitlab": "MR !{{0}}",
-  "com_ui_pr_load_failed": "Couldn't load the pull request",
   "com_ui_pr_open_in_bitbucket": "Open in Bitbucket",
   "com_ui_pr_open_in_github": "Open in GitHub",
   "com_ui_pr_open_in_gitlab": "Open in GitLab",

@@ -5,19 +5,23 @@ import { isCanonicalObjectIdString } from '~/utils/objectId';
 
 const systemRoleNames: ReadonlySet<string> = new Set(Object.values(SystemRoles));
 
-/** What principal resolution reads of a user: their role and external identity. */
-export interface PartitionUser {
+/**
+ * What principal resolution reads of a user (their role and external identity), and the tenant
+ * that holds them (absent for a platform-level user).
+ */
+export interface PrincipalUser {
   id: string;
   role?: string;
   idOnTheSource?: string | null;
+  tenantId?: string;
 }
 
 export interface PrincipalMethods {
   principalExists: (principalType: PrincipalType, principalId: string) => Promise<boolean>;
-  findPartitionUser: (userId: string) => Promise<PartitionUser | null>;
+  findPrincipalUser: (userId: string) => Promise<PrincipalUser | null>;
 }
 
-/** Principal lookups that stay in the caller's tenant partition. */
+/** Principal lookups for the admin API, in the caller's tenant partition or by id. */
 export function createPrincipalMethods(mongoose: typeof import('mongoose')): PrincipalMethods {
   async function existsInPartition(
     modelName: 'Role' | 'Group' | 'User',
@@ -62,24 +66,33 @@ export function createPrincipalMethods(mongoose: typeof import('mongoose')): Pri
   }
 
   /**
-   * A user of the caller's tenant partition (`tenantPartitionFilter`), by canonical ObjectId, with
-   * the fields principal resolution reads (`getUserPrincipals`); `null` when the partition holds
-   * no such user, as for a user of another tenant.
+   * A user the caller addresses by canonical ObjectId, with the fields principal resolution reads
+   * (`getUserPrincipals`) and the tenant that holds them. Users are addressed by id the way their
+   * config documents are: inside a tenant only that tenant's (the tenant plugin scopes the read),
+   * and outside one any tenant's, so their profile resolves in their own tenant. Strict mode
+   * refuses the read without a tenant context, as every query does. `null` when the caller sees
+   * no such user, as for a user of another tenant inside a tenant.
    */
-  async function findPartitionUser(userId: string): Promise<PartitionUser | null> {
+  async function findPrincipalUser(userId: string): Promise<PrincipalUser | null> {
     if (!isCanonicalObjectIdString(userId)) {
       return null;
     }
-    const model = mongoose.models.User as Model<{ role?: string; idOnTheSource?: string | null }>;
-    const user = await model
-      .findOne({ _id: userId, ...tenantPartitionFilter('findPartitionUser') })
-      .select('role idOnTheSource')
-      .lean();
+    const model = mongoose.models.User as Model<{
+      role?: string;
+      idOnTheSource?: string | null;
+      tenantId?: string | null;
+    }>;
+    const user = await model.findOne({ _id: userId }).select('role idOnTheSource tenantId').lean();
     if (user == null) {
       return null;
     }
-    return { id: userId, role: user.role, idOnTheSource: user.idOnTheSource ?? null };
+    return {
+      id: userId,
+      role: user.role,
+      idOnTheSource: user.idOnTheSource ?? null,
+      ...(user.tenantId ? { tenantId: user.tenantId } : {}),
+    };
   }
 
-  return { principalExists, findPartitionUser };
+  return { principalExists, findPrincipalUser };
 }

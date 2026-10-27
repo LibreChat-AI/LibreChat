@@ -1972,7 +1972,7 @@ const FEATURE_PROBES: Record<AdminConfigFeatureFlag, () => Promise<boolean>> = {
       }),
       hasCapability: async () => true,
       resolveConfigLayers: service.resolveConfigLayers,
-      findPartitionUser: async (id) => (id === 'member' ? { id, role: 'r1' } : null),
+      findPrincipalUser: async (id) => (id === 'member' ? { id, role: 'r1' } : null),
       getUserPrincipals: async () => [{ principalType: PrincipalType.ROLE, principalId: 'r1' }],
       getApplicableConfigs: async () => [role],
     });

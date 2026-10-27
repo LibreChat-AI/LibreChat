@@ -10,20 +10,21 @@ import {
   renameConfigEntryTombstones,
 } from './mutations';
 import {
-  getConfigEntryIdentity,
-  getConfigArrayMergeKey,
-  isConfigEntryTombstone,
-  getConfigTombstoneSegments,
-} from './collections';
-import {
   getAtPath,
   setAtPath,
   unsetAtPath,
   isPlainRecord,
   ConfigPathError,
   isSegmentPrefix,
+  isConfigEntryKey,
   pruneEmptyAncestors,
 } from './paths';
+import {
+  getConfigEntryIdentity,
+  getConfigArrayMergeKey,
+  isConfigEntryTombstone,
+  getConfigTombstoneSegments,
+} from './collections';
 import { combineFoldedConfigEntries } from './resolution';
 
 /**
@@ -366,9 +367,13 @@ function applyRename(
     throw new ConfigEntryError([...segments], 'invalid_entry');
   }
   const keyField = getConfigArrayMergeKey(segments);
-  return keyField
-    ? renameKeyedEntry(state, segments, keyField, from, to)
-    : renameRecordKey(state, segments, from, to);
+  if (!keyField) {
+    return renameRecordKey(state, segments, from, to);
+  }
+  if (!isConfigEntryKey(to)) {
+    throw new ConfigEntryError([...segments], 'invalid_entry');
+  }
+  return renameKeyedEntry(state, segments, keyField, from, to);
 }
 
 /**

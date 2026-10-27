@@ -314,7 +314,10 @@ export function renameConfigEntriesTombstones(
  * Moves the keyed tombstones of entry `from` of the merged-by-key array at `segments` to entry
  * `to`, as a rename of the principal's own entry carries what it hides: each keeps its path
  * inside the entry. The tombstone that hides `to` whole goes, since the principal's own entry
- * now has that key, and a moved tombstone that `to` already has is kept once.
+ * now has that key, and a moved tombstone that `to` already has is kept once. A `to` no keyed
+ * path can address (`isConfigEntryKey`), or `segments` that are not an array merged by key,
+ * throw a `ConfigPathError` (`requireEntryLocation`), as the admin routes refuse such a rename:
+ * a moved tombstone would name a path no read or removal can address.
  */
 export function renameConfigEntryTombstones(
   state: ConfigOverrideState,
@@ -322,6 +325,7 @@ export function renameConfigEntryTombstones(
   from: string,
   to: string,
 ): ConfigOverrideState {
+  requireEntryLocation({ segments, entry: { key: to, rest: [] } });
   const fromIdentity = getConfigEntryIdentity(segments, from);
   const tombstones: string[] = [];
   let changed = false;

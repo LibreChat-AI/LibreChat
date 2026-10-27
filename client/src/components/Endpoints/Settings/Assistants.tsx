@@ -1,21 +1,16 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useId, useState, useMemo, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { Label, HoverCard, SelectDropDown, HoverCardTrigger } from '@librechat/client';
+import { Label, Dropdown, HoverCard, HoverCardTrigger } from '@librechat/client';
 import type { Assistant, TPreset } from 'librechat-data-provider';
 import type { TModelSelectProps, Option } from '~/common';
-import {
-  cn,
-  defaultTextProps,
-  removeFocusRings,
-  mapAssistants,
-  createDropdownSetter,
-} from '~/utils';
 import { useLocalize, useDebouncedInput, useAssistantListMap } from '~/hooks';
+import { cn, defaultTextProps, mapAssistants } from '~/utils';
 import OptionHover from './OptionHover';
 import { ESide } from '~/common';
 
 export default function Settings({ conversation, setOption, models, readonly }: TModelSelectProps) {
   const localize = useLocalize();
+  const fieldId = useId();
   const defaultOption = useMemo(
     () => ({ label: localize('com_endpoint_use_active_assistant'), value: '' }),
     [localize],
@@ -119,14 +114,20 @@ export default function Settings({ conversation, setOption, models, readonly }: 
     <div className="grid grid-cols-6 gap-6">
       <div className="col-span-6 flex flex-col items-center justify-start gap-6 sm:col-span-3">
         <div className="grid w-full items-center gap-2">
-          <SelectDropDown
+          <Label id={`${fieldId}-model`} className="text-start text-sm font-medium">
+            {localize('com_ui_model')}
+          </Label>
+          <Dropdown
+            variant="field"
+            testId="select-dropdown-button"
+            aria-labelledby={`${fieldId}-model`}
             value={model ?? ''}
-            title={localize('com_ui_model')}
-            setValue={createDropdownSetter(setModel)}
-            availableValues={modelOptions}
+            onChange={setModel}
+            options={modelOptions}
             disabled={readonly}
-            className={cn(defaultTextProps, 'flex w-full resize-none', removeFocusRings)}
-            containerClassName="flex w-full resize-none"
+            searchable={modelOptions.length > 10}
+            searchPlaceholder={localize('com_ui_search')}
+            searchEmptyText={localize('com_ui_no_results_found')}
           />
         </div>
       </div>
@@ -134,14 +135,21 @@ export default function Settings({ conversation, setOption, models, readonly }: 
         <HoverCard openDelay={300}>
           <HoverCardTrigger className="grid w-full items-center gap-2">
             <div className="grid w-full items-center gap-2">
-              <SelectDropDown
-                title={localize('com_endpoint_assistant')}
-                value={assistantValue}
-                setValue={createDropdownSetter(setAssistant)}
-                availableValues={assistants as Option[]}
+              <Label id={`${fieldId}-assistant`} className="text-start text-sm font-medium">
+                {localize('com_endpoint_assistant')}
+              </Label>
+              <Dropdown
+                variant="field"
+                testId="select-dropdown-button"
+                aria-labelledby={`${fieldId}-assistant`}
+                value={String(assistantValue.value ?? '')}
+                placeholder={defaultOption.label}
+                onChange={setAssistant}
+                options={assistants as Option[]}
                 disabled={readonly}
-                className={cn(defaultTextProps, 'flex w-full resize-none', removeFocusRings)}
-                containerClassName="flex w-full resize-none"
+                searchable={assistants.length > 10}
+                searchPlaceholder={localize('com_ui_search')}
+                searchEmptyText={localize('com_ui_no_results_found')}
               />
             </div>
           </HoverCardTrigger>

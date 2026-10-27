@@ -391,4 +391,28 @@ describe('keyed locations: entries of an array merged by key', () => {
       renameConfigEntriesTombstones(input, [{ segments: CUSTOM, from: 'ollama', to: 'new' }]),
     ).toEqual(moved);
   });
+
+  it.each([
+    ['an unsafe new name', CUSTOM, '$where'],
+    ['a reserved new name', CUSTOM, 'constructor'],
+    ['a new name past the length limit', CUSTOM, 'k'.repeat(257)],
+    ['a record rather than an array merged by key', ['mcpServers'], 'new'],
+  ])('refuses %s instead of moving tombstones no path can address', (_label, segments, to) => {
+    const input = state({}, ['endpoints.custom["old"].headers.A']);
+    const refused = (run: () => unknown) => {
+      try {
+        run();
+      } catch (caught) {
+        return isConfigPathError(caught) && caught.reason;
+      }
+      return 'applied';
+    };
+
+    expect(refused(() => renameConfigEntryTombstones(input, segments, 'old', to))).toBe(
+      'keyed_path',
+    );
+    expect(
+      refused(() => renameConfigEntriesTombstones(input, [{ segments, from: 'old', to }])),
+    ).toBe('keyed_path');
+  });
 });

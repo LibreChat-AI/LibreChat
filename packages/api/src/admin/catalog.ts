@@ -50,6 +50,7 @@ import {
   collectDefaultEnvReferenceSections,
 } from '~/app/allowlist';
 import { resolveServedCustomEndpoints } from '~/endpoints/custom/config';
+import { getConfigPartition, getActivePartition } from './partition';
 import { listAvailableTools } from '~/tools/available';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { resolveConfigSecret } from './secrets';
@@ -98,6 +99,16 @@ export interface AdminConfigCatalogDeps {
   toolkits?: TPlugin[];
   /** Whether the principal exists in the caller's tenant partition (`principalExists`). */
   principalExists?: (principalType: PrincipalType, principalId: string) => Promise<boolean>;
+  /**
+   * A principal's config document, active or not. A group or user scope resolves in the tenant
+   * partition that stores its profile, as `GET /resolved` resolves it; without this lookup every
+   * scope resolves in the caller's.
+   */
+  findConfigByPrincipal?: (
+    principalType: PrincipalType,
+    principalId: string,
+    options?: { includeInactive?: boolean },
+  ) => Promise<ConfigRecord | null>;
   /** Every config document of the caller's partition, for the env names profiles reference. */
   listAllConfigs?: () => Promise<ConfigRecord[]>;
   /** `CONFIG_OVERRIDE_ENV_ALLOWLIST`, as the app config service is given it. */
@@ -348,6 +359,7 @@ export function createAdminConfigCatalogHandlers(deps: AdminConfigCatalogDeps): 
     toolManifest = [],
     toolkits = [],
     principalExists,
+    findConfigByPrincipal,
     listAllConfigs,
     overrideEnvAllowlist,
   } = deps;
@@ -474,10 +486,37 @@ export function createAdminConfigCatalogHandlers(deps: AdminConfigCatalogDeps): 
   }
 
   /**
+   * Whether a scope can be resolved, and the tenant partition it resolves in: the caller's, or for
+   * a group or user profile a caller without a tenant reads from a tenant, the tenant that stores
+   * it. A scope without a profile must exist in the caller's partition.
+   */
+  async function locateScope(
+    principalType: PrincipalType,
+    principalId: string,
+    isBase: boolean,
+  ): Promise<{ exists: boolean; tenantId: string | undefined }> {
+    const activePartition = getActivePartition();
+    if (isBase) {
+      return { exists: true, tenantId: activePartition };
+    }
+    const [stored, exists] = await Promise.all([
+      principalType !== PrincipalType.ROLE && findConfigByPrincipal
+        ? findConfigByPrincipal(principalType, principalId, { includeInactive: true })
+        : null,
+      principalExists ? principalExists(principalType, principalId) : true,
+    ]);
+    if (stored) {
+      return { exists: true, tenantId: getConfigPartition(stored) };
+    }
+    return { exists, tenantId: activePartition };
+  }
+
+  /**
    * GET /catalog?principalType=&principalId= — the endpoints, models, MCP servers and tools a
    * scope serves (Base when no principal is named), resolved as `getAppConfig` resolves it for
-   * that scope from the stored documents, never the override cache. Model lists are never loaded
-   * with a user's stored key. A part is left out unless the caller can read its section.
+   * that scope from the stored documents, never the override cache, in the partition the scope's
+   * profile merges in (`locateScope`). Model lists are never loaded with a user's stored key. A
+   * part is left out unless the caller can read its section.
    */
   async function getConfigCatalog(req: ServerRequest, res: Response): Promise<Response> {
     try {
@@ -501,24 +540,24 @@ export function createAdminConfigCatalogHandlers(deps: AdminConfigCatalogDeps): 
         return forbiddenResponse(res);
       }
       const isBase = isBaseConfigPrincipal({ principalType, principalId });
-      const [readable, exists] = await Promise.all([
+      const [readable, scope] = await Promise.all([
         getReadableConfigSections(user, [
           'endpoints',
           'mcpServers',
           'filteredTools',
           'includedTools',
         ]),
-        isBase || !principalExists ? true : principalExists(principalType, principalId),
+        locateScope(principalType, principalId, isBase),
       ]);
-      if (!exists) {
+      if (!scope.exists) {
         return principalNotFoundResponse(res);
       }
 
-      const config = await getAppConfig(toScopeOptions(principalType, principalId, user.tenantId));
+      const config = await getAppConfig(toScopeOptions(principalType, principalId, scope.tenantId));
       const request: CatalogScopeRequest = {
         config,
         user: {
-          tenantId: user.tenantId,
+          tenantId: scope.tenantId,
           ...(principalType === PrincipalType.ROLE && !isBase && { role: principalId }),
         },
       };

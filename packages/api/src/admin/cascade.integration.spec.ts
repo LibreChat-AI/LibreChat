@@ -164,7 +164,7 @@ function roleHandlers(overrides: Partial<AdminRolesDeps>) {
   return createAdminRolesHandlers({
     listRoles: methods.listRoles,
     countRoles: methods.countRoles,
-    getRoleByName: methods.getRoleByName,
+    getRoleByName: methods.getPartitionRole,
     createRoleByName: methods.createRoleByName,
     updateRoleByName: methods.updateRoleByName,
     updateAccessPermissions: methods.updateAccessPermissions,
@@ -177,9 +177,7 @@ function roleHandlers(overrides: Partial<AdminRolesDeps>) {
     listUsersByRole: methods.listUsersByRole,
     countUsersByRole: methods.countUsersByRole,
     deleteConfig: methods.deleteConfig,
-    deleteAclEntries: async (filter) => {
-      await methods.deleteAclEntries(filter);
-    },
+    deleteAclEntries: methods.deletePrincipalAclEntries,
     deleteGrantsForPrincipal: methods.deleteGrantsForPrincipal,
     restoreConfig: methods.restoreConfig,
     findConfigByPrincipal: methods.findConfigByPrincipal,

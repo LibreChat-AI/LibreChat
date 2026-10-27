@@ -140,8 +140,8 @@ describe('principalExists', () => {
   });
 });
 
-describe('findPartitionUser', () => {
-  it('returns what principal resolution reads, only for a user of the caller partition', async () => {
+describe('findPrincipalUser', () => {
+  it('returns what principal resolution reads and the tenant that holds the user', async () => {
     const platform = await seedPrincipals('platform');
     const tenant = await inTenant('tenant-a', async () => {
       const user = await new mongoose.models.User({
@@ -152,26 +152,51 @@ describe('findPartitionUser', () => {
       }).save();
       return user._id.toString();
     });
+    const tenantUser = {
+      id: tenant,
+      role: 'EDITOR',
+      idOnTheSource: 'entra-oid',
+      tenantId: 'tenant-a',
+    };
 
-    expect(await methods.findPartitionUser(platform.userId)).toEqual({
+    expect(await methods.findPrincipalUser(platform.userId)).toEqual({
       id: platform.userId,
       role: SystemRoles.USER,
       idOnTheSource: null,
     });
-    expect(await methods.findPartitionUser(tenant)).toBeNull();
-    expect(await inTenant('tenant-a', () => methods.findPartitionUser(tenant))).toEqual({
-      id: tenant,
-      role: 'EDITOR',
-      idOnTheSource: 'entra-oid',
-    });
-    expect(await inTenant('tenant-b', () => methods.findPartitionUser(tenant))).toBeNull();
-    expect(await inTenant('tenant-a', () => methods.findPartitionUser(platform.userId))).toBeNull();
+    /** Outside a tenant a user is addressed by id, as group and user profiles are. */
+    expect(await methods.findPrincipalUser(tenant)).toEqual(tenantUser);
+    expect(await inTenant('tenant-a', () => methods.findPrincipalUser(tenant))).toEqual(tenantUser);
+    expect(await inTenant('tenant-b', () => methods.findPrincipalUser(tenant))).toBeNull();
+    expect(await inTenant('tenant-a', () => methods.findPrincipalUser(platform.userId))).toBeNull();
+  });
+
+  it('treats an unclaimed user (null or empty tenant) as platform-level', async () => {
+    const [unset, empty] = await Promise.all(
+      [null, ''].map(async (tenantId, index) => {
+        const { insertedId } = await mongoose.models.User.collection.insertOne({
+          email: `unclaimed-${index}@example.com`,
+          provider: 'local',
+          role: 'USER',
+          tenantId,
+        });
+        return insertedId.toString();
+      }),
+    );
+
+    for (const userId of [unset, empty]) {
+      expect(await methods.findPrincipalUser(userId)).toEqual({
+        id: userId,
+        role: 'USER',
+        idOnTheSource: null,
+      });
+    }
   });
 
   it('answers null without a query for an id that cannot name a user', async () => {
     const findOne = jest.spyOn(mongoose.models.User, 'findOne');
-    expect(await methods.findPartitionUser('not-an-id')).toBeNull();
-    expect(await methods.findPartitionUser('F6E5D4C3B2A1F6E5D4C3B2A1')).toBeNull();
+    expect(await methods.findPrincipalUser('not-an-id')).toBeNull();
+    expect(await methods.findPrincipalUser('F6E5D4C3B2A1F6E5D4C3B2A1')).toBeNull();
     expect(findOne).not.toHaveBeenCalled();
     findOne.mockRestore();
   });

@@ -35,7 +35,7 @@ const mockDb = {
   toggleConfigActiveTracked: jest.fn(),
   recordAuditEntry: jest.fn(),
   principalExists: jest.fn(async () => true),
-  findPartitionUser: jest.fn(async () => null),
+  findPrincipalUser: jest.fn(async () => null),
   getUserPrincipals: jest.fn(async () => []),
   getApplicableConfigs: jest.fn(async () => []),
 };

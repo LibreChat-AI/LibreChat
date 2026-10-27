@@ -216,7 +216,7 @@ export function createCustomConfigLoader({
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
       const result = configSchema.strict().safeParse(loadedConfig);
       if (
-        result.error?.errors.some(
+        result.error?.issues.some(
           (error) => error.path != null && error.path.includes('imageOutputType'),
         )
       ) {
@@ -233,7 +233,7 @@ export function createCustomConfigLoader({
       if (!result.success) {
         const message = `Invalid custom config file at ${configPath}:\n${JSON.stringify(result.error, null, 2)}`;
         logger.error(message);
-        const speechError = result.error.errors.find(
+        const speechError = result.error.issues.find(
           (error) =>
             error.code === 'unrecognized_keys' &&
             (error.message?.includes('stt') || error.message?.includes('tts')),
@@ -251,12 +251,12 @@ export function createCustomConfigLoader({
             'CONFIG_BYPASS_VALIDATION is enabled. Continuing with default configuration despite validation errors.',
           );
           if (mode === 'reload') {
-            throw new ConfigReloadError(message, result.error, result.error.errors);
+            throw new ConfigReloadError(message, result.error, result.error.issues);
           }
           return null;
         }
         if (mode === 'reload') {
-          throw new ConfigReloadError(message, result.error, result.error.errors);
+          throw new ConfigReloadError(message, result.error, result.error.issues);
         }
 
         logger.error(

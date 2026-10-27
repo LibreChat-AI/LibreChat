@@ -4423,6 +4423,27 @@ describe('issue params', () => {
     expect(byPath['endpoints.allowedAddresses.0']).toEqual({ reason: 'missing_port' });
   });
 
+  it('keeps record-key diagnostics at their full path inside a union', () => {
+    expect(
+      getConfigOverrideIssues({
+        interface: {
+          theme: {
+            version: 1,
+            name: 'Custom',
+            modes: { light: { colors: { Invalid: '255 255 255' } } },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        path: 'interface.theme.modes.light.colors.Invalid',
+        segments: ['interface', 'theme', 'modes', 'light', 'colors', 'Invalid'],
+        code: 'invalid_string',
+        params: { validation: 'regex' },
+      },
+    ]);
+  });
+
   it('names the integer expectation of a fractional step limit', () => {
     expect(getConfigOverrideIssues({ endpoints: { agents: { maxRecursionLimit: 2.5 } } })).toEqual([
       {

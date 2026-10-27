@@ -92,7 +92,7 @@ function readHandlers(extra: Partial<ReadDeps> = {}) {
     hasCapability: async () => true,
     resolveConfigLayers: service.resolveConfigLayers,
     principalExists: methods.principalExists,
-    findPartitionUser: methods.findPartitionUser,
+    findPrincipalUser: methods.findPrincipalUser,
     getUserPrincipals: methods.getUserPrincipals,
     getApplicableConfigs: methods.getApplicableConfigs,
     ...extra,
@@ -458,5 +458,196 @@ describe('GET /effective?userId=', () => {
     expect(res.statusCode).toBe(404);
     expect(res.body).toEqual({ error: 'User not found', code: 'USER_NOT_FOUND' });
     expect((await getEffective(new mongoose.Types.ObjectId().toString())).statusCode).toBe(404);
+  });
+});
+
+describe("a tenant's profile read by an admin without a tenant", () => {
+  const TENANT = 'tenant-a';
+  const inTenant = <T>(run: () => Promise<T>): Promise<T> =>
+    dataSchemas.tenantStorage.run({ tenantId: TENANT }, run);
+  /** librechat.yaml with a custom endpoint only tenant-a resolves. */
+  const TENANT_YAML: DeepPartial<TCustomConfig> = {
+    ...YAML,
+    endpoints: {
+      custom: [
+        ...(YAML.endpoints?.custom ?? []),
+        {
+          name: 'Regional',
+          tenantId: TENANT,
+          apiKey: 'regional-literal-key',
+          baseURL: 'https://regional.example.com/v1',
+          models: { default: ['regional-1'] },
+        } as NonNullable<NonNullable<TCustomConfig['endpoints']>['custom']>[number],
+      ],
+    },
+  };
+  let tenantService: AppConfigService;
+
+  beforeAll(async () => {
+    const { createAppConfigService } = await import('~/app/service');
+    const appConfig: AppConfig = await dataSchemas.AppService({
+      config: structuredClone(TENANT_YAML),
+    });
+    const store = new Map<string, unknown>();
+    tenantService = createAppConfigService({
+      loadBaseConfig: async () => structuredClone(appConfig),
+      setCachedTools: async () => undefined,
+      getCache: () => ({
+        get: async (key: string) => store.get(key),
+        set: async (key: string, value: unknown) => {
+          store.set(key, value);
+        },
+        delete: async (key: string) => store.delete(key),
+        opts: { store: { keys: () => store.keys() } },
+      }),
+      cacheKeys: { APP_CONFIG: 'app_config' },
+      getApplicableConfigs: methods.getApplicableConfigs,
+      getUserPrincipals: methods.getUserPrincipals,
+    });
+  });
+
+  const customNames = (tree: Partial<TCustomConfig>) =>
+    (tree.endpoints?.custom ?? []).map(({ name }) => name);
+
+  /** Base documents that tell the partitions apart, and a tenant-a user in a tenant-a group. */
+  async function seedPartitions(): Promise<{ groupId: string; userId: string }> {
+    await patch(ROLE, dataSchemas.BASE_CONFIG_PRINCIPAL_ID, [
+      { fieldPath: 'interface.customWelcome', value: 'Platform Base' },
+      { fieldPath: 'registration.socialLogins', value: ['platform'] },
+    ]);
+    await new mongoose.models.Role({ name: 'EDITOR' }).save();
+    await patch(ROLE, 'EDITOR', [{ fieldPath: 'interface.modelSelect', value: true }]);
+    return inTenant(async () => {
+      await patch(ROLE, dataSchemas.BASE_CONFIG_PRINCIPAL_ID, [
+        { fieldPath: 'interface.customWelcome', value: 'Tenant Base' },
+      ]);
+      await new mongoose.models.Role({ name: 'EDITOR' }).save();
+      await patch(ROLE, 'EDITOR', [{ fieldPath: 'interface.modelSelect', value: false }]);
+      const userId = await createUser('tenant-member@example.com', 'EDITOR');
+      const groupId = await createGroup('Tenant Engineering', [userId]);
+      await patch(PrincipalType.GROUP, groupId, [
+        { fieldPath: 'registration.socialLogins', value: ['tenant-group'] },
+      ]);
+      return { groupId, userId };
+    });
+  }
+
+  it("resolves a group profile on that tenant's librechat.yaml and Base, as its members get it", async () => {
+    const { groupId } = await seedPartitions();
+    const tenantBase = await inTenant(() =>
+      methods.findConfigByPrincipal(ROLE, dataSchemas.BASE_CONFIG_PRINCIPAL_ID),
+    );
+
+    const res = await getResolved(PrincipalType.GROUP, groupId, {
+      resolveConfigLayers: tenantService.resolveConfigLayers,
+    });
+    const body = res.body as AdminResolvedConfigResponse;
+
+    expect(res.statusCode).toBe(200);
+    expect(body.layers.map(({ principalType, revision }) => [principalType, revision])).toEqual([
+      [ROLE, tenantBase && dataSchemas.getConfigRevision(tenantBase)],
+      [PrincipalType.GROUP, expect.any(String)],
+    ]);
+    expect(body.resolved.interface?.customWelcome).toBe('Tenant Base');
+    expect(body.resolved.registration?.socialLogins).toEqual(['tenant-group']);
+    expect(customNames(body.yaml)).toEqual(['Gateway', 'Regional']);
+    expect(customNames(body.resolved)).toEqual(['Gateway', 'Regional']);
+
+    const served = await inTenant(() =>
+      tenantService.getAppConfig({
+        resolvedPrincipals: [{ principalType: PrincipalType.GROUP, principalId: groupId }],
+        bypassOverrideCache: true,
+      }),
+    );
+    expect(served.interfaceConfig?.customWelcome).toBe(body.resolved.interface?.customWelcome);
+    expect(served.registration?.socialLogins).toEqual(body.resolved.registration?.socialLogins);
+
+    /** Another tenant's admin still cannot read it. */
+    const other = await dataSchemas.tenantStorage.run({ tenantId: 'tenant-b' }, () =>
+      getResolved(
+        PrincipalType.GROUP,
+        groupId,
+        { resolveConfigLayers: tenantService.resolveConfigLayers },
+        { id: 'admin-b', role: 'ADMIN', tenantId: 'tenant-b' },
+      ),
+    );
+    expect(other.statusCode).toBe(404);
+  });
+
+  it("resolves a tenant's user over that tenant's role, groups and Base, as their requests do", async () => {
+    const { groupId, userId } = await seedPartitions();
+
+    const res = await getEffective(userId, {
+      resolveConfigLayers: tenantService.resolveConfigLayers,
+    });
+    const body = res.body as AdminEffectiveConfigResponse;
+
+    expect(res.statusCode).toBe(200);
+    expect(body.principals).toEqual(
+      expect.arrayContaining([
+        { principalType: ROLE, principalId: 'EDITOR' },
+        { principalType: PrincipalType.GROUP, principalId: groupId },
+      ]),
+    );
+    const tenantDocuments = await inTenant(() =>
+      methods.getApplicableConfigs([
+        { principalType: ROLE, principalId: 'EDITOR' },
+        { principalType: PrincipalType.GROUP, principalId: groupId },
+      ]),
+    );
+    expect(body.layers.map(({ revision }) => revision)).toEqual(
+      tenantDocuments.map(dataSchemas.getConfigRevision),
+    );
+    expect(body.resolved.interface?.customWelcome).toBe('Tenant Base');
+    expect(body.resolved.interface?.modelSelect).toBe(false);
+    expect(body.resolved.registration?.socialLogins).toEqual(['tenant-group']);
+    expect(customNames(body.yaml)).toEqual(['Gateway', 'Regional']);
+
+    const served = await inTenant(() =>
+      tenantService.getAppConfig({ role: 'EDITOR', userId, bypassOverrideCache: true }),
+    );
+    expect(served.interfaceConfig?.customWelcome).toBe(body.resolved.interface?.customWelcome);
+    expect(served.interfaceConfig?.modelSelect).toBe(body.resolved.interface?.modelSelect);
+    expect(served.registration?.socialLogins).toEqual(body.resolved.registration?.socialLogins);
+  });
+
+  it("lists the catalog of a group profile from that tenant's librechat.yaml and Base", async () => {
+    const { groupId } = await seedPartitions();
+    await patch(ROLE, dataSchemas.BASE_CONFIG_PRINCIPAL_ID, [
+      { fieldPath: 'mcpServers.platform-tools.url', value: 'https://platform.example.com/mcp' },
+    ]);
+    await inTenant(() =>
+      patch(ROLE, dataSchemas.BASE_CONFIG_PRINCIPAL_ID, [
+        { fieldPath: 'mcpServers.tenant-tools.url', value: 'https://tenant.example.com/mcp' },
+      ]),
+    );
+    const { createAdminConfigCatalogHandlers } = await import('./catalog');
+    const getAppConfig = jest.fn(tenantService.getAppConfig);
+    const handlers = createAdminConfigCatalogHandlers({
+      hasAnyConfigReadAccess: async () => true,
+      getReadableConfigSections: async () => ({
+        broad: false,
+        sections: new Set(['endpoints', 'mcpServers']),
+      }),
+      hasConfigCapability: async () => true,
+      getAppConfig,
+      getEndpointsConfig: async () => ({}),
+      loadDefaultModels: async () => ({}),
+      loadConfigModels: async () => ({}),
+      principalExists: methods.principalExists,
+      findConfigByPrincipal: methods.findConfigByPrincipal,
+    });
+    const res = mockRes();
+
+    await handlers.getConfigCatalog(
+      mockReq({ query: { principalType: PrincipalType.GROUP, principalId: groupId } }),
+      res,
+    );
+    const body = res.body as { endpoints?: Record<string, unknown>; mcpServers?: unknown[] };
+
+    expect(res.statusCode).toBe(200);
+    expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ tenantId: TENANT }));
+    expect(Object.keys(body.endpoints ?? {})).toEqual(expect.arrayContaining(['Regional']));
+    expect(body.mcpServers).toEqual([expect.objectContaining({ name: 'tenant-tools' })]);
   });
 });
