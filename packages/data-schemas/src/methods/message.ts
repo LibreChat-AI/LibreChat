@@ -4156,8 +4156,8 @@ export function createMessageMethods(
 
   /**
    * The reasoning level a branch runs at: the override on the nearest user message at or above
-   * `parentMessageId` that carries one, or `null` when none does. One read of the conversation's
-   * tree links and overrides; the walk itself is in memory.
+   * `parentMessageId` that carries one, or `null` when none does. A conversation with no picks is
+   * answered by one indexed read; otherwise its tree links are read once and walked in memory.
    */
   async function getBranchReasoningOverride({
     user,
@@ -4169,21 +4169,30 @@ export function createMessageMethods(
     parentMessageId: string;
   }): Promise<IMessage['reasoningOverride'] | null> {
     const Message = mongoose.models.Message as Model<IMessage>;
-    const rows = await Message.find(
+    /* Most conversations never pick a level: answer those from the turns that carry one, before
+       reading any tree links. */
+    const picks = await Message.find(
+      { user, conversationId, isCreatedByUser: true, reasoningOverride: { $exists: true } },
+      { _id: 0, messageId: 1, reasoningOverride: 1 },
+    ).lean<Pick<IMessage, 'messageId' | 'reasoningOverride'>[]>();
+    if (picks.length === 0) {
+      return null;
+    }
+    const levels = new Map(picks.map((pick) => [pick.messageId, pick.reasoningOverride]));
+    const links = await Message.find(
       { user, conversationId },
-      { _id: 0, messageId: 1, parentMessageId: 1, isCreatedByUser: 1, reasoningOverride: 1 },
-    ).lean<
-      Pick<IMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'>[]
-    >();
-    const byId = new Map(rows.map((row) => [row.messageId, row]));
+      { _id: 0, messageId: 1, parentMessageId: 1 },
+    ).lean<Pick<IMessage, 'messageId' | 'parentMessageId'>[]>();
+    const parents = new Map(links.map((link) => [link.messageId, link.parentMessageId]));
     const visited = new Set<string>();
-    let current = byId.get(parentMessageId);
-    while (current != null && !visited.has(current.messageId)) {
-      visited.add(current.messageId);
-      if (current.isCreatedByUser === true && current.reasoningOverride != null) {
-        return current.reasoningOverride;
+    let current: string | null | undefined = parentMessageId;
+    while (current != null && parents.has(current) && !visited.has(current)) {
+      visited.add(current);
+      const level = levels.get(current);
+      if (level != null) {
+        return level;
       }
-      current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
+      current = parents.get(current);
     }
     return null;
   }

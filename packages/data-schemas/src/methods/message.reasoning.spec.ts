@@ -19,8 +19,10 @@ let getBranchReasoningOverride: ReturnType<
 
 const user = 'user-1';
 const conversationId = 'convo-1';
-const high = { key: 'reasoning_effort', value: 'high' } as const;
-const low = { key: 'reasoning_effort', value: 'low' } as const;
+const high = { key: 'reasoning_effort', value: 'high' } as NonNullable<
+  IMessage['reasoningOverride']
+>;
+const low = { key: 'reasoning_effort', value: 'low' } as NonNullable<IMessage['reasoningOverride']>;
 
 const turn = (
   messageId: string,
