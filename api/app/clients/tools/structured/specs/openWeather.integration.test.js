@@ -113,6 +113,8 @@ describe('OpenWeather Tool (Integration Test)', () => {
       console.log('Overview API response:', result);
 
       const parsed = JSON.parse(result);
+      // One Call 4.0 has no /overview endpoint; this sentence is synthesized from
+      // current (or daily) conditions rather than OpenWeather's generated summary.
       expect(parsed).toHaveProperty('weather_overview');
       expect(typeof parsed.weather_overview).toBe('string');
       expect(parsed.weather_overview.length).toBeGreaterThan(0);
