@@ -114,6 +114,89 @@ describe('createEnvReferencePolicy', () => {
     ).toEqual(['endpoints.custom.0.headers.K']);
   });
 
+  describe('Vertex AI settings, which reads return resolved', () => {
+    const vertexYaml = {
+      ...yaml,
+      endpoints: {
+        ...yaml.endpoints,
+        anthropic: {
+          vertex: {
+            projectId: '${GCP_PROJECT}',
+            region: '${GCP_REGION}',
+            serviceKeyFile: '${GOOGLE_SERVICE_KEY_FILE}',
+            models: { 'claude-sonnet-4-6': { deploymentName: '${SONNET_DEPLOYMENT}' } },
+          },
+        },
+      },
+    };
+    const projectId = ['endpoints', 'anthropic', 'vertex', 'projectId'];
+    const deployment = [
+      'endpoints',
+      'anthropic',
+      'vertex',
+      'models',
+      'claude-opus-4-6',
+      'deploymentName',
+    ];
+    const keyFile = ['endpoints', 'anthropic', 'vertex', 'serviceKeyFile'];
+
+    it('allows only the names librechat.yaml references in its own Vertex AI settings', () => {
+      const policy = createEnvReferencePolicy({ config: vertexYaml, allowlist: ['EXTRA_NAME'] });
+
+      for (const name of ['GCP_PROJECT', 'GCP_REGION', 'SONNET_DEPLOYMENT']) {
+        expect(policy.allows(name, projectId)).toBe(true);
+        expect(policy.allows(name, deployment)).toBe(true);
+      }
+      for (const name of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GATEWAY_KEY', 'EXTRA_NAME']) {
+        expect(policy.allows(name, projectId)).toBe(false);
+        expect(policy.allows(name, deployment)).toBe(false);
+        expect(policy.allows(name, ['endpoints', 'custom', '0', 'apiKey'])).toBe(true);
+      }
+      expect(policy.allows('GCP_PROJECT', ['endpoints', 'anthropic', 'apiKey'])).toBe(true);
+    });
+
+    it("allows the key file's names only in the key file, which the merge keeps librechat.yaml's", () => {
+      const policy = createEnvReferencePolicy({ config: vertexYaml });
+
+      expect(policy.allows('GOOGLE_SERVICE_KEY_FILE', keyFile)).toBe(true);
+      expect(policy.allows('GOOGLE_SERVICE_KEY_FILE', projectId)).toBe(false);
+      expect(policy.allows('GOOGLE_SERVICE_KEY_FILE', deployment)).toBe(false);
+      expect(policy.allows('GCP_PROJECT', keyFile)).toBe(true);
+    });
+
+    it('allows no reference there when librechat.yaml configures no Vertex AI', () => {
+      const policy = createEnvReferencePolicy({ config: yaml });
+      const layer = {
+        endpoints: {
+          anthropic: {
+            vertex: {
+              projectId: '${OPENAI_API_KEY}',
+              deploymentName: 'deployment-${GATEWAY_KEY}',
+              models: { 'claude-opus-4-6': { deploymentName: '${ANTHROPIC_API_KEY}' } },
+            },
+          },
+        },
+      };
+
+      expect(getEnvReferenceIssues(layer, policy).map(({ path }) => path)).toEqual([
+        'endpoints.anthropic.vertex.projectId',
+        'endpoints.anthropic.vertex.deploymentName',
+        'endpoints.anthropic.vertex.models.claude-opus-4-6.deploymentName',
+      ]);
+      expect(neutralizeEnvReferences(layer, policy)).toEqual({
+        endpoints: {
+          anthropic: {
+            vertex: {
+              projectId: '',
+              deploymentName: 'deployment-',
+              models: { 'claude-opus-4-6': { deploymentName: '' } },
+            },
+          },
+        },
+      });
+    });
+  });
+
   it('never allows an infrastructure secret, even when YAML or the extra list names it', () => {
     const policy = createEnvReferencePolicy({
       config: { ocr: { apiKey: '${CREDS_KEY}' } },

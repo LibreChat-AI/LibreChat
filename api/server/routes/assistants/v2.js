@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   reportLocatorTraversalFailure,
+  validateAssistantId,
   createContentFilter,
   extractAssistantContent,
 } = require('@librechat/api');
@@ -65,7 +66,7 @@ router.get('/:id', v1.retrieveAssistant);
  * @param {AssistantUpdateParams} req.body - The assistant update parameters.
  * @returns {Assistant} 200 - success response - application/json
  */
-router.patch('/:id', filterAssistantContent, v2.patchAssistant);
+router.patch('/:id', filterAssistantContent, validateAssistantId, v2.patchAssistant);
 
 /**
  * Deletes an assistant.
@@ -73,7 +74,7 @@ router.patch('/:id', filterAssistantContent, v2.patchAssistant);
  * @param {string} req.params.id - Assistant identifier.
  * @returns {Assistant} 200 - success response - application/json
  */
-router.delete('/:id', v1.deleteAssistant);
+router.delete('/:id', validateAssistantId, v1.deleteAssistant);
 
 /**
  * Returns a list of assistants.

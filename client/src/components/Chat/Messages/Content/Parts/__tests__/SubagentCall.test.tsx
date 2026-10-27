@@ -217,7 +217,7 @@ const event = (
 });
 
 describe('SubagentCall', () => {
-  it('registers its existing header glyph for both containing fold rails', () => {
+  it('registers its existing header glyph as a branch of its fold', () => {
     renderWithState({ toolCallId: 'fold-glyph', initialProgress: 1 });
     const row = screen.getByRole('button', { name: 'Ran agent' }).cloneNode(true) as HTMLElement;
     const glyph = row.querySelector<HTMLElement>(FOLD_GLYPH_SELECTOR);
@@ -240,10 +240,8 @@ describe('SubagentCall', () => {
       rails.push(rail);
     }
     parent.append(row);
-    expect(litFoldPath(root, row, 155)).toEqual([
-      { rail: rails[1], length: 54, end: true },
-      { rail: rails[0], length: 118, end: false },
-    ]);
+    /** The outer fold holds no row of its own above this one, so it has no branch to light. */
+    expect(litFoldPath(root, row, 155)).toEqual([{ rail: rails[1], branch: 0 }]);
   });
 
   it('keeps the configured name and avatar after live progress is cleared', () => {

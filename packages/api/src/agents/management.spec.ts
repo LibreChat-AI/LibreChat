@@ -39,6 +39,33 @@ const persistedAgent = {
 };
 
 describe('Agent Management contract', () => {
+  it.each([
+    { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' as const } },
+    Object.fromEntries(
+      Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' as const }]),
+    ),
+    Object.fromEntries(
+      Array.from({ length: 129 }, (_, i) => [
+        `${i}`.padEnd(256, 'é'),
+        { approval_mode: 'ask' as const },
+      ]),
+    ),
+  ])('preserves over-limit legacy options in responses while rejecting writes', (tool_options) => {
+    const response = projectAgentManagementResponse({ ...persistedAgent, tool_options });
+    expect(response.tool_options).toEqual(tool_options);
+    const page = projectAgentManagementListResponse({
+      data: [{ ...persistedAgent, tool_options }],
+      has_more: false,
+      after: null,
+    });
+    expect(page.data[0].tool_options).toEqual(tool_options);
+    expect(
+      agentManagementCreateSchema.safeParse({ provider: 'openAI', model: 'gpt-5', tool_options })
+        .success,
+    ).toBe(false);
+    expect(agentManagementUpdateSchema.safeParse({ tool_options }).success).toBe(false);
+  });
+
   it('preserves repository instruction mode through API updates and response projection', () => {
     for (const mode of ['prefer', 'defer', 'off'] as const) {
       expect(agentManagementUpdateSchema.parse({ repositoryInstructions: mode })).toEqual({

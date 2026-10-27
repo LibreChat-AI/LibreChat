@@ -342,10 +342,26 @@ html.high-contrast.dark .btn-neutral:hover {
     --tw-shadow: 0 0 transparent;
     -webkit-appearance: none;
     appearance: none;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%238e8ea0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
-    background-position: right 0.5rem center;
+    background-image:
+      linear-gradient(
+        to top right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      ),
+      linear-gradient(
+        to bottom right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      );
+    background-position:
+      right calc(0.5rem + 0.75em) center,
+      right calc(0.5rem + 0.45em) center;
     background-repeat: no-repeat;
-    background-size: 1.5em 1.5em;
+    background-size: 0.3em 0.3em;
     padding-inline-end: 2.5rem;
     background-color: rgb(var(--select-fill));
     border-color: rgb(var(--select-edge));
@@ -355,7 +371,18 @@ html.high-contrast.dark .btn-neutral:hover {
     line-height: 1.5rem;
   }
   [dir='rtl'] select {
-    background-position: left 0.5rem center;
+    background-position:
+      left calc(0.5rem + 0.45em) center,
+      left calc(0.5rem + 0.75em) center;
+  }
+}
+
+/* Forced colors computes `background-image` to none unless it holds a `url()`, which
+ * removes the gradient arrow; hand the indicator back to the browser. */
+@media (forced-colors: active) {
+  select {
+    -webkit-appearance: menulist;
+    appearance: menulist;
   }
 }
 
@@ -933,7 +960,7 @@ pre[class*='language-'] {
 /* Tailwind 3 gave every button a pointer cursor and Tailwind 4 leaves the
  * platform default, so this shim is what keeps the affordance. It belongs in
  * `base`: unlayered it would outrank every utility in the sheet, and
- * `cursor-default` on `SelectDropDown` or `disabled:cursor-not-allowed` on a
+ * `cursor-default` on a trigger or `disabled:cursor-not-allowed` on a
  * disabled button would stop meaning anything. */
 @layer base {
   [role='button'],
