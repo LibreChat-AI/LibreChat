@@ -195,6 +195,15 @@ function UnifiedSidebar({
         return;
       }
       /**
+       * A layer above the drawer already took this Escape: a dialog opened from
+       * the drawer dismisses itself and marks the event handled. Collapsing the
+       * drawer too would close two levels for one keystroke and drop the focus
+       * the dialog hands back to its trigger.
+       */
+      if (e.defaultPrevented) {
+        return;
+      }
+      /**
        * Menus opened from the drawer portal out of it, so their Escape still
        * reaches this listener. Dismissing the whole drawer would skip the level
        * the user meant to leave.
