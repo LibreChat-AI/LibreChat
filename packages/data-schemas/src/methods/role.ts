@@ -646,7 +646,7 @@ export function createRoleMethods(
         for (let i = 0; i < ids.length; i += REASSIGN_BATCH_SIZE) {
           const batch = ids.slice(i, i + REASSIGN_BATCH_SIZE);
           written.push(...batch);
-          reassigned.push(...(await reassignBatch(User, members, batch)));
+          await reassignBatch(User, members, batch, reassigned);
         }
       }
     } catch (error) {
@@ -660,40 +660,57 @@ export function createRoleMethods(
     }
   }
 
-  /** One batch of `reassignMembersToUser`: the ids of the accounts its write changed. */
+  /**
+   * One batch of `reassignMembersToUser`: adds the ids of the accounts its write changed to
+   * `reassigned`. When the write or its read-back rejects (the write may still have committed),
+   * the accounts carrying the nonce are read once more and added before the failure propagates,
+   * so a committed move is still reported.
+   */
   async function reassignBatch(
     User: Model<IUser>,
     members: FilterQuery<IUser>,
     batch: string[],
-  ): Promise<string[]> {
+    reassigned: string[],
+  ): Promise<void> {
     /** The tag is not a schema path, so every query naming it opts out of strict filtering. */
     const nonce = new mongoose.Types.ObjectId();
-    const { modifiedCount } = await User.updateMany(
-      { ...members, _id: { $in: batch } },
-      { $set: { role: SystemRoles.USER, [REASSIGN_NONCE_PATH]: nonce } },
-      { strict: false },
-    );
-    if (modifiedCount === 0) {
-      return [];
-    }
     const tagged = { _id: { $in: batch }, [REASSIGN_NONCE_PATH]: nonce };
-    const changed =
-      modifiedCount === batch.length
-        ? batch
-        : (await User.find(tagged, { _id: 1 }, { strictQuery: false }).lean()).map((u) =>
-            u._id.toString(),
-          );
-    try {
-      await User.updateMany(
-        tagged,
-        { $unset: { [REASSIGN_NONCE_PATH]: '' } },
-        { strict: false, strictQuery: false, timestamps: false },
+    const readTagged = async () =>
+      (await User.find(tagged, { _id: 1 }, { strictQuery: false }).lean()).map((u) =>
+        u._id.toString(),
       );
+    let modifiedCount: number;
+    try {
+      ({ modifiedCount } = await User.updateMany(
+        { ...members, _id: { $in: batch } },
+        { $set: { role: SystemRoles.USER, [REASSIGN_NONCE_PATH]: nonce } },
+        { strict: false },
+      ));
+      if (modifiedCount === 0) {
+        return;
+      }
+      reassigned.push(...(modifiedCount === batch.length ? batch : await readTagged()));
     } catch (error) {
-      /** The reassignment committed; a leftover tag is inert, so its removal does not fail it. */
-      logger.error('[deleteRoleByName] reassignment tag cleanup failed:', error);
+      try {
+        reassigned.push(...(await readTagged()));
+      } catch (recoveryError) {
+        logger.error('[deleteRoleByName] reassigned members unreadable after a failed write:', {
+          recoveryError,
+        });
+      }
+      throw error;
+    } finally {
+      try {
+        await User.updateMany(
+          tagged,
+          { $unset: { [REASSIGN_NONCE_PATH]: '' } },
+          { strict: false, strictQuery: false, timestamps: false },
+        );
+      } catch (cleanupError) {
+        /** The reassignment committed; a leftover tag is inert, so its removal does not fail it. */
+        logger.error('[deleteRoleByName] reassignment tag cleanup failed:', cleanupError);
+      }
     }
-    return changed;
   }
 
   async function deleteRoleByName(

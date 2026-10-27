@@ -991,6 +991,45 @@ describe('deleteRoleByName', () => {
     expect(await Role.exists({ name: 'editor' })).toBeTruthy();
   });
 
+  it('reports the members a write moved when it commits but its acknowledgement is lost', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          throw new Error('acknowledgement lost');
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleMembersReassignmentError);
+    expect((caught as RoleMembersReassignmentError).reassignedUserIds).toEqual([
+      alice._id.toString(),
+    ]);
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+    expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
+  });
+
   it('leaves a role recreated under the same name when the expected id no longer matches', async () => {
     const original = await createRoleByName({ name: 'editor' });
     await Role.deleteOne({ name: 'editor' });
