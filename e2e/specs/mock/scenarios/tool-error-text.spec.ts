@@ -39,6 +39,7 @@ const OpenWeather = require('./app/clients/tools/structured/OpenWeather');
   out.unauthorized = await tool._call({ action: 'current_forecast', lat: 1, lon: 2 });
   respond = () => Promise.resolve({ ok: true, json: async () => [] });
   out.city = await tool._call({ action: 'current_forecast', city: 'Atlantis' });
+  out.secretCity = await tool._call({ action: 'current_forecast', city: 'sk-proj-PRIVATEKEY123 owner@example.com' });
   out.date = await tool._call({ action: 'timestamp', lat: 1, lon: 2, date: '2020/03/04' });
   process.stdout.write('RESULT' + JSON.stringify(out));
   process.exit(0);
@@ -82,6 +83,9 @@ test.describe('approved tool error text', () => {
     );
     expect(out.city).toBe('Error: Could not find coordinates for city: Atlantis');
     expect(out.date).toBe('Error: Invalid date format. Expected YYYY-MM-DD.');
+    expect(out.secretCity).toMatch(/^Error: Could not find coordinates for city: /);
+    expect(out.secretCity).not.toContain('PRIVATEKEY123');
+    expect(out.secretCity).not.toContain('owner@example.com');
     expect(JSON.stringify(out)).not.toContain(SECRET);
     expect(JSON.stringify(out)).not.toContain('probe-api-key');
   });

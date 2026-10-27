@@ -1,4 +1,4 @@
-import { logger } from '@librechat/data-schemas';
+import { logger, redactMessage } from '@librechat/data-schemas';
 import { AuthType, EToolResources } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -101,9 +101,12 @@ export class ToolInputError extends Error {
   }
 }
 
-/** The approved text for a tool failure: a `ToolInputError` message, otherwise the fallback. */
+/**
+ * The approved text for a tool failure: a `ToolInputError` message with credentials and email
+ * addresses redacted (it may echo a tool argument), otherwise the fallback.
+ */
 export function getToolErrorText(error: unknown): string {
-  return error instanceof ToolInputError ? error.message : TOOL_ERROR_FALLBACK;
+  return error instanceof ToolInputError ? redactMessage(error.message) : TOOL_ERROR_FALLBACK;
 }
 
 /** Approved wording for an upstream HTTP status, keyed by the status class a model can act on. */
@@ -155,7 +158,7 @@ export function formatToolError(
   statusOverrides?: Readonly<Partial<Record<number, string>>>,
 ): string {
   if (error instanceof ToolInputError) {
-    return `Error: ${error.message}`;
+    return `Error: ${getToolErrorText(error)}`;
   }
   const metadata = getSafeErrorMetadata(error);
   if (metadata.status != null && metadata.status >= 400) {

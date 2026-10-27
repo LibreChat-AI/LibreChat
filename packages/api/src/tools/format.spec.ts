@@ -374,6 +374,20 @@ describe('format.ts helper functions', () => {
       );
     });
 
+    it('redacts credentials and emails a tool input error echoes from its arguments', () => {
+      const text = formatToolError(
+        new ToolInputError(
+          'Could not find coordinates for city: sk-proj-PRIVATEKEY123 private.user@example.com',
+        ),
+      );
+      expect(text).toContain('Could not find coordinates for city:');
+      expect(text).not.toContain('PRIVATEKEY123');
+      expect(text).not.toContain('private.user@example.com');
+      expect(getToolErrorText(new ToolInputError('key=PRIVATEQUERY123 rejected'))).not.toContain(
+        'PRIVATEQUERY123',
+      );
+    });
+
     it('logs only safe metadata for an unapproved failure', () => {
       const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
       const error = Object.assign(new Error('upstream said PRIVATE-DETAIL'), {
