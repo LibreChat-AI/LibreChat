@@ -3,7 +3,7 @@ import cloneDeep from 'lodash/cloneDeep';
 import { useStore, useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { hasPendingAssistantParent } from '@librechat/chat';
+import { hasPendingAssistantParent, getAppendParentMessageId } from '@librechat/chat';
 import {
   Constants,
   QueryKeys,
@@ -43,6 +43,7 @@ import {
 } from '~/hooks/Agents/codeDecision';
 import { activeUsageResponseIdFamily } from '~/components/Chat/Input/TokenUsage/store';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import { getBranchReasoning, resolveSubmittedReasoning } from './ask/reasoning';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -50,7 +51,6 @@ import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
-import { resolveSubmittedReasoning } from './ask/reasoning';
 import { isHistoryRevalidating } from './ask/guards';
 import { createRegenerate } from './ask/regenerate';
 import useUserKey from '~/hooks/Input/useUserKey';
@@ -351,6 +351,16 @@ export default function useChatFunctions({
       reasoningOverride = drainPendingReasoning(reasoningStateKey);
     }
     const stagedReasoning = reasoningOverride;
+    /* With nothing newly picked, the turn keeps the level its branch last ran at, so a composer
+       choice holds for the rest of the conversation until the user picks another. */
+    if (drainedReasoning && reasoningOverride == null) {
+      const branchMessages = overrideMessages ?? cachedMessages;
+      reasoningOverride = getBranchReasoning(
+        branchMessages,
+        parentMessageId ??
+          getAppendParentMessageId({ latestMessage, currentMessages: branchMessages ?? [] }),
+      );
+    }
     if (reasoningOverride != null) {
       const resolved = resolveSubmittedReasoning({
         queryClient,

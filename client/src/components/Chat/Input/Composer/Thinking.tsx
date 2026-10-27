@@ -1,10 +1,12 @@
 import { memo, useRef, useMemo, useState, useLayoutEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
+import { getAppendParentMessageId } from '@librechat/chat';
 import { Button, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 import Effort, { effortRank, resolveEffortLabel } from './Effort';
+import { getBranchReasoning } from '~/hooks/Chat/ask/reasoning';
 import { useGetStartupConfig } from '~/data-provider';
 import { useChatContext } from '~/Providers';
 import { cn, getModelSpec } from '~/utils';
@@ -250,7 +252,7 @@ interface ThinkingProps {
 }
 
 function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
-  const { conversation } = useChatContext();
+  const { conversation, latestMessageId, getMessages } = useChatContext();
   const { data: startupConfig } = useGetStartupConfig();
   const parametersEnabled = startupConfig?.interface?.parameters;
   const modelSpec = getModelSpec({ specName: conversation?.spec, startupConfig });
@@ -260,12 +262,23 @@ function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
     }
     return new Set(Object.keys(modelSpec.preset));
   }, [modelSpec?.preset, startupConfig?.modelSpecs?.enforce]);
+  /* Read where the next turn will attach, the same parent the send path inherits from, so the
+     button names the level the next message will actually carry. */
+  const branchReasoning = useMemo(() => {
+    const messages = getMessages(conversation?.conversationId) ?? [];
+    const latestMessage = messages.find((message) => message.messageId === latestMessageId);
+    return getBranchReasoning(
+      messages,
+      getAppendParentMessageId({ latestMessage: latestMessage ?? null, currentMessages: messages }),
+    );
+  }, [conversation?.conversationId, getMessages, latestMessageId]);
   const reasoning = useComposerReasoning({
     conversation: conversation ?? null,
     index,
     hasAddedConversation,
     enabled: parametersEnabled,
     blockedReasoningKeys,
+    branchReasoning,
   });
 
   if (parametersEnabled !== true || reasoning == null) {

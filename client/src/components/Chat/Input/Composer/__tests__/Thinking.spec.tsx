@@ -65,8 +65,11 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('~/Providers', () => ({
-  useChatContext: () =>
-    jest.requireActual<typeof import('react')>('react').useContext(mockChatContext),
+  useChatContext: () => ({
+    ...jest.requireActual<typeof import('react')>('react').useContext(mockChatContext),
+    latestMessageId: undefined,
+    getMessages: () => [],
+  }),
 }));
 
 function renderInComposer({
@@ -120,7 +123,7 @@ describe('Thinking', () => {
     } as SettingDefinition;
     renderInComposer({ index: 1 });
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const slider = screen.getByRole('slider');
     slider.focus();
     fireEvent.keyDown(slider, { key: 'ArrowRight' });
@@ -255,7 +258,7 @@ describe('Thinking', () => {
     expect(mockSetValue).toHaveBeenCalledWith({ key: 'reasoning_effort', value: 'low' });
   });
 
-  it('names the levels in Auto, focuses the Auto toggle and says the choice is one-shot', async () => {
+  it('focuses the Auto toggle when the popover opens in Auto', async () => {
     mockSetting = {
       key: 'reasoning_effort',
       type: 'enum',
@@ -266,15 +269,9 @@ describe('Thinking', () => {
     renderInComposer();
 
     fireEvent.click(screen.getByTestId('composer-thinking-button'));
-    const dialog = screen.getByRole('dialog');
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Auto' })).toHaveFocus());
-    expect(screen.getByRole('radiogroup')).toHaveAccessibleDescription(
-      'com_ui_composer_thinking_next_message',
-    );
-    expect(dialog).toHaveTextContent('Auto');
-    expect(dialog).toHaveTextContent('None');
-    expect(dialog).toHaveTextContent('Xhigh');
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('focuses the first level when the option list has no Auto value', async () => {
@@ -291,12 +288,11 @@ describe('Thinking', () => {
     expect(screen.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument();
   });
 
-  it('names the current level inside the popover', async () => {
+  it('focuses the current level when the popover opens on one', async () => {
     renderInComposer();
     fireEvent.click(screen.getByTestId('composer-thinking-button'));
 
     await waitFor(() => expect(screen.getByRole('radio', { name: 'Low' })).toHaveFocus());
-    expect(screen.getByRole('dialog')).toHaveTextContent(/com_ui_composer_thinkingLow/);
   });
 
   it('does not carry a remembered level across model settings', () => {

@@ -1,6 +1,6 @@
 import React from 'react';
-import { useSteering } from '@librechat/chat/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { useSteering, submissionByIndex } from '@librechat/chat/react';
 import { claimQueuedIntent, releaseQueuedIntent } from '@librechat/chat';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { useQueueDrain, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
@@ -48,7 +48,13 @@ import {
   pendingSteersByConvoId,
   resetSteerFamilies,
 } from '@librechat/chat/react';
-import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
+import type {
+  TFile,
+  TMessage,
+  TSubmission,
+  TConversation,
+  CodeApprovalMode,
+} from 'librechat-data-provider';
 import type { QueuedMessage } from '@librechat/chat';
 import type { ExtendedFile } from '~/common';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
@@ -4290,6 +4296,26 @@ describe('useSteering', () => {
       expect(result.current.queue[0]).toMatchObject({
         text: 'reason about this',
         reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      });
+      expect(result.current.pendingReasoning).toBeUndefined();
+    });
+
+    it('queues a turn on the running level when nothing new is picked', () => {
+      const { result } = setupWithContext();
+      const running = { key: 'reasoning_effort', value: ReasoningEffort.high } as const;
+      act(() => {
+        contextStore.set(submissionByIndex(0), {
+          userMessage: { reasoningOverride: running },
+        } as unknown as TSubmission);
+      });
+
+      act(() => {
+        result.current.steering.queueFromComposer('think about this next');
+      });
+
+      expect(result.current.queue[0]).toMatchObject({
+        text: 'think about this next',
+        reasoningOverride: running,
       });
       expect(result.current.pendingReasoning).toBeUndefined();
     });

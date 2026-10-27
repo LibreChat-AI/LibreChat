@@ -29,6 +29,7 @@ import {
 } from '../steer/atoms';
 import { hasLiveRunPause, selectLiveMessageState, carriedSteerContext } from '../../core';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../composer';
+import { submissionByIndex } from '../submission';
 import useQueuedTurnReceipts from './receipts';
 import { useSteerHost } from '../steer/host';
 import useDuringRunActions from './actions';
@@ -168,6 +169,8 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   const reasoningStateKey = getReasoningStateKey(conversationId, index);
   const sendLockTimeoutMs = queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const pendingReasoningOverride = useAtomValue(pendingReasoningOverrideFamily(reasoningStateKey));
+  const liveReasoningOverride = useAtomValue(submissionByIndex(index))?.userMessage
+    ?.reasoningOverride;
   const { applyQueuedTurnReceipts, finishQueuedTurnEnqueue } = useQueuedTurnReceipts({
     conversationId,
     queueKey,
@@ -261,6 +264,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   const composer = useComposerTake({
     conversationId,
     reasoningStateKey,
+    liveReasoningOverride,
     files,
     setFiles,
   });

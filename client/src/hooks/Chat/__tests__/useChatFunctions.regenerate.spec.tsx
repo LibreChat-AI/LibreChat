@@ -687,6 +687,54 @@ describe('useChatFunctions ask', () => {
     expect(submission.userMessage.reasoningOverride).toEqual(override);
     expect(reasoningStore.get(pendingReasoningOverrideFamily('conversation-1'))).toBeUndefined();
   });
+  describe('the level a branch runs at', () => {
+    const high = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
+    const ranHigh = () => [
+      { ...userMessage('user-1'), reasoningOverride: high },
+      assistantMessage('assistant-1', 'user-1'),
+    ];
+    const submitted = (setSubmission: jest.Mock) =>
+      (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage.reasoningOverride;
+
+    it('carries the last picked level onto a turn with nothing newly picked', () => {
+      const { result, setSubmission, reasoningStore } = renderAsk(ranHigh());
+
+      act(() => {
+        result.current.ask({ text: 'And again' });
+      });
+
+      expect(submitted(setSubmission)).toEqual(high);
+      expect(reasoningStore.get(pendingReasoningOverrideFamily('conversation-1'))).toBeUndefined();
+    });
+
+    it('replaces the branch level with a newly picked one', () => {
+      const low = { key: 'reasoning_effort', value: 'low' } as TReasoningOverride;
+      const { result, setSubmission } = renderAsk(ranHigh(), 'conversation-1', {
+        reasoningOverride: low,
+      });
+
+      act(() => {
+        result.current.ask({ text: 'Lighter now' });
+      });
+
+      expect(submitted(setSubmission)).toEqual(low);
+    });
+
+    it('leaves a branch whose last user turn picked nothing on the default', () => {
+      const { result, setSubmission } = renderAsk([
+        ...ranHigh(),
+        userMessage('user-2', 'assistant-1'),
+        assistantMessage('assistant-2', 'user-2'),
+      ]);
+
+      act(() => {
+        result.current.ask({ text: 'Default please' });
+      });
+
+      expect(submitted(setSubmission)).toBeUndefined();
+    });
+  });
+
   it('keeps a staged override for an ephemeral agent resolved from its encoded target', () => {
     const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
     const { result, setSubmission } = renderAsk([], 'conversation-1', {

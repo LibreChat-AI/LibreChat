@@ -103,7 +103,7 @@ describe('ReasoningControl', () => {
     );
 
     const trigger = screen.getByRole('button', {
-      name: 'com_ui_reasoning_for_next_message com_ui_medium',
+      name: 'com_ui_composer_thinking com_ui_medium',
     });
 
     fireEvent.click(trigger);
@@ -124,7 +124,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const slider = screen.getByRole('slider', { name: 'com_endpoint_reasoning_effort' });
     expect(slider).toHaveAttribute('aria-valuenow', '3');
     expect(slider).toHaveAttribute('aria-valuetext', 'com_ui_medium');
@@ -146,7 +146,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const dialog = screen.getByRole('dialog', { name: 'com_endpoint_reasoning_effort' });
 
     expect(dialog).toBeVisible();
@@ -164,7 +164,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const slider = screen.getByRole('slider', { name: 'com_endpoint_thinking_budget' });
     expect(slider).toHaveAttribute('aria-valuemin', '128');
     expect(slider).toHaveAttribute('aria-valuemax', '32768');
@@ -194,7 +194,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
     fireEvent.change(input, { target: { value: '16' } });
     fireEvent.blur(input);
@@ -213,7 +213,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
     fireEvent.focus(input);
     fireEvent.blur(input);
@@ -234,7 +234,7 @@ describe('ReasoningControl', () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+      fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
       const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
       fireEvent.change(input, { target: { value: '' } });
       fireEvent.blur(input);
@@ -399,6 +399,78 @@ describe('useComposerReasoning', () => {
     expect(reasoningStore.get(pendingReasoningOverrideFamily('staged-conversation'))).toEqual(
       staged,
     );
+  });
+
+  it('shows the level the branch last ran at until the user picks another', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      ({ branchReasoning }: { branchReasoning?: TReasoningOverride }) =>
+        useComposerReasoning({
+          conversation: {
+            conversationId: 'branch-conversation',
+            endpoint: 'openAI',
+            model: 'gpt-5',
+          } as TConversation,
+          index: 0,
+          enabled: true,
+          branchReasoning,
+        }),
+      {
+        initialProps: {
+          branchReasoning: {
+            key: 'reasoning_effort',
+            value: ReasoningEffort.high,
+          } as TReasoningOverride,
+        },
+        wrapper,
+      },
+    );
+
+    await waitFor(() =>
+      expect(rendered.result.current?.value).toEqual({
+        key: 'reasoning_effort',
+        value: ReasoningEffort.high,
+      }),
+    );
+
+    act(() => {
+      rendered.result.current?.setValue({ key: 'reasoning_effort', value: ReasoningEffort.low });
+    });
+    expect(rendered.result.current?.value).toEqual({
+      key: 'reasoning_effort',
+      value: ReasoningEffort.low,
+    });
+  });
+
+  it('does not show a branch level the current model does not take', async () => {
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={createStore()}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation: {
+            conversationId: 'branch-conversation',
+            endpoint: 'openAI',
+            model: 'gpt-5',
+          } as TConversation,
+          index: 0,
+          enabled: true,
+          branchReasoning: { key: 'thinkingBudget', value: 4096 } as TReasoningOverride,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('reasoning_effort'));
+    expect(rendered.result.current?.value?.key).toBe('reasoning_effort');
+    expect(rendered.result.current?.value?.value).not.toBe(4096);
   });
 
   it('resolves the control for an ephemeral agent from its encoded target', async () => {

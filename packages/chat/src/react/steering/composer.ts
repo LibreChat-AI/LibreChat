@@ -22,11 +22,15 @@ export interface ComposerTake {
 export default function useComposerTake<File extends ComposerFile>({
   conversationId,
   reasoningStateKey,
+  liveReasoningOverride,
   files,
   setFiles,
 }: {
   conversationId: string;
   reasoningStateKey: string;
+  /** The level the running turn carries: a queued turn with nothing newly picked keeps it, as a
+   *  direct send keeps its branch's level. */
+  liveReasoningOverride?: TMessage['reasoningOverride'];
   files?: Map<string, File>;
   setFiles?: ComposerFileSetter<File>;
 }): ComposerTake {
@@ -84,14 +88,15 @@ export default function useComposerTake<File extends ComposerFile>({
   const takeComposerContext = useCallback((): QueuedMessageContext => {
     const quotes = reasoningStore.get(pendingQuotesByConvoId(conversationId));
     const manualSkills = reasoningStore.get(pendingManualSkillsByConvoId(conversationId));
-    const reasoningOverride = reasoningStore.get(pendingReasoningOverrideFamily(reasoningStateKey));
+    const pendingReasoning = reasoningStore.get(pendingReasoningOverrideFamily(reasoningStateKey));
+    const reasoningOverride = pendingReasoning ?? liveReasoningOverride;
     if (quotes.length > 0) {
       reasoningStore.set(pendingQuotesByConvoId(conversationId), []);
     }
     if (manualSkills.length > 0) {
       reasoningStore.set(pendingManualSkillsByConvoId(conversationId), []);
     }
-    if (reasoningOverride != null) {
+    if (pendingReasoning != null) {
       reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), undefined);
     }
     return {
@@ -99,7 +104,7 @@ export default function useComposerTake<File extends ComposerFile>({
       ...(manualSkills.length > 0 && { manualSkills }),
       ...(reasoningOverride != null && { reasoningOverride }),
     };
-  }, [conversationId, reasoningStateKey, reasoningStore]);
+  }, [conversationId, liveReasoningOverride, reasoningStateKey, reasoningStore]);
 
   /** Quotes-only drain for composer-origin steers: the excerpts ride the steer
    *  POST into the live run, while manual skill picks stay staged: a skill

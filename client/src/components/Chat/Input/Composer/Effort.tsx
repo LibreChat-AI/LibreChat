@@ -1,4 +1,4 @@
-import { memo, useId, useRef, useMemo, useState, useEffect, useCallback } from 'react';
+import { memo, useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { CircleHelp } from 'lucide-react';
 import { Constants, reasoningOverrideSchema } from 'librechat-data-provider';
 import {
@@ -49,6 +49,11 @@ const ARROW_STEP: Record<string, number | undefined> = {
 };
 
 /**
+ * `enumMappings` maps a raw value to a translation KEY, not to display text:
+ * rendering it directly is what leaks `com_ui_medium` into the UI. Shared with
+ * the trigger button, which is the only place the level is named.
+ */
+/**
  * Where a value sits on the effort scale, for telling whether a change went up
  * or down. The separate mode ranks below every level.
  */
@@ -69,11 +74,6 @@ export function leanFor(distance: number): number {
   return Math.sign(distance) * magnitude;
 }
 
-/**
- * `enumMappings` maps a raw value to a translation KEY, not to display text:
- * rendering it directly is what leaks `com_ui_medium` into the UI. Shared with
- * the trigger button.
- */
 export function resolveEffortLabel(
   setting: SettingDefinition,
   value: string,
@@ -108,10 +108,8 @@ interface EffortProps {
  * behaviour for free, with pointer drag layered on top so the thumb can also
  * be swept the way a touch control behaves.
  *
- * The current level is named above the rail and the rail's two ends below it,
- * because the stops come from the endpoint's own option list and are not
- * discoverable otherwise. The choice applies to the next message only, which
- * the footer says outright.
+ * The level is deliberately not named in here: the button that opens this owns
+ * that, so the value never appears in two places at once.
  */
 function Effort({ setting, conversation, value, onChange }: EffortProps) {
   const localize = useLocalize();
@@ -121,7 +119,6 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
   const draggingRef = useRef(false);
   /** One per stop, so an arrow key can move focus along with the selection. */
   const stopRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const scopeId = useId();
   const [dragging, setDragging] = useState(false);
   const reducedMotion = useReducedMotion();
 
@@ -322,22 +319,13 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         : setting.description;
   }
   const thumbSize = dragging ? THUMB_ACTIVE : THUMB;
-  const currentLabel = isUngraded || current == null ? ungradedLabel : label(current);
-  const scopeHintId = `${scopeId}-scope`;
 
   return (
     <div className="w-[268px] p-3">
-      {/* The radios already carry their names for assistive tech; this names
-          the current one on screen, where the rail alone cannot. */}
-      <div aria-hidden="true" className="mb-1.5 flex items-center justify-between gap-2 text-sm">
-        <span className="text-text-secondary">{localize('com_ui_composer_thinking')}</span>
-        <span className="text-text-primary truncate font-medium">{currentLabel}</span>
-      </div>
       <div
         ref={trackRef}
         role="radiogroup"
         aria-label={localize('com_ui_composer_thinking')}
-        aria-describedby={scopeHintId}
         /* The rail is built on physical left offsets and clientX math, so the
            axis is explicitly LTR; the hint row below carries the same dir so
            "Faster" stays over the low end in RTL locales too. */
@@ -423,19 +411,29 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
           />
         </span>
 
-        {/* Shown in the separate mode too, so the rail reads as a set of
-            levels to pick from rather than an empty bar. */}
-        {levels.map((value, index) => (
+        {!isUngraded &&
+          levels.map((value, index) => (
+            <span
+              key={`stop-${value}`}
+              aria-hidden="true"
+              style={{ left: centerOf(index) }}
+              className={cn(
+                'absolute top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-50 transition-colors',
+                index < activeIndex ? 'bg-surface-fixed' : 'bg-text-secondary',
+              )}
+            />
+          ))}
+
+        {/* The ungraded mode has no position on the track, so the rail names it
+            outright rather than looking broken. */}
+        {isUngraded && (
           <span
-            key={`stop-${value}`}
             aria-hidden="true"
-            style={{ left: centerOf(index) }}
-            className={cn(
-              'absolute top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-50 transition-colors',
-              index < activeIndex ? 'bg-surface-fixed' : 'bg-text-secondary',
-            )}
-          />
-        ))}
+            className="text-text-secondary pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-medium tracking-wide uppercase"
+          >
+            {ungradedLabel}
+          </span>
+        )}
 
         {/* Always mounted: unmounting it on the way into the ungraded mode pulled
             the cover off the fill mid-fade. It holds still until the fill has
@@ -504,67 +502,63 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         })}
       </div>
 
-      {/* One slot holding both axis rows: the rail's end levels at rest and the
-          faster/smarter hints while sweeping, crossfading in place rather than
-          stacking. Grid keeps the height of the taller of the two. */}
-      <div aria-hidden="true" dir="ltr" className="text-text-secondary mt-1 grid text-xs">
+      {/* One slot holding both footers: the axis hints belong to the gesture and
+          the Thinking row to the resting state, so they crossfade in place
+          rather than stacking. Grid keeps the height of the taller of the two. */}
+      <div className="mt-1.5 grid">
         <div
+          aria-hidden="true"
+          dir="ltr"
           className={cn(
-            'col-start-1 row-start-1 flex items-center justify-between gap-2 transition-opacity duration-150',
-            dragging ? 'opacity-100' : 'opacity-0',
+            'text-text-secondary col-start-1 row-start-1 flex items-center justify-between text-xs transition-opacity duration-150',
+            dragging ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
         >
           <span>{localize('com_ui_composer_effort_faster')}</span>
           <span>{localize('com_ui_composer_effort_smarter')}</span>
         </div>
+
         <div
           className={cn(
             'col-start-1 row-start-1 flex items-center justify-between gap-2 transition-opacity duration-150',
-            dragging ? 'opacity-0' : 'opacity-100',
+            dragging ? 'pointer-events-none opacity-0' : 'opacity-100',
           )}
         >
-          {levels.length > 1 && <span className="truncate">{label(levels[0])}</span>}
-          <span className="ms-auto truncate">{label(levels[levels.length - 1])}</span>
+          <span className="text-text-secondary text-sm">
+            {localize('com_ui_composer_thinking')}
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            {/* Always present so the separate mode reads as something the user
+                can turn on and off rather than as a one-way escape hatch. */}
+            {ungradedValue != null && (
+              <Button
+                variant="pill-toggle"
+                data-autofocus={initialFocus.current.ungraded ? true : undefined}
+                aria-pressed={isUngraded}
+                onClick={() => select(isUngraded ? levels[restoreIndex] : ungradedValue)}
+              >
+                {label(ungradedValue)}
+              </Button>
+            )}
+            {descriptionText != null && descriptionText !== '' && (
+              <HoverCard openDelay={200}>
+                <HoverCardTrigger asChild>
+                  {/* A button rather than a bare span: this is the only place
+                      the provider's own explanation of the parameter appears,
+                      and hovering was the only way to reach it. */}
+                  <IconButton label={localize('com_ui_more_info')} size="xs">
+                    <CircleHelp className="text-text-secondary h-3.5 w-3.5" aria-hidden="true" />
+                  </IconButton>
+                </HoverCardTrigger>
+                <HoverCardPortal>
+                  <HoverCardContent side="top" className="w-72">
+                    <span className="text-sm">{descriptionText}</span>
+                  </HoverCardContent>
+                </HoverCardPortal>
+              </HoverCard>
+            )}
+          </span>
         </div>
-      </div>
-
-      <div className="mt-2 flex items-center justify-between gap-2">
-        {/* The composer stages a one-shot override; without this the reset to
-            the conversation's value after sending read as the control failing. */}
-        <span id={scopeHintId} className="text-text-secondary min-w-0 text-xs">
-          {localize('com_ui_composer_thinking_next_message')}
-        </span>
-        <span className="flex shrink-0 items-center gap-2">
-          {/* Always present so the separate mode reads as something the user
-              can turn on and off rather than as a one-way escape hatch. */}
-          {ungradedValue != null && (
-            <Button
-              variant="pill-toggle"
-              data-autofocus={initialFocus.current.ungraded ? true : undefined}
-              aria-pressed={isUngraded}
-              onClick={() => select(isUngraded ? levels[restoreIndex] : ungradedValue)}
-            >
-              {label(ungradedValue)}
-            </Button>
-          )}
-          {descriptionText != null && descriptionText !== '' && (
-            <HoverCard openDelay={200}>
-              <HoverCardTrigger asChild>
-                {/* A button rather than a bare span: this is the only place
-                    the provider's own explanation of the parameter appears,
-                    and hovering was the only way to reach it. */}
-                <IconButton label={localize('com_ui_more_info')} size="xs">
-                  <CircleHelp className="text-text-secondary h-3.5 w-3.5" aria-hidden="true" />
-                </IconButton>
-              </HoverCardTrigger>
-              <HoverCardPortal>
-                <HoverCardContent side="top" className="w-72">
-                  <span className="text-sm">{descriptionText}</span>
-                </HoverCardContent>
-              </HoverCardPortal>
-            </HoverCard>
-          )}
-        </span>
       </div>
     </div>
   );

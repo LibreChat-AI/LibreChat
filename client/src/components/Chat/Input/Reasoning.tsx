@@ -18,6 +18,7 @@ import {
 } from 'librechat-data-provider';
 import type {
   Agent,
+  TMessage,
   SettingDefinition,
   TConversation,
   TReasoningOverride,
@@ -118,7 +119,7 @@ export function ReasoningControl({
         <Button
           variant="composer-trigger"
           disabled={disabled}
-          aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
+          aria-label={`${localize('com_ui_composer_thinking')} ${displayValue}`}
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
           <ChevronDown className="size-3" aria-hidden="true" />
@@ -140,7 +141,7 @@ export function ReasoningControl({
                 {label}
               </div>
               <div className="text-text-secondary truncate text-xs">
-                {localize('com_ui_reasoning_for_next_message')}
+                {localize('com_ui_composer_thinking')}
               </div>
             </div>
             <Popover.Close asChild>
@@ -254,6 +255,8 @@ type ComposerReasoningOptions = {
   hasAddedConversation?: boolean;
   enabled?: boolean;
   blockedReasoningKeys?: ReadonlySet<string>;
+  /** The level the branch the next turn extends last ran at; shown until the user picks again. */
+  branchReasoning?: TMessage['reasoningOverride'];
 };
 
 type ComposerReasoningState = {
@@ -268,6 +271,7 @@ export function useComposerReasoning({
   hasAddedConversation = false,
   enabled = true,
   blockedReasoningKeys,
+  branchReasoning,
 }: ComposerReasoningOptions): ComposerReasoningState | null {
   const agentsMap = useAgentsMapContext();
   const { data: fetchedAgent } = useGetAgentByIdQuery(conversation?.agent_id);
@@ -426,8 +430,13 @@ export function useComposerReasoning({
 
   const configuredValue =
     isAgent && agent != null ? agent.model_parameters?.[setting.key] : conversation?.[setting.key];
+  const inherited =
+    branchReasoning != null && isReasoningOverrideSupported(branchReasoning, setting)
+      ? branchReasoning
+      : undefined;
   const displayedValue =
     value ??
+    inherited ??
     reasoningOverrideSchema.safeParse({
       key: setting.key,
       value: configuredValue ?? setting.default,

@@ -119,3 +119,31 @@ export function resolveSubmittedReasoning({
     usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '');
   return { reasoningOverride: undefined, restoreStaged };
 }
+
+/**
+ * The level a branch runs at: the override on the nearest user message at or above
+ * `fromMessageId`. A composer pick rides on every later turn of the branch, so the nearest user
+ * message holds the current choice, and one without an override means none was made.
+ */
+export function getBranchReasoning(
+  messages: TMessage[] | undefined,
+  fromMessageId: string | null | undefined,
+): TMessage['reasoningOverride'] {
+  if (messages == null || messages.length === 0 || fromMessageId == null) {
+    return undefined;
+  }
+  const byId = new Map<string, TMessage>();
+  for (const message of messages) {
+    byId.set(message.messageId, message);
+  }
+  const visited = new Set<string>();
+  let current = byId.get(fromMessageId);
+  while (current != null && !visited.has(current.messageId)) {
+    if (current.isCreatedByUser === true) {
+      return current.reasoningOverride ?? undefined;
+    }
+    visited.add(current.messageId);
+    current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
+  }
+  return undefined;
+}
