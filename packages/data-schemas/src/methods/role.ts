@@ -654,12 +654,6 @@ export function createRoleMethods(
     let reason: RoleDeletionFailure = 'reassignment_failed';
     try {
       for (let pass = 0; ; pass++) {
-        /** Members are read by name, so each pass first confirms the name still holds the
-         * targeted role: never the members of a role recreated under it mid-delete. */
-        if (!(await isStillTargeted())) {
-          reason = 'deleted_elsewhere';
-          throw new Error(`role "${roleName}" changed during its deletion`);
-        }
         const ids = (await User.find(members).select('_id').lean()).map((u) => u._id.toString());
         if (ids.length === 0) {
           return reassigned;
@@ -668,6 +662,12 @@ export function createRoleMethods(
           throw new Error(`members still joining "${roleName}" after every pass`);
         }
         for (let i = 0; i < ids.length; i += REASSIGN_BATCH_SIZE) {
+          /** Members are matched by name, so every write first confirms the name still holds
+           * the targeted role: never the members of a role recreated under it mid-delete. */
+          if (!(await isStillTargeted())) {
+            reason = 'deleted_elsewhere';
+            throw new Error(`role "${roleName}" changed during its deletion`);
+          }
           const batch = ids.slice(i, i + REASSIGN_BATCH_SIZE);
           written.push(...batch);
           await reassignBatch(User, members, batch, reassigned);

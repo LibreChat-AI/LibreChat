@@ -1112,6 +1112,52 @@ describe('deleteRoleByName', () => {
     expect(await Role.exists({ name: 'editor' })).toBeTruthy();
   });
 
+  it('checks the role identity before every batch of a large role', async () => {
+    const original = await createRoleByName({ name: 'editor' });
+    await User.insertMany(
+      Array.from({ length: 1001 }, (_, i) => ({
+        name: `Member ${i}`,
+        email: `member${i}@test.com`,
+        username: `member${i}`,
+        role: 'editor',
+      })),
+    );
+    let writes = 0;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if (
+          (update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER &&
+          writes++ === 0
+        ) {
+          /** After the first batch: the role is deleted and recreated under the same name, so
+           * the accounts still holding the name now belong to the replacement. */
+          await Role.deleteOne({ _id: original._id });
+          await createRoleByName({ name: 'editor' });
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor', { id: String(original._id) });
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
+    expect((caught as RoleDeletionError).reassignedUserIds).toHaveLength(1000);
+    expect(await User.countDocuments({ role: 'editor' })).toBe(1);
+  });
+
   it('reports the members it moved and evicts caches when the role delete rejects', async () => {
     process.env.AUTH_USER_CACHE_MODE = 'on';
     await createRoleByName({ name: 'editor' });
