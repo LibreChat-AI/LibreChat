@@ -1325,11 +1325,12 @@ describe('refreshController – OpenID path', () => {
   };
 
   /** A retired session is ended outright: the IdP grant would mint a bearer the strategy refuses. */
-  const expectRetiredOpenIDSessionRefused = (tenantId) => {
+  const expectRetiredOpenIDSessionRefused = () => {
     expect(setCloudFrontAuthCookies).not.toHaveBeenCalled();
     expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
     expect(setOpenIDAuthTokens).not.toHaveBeenCalled();
-    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', tenantId);
+    /** Cleared against the user the check ran for, whatever identity the session tokens carry. */
+    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', 'tenant-1');
     expect(res.send).toHaveBeenCalledWith({ code: 'OPENID_SESSION_MISSING' });
   };
 
@@ -1341,7 +1342,7 @@ describe('refreshController – OpenID path', () => {
     await refreshController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expectRetiredOpenIDSessionRefused('tenant-1');
+    expectRetiredOpenIDSessionRefused();
   });
 
   it('ends a session whose identity cookie was minted in the resetting millisecond', async () => {
@@ -1352,7 +1353,7 @@ describe('refreshController – OpenID path', () => {
     await refreshController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expectRetiredOpenIDSessionRefused('tenant-1');
+    expectRetiredOpenIDSessionRefused();
   });
 
   it('ends a stale session minted before a password reset instead of spending its grant', async () => {
@@ -1372,7 +1373,7 @@ describe('refreshController – OpenID path', () => {
     await refreshController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expectRetiredOpenIDSessionRefused(undefined);
+    expectRetiredOpenIDSessionRefused();
   });
 
   it('dates a session without an identity cookie by its last server-side rotation', async () => {
@@ -1390,7 +1391,19 @@ describe('refreshController – OpenID path', () => {
     await refreshController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expectRetiredOpenIDSessionRefused(undefined);
+    expectRetiredOpenIDSessionRefused();
+  });
+
+  it('clears a retired session dated only by its identity cookie against that user', async () => {
+    const credentialsChangedAt = new Date();
+    setOpenIDReuseCookies(makeSignedReuseCookie(credentialsChangedAt.getTime() - 60_000));
+    req.session = {};
+    getUserById.mockResolvedValue({ ...defaultUser, credentialsChangedAt });
+
+    await refreshController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expectRetiredOpenIDSessionRefused();
   });
 
   it('refreshes a session without an identity cookie rotated after the reset', async () => {
@@ -1810,6 +1823,7 @@ describe('refreshController – OpenID path', () => {
     expect(getRefreshTokenBridge).toHaveBeenCalled();
     expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
     expect(setOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', 'tenant-1');
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.send).toHaveBeenCalledWith('Invalid OpenID refresh token');
   });
