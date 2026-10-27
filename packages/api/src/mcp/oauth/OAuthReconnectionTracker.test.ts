@@ -584,5 +584,15 @@ describe('OAuthReconnectTracker', () => {
       dflt.setFailed('other-user', serverName);
       expect(dflt.getStats().usersWithFailedServers).toBe(2);
     });
+
+    it('prunes promptly when retention is shorter than the prune interval', () => {
+      jest.useFakeTimers();
+      const tiny = new OAuthReconnectionTracker(1_000);
+      tiny.setFailed(userId, serverName);
+      tiny.setFailed('warm', serverName);
+      jest.advanceTimersByTime(2_000);
+      tiny.setFailed('other-user', serverName);
+      expect(tiny.getStats().usersWithFailedServers).toBe(1);
+    });
   });
 });

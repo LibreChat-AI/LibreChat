@@ -78,7 +78,7 @@ export class OAuthReconnectionTracker {
   }
 
   private pruneFailed(now: number): void {
-    if (now - this.lastFailedPrune < FAILED_PRUNE_INTERVAL_MS) {
+    if (now - this.lastFailedPrune < Math.min(FAILED_PRUNE_INTERVAL_MS, this.failedRetentionMs)) {
       return;
     }
     this.lastFailedPrune = now;
