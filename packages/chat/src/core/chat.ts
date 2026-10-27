@@ -589,7 +589,9 @@ export class Chat {
    */
   setMessages(messages: TMessage[] | ((current: TMessage[]) => TMessage[])): Promise<void> {
     return this.executor.run(() => {
-      this.write(typeof messages === 'function' ? messages(this.messages) : messages);
+      if (!this.disposed) {
+        this.write(typeof messages === 'function' ? messages(this.messages) : messages);
+      }
     });
   }
 

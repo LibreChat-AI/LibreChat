@@ -144,6 +144,24 @@ describe('Chat.setMessages', () => {
     expect(state.messages).toEqual([earlier]);
   });
 
+  it('never runs a function once the chat is disposed, one queued before the disposal included', async () => {
+    const state = createState([earlier]);
+    const chat = createChat(state);
+    const updater = jest.fn((current: TMessage[]) => {
+      current[0] = { ...earlier, text: 'Edited' };
+      return current;
+    });
+    /** The first write runs at once; the second waits its turn behind it, past the disposal. */
+    const first = chat.setMessages((current) => current);
+    const queued = chat.setMessages(updater);
+    chat.dispose();
+    await Promise.all([first, queued]);
+    await chat.setMessages(updater);
+
+    expect(updater).not.toHaveBeenCalled();
+    expect(state.messages).toEqual([earlier]);
+  });
+
   it('keeps its write when the server replaces the start and the optimistic rows are undone', async () => {
     let answer: ((result: ChatSendResult) => void) | undefined;
     const state = createState([earlier]);
