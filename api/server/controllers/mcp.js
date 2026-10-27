@@ -678,7 +678,11 @@ const deleteMCPServerController = async (req, res, uninstallOAuthMCP) => {
           }).lean()
         : Promise.resolve([]);
     const [oauthDeletionSnapshot, retainedTools] = await Promise.all([
-      prepareMCPServerOAuthDeletion({ getTokenUserIds, getAclEntries }),
+      prepareMCPServerOAuthDeletion({
+        getTokenUserIds,
+        getAclEntries,
+        getViewerUserIds: db.findMCPServerViewerUserIds,
+      }),
       getMCPServerTools(userId, serverName, existingConfig),
     ]);
     await invalidateCachedTools({ userId, serverName });
