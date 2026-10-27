@@ -962,11 +962,16 @@ export interface MessageMethods {
 }
 
 const DATE_SORT_FIELDS = new Set(['createdAt', 'updatedAt']);
+/** Cursor marker for a null or missing sort value, which MongoDB orders before every string, '' included. */
+const NULL_SORT_VALUE = '\u0000';
 const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
 
 /** Encodes the last row of a page as `<sortValue>|<_id>`; dates use ISO strings so milliseconds survive. */
 function formatMessageCursor(value: unknown, id: unknown): string {
-  const sortValue = value instanceof Date ? value.toISOString() : String(value ?? '');
+  if (value == null) {
+    return id == null ? NULL_SORT_VALUE : `${NULL_SORT_VALUE}|${String(id)}`;
+  }
+  const sortValue = value instanceof Date ? value.toISOString() : String(value);
   return id == null ? sortValue : `${sortValue}|${String(id)}`;
 }
 
@@ -977,6 +982,38 @@ function parseMessageCursor(cursor: string): { value: string; id?: string } {
     return { value: cursor.slice(0, split), id: cursor.slice(split + 1) };
   }
   return { value: cursor };
+}
+
+/** The rows after a cursor, following MongoDB's order for a string field: null/missing, '', then text. */
+function buildCursorFilter(
+  sortField: string,
+  op: '$gt' | '$lt',
+  value: string | Date,
+  position: { value: string; id?: Types.ObjectId },
+): FilterQuery<IMessage> {
+  if (position.id == null) {
+    return { [sortField]: { [op]: value } };
+  }
+  const tieId = { _id: { [op]: position.id } };
+  if (DATE_SORT_FIELDS.has(sortField)) {
+    return { $or: [{ [sortField]: { [op]: value } }, { [sortField]: value, ...tieId }] };
+  }
+  const ascending = op === '$gt';
+  if (position.value === NULL_SORT_VALUE) {
+    return {
+      $or: [
+        { [sortField]: null, ...tieId },
+        ...(ascending ? [{ [sortField]: { $ne: null } }] : []),
+      ],
+    };
+  }
+  return {
+    $or: [
+      { [sortField]: { [op]: value } },
+      { [sortField]: value, ...tieId },
+      ...(ascending ? [] : [{ [sortField]: null }]),
+    ],
+  };
 }
 
 /** The agent-ownership rule shared by background-tool settling and claiming:
@@ -4271,22 +4308,8 @@ export function createMessageMethods(
     if (position != null) {
       const op = sortOrder === 1 ? '$gt' : '$lt';
       const value = DATE_SORT_FIELDS.has(sortField) ? new Date(position.value) : position.value;
-      const after: FilterQuery<IMessage> =
-        position.id == null
-          ? { [sortField]: { [op]: value } }
-          : {
-              $or: [
-                { [sortField]: { [op]: value } },
-                /** Missing values sort before every string, so descending ends with them. */
-                ...(sortOrder === -1 && value !== '' && !DATE_SORT_FIELDS.has(sortField)
-                  ? [{ [sortField]: null }]
-                  : []),
-                {
-                  [sortField]: value === '' ? { $in: [null, ''] } : value,
-                  _id: { [op]: new mongoose.Types.ObjectId(position.id) },
-                },
-              ],
-            };
+      const id = position.id == null ? undefined : new mongoose.Types.ObjectId(position.id);
+      const after = buildCursorFilter(sortField, op, value, { value: position.value, id });
       queryFilter.$and = [...(queryFilter.$and ?? []), after];
     }
     const query = Message.find(queryFilter);
