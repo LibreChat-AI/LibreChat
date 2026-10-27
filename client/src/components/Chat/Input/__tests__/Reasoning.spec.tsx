@@ -502,6 +502,32 @@ describe('useComposerReasoning', () => {
     ).toEqual({ key: 'reasoning_effort', value: ReasoningEffort.medium });
   });
 
+  it('does not show an inherited level while thinking is switched off', async () => {
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={createStore()}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation: {
+            conversationId: 'thinking-off',
+            endpoint: 'anthropic',
+            model: 'claude-sonnet-4-6',
+            thinking: false,
+          } as TConversation,
+          index: 0,
+          enabled: true,
+          branchReasoning: { key: 'effort', value: 'high' } as TReasoningOverride,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('effort'));
+    expect(rendered.result.current?.value?.value).not.toBe('high');
+  });
+
   it('does not show a branch level the current model does not take', async () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <RecoilRoot>

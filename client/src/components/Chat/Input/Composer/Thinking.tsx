@@ -303,8 +303,13 @@ function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
      branch the composer extends carries. */
   const queuedReasoning = useMemo(() => {
     for (let i = queued.length - 1; i >= 0; i--) {
-      if (queued[i].reasoningOverride != null) {
-        return queued[i].reasoningOverride;
+      const row = queued[i];
+      /* A held row waits for an explicit send, so it is not the turn that runs next. */
+      if (row.heldByUser === true || row.needsExplicitSend === true) {
+        continue;
+      }
+      if (row.reasoningOverride != null) {
+        return row.reasoningOverride;
       }
     }
     return undefined;

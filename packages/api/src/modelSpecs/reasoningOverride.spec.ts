@@ -376,6 +376,34 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
     expect(req.body).not.toHaveProperty('reasoningOverride');
   });
 
+  it.each([
+    ['applies it while thinking is on', true],
+    ['skips it while thinking is switched off', false],
+  ])('for an inherited thinking budget, %s', async (_label, thinking) => {
+    const model = 'gemini-2.5-pro';
+    const getBranchReasoningOverride = jest
+      .fn()
+      .mockResolvedValue({ key: 'thinkingBudget', value: 32768 });
+    const req = request();
+    req.body.endpointOption = {
+      model_parameters: { model, thinking },
+      agent: Promise.resolve({ provider: EModelEndpoint.google, model }),
+    };
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...withoutPick,
+        endpoint: EModelEndpoint.google,
+        getBranchReasoningOverride,
+      }),
+    ).resolves.toBe(true);
+
+    expect(req.body.endpointOption.model_parameters).toMatchObject(
+      thinking ? { thinking: true, thinkingBudget: 32768 } : { thinking: false },
+    );
+    expect('reasoningOverride' in req.body).toBe(thinking);
+  });
+
   it('does not inherit for a resumed turn, which replays its own parameters', async () => {
     const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
     const req = { ...request(), resumeReplayed: true };

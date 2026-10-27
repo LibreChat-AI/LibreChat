@@ -318,6 +318,26 @@ describe('Thinking', () => {
     }
   });
 
+  it('ignores a held queued turn when naming the next level', () => {
+    const store = getDefaultStore();
+    store.set(queuedMessagesByConvoId('convo-1'), [
+      {
+        id: 'held-1',
+        text: 'waiting',
+        heldByUser: true,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      } as QueuedMessage,
+    ]);
+    try {
+      renderInComposer();
+      expect(screen.getByTestId('composer-thinking-button')).toHaveAccessibleName(
+        'com_ui_composer_thinking_value:Low',
+      );
+    } finally {
+      store.set(queuedMessagesByConvoId('convo-1'), []);
+    }
+  });
+
   it('does not carry a remembered level across model settings', () => {
     mockConversation = {
       conversationId: 'convo-1',

@@ -249,6 +249,13 @@ export function ReasoningControl({
   );
 }
 
+/** Override keys whose level also turns thinking on. */
+const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+]);
+
 type ComposerReasoningOptions = {
   conversation: TConversation | null;
   index: number;
@@ -462,8 +469,15 @@ export function useComposerReasoning({
     return null;
   }
 
+  /* Mirrors the server: thinking switched off wins over a level the next turn would only inherit. */
+  const thinkingKey: string = 'thinking';
+  const thinkingOff =
+    (isAgent && agent != null ? agent.model_parameters?.[thinkingKey] : conversation?.thinking) ===
+    false;
   const inherited =
-    branchReasoning != null && isReasoningOverrideSupported(branchReasoning, setting)
+    branchReasoning != null &&
+    isReasoningOverrideSupported(branchReasoning, setting) &&
+    !(thinkingOff && THINKING_LEVEL_KEYS.has(branchReasoning.key))
       ? branchReasoning
       : undefined;
   const displayedValue =

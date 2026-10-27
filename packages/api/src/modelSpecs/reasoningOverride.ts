@@ -16,6 +16,13 @@ import {
 import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
 import type { ReasoningCapabilityResult } from '~/types';
 
+/** Override keys whose level also turns thinking on. */
+const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+]);
+
 export type ReasoningOverrideRequest =
   | { ok: true; reasoningOverride?: TReasoningOverride }
   | { ok: false; reason: 'invalid-reasoning-override' };
@@ -152,10 +159,7 @@ export async function resolveReasoningOverride({
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 
-  const enablesThinking =
-    reasoningOverride.key === 'effort' ||
-    reasoningOverride.key === 'thinkingLevel' ||
-    reasoningOverride.key === 'thinkingBudget';
+  const enablesThinking = THINKING_LEVEL_KEYS.has(reasoningOverride.key);
   const nextBase =
     existingBase?.key === reasoningOverride.key
       ? existingBase
@@ -356,6 +360,15 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
     request.reasoningOverride ??
     (await loadBranchReasoningOverride(req, getBranchReasoningOverride));
   if (reasoningOverride == null) {
+    return true;
+  }
+  /* Thinking switched off for the conversation wins over a level the turn only inherited: applying
+     it would turn thinking back on behind the switch. A level picked for this turn still does. */
+  if (
+    inherited &&
+    THINKING_LEVEL_KEYS.has(reasoningOverride.key) &&
+    req.body.endpointOption.model_parameters?.thinking === false
+  ) {
     return true;
   }
   const resolution = await resolveReasoningOverride({
