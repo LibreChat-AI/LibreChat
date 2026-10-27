@@ -446,6 +446,16 @@ export function useComposerReasoning({
   const thinkingOff =
     (isAgent && agent != null ? agent.model_parameters?.[thinkingKey] : conversation?.thinking) ===
     false;
+  /* Switching thinking off withdraws a staged level that would turn it back on; a level picked
+     after the switch is off is the user turning it on for that turn, so it stays. */
+  const previousThinkingOff = useRef(thinkingOff);
+  useEffect(() => {
+    const wasOff = previousThinkingOff.current;
+    previousThinkingOff.current = thinkingOff;
+    if (thinkingOff && !wasOff && value != null && THINKING_LEVEL_KEYS.has(value.key)) {
+      setValue(undefined);
+    }
+  }, [setValue, thinkingOff, value]);
   const previousConfigured = useRef<{ scope: string; value: unknown } | null>(null);
   useEffect(() => {
     /* While the capabilities load the setting is hidden, which says nothing about the configured
