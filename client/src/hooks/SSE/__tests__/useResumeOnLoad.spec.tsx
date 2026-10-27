@@ -32,6 +32,7 @@ import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettin
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
+import { usePaneConversation } from '~/routes/ChatSettings';
 import { SteerHostTestProvider } from 'test/steerHost';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
@@ -219,6 +220,7 @@ function renderUseResumeOnLoad({
             <ChatSettingsContext.Provider
               value={{
                 ...defaultChatSettings,
+                usePaneConversation,
                 config: {
                   ...defaultChatSettings.config,
                   retentionMode: mockStartupConfig?.interface?.retentionMode,

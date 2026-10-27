@@ -15,6 +15,8 @@ const deleteVectors = (req, file) =>
     baseUrl: process.env.RAG_API_URL,
     httpClient: axios,
     generateToken: generateShortLivedToken,
+    ownershipTrackingStart: req.config?.fileConfig?.vectorOwnershipTrackingStart,
+    namespaceConcurrency: req.config?.fileConfig?.vectorDeletionConcurrency,
   })(req, file);
 
 /**

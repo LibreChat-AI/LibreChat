@@ -28,7 +28,7 @@ import type {
   TConversation,
   TEndpointsConfig,
 } from 'librechat-data-provider';
-import type { SetterOrUpdater } from 'recoil';
+import type { Dispatch, SetStateAction } from 'react';
 import type { TAskFunction, ExtendedFile } from '~/common';
 import {
   logger,
@@ -82,11 +82,11 @@ export default function useChatFunctions({
   getMessages: (conversationId?: string | null) => TMessage[] | undefined;
   setMessages: (messages: TMessage[]) => void;
   files?: Map<string, ExtendedFile>;
-  setFiles?: SetterOrUpdater<Map<string, ExtendedFile>>;
-  setSubmission: SetterOrUpdater<TSubmission | null>;
+  setFiles?: Dispatch<SetStateAction<Map<string, ExtendedFile>>>;
+  setSubmission: Dispatch<SetStateAction<TSubmission | null>>;
   /** Supplied by the host that owns the conversation atom, so a send records the decision it
    *  established without this hook becoming a second writer of that state. */
-  setConversation: SetterOrUpdater<TConversation | null>;
+  setConversation: Dispatch<SetStateAction<TConversation | null>>;
 }) {
   const navigate = useNavigate();
   const reasoningStore = useStore();

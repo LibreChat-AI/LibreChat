@@ -116,6 +116,7 @@ export default function PendingTurn({
     >
       <div className="m-auto justify-center px-4 py-3 sm:px-0">
         <MessageRow
+          message={message}
           icon={<MessageIcon iconData={iconData} />}
           label={label}
           timestamp={reveal.revealedAt}

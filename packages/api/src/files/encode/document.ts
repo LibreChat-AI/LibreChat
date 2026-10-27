@@ -16,6 +16,11 @@ import type {
   ServerRequest,
 } from '~/types';
 import {
+  CONTENT_TRAVERSAL_MAX_DEPTH,
+  CONTENT_TRAVERSAL_MAX_NODES,
+  ContentTraversalLimitError,
+} from '~/protection/adapters/nested';
+import {
   getFileStream,
   getConfiguredFileSizeLimit,
   isAttachmentObjectNotFoundError,
@@ -34,25 +39,26 @@ export interface PayloadContentPart {
   media?: PayloadContentPart[];
 }
 
-/** `name (n)`, trimmed so the suffix fits the limit and never follows a space. */
-function numberedDocumentName(name: string, index: number): string {
-  const suffix = ` (${index})`;
-  return `${name.slice(0, BEDROCK_DOCUMENT_NAME_LIMIT - suffix.length).trimEnd()}${suffix}`;
-}
-
-/** Hands out each name once, numbering repeats in the order they are asked for. */
+/** Hands out each name once, sharing suffix progress between colliding truncated prefixes. */
 function createDocumentNamer(): (name: string) => string {
   const used = new Set<string>();
   const nextIndex = new Map<string, number>();
-  return (original) => {
-    const baseKey = original.toLowerCase();
+  return (input) => {
+    const original = input.slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
     let name = original;
-    let index = nextIndex.get(baseKey) ?? 2;
+    let index = 2;
     while (used.has(name.toLowerCase())) {
-      name = numberedDocumentName(original, index);
-      index++;
+      const suffix = ` (${index})`;
+      const prefix = original.slice(0, BEDROCK_DOCUMENT_NAME_LIMIT - suffix.length).trimEnd();
+      const key = `${suffix.length}:${prefix.toLowerCase()}`;
+      const next = nextIndex.get(key);
+      if (next != null && next > index) {
+        index = next;
+        continue;
+      }
+      name = `${prefix}${suffix}`;
+      nextIndex.set(key, ++index);
     }
-    nextIndex.set(baseKey, index);
     used.add(name.toLowerCase());
     return name;
   };
@@ -62,7 +68,13 @@ function createDocumentNamer(): (name: string) => string {
 function renameDocumentParts(
   parts: PayloadContentPart[],
   nameOf: (name: string) => string,
+  budget: { remaining: number },
+  depth = 0,
 ): PayloadContentPart[] {
+  if (depth > CONTENT_TRAVERSAL_MAX_DEPTH || parts.length > budget.remaining) {
+    throw new ContentTraversalLimitError();
+  }
+  budget.remaining -= parts.length;
   let renamed: PayloadContentPart[] | undefined;
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -72,7 +84,7 @@ function renameDocumentParts(
       const name = nameOf(original);
       next = name === original ? part : { ...part, document: { ...part.document, name } };
     } else if (Array.isArray(part?.media)) {
-      const media = renameDocumentParts(part.media, nameOf);
+      const media = renameDocumentParts(part.media, nameOf, budget, depth + 1);
       next = media === part.media ? part : { ...part, media };
     }
     if (next !== part) {
@@ -90,17 +102,21 @@ function renameDocumentParts(
  * formatted payload in conversation order (`report`, `report (2)`), leaving the first occurrence,
  * every other kind of part, and the parts themselves untouched: a message whose documents change
  * gets a new content array. Names compare case-insensitively, as the restriction is not
- * documented to be case-sensitive.
+ * documented to be case-sensitive. Replay always enforces traversal limits, even without filters.
  */
 export function dedupeDocumentNames(
   messages: Array<{ content?: string | PayloadContentPart[] | null }>,
 ): void {
+  const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - messages.length };
+  if (budget.remaining < 0) {
+    throw new ContentTraversalLimitError();
+  }
   const nameOf = createDocumentNamer();
   for (const message of messages) {
     if (!Array.isArray(message?.content)) {
       continue;
     }
-    const content = renameDocumentParts(message.content, nameOf);
+    const content = renameDocumentParts(message.content, nameOf, budget);
     if (content !== message.content) {
       message.content = content;
     }

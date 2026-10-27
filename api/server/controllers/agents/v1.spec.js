@@ -220,6 +220,70 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     };
   });
 
+  describe('tool_options HTTP validation', () => {
+    test.each([
+      ['key length', { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' } }],
+      [
+        'entry count',
+        Object.fromEntries(
+          Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' }]),
+        ),
+      ],
+      [
+        'key bytes',
+        Object.fromEntries(
+          Array.from({ length: 129 }, (_, i) => [
+            `${i}`.padEnd(256, 'é'),
+            { approval_mode: 'ask' },
+          ]),
+        ),
+      ],
+    ])(
+      'rejects excess %s over POST and PATCH without changing persisted data',
+      async (_label, tool_options) => {
+        const existing = await Agent.create({
+          id: `agent_${uuidv4()}`,
+          name: 'Unchanged',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: mockReq.user.id,
+          tool_options: { web_search: { approval_mode: 'ask' } },
+        });
+        const before = await Agent.findById(existing._id).lean();
+        const app = express();
+        app.use(express.json({ limit: '3mb' }));
+        app.use((req, _res, next) => {
+          req.user = mockReq.user;
+          req.config = {};
+          next();
+        });
+        app.post('/api/agents', createAgentHandler);
+        app.patch('/api/agents/:id', updateAgentHandler);
+
+        for (const response of [
+          await request(app).post('/api/agents').send({
+            name: 'Rejected',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            tool_options,
+          }),
+          await request(app)
+            .patch(`/api/agents/${existing.id}`)
+            .send({ name: 'Rejected', tool_options }),
+        ]) {
+          expect(response.status).toBe(400);
+          expect(response.body).toMatchObject({
+            error: 'Invalid request data',
+            details: [expect.objectContaining({ path: ['tool_options'] })],
+          });
+        }
+        expect(await Agent.countDocuments()).toBe(1);
+        expect(await Agent.findById(existing._id).lean()).toEqual(before);
+      },
+    );
+  });
+
   describe('inference input boundary', () => {
     test.each(['modelKwargs', 'configuration', 'fallbacks', 'apiKey', 'callbacks'])(
       'rejects %s on creation without persisting or disclosing its value',

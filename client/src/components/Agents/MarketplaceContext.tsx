@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChatProvider } from '~/hooks/Chat/provider';
+import { ChatProvider } from '@librechat/chat/react';
 
 /**
  * Minimal marketplace provider that provides only what SidePanel actually needs
