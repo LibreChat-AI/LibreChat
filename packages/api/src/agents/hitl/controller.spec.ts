@@ -271,3 +271,61 @@ test('agent-wide and inaccessible resets do not load MCP catalogs', async () => 
   expect(f.getMCPServerConfigs).not.toHaveBeenCalled();
   expect(f.getMCPServerTools).not.toHaveBeenCalled();
 });
+
+test.each([
+  { approval_mode: 'chat' as const, count: 513, nameLength: 0 },
+  { approval_mode: 'always' as const, count: 513, nameLength: 0 },
+  { approval_mode: 'chat' as const, count: 64, nameLength: 512 },
+  { approval_mode: 'always' as const, count: 64, nameLength: 512 },
+])(
+  'targeted reset preserves persisted limits through normalization ($approval_mode count=$count nameLength=$nameLength)',
+  async ({ approval_mode, count, nameLength }) => {
+    const f = fixture({ id: 'viewer-a' });
+    const agent = {
+      id: 'agent-a',
+      tool_options: Object.fromEntries(
+        Array.from({ length: count }, (_, i) => [
+          `db_ops_${i === 0 ? 'read_0' : `read_${i}`.padEnd(nameLength, 'x')}_mcp_db ops`,
+          { approval_mode },
+        ]),
+      ),
+    };
+    const saved = JSON.stringify(agent);
+    f.getAgent.mockResolvedValue(agent);
+    f.getMCPServerConfigs.mockResolvedValue({
+      'db ops': { type: 'streamable-http', url: 'https://mcp.example.test/mcp' },
+    });
+    f.getMCPServerTools.mockResolvedValue(
+      formatMCPServerTools('db ops', [{ name: 'db_ops_read_0' }]),
+    );
+    await request(f.app)
+      .post('/reset')
+      .send({ agentId: 'agent-a', toolName: 'read_0_mcp_db_ops' })
+      .expect(200, { reset: true });
+    expect(f.storage.resetToolApprovalGrants).toHaveBeenCalledWith(
+      'viewer-a',
+      'agent-a',
+      'read_0_mcp_db_ops',
+    );
+    expect(JSON.stringify(agent)).toBe(saved);
+  },
+);
+
+test('targeted reset rejects oversized legacy options without blocking agent-wide revocation', async () => {
+  const f = fixture({ id: 'viewer-a' });
+  const name = 'q' + '_mcp_z'.repeat(4000);
+  f.getAgent.mockResolvedValue({
+    id: 'agent-a',
+    tool_options: {
+      db_query_mcp_db: { approval_mode: 'always' },
+      [name]: { approval_mode: 'ask' },
+    },
+  });
+  f.getMCPServerTools.mockResolvedValue(formatMCPServerTools('db', [{ name: 'db_query' }]));
+  const response = await request(f.app).post('/reset').send(reset).expect(503);
+  expect(response.body).toEqual({ code: 'APPROVAL_RESET_FAILED' });
+  expect(JSON.stringify(response.body)).not.toContain(name);
+  expect(f.storage.resetToolApprovalGrants).not.toHaveBeenCalled();
+  await request(f.app).post('/reset').send({ agentId: 'agent-a' }).expect(200, { reset: true });
+  expect(f.storage.resetToolApprovalGrants).toHaveBeenCalledWith('viewer-a', 'agent-a', undefined);
+});

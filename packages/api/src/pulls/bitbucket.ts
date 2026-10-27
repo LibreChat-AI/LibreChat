@@ -19,6 +19,7 @@ import {
   DEFAULT_MAX_HEAD_COMPARISONS,
   DEFAULT_MAX_CANDIDATE_PULL_REQUESTS,
 } from './shared';
+import { logDiscoveryDiagnostic } from './diagnostics';
 import { PullRequestSourceError } from './types';
 
 export const BITBUCKET_HOST = 'bitbucket.org';
@@ -277,10 +278,16 @@ export function createBitbucketPullRequestSource({
        */
       const contains = async (hash: string): Promise<boolean> => {
         if (recorded == null || recorded.startsWith(hash)) return true;
-        if (comparisons >= lookup.maxHeadComparisons) return false;
+        if (comparisons >= lookup.maxHeadComparisons) {
+          logDiscoveryDiagnostic('bitbucket', 'COMPARISON_LIMIT');
+          return false;
+        }
         comparisons += 1;
         const merged = await getJson(`/merge-base/${recorded}..${hash}`, [400]);
-        if (merged == null) return false;
+        if (merged == null) {
+          logDiscoveryDiagnostic('bitbucket', 'COMPARISON_UNAVAILABLE');
+          return false;
+        }
         if (!isRecord(merged) || typeof merged.hash !== 'string') {
           throw new PullRequestSourceError('UPSTREAM_ERROR');
         }

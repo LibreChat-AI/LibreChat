@@ -236,8 +236,9 @@
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
  * definition reshapes the existing `rounded-*`, `font-sans`, `font-mono`, `text-*` and `shadow-*`
  * call sites without a migration, in the app and in a consumer alike. The defaults in `defaults.css` reproduce the scale
- * the app's utilities resolved to before. Bare `rounded` stays Tailwind's fixed 0.25rem: `sm` keeps
- * its px offset, so the two part at a non-16px root. Bare `shadow` reads `--shadow`, which has
+ * the app's utilities resolved to before. Bare `rounded` stays Tailwind's fixed
+ * 0.25rem and is not used in the package: write `rounded-sm`, which equals it at a 16px root and
+ * follows the theme. Bare `shadow` reads `--shadow`, which has
  * always equalled `sm`, and follows it. A shadow held in a variable cannot be recolored by a
  * `shadow-<color>` modifier; nothing in the app or the package uses one. */
 @theme inline {

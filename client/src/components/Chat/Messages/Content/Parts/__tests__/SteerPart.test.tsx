@@ -335,3 +335,24 @@ describe('SteerPart receipt settling', () => {
     expect(checks()).not.toHaveClass(STEER_ICON);
   });
 });
+
+it('keeps an unsuccessful guidance body and timestamp without a waiting or applied receipt', () => {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData([QueryKeys.endpoints], {});
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot>
+        <SteerPart
+          steer="unsuccessful guidance"
+          steerId="failed"
+          createdAt={1}
+          receiptState={null}
+        />
+      </RecoilRoot>
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText('unsuccessful guidance')).toBeVisible();
+  expect(screen.getByTestId('steer-timestamp')).toBeInTheDocument();
+  expect(screen.queryByTestId('steer-receipt')).not.toBeInTheDocument();
+  queryClient.clear();
+});

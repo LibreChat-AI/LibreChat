@@ -196,7 +196,7 @@ jest.mock('./SubagentActivity', () => ({
   SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="shared-scroll-surface">{children}</div>
   ),
-  default: ({
+  default: function MockActivity({
     activity,
     activityId,
     state,
@@ -211,35 +211,43 @@ jest.mock('./SubagentActivity', () => ({
     activityId?: string;
     state: string;
     onCancelControl?: (controlId: string) => void;
-  }) => (
-    <div
-      data-testid="shared-activity"
-      data-activity-id={activityId}
-      data-state={state}
-      data-status={activity.status}
-      data-can-withdraw={onCancelControl != null ? 'true' : 'false'}
-    >
-      {activity.prompt}
-      {activity.items.map((item, index) => (
-        <span key={index}>{item.text ?? item.type}</span>
-      ))}
-      {activity.controls?.map((control) => (
-        <span key={control.invocationId}>{control.status}</span>
-      ))}
-      {onCancelControl != null && (
-        <button
-          type="button"
-          data-testid="withdraw-control"
-          onClick={() => onCancelControl('control-1')}
-        />
-      )}
-    </div>
-  ),
+  }) {
+    const { useContext } = jest.requireActual<typeof import('react')>('react');
+    const { TaskContentScopeContext } = jest.requireActual<
+      typeof import('~/data-provider/Subagents/content')
+    >('~/data-provider/Subagents/content');
+    const scope = useContext(TaskContentScopeContext);
+    return (
+      <div
+        data-testid="shared-activity"
+        data-receipt-scope={JSON.stringify(scope)}
+        data-activity-id={activityId}
+        data-state={state}
+        data-status={activity.status}
+        data-can-withdraw={onCancelControl != null ? 'true' : 'false'}
+      >
+        {activity.prompt}
+        {activity.items.map((item, index) => (
+          <span key={index}>{item.text ?? item.type}</span>
+        ))}
+        {activity.controls?.map((control) => (
+          <span key={control.invocationId}>{control.status}</span>
+        ))}
+        {onCancelControl != null && (
+          <button
+            type="button"
+            data-testid="withdraw-control"
+            onClick={() => onCancelControl('control-1')}
+          />
+        )}
+      </div>
+    );
+  },
 }));
 
 jest.mock('./SubagentConversation', () => ({
   __esModule: true,
-  default: ({
+  default: function MockConversation({
     turns,
     author,
     parentAuthor,
@@ -258,30 +266,38 @@ jest.mock('./SubagentConversation', () => ({
     stateByTask?: ReadonlyMap<string, string>;
     detailStateByTask?: ReadonlyMap<string, string>;
     onLoadTurnDetails?: (taskId: string) => void;
-  }) => (
-    <div
-      data-testid="subagent-conversation"
-      data-state={turns[0] == null ? undefined : stateByTask?.get(turns[0].taskId)}
-      data-author={author.name}
-      data-parent-author={parentAuthor.name}
-    >
-      {author.icon}
-      {turns.map((turn) => (
-        <div key={turn.taskId} data-testid="conversation-turn" data-outcome={turn.outcome?.text}>
-          {turn.trigger.summary}
-          {turn.activity.items.map((item, index) => (
-            <span key={index}>{item.text}</span>
-          ))}
-          {turn.activity.activityTruncated === true && onLoadTurnDetails != null && (
-            <button type="button" onClick={() => onLoadTurnDetails(turn.taskId)}>
-              {`load-${turn.taskId}`}
-            </button>
-          )}
-          {detailStateByTask?.get(turn.taskId)}
-        </div>
-      ))}
-    </div>
-  ),
+  }) {
+    const { useContext } = jest.requireActual<typeof import('react')>('react');
+    const { TaskContentScopeContext } = jest.requireActual<
+      typeof import('~/data-provider/Subagents/content')
+    >('~/data-provider/Subagents/content');
+    const scope = useContext(TaskContentScopeContext);
+    return (
+      <div
+        data-testid="subagent-conversation"
+        data-receipt-scope={JSON.stringify(scope)}
+        data-state={turns[0] == null ? undefined : stateByTask?.get(turns[0].taskId)}
+        data-author={author.name}
+        data-parent-author={parentAuthor.name}
+      >
+        {author.icon}
+        {turns.map((turn) => (
+          <div key={turn.taskId} data-testid="conversation-turn" data-outcome={turn.outcome?.text}>
+            {turn.trigger.summary}
+            {turn.activity.items.map((item, index) => (
+              <span key={index}>{item.text}</span>
+            ))}
+            {turn.activity.activityTruncated === true && onLoadTurnDetails != null && (
+              <button type="button" onClick={() => onLoadTurnDetails(turn.taskId)}>
+                {`load-${turn.taskId}`}
+              </button>
+            )}
+            {detailStateByTask?.get(turn.taskId)}
+          </div>
+        ))}
+      </div>
+    );
+  },
 }));
 
 /** The shared composer's own Enter contract, for the mock to fall back on when
@@ -546,6 +562,94 @@ describe('SubagentThreadPanel', () => {
     jest.restoreAllMocks();
   });
 
+  it.each([false, true])(
+    'provides the exact durable receipt scope with conversation projection=%s',
+    (projected) => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: {
+          ...completedView,
+          messages: projected ? completedView.messages : [],
+          turns: projected ? completedTurns : undefined,
+        },
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      render(
+        <Root>
+          <SubagentThreadPanel selection={selection} />
+        </Root>,
+      );
+      const surface =
+        screen.queryByTestId('shared-activity') ?? screen.getByTestId('subagent-conversation');
+      expect(surface).toHaveAttribute(
+        'data-receipt-scope',
+        JSON.stringify({
+          parentConversationId: selection.parentConversationId,
+          threadId: 'child-thread',
+          taskId: 'task',
+        }),
+      );
+    },
+  );
+
+  it('isolates historical event receipt scopes from the selected task', () => {
+    const child: ParentSubagentSummary = {
+      threadId: 'child-thread',
+      parentMessageId: 'parent-message',
+      subagentType: 'researcher',
+      subagentKind: 'agent',
+      title: 'Worker',
+      origin: 'event',
+      actorId: 'actor',
+      status: 'completed',
+      latestTaskId: 'task',
+      tasks: [
+        { taskId: 'task', status: 'completed' },
+        { taskId: 'earlier', status: 'completed' },
+      ],
+      tasksTruncated: false,
+    };
+    mockParentChildrenByThread = new Map([[child.threadId, child]]);
+    mockParentChildrenByMessage = new Map([['parent-message', [child]]]);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: { ...completedView, turns: undefined },
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{
+            ...selection,
+            event: { actorId: 'actor', progressKey: 'event-task:child-thread:task' },
+          }}
+        />
+      </Root>,
+    );
+    expect(
+      screen
+        .getAllByTestId('shared-activity')
+        .map((surface) => JSON.parse(surface.getAttribute('data-receipt-scope')!)),
+    ).toEqual([
+      { parentConversationId: 'parent-conversation', threadId: 'child-thread', taskId: 'earlier' },
+      { parentConversationId: 'parent-conversation', threadId: 'child-thread', taskId: 'task' },
+    ]);
+  });
+
+  it('does not provide private receipt scope for a foreground activity without a durable task', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: false, isError: false });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, durable: undefined }} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-receipt-scope',
+      'null',
+    );
+  });
   it.each(['agent-1', 'missing-agent', 'self'])(
     'resolves the saved foreground identity %s in the panel',
     (subagentType) => {

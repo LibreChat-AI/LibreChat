@@ -9,6 +9,7 @@ const {
   logAxiosError,
   detachOnAbort,
   getTokenExpiresAt,
+  getSafeErrorMetadata,
   getOAuthCallbackUrl,
   refreshAccessToken,
   GenerationJobManager,
@@ -320,7 +321,7 @@ async function createActionTool({
                   throw error;
                 }
                 const errorMessage = 'Failed to authenticate OAuth tool';
-                logger.error(errorMessage, error);
+                logger.error(errorMessage, getSafeErrorMetadata(error));
                 throw new Error(errorMessage);
               }
             };
@@ -395,7 +396,10 @@ async function createActionTool({
                 if (isAbortError(error)) {
                   throw error;
                 }
-                logger.error('Failed to refresh token, requesting new login:', error);
+                logger.error(
+                  'Failed to refresh token, requesting new login:',
+                  getSafeErrorMetadata(error),
+                );
                 await requestLogin();
               }
             } else {

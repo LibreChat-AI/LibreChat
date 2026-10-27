@@ -45,6 +45,7 @@ export default {
   transformIgnorePatterns: [`/node_modules/(?!(${esModules})/).*/`],
   moduleNameMapper: {
     '^@src/(.*)$': '<rootDir>/src/$1',
+    '^~/api/(.*)$': '<rootDir>/../../api/$1',
     '~/(.*)': '<rootDir>/src/$1',
   },
   // coverageThreshold: {
