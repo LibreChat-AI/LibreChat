@@ -2730,6 +2730,8 @@ const lookupConcurrency = z.number().int().min(1).max(32).optional();
 /** Upper bounds on independent lookups a request runs at once. Omitted keys use the server
  *  defaults (`DEFAULT_LOOKUP_CONCURRENCY` in `@librechat/api`); `1` restores serial lookups. */
 export const lookupConcurrencySchema = z.object({
+  /** Connected agents initialized together per level while discovering a handoff graph. */
+  connectedAgentLoads: lookupConcurrency,
   /** MCP tool catalog reads when assembling an ephemeral or added agent. */
   mcpCatalogLookups: lookupConcurrency,
   /** Model spec skill name resolutions. */

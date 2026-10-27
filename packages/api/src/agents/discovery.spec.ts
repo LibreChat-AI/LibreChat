@@ -1101,6 +1101,45 @@ describe('discoverConnectedAgents', () => {
     expect([...result.agentConfigs.keys()]).toEqual(['B', 'C']);
   });
 
+  it('initializes one connected agent at a time when concurrency.connectedAgentLoads is 1', async () => {
+    let active = 0;
+    let peak = 0;
+    mockInitializeAgent.mockImplementation(async ({ agent }: { agent: Agent }) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+      return makeConfig(agent.id);
+    });
+    const req = {
+      user: { id: 'u1', role: 'USER' },
+      config: { concurrency: { connectedAgentLoads: 1 } },
+    } as unknown as ServerRequest;
+    const primaryConfig = makeConfig('A', [
+      { from: 'A', to: 'B', edgeType: 'handoff' },
+      { from: 'A', to: 'C', edgeType: 'handoff' },
+    ]);
+
+    await discoverConnectedAgents(
+      {
+        req,
+        res: makeRes(),
+        primaryConfig,
+        allowedProviders: new Set(),
+        modelsConfig: { openai: ['gpt-4o'] },
+        loadTools: jest.fn(),
+      },
+      {
+        getAgent: jest.fn(async ({ id }: { id: string }) => makeAgent(id)),
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: {} as never,
+      },
+    );
+
+    expect(peak).toBe(1);
+  });
+
   it('processes legacy agent_ids chain and adds sequential chain edges', async () => {
     const primaryConfig = makeConfig('A', []);
 

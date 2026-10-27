@@ -2,6 +2,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 
 /** Bounds on parallel per-request lookups, used when `concurrency` omits a key. */
 export const DEFAULT_LOOKUP_CONCURRENCY = {
+  connectedAgentLoads: 4,
   mcpCatalogLookups: 4,
   skillNameLookups: 8,
   skillFileInspections: 4,

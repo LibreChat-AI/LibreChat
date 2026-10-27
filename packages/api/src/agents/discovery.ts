@@ -25,6 +25,7 @@ import { initializeAgent as defaultInitializeAgent } from './initialize';
 import { createEdgeCollector, resolveReachableGraph } from './edges';
 import { isFatalAgentInitializationError } from './errors';
 import { createConcurrencyLimiter } from '~/utils/promise';
+import { getLookupConcurrency } from '~/utils/concurrency';
 import { createSequentialChainEdges } from './chain';
 import { detachOnAbort } from '~/utils/promises';
 
@@ -485,7 +486,9 @@ export async function discoverConnectedAgents(
 
   collectEdges(primaryConfig.edges);
 
-  const loadDiscovered = createConcurrencyLimiter(SUBAGENT_GRAPH_LOAD_CONCURRENCY);
+  const loadDiscovered = createConcurrencyLimiter(
+    getLookupConcurrency(params.req.config, 'connectedAgentLoads'),
+  );
   while (agentsToProcess.size > 0) {
     /** One BFS level: agents already queued are independent, so load them together
      *  and fold results back in queue order. Edges they expose form the next level. */
