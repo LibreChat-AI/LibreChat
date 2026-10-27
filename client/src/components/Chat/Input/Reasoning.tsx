@@ -453,13 +453,17 @@ export function useComposerReasoning({
     previousConfigured.current = { scope: configuredScope, value: configuredValue };
     if (
       previous == null ||
-      configuredValue == null ||
       previous.scope !== configuredScope ||
       Object.is(previous.value, configuredValue)
     ) {
       return;
     }
-    const edited = reasoningOverrideSchema.safeParse({ key: setting.key, value: configuredValue });
+    /* A reset removes the value; it is the user choosing the default, not leaving the choice. */
+    const editedValue = configuredValue ?? setting.default;
+    if (editedValue == null) {
+      return;
+    }
+    const edited = reasoningOverrideSchema.safeParse({ key: setting.key, value: editedValue });
     if (edited.success && isReasoningOverrideSupported(edited.data, setting)) {
       setValue(edited.data);
     }

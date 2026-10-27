@@ -248,24 +248,31 @@ type BranchReasoningRequest = {
     conversationId?: unknown;
     parentMessageId?: unknown;
     isEdited?: unknown;
+    editedContent?: unknown;
+    isRegenerate?: unknown;
+    isContinued?: unknown;
   };
 };
 
 /**
  * The level a turn without its own pick inherits: the one the branch it extends last ran at, so a
- * composer choice holds for the rest of the conversation until the user picks another. A resumed
- * turn replays its own parameters and an edit re-runs a turn that already has its own, so neither
- * inherits.
+ * composer choice holds for the rest of the conversation until the user picks another. Only a fresh
+ * turn inherits: a resume replays its own parameters, and an edit, regeneration or continuation
+ * replays a turn that already ran, with the override the client sends for it.
  */
 async function loadBranchReasoningOverride(
   req: BranchReasoningRequest,
   getBranchReasoningOverride: RequestReasoningOverrideInput['getBranchReasoningOverride'],
 ): Promise<TReasoningOverride | undefined> {
-  const { conversationId, parentMessageId, isEdited } = req.body;
+  const { conversationId, parentMessageId, isEdited, editedContent, isRegenerate, isContinued } =
+    req.body;
   if (
     getBranchReasoningOverride == null ||
     req.resumeReplayed === true ||
     isEdited === true ||
+    editedContent != null ||
+    isRegenerate === true ||
+    isContinued === true ||
     req.user?.id == null ||
     typeof conversationId !== 'string' ||
     conversationId === '' ||

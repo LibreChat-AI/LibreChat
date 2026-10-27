@@ -447,6 +447,47 @@ describe('useComposerReasoning', () => {
     });
   });
 
+  it('treats a Parameters reset as choosing the default over the branch level', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const high = { key: 'reasoning_effort', value: ReasoningEffort.high } as TReasoningOverride;
+    const base = {
+      conversationId: 'reset-conversation',
+      endpoint: 'openAI',
+      model: 'gpt-5',
+    } as TConversation;
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true, branchReasoning: high }),
+      {
+        initialProps: {
+          conversation: { ...base, reasoning_effort: ReasoningEffort.medium } as TConversation,
+        },
+        wrapper,
+      },
+    );
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+
+    rendered.rerender({ conversation: base });
+
+    const reset = {
+      key: 'reasoning_effort',
+      value: rendered.result.current?.setting.default,
+    };
+    await waitFor(() =>
+      expect(
+        reasoningStore.get(
+          pendingReasoningOverrideFamily(getReasoningStateKey('reset-conversation', 0)),
+        ),
+      ).toEqual(reset),
+    );
+    expect(rendered.result.current?.value).toEqual(reset);
+  });
+
   it('lets a Parameters edit replace the branch level, but not a conversation switch', async () => {
     const reasoningStore = createStore();
     const wrapper = ({ children }: { children: ReactNode }) => (

@@ -96,6 +96,21 @@ describe('getBranchReasoningOverride', () => {
     ).resolves.toBeNull();
   });
 
+  it('answers with a single read of the conversation', async () => {
+    await Message.insertMany([
+      turn('u1', '00000000-0000-0000-0000-000000000000', true, high),
+      turn('a1', 'u1', false),
+      turn('u2', 'a1', true),
+      turn('a2', 'u2', false),
+    ]);
+    const find = jest.spyOn(Message, 'find');
+
+    await getBranchReasoningOverride({ user, conversationId, parentMessageId: 'a2' });
+
+    expect(find).toHaveBeenCalledTimes(1);
+    find.mockRestore();
+  });
+
   it("does not read another user's messages", async () => {
     await Message.insertMany([
       { ...turn('u1', '00000000-0000-0000-0000-000000000000', true, high), user: 'user-2' },

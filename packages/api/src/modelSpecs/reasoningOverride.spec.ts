@@ -366,6 +366,9 @@ describe('applyRequestReasoningOverride branch inheritance', () => {
     ['a new conversation', { conversationId: 'new' }],
     ['a first turn', { parentMessageId: '00000000-0000-0000-0000-000000000000' }],
     ['an edit', { isEdited: true }],
+    ['an edit from the browser', { editedContent: { index: 0, text: 'changed' } }],
+    ['a regeneration', { isRegenerate: true }],
+    ['a continuation', { isContinued: true }],
   ])('does not inherit for %s', async (_label, body) => {
     const getBranchReasoningOverride = jest.fn().mockResolvedValue(high);
     const req = request(body);
