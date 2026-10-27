@@ -760,6 +760,56 @@ describe('removing a shared MCP server with its owner', () => {
     expect(MCPTokenStorage.isRefreshTeardownActive(viewerId.toString(), serverName)).toBe(false);
   });
 
+  it('keeps the server when a held fence lapsed and another writer took it before the delete', async () => {
+    const ownerId = new mongoose.Types.ObjectId();
+    const viewerId = new mongoose.Types.ObjectId();
+    const { mcpServerId } = await seedUser(ownerId);
+    const serverName = `acl-${ownerId}`;
+    await share(mcpServerId, ownerId, PrincipalType.USER, viewerId);
+    await authorize(viewerId, serverName);
+    const { flowManager, uninstallOAuthMCP } = createOAuthHost(
+      jest.fn().mockResolvedValue(undefined),
+    );
+    const viewerLeaseId = getMCPOAuthLeaseId(viewerId.toString(), serverName);
+    const deleteMCPServersWithAcl = jest.fn();
+    const { deps } = createDeps();
+    let lapsed = false;
+
+    await expect(
+      deleteUserMCPServers(ownerId.toString(), {
+        ...deps,
+        deleteMCPServersWithAcl,
+        mcpOAuth: {
+          getServerConfig: async () => serverConfig,
+          getUserPrincipals: (candidate) => methods.getUserPrincipals({ userId: candidate }),
+          resolveAllowlists: async () => ({}),
+          uninstallOAuthMCP: async (candidate, pluginKey, appConfig, config, teardown) => {
+            await uninstallOAuthMCP(candidate, pluginKey, appConfig, config, teardown);
+            if (candidate !== viewerId.toString() || lapsed) {
+              return;
+            }
+            /** The viewer's lease outlived its 15 minutes; a callback on another replica took it. */
+            lapsed = true;
+            const realNow = Date.now();
+            const clock = jest.spyOn(Date, 'now').mockReturnValue(realNow + 16 * 60_000);
+            try {
+              const writer = await flowManager.acquireLease(viewerLeaseId, { waitMs: 0 });
+              expect(writer).not.toBeNull();
+              await writer?.release();
+            } finally {
+              clock.mockRestore();
+            }
+          },
+        },
+      }),
+    ).rejects.toThrow('fence lapsed');
+
+    expect(lapsed).toBe(true);
+    expect(deleteMCPServersWithAcl).not.toHaveBeenCalled();
+    expect(await count('MCPServer', { _id: mcpServerId })).toBe(1);
+    expect(MCPTokenStorage.isRefreshTeardownActive(viewerId.toString(), serverName)).toBe(false);
+  });
+
   it('releases every held fence when a later teardown fails', async () => {
     const ownerId = new mongoose.Types.ObjectId();
     const viewerId = new mongoose.Types.ObjectId();

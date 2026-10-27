@@ -63,10 +63,17 @@ export interface MCPOAuthTeardownOptions {
   /** Clears local state, then rejects when the provider refused a revocation. */
   strictRevocation?: boolean;
   /**
-   * Receives the release of a successful teardown's fence instead of releasing it, so the caller
-   * can keep new authorizations and refreshes out until the server record is gone.
+   * Receives a successful teardown's fence instead of releasing it, so the caller can keep new
+   * authorizations and refreshes out until the server record is gone.
    */
-  retainFence?: (release: () => Promise<void>) => void;
+  retainFence?: (fence: MCPOAuthRetainedFence) => void;
+}
+
+/** A teardown fence the caller holds past the teardown itself. */
+export interface MCPOAuthRetainedFence {
+  /** Extends the lease; false when it lapsed and another writer took it in the meantime. */
+  renew: () => Promise<boolean>;
+  release: () => Promise<void>;
 }
 
 interface CleanupDeletedUsersParams {
@@ -352,7 +359,11 @@ export async function cleanupMCPServerOAuth(params: UninstallParams): Promise<vo
     }
     const retainFence = params.teardown?.retainFence;
     if (retainFence) {
-      retainFence(releaseFence);
+      const lease = teardownLease;
+      retainFence({
+        renew: async () => (lease?.renew ? lease.renew() : lease != null),
+        release: releaseFence,
+      });
       fenceRetained = true;
     }
   } finally {

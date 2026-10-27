@@ -90,6 +90,10 @@ test.describe('removing a shared MCP server', () => {
   test('no authorization or refresh can take the OAuth fence until the server delete commits @scenario:erasure-holds-oauth-fence-through-delete', () => {
     expectPassed('erasure', 'holds every OAuth teardown fence until the server delete commits');
     expectPassed('erasure', 'releases every held fence when a later teardown fails');
+    expectPassed(
+      'erasure',
+      'keeps the server when a held fence lapsed and another writer took it before the delete',
+    );
   });
 
   test('a user removing their own MCP connection still succeeds when the provider refuses revocation @scenario:own-connection-removal-stays-best-effort', () => {

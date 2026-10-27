@@ -2,7 +2,11 @@ import mongoose from 'mongoose';
 import { logger } from '@librechat/data-schemas';
 import type { TCheckpointerConfig, MCPOptions } from 'librechat-data-provider';
 import type { AllMethods, IMongoFile } from '@librechat/data-schemas';
-import type { MCPOAuthTeardownOptions, OAuthAclSubject } from '../mcp/oauth/cleanup';
+import type {
+  OAuthAclSubject,
+  MCPOAuthRetainedFence,
+  MCPOAuthTeardownOptions,
+} from '../mcp/oauth/cleanup';
 import type { CheckpointDeletion } from '~/agents/checkpoints/deletion';
 import type { FileDeletionOutcome } from '../files/deletion';
 import {
@@ -165,7 +169,7 @@ export async function deleteUserMCPServers(
 
   /** Each user's OAuth fence stays held until the delete commits, so no authorization or refresh
    * can persist credentials between the cleanup and the removal of the retry anchor. */
-  const fenceReleases: Array<() => Promise<void>> = [];
+  const fences: MCPOAuthRetainedFence[] = [];
   const cleanupSharedUsers = async (removed: typeof prepared): Promise<number> => {
     if (!oauth) {
       return 0;
@@ -186,7 +190,7 @@ export async function deleteUserMCPServers(
           },
           uninstallOAuthMCP: oauth.uninstallOAuthMCP,
           strictRevocation: true,
-          retainFence: (release) => fenceReleases.push(release),
+          retainFence: (fence) => fences.push(fence),
         }),
       ),
     );
@@ -202,9 +206,14 @@ export async function deleteUserMCPServers(
     if ((await cleanupSharedUsers(prepared)) > 0) {
       throw new Error('MCP OAuth cleanup failed for users of a server being removed');
     }
+    /** A large teardown can outlive a lease; one that lapsed may have let a writer through. */
+    const renewed = await Promise.all(fences.map((fence) => fence.renew()));
+    if (renewed.includes(false)) {
+      throw new Error('An MCP OAuth teardown fence lapsed before the server was removed');
+    }
     await deps.deleteMCPServersWithAcl(servers.map((s) => s.id));
   } finally {
-    const releases = await Promise.allSettled(fenceReleases.map((release) => release()));
+    const releases = await Promise.allSettled(fences.map((fence) => fence.release()));
     for (const result of releases) {
       if (result.status === 'rejected') {
         logger.warn('[eraseUserData] Failed to release an MCP OAuth teardown fence', result.reason);
