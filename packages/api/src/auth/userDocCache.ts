@@ -228,22 +228,46 @@ export function isCachedAuthUserDocCurrent(
   );
 }
 
+export interface CurrentAuthUserDocDeps {
+  /** Selects one user by id; called with `AUTH_USER_FRESHNESS_PROJECTION`. */
+  findUser: (criteria: { _id: string }, fieldsToSelect: string) => Promise<IUser | null>;
+}
+
 /**
  * Reads a cached auth user document and returns it only when it is still current, checked by
- * one small read of the stored user (`readStored` selects `AUTH_USER_FRESHNESS_PROJECTION`).
- * Anything else, including a cached document without an id, is a miss.
+ * one small read of the stored user. Anything else, including a cached document without an
+ * id, is a miss. A returned document has passed the deletion fence check.
  */
 export async function getCurrentCachedAuthUserDoc(
   store: AuthUserDocCacheStore,
   cacheKey: string,
-  readStored: (userId: string) => Promise<IUser | null>,
+  deps: CurrentAuthUserDocDeps,
 ): Promise<CachedAuthUser | undefined> {
   const cached = await getCachedAuthUserDoc(store, cacheKey);
   const userId = cached ? getUserId(cached) : undefined;
   if (!cached || !userId) {
     return undefined;
   }
-  return isCachedAuthUserDocCurrent(cached, await readStored(userId)) ? cached : undefined;
+  const stored = await deps.findUser({ _id: userId }, AUTH_USER_FRESHNESS_PROJECTION);
+  return isCachedAuthUserDocCurrent(cached, stored) ? cached : undefined;
+}
+
+/**
+ * Whether an authenticated user may proceed past the account deletion fence. A document served
+ * by `getCurrentCachedAuthUserDoc` already read the fence, so only a database-loaded user costs
+ * the separate fence read.
+ */
+export async function isAuthUserAdmissible(
+  userId: string,
+  {
+    fenceChecked,
+    isPrincipalActive,
+  }: {
+    fenceChecked: boolean;
+    isPrincipalActive: (userId: string) => Promise<boolean>;
+  },
+): Promise<boolean> {
+  return fenceChecked || isPrincipalActive(userId);
 }
 
 /**

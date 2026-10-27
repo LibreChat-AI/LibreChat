@@ -4,7 +4,6 @@ import type { AuthUserDocCacheMode, AuthUserDocCacheStore, CachedAuthUser } from
 import {
   setCachedAuthUserDoc,
   getCurrentCachedAuthUserDoc,
-  AUTH_USER_FRESHNESS_PROJECTION,
   buildAuthUserDocCacheKey,
   invalidateCachedAuthUserDoc,
 } from './userDocCache';
@@ -48,9 +47,9 @@ export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Prom
   const store = cacheKey ? deps.getCacheStore() : undefined;
 
   if (store && cacheKey) {
-    const cached = await getCurrentCachedAuthUserDoc(store, cacheKey, (id) =>
-      runAsSystem(() => deps.getUserById(id, AUTH_USER_FRESHNESS_PROJECTION)),
-    );
+    const cached = await getCurrentCachedAuthUserDoc(store, cacheKey, {
+      findUser: ({ _id }, fields) => runAsSystem(() => deps.getUserById(_id, fields)),
+    });
     if (cached) {
       return {
         user: cached,

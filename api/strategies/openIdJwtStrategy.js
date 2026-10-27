@@ -14,7 +14,7 @@ const {
   buildAuthUserDocCacheKey,
   getAuthUserDocCacheMode,
   getCurrentCachedAuthUserDoc,
-  AUTH_USER_FRESHNESS_PROJECTION,
+  isAuthUserAdmissible,
   getValidOpenIdReuseUserId,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
@@ -181,9 +181,7 @@ const openIdJwtLogin = (openIdConfig) => {
           authUserCacheMode !== 'off' && authUserCacheKey ? getAuthUserDocCacheStore() : undefined;
         const cachedUser =
           authUserCacheMode !== 'off' && authUserCacheStore && authUserCacheKey
-            ? await getCurrentCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, (id) =>
-                findUser({ _id: id }, AUTH_USER_FRESHNESS_PROJECTION),
-              )
+            ? await getCurrentCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, { findUser })
             : undefined;
 
         const servedCachedUser =
@@ -219,11 +217,11 @@ const openIdJwtLogin = (openIdConfig) => {
             (message) => logger.warn(message),
             async () => {
               user.id = user._id.toString();
-              /** A cache hit already read the deletion fence in its freshness check. */
-              if (
-                !servedCachedUser &&
-                !(await runAsSystem(() => isAgentTriggerPrincipalActive(user.id)))
-              ) {
+              const admissible = await isAuthUserAdmissible(user.id, {
+                fenceChecked: Boolean(servedCachedUser),
+                isPrincipalActive: (id) => runAsSystem(() => isAgentTriggerPrincipalActive(id)),
+              });
+              if (!admissible) {
                 done(null, false, {
                   message: 'Account deletion is in progress',
                   code: 'ACCOUNT_DELETION_IN_PROGRESS',

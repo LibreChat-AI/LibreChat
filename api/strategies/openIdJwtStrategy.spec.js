@@ -43,7 +43,8 @@ jest.mock('@librechat/api', () => ({
   buildAuthUserDocCacheKey: jest.fn(() => 'auth-user-doc-key'),
   getAuthUserDocCacheMode: jest.fn(() => 'off'),
   getCurrentCachedAuthUserDoc: jest.fn(),
-  AUTH_USER_FRESHNESS_PROJECTION: 'freshness-projection',
+  isAuthUserAdmissible: (...args) =>
+    jest.requireActual('@librechat/api').isAuthUserAdmissible(...args),
   getValidOpenIdReuseUserId: jest.fn(),
   invalidateCachedAuthUserDoc: jest.fn(),
   setCachedAuthUserDoc: jest.fn(),
@@ -638,16 +639,16 @@ describe('openIdJwtStrategy – auth user document cache', () => {
 
   it('checks the cached document against the stored user and reads it fully when stale', async () => {
     getAuthUserDocCacheMode.mockReturnValue('on');
-    findUser.mockResolvedValue({ _id: 'user-abc', updatedAt: new Date() });
-    getCurrentCachedAuthUserDoc.mockImplementation(async (_store, _key, readStored) => {
-      await readStored('user-abc');
-      return undefined;
-    });
+    getCurrentCachedAuthUserDoc.mockResolvedValue(undefined);
     findOpenIDUser.mockResolvedValue({ user: { ...baseUser }, error: null, migration: false });
 
     const { user } = await invokeVerify(req, payload);
 
-    expect(findUser).toHaveBeenCalledWith({ _id: 'user-abc' }, 'freshness-projection');
+    expect(getCurrentCachedAuthUserDoc).toHaveBeenCalledWith(
+      mockAuthUserDocCacheStore,
+      'auth-user-doc-key',
+      { findUser },
+    );
     expect(findOpenIDUser).toHaveBeenCalled();
     expect(user).toMatchObject({ id: 'user-abc' });
   });
