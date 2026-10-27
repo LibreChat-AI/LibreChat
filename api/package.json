@@ -64,7 +64,7 @@
     "@opentelemetry/semantic-conventions": "^1.39.0",
     "@smithy/node-http-handler": "^4.4.5",
     "ai-tokenizer": "^1.0.6",
-    "axios": "^1.16.0",
+    "axios": "^1.21.0",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",
     "connect-redis": "^8.1.0",

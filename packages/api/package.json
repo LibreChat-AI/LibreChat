@@ -119,7 +119,7 @@
     "@opentelemetry/semantic-conventions": "^1.39.0",
     "@smithy/node-http-handler": "^4.4.5",
     "ai-tokenizer": "^1.0.6",
-    "axios": "^1.16.0",
+    "axios": "^1.21.0",
     "connect-redis": "^8.1.0",
     "eventsource": "^3.0.2",
     "express": "^5.1.0",
