@@ -31,7 +31,7 @@ const {
   createOpenIDSessionIdentity,
   resolveAppConfigForUser,
   resolvePreAuthAppConfig,
-  commitPasswordReset,
+  resetPasswordWithToken,
   getSafeErrorMetadata,
   hashSecret,
   compareSecret,
@@ -583,16 +583,32 @@ const requestPasswordReset = async (req) => {
   return { message: genericResetMessage };
 };
 
+const sendPasswordResetNotice = async (user) => {
+  if (!checkEmailConfig()) {
+    return;
+  }
+  await sendEmail({
+    email: user.email,
+    subject: 'Password Reset Successfully',
+    payload: {
+      appName: process.env.APP_TITLE || 'LibreChat',
+      name: user.name || user.username || user.email,
+      year: new Date().getFullYear(),
+    },
+    template: 'passwordReset.handlebars',
+  });
+};
+
 /**
  * Reset Password
  *
- * @param {*} userId
- * @param {String} token
- * @param {String} password
- * @returns
+ * @param {string} userId
+ * @param {string} token
+ * @param {string} password
+ * @returns {Promise<import('@librechat/api').PasswordResetResult>}
  */
-const resetPassword = async (userId, token, password) => {
-  const outcome = await commitPasswordReset(
+const resetPassword = (userId, token, password) =>
+  resetPasswordWithToken(
     {
       findResetToken: findPasswordResetToken,
       getUserById,
@@ -600,33 +616,11 @@ const resetPassword = async (userId, token, password) => {
       deleteTokens,
       compareToken: compareSecret,
       hashPassword: hashSecret,
+      consumeResetToken: (resetToken) => deleteTokens(getPasswordResetTokenDeleteQuery(resetToken)),
+      sendResetNotice: sendPasswordResetNotice,
     },
     { userId, token, password },
   );
-
-  if (!outcome.ok) {
-    return new Error('Invalid or expired password reset token');
-  }
-
-  const { user, resetToken: passwordResetToken } = outcome;
-
-  if (checkEmailConfig()) {
-    await sendEmail({
-      email: user.email,
-      subject: 'Password Reset Successfully',
-      payload: {
-        appName: process.env.APP_TITLE || 'LibreChat',
-        name: user.name || user.username || user.email,
-        year: new Date().getFullYear(),
-      },
-      template: 'passwordReset.handlebars',
-    });
-  }
-
-  await deleteTokens(getPasswordResetTokenDeleteQuery(passwordResetToken));
-  logger.info(`[resetPassword] Password reset successful. [User ID: ${userId}]`);
-  return { message: 'Password reset was successful' };
-};
 
 /**
  * Reads the previously issued CloudFront cookie scope used for stale cookie cleanup.

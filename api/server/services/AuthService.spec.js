@@ -71,7 +71,7 @@ jest.mock(
       resolvePreAuthAppConfig: jest.fn((getAppConfig) =>
         getAppConfig({ skipRuntimeAugmentation: true, failClosed: true }),
       ),
-      commitPasswordReset: jest.fn(),
+      resetPasswordWithToken: jest.fn(),
       createOpenIDSessionIdentity: jest.fn(
         ({ user, userId, openidSubject, tenantId, openidIssuer }) => {
           const normalize = (value) => {
@@ -183,7 +183,7 @@ let resendVerificationEmail;
 let setAuthTokens;
 let setCloudFrontAuthCookies;
 let verifyEmail;
-let commitPasswordReset;
+let resetPasswordWithToken;
 
 jest.isolateModules(() => {
   ({
@@ -191,7 +191,7 @@ jest.isolateModules(() => {
     isEmailDomainAllowed,
     resolveAppConfigForUser,
     resolvePreAuthAppConfig,
-    commitPasswordReset,
+    resetPasswordWithToken,
     setRefreshTokenCookie,
     setOpenIDMarkerCookies,
     setLocalSessionCookies,
@@ -1104,9 +1104,14 @@ describe('resetPassword', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     checkEmailConfig.mockReturnValue(false);
-    commitPasswordReset.mockImplementation(async (deps, { userId }) => {
+    resetPasswordWithToken.mockImplementation(async (deps, { userId }) => {
       const resetToken = await deps.findResetToken(userId);
-      return resetToken ? { ok: true, user: resolvedUser, resetToken } : { ok: false };
+      if (!resetToken) {
+        return { ok: false };
+      }
+      await deps.consumeResetToken(resetToken);
+      await deps.sendResetNotice(resolvedUser);
+      return { ok: true, tokenConsumed: true };
     });
   });
 
@@ -1115,7 +1120,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(result).toBeInstanceOf(Error);
+    expect(result).toEqual({ ok: false });
     expect(findToken).toHaveBeenNthCalledWith(
       1,
       { userId: 'user-reset', type: 'password_reset' },
@@ -1138,8 +1143,10 @@ describe('resetPassword', () => {
 
     await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(commitPasswordReset).toHaveBeenCalledWith(
+    expect(resetPasswordWithToken).toHaveBeenCalledWith(
       expect.objectContaining({
+        consumeResetToken: expect.any(Function),
+        sendResetNotice: expect.any(Function),
         findResetToken: expect.any(Function),
         getUserById: expect.any(Function),
         updateUser: expect.any(Function),
@@ -1161,7 +1168,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(result).toEqual({ message: 'Password reset was successful' });
+    expect(result).toEqual({ ok: true, tokenConsumed: true });
     expect(deleteTokens).toHaveBeenCalledWith({ token: 'reset-hash', type: 'password_reset' });
   });
 
@@ -1174,7 +1181,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'legacy-reset-token', 'new-password');
 
-    expect(result).toEqual({ message: 'Password reset was successful' });
+    expect(result).toEqual({ ok: true, tokenConsumed: true });
     expect(deleteTokens).toHaveBeenCalledWith({
       token: 'legacy-hash',
       email: null,
@@ -1188,7 +1195,7 @@ describe('resetPassword', () => {
 
     const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
-    expect(result).toBeInstanceOf(Error);
+    expect(result).toEqual({ ok: false });
     expect(sendEmail).not.toHaveBeenCalled();
     expect(deleteTokens).not.toHaveBeenCalled();
   });

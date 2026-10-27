@@ -85,7 +85,7 @@ describe('commitPasswordReset', () => {
         twoFactorAcknowledgementNonceHash: null,
         twoFactorFinalizationNonceHash: null,
       },
-      { email: 'user@example.com' },
+      { email: 'user@example.com', credentialsChangedAt: null },
     );
   });
 

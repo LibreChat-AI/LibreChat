@@ -12,6 +12,8 @@ export interface PasswordResetToken {
   token: string;
   email?: string | null;
   type?: string | null;
+  /** When the link was issued; absent only on documents written before the field existed. */
+  createdAt?: Date | string | number | null;
 }
 
 export interface PasswordResetUser {
@@ -21,6 +23,8 @@ export interface PasswordResetUser {
   username?: string;
   /** Set when a confirmed email change commits; absent on documents written before it. */
   emailChangedAt?: Date | string | null;
+  /** Set by every password reset; a link issued before it has already been spent. */
+  credentialsChangedAt?: Date | string | null;
 }
 
 export interface PasswordResetDeps {
@@ -29,7 +33,7 @@ export interface PasswordResetDeps {
   updateUser: (
     userId: string,
     update: PasswordResetUpdate,
-    expectedState: { email: string },
+    expectedState: { email: string; credentialsChangedAt: Date | string | null },
   ) => Promise<PasswordResetUser | null>;
   deleteTokens: (query: { userId: string; type: string }) => Promise<unknown>;
   compareToken: (candidate: string, storedHash: string) => Promise<boolean>;
@@ -43,11 +47,7 @@ export interface PasswordResetInput {
 }
 
 export interface PasswordResetControllerDeps {
-  resetPassword: (
-    userId: string,
-    token: string,
-    password: string,
-  ) => Promise<{ message: string } | Error>;
+  resetPassword: (userId: string, token: string, password: string) => Promise<PasswordResetResult>;
   deleteAllUserSessions: (query: { userId: string }) => Promise<{ deletedCount?: number }>;
   deletePasskeysByUser: (userId: string) => Promise<{ deletedCount?: number }>;
   /** Resolves once no cached auth document from before the reset can be served. */
@@ -65,7 +65,8 @@ export type PasswordResetOutcome =
   | { ok: true; user: PasswordResetUser; resetToken: PasswordResetToken }
   | { ok: false };
 
-export const PASSWORD_RESET_USER_FIELDS: string = 'email _id name username emailChangedAt';
+export const PASSWORD_RESET_USER_FIELDS: string =
+  'email _id name username emailChangedAt credentialsChangedAt';
 
 /** The password changed but a credential minted during the change may still be accepted. */
 export const CREDENTIAL_RETIREMENT_INCOMPLETE = 'CREDENTIAL_RETIREMENT_INCOMPLETE';
@@ -91,64 +92,127 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
     }
     /** After the revocations, so nothing can mint a post-stamp token while it waits. */
     await deps.awaitAuthUserDocEviction(userId);
+    if (sessions.status === 'rejected' || passkeys.status === 'rejected') {
+      throw new Error('Sessions or passkeys outlived the reset');
+    }
   };
 
-  /**
-   * The reset has committed, consumed its token and sent its notice before this runs, so a failure
-   * here cannot leave the link replayable. Re-dating the cutoff retires any credential minted while
-   * the password write was in flight.
-   */
-  const restampReset = async (userId: string): Promise<unknown> => {
-    try {
-      const committed = await deps.getUserById(userId, 'credentialsChangedAt');
-      const stampedAt = committed?.credentialsChangedAt;
-      if (stampedAt == null) {
-        return undefined;
-      }
-      await restampRetirementCutoff(
-        'credentialsChangedAt',
-        userId,
-        new Date(stampedAt),
-        (cutoff, expectedState) => deps.updateUser(userId, cutoff, expectedState),
-      );
-      return undefined;
-    } catch (error) {
-      return error;
+  /** Re-dates the committed cutoff so a credential minted while the write was in flight retires. */
+  const restampReset = async (userId: string): Promise<void> => {
+    const committed = await deps.getUserById(userId, 'credentialsChangedAt');
+    const stampedAt = committed?.credentialsChangedAt;
+    if (stampedAt == null) {
+      throw new Error('Committed reset has no credentialsChangedAt to re-date');
     }
+    await restampRetirementCutoff(
+      'credentialsChangedAt',
+      userId,
+      new Date(stampedAt),
+      (cutoff, expectedState) => deps.updateUser(userId, cutoff, expectedState),
+    );
+  };
+
+  /** Never throws: every step runs, and a failed one only marks the retirement incomplete. */
+  const retireCredentials = async (userId: string): Promise<boolean> => {
+    let complete = true;
+    for (const [label, step] of [
+      ['re-date the cutoff', () => restampReset(userId)],
+      ['revoke sessions and passkeys', () => revokeCredentials(userId)],
+    ] as const) {
+      try {
+        await step();
+      } catch (error) {
+        complete = false;
+        logger.error(`[resetPasswordController] Failed to ${label} for user ${userId}`, error);
+      }
+    }
+    return complete;
   };
 
   return async (
     req: Request<Record<string, string>, object, PasswordResetInput>,
     res: Response,
   ): Promise<Response> => {
+    const { userId, token, password } = req.body;
+    let result: PasswordResetResult;
     try {
-      const { userId, token, password } = req.body;
-      const result = await deps.resetPassword(userId, token, password);
-      if (result instanceof Error) {
-        return res.status(400).json(result);
-      }
-
-      const restampError = await restampReset(userId);
-      await revokeCredentials(userId);
-      clearSessionHintCookie(res);
-
-      if (restampError) {
-        /** The password changed, but a credential minted during the change may still be accepted. */
-        logger.error(
-          `[resetPasswordController] Password changed but its cutoff was not re-dated for user ${userId}`,
-          restampError,
-        );
-        return res.status(500).json({
-          code: CREDENTIAL_RETIREMENT_INCOMPLETE,
-          message: 'Your password was changed, but other sessions may stay signed in.',
-        });
-      }
-      return res.status(200).json(result);
+      result = await deps.resetPassword(userId, token, password);
     } catch (error) {
+      /** Throws only up to and including the password write, never after it commits. */
       logger.error('[resetPasswordController]', error);
       return res.status(400).json({ message: 'Password reset failed' });
     }
+    if (!result.ok) {
+      return res.status(400).json({ message: 'Invalid or expired password reset token' });
+    }
+
+    /** From here the password has changed: retirement runs on every path. */
+    const retired = await retireCredentials(userId);
+    clearSessionHintCookie(res);
+    if (!retired || !result.tokenConsumed) {
+      return res.status(500).json({
+        code: CREDENTIAL_RETIREMENT_INCOMPLETE,
+        message: 'Your password was changed, but other sessions may stay signed in.',
+      });
+    }
+    return res.status(200).json({ message: 'Password reset was successful' });
   };
+}
+
+export type PasswordResetResult = { ok: false } | { ok: true; tokenConsumed: boolean };
+
+export interface PasswordResetCompletionDeps extends PasswordResetDeps {
+  /** Deletes the link that was redeemed. */
+  consumeResetToken: (resetToken: PasswordResetToken) => Promise<unknown>;
+  /** Tells the account owner the password changed. */
+  sendResetNotice: (user: PasswordResetUser) => Promise<unknown>;
+}
+
+/**
+ * Redeems a reset link. Everything up to and including the password write may throw; nothing
+ * after it does, so a caller that sees `ok: true` knows the password changed and owns retiring the
+ * credentials it replaced. A link that could not be deleted is still spent: it predates the
+ * `credentialsChangedAt` this reset stamped, which `commitPasswordReset` refuses.
+ */
+export async function resetPasswordWithToken(
+  deps: PasswordResetCompletionDeps,
+  input: PasswordResetInput,
+): Promise<PasswordResetResult> {
+  const outcome = await commitPasswordReset(deps, input);
+  if (!outcome.ok) {
+    return { ok: false };
+  }
+
+  let tokenConsumed = true;
+  try {
+    await deps.consumeResetToken(outcome.resetToken);
+  } catch (error) {
+    tokenConsumed = false;
+    logger.error(
+      `[resetPassword] Failed to delete the redeemed link for user ${input.userId}`,
+      error,
+    );
+  }
+  try {
+    await deps.sendResetNotice(outcome.user);
+  } catch (error) {
+    logger.error(`[resetPassword] Failed to send the reset notice for user ${input.userId}`, error);
+  }
+  logger.info(`[resetPassword] Password reset successful. [User ID: ${input.userId}]`);
+  return { ok: true, tokenConsumed };
+}
+
+/** Whether the link was issued before the account's last credential change, which spent it. */
+export function isResetTokenSpent(
+  resetToken: PasswordResetToken,
+  user: PasswordResetUser | null,
+): boolean {
+  if (resetToken.createdAt == null || user?.credentialsChangedAt == null) {
+    return false;
+  }
+  const issuedMs = new Date(resetToken.createdAt).getTime();
+  const changedMs = new Date(user.credentialsChangedAt).getTime();
+  return !Number.isNaN(issuedMs) && !Number.isNaN(changedMs) && issuedMs <= changedMs;
 }
 
 /**
@@ -212,11 +276,15 @@ export async function commitPasswordReset(
   if (!resetTokenBindsToAccount(resetToken, account) || !account) {
     return { ok: false };
   }
+  if (isResetTokenSpent(resetToken, account)) {
+    return { ok: false };
+  }
 
   const user = await deps.updateUser(
     input.userId,
     createPasswordResetUpdate(await deps.hashPassword(input.password)),
-    { email: account.email },
+    /** Conditioned on the cutoff it read, so two redemptions of one link cannot both commit. */
+    { email: account.email, credentialsChangedAt: account.credentialsChangedAt ?? null },
   );
   if (!user) {
     return { ok: false };

@@ -3088,11 +3088,15 @@ describe('registrationController - invite consumption', () => {
 
 describe('resetPasswordController', () => {
   let req, res;
-  const serviceResult = { message: 'Password reset successful' };
+  const serviceResult = { ok: true, tokenConsumed: true };
+  const successBody = { message: 'Password reset was successful' };
+  const incompleteBody = expect.objectContaining({ code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' });
 
   beforeEach(() => {
     jest.clearAllMocks();
     resetPassword.mockReset().mockResolvedValue(serviceResult);
+    getUserById.mockReset().mockResolvedValue({ credentialsChangedAt: new Date() });
+    updateUser.mockReset().mockResolvedValue({});
     deleteAllUserSessions.mockReset().mockResolvedValue(undefined);
     deletePasskeysByUser.mockReset().mockResolvedValue(undefined);
     awaitAuthUserDocEviction.mockReset().mockResolvedValue(undefined);
@@ -3111,7 +3115,6 @@ describe('resetPasswordController', () => {
   });
 
   it('revokes sessions and passkeys on successful password reset', async () => {
-    const serviceResult = { message: 'Password reset successful' };
     resetPassword.mockResolvedValue(serviceResult);
     deleteAllUserSessions.mockResolvedValue(undefined);
     deletePasskeysByUser.mockResolvedValue(undefined);
@@ -3122,8 +3125,13 @@ describe('resetPasswordController', () => {
     expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-123' });
     expect(deletePasskeysByUser).toHaveBeenCalledWith('user-123');
     expect(res.clearCookie).toHaveBeenCalledWith('session_hint');
+    expect(updateUser).toHaveBeenCalledWith(
+      'user-123',
+      { credentialsChangedAt: expect.any(Date) },
+      { credentialsChangedAt: expect.any(Date) },
+    );
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(serviceResult);
+    expect(res.json).toHaveBeenCalledWith(successBody);
   });
 
   it('confirms the reset only after revoking and settling the auth cache', async () => {
@@ -3152,52 +3160,55 @@ describe('resetPasswordController', () => {
   });
 
   it('does not revoke sessions or passkeys when reset fails', async () => {
-    const resetError = new Error('Invalid token');
-    resetPassword.mockResolvedValue(resetError);
+    resetPassword.mockResolvedValue({ ok: false });
 
     await resetPasswordController(req, res);
 
     expect(deleteAllUserSessions).not.toHaveBeenCalled();
     expect(deletePasskeysByUser).not.toHaveBeenCalled();
     expect(awaitAuthUserDocEviction).not.toHaveBeenCalled();
+    expect(updateUser).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(resetError);
+    expect(res.json).toHaveBeenCalledWith({ message: 'Invalid or expired password reset token' });
   });
 
   it.each([
     ['sessions', true, false],
     ['passkeys', false, true],
     ['sessions and passkeys', true, true],
-  ])('reports a committed reset when revoking %s fails', async (_, failSessions, failPasskeys) => {
-    const sessionError = new Error('Session store unavailable');
-    const passkeyError = new Error('Passkey store unavailable');
-    if (failSessions) {
-      deleteAllUserSessions.mockRejectedValue(sessionError);
-    }
-    if (failPasskeys) {
-      deletePasskeysByUser.mockRejectedValue(passkeyError);
-    }
+  ])(
+    'reports an incomplete reset when revoking %s fails',
+    async (_, failSessions, failPasskeys) => {
+      const sessionError = new Error('Session store unavailable');
+      const passkeyError = new Error('Passkey store unavailable');
+      if (failSessions) {
+        deleteAllUserSessions.mockRejectedValue(sessionError);
+      }
+      if (failPasskeys) {
+        deletePasskeysByUser.mockRejectedValue(passkeyError);
+      }
 
-    await resetPasswordController(req, res);
+      await resetPasswordController(req, res);
 
-    expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-123' });
-    expect(deletePasskeysByUser).toHaveBeenCalledWith('user-123');
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(serviceResult);
-    expect(logger.error).toHaveBeenCalledTimes(Number(failSessions) + Number(failPasskeys));
-    if (failSessions) {
-      expect(logger.error).toHaveBeenCalledWith(
-        '[resetPasswordController] Failed to revoke sessions for user user-123',
-        sessionError,
-      );
-    }
-    if (failPasskeys) {
-      expect(logger.error).toHaveBeenCalledWith(
-        '[resetPasswordController] Failed to revoke passkeys for user user-123',
-        passkeyError,
-      );
-    }
-  });
+      expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-123' });
+      expect(deletePasskeysByUser).toHaveBeenCalledWith('user-123');
+      expect(awaitAuthUserDocEviction).toHaveBeenCalledWith('user-123');
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(incompleteBody);
+      if (failSessions) {
+        expect(logger.error).toHaveBeenCalledWith(
+          '[resetPasswordController] Failed to revoke sessions for user user-123',
+          sessionError,
+        );
+      }
+      if (failPasskeys) {
+        expect(logger.error).toHaveBeenCalledWith(
+          '[resetPasswordController] Failed to revoke passkeys for user user-123',
+          passkeyError,
+        );
+      }
+    },
+  );
 
   it('starts passkey revocation while session revocation is still pending', async () => {
     let finishSessions;
@@ -3230,13 +3241,34 @@ describe('resetPasswordController', () => {
 
     expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-123' });
     expect(deletePasskeysByUser).toHaveBeenCalledWith('user-123');
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(serviceResult);
-    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith(incompleteBody);
     expect(logger.error).toHaveBeenCalledWith(
       `[resetPasswordController] Failed to revoke ${kind} for user user-123`,
       error,
     );
+  });
+
+  it.each([
+    [
+      'the link could not be deleted',
+      () => resetPassword.mockResolvedValue({ ok: true, tokenConsumed: false }),
+    ],
+    ['the cutoff could not be re-dated', () => updateUser.mockRejectedValue(new Error('down'))],
+    [
+      'the auth cache did not settle',
+      () => awaitAuthUserDocEviction.mockRejectedValue(new Error('down')),
+    ],
+  ])('still retires credentials and reports an incomplete reset when %s', async (_, arrange) => {
+    arrange();
+
+    await resetPasswordController(req, res);
+
+    expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-123' });
+    expect(deletePasskeysByUser).toHaveBeenCalledWith('user-123');
+    expect(updateUser).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith(incompleteBody);
   });
 
   it('does not revoke sessions or passkeys when the reset service throws', async () => {

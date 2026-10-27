@@ -4,11 +4,16 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
+import type {
+  PasswordResetUser,
+  PasswordResetToken,
+  PasswordResetCompletionDeps,
+} from './passwordReset';
 import type { OptInConfirmationDependencies } from './enrollment';
 import type { StoredTwoFactorAccount } from './twoFactor';
-import type { PasswordResetDeps } from './passwordReset';
 import {
   commitPasswordReset,
+  resetPasswordWithToken,
   createResetPasswordController,
   CREDENTIAL_RETIREMENT_INCOMPLETE,
 } from './passwordReset';
@@ -76,51 +81,66 @@ function createRes() {
 }
 
 describe('password reset ordering', () => {
+  type ResetFailure = 'notice' | 'token' | 'emailChange' | 'restamp' | 'sessions' | 'eviction';
+
   /**
-   * Wires the controller to a reset that commits through `commitPasswordReset` against the real
-   * user document, and then consumes its token and sends its notice the way `AuthService` does.
+   * Wires the controller to `resetPasswordWithToken` over the real user document, with a link
+   * issued before the reset. `fail` makes one post-commit step throw.
    */
-  function createResetController(
-    userId: string,
-    overrides: { onCommitWrite?: () => Promise<void>; failRestamp?: boolean } = {},
+  async function createReset(
+    overrides: { onCommitWrite?: () => Promise<void>; fail?: ResetFailure } = {},
   ) {
-    const events: string[] = [];
-    const commitDeps: PasswordResetDeps = {
-      findResetToken: async () => ({ token: 'hash', email: null, type: null }),
-      getUserById: async () => ({ _id: userId, email: 'user@example.com' }),
+    const userId = await createUser();
+    const issuedAt = new Date(Date.now() - 1_000);
+    const link: PasswordResetToken = {
+      token: 'hash',
+      email: null,
+      type: null,
+      createdAt: issuedAt,
+    };
+    const ran: string[] = [];
+    const failIf = (step: ResetFailure) => {
+      ran.push(step);
+      if (overrides.fail === step) {
+        throw new Error(`${step} failed`);
+      }
+    };
+    const completion: PasswordResetCompletionDeps = {
+      findResetToken: async () => link,
+      getUserById: (id, select) =>
+        methods.getUserById(id, select) as Promise<PasswordResetUser | null>,
       compareToken: async () => true,
       hashPassword: async () => 'new-hash',
-      deleteTokens: async () => ({}),
-      updateUser: async (id, update) => {
-        await overrides.onCommitWrite?.();
-        return writeUser(id, update) as Promise<{ email: string } | null>;
+      deleteTokens: async () => {
+        failIf('emailChange');
+        return {};
       },
+      updateUser: async (id, update, expected) => {
+        await overrides.onCommitWrite?.();
+        return writeUser(id, update, expected) as Promise<PasswordResetUser | null>;
+      },
+      consumeResetToken: async () => failIf('token'),
+      sendResetNotice: async () => failIf('notice'),
     };
     const deps = {
-      resetPassword: jest.fn(async () => {
-        await commitPasswordReset(commitDeps, { userId, token: 't', password: 'p' });
-        events.push('notice-sent', 'token-consumed');
-        return { message: 'Password reset was successful' };
-      }),
-      deleteAllUserSessions: jest.fn(async () => {
-        events.push('sessions-revoked');
+      resetPassword: (id: string, token: string, password: string) =>
+        resetPasswordWithToken(completion, { userId: id, token, password }),
+      deleteAllUserSessions: async () => {
+        failIf('sessions');
         return { deletedCount: 1 };
-      }),
-      deletePasskeysByUser: jest.fn(async () => {
-        events.push('passkeys-revoked');
+      },
+      deletePasskeysByUser: async () => {
+        ran.push('passkeys');
         return { deletedCount: 1 };
-      }),
-      awaitAuthUserDocEviction: jest.fn(async () => undefined),
+      },
+      awaitAuthUserDocEviction: async () => failIf('eviction'),
       getUserById: (id: string, select: string) => methods.getUserById(id, select),
       updateUser: async (
         id: string,
         update: { credentialsChangedAt: Date },
         expected: { credentialsChangedAt: Date },
       ) => {
-        events.push('restamp');
-        if (overrides.failRestamp) {
-          throw new Error('write failed');
-        }
+        failIf('restamp');
         return methods.updateUser(id, update, expected);
       },
     };
@@ -136,14 +156,17 @@ describe('password reset ordering', () => {
       );
       return res;
     };
-    return { run, deps, events };
+    const replay = () => commitPasswordReset(completion, { userId, token: 't', password: 'other' });
+    return { userId, run, replay, ran };
   }
 
   it('retires a credential minted while the reset write is in flight', async () => {
-    const userId = await createUser();
     let mintedAt = 0;
-    const { run } = createResetController(userId, {
+    const { userId, run } = await createReset({
       onCommitWrite: async () => {
+        if (mintedAt) {
+          return;
+        }
         /** A login that read the old document mints between the stamp and the commit. */
         await tick();
         mintedAt = Date.now();
@@ -169,30 +192,48 @@ describe('password reset ordering', () => {
     expect((await readCutoffs(userId))?.credentialsChangedAt?.getTime()).toBe(later.getTime());
   });
 
-  it('consumes the link, notifies, revokes and reports an incomplete reset when the re-stamp fails', async () => {
-    const userId = await createUser();
-    const { run, events } = createResetController(userId, { failRestamp: true });
-
-    const res = await run();
-
-    /** The token and the notice are settled before the re-stamp can fail. */
-    expect(events.indexOf('token-consumed')).toBeLessThan(events.indexOf('restamp'));
-    expect(events.indexOf('notice-sent')).toBeLessThan(events.indexOf('restamp'));
-    expect(events).toEqual(expect.arrayContaining(['sessions-revoked', 'passkeys-revoked']));
-    expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ code: CREDENTIAL_RETIREMENT_INCOMPLETE }),
-    );
-    const stored = await mongoose.models.User.findById(userId).select('+password').lean<IUser>();
-    expect(stored?.password).toBe('new-hash');
-  });
-
-  it('surfaces the re-stamp failure with its stable code', async () => {
+  it('surfaces a re-stamp failure with its stable code', async () => {
     await expect(
       restampRetirementCutoff('credentialsChangedAt', 'user-1', new Date(), async () => {
         throw new Error('write failed');
       }),
     ).rejects.toMatchObject({ code: RETIREMENT_RESTAMP_FAILED });
+  });
+
+  it.each([
+    ['notice', 200],
+    ['emailChange', 200],
+    ['token', 500],
+    ['restamp', 500],
+    ['sessions', 500],
+    ['eviction', 500],
+  ] as const)(
+    'when the %s step fails after the password write, the link is spent and retirement still runs',
+    async (fail, status) => {
+      const { userId, run, replay, ran } = await createReset({ fail });
+
+      const res = await run();
+
+      expect(res.status).toHaveBeenCalledWith(status);
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      if (status === 500) {
+        expect(res.json).toHaveBeenCalledWith(
+          expect.objectContaining({ code: CREDENTIAL_RETIREMENT_INCOMPLETE }),
+        );
+      }
+      expect(ran).toEqual(expect.arrayContaining(['restamp', 'sessions', 'passkeys', 'eviction']));
+      await expect(replay()).resolves.toEqual({ ok: false });
+      const stored = await mongoose.models.User.findById(userId).select('+password').lean<IUser>();
+      expect(stored?.password).toBe('new-hash');
+    },
+  );
+
+  it('lets only one of two concurrent redemptions of a link commit', async () => {
+    const { replay } = await createReset();
+
+    const outcomes = await Promise.all([replay(), replay()]);
+
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
   });
 });
 
