@@ -162,37 +162,54 @@ describe('Chat.setMessages', () => {
     expect(state.messages).toEqual([earlier]);
   });
 
-  it('keeps its write when the server replaces the start and the optimistic rows are undone', async () => {
-    let answer: ((result: ChatSendResult) => void) | undefined;
-    const state = createState([earlier]);
-    const chat = createChat(state, {
-      sendMessages: jest.fn(
-        () =>
-          new Promise<ChatSendResult>((resolve) => {
-            answer = resolve;
-          }),
-      ),
-      reconnectToStream: jest.fn(async () => emptyStream()),
-    });
-    const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
-    await flush();
-    await chat.setMessages((current) =>
-      current.map((message) =>
-        message.messageId === 'earlier-1' ? { ...message, text: 'Edited' } : message,
-      ),
-    );
+  it.each([
+    [
+      'a row the turn did not touch',
+      (current: TMessage[]) =>
+        current.map((m) => (m.messageId === 'earlier-1' ? { ...m, text: 'Edited' } : m)),
+      ['earlier-1:Edited'],
+    ],
+    [
+      'a row the turn added',
+      (current: TMessage[]) =>
+        current.map((m) => (m.messageId === 'response-1' ? { ...m, text: 'Kept' } : m)),
+      ['earlier-1:Earlier', 'response-1:Kept'],
+    ],
+    [
+      'a removal of a row the turn did not touch',
+      (current: TMessage[]) => current.filter((m) => m.messageId !== 'earlier-1'),
+      [],
+    ],
+  ])(
+    'keeps its write to %s when the server replaces the start and the turn is undone',
+    async (_label, edit, expected) => {
+      let answer: ((result: ChatSendResult) => void) | undefined;
+      const state = createState([earlier]);
+      const chat = createChat(state, {
+        sendMessages: jest.fn(
+          () =>
+            new Promise<ChatSendResult>((resolve) => {
+              answer = resolve;
+            }),
+        ),
+        reconnectToStream: jest.fn(async () => emptyStream()),
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      await chat.setMessages(edit);
 
-    answer?.({
-      status: 'replaced',
-      conversationId: 'convo-1',
-      streamId: 'stream-2',
-      generationCreatedAt: 200,
-      generationProtocolVersion: 2,
-    });
-    await sent;
+      answer?.({
+        status: 'replaced',
+        conversationId: 'convo-1',
+        streamId: 'stream-2',
+        generationCreatedAt: 200,
+        generationProtocolVersion: 2,
+      });
+      await sent;
 
-    expect(chat.messages.map((message) => `${message.messageId}:${message.text}`)).toEqual([
-      'earlier-1:Edited',
-    ]);
-  });
+      expect(chat.messages.map((message) => `${message.messageId}:${message.text}`)).toEqual(
+        expected,
+      );
+    },
+  );
 });
