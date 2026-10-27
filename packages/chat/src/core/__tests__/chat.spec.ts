@@ -1203,6 +1203,161 @@ describe('Chat attachments and reported conversations', () => {
     },
   );
 
+  describe('optimistic rollback at the store boundary', () => {
+    const earlier: TMessage[] = [
+      { ...placeholder, messageId: 'earlier-1', text: 'Earlier' },
+      { ...placeholder, messageId: 'earlier-2', text: 'Answer' },
+    ];
+    const external: TMessage = { ...placeholder, messageId: 'external-1', text: 'External' };
+    /** Overwrites `earlier-2` and appends the turn, so the write both replaces and adds rows. */
+    const optimistic = (current: TMessage[]) => [
+      ...current.map((m) => (m.messageId === 'earlier-2' ? { ...m, text: '' } : m)),
+      userMessage,
+      placeholder,
+    ];
+    const replaced = {
+      status: 'replaced' as const,
+      generationProtocolVersion: 2,
+      conversationId: 'convo-1',
+      streamId: 'stream-2',
+      generationCreatedAt: 200,
+    };
+
+    /**
+     * A store that tells its own subscribers of every write before `replaceMessages` returns and,
+     * when `shared`, commits each changed row as a copy, as a cache with structural sharing does.
+     */
+    const createStore = (shared: boolean) => {
+      const state = createState(earlier);
+      const listeners = new Set<() => void>();
+      const replace = state.replaceMessages.bind(state);
+      state.replaceMessages = (next: TMessage[]) => {
+        const held = new Map(state.messages.map((m) => [m.messageId, m]));
+        replace(shared ? next.map((m) => (held.get(m.messageId) === m ? m : { ...m })) : next);
+        [...listeners].forEach((listener) => listener());
+      };
+      state.subscribe = (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      };
+      return state;
+    };
+
+    /** A store subscriber that appends `external` once the turn's placeholder is listed. */
+    const appendOnWrite = (state: ChatState) => () => {
+      const current = state.messages;
+      if (
+        current.some((m) => m.messageId === placeholder.messageId) &&
+        !current.some((m) => m.messageId === external.messageId)
+      ) {
+        state.replaceMessages([...current, external]);
+      }
+    };
+
+    const rows = (messages: TMessage[]) => messages.map((m) => `${m.messageId}:${m.text}`);
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'keeps a row a store subscriber appended inside the write when a replaced start rolls back, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        state.subscribe?.(appendOnWrite(state));
+        const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
+        let attachedWith: string[] = [];
+        const { chat } = setup(
+          { state, prepareRequest: jest.fn(() => ({ payload, messages: optimistic })) },
+          {
+            sendMessages: jest.fn(async () => replaced),
+            reconnectToStream: jest.fn(async () => {
+              attachedWith = rows(chat.messages);
+              return stream;
+            }),
+          },
+        );
+        const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        await flush();
+        stream.push(finalEvent({ requestMessage: null, responseMessage: null }));
+        await sent;
+
+        expect(attachedWith).toEqual([
+          'earlier-1:Earlier',
+          'earlier-2:Answer',
+          'external-1:External',
+        ]);
+      },
+    );
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'undoes the write of a turn a store subscriber disposed inside that write, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        const append = appendOnWrite(state);
+        const { chat, transport } = setup({
+          state,
+          prepareRequest: jest.fn(() => ({ payload, messages: optimistic })),
+        });
+        state.subscribe?.(() => {
+          if (state.messages.some((m) => m.messageId === placeholder.messageId)) {
+            append();
+            chat.dispose();
+          }
+        });
+
+        await chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+
+        expect(transport.sendMessages).not.toHaveBeenCalled();
+        expect(rows(state.messages)).toEqual([
+          'earlier-1:Earlier',
+          'earlier-2:Answer',
+          'external-1:External',
+        ]);
+        expect(chat.status).toBe('ready');
+      },
+    );
+
+    it('keeps a later write to a row the turn added when a structurally shared store rolls back', async () => {
+      const state = createStore(true);
+      const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
+      let attachedWith: string[] = [];
+      let answer: (() => void) | undefined;
+      const { chat } = setup(
+        { state, prepareRequest: jest.fn(() => ({ payload, messages: optimistic })) },
+        {
+          sendMessages: jest.fn(
+            () =>
+              new Promise((resolve) => {
+                answer = () => resolve(replaced);
+              }),
+          ),
+          reconnectToStream: jest.fn(async () => {
+            attachedWith = rows(chat.messages);
+            return stream;
+          }),
+        },
+      );
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      state.replaceMessages(
+        state.messages.map((m) =>
+          m.messageId === userMessage.messageId ? { ...m, text: 'Edited' } : m,
+        ),
+      );
+      answer?.();
+      await flush();
+      stream.push(finalEvent({ requestMessage: null, responseMessage: null }));
+      await sent;
+
+      expect(attachedWith).toEqual(['earlier-1:Earlier', 'earlier-2:Answer', 'user-1:Edited']);
+    });
+  });
+
   it('reports an error the generation itself sent on an attachment as terminal', async () => {
     const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
     const { chat, onFinish } = replacing(stream);

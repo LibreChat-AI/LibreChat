@@ -159,8 +159,21 @@ type Generation = {
   responseless?: boolean;
 };
 
-/** The list before and after a turn's optimistic write: what undoing that write restores. */
-type OptimisticWrite = { before: TMessage[]; written: TMessage[] };
+/**
+ * What one optimistic write did, by message id, so undoing it touches only those rows. A row the
+ * state holds that the write did not add, replace or remove, such as one a store subscriber
+ * appended while the write was committed, is never part of it.
+ */
+type OptimisticWrite = {
+  /** The list before the write, which places a removed row back among its neighbours. */
+  before: TMessage[];
+  /** Each row the write added or replaced, as the state committed it. */
+  committed: Map<string, TMessage>;
+  /** Each row the write replaced, as it was before. */
+  replaced: Map<string, TMessage>;
+  /** The ids of the rows the write removed. */
+  removed: Set<string>;
+};
 
 type ActiveRequest = {
   controller: AbortController;
@@ -415,32 +428,61 @@ const getRestoreIndex = (before: TMessage[], index: number, next: TMessage[]): n
 };
 
 /**
- * Undoes an optimistic write on the list as it stands now: rows it added go, rows it changed or
- * removed come back as they were, and a row someone else wrote since then keeps that write.
+ * Records the rows `written` changed against `before`, each added or replaced row under the
+ * identity the state `committed` it with, since a store may copy a row on the way in.
  */
-const undoOptimisticWrite = (
+const recordOptimisticWrite = (
   before: TMessage[],
   written: TMessage[],
-  current: TMessage[],
-): TMessage[] => {
+  committed: TMessage[],
+): OptimisticWrite => {
   const prior = new Map(before.map((message) => [message.messageId, message]));
-  const wrote = new Map(written.map((message) => [message.messageId, message]));
+  const held = new Map(committed.map((message) => [message.messageId, message]));
+  const record: OptimisticWrite = {
+    before,
+    committed: new Map(),
+    replaced: new Map(),
+    removed: new Set(prior.keys()),
+  };
+  for (const message of written) {
+    const was = prior.get(message.messageId);
+    record.removed.delete(message.messageId);
+    const row = held.get(message.messageId);
+    if (was === message || row == null) {
+      continue;
+    }
+    record.committed.set(message.messageId, row);
+    if (was != null) {
+      record.replaced.set(message.messageId, was);
+    }
+  }
+  return record;
+};
+
+/**
+ * Undoes an optimistic write on the list as it stands now: rows it added go, rows it replaced or
+ * removed come back as they were, and any other row, or one of its rows someone else wrote since,
+ * stays as it is.
+ */
+const undoOptimisticWrite = (record: OptimisticWrite, current: TMessage[]): TMessage[] => {
   const next: TMessage[] = [];
   const kept = new Set<string>();
   for (const message of current) {
-    const was = prior.get(message.messageId);
-    const ours = wrote.get(message.messageId) === message;
-    if (was == null && ours) {
+    if (record.committed.get(message.messageId) !== message) {
+      next.push(message);
+      kept.add(message.messageId);
       continue;
     }
-    next.push(ours && was != null ? was : message);
-    kept.add(message.messageId);
-  }
-  before.forEach((message, index) => {
-    if (kept.has(message.messageId) || wrote.has(message.messageId)) {
-      return;
+    const was = record.replaced.get(message.messageId);
+    if (was != null) {
+      next.push(was);
+      kept.add(message.messageId);
     }
-    next.splice(getRestoreIndex(before, index, next), 0, message);
+  }
+  record.before.forEach((message, index) => {
+    if (record.removed.has(message.messageId) && !kept.has(message.messageId)) {
+      next.splice(getRestoreIndex(record.before, index, next), 0, message);
+    }
   });
   return next;
 };
@@ -566,10 +608,9 @@ export class Chat {
        * keeps its status and rows, since the server keeps running it. Either way the chat holds
        * no stream.
        */
-      if (rollback) {
-        state.replaceMessages(
-          undoOptimisticWrite(rollback.before, rollback.written, state.messages),
-        );
+      if (active && rollback) {
+        active.optimistic = undefined;
+        state.replaceMessages(undoOptimisticWrite(rollback, state.messages));
       }
       state.status = status;
       state.connection = 'idle';
@@ -615,10 +656,17 @@ export class Chat {
           if (!active.controller.signal.aborted) {
             const before = this.messages;
             const written = typeof optimistic === 'function' ? optimistic(before) : optimistic;
-            /** The rows as the state committed them, read before a subscriber can write more. */
+            /** The rows as the state committed them, read before a chat subscriber writes more. */
             this.write(written, (committed) => {
-              active.optimistic = { before, written: committed };
+              active.optimistic = recordOptimisticWrite(before, written, committed);
             });
+            if (this.disposed && active.optimistic) {
+              /** A store subscriber disposed the chat inside the write, before it had a record. */
+              this.init.state.replaceMessages(
+                undoOptimisticWrite(active.optimistic, this.messages),
+              );
+              active.optimistic = undefined;
+            }
           }
         });
       }
@@ -667,7 +715,7 @@ export class Chat {
         if (rollback) {
           /** The server ran a newer generation instead, so this turn's optimistic write is undone. */
           await this.executor.run(() => {
-            this.write(undoOptimisticWrite(rollback.before, rollback.written, this.messages));
+            this.write(undoOptimisticWrite(rollback, this.messages));
           });
         }
         /** The replacement's response is not this turn's placeholder; its first frame names it. */
