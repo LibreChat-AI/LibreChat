@@ -62,7 +62,7 @@ test.describe('composer thinking labels', () => {
     await expect(group).toHaveAccessibleDescription('Applies to your next message');
     await expect(popover.getByText('Applies to your next message')).toBeVisible();
 
-    await popover.getByRole('radio', { name: 'High' }).click();
+    await popover.getByRole('radio', { name: 'High', exact: true }).click();
     await expect(trigger).toHaveAccessibleName('Thinking: High');
     await page.keyboard.press('Escape');
 
