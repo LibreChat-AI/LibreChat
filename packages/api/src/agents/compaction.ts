@@ -521,7 +521,7 @@ export async function settleExistingRowsBeforeErrorTurn(
 ): Promise<ErrorTurnSettlement> {
   const isCompaction = requestBody?.compact === true;
   const settleLiveRow = async (): Promise<boolean> => {
-    if (liveResponseMessageId == null || liveResponseMessageId === errorMessageId) {
+    if (liveResponseMessageId == null) {
       return false;
     }
     /** Full documents only where the compaction finalization needs the
@@ -543,6 +543,12 @@ export async function settleExistingRowsBeforeErrorTurn(
     }
     return true;
   };
+  /** The bounded fallback already names this run's response, not the anchor. */
+  if (isCompaction && errorMessageId === liveResponseMessageId) {
+    return (await settleLiveRow())
+      ? { covered: true }
+      : { covered: false, errorRowMessageId: errorMessageId };
+  }
   const existing = await getMessages(
     { user: userId, messageId: errorMessageId, conversationId },
     '_id',
@@ -563,7 +569,7 @@ export async function settleExistingRowsBeforeErrorTurn(
     }
     return { covered: true };
   }
-  if (await settleLiveRow()) {
+  if (liveResponseMessageId !== errorMessageId && (await settleLiveRow())) {
     return { covered: true };
   }
   return { covered: false, errorRowMessageId: errorMessageId };

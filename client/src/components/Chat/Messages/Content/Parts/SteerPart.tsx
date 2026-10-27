@@ -30,8 +30,12 @@ const SteerPart = memo(function SteerPart({
   createdAt,
   isSubmitting = false,
   receiptState = 'applied',
+  hasMore = false,
+  onExpand,
 }: {
   steer: string;
+  hasMore?: boolean;
+  onExpand?: () => void;
   files?: TMessage['files'];
   /** Quoted excerpts steered with the message; rendered as the same reference
    *  blocks a user bubble shows for `message.quotes`. */
@@ -44,7 +48,7 @@ const SteerPart = memo(function SteerPart({
    *  to timestamp gray (always settled on reload, share, and search). */
   isSubmitting?: boolean;
   /** Pending renderer state must never claim server application early. */
-  receiptState?: SteerReceiptState;
+  receiptState?: SteerReceiptState | null;
 }) {
   const localize = useLocalize();
   const { useUser, useFileMap, useUserTextPreferences, useLiveAppliedSteer } =
@@ -76,6 +80,9 @@ const SteerPart = memo(function SteerPart({
     () => hydratedFiles?.filter((file) => !usesImagePreview(file)) ?? [],
     [hydratedFiles],
   );
+  useEffect(() => {
+    if (hasMore && !collapseLongUserMessages) onExpand?.();
+  }, [hasMore, collapseLongUserMessages, onExpand]);
   const [selectedFile, setSelectedFile] = useState<Partial<TFile> | null>(null);
   const handlePreviewClose = useCallback((open: boolean) => {
     if (!open) {
@@ -148,7 +155,11 @@ const SteerPart = memo(function SteerPart({
               )}
             </div>
           )}
-          <CollapsibleText enabled={collapseLongUserMessages}>
+          <CollapsibleText
+            enabled={collapseLongUserMessages || hasMore}
+            hasMore={hasMore}
+            onExpand={onExpand}
+          >
             <div
               className={cn(
                 'markdown prose message-content light w-full break-words',
@@ -166,7 +177,9 @@ const SteerPart = memo(function SteerPart({
          *  width changes as the relative string ticks. */}
         <div className="text-text-secondary mt-1 flex min-h-8 items-center justify-end gap-2">
           <MessageTimestamp value={timestamp} className="ms-0" />
-          <SteerReceipt state={receiptState} live={isSubmitting} animateIn={animateIn} />
+          {receiptState != null && (
+            <SteerReceipt state={receiptState} live={isSubmitting} animateIn={animateIn} />
+          )}
         </div>
       </div>
       {otherFiles.length > 0 && (

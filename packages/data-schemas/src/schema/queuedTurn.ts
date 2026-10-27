@@ -1,5 +1,5 @@
 import { Schema } from 'mongoose';
-import { CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import { Constants, CODE_APPROVAL_MODES } from 'librechat-data-provider';
 import type { IAgentQueuedTurnDocument } from '~/types/queuedTurn';
 
 const fileRefSchema = new Schema(
@@ -67,7 +67,11 @@ const queuedTurnSchema: Schema<IAgentQueuedTurnDocument> = new Schema(
     tenantId: { type: String, index: true },
     conversationId: { type: String, required: true, maxlength: 256 },
     agentId: { type: String, required: true, maxlength: 256 },
-    parentMessageId: { type: String, required: true, maxlength: 256 },
+    parentMessageId: {
+      type: String,
+      required: true,
+      maxlength: Number(Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH),
+    },
     clientRequestId: { type: String, required: true, maxlength: 128 },
     fingerprint: { type: String, required: true, minlength: 43, maxlength: 64 },
     laneId: { type: String, required: true, maxlength: 128 },

@@ -964,6 +964,65 @@ describe('AclEntry Model Tests', () => {
     });
   });
 
+  describe('deletePrincipalAclEntries', () => {
+    const grantTo = (principalType: PrincipalType, principalId: string | mongoose.Types.ObjectId) =>
+      methods.grantPermission(
+        principalType,
+        principalId,
+        ResourceType.AGENT,
+        new mongoose.Types.ObjectId(),
+        PermissionBits.VIEW,
+        grantedById,
+      );
+    const remainingIds = async () =>
+      (await AclEntry.find({}).select('_id').lean()).map(({ _id }) => _id.toString()).sort();
+
+    it("removes a role's platform-level entries outside a tenant, never a tenant role's of that name", async () => {
+      await grantTo(PrincipalType.ROLE, 'editor');
+      const unclaimed = await grantTo(PrincipalType.ROLE, 'editor');
+      const tenant = await grantTo(PrincipalType.ROLE, 'editor');
+      const other = await grantTo(PrincipalType.ROLE, 'other');
+      await AclEntry.collection.updateOne({ _id: unclaimed?._id }, { $set: { tenantId: '' } });
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await methods.deletePrincipalAclEntries({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+      });
+
+      expect(await remainingIds()).toEqual([tenant?._id.toString(), other?._id.toString()].sort());
+    });
+
+    it("removes only the active tenant's role entries inside it", async () => {
+      const platform = await grantTo(PrincipalType.ROLE, 'editor');
+      const tenant = await grantTo(PrincipalType.ROLE, 'editor');
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.deletePrincipalAclEntries({
+          principalType: PrincipalType.ROLE,
+          principalId: 'editor',
+        }),
+      );
+
+      expect(await remainingIds()).toEqual([platform?._id.toString()]);
+    });
+
+    it('removes a group principal entries by id, whichever tenant holds them', async () => {
+      const groupId = new mongoose.Types.ObjectId();
+      const tenant = await grantTo(PrincipalType.GROUP, groupId);
+      const other = await grantTo(PrincipalType.GROUP, new mongoose.Types.ObjectId());
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await methods.deletePrincipalAclEntries({
+        principalType: PrincipalType.GROUP,
+        principalId: groupId,
+      });
+
+      expect(await remainingIds()).toEqual([other?._id.toString()]);
+    });
+  });
+
   describe('moveAclEntriesToPrincipal', () => {
     const grantToRole = (roleName: string, bits: number) =>
       methods.grantPermission(

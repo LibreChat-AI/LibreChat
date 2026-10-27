@@ -20,8 +20,9 @@ import type {
 } from 'librechat-data-provider';
 import type { StreamContext } from './terminal';
 import type { StepEvent } from '../reducer';
-import { getResumeMessageIndexes, buildResumeEventSubmission, mergeResumeMessages } from './resume';
+import { getResumeMessageIndexes, mergeResumeMessages } from './placement';
 import { getStepEventId, isOAuthStepEvent } from './events';
+import { buildResumeEventSubmission } from './resume';
 import { preferDefinedString } from './messages';
 
 /**

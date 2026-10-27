@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { renderHook } from '@testing-library/react';
+import { useChatHelpers } from '@librechat/chat/react';
 import { RetentionMode } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation, TModelSpec } from 'librechat-data-provider';
@@ -8,7 +9,9 @@ import type { MutableSnapshot } from 'recoil';
 import type { ChatSettings } from '../contract';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
-import useChatHelpers from '../useChatHelpers';
+import { usePaneConversationState } from '~/routes/ChatSettings';
+import { SteerHostTestProvider } from 'test/steerHost';
+import { ChatHostTestProvider } from 'test/chatHost';
 import useTokenLimits from '../useTokenLimits';
 import store from '~/store';
 
@@ -35,21 +38,23 @@ jest.mock('~/hooks/useNewConvo', () => ({
   default: () => ({ newConversation: jest.fn() }),
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useSteerConvert: () => jest.fn(),
-}));
+/** The pane conversation comes from the app's pane store, as the host supplies it. */
+const paneSettings: ChatSettings = { ...defaultChatSettings, usePaneConversationState };
 
 function createWrapper(
   initializeState?: (snapshot: MutableSnapshot) => void,
-  settings: ChatSettings = defaultChatSettings,
+  settings: ChatSettings = paneSettings,
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
         <RecoilRoot initializeState={initializeState}>
-          <ChatSettingsContext.Provider value={settings}>{children}</ChatSettingsContext.Provider>
+          <ChatSettingsContext.Provider value={settings}>
+            <SteerHostTestProvider>
+              <ChatHostTestProvider>{children}</ChatHostTestProvider>
+            </SteerHostTestProvider>
+          </ChatSettingsContext.Provider>
         </RecoilRoot>
       </QueryClientProvider>
     );
@@ -60,7 +65,9 @@ function renderChatHelpers(
   paramId?: string,
   initializeState?: (snapshot: MutableSnapshot) => void,
 ) {
-  return renderHook(() => useChatHelpers(0, paramId), { wrapper: createWrapper(initializeState) });
+  return renderHook(() => useChatHelpers(0, paramId), {
+    wrapper: createWrapper(initializeState),
+  });
 }
 
 describe('useChatHelpers contract members', () => {
