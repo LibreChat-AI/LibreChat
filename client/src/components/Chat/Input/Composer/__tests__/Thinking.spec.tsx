@@ -278,6 +278,20 @@ describe('Thinking', () => {
     expect(dialog).toHaveTextContent('Xhigh');
   });
 
+  it('focuses the first level when the option list has no Auto value', async () => {
+    mockSetting = {
+      key: 'reasoning_effort',
+      type: 'enum',
+      options: ['low', 'high'],
+    } as unknown as SettingDefinition;
+    mockConversation = { conversationId: 'convo-1' } as unknown as TConversation;
+    renderInComposer();
+    fireEvent.click(screen.getByTestId('composer-thinking-button'));
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Low' })).toHaveFocus());
+    expect(screen.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument();
+  });
+
   it('names the current level inside the popover', async () => {
     renderInComposer();
     fireEvent.click(screen.getByTestId('composer-thinking-button'));
