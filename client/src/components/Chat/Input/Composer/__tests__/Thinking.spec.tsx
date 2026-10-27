@@ -178,7 +178,7 @@ describe('Thinking', () => {
     expect(mockConversation.reasoning_effort).toBe('low');
   });
 
-  it('keeps activation inside the control and supports arrow-key navigation', () => {
+  it('keeps activation inside the control and supports arrow-key navigation', async () => {
     const { onComposerClick } = renderInComposer();
     const disclosure = screen.getByTestId('composer-thinking-button');
 
@@ -188,8 +188,7 @@ describe('Thinking', () => {
     expect(onComposerClick).not.toHaveBeenCalled();
     expect(screen.getByRole('radiogroup')).toBeVisible();
     const low = screen.getByRole('radio', { name: 'Low' });
-    low.focus();
-    expect(low).toHaveFocus();
+    await waitFor(() => expect(low).toHaveFocus());
 
     fireEvent.keyDown(low, { key: 'ArrowRight' });
     expect(screen.getByRole('radio', { name: 'High' })).toHaveFocus();
