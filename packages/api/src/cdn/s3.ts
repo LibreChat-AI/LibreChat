@@ -1,4 +1,5 @@
 import { S3Client } from '@aws-sdk/client-s3';
+import { fromTemporaryCredentials, fromTokenFile } from '@aws-sdk/credential-providers';
 import { logger } from '@librechat/data-schemas';
 import { isEnabled } from '~/utils/common';
 
@@ -7,10 +8,12 @@ let s3: S3Client | null = null;
 /**
  * Initializes and returns an instance of the AWS S3 client.
  *
- * If AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are provided, they will be used.
- * Otherwise, the AWS SDK's default credentials chain (including IRSA) is used.
- *
- * If AWS_ENDPOINT_URL is provided, it will be used as the endpoint.
+ * Credential precedence:
+ * 1. If AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are provided, they will be used.
+ * 2. If AWS_ROLE_NAME is provided, uses IRSA (or other token-based auth) to assume that role for S3 access.
+ *    This is useful in Kubernetes with IRSA or other environments where you need to assume a role.
+ * 3. Otherwise, the AWS SDK's default credentials chain (including IRSA, instance profiles,
+ *    AWS profiles, environment variables, etc.) is used.
  *
  * @returns An instance of S3Client if the region is provided; otherwise, null.
  */
@@ -32,10 +35,10 @@ export const initializeS3 = (): S3Client | null => {
     );
   }
 
-  // Read the custom endpoint if provided.
   const endpoint = process.env.AWS_ENDPOINT_URL;
   const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
   const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  const awsRoleArn = process.env.AWS_ROLE_NAME;
 
   const config = {
     region,
@@ -50,8 +53,21 @@ export const initializeS3 = (): S3Client | null => {
       credentials: { accessKeyId, secretAccessKey },
     });
     logger.info('[initializeS3] S3 initialized with provided credentials.');
+  } else if (awsRoleArn) {
+    // Use IRSA (or other token-based auth) to assume specified role for S3 access
+    s3 = new S3Client({
+      ...config,
+      credentials: fromTemporaryCredentials({
+        masterCredentials: fromTokenFile(),
+        params: {
+          RoleArn: awsRoleArn,
+          RoleSessionName: 'librechat-s3-session',
+        },
+      }),
+    });
+    logger.info(`[initializeS3] S3 initialized with assumed role: ${awsRoleArn}`);
   } else {
-    // When using IRSA, credentials are automatically provided via the IAM Role attached to the ServiceAccount.
+    // Fallback to default credentials chain (IRSA, instance profiles, etc.)
     s3 = new S3Client(config);
     logger.info('[initializeS3] S3 initialized using default credentials (IRSA).');
   }
