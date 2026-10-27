@@ -904,7 +904,7 @@ describe('deleteRoleByName', () => {
     const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
       filter: mongoose.FilterQuery<IUser>,
       update: mongoose.UpdateQuery<IUser>,
-      options: mongoose.QueryOptions<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
     ) =>
       (async () => {
         /** Between the member read and the writes: another request moves Bob to USER, and Eve
