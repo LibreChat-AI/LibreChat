@@ -212,6 +212,39 @@ describe('getMessagesByCursor', () => {
     },
   );
 
+  it.each([1, -1] as const)(
+    'pages past messages with a missing timestamp (order %i)',
+    async (sortOrder) => {
+      const conversationId = uuid();
+      const at = new Date('2026-01-01T00:00:00.000Z');
+      const rows = [at, undefined, at, undefined].map((updatedAt, index) => ({
+        messageId: `ts-${index}-${uuid()}`,
+        conversationId,
+        user: 'user-1',
+        text: 'x',
+        isCreatedByUser: false,
+        createdAt: at,
+        ...(updatedAt ? { updatedAt } : {}),
+      }));
+      await mongoose.models.Message.collection.insertMany(rows);
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 10; page++) {
+        const result = await methods.getMessagesByCursor(
+          { conversationId, user: 'user-1' },
+          { sortField: 'updatedAt', sortOrder, limit: 1, cursor },
+        );
+        seen.push(...result.messages.map((message) => message.messageId));
+        if (result.nextCursor == null) {
+          break;
+        }
+        cursor = result.nextCursor;
+      }
+      expect(new Set(seen)).toEqual(new Set(rows.map((row) => row.messageId)));
+      expect(seen).toHaveLength(rows.length);
+    },
+  );
+
   it('still honors a legacy bare timestamp cursor', async () => {
     const conversationId = uuid();
     const newer = new Date('2026-02-01T00:00:00.000Z');

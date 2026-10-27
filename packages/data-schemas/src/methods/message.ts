@@ -984,7 +984,7 @@ function parseMessageCursor(cursor: string): { value: string; id?: string } {
   return { value: cursor };
 }
 
-/** The rows after a cursor, following MongoDB's order for a string field: null/missing, '', then text. */
+/** The rows after a cursor, following MongoDB's order: null/missing, then '' (strings only), then values. */
 function buildCursorFilter(
   sortField: string,
   op: '$gt' | '$lt',
@@ -995,9 +995,6 @@ function buildCursorFilter(
     return { [sortField]: { [op]: value } };
   }
   const tieId = { _id: { [op]: position.id } };
-  if (DATE_SORT_FIELDS.has(sortField)) {
-    return { $or: [{ [sortField]: { [op]: value } }, { [sortField]: value, ...tieId }] };
-  }
   const ascending = op === '$gt';
   if (position.value === NULL_SORT_VALUE) {
     return {
@@ -4307,7 +4304,10 @@ export function createMessageMethods(
     const position = cursor ? parseMessageCursor(cursor) : null;
     if (position != null) {
       const op = sortOrder === 1 ? '$gt' : '$lt';
-      const value = DATE_SORT_FIELDS.has(sortField) ? new Date(position.value) : position.value;
+      const value =
+        DATE_SORT_FIELDS.has(sortField) && position.value !== NULL_SORT_VALUE
+          ? new Date(position.value)
+          : position.value;
       const id = position.id == null ? undefined : new mongoose.Types.ObjectId(position.id);
       const after = buildCursorFilter(sortField, op, value, { value: position.value, id });
       queryFilter.$and = [...(queryFilter.$and ?? []), after];
