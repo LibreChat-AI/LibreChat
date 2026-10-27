@@ -1,19 +1,39 @@
+import { z } from 'zod';
 import { logger, isValidObjectIdString } from '@librechat/data-schemas';
 import {
   PermissionBits,
   ResourceType,
+  SystemRoles,
   DEFAULT_CACHE_CLEAR_TIMEOUT_MS,
 } from 'librechat-data-provider';
 import type { Response } from 'express';
-import type { PromptGroupRecord, PromptServiceError, StoredId } from './types';
+import type {
+  PromptGroupRecord,
+  PromptSelection,
+  PromptServiceError,
+  ResolvedPrompt,
+  StoredId,
+} from './types';
 import type { PromptViaGroupResource } from './access';
 import type { PromptService } from './service';
 import type { ServerRequest } from '~/types';
 import { contentFilterBlockResponse } from '~/middleware/contentFilter';
+import { toLangfusePromptErrorResponse } from '~/langfuse/promptSync';
+import { LangfusePromptRequestError } from '~/langfuse/prompts';
 import { runBounded } from '~/agents/instructions/linked';
 import { formatPromptGroupsResponse } from './format';
 import { getSafeErrorMetadata } from '~/utils';
 import { isPromptStoreError } from './errors';
+
+/** Same rule as the admin Langfuse route's `promptVersionQuerySchema`
+ *  (`admin/langfuse.ts`): an absent query param resolves `production`. Parses
+ *  the raw query value rather than a pre-coerced string, so a repeated or
+ *  bracketed `version` query parameter (an array, not a string) fails
+ *  validation instead of silently falling back to `production`. */
+const resolveVersionQuerySchema = z.union([
+  z.undefined(),
+  z.string().pipe(z.coerce.number<string>().int().positive().max(Number.MAX_SAFE_INTEGER)),
+]);
 
 /** A request after the prompt access middleware stored the resolved record. */
 export type PromptRequest = ServerRequest & {
@@ -46,6 +66,7 @@ export interface PromptHandlersDeps {
 
 export interface PromptHandlers {
   getPromptGroup: PromptHandler;
+  resolvePrompt: PromptHandler;
   listAllPromptGroups: PromptHandler;
   listPromptGroups: PromptHandler;
   createPromptGroup: PromptHandler;
@@ -93,7 +114,59 @@ function sendRejection(res: Response, error: PromptServiceError): Response {
           : { error: error.message, details: error.details },
       );
   }
+  if (error.type === 'read_only') {
+    return res
+      .status(403)
+      .send({ code: 'read_only', error: 'Externally managed prompts are read-only' });
+  }
   return res.status(400).send({ error: 'Prompt operation is not available' });
+}
+
+/**
+ * Omits `sourceUrl` from a resolved Langfuse prompt for a non-admin requester. A native
+ * result carries no `sourceUrl` and is returned unchanged either way.
+ */
+export function toResolveResponse(
+  value: ResolvedPrompt,
+  { isAdmin }: { isAdmin: boolean },
+): ResolvedPrompt {
+  if (value.source !== 'langfuse' || isAdmin) {
+    return value;
+  }
+  const { sourceUrl: _sourceUrl, ...rest } = value;
+  return rest;
+}
+
+/**
+ * Maps a `resolvePrompt` rejection to its `/resolve` response. `unsupported_source` only
+ * comes from the `allowedSources` check, which this route never passes, and
+ * `invalid_input`/`unsupported` belong to other operations; none of the three can reach
+ * here through this route, so they fall through to the generic 500 like any other
+ * unexpected failure.
+ */
+function sendResolveRejection(res: Response, error: PromptServiceError): Response {
+  switch (error.type) {
+    case 'blocked_content':
+      return res.status(400).send(contentFilterBlockResponse(error.finding));
+    case 'unsupported_selection':
+      return res.status(400).send({ code: 'invalid_request' });
+    case 'unavailable_selection':
+      return res.status(404).send({ code: 'not_found' });
+    case 'source_not_found':
+      return res.status(404).send({ code: 'not_found', message: 'Prompt not found in Langfuse' });
+    case 'unsupported_content':
+      return res.status(422).send({ code: 'unsupported_type' });
+    case 'source_unavailable':
+      if (error.reason === 'disabled') {
+        return res.status(404).send({ code: 'not_available' });
+      }
+      if (error.reason === 'not_configured') {
+        return res.status(409).send({ code: 'not_configured' });
+      }
+      return res.status(409).send({ code: 'source_changed' });
+    default:
+      return res.status(500).send({ message: 'Error resolving prompt' });
+  }
 }
 
 /**
@@ -169,6 +242,50 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           return res.status(404).send({ message: 'Prompt group not found' });
         }
         return res.status(500).send({ message: 'Error getting prompt group' });
+      }
+    },
+
+    /**
+     * Resolves a group's content for either source: native resolves `production`
+     * (the only selection it accepts), and Langfuse fetches live, by the `production`
+     * label or an exact `version`. Usage is not recorded here — `/use` already does.
+     */
+    async resolvePrompt(req, res) {
+      const groupId = param(req, 'groupId');
+      const parsedVersion = resolveVersionQuerySchema.safeParse(
+        (req.query as { version?: unknown }).version,
+      );
+      if (!parsedVersion.success) {
+        return res.status(400).send({ code: 'invalid_request' });
+      }
+      const selection: PromptSelection =
+        parsedVersion.data == null
+          ? { type: 'production' }
+          : { type: 'version', version: parsedVersion.data };
+      try {
+        const result = await service.resolvePrompt({
+          groupId,
+          selection,
+          loadedGroup: loadedGroup(req),
+          filters: req.config?.filters,
+        });
+        if (!result.ok) {
+          return sendResolveRejection(res, result.error);
+        }
+        return res
+          .status(200)
+          .send(toResolveResponse(result.value, { isAdmin: req.user?.role === SystemRoles.ADMIN }));
+      } catch (error) {
+        if (error instanceof LangfusePromptRequestError) {
+          logger.error('[prompts] Langfuse request failed while resolving a prompt', error);
+          const { status, body } = toLangfusePromptErrorResponse(error);
+          return res.status(status).send(body);
+        }
+        logger.error('Error resolving prompt', error);
+        if (isPromptStoreError(error, 'read')) {
+          return res.status(404).send({ code: 'not_found' });
+        }
+        return res.status(500).send({ message: 'Error resolving prompt' });
       }
     },
 
@@ -258,6 +375,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           prompt: body(req).prompt,
           author: req.user?.id ?? '',
           filters: req.config?.filters,
+          loadedGroup: loadedGroup(req),
         });
         if (!result.ok) {
           return sendRejection(res, result.error);
@@ -298,6 +416,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           groupId: param(req, 'groupId'),
           updates: req.body,
           filters: req.config?.filters,
+          loadedGroup: loadedGroup(req),
         });
         if (!result.ok) {
           return sendRejection(res, result.error);
@@ -397,7 +516,11 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           return res.status(400).send({ error: 'Invalid or missing groupId' });
         }
         const promptId = param(req, 'promptId');
-        const result = await service.deletePrompt({ groupId, promptId });
+        const result = await service.deletePrompt({
+          groupId,
+          promptId,
+          loadedRevision: loadedRevision(req),
+        });
         if (!result.ok) {
           return sendRejection(res, result.error);
         }
@@ -412,23 +535,18 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
     async deletePromptGroup(req, res) {
       try {
         const groupId = param(req, 'groupId');
-        /* Revisions are gone once the group is deleted, so their IDs are read first —
-         * only when a cache is wired, since otherwise nothing is cleared. A read failure
-         * leaves exact-revision cache entries to expire by TTL; it is logged and the
-         * delete proceeds. */
-        let promptIds: readonly string[] = [];
-        if (deps.invalidateLinkedPrompt) {
-          try {
-            promptIds = (await service.getPrompts({ groupId })).map((revision) => revision._id);
-          } catch (error) {
-            logger.error('[prompts] Failed to read revisions before deleting the group', {
-              groupId,
-              ...getSafeErrorMetadata(error),
-            });
-          }
+        const result = await service.deletePromptGroup({
+          groupId,
+          loadedGroup: loadedGroup(req),
+          // Only the service needs to read revision IDs before the group (and its
+          // revisions) are gone; it is pointless when no cache is wired to clear.
+          collectPromptIds: Boolean(deps.invalidateLinkedPrompt),
+        });
+        if (!result.ok) {
+          return sendRejection(res, result.error);
         }
-        const value = await service.deletePromptGroup(groupId);
-        await clearLinkedPromptCache(deps, req, groupId, promptIds);
+        const { promptIds, ...value } = result.value;
+        await clearLinkedPromptCache(deps, req, groupId, promptIds ?? []);
         return res.send(value);
       } catch (error) {
         logger.error('Error deleting prompt group', error);

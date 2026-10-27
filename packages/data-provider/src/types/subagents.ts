@@ -1,6 +1,6 @@
+import type { StepEvents, SteerEvents, TSteerAppliedEvent } from './runs';
 import type { TMessageContentParts } from './content';
 import type { ChatStepFrame } from './transport';
-import type { StepEvents } from './runs';
 import type { Agents } from './agents';
 
 export type SubagentThreadStatus =
@@ -52,6 +52,14 @@ export type ParentSubagentIndex = {
  * or durable records that produced it.
  */
 export type SubagentActivityItem =
+  | {
+      type: 'steer';
+      steer: string;
+      steerId?: string;
+      clientSteerId?: string;
+      createdAt?: number;
+      textTruncated?: boolean;
+    }
   | {
       type: 'writing';
       text: string;
@@ -251,6 +259,7 @@ export type SubagentDigest = {
 
 /** Public graph events only. Never a private model transcript or tool execution request. */
 export type SubagentContentFrame =
+  | { event: SteerEvents.ON_STEER_APPLIED; data: TSteerAppliedEvent }
   | Extract<
       ChatStepFrame,
       {

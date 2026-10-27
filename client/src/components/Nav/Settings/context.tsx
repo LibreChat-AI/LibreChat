@@ -36,6 +36,7 @@ export function useSettingsContext(): SettingsContextValue {
 
   const balanceEnabled = startupConfig?.balance?.enabled === true;
   const langfuseConnectionAccess = startupConfig?.langfuseConnectionAccess === true;
+  const langfusePromptSyncAccess = startupConfig?.langfusePromptSyncAccess === true;
   const adminPanelURL = startupConfig?.adminPanelURL ?? '';
   const isLocalProvider = user?.provider === 'local';
   const emailEnabled = startupConfig?.emailEnabled === true;
@@ -92,6 +93,7 @@ export function useSettingsContext(): SettingsContextValue {
       mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
+      langfusePromptSyncAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,
@@ -119,6 +121,7 @@ export function useSettingsContext(): SettingsContextValue {
       mascotAllowed,
       engineTTS,
       langfuseConnectionAccess,
+      langfusePromptSyncAccess,
       adminPanelURL,
       replyTabBadgeAllowed,
       replyNotificationsAllowed,

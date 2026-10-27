@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   limiterCache,
+  requirePreAuthTenantContext,
   createSetBalanceConfig,
   requireTwoFactorSetupToken,
   createTwoFactorManagementLimiter,
@@ -69,6 +70,7 @@ const ldapAuth = !!process.env.LDAP_URL && !!process.env.LDAP_USER_SEARCH_BASE;
 router.post('/logout', middleware.requireJwtAuth, logoutController);
 router.post(
   '/login',
+  requirePreAuthTenantContext,
   middleware.logHeaders,
   middleware.requireSameOrigin,
   middleware.loginLimiter,
@@ -94,6 +96,7 @@ router.post('/cloudfront/refresh', middleware.requireJwtAuth, (req, res) => {
 });
 router.post(
   '/register',
+  requirePreAuthTenantContext,
   middleware.registerLimiter,
   middleware.checkBan,
   middleware.checkInviteUser,
@@ -102,6 +105,7 @@ router.post(
 );
 router.post(
   '/requestPasswordReset',
+  requirePreAuthTenantContext,
   middleware.resetPasswordLimiter,
   middleware.checkBan,
   middleware.validatePasswordReset,
@@ -109,6 +113,7 @@ router.post(
 );
 router.post(
   '/resetPassword',
+  requirePreAuthTenantContext,
   middleware.resetPasswordSubmissionLimiter,
   middleware.checkBan,
   middleware.validatePasswordReset,
@@ -119,6 +124,7 @@ router.post('/2fa/enable', middleware.requireJwtAuth, twoFactorManagementLimiter
 router.post('/2fa/verify', middleware.requireJwtAuth, twoFactorManagementLimiter, verify2FA);
 router.post(
   '/2fa/setup',
+  requirePreAuthTenantContext,
   middleware.setTwoFactorTempUser,
   middleware.twoFactorSetupLimiter,
   middleware.checkBan,
@@ -128,6 +134,7 @@ router.post(
 );
 router.post(
   '/2fa/setup/confirm',
+  requirePreAuthTenantContext,
   middleware.setTwoFactorTempUser,
   middleware.twoFactorTempLimiter,
   middleware.checkBan,
@@ -137,6 +144,7 @@ router.post(
 );
 router.post(
   '/2fa/setup/acknowledge',
+  requirePreAuthTenantContext,
   middleware.setTwoFactorAcknowledgementTempUser,
   middleware.twoFactorSetupLimiter,
   middleware.checkBan,
@@ -145,6 +153,7 @@ router.post(
 );
 router.post(
   '/2fa/setup/finalize',
+  requirePreAuthTenantContext,
   middleware.setTwoFactorFinalizationTempUser,
   middleware.twoFactorSetupLimiter,
   middleware.checkBan,
@@ -153,6 +162,7 @@ router.post(
 );
 router.post(
   '/2fa/verify-temp',
+  requirePreAuthTenantContext,
   middleware.requireSameOrigin,
   middleware.setTwoFactorTempUser,
   middleware.twoFactorTempLimiter,
@@ -177,6 +187,7 @@ router.post(
 /* Passkeys (WebAuthn) */
 router.post(
   '/passkey/login/options',
+  requirePreAuthTenantContext,
   middleware.logHeaders,
   middleware.passkeyLimiter,
   middleware.checkBan,
@@ -184,6 +195,7 @@ router.post(
 );
 router.post(
   '/passkey/login/verify',
+  requirePreAuthTenantContext,
   middleware.logHeaders,
   middleware.requireSameOrigin,
   middleware.passkeyLimiter,
