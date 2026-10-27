@@ -4364,6 +4364,32 @@ describe('useSteering', () => {
       expect(result.current.queue.map((item) => item.reasoningOverride)).toEqual([low, low]);
     });
 
+    it('keeps a level picked under a new target on the turns queued after it', () => {
+      const low = { key: 'reasoning_effort', value: ReasoningEffort.low } as const;
+      const { result } = setupWithContext(
+        { conversation: { ...agentsConversation, spec: 'other-spec' } },
+        undefined,
+        low,
+      );
+      act(() => {
+        contextStore.set(submissionByIndex(0), {
+          conversation: agentsConversation,
+          userMessage: {
+            reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+          },
+        } as unknown as TSubmission);
+      });
+
+      act(() => {
+        result.current.steering.queueFromComposer('first on the new spec');
+      });
+      act(() => {
+        result.current.steering.queueFromComposer('second on the new spec');
+      });
+
+      expect(result.current.queue.map((item) => item.reasoningOverride)).toEqual([low, low]);
+    });
+
     /* The interrupt-and-steer chord promises to keep the partial answer. With
        reasoning staged it cannot steer, and aborting would break that promise,
        so it declines like its disabled menu row instead of interrupting. */

@@ -24,7 +24,7 @@ export default function useComposerTake<File extends ComposerFile>({
   conversationId,
   queueKey,
   reasoningStateKey,
-  inheritReasoning,
+  reasoningTarget,
   liveReasoningOverride,
   files,
   setFiles,
@@ -32,10 +32,11 @@ export default function useComposerTake<File extends ComposerFile>({
   conversationId: string;
   queueKey: string;
   reasoningStateKey: string;
-  /** Whether the conversation still targets what the running turn ran on, so its level applies. */
-  inheritReasoning: boolean;
-  /** The level the running turn carries: a queued turn with nothing newly picked keeps the level
-   *  of the turn it will follow, as a direct send keeps its branch's level. */
+  /** What the conversation targets now; recorded on each queued item. */
+  reasoningTarget: string;
+  /** The level the running turn carries, when it ran on the current target: a queued turn with
+   *  nothing newly picked keeps the level of the turn it will follow, as a direct send keeps its
+   *  branch's level. */
   liveReasoningOverride?: TMessage['reasoningOverride'];
   files?: Map<string, File>;
   setFiles?: ComposerFileSetter<File>;
@@ -98,9 +99,10 @@ export default function useComposerTake<File extends ComposerFile>({
     /* The turn this one will follow is the last one queued, or the running turn when none is. */
     const queued = reasoningStore.get(queuedMessagesByConvoId(queueKey));
     const lastQueued = queued[queued.length - 1];
-    let inherited: TMessage['reasoningOverride'];
-    if (inheritReasoning) {
-      inherited = lastQueued != null ? lastQueued.reasoningOverride : liveReasoningOverride;
+    let inherited = liveReasoningOverride;
+    if (lastQueued != null) {
+      inherited =
+        lastQueued.reasoningTarget === reasoningTarget ? lastQueued.reasoningOverride : undefined;
     }
     const reasoningOverride = pendingReasoning ?? inherited;
     if (quotes.length > 0) {
@@ -116,10 +118,11 @@ export default function useComposerTake<File extends ComposerFile>({
       ...(quotes.length > 0 && { quotes }),
       ...(manualSkills.length > 0 && { manualSkills }),
       ...(reasoningOverride != null && { reasoningOverride }),
+      reasoningTarget,
     };
   }, [
     conversationId,
-    inheritReasoning,
+    reasoningTarget,
     liveReasoningOverride,
     queueKey,
     reasoningStateKey,

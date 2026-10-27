@@ -27,8 +27,12 @@ import {
   activeGenerationCreatedAtByConvoId,
   activeGenerationProtocolVersionByConvoId,
 } from '../steer/atoms';
+import {
+  getReasoningTarget,
+  getReasoningStateKey,
+  pendingReasoningOverrideFamily,
+} from '../composer';
 import { hasLiveRunPause, selectLiveMessageState, carriedSteerContext } from '../../core';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../composer';
 import { submissionByIndex } from '../submission';
 import useQueuedTurnReceipts from './receipts';
 import { useSteerHost } from '../steer/host';
@@ -172,14 +176,12 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
   const liveSubmission = useAtomValue(submissionByIndex(index));
   /* A level belongs to the target it ran on: once the conversation moves to another spec, model
      or agent, a queued turn does not inherit it, as a composer pick is dropped on the same change. */
-  const liveConversation = liveSubmission?.conversation;
-  const inheritReasoning =
-    liveConversation != null &&
-    liveConversation.spec === conversation?.spec &&
-    liveConversation.endpoint === conversation?.endpoint &&
-    liveConversation.model === conversation?.model &&
-    liveConversation.agent_id === conversation?.agent_id;
-  const liveReasoningOverride = liveSubmission?.userMessage?.reasoningOverride;
+  const reasoningTarget = getReasoningTarget(conversation);
+  const liveReasoningOverride =
+    liveSubmission?.conversation != null &&
+    getReasoningTarget(liveSubmission.conversation) === reasoningTarget
+      ? liveSubmission.userMessage?.reasoningOverride
+      : undefined;
   const { applyQueuedTurnReceipts, finishQueuedTurnEnqueue } = useQueuedTurnReceipts({
     conversationId,
     queueKey,
@@ -274,7 +276,7 @@ export default function useSteering<File extends ComposerFile = ComposerFile>({
     conversationId,
     queueKey,
     reasoningStateKey,
-    inheritReasoning,
+    reasoningTarget,
     liveReasoningOverride,
     files,
     setFiles,

@@ -104,6 +104,9 @@ export type QueuedMessage = {
   manualSkills?: string[];
   /** Request-scoped reasoning setting captured when this item was queued. */
   reasoningOverride?: TMessage['reasoningOverride'];
+  /** The spec, endpoint, model and agent the item was queued for, so a turn queued after it only
+   *  inherits its level while the conversation still targets the same thing. */
+  reasoningTarget?: string;
   /** Front-inserted by "Interrupt & send": stays ahead of chronologically
    *  older items when leftover steers are merged back into the queue. */
   priority?: boolean;
@@ -198,6 +201,7 @@ export interface QueuedMessageContext {
   quotes?: string[];
   manualSkills?: string[];
   reasoningOverride?: TMessage['reasoningOverride'];
+  reasoningTarget?: string;
   clientRequestId?: string;
   recoverySteerId?: string;
   expectedPredecessorCreatedAt?: number;
