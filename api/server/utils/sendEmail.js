@@ -8,7 +8,7 @@ const {
   isEnabled,
   logAxiosError,
   readFileAsString,
-  SERVICE_REQUEST_TIMEOUT_MS,
+  serviceRequestBudget,
 } = require('@librechat/api');
 
 /**
@@ -41,8 +41,7 @@ const sendEmailViaMailgun = async ({ to, from, subject, html }) => {
 
   try {
     const response = await axios.post(`${mailgunHost}/v3/${mailgunDomain}/messages`, formData, {
-      timeout: SERVICE_REQUEST_TIMEOUT_MS,
-      signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
+      ...serviceRequestBudget(),
       headers: {
         ...formData.getHeaders(),
         Authorization: `Basic ${Buffer.from(`api:${mailgunApiKey}`).toString('base64')}`,

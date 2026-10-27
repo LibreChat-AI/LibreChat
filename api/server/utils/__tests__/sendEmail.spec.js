@@ -9,6 +9,7 @@ jest.mock('@librechat/api', () => ({
   logAxiosError: jest.fn(),
   isEnabled: jest.fn((val) => val === 'true' || val === true),
   readFileAsString: jest.fn(),
+  serviceRequestBudget: jest.fn(() => ({ timeout: 10000 })),
 }));
 
 const savedEnv = { ...process.env };
@@ -52,6 +53,7 @@ function loadSendEmail() {
     logAxiosError: jest.fn(),
     isEnabled: jest.fn((val) => val === 'true' || val === true),
     readFileAsString: jest.fn().mockResolvedValue({ content: '<p>{{name}}</p>' }),
+    serviceRequestBudget: jest.fn(() => ({ timeout: 10000 })),
   }));
   return require('../sendEmail');
 }

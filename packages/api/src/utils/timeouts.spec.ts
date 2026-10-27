@@ -5,6 +5,8 @@ import {
   getOutboundTimeoutMs,
   toolRequestBudget,
   createSpeechBudget,
+  serviceRequestBudget,
+  SERVICE_REQUEST_TIMEOUT_MS,
   outboundRequestBudget,
   DEFAULT_OUTBOUND_TIMEOUTS_MS,
 } from './timeouts';
@@ -151,5 +153,13 @@ describe('createSpeechBudget', () => {
     expect(first.signal.aborted).toBe(true);
     expect(second.signal.aborted).toBe(true);
     expect(next().signal.aborted).toBe(true);
+  });
+});
+
+describe('serviceRequestBudget', () => {
+  it('bounds a request by the fixed service timeout with a fresh deadline', () => {
+    const first = serviceRequestBudget();
+    expect(first.timeout).toBe(SERVICE_REQUEST_TIMEOUT_MS);
+    expect(first.signal).not.toBe(serviceRequestBudget().signal);
   });
 });

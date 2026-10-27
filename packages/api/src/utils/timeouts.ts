@@ -106,3 +106,11 @@ export function configuredRequestBudget(
 ): ReturnType<typeof outboundRequestBudget> {
   return outboundRequestBudget(getOutboundTimeoutMs(appConfig, key), key, signal);
 }
+
+/** Fixed budget for startup and auth requests made before app config exists. */
+export function serviceRequestBudget(): { timeout: number; signal: AbortSignal } {
+  return {
+    timeout: SERVICE_REQUEST_TIMEOUT_MS,
+    signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
+  };
+}

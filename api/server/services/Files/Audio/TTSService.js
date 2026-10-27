@@ -370,6 +370,7 @@ class TTSService {
           if (!res.headersSent) {
             return res.status(500).end();
           }
+          res.destroy();
           return;
         }
       }
