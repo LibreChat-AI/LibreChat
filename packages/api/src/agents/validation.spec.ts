@@ -15,6 +15,12 @@ import {
   validateAgentModel,
 } from './validation';
 
+import {
+  MAX_TOOL_OPTION_KEY_LENGTH,
+  MAX_TOOL_OPTION_ENTRIES,
+  MAX_TOOL_OPTION_KEY_BYTES,
+} from './options';
+
 const validGroupId = '507f1f77bcf86cd799439011';
 const validPromptId = '507f191e810c19729de860ea';
 
@@ -56,7 +62,10 @@ describe('agent Git identity validation', () => {
       const regexCheck = jest.spyOn(RegExp.prototype, 'test');
 
       const result = schema.safeParse({ ...base, git_identity: { name: 'Lia', email } });
-      const regexCheckedEmail = regexCheck.mock.calls.some(([value]) => value === email);
+      const regexCheckedEmail = regexCheck.mock.calls.some(
+        ([value], index) =>
+          value === email && !regexCheck.mock.contexts[index].source.startsWith('[\\uD800'),
+      );
       regexCheck.mockRestore();
 
       expect(result.success).toBe(false);
@@ -625,5 +634,42 @@ describe('validateAgentModel', () => {
     expect(result.isValid).toBe(false);
     expect(result.error?.message).toContain('illegal_model_request');
     expect(logViolation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('agent tool-option safety limits', () => {
+  const base = { provider: 'openAI', model: 'gpt-4o-mini', tools: [] };
+  const options = (names: string[]) =>
+    Object.fromEntries(names.map((name) => [name, { approval_mode: 'ask' as const }]));
+
+  test.each([
+    ['delimiter-rich key', options(['q' + '_mcp_z'.repeat(4000)])],
+    [
+      'too many entries',
+      options(Array.from({ length: MAX_TOOL_OPTION_ENTRIES + 1 }, (_, i) => `${i}`)),
+    ],
+    ['aggregate bytes', options(Array.from({ length: 129 }, (_, i) => `${i}`.padEnd(256, 'é')))],
+  ])('rejects %s on both create and update', (_label, tool_options) => {
+    for (const result of [
+      agentCreateSchema.safeParse({ ...base, tool_options }),
+      agentUpdateSchema.safeParse({ tool_options }),
+    ]) {
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues[0].path).toEqual(['tool_options']);
+    }
+  });
+
+  test('accepts the inclusive key, entry and aggregate-byte boundaries', () => {
+    for (const tool_options of [
+      options(['x'.repeat(MAX_TOOL_OPTION_KEY_LENGTH)]),
+      options(
+        Array.from({ length: MAX_TOOL_OPTION_ENTRIES }, (_, i) =>
+          `${i}`.padStart(MAX_TOOL_OPTION_KEY_BYTES / MAX_TOOL_OPTION_ENTRIES, 'x'),
+        ),
+      ),
+    ]) {
+      expect(agentCreateSchema.parse({ ...base, tool_options }).tool_options).toEqual(tool_options);
+      expect(agentUpdateSchema.parse({ tool_options }).tool_options).toEqual(tool_options);
+    }
   });
 });

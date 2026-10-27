@@ -331,6 +331,7 @@ describe('getAzureGroupReentryIssues', () => {
   const yamlGroupMap = {
     east: { apiKey: 'yaml-literal-key', instanceName: 'east', version: '2024-10-21', models: {} },
   };
+  const yamlBase = { groups: [{ group: 'east', ...yamlGroupMap.east }], groupMap: yamlGroupMap };
   const group = (overrides: Record<string, unknown> = {}) => ({
     group: 'west',
     apiKey: STORED_KEY,
@@ -349,7 +350,7 @@ describe('getAzureGroupReentryIssues', () => {
     return getAzureGroupReentryIssues({
       stored: document,
       candidate: setConfigFields(toConfigOverrideState(document), writes),
-      baseGroupMap: yamlGroupMap,
+      base: yamlBase,
       entered: new Set([ENTERED_KEY]),
     });
   }
@@ -373,6 +374,28 @@ describe('getAzureGroupReentryIssues', () => {
     expect(judge(groupsWrite(group({ version: '2025-01-01' })))).toEqual([]);
   });
 
+  it("judges a partial item merged over librechat.yaml's group of its name", () => {
+    const partial: StoredDocument = {
+      overrides: {
+        endpoints: { azureOpenAI: { groups: [{ group: 'east', apiKey: STORED_KEY }] } },
+      },
+      tombstones: [],
+    };
+    const write = (item: Record<string, unknown>) =>
+      judge(groupsWrite({ group: 'east', apiKey: STORED_KEY, ...item }), partial);
+
+    expect(write({ models: { 'gpt-4o': { deploymentName: 'gpt-4o', version: 'v' } } })).toEqual([]);
+    expect(write({ instanceName: 'east' })).toEqual([]);
+    expect(write({ instanceName: 'attacker' })).toEqual([
+      {
+        path: 'endpoints.azureOpenAI.groups.0.instanceName',
+        segments: ['endpoints', 'azureOpenAI', 'groups', '0', 'instanceName'],
+        code: 'secret_reentry_required',
+        secretPath: 'endpoints.azureOpenAI.groups.0.apiKey',
+      },
+    ]);
+  });
+
   it('judges a group that does not resolve yet, so a later write cannot put the move to use', () => {
     const unresolved = group({ instanceName: 'attacker', deploymentName: undefined });
 
@@ -392,7 +415,7 @@ describe('getAzureGroupReentryIssues', () => {
         ...toConfigOverrideState(mapped),
         tombstones: ['endpoints.azureOpenAI.groupMap.east.instanceName'],
       },
-      baseGroupMap: yamlGroupMap,
+      base: yamlBase,
       entered: new Set(),
     });
 
@@ -427,7 +450,7 @@ describe('getAzureGroupReentryIssues', () => {
         ...toConfigOverrideState(mapped),
         tombstones: ['endpoints.azureOpenAI.groups'],
       },
-      baseGroupMap: yamlGroupMap,
+      base: yamlBase,
       entered: new Set(),
     });
 
@@ -691,7 +714,7 @@ describe('a stored key bound to a destination over a lower layer', () => {
             value: baseURL,
           },
         ]),
-        baseGroupMap: {},
+        base: { groups: undefined, groupMap: {} },
         entered: new Set(),
       });
 

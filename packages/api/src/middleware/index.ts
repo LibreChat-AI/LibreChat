@@ -11,6 +11,9 @@ export * from './sanitize';
 export * from './capabilities';
 export * from './auth';
 export {
+  TENANT_CONTEXT_REQUIRED,
+  createPreAuthTenantGuard,
+  requirePreAuthTenantContext,
   requestContextMiddleware,
   tenantContextMiddleware,
   restoreTenantContextFromReq,
@@ -32,3 +35,5 @@ export * from './generationRetry';
 export * from './code';
 export * from './management';
 export * from './twoFactor';
+export * from './messageIds';
+export * from './promptResolveLimiter';

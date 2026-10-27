@@ -29,6 +29,8 @@ interface ControlComboboxProps {
   ariaInvalid?: boolean;
   ariaDescribedBy?: string;
   searchPlaceholder?: string;
+  /** Optional controls beside the search field, outside the option list. */
+  searchActions?: React.ReactNode;
   selectPlaceholder?: string;
   isCollapsed: boolean;
   SelectIcon?: React.ReactNode;
@@ -79,6 +81,7 @@ function ControlCombobox({
   ariaInvalid,
   ariaDescribedBy,
   searchPlaceholder,
+  searchActions,
   selectPlaceholder,
   containerClassName,
   isCollapsed,
@@ -282,8 +285,8 @@ function ControlCombobox({
           minWidth: matchTriggerWidth ? undefined : 'min(16rem, 90vw)',
         }}
       >
-        <div className="shrink-0 py-1.5">
-          <div className="relative">
+        <div className="flex shrink-0 items-center gap-2 py-1.5">
+          <div className="relative min-w-0 flex-1">
             <Search className="text-text-primary absolute inset-s-3 top-1/2 h-4 w-4 -translate-y-1/2" />
             <Ariakit.Combobox
               store={combobox}
@@ -292,6 +295,7 @@ function ControlCombobox({
               className="bg-surface-secondary text-text-primary w-full rounded-md py-2 ps-9 pe-3 text-sm focus:outline-hidden"
             />
           </div>
+          {searchActions != null && <div className="shrink-0 pe-2">{searchActions}</div>}
         </div>
         <div
           className={cn(

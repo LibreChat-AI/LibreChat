@@ -47,6 +47,35 @@ describe('regenerate helpers', () => {
     expect(getPreliminaryRegenerateResponseMessageId('')).toBeNull();
   });
 
+  it('allocates a bounded placeholder for a full-length response without truncating it', () => {
+    const responseMessageId = 'a'.repeat(257);
+    const first = getPreliminaryRegenerateResponseMessageId(responseMessageId);
+    const second = getPreliminaryRegenerateResponseMessageId(responseMessageId);
+    expect(first).toMatch(/^[0-9a-f-]{36}_$/);
+    expect(second).not.toBe(first);
+    expect(getPreliminaryRegenerateResponseMessageId(first)).toBe(first);
+    expect(getPreliminaryRegenerateResponseMessageId('a'.repeat(256) + '_')).toBe(
+      'a'.repeat(256) + '_',
+    );
+  });
+
+  it('bounds oversized adversarial response IDs before normalization', () => {
+    expect(
+      getPreliminaryRegenerateResponseMessageId('_'.repeat(80_000) + 'X')?.length,
+    ).toBeLessThanOrEqual(257);
+  });
+
+  it('keeps response placeholders bounded and stable across the protocol boundary', () => {
+    for (let length = 1; length <= Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH + 1; length++) {
+      for (const suffix of ['', '_', '___', '_X']) {
+        const response = getPreliminaryRegenerateResponseMessageId('a'.repeat(length) + suffix);
+        expect(response).not.toBeNull();
+        expect(response?.length).toBeLessThanOrEqual(Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH);
+        expect(getPreliminaryRegenerateResponseMessageId(response)).toBe(response);
+      }
+    }
+  });
+
   it('prefers the targeted response, then the latest, then the newest sibling', () => {
     const first = msg({ messageId: 'a1', parentMessageId: 'u' });
     const second = msg({ messageId: 'a2', parentMessageId: 'u' });

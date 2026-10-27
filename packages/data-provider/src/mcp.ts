@@ -453,7 +453,8 @@ export const StdioOptionsSchema = BaseOptionsSchema.extend({
         processedEnv[key] = extractEnvVariable(value);
       }
       return processedEnv;
-    }),
+    })
+    .optional(),
   /**
    * How to handle stderr of the child process.
    * Accepts: 'pipe' | 'ignore' | 'inherit' | file descriptor number.

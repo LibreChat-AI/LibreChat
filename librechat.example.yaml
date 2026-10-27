@@ -752,6 +752,11 @@ actions:
 
 # Definition of custom endpoints
 endpoints:
+  # (optional) How long the admin config catalog reuses a scope's model lists while its endpoint
+  # config is unchanged, in milliseconds. Defaults to 120000 (two minutes), at most 3600000 (one
+  # hour); 0 resolves them on every read (a fetched list may still come from the two-minute
+  # model-list cache). Only librechat.yaml sets it.
+  # catalogModelsTtlMs: 120000
   # assistants:
   #   disableBuilder: false # Disable Assistants Builder Interface by setting to `true`
   #   pollIntervalMs: 3000  # Polling interval for checking assistant updates

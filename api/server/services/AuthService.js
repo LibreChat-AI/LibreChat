@@ -393,7 +393,7 @@ const verifyEmail = async (req) => {
 const registerUser = async (user, additionalData = {}) => {
   const result = registerSchema.safeParse(user);
   if (!result.success) {
-    const errorMessage = errorsToString(result.error.errors);
+    const errorMessage = errorsToString(result.error.issues);
     logger.info('Route: register - Validation Error', {
       name: 'Validation error:',
       value: errorMessage,

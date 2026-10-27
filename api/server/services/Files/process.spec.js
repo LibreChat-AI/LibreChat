@@ -3990,7 +3990,11 @@ describe('stored upload cleanup across storage-before-record paths', () => {
       }),
     ).rejects.toThrow('db down');
 
-    expectStoredObjectDeleted(req, { file_id: 'agent-file', embedded: true });
+    expectStoredObjectDeleted(req, {
+      file_id: 'agent-file',
+      embedded: true,
+      metadata: { embeddedEntities: ['agent-abc'] },
+    });
   });
 
   it('deletes the stored object when the vector upload fails', async () => {
@@ -4011,6 +4015,10 @@ describe('stored upload cleanup across storage-before-record paths', () => {
       }),
     ).rejects.toThrow('rag unavailable');
 
-    expectStoredObjectDeleted(req, { file_id: 'agent-file', embedded: true });
+    expectStoredObjectDeleted(req, {
+      file_id: 'agent-file',
+      embedded: true,
+      metadata: { embeddedEntities: ['agent-abc'] },
+    });
   });
 });
