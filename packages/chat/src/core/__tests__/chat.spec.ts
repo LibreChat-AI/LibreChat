@@ -1,4 +1,4 @@
-import { StepEvents } from 'librechat-data-provider';
+import { StepEvents, buildTree } from 'librechat-data-provider';
 import type { Agents, TMessage, TPayload, ChatEvent } from 'librechat-data-provider';
 import type { ChatStream, ChatStatus, ChatTransport, ChatConnection } from '../types';
 import type { ChatState, ChatInit } from '../chat';
@@ -1205,16 +1205,31 @@ describe('Chat attachments and reported conversations', () => {
 
   describe('optimistic rollback at the store boundary', () => {
     const earlier: TMessage[] = [
-      { ...placeholder, messageId: 'earlier-1', text: 'Earlier' },
-      { ...placeholder, messageId: 'earlier-2', text: 'Answer' },
+      { ...userMessage, messageId: 'earlier-1', parentMessageId: null, text: 'Earlier' },
+      { ...placeholder, messageId: 'earlier-2', parentMessageId: 'earlier-1', text: 'Answer' },
     ];
-    const external: TMessage = { ...placeholder, messageId: 'external-1', text: 'External' };
+    const turnUser: TMessage = { ...userMessage, parentMessageId: 'earlier-2' };
+    const external: TMessage = {
+      ...placeholder,
+      messageId: 'external-1',
+      parentMessageId: 'earlier-2',
+      text: 'External',
+    };
     /** Overwrites `earlier-2` and appends the turn, so the write both replaces and adds rows. */
     const optimistic = (current: TMessage[]) => [
       ...current.map((m) => (m.messageId === 'earlier-2' ? { ...m, text: '' } : m)),
-      userMessage,
+      turnUser,
       placeholder,
     ];
+    type Node = TMessage & { children?: Node[] };
+    /** The tree `buildTree` files the list as: one id path per root, depth first. */
+    const chains = (messages: TMessage[]) => {
+      const walk = (node: Node): string[] => [
+        node.messageId,
+        ...(node.children ?? []).flatMap((child) => walk(child)),
+      ];
+      return ((buildTree({ messages }) ?? []) as Node[]).map((root) => walk(root));
+    };
     const replaced = {
       status: 'replaced' as const,
       generationProtocolVersion: 2,
@@ -1322,47 +1337,70 @@ describe('Chat attachments and reported conversations', () => {
       },
     );
 
+    /** Edits the turn's response and the row it overwrote, as another writer of the store would. */
+    const editTurn = (current: TMessage[]) =>
+      current.map((m) =>
+        m.messageId === placeholder.messageId || m.messageId === 'earlier-2'
+          ? { ...m, text: 'Edited' }
+          : m,
+      );
+
     it.each([
-      ['over a store that reports writes synchronously', false],
-      ['over a structurally shared store', true],
+      [
+        'by a store subscriber inside the write, over a store that reports writes synchronously',
+        false,
+        true,
+      ],
+      ['by a store subscriber inside the write, over a structurally shared store', true, true],
+      ['by the host after the write, over a store that reports writes synchronously', false, false],
+      ['by the host after the write, over a structurally shared store', true, false],
     ])(
-      'keeps the edits a store subscriber made to the turn rows inside the write when a replaced start rolls back, %s',
-      async (_label, shared) => {
+      'keeps an edited turn row and the turn rows above it when a replaced start rolls back, edited %s',
+      async (_label, shared, inside) => {
         const state = createStore(shared);
-        state.subscribe?.(() => {
-          const current = state.messages;
-          if (current.some((m) => m.messageId === placeholder.messageId && m.text === '')) {
-            state.replaceMessages(
-              current.map((m) =>
-                m.messageId === placeholder.messageId || m.messageId === 'earlier-2'
-                  ? { ...m, text: 'Edited' }
-                  : m,
-              ),
-            );
-          }
-        });
+        if (inside) {
+          state.subscribe?.(() => {
+            const current = state.messages;
+            if (current.some((m) => m.messageId === placeholder.messageId && m.text === '')) {
+              state.replaceMessages(editTurn(current));
+            }
+          });
+        }
         const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
-        let attachedWith: string[] = [];
+        let attachedWith: TMessage[] = [];
+        let answer: (() => void) | undefined;
         const { chat } = setup(
           { state, prepareRequest: jest.fn(() => ({ payload, messages: optimistic })) },
           {
-            sendMessages: jest.fn(async () => replaced),
+            sendMessages: jest.fn(
+              () =>
+                new Promise((resolve) => {
+                  answer = () => resolve(replaced);
+                }),
+            ),
             reconnectToStream: jest.fn(async () => {
-              attachedWith = rows(chat.messages);
+              attachedWith = chat.messages;
               return stream;
             }),
           },
         );
         const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
         await flush();
+        if (!inside) {
+          state.replaceMessages(editTurn(state.messages));
+        }
+        answer?.();
+        await flush();
         stream.push(finalEvent({ requestMessage: null, responseMessage: null }));
         await sent;
 
-        expect(attachedWith).toEqual([
+        expect(rows(attachedWith)).toEqual([
           'earlier-1:Earlier',
           'earlier-2:Edited',
+          'user-1:Hi',
           'response-1:Edited',
         ]);
+        expect(chains(attachedWith)).toEqual([['earlier-1', 'earlier-2', 'user-1', 'response-1']]);
       },
     );
 
