@@ -341,18 +341,10 @@ describe('OpenWeather Tool', () => {
       return Promise.reject('Unexpected fetch call for geocoding');
     });
 
-    // Mock timestamp API response
-    fetch.mockImplementationOnce((url) => {
-      if (url.includes('onecall/timemachine')) {
-        throw new Error('Invalid date format. Expected YYYY-MM-DD.');
-      }
-      return Promise.reject('Unexpected fetch call');
-    });
-
     const result = await tool.call({
       action: 'timestamp',
       city: 'Knoxville, Tennessee',
-      date: '03-04-2020', // Wrong format
+      date: '2020/03/04', // Wrong format
     });
     expect(result).toMatch(/Error: Invalid date format. Expected YYYY-MM-DD./);
   });

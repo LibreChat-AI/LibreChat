@@ -399,10 +399,10 @@ describe('getUserFacingGenerationError', () => {
     );
   });
 
-  it('keeps the credential-redacted message when no content policy is active', () => {
+  it('keeps the message with URLs redacted when no content policy is active', () => {
     const error = new Error('request to https://api.example.test/?api_key=secret-key failed');
     expect(getUserFacingGenerationError(error, {}, 'Generation failed')).toBe(
-      'request to https://api.example.test/?api_key=[REDACTED] failed',
+      'request to https://api.example.test/[redacted] failed',
     );
     expect(getUserFacingGenerationError(new Error('  '), undefined, 'Generation failed')).toBe(
       'Generation failed',

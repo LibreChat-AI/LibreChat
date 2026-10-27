@@ -39,7 +39,7 @@ const OpenWeather = require('./app/clients/tools/structured/OpenWeather');
   out.unauthorized = await tool._call({ action: 'current_forecast', lat: 1, lon: 2 });
   respond = () => Promise.resolve({ ok: true, json: async () => [] });
   out.city = await tool._call({ action: 'current_forecast', city: 'Atlantis' });
-  out.date = await tool._call({ action: 'timestamp', lat: 1, lon: 2, date: '03-04-2020' });
+  out.date = await tool._call({ action: 'timestamp', lat: 1, lon: 2, date: '2020/03/04' });
   process.stdout.write('RESULT' + JSON.stringify(out));
   process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });
