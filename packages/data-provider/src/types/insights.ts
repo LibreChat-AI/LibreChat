@@ -20,12 +20,20 @@ export type TInsightsAgent = {
   name: string;
 };
 
-export type TInsightsDailyPoint = {
+export type TInsightsResponseOutcomes = {
+  completedResponses: number;
+  failedResponses: number;
+  /** Responses marked unfinished, including cancellations and partial responses. */
+  interruptedResponses: number;
+};
+
+export type TInsightsDailyPoint = TInsightsResponseOutcomes & {
   date: string;
   conversations: number;
   users: number;
   messages: number;
   totalTokens: number;
+  responses: number;
 };
 
 export type TInsightsUser = {
@@ -54,11 +62,14 @@ export type TInsightsConversation = {
   totalTokens: number;
 };
 
-export type TInsightsSummary = {
+export type TInsightsSummary = TInsightsResponseOutcomes & {
   totalUsers: number;
   totalConversations: number;
   totalMessages: number;
   totalTokens: number;
+  totalResponses: number;
+  /** Latest eligible message creation timestamp in the selected reporting period. */
+  lastUsed: string | null;
 };
 
 export type TInsightsAggregateResponse = {

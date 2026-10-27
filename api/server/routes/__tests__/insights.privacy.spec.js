@@ -45,8 +45,30 @@ const records = [
 const privateValue = 'private-content-sentinel';
 const detailed = {
   agents,
-  summary: { totalUsers: 1, totalConversations: 1, totalMessages: 2, totalTokens: 8 },
-  daily: [{ date: '2026-10-01', conversations: 1, users: 1, messages: 2, totalTokens: 8 }],
+  summary: {
+    totalUsers: 1,
+    totalConversations: 1,
+    totalMessages: 4,
+    totalTokens: 8,
+    totalResponses: 3,
+    completedResponses: 1,
+    failedResponses: 1,
+    interruptedResponses: 1,
+    lastUsed: '2026-10-01T12:00:00.000Z',
+  },
+  daily: [
+    {
+      date: '2026-10-01',
+      conversations: 1,
+      users: 1,
+      messages: 4,
+      totalTokens: 8,
+      responses: 3,
+      completedResponses: 1,
+      failedResponses: 1,
+      interruptedResponses: 1,
+    },
+  ],
   topUsers: [{ userId: privateValue, name: privateValue, email: privateValue }],
   churnedUsers: [],
   latest: {

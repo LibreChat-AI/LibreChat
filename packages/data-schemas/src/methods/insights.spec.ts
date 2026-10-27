@@ -7,6 +7,12 @@ import { createUserModel } from '../models/user';
 
 let mongoServer: MongoMemoryServer;
 const selectedAgents = [{ id: 'agent-a', name: 'Agent A' }];
+const noResponses = {
+  responses: 0,
+  completedResponses: 0,
+  failedResponses: 0,
+  interruptedResponses: 0,
+};
 
 const fixtures = {
   conversations: {
@@ -148,6 +154,11 @@ describe('Insights methods', () => {
           totalMessages: count * 2,
           totalUsers: count,
           totalTokens: count * 12,
+          totalResponses: count,
+          completedResponses: count,
+          failedResponses: 0,
+          interruptedResponses: 0,
+          lastUsed: count ? now.toISOString() : null,
         });
       }
       expect(
@@ -228,6 +239,11 @@ describe('Insights methods', () => {
       totalConversations: 1,
       totalMessages: 2,
       totalTokens: 8,
+      totalResponses: 1,
+      completedResponses: 1,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: now.toISOString(),
     });
     expect(Object.keys(aggregate).sort()).toEqual(['agents', 'daily', 'summary']);
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
@@ -253,11 +269,145 @@ describe('Insights methods', () => {
       totalConversations: 0,
       totalMessages: 0,
       totalTokens: 0,
+      totalResponses: 0,
+      completedResponses: 0,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: null,
     });
     expect(result).not.toHaveProperty('topUsers');
     expect(result).not.toHaveProperty('churnedUsers');
     expect(result).not.toHaveProperty('latest');
   });
+
+  it.each([false, true])(
+    'derives response outcomes and period activity without exposing content (showDetails=%s)',
+    async (showDetails) => {
+      const user = new mongoose.Types.ObjectId().toString();
+      const privateValue = 'private-response-text';
+      const createdAt = new Date('2026-09-01T12:00:00Z');
+      await fixtures.conversations.insertOne({
+        conversationId: 'outcomes',
+        tenantId: 'tenant-a',
+        user,
+        initial_agent_id: 'agent-a',
+        agent_id: 'agent-b',
+        createdAt,
+        updatedAt: new Date('2026-10-15T12:00:00Z'),
+      });
+      const firstDay = new Date('2026-10-02T12:00:00Z');
+      const secondDay = new Date('2026-10-03T12:00:00Z');
+      const latestPrompt = new Date('2026-10-04T12:00:00Z');
+      const base = {
+        conversationId: 'outcomes',
+        tenantId: 'tenant-a',
+        user,
+        isCreatedByUser: false,
+        model: 'agent-b',
+        text: privateValue,
+      };
+      await mongoose.models.Message.collection.insertMany([
+        { ...base, messageId: 'completed', createdAt: firstDay, error: false, unfinished: false },
+        { ...base, messageId: 'legacy-completed', createdAt: firstDay },
+        { ...base, messageId: 'failed', createdAt: firstDay, error: true, unfinished: false },
+        {
+          ...base,
+          messageId: 'failed-overlap',
+          createdAt: secondDay,
+          error: true,
+          unfinished: true,
+        },
+        { ...base, messageId: 'partial', createdAt: secondDay, error: false, unfinished: true },
+        {
+          ...base,
+          messageId: 'tool-limit',
+          createdAt: secondDay,
+          unfinished: true,
+          finish_reason: 'tool_call_limit',
+        },
+        { ...base, messageId: 'legacy-partial', createdAt: secondDay, unfinished: true },
+        {
+          ...base,
+          messageId: 'prompt-with-flags',
+          createdAt: firstDay,
+          isCreatedByUser: true,
+          error: true,
+          unfinished: true,
+        },
+        { ...base, messageId: 'latest-prompt', createdAt: latestPrompt, isCreatedByUser: true },
+        {
+          conversationId: 'outcomes',
+          tenantId: 'tenant-a',
+          user,
+          messageId: 'unknown-role',
+          createdAt: firstDay,
+        },
+        { ...base, messageId: 'before-period', createdAt, error: true },
+        { ...base, messageId: 'after-period', createdAt: new Date('2026-10-08T00:00:00Z') },
+      ]);
+      const methods = createInsightsMethods(mongoose);
+      const options = {
+        showDetails,
+        tenantId: 'tenant-a',
+        range: 'custom' as const,
+        fromTimestamp: '2026-10-01T00:00:00Z',
+        toTimestamp: '2026-10-07T23:59:59Z',
+      };
+      const root = await methods.getInsights({ ...options, agentIds: ['agent-a'] });
+      const combined = await methods.getInsights({ ...options, agentIds: ['agent-a', 'agent-b'] });
+      expect(root.summary).toEqual({
+        totalUsers: 1,
+        totalConversations: 0,
+        totalMessages: 10,
+        totalTokens: 0,
+        totalResponses: 7,
+        completedResponses: 2,
+        failedResponses: 2,
+        interruptedResponses: 3,
+        lastUsed: latestPrompt.toISOString(),
+      });
+      expect(combined.summary).toEqual(root.summary);
+      expect(combined.daily).toEqual(root.daily);
+      expect(root.daily.find((day) => day.date === '2026-10-02')).toEqual({
+        date: '2026-10-02',
+        conversations: 0,
+        users: 1,
+        messages: 5,
+        totalTokens: 0,
+        responses: 3,
+        completedResponses: 2,
+        failedResponses: 1,
+        interruptedResponses: 0,
+      });
+      expect(root.daily.find((day) => day.date === '2026-10-03')).toEqual({
+        date: '2026-10-03',
+        conversations: 0,
+        users: 1,
+        messages: 4,
+        totalTokens: 0,
+        responses: 4,
+        completedResponses: 0,
+        failedResponses: 1,
+        interruptedResponses: 3,
+      });
+      expect(root.daily.find((day) => day.date === '2026-10-04')).toEqual(
+        expect.objectContaining({ messages: 1, responses: 0 }),
+      );
+      for (const day of root.daily) {
+        expect(day.responses).toBe(
+          day.completedResponses + day.failedResponses + day.interruptedResponses,
+        );
+      }
+      const answeringAgent = await methods.getInsights({ ...options, agentIds: ['agent-b'] });
+      expect(answeringAgent.summary).toEqual(
+        expect.objectContaining({ totalResponses: 0, lastUsed: null }),
+      );
+      expect(JSON.stringify(root)).not.toContain(privateValue);
+      if (!showDetails) {
+        expect(Object.keys(root).sort()).toEqual(['agents', 'daily', 'summary']);
+      }
+    },
+  );
 
   it('counts active users from prompts and all messages for top users within the tenant', async () => {
     const now = new Date();
@@ -825,6 +975,10 @@ describe('Insights methods', () => {
       messages: 2,
       users: 1,
       totalTokens: 12,
+      responses: 1,
+      completedResponses: 1,
+      failedResponses: 0,
+      interruptedResponses: 0,
     });
     expect(agentAInsights.topUsers).toEqual([
       expect.objectContaining({
@@ -924,6 +1078,11 @@ describe('Insights methods', () => {
       totalMessages: 2,
       totalTokens: 18,
       totalUsers: 1,
+      totalResponses: 2,
+      completedResponses: 2,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: active.toISOString(),
     });
     expect(root.daily.find((point) => point.date === '2026-10-03')).toEqual({
       date: '2026-10-03',
@@ -931,12 +1090,21 @@ describe('Insights methods', () => {
       messages: 2,
       totalTokens: 18,
       users: 1,
+      responses: 2,
+      completedResponses: 2,
+      failedResponses: 0,
+      interruptedResponses: 0,
     });
     expect(answeringAgent.summary).toEqual({
       totalConversations: 0,
       totalMessages: 0,
       totalTokens: 0,
       totalUsers: 0,
+      totalResponses: 0,
+      completedResponses: 0,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: null,
     });
     expect(combined.summary).toEqual(root.summary);
     expect(Object.keys(root).sort()).toEqual(['agents', 'daily', 'summary']);
@@ -1053,6 +1221,11 @@ describe('Insights methods', () => {
         totalMessages: 1,
         totalUsers: 1,
         totalTokens: tokens,
+        totalResponses: 1,
+        completedResponses: 1,
+        failedResponses: 0,
+        interruptedResponses: 0,
+        lastUsed: now.toISOString(),
       });
       expect(result.latest.conversations).toEqual([
         expect.objectContaining({
@@ -1075,6 +1248,11 @@ describe('Insights methods', () => {
       totalMessages: 2,
       totalUsers: 2,
       totalTokens: 8,
+      totalResponses: 2,
+      completedResponses: 2,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: now.toISOString(),
     });
     expect(combined.latest.conversations).toHaveLength(2);
   });
@@ -1213,9 +1391,30 @@ describe('Insights methods', () => {
     });
 
     expect(result.daily).toEqual([
-      { date: '2026-08-01', conversations: 1, messages: 1, totalTokens: 0, users: 1 },
-      { date: '2026-08-02', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
-      { date: '2026-08-03', conversations: 1, messages: 1, totalTokens: 0, users: 1 },
+      {
+        ...noResponses,
+        date: '2026-08-01',
+        conversations: 1,
+        messages: 1,
+        totalTokens: 0,
+        users: 1,
+      },
+      {
+        ...noResponses,
+        date: '2026-08-02',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
+      {
+        ...noResponses,
+        date: '2026-08-03',
+        conversations: 1,
+        messages: 1,
+        totalTokens: 0,
+        users: 1,
+      },
     ]);
   });
 
@@ -1275,9 +1474,30 @@ describe('Insights methods', () => {
     });
 
     expect(result.daily).toEqual([
-      { date: '2026-03-07', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
-      { date: '2026-03-08', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
-      { date: '2026-03-09', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
+      {
+        ...noResponses,
+        date: '2026-03-07',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
+      {
+        ...noResponses,
+        date: '2026-03-08',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
+      {
+        ...noResponses,
+        date: '2026-03-09',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
     ]);
   });
 

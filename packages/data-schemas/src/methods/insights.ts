@@ -12,6 +12,8 @@ import type {
   TInsightsDetailedResponse,
   TInsightsParams,
   TInsightsResponse,
+  TInsightsResponseOutcomes,
+  TInsightsSummary,
   TInsightsUser,
 } from 'librechat-data-provider';
 import type { Model, PipelineStage } from 'mongoose';
@@ -53,7 +55,13 @@ type ConversationMessageSummary = UserMessageTotals & {
   totalTokens: number;
 };
 type UserConversationCount = { _id: string; conversations: number };
-type MessageDay = { date: string; messages: number; totalTokens: number };
+type MessageDay = TInsightsResponseOutcomes & {
+  date: string;
+  messages: number;
+  totalTokens: number;
+  responses: number;
+  lastUsed: Date;
+};
 type FirstMessage = { _id: ConversationOwner; text: string };
 type UserSummary = {
   _id: { toString(): string };
@@ -244,6 +252,10 @@ const addDay = (days: Map<string, TInsightsDailyPoint>, date: string): TInsights
     users: 0,
     messages: 0,
     totalTokens: 0,
+    responses: 0,
+    completedResponses: 0,
+    failedResponses: 0,
+    interruptedResponses: 0,
   };
   days.set(date, current);
   return current;
@@ -394,13 +406,55 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       Message.aggregate<MessageDay>([
         ...messagePipeline,
         {
+          $addFields: {
+            insightsOutcome: {
+              $cond: [
+                { $eq: ['$isCreatedByUser', false] },
+                {
+                  $cond: [
+                    { $eq: ['$error', true] },
+                    'failed',
+                    {
+                      $cond: [{ $eq: ['$unfinished', true] }, 'interrupted', 'completed'],
+                    },
+                  ],
+                },
+                null,
+              ],
+            },
+          },
+        },
+        {
           $group: {
             _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone } },
             messages: { $sum: 1 },
             totalTokens: { $sum: { $ifNull: ['$tokenCount', 0] } },
+            responses: { $sum: { $cond: [{ $ne: ['$insightsOutcome', null] }, 1, 0] } },
+            completedResponses: {
+              $sum: { $cond: [{ $eq: ['$insightsOutcome', 'completed'] }, 1, 0] },
+            },
+            failedResponses: {
+              $sum: { $cond: [{ $eq: ['$insightsOutcome', 'failed'] }, 1, 0] },
+            },
+            interruptedResponses: {
+              $sum: { $cond: [{ $eq: ['$insightsOutcome', 'interrupted'] }, 1, 0] },
+            },
+            lastUsed: { $max: '$createdAt' },
           },
         },
-        { $project: { _id: 0, date: '$_id', messages: 1, totalTokens: 1 } },
+        {
+          $project: {
+            _id: 0,
+            date: '$_id',
+            messages: 1,
+            totalTokens: 1,
+            responses: 1,
+            completedResponses: 1,
+            failedResponses: 1,
+            interruptedResponses: 1,
+            lastUsed: 1,
+          },
+        },
         { $sort: { date: 1 } },
       ]),
       Message.aggregate<CountResult>([
@@ -460,24 +514,40 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       addDay(days, key);
     }
     for (const row of conversationDays) addDay(days, row.date).conversations = row.conversations;
+    const summary: TInsightsSummary = {
+      totalUsers: userCount[0]?.total ?? 0,
+      totalConversations: conversationDays.reduce((total, row) => total + row.conversations, 0),
+      totalMessages: 0,
+      totalTokens: 0,
+      totalResponses: 0,
+      completedResponses: 0,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: null,
+    };
+    let lastUsed: Date | null = null;
     for (const row of messageDays) {
       const day = addDay(days, row.date);
       day.messages = row.messages;
       day.totalTokens = row.totalTokens;
+      day.responses = row.responses;
+      day.completedResponses = row.completedResponses;
+      day.failedResponses = row.failedResponses;
+      day.interruptedResponses = row.interruptedResponses;
+      summary.totalMessages += row.messages;
+      summary.totalTokens += row.totalTokens;
+      summary.totalResponses += row.responses;
+      summary.completedResponses += row.completedResponses;
+      summary.failedResponses += row.failedResponses;
+      summary.interruptedResponses += row.interruptedResponses;
+      if (lastUsed == null || row.lastUsed > lastUsed) lastUsed = row.lastUsed;
     }
+    summary.lastUsed = lastUsed?.toISOString() ?? null;
     for (const row of dailyUsers) addDay(days, row.date).users = row.users;
-    const totalConversations = conversationDays.reduce(
-      (total, row) => total + row.conversations,
-      0,
-    );
+    const totalConversations = summary.totalConversations;
     const aggregate: TInsightsAggregateResponse = {
       agents: options.agents ?? [],
-      summary: {
-        totalUsers: userCount[0]?.total ?? 0,
-        totalConversations,
-        totalMessages: messageDays.reduce((total, row) => total + row.messages, 0),
-        totalTokens: messageDays.reduce((total, row) => total + row.totalTokens, 0),
-      },
+      summary,
       daily: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)),
     };
     if (!showDetails) {

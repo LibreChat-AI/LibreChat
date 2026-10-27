@@ -18,6 +18,11 @@ const emptyInsights: TInsightsResponse = {
     totalConversations: 0,
     totalMessages: 0,
     totalTokens: 0,
+    totalResponses: 0,
+    completedResponses: 0,
+    failedResponses: 0,
+    interruptedResponses: 0,
+    lastUsed: null,
   },
   daily: [],
   topUsers: [],
@@ -226,17 +231,32 @@ describe('Insights handlers', () => {
     async (role) => {
       insightsEnabled.mockReturnValueOnce({ enabled: true, showDetails: false });
       const privateValue = 'private-content-must-not-cross-api';
+      const summary = {
+        totalUsers: 1,
+        totalConversations: 1,
+        totalMessages: 4,
+        totalTokens: 5,
+        totalResponses: 3,
+        completedResponses: 1,
+        failedResponses: 1,
+        interruptedResponses: 1,
+        lastUsed: '2026-10-01T12:00:00.000Z',
+      };
       const getInsights = jest.fn().mockResolvedValue({
         ...emptyInsights,
         agents: [{ id: 'agent-a', name: 'Alpha', email: privateValue }],
-        summary: { ...emptyInsights.summary, userId: privateValue },
+        summary: { ...summary, userId: privateValue },
         daily: [
           {
             date: '2026-10-01',
             conversations: 1,
             users: 1,
-            messages: 2,
+            messages: 4,
             totalTokens: 5,
+            responses: 3,
+            completedResponses: 1,
+            failedResponses: 1,
+            interruptedResponses: 1,
             text: privateValue,
           },
         ],
@@ -265,8 +285,20 @@ describe('Insights handlers', () => {
       );
       expect(json).toHaveBeenCalledWith({
         agents: [{ id: 'agent-a', name: 'Alpha' }],
-        summary: emptyInsights.summary,
-        daily: [{ date: '2026-10-01', conversations: 1, users: 1, messages: 2, totalTokens: 5 }],
+        summary,
+        daily: [
+          {
+            date: '2026-10-01',
+            conversations: 1,
+            users: 1,
+            messages: 4,
+            totalTokens: 5,
+            responses: 3,
+            completedResponses: 1,
+            failedResponses: 1,
+            interruptedResponses: 1,
+          },
+        ],
       });
       expect(JSON.stringify(json.mock.calls)).not.toContain(privateValue);
     },

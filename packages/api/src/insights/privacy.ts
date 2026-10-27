@@ -11,13 +11,22 @@ export function toAggregateInsightsResponse(
       totalConversations: insights.summary.totalConversations,
       totalMessages: insights.summary.totalMessages,
       totalTokens: insights.summary.totalTokens,
+      totalResponses: insights.summary.totalResponses,
+      completedResponses: insights.summary.completedResponses,
+      failedResponses: insights.summary.failedResponses,
+      interruptedResponses: insights.summary.interruptedResponses,
+      lastUsed: insights.summary.lastUsed,
     },
-    daily: insights.daily.map(({ date, conversations, users, messages, totalTokens }) => ({
-      date,
-      conversations,
-      users,
-      messages,
-      totalTokens,
+    daily: insights.daily.map((day) => ({
+      date: day.date,
+      conversations: day.conversations,
+      users: day.users,
+      messages: day.messages,
+      totalTokens: day.totalTokens,
+      responses: day.responses,
+      completedResponses: day.completedResponses,
+      failedResponses: day.failedResponses,
+      interruptedResponses: day.interruptedResponses,
     })),
   };
 }
