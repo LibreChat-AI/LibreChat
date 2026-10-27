@@ -74,9 +74,14 @@ export class ReactQueryChatState implements ChatState {
   get version(): number {
     const query = this.options.queryClient.getQueryCache().get(this.queryHash);
     const data = query?.state.data;
+    const read = this.options.read?.();
     let version = this.carried + (query?.state.dataUpdateCount ?? 0) + this.revision;
+    /** A host store's list that moved unheard is a change too, or this read would hide it. */
     const changed =
-      query !== this.counted || data !== this.countedData || this.changes !== this.countedChanges;
+      query !== this.counted ||
+      data !== this.countedData ||
+      read !== this.countedRead ||
+      this.changes !== this.countedChanges;
     if (changed && this.reported != null && version <= this.reported) {
       /**
        * The write count restarts when an entry is created with initial data, removed and created
@@ -87,7 +92,7 @@ export class ReactQueryChatState implements ChatState {
     }
     this.counted = query;
     this.countedData = data;
-    this.countedRead = this.options.read?.();
+    this.countedRead = read;
     this.countedChanges = this.changes;
     this.reported = version;
     return version;
