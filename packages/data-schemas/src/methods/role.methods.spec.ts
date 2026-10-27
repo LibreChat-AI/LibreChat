@@ -1261,6 +1261,51 @@ describe('deleteRoleByName', () => {
     expect(await Role.exists({ name: 'editor' })).toBeNull();
   });
 
+  it('keeps the reassignment tag as evidence when the write and its recovery read both fail', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const realUpdateMany = User.updateMany.bind(User);
+    const updateSpy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          throw new Error('acknowledgement lost');
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+    const realFind = User.find.bind(User);
+    const findSpy = jest.spyOn(User, 'find').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      ...rest: unknown[]
+    ) => {
+      if (filter && '_roleReassignment' in filter) {
+        throw new Error('database unreachable');
+      }
+      return (realFind as (...args: unknown[]) => unknown)(filter, ...rest);
+    }) as unknown as typeof User.find);
+
+    try {
+      await expect(deleteRoleByName('editor')).rejects.toBeInstanceOf(RoleDeletionError);
+    } finally {
+      updateSpy.mockRestore();
+      findSpy.mockRestore();
+    }
+
+    const stored = await User.collection.findOne({ _id: alice._id });
+    expect(stored?.role).toBe(SystemRoles.USER);
+    expect(stored?._roleReassignment).toBeDefined();
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+  });
+
   it('leaves a role recreated under the same name when the expected id no longer matches', async () => {
     const original = await createRoleByName({ name: 'editor' });
     await Role.deleteOne({ name: 'editor' });

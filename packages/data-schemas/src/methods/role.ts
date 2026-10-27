@@ -701,6 +701,7 @@ export function createRoleMethods(
         u._id.toString(),
       );
     let modifiedCount: number;
+    let keepTag = false;
     try {
       ({ modifiedCount } = await User.updateMany(
         { ...members, _id: { $in: batch } },
@@ -719,21 +720,26 @@ export function createRoleMethods(
           reassigned.add(id);
         }
       } catch (recoveryError) {
-        logger.error('[deleteRoleByName] reassigned members unreadable after a failed write:', {
-          recoveryError,
-        });
+        /** The tag is now the only record of whom the write moved: keep it for reconciliation. */
+        keepTag = true;
+        logger.error(
+          `[deleteRoleByName] reassigned members unreadable after a failed write; accounts tagged ${REASSIGN_NONCE_PATH}=${nonce.toString()} were moved to USER:`,
+          { recoveryError },
+        );
       }
       throw error;
     } finally {
-      try {
-        await User.updateMany(
-          tagged,
-          { $unset: { [REASSIGN_NONCE_PATH]: '' } },
-          { strict: false, strictQuery: false, timestamps: false },
-        );
-      } catch (cleanupError) {
-        /** The reassignment committed; a leftover tag is inert, so its removal does not fail it. */
-        logger.error('[deleteRoleByName] reassignment tag cleanup failed:', cleanupError);
+      if (!keepTag) {
+        try {
+          await User.updateMany(
+            tagged,
+            { $unset: { [REASSIGN_NONCE_PATH]: '' } },
+            { strict: false, strictQuery: false, timestamps: false },
+          );
+        } catch (cleanupError) {
+          /** The reassignment committed; a leftover tag is inert, so its removal does not fail it. */
+          logger.error('[deleteRoleByName] reassignment tag cleanup failed:', cleanupError);
+        }
       }
     }
   }
