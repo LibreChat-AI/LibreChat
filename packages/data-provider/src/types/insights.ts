@@ -1,3 +1,5 @@
+import type { TFeedbackTagKey } from '../feedback';
+
 export type InsightsRange = '24h' | '7d' | '30d' | 'custom';
 
 export const INSIGHTS_MAX_RANGE_DAYS = 30;
@@ -27,6 +29,12 @@ export type TInsightsResponseOutcomes = {
   interruptedResponses: number;
 };
 
+export type TInsightsFeedback = {
+  thumbsUp: number;
+  thumbsDown: number;
+  categories: { key: TFeedbackTagKey; count: number }[];
+};
+
 export type TInsightsDailyPoint = TInsightsResponseOutcomes & {
   date: string;
   conversations: number;
@@ -34,6 +42,7 @@ export type TInsightsDailyPoint = TInsightsResponseOutcomes & {
   messages: number;
   totalTokens: number;
   responses: number;
+  feedback: TInsightsFeedback;
 };
 
 export type TInsightsUser = {
@@ -70,6 +79,7 @@ export type TInsightsSummary = TInsightsResponseOutcomes & {
   totalResponses: number;
   /** Latest eligible message creation timestamp in the selected reporting period. */
   lastUsed: string | null;
+  feedback: TInsightsFeedback;
 };
 
 export type TInsightsAggregateResponse = {

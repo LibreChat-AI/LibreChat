@@ -1,4 +1,18 @@
-import type { TInsightsAggregateResponse, TInsightsResponse } from 'librechat-data-provider';
+import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
+import type {
+  TInsightsAggregateResponse,
+  TInsightsFeedback,
+  TInsightsResponse,
+} from 'librechat-data-provider';
+
+function toAggregateFeedback(feedback: TInsightsFeedback): TInsightsFeedback {
+  const counts = new Map(feedback.categories.map(({ key, count }) => [key, count]));
+  return {
+    thumbsUp: feedback.thumbsUp,
+    thumbsDown: feedback.thumbsDown,
+    categories: FEEDBACK_REASON_KEYS.map((key) => ({ key, count: counts.get(key) ?? 0 })),
+  };
+}
 
 /** Only these aggregate fields may cross the API boundary when inspection is disabled. */
 export function toAggregateInsightsResponse(
@@ -16,6 +30,7 @@ export function toAggregateInsightsResponse(
       failedResponses: insights.summary.failedResponses,
       interruptedResponses: insights.summary.interruptedResponses,
       lastUsed: insights.summary.lastUsed,
+      feedback: toAggregateFeedback(insights.summary.feedback),
     },
     daily: insights.daily.map((day) => ({
       date: day.date,
@@ -27,6 +42,7 @@ export function toAggregateInsightsResponse(
       completedResponses: day.completedResponses,
       failedResponses: day.failedResponses,
       interruptedResponses: day.interruptedResponses,
+      feedback: toAggregateFeedback(day.feedback),
     })),
   };
 }

@@ -1,5 +1,6 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
+import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { render, screen, waitFor } from '@testing-library/react';
 import type { TInsightsParams, TInsightsResponse } from 'librechat-data-provider';
@@ -21,6 +22,11 @@ const insightsData: TInsightsResponse = {
     failedResponses: 1,
     interruptedResponses: 0,
     lastUsed: '2026-10-01T12:00:00.000Z',
+    feedback: {
+      thumbsUp: 0,
+      thumbsDown: 0,
+      categories: FEEDBACK_REASON_KEYS.map((key) => ({ key, count: 0 })),
+    },
   },
   daily: [],
   latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },

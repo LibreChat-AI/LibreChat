@@ -1,3 +1,4 @@
+import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
 import type { TInsightsAgent, TInsightsResponse } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
@@ -23,6 +24,11 @@ const emptyInsights: TInsightsResponse = {
     failedResponses: 0,
     interruptedResponses: 0,
     lastUsed: null,
+    feedback: {
+      thumbsUp: 0,
+      thumbsDown: 0,
+      categories: FEEDBACK_REASON_KEYS.map((key) => ({ key, count: 0 })),
+    },
   },
   daily: [],
   topUsers: [],
@@ -231,6 +237,27 @@ describe('Insights handlers', () => {
     async (role) => {
       insightsEnabled.mockReturnValueOnce({ enabled: true, showDetails: false });
       const privateValue = 'private-content-must-not-cross-api';
+      const feedback = {
+        thumbsUp: 1,
+        thumbsDown: 1,
+        categories: FEEDBACK_REASON_KEYS.map((key) => ({
+          key,
+          count: key === 'inaccurate' || key === 'accurate_reliable' ? 1 : 0,
+        })),
+      };
+      const unsafeFeedback = {
+        ...feedback,
+        text: privateValue,
+        userId: privateValue,
+        categories: [
+          ...feedback.categories.map((category) => ({
+            ...category,
+            label: privateValue,
+            text: privateValue,
+          })),
+          { key: privateValue, count: 1 },
+        ],
+      };
       const summary = {
         totalUsers: 1,
         totalConversations: 1,
@@ -241,11 +268,12 @@ describe('Insights handlers', () => {
         failedResponses: 1,
         interruptedResponses: 1,
         lastUsed: '2026-10-01T12:00:00.000Z',
+        feedback,
       };
       const getInsights = jest.fn().mockResolvedValue({
         ...emptyInsights,
         agents: [{ id: 'agent-a', name: 'Alpha', email: privateValue }],
-        summary: { ...summary, userId: privateValue },
+        summary: { ...summary, userId: privateValue, feedback: unsafeFeedback },
         daily: [
           {
             date: '2026-10-01',
@@ -258,6 +286,7 @@ describe('Insights handlers', () => {
             failedResponses: 1,
             interruptedResponses: 1,
             text: privateValue,
+            feedback: unsafeFeedback,
           },
         ],
         topUsers: [{ name: privateValue }],
@@ -297,6 +326,7 @@ describe('Insights handlers', () => {
             completedResponses: 1,
             failedResponses: 1,
             interruptedResponses: 1,
+            feedback,
           },
         ],
       });

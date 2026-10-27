@@ -1,7 +1,7 @@
 const express = require('express');
 const request = require('supertest');
 const { Types } = require('mongoose');
-const { PermissionBits, PrincipalType } = require('librechat-data-provider');
+const { FEEDBACK_REASON_KEYS, PermissionBits, PrincipalType } = require('librechat-data-provider');
 
 const mockGetAppConfig = jest.fn();
 const mockGetAgents = jest.fn();
@@ -43,6 +43,14 @@ const records = [
   { _id: new Types.ObjectId(), id: 'agent-b', name: 'Beta', tenantId: 'tenant-a' },
 ];
 const privateValue = 'private-content-sentinel';
+const aggregateFeedback = {
+  thumbsUp: 1,
+  thumbsDown: 1,
+  categories: FEEDBACK_REASON_KEYS.map((key) => ({
+    key,
+    count: key === 'inaccurate' || key === 'accurate_reliable' ? 1 : 0,
+  })),
+};
 const detailed = {
   agents,
   summary: {
@@ -55,6 +63,7 @@ const detailed = {
     failedResponses: 1,
     interruptedResponses: 1,
     lastUsed: '2026-10-01T12:00:00.000Z',
+    feedback: aggregateFeedback,
   },
   daily: [
     {
@@ -67,6 +76,7 @@ const detailed = {
       completedResponses: 1,
       failedResponses: 1,
       interruptedResponses: 1,
+      feedback: aggregateFeedback,
     },
   ],
   topUsers: [{ userId: privateValue, name: privateValue, email: privateValue }],

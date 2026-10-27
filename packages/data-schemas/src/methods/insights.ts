@@ -1,4 +1,5 @@
 import {
+  FEEDBACK_TAGS,
   INSIGHTS_MAX_RANGE_DAYS,
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
@@ -10,6 +11,7 @@ import type {
   TInsightsConversation,
   TInsightsDailyPoint,
   TInsightsDetailedResponse,
+  TInsightsFeedback,
   TInsightsParams,
   TInsightsResponse,
   TInsightsResponseOutcomes,
@@ -61,6 +63,7 @@ type MessageDay = TInsightsResponseOutcomes & {
   totalTokens: number;
   responses: number;
   lastUsed: Date;
+  feedback: TInsightsFeedback;
 };
 type FirstMessage = { _id: ConversationOwner; text: string };
 type UserSummary = {
@@ -245,6 +248,12 @@ function messageScope(
   ];
 }
 
+const emptyFeedback = (): TInsightsFeedback => ({
+  thumbsUp: 0,
+  thumbsDown: 0,
+  categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: 0 })),
+});
+
 const addDay = (days: Map<string, TInsightsDailyPoint>, date: string): TInsightsDailyPoint => {
   const current = days.get(date) ?? {
     date,
@@ -256,6 +265,7 @@ const addDay = (days: Map<string, TInsightsDailyPoint>, date: string): TInsights
     completedResponses: 0,
     failedResponses: 0,
     interruptedResponses: 0,
+    feedback: emptyFeedback(),
   };
   days.set(date, current);
   return current;
@@ -407,6 +417,10 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         ...messagePipeline,
         {
           $addFields: {
+            insightsFeedbackRating: {
+              $cond: [{ $eq: ['$isCreatedByUser', false] }, '$feedback.rating', null],
+            },
+            insightsFeedbackTag: { $ifNull: ['$feedback.tag.key', '$feedback.tag'] },
             insightsOutcome: {
               $cond: [
                 { $eq: ['$isCreatedByUser', false] },
@@ -440,6 +454,31 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
               $sum: { $cond: [{ $eq: ['$insightsOutcome', 'interrupted'] }, 1, 0] },
             },
             lastUsed: { $max: '$createdAt' },
+            feedbackThumbsUp: {
+              $sum: { $cond: [{ $eq: ['$insightsFeedbackRating', 'thumbsUp'] }, 1, 0] },
+            },
+            feedbackThumbsDown: {
+              $sum: { $cond: [{ $eq: ['$insightsFeedbackRating', 'thumbsDown'] }, 1, 0] },
+            },
+            ...Object.fromEntries(
+              FEEDBACK_TAGS.map(({ key, direction }) => [
+                `feedback_${key}`,
+                {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: ['$insightsFeedbackRating', direction] },
+                          { $eq: ['$insightsFeedbackTag', key] },
+                        ],
+                      },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+              ]),
+            ),
           },
         },
         {
@@ -453,6 +492,11 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             failedResponses: 1,
             interruptedResponses: 1,
             lastUsed: 1,
+            feedback: {
+              thumbsUp: '$feedbackThumbsUp',
+              thumbsDown: '$feedbackThumbsDown',
+              categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: `$feedback_${key}` })),
+            },
           },
         },
         { $sort: { date: 1 } },
@@ -524,6 +568,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       failedResponses: 0,
       interruptedResponses: 0,
       lastUsed: null,
+      feedback: emptyFeedback(),
     };
     let lastUsed: Date | null = null;
     for (const row of messageDays) {
@@ -534,12 +579,18 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       day.completedResponses = row.completedResponses;
       day.failedResponses = row.failedResponses;
       day.interruptedResponses = row.interruptedResponses;
+      day.feedback = row.feedback;
       summary.totalMessages += row.messages;
       summary.totalTokens += row.totalTokens;
       summary.totalResponses += row.responses;
       summary.completedResponses += row.completedResponses;
       summary.failedResponses += row.failedResponses;
       summary.interruptedResponses += row.interruptedResponses;
+      summary.feedback.thumbsUp += row.feedback.thumbsUp;
+      summary.feedback.thumbsDown += row.feedback.thumbsDown;
+      for (const [index, category] of row.feedback.categories.entries()) {
+        summary.feedback.categories[index].count += category.count;
+      }
       if (lastUsed == null || row.lastUsed > lastUsed) lastUsed = row.lastUsed;
     }
     summary.lastUsed = lastUsed?.toISOString() ?? null;

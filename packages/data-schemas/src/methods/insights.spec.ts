@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
+import { FEEDBACK_TAGS } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import type { TFeedbackTagKey } from 'librechat-data-provider';
 import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
 import { createInsightsMethods } from './insights';
@@ -7,11 +9,21 @@ import { createUserModel } from '../models/user';
 
 let mongoServer: MongoMemoryServer;
 const selectedAgents = [{ id: 'agent-a', name: 'Agent A' }];
+const feedbackCounts = (
+  thumbsUp = 0,
+  thumbsDown = 0,
+  counts: Partial<Record<TFeedbackTagKey, number>> = {},
+) => ({
+  thumbsUp,
+  thumbsDown,
+  categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: counts[key] ?? 0 })),
+});
 const noResponses = {
   responses: 0,
   completedResponses: 0,
   failedResponses: 0,
   interruptedResponses: 0,
+  feedback: feedbackCounts(),
 };
 
 const fixtures = {
@@ -138,6 +150,7 @@ describe('Insights methods', () => {
         isTemporary: false,
         model: 'agent-unrelated',
         tokenCount: 7,
+        feedback: { rating: 'thumbsUp', tag: 'accurate_reliable' },
       });
       const methods = createInsightsMethods(mongoose);
       for (const agentId of ['agent-a', 'agent-b']) {
@@ -159,6 +172,7 @@ describe('Insights methods', () => {
           failedResponses: 0,
           interruptedResponses: 0,
           lastUsed: count ? now.toISOString() : null,
+          feedback: feedbackCounts(count, 0, { accurate_reliable: count }),
         });
       }
       expect(
@@ -209,6 +223,11 @@ describe('Insights methods', () => {
         isTemporary: false,
         text: privateValue,
         tokenCount: 5,
+        feedback: {
+          rating: 'thumbsDown',
+          tag: { key: 'inaccurate', label: privateValue, icon: privateValue },
+          text: privateValue,
+        },
       },
     ]);
     const methods = createInsightsMethods(mongoose);
@@ -244,6 +263,7 @@ describe('Insights methods', () => {
       failedResponses: 0,
       interruptedResponses: 0,
       lastUsed: now.toISOString(),
+      feedback: feedbackCounts(0, 1, { inaccurate: 1 }),
     });
     expect(Object.keys(aggregate).sort()).toEqual(['agents', 'daily', 'summary']);
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
@@ -274,6 +294,7 @@ describe('Insights methods', () => {
       failedResponses: 0,
       interruptedResponses: 0,
       lastUsed: null,
+      feedback: feedbackCounts(),
     });
     expect(result).not.toHaveProperty('topUsers');
     expect(result).not.toHaveProperty('churnedUsers');
@@ -365,6 +386,7 @@ describe('Insights methods', () => {
         failedResponses: 2,
         interruptedResponses: 3,
         lastUsed: latestPrompt.toISOString(),
+        feedback: feedbackCounts(),
       });
       expect(combined.summary).toEqual(root.summary);
       expect(combined.daily).toEqual(root.daily);
@@ -378,6 +400,7 @@ describe('Insights methods', () => {
         completedResponses: 2,
         failedResponses: 1,
         interruptedResponses: 0,
+        feedback: feedbackCounts(),
       });
       expect(root.daily.find((day) => day.date === '2026-10-03')).toEqual({
         date: '2026-10-03',
@@ -389,6 +412,7 @@ describe('Insights methods', () => {
         completedResponses: 0,
         failedResponses: 1,
         interruptedResponses: 3,
+        feedback: feedbackCounts(),
       });
       expect(root.daily.find((day) => day.date === '2026-10-04')).toEqual(
         expect.objectContaining({ messages: 1, responses: 0 }),
@@ -408,6 +432,214 @@ describe('Insights methods', () => {
       }
     },
   );
+
+  it.each([false, true])(
+    'counts registered feedback on root-attributed responses by message date (showDetails=%s)',
+    async (showDetails) => {
+      const user = new mongoose.Types.ObjectId().toString();
+      const privateValue = 'private-feedback-sentinel';
+      const createdAt = new Date('2026-09-01T12:00:00Z');
+      const firstDay = new Date('2026-10-02T12:00:00Z');
+      const secondDay = new Date('2026-10-03T12:00:00Z');
+      await fixtures.conversations.insertOne({
+        conversationId: 'historical-feedback',
+        user,
+        tenantId: 'tenant-a',
+        initial_agent_id: 'agent-a',
+        agent_id: 'agent-b',
+        createdAt,
+        updatedAt: new Date('2026-10-15T12:00:00Z'),
+      });
+      const base = {
+        conversationId: 'historical-feedback',
+        user,
+        tenantId: 'tenant-a',
+        model: 'agent-b',
+        isCreatedByUser: false,
+        createdAt: secondDay,
+        text: privateValue,
+      };
+      await fixtures.messages.insertMany([
+        ...FEEDBACK_TAGS.map(({ key, direction }) => ({
+          ...base,
+          messageId: key,
+          createdAt: firstDay,
+          feedback: { rating: direction, tag: key, text: privateValue },
+        })),
+        {
+          ...base,
+          messageId: 'object-tag',
+          error: true,
+          feedback: {
+            rating: 'thumbsDown',
+            tag: {
+              key: 'inaccurate',
+              label: privateValue,
+              icon: privateValue,
+              direction: 'thumbsUp',
+            },
+            text: privateValue,
+          },
+        },
+        { ...base, messageId: 'rating-only', feedback: { rating: 'thumbsUp' } },
+        {
+          ...base,
+          messageId: 'unknown-tag',
+          feedback: { rating: 'thumbsDown', tag: privateValue, text: privateValue },
+        },
+        {
+          ...base,
+          messageId: 'mismatched-tag',
+          feedback: { rating: 'thumbsUp', tag: 'inaccurate' },
+        },
+        {
+          ...base,
+          messageId: 'unknown-rating',
+          feedback: { rating: privateValue, tag: 'inaccurate' },
+        },
+        { ...base, messageId: 'removed-feedback', feedback: null },
+        { ...base, messageId: 'no-feedback' },
+        {
+          ...base,
+          messageId: 'prompt-feedback',
+          isCreatedByUser: true,
+          feedback: { rating: 'thumbsUp', tag: 'accurate_reliable' },
+        },
+        {
+          ...base,
+          messageId: 'before-range-feedback',
+          createdAt,
+          updatedAt: secondDay,
+          feedback: { rating: 'thumbsDown', tag: 'inaccurate' },
+        },
+        {
+          ...base,
+          messageId: 'after-range-feedback',
+          createdAt: new Date('2026-10-08T00:00:00Z'),
+          feedback: { rating: 'thumbsDown', tag: 'inaccurate' },
+        },
+      ]);
+      const methods = createInsightsMethods(mongoose);
+      const options = {
+        showDetails,
+        tenantId: 'tenant-a',
+        range: 'custom' as const,
+        fromTimestamp: '2026-10-01T00:00:00Z',
+        toTimestamp: '2026-10-07T23:59:59Z',
+      };
+      const root = await methods.getInsights({ ...options, agentIds: ['agent-a'] });
+      expect(root.summary.totalConversations).toBe(0);
+      expect(root.summary.feedback).toEqual({
+        thumbsUp: 6,
+        thumbsDown: 9,
+        categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: key === 'inaccurate' ? 2 : 1 })),
+      });
+      expect(root.daily.find((day) => day.date === '2026-10-02')?.feedback).toEqual({
+        thumbsUp: 4,
+        thumbsDown: 7,
+        categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: 1 })),
+      });
+      expect(root.daily.find((day) => day.date === '2026-10-03')?.feedback).toEqual(
+        feedbackCounts(2, 2, { inaccurate: 1 }),
+      );
+      expect(root.daily.find((day) => day.date === '2026-10-01')?.feedback).toEqual(
+        feedbackCounts(),
+      );
+      const answeringAgent = await methods.getInsights({ ...options, agentIds: ['agent-b'] });
+      expect(answeringAgent.summary.feedback).toEqual(feedbackCounts());
+      const combined = await methods.getInsights({ ...options, agentIds: ['agent-a', 'agent-b'] });
+      expect(combined.summary.feedback).toEqual(root.summary.feedback);
+      expect(combined.daily).toEqual(root.daily);
+      expect(JSON.stringify(root)).not.toContain(privateValue);
+      if (!showDetails) expect(Object.keys(root).sort()).toEqual(['agents', 'daily', 'summary']);
+    },
+  );
+
+  it('ignores malformed category values without discarding recognized ratings', async () => {
+    const now = new Date();
+    const user = new mongoose.Types.ObjectId().toString();
+    await fixtures.conversations.insertOne({
+      conversationId: 'malformed-feedback',
+      user,
+      tenantId: 'tenant-a',
+      createdAt: now,
+    });
+    const tags = [
+      null,
+      123,
+      {},
+      { key: 123 },
+      ['accurate_reliable'],
+      [{ key: 'accurate_reliable' }],
+      { key: ['accurate_reliable'] },
+    ];
+    await fixtures.messages.insertMany(
+      tags.map((tag, index) => ({
+        messageId: `malformed-${index}`,
+        conversationId: 'malformed-feedback',
+        user,
+        tenantId: 'tenant-a',
+        createdAt: now,
+        isCreatedByUser: false,
+        feedback: { rating: 'thumbsUp', tag },
+      })),
+    );
+    const result = await createInsightsMethods(mongoose).getInsights({
+      tenantId: 'tenant-a',
+      agentIds: ['agent-a'],
+      showDetails: false,
+    });
+    expect(result.summary.feedback).toEqual(feedbackCounts(7));
+  });
+
+  it('reflects changed and removed feedback on responses created in the selected period', async () => {
+    const user = new mongoose.Types.ObjectId().toString();
+    const createdAt = new Date('2026-10-03T12:00:00Z');
+    await fixtures.conversations.insertOne({
+      conversationId: 'updated-feedback',
+      user,
+      tenantId: 'tenant-a',
+      createdAt,
+    });
+    await fixtures.messages.insertOne({
+      messageId: 'updated-feedback-response',
+      conversationId: 'updated-feedback',
+      user,
+      tenantId: 'tenant-a',
+      createdAt,
+      isCreatedByUser: false,
+      feedback: { rating: 'thumbsUp', tag: 'accurate_reliable' },
+    });
+    const methods = createInsightsMethods(mongoose);
+    const options = {
+      tenantId: 'tenant-a',
+      agentIds: ['agent-a'],
+      showDetails: false as const,
+      range: 'custom' as const,
+      fromTimestamp: '2026-10-01T00:00:00Z',
+      toTimestamp: '2026-10-07T23:59:59Z',
+    };
+    expect((await methods.getInsights(options)).summary.feedback).toEqual(
+      feedbackCounts(1, 0, { accurate_reliable: 1 }),
+    );
+    await mongoose.models.Message.collection.updateOne(
+      { messageId: 'updated-feedback-response', user },
+      {
+        $set: {
+          feedback: { rating: 'thumbsDown', tag: 'inaccurate', text: 'private feedback' },
+          updatedAt: new Date('2026-10-15T12:00:00Z'),
+        },
+      },
+    );
+    expect((await methods.getInsights(options)).summary.feedback).toEqual(
+      feedbackCounts(0, 1, { inaccurate: 1 }),
+    );
+    await mongoose.models.Message.collection.updateOne(
+      { messageId: 'updated-feedback-response', user },
+      { $set: { feedback: null } },
+    );
+    expect((await methods.getInsights(options)).summary.feedback).toEqual(feedbackCounts());
+  });
 
   it('counts active users from prompts and all messages for top users within the tenant', async () => {
     const now = new Date();
@@ -979,6 +1211,7 @@ describe('Insights methods', () => {
       completedResponses: 1,
       failedResponses: 0,
       interruptedResponses: 0,
+      feedback: feedbackCounts(),
     });
     expect(agentAInsights.topUsers).toEqual([
       expect.objectContaining({
@@ -1083,6 +1316,7 @@ describe('Insights methods', () => {
       failedResponses: 0,
       interruptedResponses: 0,
       lastUsed: active.toISOString(),
+      feedback: feedbackCounts(),
     });
     expect(root.daily.find((point) => point.date === '2026-10-03')).toEqual({
       date: '2026-10-03',
@@ -1094,6 +1328,7 @@ describe('Insights methods', () => {
       completedResponses: 2,
       failedResponses: 0,
       interruptedResponses: 0,
+      feedback: feedbackCounts(),
     });
     expect(answeringAgent.summary).toEqual({
       totalConversations: 0,
@@ -1105,6 +1340,7 @@ describe('Insights methods', () => {
       failedResponses: 0,
       interruptedResponses: 0,
       lastUsed: null,
+      feedback: feedbackCounts(),
     });
     expect(combined.summary).toEqual(root.summary);
     expect(Object.keys(root).sort()).toEqual(['agents', 'daily', 'summary']);
@@ -1146,7 +1382,13 @@ describe('Insights methods', () => {
       { ...base, conversationId: 'null-root', initial_agent_id: null },
       { ...base, conversationId: 'empty-root', initial_agent_id: '' },
     ]);
-    const response = { ...base, isCreatedByUser: false, isTemporary: false, model: 'agent-b' };
+    const response = {
+      ...base,
+      isCreatedByUser: false,
+      isTemporary: false,
+      model: 'agent-b',
+      feedback: { rating: 'thumbsDown', tag: 'inaccurate' },
+    };
     await fixtures.messages.insertMany([
       { ...response, messageId: 'belongs-to-a', conversationId: 'shared-root-id', tokenCount: 3 },
       {
@@ -1226,6 +1468,7 @@ describe('Insights methods', () => {
         failedResponses: 0,
         interruptedResponses: 0,
         lastUsed: now.toISOString(),
+        feedback: feedbackCounts(0, 1, { inaccurate: 1 }),
       });
       expect(result.latest.conversations).toEqual([
         expect.objectContaining({
@@ -1253,6 +1496,7 @@ describe('Insights methods', () => {
       failedResponses: 0,
       interruptedResponses: 0,
       lastUsed: now.toISOString(),
+      feedback: feedbackCounts(0, 2, { inaccurate: 2 }),
     });
     expect(combined.latest.conversations).toHaveLength(2);
   });
