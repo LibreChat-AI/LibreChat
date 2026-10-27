@@ -5,6 +5,6 @@
   "module": "./index.es.js",
   "types": "../dist/types/react-query/index.d.ts",
   "dependencies": {
-    "axios": "^1.16.0"
+    "axios": "^1.20.0"
   }
 }
