@@ -119,7 +119,7 @@
     "pdfjs-dist": "^5.4.624",
     "prom-client": "^15.1.3",
     "rate-limit-redis": "^4.2.0",
-    "sanitize-html": "^2.13.0",
+    "sanitize-html": "^2.18.1",
     "sharp": "^0.35.4",
     "traverse": "^0.6.7",
     "ua-parser-js": "^1.0.36",
