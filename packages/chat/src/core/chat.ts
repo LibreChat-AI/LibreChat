@@ -970,16 +970,21 @@ export class Chat {
   ): void {
     const { state } = this.init;
     const status: ChatStatus = outcome.kind === 'error' ? 'error' : 'ready';
-    /** One terminal state: a store that reports each field hears listeners told once, after all. */
+    /**
+     * One terminal state, with the chat's listeners told once it is all set. A store subscriber
+     * told of a field may start the next turn, which then owns the fields this one has not set.
+     */
     this.writing = true;
     try {
       if (state.connection !== 'idle') {
         state.connection = 'idle';
       }
-      if (state.status !== status) {
+      if (!this.active && state.status !== status) {
         state.status = status;
       }
-      state.error = outcome.kind === 'error' ? outcome.error : undefined;
+      if (!this.active) {
+        state.error = outcome.kind === 'error' ? outcome.error : undefined;
+      }
     } finally {
       this.writing = false;
     }

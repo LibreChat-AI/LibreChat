@@ -637,6 +637,49 @@ describe('Chat', () => {
     expect(chat.error).toBeUndefined();
   });
 
+  it.each(['final', 'error'] as const)(
+    'keeps the next turn a store subscriber starts as the connection goes idle, after a %s',
+    async (end) => {
+      const state = createState([]);
+      const listeners = new Set<() => void>();
+      let connection: ChatConnection = 'idle';
+      Object.defineProperty(state, 'connection', {
+        get: () => connection,
+        set: (next: ChatConnection) => {
+          connection = next;
+          [...listeners].forEach((listener) => listener());
+        },
+      });
+      state.subscribe = (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      };
+      const { chat, stream } = setup({ state });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      let next: Promise<void> | undefined;
+      let started = false;
+      listeners.add(() => {
+        if (connection === 'idle' && !started) {
+          started = true;
+          next = chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+        }
+      });
+      stream.push(
+        end === 'final'
+          ? finalEvent()
+          : ({ type: 'error', data: { message: 'Failed' } } as ChatEvent),
+      );
+      await sent;
+
+      expect(next).toBeDefined();
+      expect(chat.status).toBe('submitted');
+      expect(chat.error).toBeUndefined();
+    },
+  );
+
   it.each(['final', 'abort'] as const)(
     'finishes on %s with the response the turn produced, not the tail of another branch',
     async (end) => {
