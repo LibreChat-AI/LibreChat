@@ -60,6 +60,7 @@ jest.mock('@librechat/api', () => {
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
     /** Mirrors the real parse (default 25, ceiling 1000) without loading the config service. */
+    awaitPageSize: jest.fn((pageSize) => pageSize),
     resolveMessagesPageSize: jest.fn(async (_user, raw) => {
       const parsed = parseInt(String(raw), 10);
       return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 1000) : 25;

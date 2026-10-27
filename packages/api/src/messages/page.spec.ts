@@ -3,6 +3,7 @@ import {
   MAX_MESSAGES_PAGE_SIZE,
   parseMessagesPageSize,
   resolveMessagesPageSize,
+  awaitPageSize,
 } from './page';
 
 describe('parseMessagesPageSize', () => {
@@ -51,5 +52,17 @@ describe('resolveMessagesPageSize', () => {
     await expect(resolveMessagesPageSize(user, '5000', { getAppConfig })).resolves.toBe(
       MAX_MESSAGES_PAGE_SIZE,
     );
+  });
+});
+
+describe('awaitPageSize', () => {
+  it('returns the page size and leaves a rejecting sibling read awaitable', async () => {
+    const failing = Promise.reject(new Error('db down'));
+    const size = await awaitPageSize(
+      new Promise<number>((resolve) => setTimeout(() => resolve(40), 5)),
+      failing,
+    );
+    expect(size).toBe(40);
+    await expect(failing).rejects.toThrow('db down');
   });
 });

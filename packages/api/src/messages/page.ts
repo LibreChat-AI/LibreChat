@@ -41,3 +41,17 @@ export async function resolveMessagesPageSize(
     return parseMessagesPageSize(raw);
   }
 }
+
+/**
+ * Waits for the resolved page size while `pending` reads run beside it. They are observed so one
+ * that rejects first is not an unhandled rejection; each stays awaitable by the caller.
+ */
+export async function awaitPageSize(
+  pageSize: Promise<number>,
+  ...pending: Promise<unknown>[]
+): Promise<number> {
+  for (const read of pending) {
+    read.catch(() => undefined);
+  }
+  return pageSize;
+}

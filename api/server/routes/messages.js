@@ -35,6 +35,7 @@ const {
   createSubagentAttachmentCallsHandler,
   rejectToolCallPreviewWrites,
   resolveMessagesPageSize,
+  awaitPageSize,
   withMessageToolCallPreviews,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
@@ -146,9 +147,7 @@ router.get('/', async (req, res) => {
     const previewToolCalls = prepareToolCallPreviews(req, toolCallPreviewDeps);
     if (typeof conversationId === 'string') {
       const ownershipRead = db.getConvoOwnership(user, conversationId);
-      /** Observed here so a rejection while the page size resolves is not unhandled; it is rethrown at the await below. */
-      ownershipRead.catch(() => {});
-      const pageSize = await pageSizeRead;
+      const pageSize = await awaitPageSize(pageSizeRead, ownershipRead);
       /** Client-facing reads never expose server-private fields such as `contextMeta`. */
       const messageRead = messageId
         ? db.getMessages({ conversationId, messageId, user }, CLIENT_MESSAGE_SELECT)
