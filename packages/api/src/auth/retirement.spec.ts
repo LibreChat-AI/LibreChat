@@ -76,30 +76,84 @@ function createRes() {
 }
 
 describe('password reset ordering', () => {
-  it('retires a credential minted while the reset write is in flight', async () => {
-    const userId = await createUser();
-    let mintedAt = 0;
-    const deps: PasswordResetDeps = {
+  /**
+   * Wires the controller to a reset that commits through `commitPasswordReset` against the real
+   * user document, and then consumes its token and sends its notice the way `AuthService` does.
+   */
+  function createResetController(
+    userId: string,
+    overrides: { onCommitWrite?: () => Promise<void>; failRestamp?: boolean } = {},
+  ) {
+    const events: string[] = [];
+    const commitDeps: PasswordResetDeps = {
       findResetToken: async () => ({ token: 'hash', email: null, type: null }),
       getUserById: async () => ({ _id: userId, email: 'user@example.com' }),
       compareToken: async () => true,
       hashPassword: async () => 'new-hash',
       deleteTokens: async () => ({}),
-      updateUser: async (id, update, expectedState) => {
-        if (!mintedAt) {
-          /** A login that read the old document mints between the stamp and the commit. */
-          await tick();
-          mintedAt = Date.now();
-          await tick();
-        }
-        const filter = 'email' in expectedState ? {} : expectedState;
-        return writeUser(id, update, filter) as Promise<{ email: string } | null>;
+      updateUser: async (id, update) => {
+        await overrides.onCommitWrite?.();
+        return writeUser(id, update) as Promise<{ email: string } | null>;
       },
     };
+    const deps = {
+      resetPassword: jest.fn(async () => {
+        await commitPasswordReset(commitDeps, { userId, token: 't', password: 'p' });
+        events.push('notice-sent', 'token-consumed');
+        return { message: 'Password reset was successful' };
+      }),
+      deleteAllUserSessions: jest.fn(async () => {
+        events.push('sessions-revoked');
+        return { deletedCount: 1 };
+      }),
+      deletePasskeysByUser: jest.fn(async () => {
+        events.push('passkeys-revoked');
+        return { deletedCount: 1 };
+      }),
+      awaitAuthUserDocEviction: jest.fn(async () => undefined),
+      getUserById: (id: string, select: string) => methods.getUserById(id, select),
+      updateUser: async (
+        id: string,
+        update: { credentialsChangedAt: Date },
+        expected: { credentialsChangedAt: Date },
+      ) => {
+        events.push('restamp');
+        if (overrides.failRestamp) {
+          throw new Error('write failed');
+        }
+        return methods.updateUser(id, update, expected);
+      },
+    };
+    const run = async () => {
+      const res = createRes();
+      await createResetPasswordController(deps)(
+        { body: { userId, token: 't', password: 'p' } } as Request<
+          Record<string, string>,
+          object,
+          { userId: string; token: string; password: string }
+        >,
+        res as unknown as Response,
+      );
+      return res;
+    };
+    return { run, deps, events };
+  }
 
-    const outcome = await commitPasswordReset(deps, { userId, token: 't', password: 'p' });
+  it('retires a credential minted while the reset write is in flight', async () => {
+    const userId = await createUser();
+    let mintedAt = 0;
+    const { run } = createResetController(userId, {
+      onCommitWrite: async () => {
+        /** A login that read the old document mints between the stamp and the commit. */
+        await tick();
+        mintedAt = Date.now();
+        await tick();
+      },
+    });
 
-    expect(outcome.ok).toBe(true);
+    const res = await run();
+
+    expect(res.status).toHaveBeenCalledWith(200);
     expect(isTokenRetired({ issuedAtMs: mintedAt }, await readCutoffs(userId))).toBe(true);
   });
 
@@ -115,59 +169,30 @@ describe('password reset ordering', () => {
     expect((await readCutoffs(userId))?.credentialsChangedAt?.getTime()).toBe(later.getTime());
   });
 
-  it('reports a re-stamp failure after the reset committed', async () => {
+  it('consumes the link, notifies, revokes and reports an incomplete reset when the re-stamp fails', async () => {
     const userId = await createUser();
-    let writes = 0;
-    const deps: PasswordResetDeps = {
-      findResetToken: async () => ({ token: 'hash', email: null, type: null }),
-      getUserById: async () => ({ _id: userId, email: 'user@example.com' }),
-      compareToken: async () => true,
-      hashPassword: async () => 'new-hash',
-      deleteTokens: async () => ({}),
-      updateUser: async (id, update) => {
-        writes += 1;
-        if (writes > 1) {
-          throw new Error('write failed');
-        }
-        return writeUser(id, update) as Promise<{ email: string } | null>;
-      },
-    };
+    const { run, events } = createResetController(userId, { failRestamp: true });
 
-    const reset = commitPasswordReset(deps, { userId, token: 't', password: 'p' });
+    const res = await run();
 
-    await expect(reset).rejects.toMatchObject({ code: RETIREMENT_RESTAMP_FAILED });
-    const stored = await mongoose.models.User.findById(userId).select('+password').lean<IUser>();
-    expect(stored?.password).toBe('new-hash');
-    expect(stored?.credentialsChangedAt).toBeInstanceOf(Date);
-  });
-
-  it('revokes sessions and passkeys and reports an incomplete reset when the re-stamp fails', async () => {
-    const deps = {
-      resetPassword: jest.fn(async () => {
-        throw Object.assign(new Error('restamp'), { code: 'RETIREMENT_RESTAMP_FAILED' });
-      }),
-      deleteAllUserSessions: jest.fn(async () => ({ deletedCount: 1 })),
-      deletePasskeysByUser: jest.fn(async () => ({ deletedCount: 1 })),
-      awaitAuthUserDocEviction: jest.fn(async () => undefined),
-    };
-    const res = createRes();
-
-    await createResetPasswordController(deps)(
-      { body: { userId: 'user-1', token: 't', password: 'p' } } as Request<
-        Record<string, string>,
-        object,
-        { userId: string; token: string; password: string }
-      >,
-      res as unknown as Response,
-    );
-
-    expect(deps.deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-1' });
-    expect(deps.deletePasskeysByUser).toHaveBeenCalledWith('user-1');
-    expect(deps.awaitAuthUserDocEviction).toHaveBeenCalledWith('user-1');
+    /** The token and the notice are settled before the re-stamp can fail. */
+    expect(events.indexOf('token-consumed')).toBeLessThan(events.indexOf('restamp'));
+    expect(events.indexOf('notice-sent')).toBeLessThan(events.indexOf('restamp'));
+    expect(events).toEqual(expect.arrayContaining(['sessions-revoked', 'passkeys-revoked']));
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({ code: CREDENTIAL_RETIREMENT_INCOMPLETE }),
     );
+    const stored = await mongoose.models.User.findById(userId).select('+password').lean<IUser>();
+    expect(stored?.password).toBe('new-hash');
+  });
+
+  it('surfaces the re-stamp failure with its stable code', async () => {
+    await expect(
+      restampRetirementCutoff('credentialsChangedAt', 'user-1', new Date(), async () => {
+        throw new Error('write failed');
+      }),
+    ).rejects.toMatchObject({ code: RETIREMENT_RESTAMP_FAILED });
   });
 });
 

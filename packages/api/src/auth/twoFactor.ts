@@ -281,14 +281,6 @@ export async function restampRetirementCutoff<F extends RetirementCutoffField>(
   }
 }
 
-/** The account change committed but credentials minted while it was in flight may survive it. */
-export function isRetirementRestampError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error as Error & { code?: string }).code === RETIREMENT_RESTAMP_FAILED
-  );
-}
-
 export interface MintedSessionWithdrawal {
   deleteAllUserSessions: (query: { userId: string }) => Promise<unknown>;
   clearCloudFrontCookies: (

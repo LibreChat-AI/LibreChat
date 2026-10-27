@@ -1,8 +1,9 @@
 import { logger } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { PasswordResetUpdate } from './passwordResetUpdate';
-import { isRetirementRestampError, restampRetirementCutoff } from './twoFactor';
+import type { TokenRetirementSignals } from './twoFactor';
 import { createPasswordResetUpdate } from './passwordResetUpdate';
+import { restampRetirementCutoff } from './twoFactor';
 import { clearSessionHintCookie } from '~/oauth/csrf';
 import { EMAIL_CHANGE_TOKEN_TYPE } from './email';
 
@@ -28,7 +29,7 @@ export interface PasswordResetDeps {
   updateUser: (
     userId: string,
     update: PasswordResetUpdate,
-    expectedState: { email: string } | { credentialsChangedAt: Date },
+    expectedState: { email: string },
   ) => Promise<PasswordResetUser | null>;
   deleteTokens: (query: { userId: string; type: string }) => Promise<unknown>;
   compareToken: (candidate: string, storedHash: string) => Promise<boolean>;
@@ -51,6 +52,13 @@ export interface PasswordResetControllerDeps {
   deletePasskeysByUser: (userId: string) => Promise<{ deletedCount?: number }>;
   /** Resolves once no cached auth document from before the reset can be served. */
   awaitAuthUserDocEviction: (userId: string) => Promise<void>;
+  /** Reads and re-dates the cutoff the committed reset stamped. */
+  getUserById: (userId: string, select: string) => Promise<TokenRetirementSignals | null>;
+  updateUser: (
+    userId: string,
+    update: { credentialsChangedAt: Date },
+    expectedState: { credentialsChangedAt: Date },
+  ) => Promise<unknown>;
 }
 
 export type PasswordResetOutcome =
@@ -85,57 +93,62 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
     await deps.awaitAuthUserDocEviction(userId);
   };
 
+  /**
+   * The reset has committed, consumed its token and sent its notice before this runs, so a failure
+   * here cannot leave the link replayable. Re-dating the cutoff retires any credential minted while
+   * the password write was in flight.
+   */
+  const restampReset = async (userId: string): Promise<unknown> => {
+    try {
+      const committed = await deps.getUserById(userId, 'credentialsChangedAt');
+      const stampedAt = committed?.credentialsChangedAt;
+      if (stampedAt == null) {
+        return undefined;
+      }
+      await restampRetirementCutoff(
+        'credentialsChangedAt',
+        userId,
+        new Date(stampedAt),
+        (cutoff, expectedState) => deps.updateUser(userId, cutoff, expectedState),
+      );
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  };
+
   return async (
     req: Request<Record<string, string>, object, PasswordResetInput>,
     res: Response,
   ): Promise<Response> => {
-    const { userId, token, password } = req.body;
     try {
+      const { userId, token, password } = req.body;
       const result = await deps.resetPassword(userId, token, password);
       if (result instanceof Error) {
         return res.status(400).json(result);
       }
 
+      const restampError = await restampReset(userId);
       await revokeCredentials(userId);
       clearSessionHintCookie(res);
 
+      if (restampError) {
+        /** The password changed, but a credential minted during the change may still be accepted. */
+        logger.error(
+          `[resetPasswordController] Password changed but its cutoff was not re-dated for user ${userId}`,
+          restampError,
+        );
+        return res.status(500).json({
+          code: CREDENTIAL_RETIREMENT_INCOMPLETE,
+          message: 'Your password was changed, but other sessions may stay signed in.',
+        });
+      }
       return res.status(200).json(result);
     } catch (error) {
-      if (isRetirementRestampError(error)) {
-        return finishIncompleteRetirement(res, userId, error);
-      }
       logger.error('[resetPasswordController]', error);
       return res.status(400).json({ message: 'Password reset failed' });
     }
   };
-
-  /**
-   * The password changed, but a credential minted while that write was in flight may outlive it.
-   * Revoke everything else the reset revokes, then report the reset as incomplete instead of done.
-   */
-  async function finishIncompleteRetirement(
-    res: Response,
-    userId: string,
-    error: unknown,
-  ): Promise<Response> {
-    logger.error(
-      '[resetPasswordController] Password changed but its cutoff was not re-dated',
-      error,
-    );
-    try {
-      await revokeCredentials(userId);
-    } catch (revocationError) {
-      logger.error(
-        '[resetPasswordController] Revocation after an incomplete reset failed',
-        revocationError,
-      );
-    }
-    clearSessionHintCookie(res);
-    return res.status(500).json({
-      code: CREDENTIAL_RETIREMENT_INCOMPLETE,
-      message: 'Your password was changed, but other sessions may stay signed in. Reset it again.',
-    });
-  }
 }
 
 /**
@@ -200,19 +213,16 @@ export async function commitPasswordReset(
     return { ok: false };
   }
 
-  const update = createPasswordResetUpdate(await deps.hashPassword(input.password));
-  const user = await deps.updateUser(input.userId, update, { email: account.email });
+  const user = await deps.updateUser(
+    input.userId,
+    createPasswordResetUpdate(await deps.hashPassword(input.password)),
+    { email: account.email },
+  );
   if (!user) {
     return { ok: false };
   }
 
   await clearPendingEmailChanges(deps, input.userId);
-  await restampRetirementCutoff(
-    'credentialsChangedAt',
-    input.userId,
-    update.credentialsChangedAt,
-    (cutoff, expectedState) => deps.updateUser(input.userId, cutoff, expectedState),
-  );
 
   return { ok: true, user, resetToken };
 }
