@@ -71,6 +71,80 @@ beforeEach(async () => {
 });
 
 describe('Insights methods', () => {
+  it.each([
+    [
+      'initial agent takes precedence',
+      { initial_agent_id: 'agent-a', agent_id: 'agent-b' },
+      'agent-a',
+    ],
+    ['initial agent works without a current agent', { initial_agent_id: 'agent-a' }, 'agent-a'],
+    [
+      'initial agent works with a cleared current agent',
+      { initial_agent_id: 'agent-a', agent_id: null },
+      'agent-a',
+    ],
+    ['legacy agent A', { agent_id: 'agent-a' }, 'agent-a'],
+    ['legacy agent B', { agent_id: 'agent-b' }, 'agent-b'],
+    [
+      'initial agent B takes precedence',
+      { initial_agent_id: 'agent-b', agent_id: 'agent-a' },
+      'agent-b',
+    ],
+    ['explicit null initial agent', { initial_agent_id: null, agent_id: 'agent-a' }, null],
+    ['explicit empty initial agent', { initial_agent_id: '', agent_id: 'agent-a' }, null],
+    ['missing attribution', {}, null],
+    ['null legacy agent', { agent_id: null }, null],
+    ['empty legacy agent', { agent_id: '' }, null],
+  ] as const)(
+    'preserves conversation and prompt root selection: %s',
+    async (_name, attribution, root) => {
+      const now = new Date();
+      const user = new mongoose.Types.ObjectId().toString();
+      const conversation = {
+        _id: new mongoose.Types.ObjectId(),
+        conversationId: 'root-selection',
+        tenantId: 'tenant-a',
+        user,
+        createdAt: now,
+        updatedAt: now,
+        isTemporary: false,
+        ...attribution,
+      };
+      // Bypass the fixture's legacy-agent default so missing fields really remain absent.
+      await mongoose.models.Conversation.collection.insertOne(conversation);
+      await fixtures.messages.insertOne({
+        messageId: 'root-prompt',
+        conversationId: conversation.conversationId,
+        tenantId: 'tenant-a',
+        user,
+        createdAt: now,
+        isCreatedByUser: true,
+        isTemporary: false,
+        tokenCount: 5,
+      });
+      const methods = createInsightsMethods(mongoose);
+      for (const agentId of ['agent-a', 'agent-b']) {
+        const result = await methods.getInsights({
+          showDetails: false,
+          tenantId: 'tenant-a',
+          range: '7d',
+          agentIds: [agentId],
+          agents: [{ id: agentId, name: agentId }],
+        });
+        const count = root === agentId ? 1 : 0;
+        expect(result.summary).toEqual({
+          totalConversations: count,
+          totalMessages: count,
+          totalUsers: count,
+          totalTokens: count * 5,
+        });
+      }
+      expect(
+        await mongoose.models.Conversation.collection.findOne({ _id: conversation._id }),
+      ).toEqual(conversation);
+    },
+  );
+
   it('returns the same aggregate totals without querying detail, identities or first-message text', async () => {
     const now = new Date();
     const userId = new mongoose.Types.ObjectId();

@@ -179,15 +179,24 @@ const conversationOwnerMatch = ({ conversationId, userId }: ConversationOwner) =
   user: userId,
 });
 
+/** A present initial field is authoritative, including an explicitly unattributed value. */
+function rootAgentMatch(agentIds: string[], prefix = '') {
+  const initialField = `${prefix}initial_agent_id`;
+  const currentField = `${prefix}agent_id`;
+  return {
+    $or: [
+      { [initialField]: { $in: agentIds } },
+      { [initialField]: { $exists: false }, [currentField]: { $in: agentIds } },
+    ],
+  };
+}
+
 function conversationScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
   return [
     {
       $match: {
         ...match,
-        $or: [
-          { initial_agent_id: { $in: agentIds } },
-          { initial_agent_id: { $exists: false }, agent_id: { $in: agentIds } },
-        ],
+        ...rootAgentMatch(agentIds),
       },
     },
     { $addFields: { insightsAgentId: { $ifNull: ['$initial_agent_id', '$agent_id'] } } },
@@ -237,11 +246,9 @@ function messageScope(
         'insightsConversation.user': { $nin: [null, ''] },
         insightsOwnerMatches: true,
         $or: [
-          { isCreatedByUser: true, 'insightsConversation.initial_agent_id': { $in: agentIds } },
           {
             isCreatedByUser: true,
-            'insightsConversation.initial_agent_id': { $exists: false },
-            'insightsConversation.agent_id': { $in: agentIds },
+            ...rootAgentMatch(agentIds, 'insightsConversation.'),
           },
           {
             isCreatedByUser: { $ne: true },
