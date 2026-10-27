@@ -801,7 +801,10 @@ export function createOpenAIHandlers(
 }
 
 /**
- * Send the final chunk with finish_reason and optional usage
+ * Send the final chunk with finish_reason and optional usage.
+ *
+ * `usageOverride` lets callers that track usage outside the stream handlers
+ * (e.g. isolated subagent child runs) report totals the tracker never saw.
  */
 export function sendFinalChunk(
   config: OpenAIContentStreamConfig,
