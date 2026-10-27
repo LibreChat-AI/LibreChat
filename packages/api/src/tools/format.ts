@@ -106,17 +106,6 @@ export function getToolErrorText(error: unknown): string {
   return error instanceof ToolInputError ? error.message : TOOL_ERROR_FALLBACK;
 }
 
-/**
- * Error text a tool returns to the model. Only a `ToolInputError` keeps its message; any other
- * failure becomes the stable fallback, and its status (never its text) is logged under `source`.
- */
-export function formatToolError(error: unknown, source = 'tool'): string {
-  if (!(error instanceof ToolInputError)) {
-    logger.warn(`[${source}] Tool request failed`, getSafeErrorMetadata(error));
-  }
-  return `Error: ${getToolErrorText(error)}`;
-}
-
 /** Approved wording for an upstream HTTP status, keyed by the status class a model can act on. */
 function describeToolHttpStatus(status: number): string {
   if (status === 401 || status === 403) {
@@ -154,3 +143,29 @@ export function formatToolHttpError(
   }
   return `Error: ${service} ${describeToolHttpStatus(status)} (status ${status}).`;
 }
+
+/**
+ * Error text a tool returns to the model. A `ToolInputError` keeps its message; an upstream HTTP
+ * failure is worded from its status alone (see `formatToolHttpError`); anything else becomes the
+ * stable fallback, and only its sanitized metadata is logged under `service`.
+ */
+export function formatToolError(
+  error: unknown,
+  service = 'tool',
+  statusOverrides?: Readonly<Partial<Record<number, string>>>,
+): string {
+  if (error instanceof ToolInputError) {
+    return `Error: ${error.message}`;
+  }
+  const metadata = getSafeErrorMetadata(error);
+  if (metadata.status != null && metadata.status >= 400) {
+    return formatToolHttpError(service, metadata.status, statusOverrides);
+  }
+  logger.warn(`[${service}] Tool request failed`, metadata);
+  return `Error: ${TOOL_ERROR_FALLBACK}`;
+}
+
+/** The Wolfram|Alpha LLM API answers 501 when it cannot interpret the input; its body echoes the query. */
+export const WOLFRAM_STATUS_TEXT: Readonly<Partial<Record<number, string>>> = {
+  501: 'Wolfram|Alpha could not interpret the input. Rephrase it as a simpler query, such as single keywords or standard math notation, and try again.',
+};

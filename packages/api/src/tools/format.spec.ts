@@ -10,6 +10,7 @@ import {
   filterUniquePlugins,
   formatToolHttpError,
   TOOL_ERROR_FALLBACK,
+  WOLFRAM_STATUS_TEXT,
 } from './format';
 
 describe('format.ts helper functions', () => {
@@ -375,16 +376,30 @@ describe('format.ts helper functions', () => {
 
     it('logs only safe metadata for an unapproved failure', () => {
       const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
-      const error = Object.assign(new Error('upstream said PRIVATE-DETAIL'), { status: 502 });
+      const error = Object.assign(new Error('upstream said PRIVATE-DETAIL'), {
+        code: 'ECONNRESET',
+      });
 
       formatToolError(error, 'Example');
 
-      expect(warn).toHaveBeenCalledWith('[Example] Tool request failed', {
-        type: 'Error',
-        status: 502,
-      });
+      expect(warn).toHaveBeenCalledWith('[Example] Tool request failed', { type: 'Error' });
       expect(JSON.stringify(warn.mock.calls)).not.toContain('PRIVATE-DETAIL');
       warn.mockRestore();
+    });
+
+    it('words an HTTP failure from its status, never its response body', () => {
+      const httpError = (status: number) =>
+        Object.assign(new Error('Request failed'), {
+          response: { status, data: 'PRIVATE-PROVIDER-BODY' },
+        });
+
+      expect(formatToolError(httpError(503), 'Wolfram|Alpha', WOLFRAM_STATUS_TEXT)).toBe(
+        'Error: Wolfram|Alpha is unavailable; try again later (status 503).',
+      );
+      expect(formatToolError(httpError(501), 'Wolfram|Alpha', WOLFRAM_STATUS_TEXT)).toBe(
+        `Error: ${WOLFRAM_STATUS_TEXT[501]}`,
+      );
+      expect(formatToolError(httpError(404), 'Example')).not.toContain('PRIVATE-PROVIDER-BODY');
     });
   });
 

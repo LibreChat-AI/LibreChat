@@ -1,12 +1,7 @@
 /* eslint-disable no-useless-escape */
 const axios = require('axios');
-const { formatToolError, formatToolHttpError } = require('@librechat/api');
+const { formatToolError, WOLFRAM_STATUS_TEXT } = require('@librechat/api');
 const { Tool } = require('@librechat/agents/langchain/tools');
-
-/** The LLM API answers 501 when it cannot interpret the input; its body echoes the query. */
-const WOLFRAM_STATUS_TEXT = {
-  501: 'Wolfram|Alpha could not interpret the input. Rephrase it as a simpler query, such as single keywords or standard math notation, and try again.',
-};
 
 const wolframJsonSchema = {
   type: 'object',
@@ -93,11 +88,7 @@ class WolframAlphaAPI extends Tool {
       const response = await this.fetchRawText(url);
       return response;
     } catch (error) {
-      const status = error?.response?.status;
-      if (typeof status === 'number') {
-        return formatToolHttpError('Wolfram|Alpha', status, WOLFRAM_STATUS_TEXT);
-      }
-      return formatToolError(error, 'WolframAlphaAPI');
+      return formatToolError(error, 'Wolfram|Alpha', WOLFRAM_STATUS_TEXT);
     }
   }
 }
