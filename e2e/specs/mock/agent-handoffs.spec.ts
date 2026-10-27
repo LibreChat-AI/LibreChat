@@ -167,6 +167,11 @@ async function selectAgentForChat(page: Page, agentName: string): Promise<void> 
   await page.getByRole('option', { name: agentName }).click();
   await expect(form.getByLabel('Agent name')).toHaveValue(agentName);
   await form.getByRole('button', { name: 'Select Agent' }).click();
+  /** On narrow viewports the builder drawer stays open over the composer. */
+  const closeSidebar = page.getByRole('button', { name: 'Close sidebar' });
+  if (await closeSidebar.isVisible()) {
+    await closeSidebar.click();
+  }
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 }
 
