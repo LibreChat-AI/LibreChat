@@ -949,11 +949,15 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
                 return;
               }
               /** The profile is keyed by name: put it back only while the name still holds the
-               * targeted role, never onto a role recreated under it (or when that is unknown).
-               * This covers the restore of a removal that rejected as well as `compensate`. */
+               * targeted role, never onto a role recreated under it. This covers the restore of a
+               * removal that rejected as well as `compensate`. When the role cannot be read, the
+               * restore fails instead, so the cascade keeps the snapshot for `compensate` to retry. */
               const lookup = await lookupRole();
-              if (!lookup.known || !isTargetedRole(lookup.role)) {
-                logger.warn('[adminRoles] config restore skipped, role changed or unknown:', name);
+              if (!lookup.known) {
+                throw new Error('role unreadable; config restore deferred');
+              }
+              if (!isTargetedRole(lookup.role)) {
+                logger.warn('[adminRoles] config restore skipped, role changed:', name);
                 return;
               }
               /** Insert-only: an override written after the snapshot is kept. */

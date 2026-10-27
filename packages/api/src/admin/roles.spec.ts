@@ -1376,6 +1376,28 @@ describe('createAdminRolesHandlers', () => {
       expect(deps.restoreConfig).not.toHaveBeenCalled();
     });
 
+    it('retries a deferred config restore once the role is readable again', async () => {
+      const config = { principalModel: 'Role', overrides: { a: 1 }, priority: 4 };
+      const deps = deleteDeps({
+        getRoleByName: jest
+          .fn()
+          .mockResolvedValueOnce(mockRole())
+          .mockRejectedValueOnce(new Error('mongo blip'))
+          .mockResolvedValue(mockRole()),
+        findConfigByPrincipal: jest.fn().mockResolvedValue(config),
+        deleteConfig: jest.fn().mockRejectedValue(new Error('response lost')),
+        restoreConfig: jest.fn().mockResolvedValue(true),
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({ params: { name: 'editor' } });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(500);
+      expect(deps.restoreConfig).toHaveBeenCalledTimes(1);
+      expect(deps.restoreConfig).toHaveBeenCalledWith(config);
+    });
+
     it('still audits a committed deletion when the access cache invalidation fails', async () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({

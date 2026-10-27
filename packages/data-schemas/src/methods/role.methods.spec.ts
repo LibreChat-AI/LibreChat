@@ -943,6 +943,45 @@ describe('deleteRoleByName', () => {
     expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
   });
 
+  it('reports an account re-added to the role between passes once', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    let readded = false;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if (
+          !readded &&
+          (update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER
+        ) {
+          /** An administrator adds Alice back before the next pass. */
+          readded = true;
+          await User.updateOne({ _id: alice._id }, { $set: { role: 'editor' } });
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let deleted: Awaited<ReturnType<typeof deleteRoleByName>>;
+    try {
+      deleted = await deleteRoleByName('editor');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(deleted!.reassignedUserIds).toEqual([alice._id.toString()]);
+    expect((await User.findById(alice._id).lean())!.role).toBe(SystemRoles.USER);
+  });
+
   it('keeps the role and reports who it moved when members keep joining after every pass', async () => {
     await createRoleByName({ name: 'editor' });
     await User.create({
