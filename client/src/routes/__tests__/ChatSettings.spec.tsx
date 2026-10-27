@@ -97,6 +97,7 @@ describe('ChatSettingsProvider', () => {
     expect(result.current.settings.config).toEqual({
       feedbackEnabled: false,
       canRenameRunningChat: false,
+      modelSpecsEnforced: false,
       loaded: false,
       balanceEnabled: false,
     });
@@ -106,7 +107,7 @@ describe('ChatSettingsProvider', () => {
     const modelSpecs = [{ name: 'spec', label: 'Spec', preset: { endpoint: 'openAI' } }];
     mockStartupConfig = {
       conversationTitleOwnershipVersion: 1,
-      modelSpecs: { list: modelSpecs },
+      modelSpecs: { list: modelSpecs, enforce: true },
       balance: { enabled: true },
       interface: {
         retentionMode: RetentionMode.EPHEMERAL,
@@ -124,6 +125,7 @@ describe('ChatSettingsProvider', () => {
       feedbackEnabled: true,
       canRenameRunningChat: true,
       modelSpecs,
+      modelSpecsEnforced: true,
       queuedSendLockTimeoutMs: 1_000,
       queuedTurnReconciliationTimeoutMs: 2_000,
       steerArmConfirmationTimeoutMs: 3_000,
