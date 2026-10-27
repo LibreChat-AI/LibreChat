@@ -57,3 +57,21 @@ it('still lets Escape close the dialog once the list is closed', async () => {
 
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+it('lets Escape close the dialog right after an option is picked', async () => {
+  const onClose = jest.fn();
+  render(<SettingsLikeDialog onClose={onClose} />);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('combobox', { name: /Clock format/ }));
+  });
+  await act(async () => {
+    fireEvent.click(await screen.findByRole('option', { name: '12-hour' }));
+  });
+  /** The list is closing, not open: the Escape is the dialog's. */
+  await act(async () => {
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+  });
+
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
