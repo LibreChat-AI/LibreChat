@@ -185,7 +185,7 @@ const FRESHNESS_DATE_FIELDS = ['updatedAt', 'credentialsChangedAt', 'twoFactorEn
 const FRESHNESS_VALUE_FIELDS = ['role', 'tenantId', 'twoFactorEnabled'] as const;
 
 /** What a cache hit reads to prove the cached document is still the stored one. */
-export const AUTH_USER_FRESHNESS_PROJECTION = [
+export const AUTH_USER_FRESHNESS_PROJECTION: string = [
   '_id',
   ...FRESHNESS_DATE_FIELDS,
   ...FRESHNESS_VALUE_FIELDS,
