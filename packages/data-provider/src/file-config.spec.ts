@@ -2196,6 +2196,23 @@ describe('server-effective Responses routing', () => {
       }),
     ).toBe(false);
   });
+  it('routes a snapshot of a release with no base family by its own snapshot policy', () => {
+    const routing = { 'gpt-6.1-terra': enabled, 'gpt-6.1-terra-*': enabled, '*': disabled };
+    expect(prefersResponsesApiByModel('gpt-6.1-terra')).toBe(true);
+    for (const endpoint of [EModelEndpoint.openAI, EModelEndpoint.azureOpenAI]) {
+      expect(
+        resolveEffectiveUseResponsesApi({ endpoint, model: 'gpt-6.1-terra-2026-10-26', routing }),
+      ).toBe(true);
+    }
+    // Configured Azure deployments publish no snapshot wildcards to inherit from.
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model: 'gpt-6.1-terra-2026-10-26',
+        routing: { 'gpt-6.1-terra': enabled, '*': disabled },
+      }),
+    ).toBe(false);
+  });
   it('uses native snapshot policy but does not invent an Azure deployment', () => {
     const routing = { 'gpt-6-sol': enabled, 'gpt-6-sol-*': enabled, '*': disabled };
     expect(

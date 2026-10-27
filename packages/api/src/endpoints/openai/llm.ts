@@ -989,7 +989,8 @@ export function getOpenAILLMConfig({
   if (responsesApiExplicitlyOptedOut) llmConfig.useResponsesApi = false;
 
   const tier = gpt6Tier(llmConfig.model);
-  const solLunaRulesApply = firstPartyEndpoint && (tier === 'sol' || tier === 'luna');
+  const solLunaRulesApply =
+    firstPartyEndpoint && (tier === 'sol' || tier === 'terra' || tier === 'luna');
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({

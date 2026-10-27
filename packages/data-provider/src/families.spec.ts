@@ -1,4 +1,4 @@
-import { gpt6Tier, gptPointReleaseFamily } from './families';
+import { gpt6Tier, gpt6Release, gptPointReleaseFamily } from './families';
 
 describe('gptPointReleaseFamily', () => {
   it.each([
@@ -32,14 +32,40 @@ describe('gpt6Tier', () => {
     ['GPT-6.1-SOL-2026-10-01', 'sol'],
     ['gpt-6-luna-2026-09-22', 'luna'],
     ['gpt-6.2-astra', 'astra'],
+    ['gpt-6.1-terra', 'terra'],
+    ['GPT-6.1-Terra-2026-10-26', 'terra'],
   ])('reads the tier of %s', (model, tier) => {
     expect(gpt6Tier(model)).toBe(tier);
   });
 
-  it.each([undefined, null, '', 'gpt-6-solar', 'gpt-60-sol', 'gpt-5.6-luna', 'openai/gpt-6-sol'])(
-    'has no tier for %p',
+  it.each([
+    undefined,
+    null,
+    '',
+    'gpt-6-solar',
+    'gpt-60-sol',
+    'gpt-5.6-luna',
+    'gpt-5.6-terra',
+    'openai/gpt-6-sol',
+  ])('has no tier for %p', (model) => {
+    expect(gpt6Tier(model)).toBeUndefined();
+  });
+});
+
+describe('gpt6Release', () => {
+  it.each([
+    ['gpt-6-sol', 'gpt-6-sol'],
+    ['gpt-6-sol-2026-09-22', 'gpt-6-sol'],
+    ['gpt-6.1-terra', 'gpt-6.1-terra'],
+    ['GPT-6.1-Terra-2026-10-26', 'gpt-6.1-terra'],
+  ])('reads the release of %s', (model, release) => {
+    expect(gpt6Release(model)).toBe(release);
+  });
+
+  it.each([undefined, '', 'gpt-5.6-terra', 'openai/gpt-6.1-terra'])(
+    'has no release for %p',
     (model) => {
-      expect(gpt6Tier(model)).toBeUndefined();
+      expect(gpt6Release(model)).toBeUndefined();
     },
   );
 });

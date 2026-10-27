@@ -369,7 +369,7 @@ describe('Sonnet 5.5 token limits', () => {
   });
 });
 
-describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
+describe.each(['gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'])('%s token limits', (model) => {
   it('resolves exact, snapshot, and provider-prefixed IDs', () => {
     for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
       expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
