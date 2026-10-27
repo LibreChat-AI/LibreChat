@@ -94,6 +94,152 @@ beforeEach(async () => {
 
 describe('Insights methods', () => {
   it.each([
+    ['valid root', {}, [], 1, 1],
+    ['legacy root', { agent_id: 'agent-a' }, ['initial_agent_id'], 1, 1],
+    ['older conversation', { createdAt: new Date('2026-09-01T12:00:00Z') }, [], 0, 1],
+    ['temporary conversation', { isTemporary: true }, [], 0, 0],
+    ['subagent thread', { subagentThread: { parentConversationId: 'parent' } }, [], 0, 0],
+    ['explicit null thread field', { subagentThread: null }, [], 0, 0],
+    ['foreign tenant', { tenantId: 'tenant-b' }, [], 0, 0],
+    ['missing tenant', {}, ['tenantId'], 0, 0],
+    ['missing owner', {}, ['user'], 0, 0],
+    ['null owner', { user: null }, [], 0, 0],
+    ['empty owner', { user: '' }, [], 0, 0],
+    ['missing conversation ID', {}, ['conversationId'], 0, 0],
+    ['null conversation ID', { conversationId: null }, [], 0, 0],
+    ['empty conversation ID', { conversationId: '' }, [], 0, 0],
+    ['null initial attribution', { initial_agent_id: null, agent_id: 'agent-a' }, [], 0, 0],
+    ['empty initial attribution', { initial_agent_id: '', agent_id: 'agent-a' }, [], 0, 0],
+    ['another root agent', { initial_agent_id: 'agent-b', agent_id: 'agent-a' }, [], 0, 0],
+    ['missing attribution', {}, ['initial_agent_id', 'agent_id'], 0, 0],
+  ] as const)(
+    'uses one conversation eligibility rule across counts, messages and spend: %s',
+    async (_name, overrides, omitted, conversations, activityCount) => {
+      const user = new mongoose.Types.ObjectId();
+      const activity = new Date('2026-10-03T12:00:00Z');
+      const conversation: Record<string, unknown> = {
+        conversationId: 'shared-eligibility',
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        initial_agent_id: 'agent-a',
+        agent_id: 'agent-b',
+        createdAt: activity,
+        updatedAt: new Date('2026-10-15T12:00:00Z'),
+        ...overrides,
+      };
+      for (const field of omitted) delete conversation[field];
+      // Native inserts deliberately exercise missing bindings that schema validation rejects.
+      await mongoose.models.Conversation.collection.insertOne(conversation);
+      const message = {
+        conversationId: conversation.conversationId,
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        createdAt: activity,
+      };
+      await fixtures.messages.insertMany([
+        { ...message, messageId: 'scope-prompt', isCreatedByUser: true, tokenCount: 5 },
+        {
+          ...message,
+          messageId: 'scope-response',
+          isCreatedByUser: false,
+          model: 'agent-b',
+          tokenCount: 7,
+          error: true,
+          feedback: { rating: 'thumbsDown', tag: 'inaccurate' },
+        },
+      ]);
+      await mongoose.models.Transaction.collection.insertOne({
+        conversationId: conversation.conversationId,
+        user,
+        tenantId: 'tenant-a',
+        createdAt: activity,
+        tokenType: 'completion',
+        tokenValue: -250_000,
+      });
+      const result = await createInsightsMethods(mongoose).getInsights({
+        tenantId: 'tenant-a',
+        agentIds: ['agent-a'],
+        showDetails: false,
+        range: 'custom',
+        fromTimestamp: '2026-10-01T00:00:00Z',
+        toTimestamp: '2026-10-07T23:59:59Z',
+      });
+      expect(result.summary).toEqual({
+        totalConversations: conversations,
+        totalMessages: activityCount * 2,
+        totalUsers: activityCount,
+        totalTokens: activityCount * 12,
+        totalResponses: activityCount,
+        completedResponses: 0,
+        failedResponses: activityCount,
+        interruptedResponses: 0,
+        lastUsed: activityCount ? activity.toISOString() : null,
+        feedback: feedbackCounts(0, activityCount, { inaccurate: activityCount }),
+        spendUSD: activityCount ? 0.25 : null,
+      });
+      expect(result.daily.find((day) => day.date === '2026-10-03')).toEqual({
+        date: '2026-10-03',
+        conversations,
+        messages: activityCount * 2,
+        users: activityCount,
+        totalTokens: activityCount * 12,
+        responses: activityCount,
+        completedResponses: 0,
+        failedResponses: activityCount,
+        interruptedResponses: 0,
+        feedback: feedbackCounts(0, activityCount, { inaccurate: activityCount }),
+        spendUSD: activityCount ? 0.25 : null,
+      });
+      expect(Object.keys(result).sort()).toEqual(['agents', 'daily', 'summary']);
+    },
+  );
+
+  it.each(['message-owner', 'message-tenant', 'transaction-owner', 'transaction-tenant'] as const)(
+    'retains the record-specific ownership and tenant check: %s',
+    async (mismatch) => {
+      const user = new mongoose.Types.ObjectId();
+      const outsider = new mongoose.Types.ObjectId();
+      const activity = new Date('2026-10-03T12:00:00Z');
+      await fixtures.conversations.insertOne({
+        conversationId: 'record-isolation',
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        initial_agent_id: 'agent-a',
+        createdAt: activity,
+      });
+      await fixtures.messages.insertOne({
+        messageId: 'record-response',
+        conversationId: 'record-isolation',
+        createdAt: activity,
+        user: mismatch === 'message-owner' ? outsider.toString() : user.toString(),
+        tenantId: mismatch === 'message-tenant' ? 'tenant-b' : 'tenant-a',
+        isCreatedByUser: false,
+        tokenCount: 5,
+      });
+      await mongoose.models.Transaction.collection.insertOne({
+        conversationId: 'record-isolation',
+        createdAt: activity,
+        user: mismatch === 'transaction-owner' ? outsider : user,
+        tenantId: mismatch === 'transaction-tenant' ? 'tenant-b' : 'tenant-a',
+        tokenType: 'completion',
+        tokenValue: -250_000,
+      });
+      const result = await createInsightsMethods(mongoose).getInsights({
+        tenantId: 'tenant-a',
+        agentIds: ['agent-a'],
+        showDetails: false,
+        range: 'custom',
+        fromTimestamp: '2026-10-01T00:00:00Z',
+        toTimestamp: '2026-10-07T23:59:59Z',
+      });
+      expect(result.summary.totalConversations).toBe(1);
+      expect(result.summary.totalMessages).toBe(mismatch.startsWith('message') ? 0 : 1);
+      expect(result.summary.totalTokens).toBe(mismatch.startsWith('message') ? 0 : 5);
+      expect(result.summary.spendUSD).toBe(mismatch.startsWith('transaction') ? null : 0.25);
+    },
+  );
+
+  it.each([
     [
       'initial agent takes precedence',
       { initial_agent_id: 'agent-a', agent_id: 'agent-b' },

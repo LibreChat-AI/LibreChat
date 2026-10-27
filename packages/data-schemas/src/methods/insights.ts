@@ -86,12 +86,6 @@ function tenantMatch(tenantId?: string, prefix = '') {
   return tenantId ? { [field]: tenantId } : { [field]: { $exists: false } };
 }
 
-function joinedTenantMatch(tenantId?: string) {
-  return tenantId
-    ? { 'insightsConversation.tenantId': tenantId }
-    : { 'insightsConversation.tenantId': { $exists: false } };
-}
-
 function validTimeZone(timeZone?: string) {
   if (!timeZone) return 'UTC';
   try {
@@ -205,12 +199,28 @@ function rootAgentMatch(agentIds: string[], prefix = '') {
   };
 }
 
-function conversationScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
+/** Eligibility is independent of reporting dates and applies on either side of a join. */
+function conversationEligibility(agentIds: string[], tenantId?: string, prefix = '') {
+  return {
+    ...tenantMatch(tenantId, prefix),
+    [`${prefix}conversationId`]: { $exists: true, $nin: [null, ''] },
+    [`${prefix}user`]: { $exists: true, $nin: [null, ''] },
+    [`${prefix}isTemporary`]: { $ne: true },
+    [`${prefix}subagentThread`]: { $exists: false },
+    ...rootAgentMatch(agentIds, prefix),
+  };
+}
+
+function conversationScope(
+  agentIds: string[],
+  tenantId?: string,
+  createdAt?: { $gte: Date; $lte: Date },
+): PipelineStage[] {
   return [
     {
       $match: {
-        ...match,
-        ...rootAgentMatch(agentIds),
+        ...conversationEligibility(agentIds, tenantId),
+        ...(createdAt ? { createdAt } : {}),
       },
     },
     { $addFields: { insightsAgentId: { $ifNull: ['$initial_agent_id', '$agent_id'] } } },
@@ -240,12 +250,8 @@ function messageScope(
     },
     {
       $match: {
-        ...joinedTenantMatch(tenantId),
-        'insightsConversation.isTemporary': { $ne: true },
-        'insightsConversation.subagentThread': { $exists: false },
-        'insightsConversation.user': { $nin: [null, ''] },
+        ...conversationEligibility(agentIds, tenantId, 'insightsConversation.'),
         insightsOwnerMatches: true,
-        ...rootAgentMatch(agentIds, 'insightsConversation.'),
       },
     },
   ];
@@ -312,23 +318,16 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const churnedCutoff = new Date(to.getTime() - churnedUserWindowDays * dayMs);
     const churnedActivityFrom = new Date(from.getTime() - churnedUserWindowDays * dayMs);
     const tenant = tenantMatch(options.tenantId);
-    const eligibleConversationMatch = {
-      ...tenant,
-      isTemporary: { $ne: true },
-      subagentThread: { $exists: false },
-      user: { $nin: [null, ''] },
-    };
-    const conversationMatch = {
-      ...eligibleConversationMatch,
-      createdAt: { $gte: from, $lte: to },
-    };
     const messageMatch = {
       ...tenant,
       user: { $nin: [null, ''] },
       isTemporary: { $ne: true },
       createdAt: { $gte: from, $lte: to },
     };
-    const conversationPipeline = conversationScope(conversationMatch, agentIds);
+    const conversationPipeline = conversationScope(agentIds, options.tenantId, {
+      $gte: from,
+      $lte: to,
+    });
     const messagePipeline = messageScope(messageMatch, agentIds, options.tenantId);
 
     const requestedSearch = options.search?.trim().slice(0, INSIGHTS_SEARCH_MAX_LENGTH) ?? '';
@@ -558,10 +557,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           ])
         : Promise.resolve([] as ChurnedUserActivity[]),
       Conversation.aggregate<SpendDay>([
-        ...conversationScope(
-          { ...eligibleConversationMatch, conversationId: { $nin: [null, ''] } },
-          agentIds,
-        ),
+        ...conversationScope(agentIds, options.tenantId),
         {
           $lookup: {
             from: 'transactions',
