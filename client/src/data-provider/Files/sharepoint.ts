@@ -1,5 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import type { UseMutationResult } from '@tanstack/react-query';
+import { inferMimeType } from 'librechat-data-provider';
 
 export interface SharePointFile {
   id: string;
@@ -59,8 +60,10 @@ export const useSharePointBatchDownload = (): UseMutationResult<
             }
 
             const blob = await response.blob();
-            const contentType =
-              response.headers.get('content-type') || getMimeTypeFromFileName(file.name);
+            const contentType = resolveSharePointContentType(
+              response.headers.get('content-type'),
+              file.name,
+            );
 
             const downloadedFile = new File([blob], file.name, {
               type: contentType,
@@ -109,7 +112,24 @@ export const useSharePointBatchDownload = (): UseMutationResult<
   });
 };
 
-function getMimeTypeFromFileName(fileName: string): string {
+export const GENERIC_MIME_TYPE = 'application/octet-stream';
+
+export function resolveSharePointContentType(
+  headerContentType: string | null | undefined,
+  fileName: string,
+): string {
+  const header = headerContentType?.split(';')[0].trim().toLowerCase() ?? '';
+  if (header && header !== GENERIC_MIME_TYPE) {
+    return header;
+  }
+  const byName = getMimeTypeFromFileName(fileName);
+  if (byName !== GENERIC_MIME_TYPE) {
+    return byName;
+  }
+  return inferMimeType(fileName, '') || GENERIC_MIME_TYPE;
+}
+
+export function getMimeTypeFromFileName(fileName: string): string {
   const extension = fileName.split('.').pop()?.toLowerCase();
 
   const mimeTypes: Record<string, string> = {
