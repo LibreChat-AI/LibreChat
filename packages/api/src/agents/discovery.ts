@@ -491,23 +491,23 @@ export async function discoverConnectedAgents(
      *  and fold results back in queue order. Edges they expose form the next level. */
     const level = [...agentsToProcess];
     agentsToProcess.clear();
-    const outcomes = await Promise.all(
-      level.map((agentId) =>
-        loadDiscovered(async () => {
-          try {
-            return { loaded: await loadAgent(agentId) };
-          } catch (error) {
-            return { error };
-          }
-        }),
-      ),
+    /** Outcomes never reject, so consuming them in queue order leaves no unhandled
+     *  rejection and lets a fatal error surface before later siblings finish. */
+    const outcomes = level.map((agentId) =>
+      loadDiscovered(async () => {
+        try {
+          return { loaded: await loadAgent(agentId) };
+        } catch (error) {
+          return { error };
+        }
+      }),
     );
     /** Stage every loaded config before collecting edges, so a sibling referenced by
      *  another member of the level is not queued a second time. */
     const loadedAgents: Array<Agent | null> = [];
     for (let index = 0; index < level.length; index++) {
       const agentId = level[index];
-      const outcome = outcomes[index];
+      const outcome = await outcomes[index];
       if ('error' in outcome) {
         if (isFatalAgentInitializationError(outcome.error, { signal: params.signal })) {
           throw outcome.error;
