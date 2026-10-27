@@ -119,6 +119,21 @@ function reportThemeCheck(configPath: string, errors: string[], warnings: string
   }
 }
 
+/** Whether `error` is the service request budget running out, not a refused or failed fetch. */
+function isFetchTimeout(error: unknown): boolean {
+  const { code, name, config } = (error ?? {}) as {
+    code?: unknown;
+    name?: unknown;
+    config?: { signal?: { reason?: { name?: unknown } } };
+  };
+  return (
+    code === 'ECONNABORTED' ||
+    code === 'ETIMEDOUT' ||
+    name === 'TimeoutError' ||
+    config?.signal?.reason?.name === 'TimeoutError'
+  );
+}
+
 /** Creates one process-local custom-config reader. */
 export function createCustomConfigLoader({
   defaultConfigPath,
@@ -173,6 +188,12 @@ export function createCustomConfigLoader({
         try {
           loadedConfig = await fetchRemote(configPath);
         } catch (error) {
+          if (isFetchTimeout(error)) {
+            /** Booting on defaults would drop policy such as `registration.allowedDomains`. */
+            throw new Error(`Timed out fetching the remote config file from ${configPath}`, {
+              cause: error,
+            });
+          }
           return failSourceLoad(`Failed to fetch the remote config file from ${configPath}`, error);
         }
       } else {

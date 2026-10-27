@@ -238,3 +238,43 @@ describe('createCustomConfigLoader policy links', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+describe('createCustomConfigLoader remote fetch failures', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+
+  beforeEach(() => {
+    process.env.CONFIG_PATH = 'https://config.example/librechat.yaml';
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  const loaderFor = (error: unknown) =>
+    createCustomConfigLoader({
+      loadLocal: loadYaml,
+      defaultConfigPath: fixture('valid'),
+      redactConfig: (config: TCustomConfig) => config,
+      fetchRemote: async () => {
+        throw error;
+      },
+    });
+
+  it('fails startup when the remote config fetch times out', async () => {
+    const timeout = Object.assign(new Error('timeout of 10000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    await expect(loaderFor(timeout)()).rejects.toThrow(/Timed out fetching the remote config/);
+  });
+
+  it('keeps returning null for other remote fetch failures', async () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    await expect(loaderFor(refused)()).resolves.toBeNull();
+  });
+});
