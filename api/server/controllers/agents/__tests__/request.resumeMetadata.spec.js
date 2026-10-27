@@ -262,6 +262,8 @@ jest.mock('@librechat/api', () => ({
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  getUserFacingGenerationError: (...args) =>
+    jest.requireActual('@librechat/api').getUserFacingGenerationError(...args),
   stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getSteerRecoveryFailure: jest.requireActual(
     '../../../../../packages/api/src/stream/SteerRecovery',
@@ -2799,6 +2801,90 @@ describe('ResumableAgentController resume metadata', () => {
     expect(message).toContain('AccessDenied reading https://minio.example.com/[redacted]');
     expect(message).not.toContain('X-Amz-Signature');
     expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain(signedUrl);
+  });
+
+  it('publishes and persists the fallback for a raw generation error under a content policy', async () => {
+    const privateValue = 'PRIVATE-PROMPT-ECHO';
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {
+        filters: {
+          messages: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret', regex: 'NEVER-MATCHES-XYZ' }],
+            },
+          },
+        },
+      },
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(`Provider echoed ${privateValue}`)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
+      'conversation-123',
+      'Generation failed',
+      1000,
+      expect.objectContaining({ beforeErrorPublication: expect.any(Function) }),
+    );
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: 'Generation failed' }),
+      expect.any(Object),
+    );
+    expect(JSON.stringify(mockGenerationJobManager.completeJob.mock.calls)).not.toContain(
+      privateValue,
+    );
+    expect(JSON.stringify(mockSaveMessage.mock.calls)).not.toContain(privateValue);
+  });
+
+  it('keeps a typed generation error under a content policy so the client can localize it', async () => {
+    const typedError = JSON.stringify({ type: 'no_user_key' });
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {
+        filters: {
+          messages: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret', regex: 'NEVER-MATCHES-XYZ' }],
+            },
+          },
+        },
+      },
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(typedError)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: typedError }),
+      expect.any(Object),
+    );
   });
 
   it('publishes a safe image storage failure during generation and releases the request', async () => {

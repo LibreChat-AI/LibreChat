@@ -193,7 +193,7 @@ const {
 } = require('../ToolService');
 const { createOnSearchResults } = require('~/server/services/Tools/search');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
-const { ContentFilterError, PENDING_STALE_MS } = require('@librechat/api');
+const { ContentFilterError, PENDING_STALE_MS, ToolInputError } = require('@librechat/api');
 
 /** Role document shape `checkAccess` reads; all three role-gated tools granted. */
 function buildRole(overrides = {}) {
@@ -687,6 +687,46 @@ describe('ToolService - Action Capability Gating', () => {
       expect(output).not.toContain(privateOutput);
       expect(output).not.toContain('Bearer token');
       expect(output).not.toContain('bearer_header');
+    });
+
+    it('returns approved tool error text instead of a raw exception message', async () => {
+      const rawMessage =
+        'connect ECONNREFUSED 10.0.0.5:443 for https://api.example.test/?q=PRIVATE';
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          { name: 'safe_tool', _call: jest.fn().mockRejectedValue(new Error(rawMessage)) },
+        ],
+        toolContextMap: {},
+      });
+
+      const result = await processRequiredActions(buildClient(undefined), [buildAction()]);
+
+      expect(result.tool_outputs).toEqual([
+        {
+          tool_call_id: 'call_1',
+          output: 'Error processing tool safe_tool: The tool request failed.',
+        },
+      ]);
+    });
+
+    it('keeps the message of a tool input error the tool wrote for the model', async () => {
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'safe_tool',
+            _call: jest
+              .fn()
+              .mockRejectedValue(new ToolInputError('Could not find coordinates for city: Rome')),
+          },
+        ],
+        toolContextMap: {},
+      });
+
+      const result = await processRequiredActions(buildClient(undefined), [buildAction()]);
+
+      expect(result.tool_outputs[0].output).toBe(
+        'Error processing tool safe_tool: Could not find coordinates for city: Rome',
+      );
     });
 
     it('blocks persisted Assistant action metadata before required-action execution', async () => {

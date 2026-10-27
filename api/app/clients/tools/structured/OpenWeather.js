@@ -1,5 +1,5 @@
 const fetch = require('node-fetch');
-const { formatToolError } = require('@librechat/api');
+const { ToolInputError, formatToolError, formatToolHttpError } = require('@librechat/api');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { getEnvironmentVariable } = require('@librechat/agents/langchain/utils/env');
 
@@ -139,7 +139,7 @@ class OpenWeather extends Tool {
     const res = await fetch(geocodeUrl);
     const data = await res.json();
     if (!res.ok || !Array.isArray(data) || data.length === 0) {
-      throw new Error(`Could not find coordinates for city: ${city}`);
+      throw new ToolInputError(`Could not find coordinates for city: ${city}`);
     }
     return { lat: data[0].lat, lon: data[0].lon };
   }
@@ -147,18 +147,18 @@ class OpenWeather extends Tool {
   convertDateToUnix(dateStr) {
     const parts = dateStr.split('-');
     if (parts.length !== 3) {
-      throw new Error('Invalid date format. Expected YYYY-MM-DD.');
+      throw new ToolInputError('Invalid date format. Expected YYYY-MM-DD.');
     }
     const year = parseInt(parts[0], 10);
     const month = parseInt(parts[1], 10);
     const day = parseInt(parts[2], 10);
     if (isNaN(year) || isNaN(month) || isNaN(day)) {
-      throw new Error('Invalid date format. Expected YYYY-MM-DD with valid numbers.');
+      throw new ToolInputError('Invalid date format. Expected YYYY-MM-DD with valid numbers.');
     }
 
     const dateObj = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
     if (isNaN(dateObj.getTime())) {
-      throw new Error('Invalid date provided. Cannot parse into a valid date.');
+      throw new ToolInputError('Invalid date provided. Cannot parse into a valid date.');
     }
 
     return Math.floor(dateObj.getTime() / 1000);
@@ -338,17 +338,15 @@ class OpenWeather extends Tool {
 
       const url = `${baseUrl}${endpoint}?${params.toString()}`;
       const response = await fetch(url);
-      const json = await response.json();
       if (!response.ok) {
-        return `Error: OpenWeather API request failed with status ${response.status}: ${
-          json.message || JSON.stringify(json)
-        }`;
+        return formatToolHttpError('OpenWeather', response.status);
       }
+      const json = await response.json();
 
       const roundedJson = roundTemperatures(json);
       return JSON.stringify(roundedJson);
     } catch (err) {
-      return formatToolError(err);
+      return formatToolError(err, 'OpenWeather');
     }
   }
 }

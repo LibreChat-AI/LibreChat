@@ -1,4 +1,4 @@
-const { logger, redactMessage, getTenantId } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
@@ -77,6 +77,7 @@ const {
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
   getOutboundTimeoutMs,
+  getToolErrorText,
 } = require('@librechat/api');
 const {
   Time,
@@ -732,7 +733,7 @@ async function processRequiredActions(client, requiredActions) {
       const output = getSafeRequiredActionOutput(
         client,
         currentAction,
-        `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
+        `Error processing tool ${currentAction.tool}: ${getToolErrorText(error)}`,
       );
       return {
         tool_call_id: currentAction.toolCallId,

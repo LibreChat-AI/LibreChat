@@ -1,7 +1,12 @@
 /* eslint-disable no-useless-escape */
 const axios = require('axios');
-const { logger } = require('@librechat/data-schemas');
+const { formatToolError, formatToolHttpError } = require('@librechat/api');
 const { Tool } = require('@librechat/agents/langchain/tools');
+
+/** The LLM API answers 501 when it cannot interpret the input; its body echoes the query. */
+const WOLFRAM_STATUS_TEXT = {
+  501: 'Wolfram|Alpha could not interpret the input. Rephrase it as a simpler query, such as single keywords or standard math notation, and try again.',
+};
 
 const wolframJsonSchema = {
   type: 'object',
@@ -59,13 +64,8 @@ class WolframAlphaAPI extends Tool {
   }
 
   async fetchRawText(url) {
-    try {
-      const response = await axios.get(url, { responseType: 'text' });
-      return response.data;
-    } catch (error) {
-      logger.error('[WolframAlphaAPI] Error fetching raw text:', error);
-      throw error;
-    }
+    const response = await axios.get(url, { responseType: 'text' });
+    return response.data;
   }
 
   getAppId() {
@@ -93,13 +93,11 @@ class WolframAlphaAPI extends Tool {
       const response = await this.fetchRawText(url);
       return response;
     } catch (error) {
-      if (error.response && error.response.data) {
-        logger.error('[WolframAlphaAPI] Error data:', error);
-        return error.response.data;
-      } else {
-        logger.error('[WolframAlphaAPI] Error querying Wolfram Alpha', error);
-        return 'There was an error querying Wolfram Alpha.';
+      const status = error?.response?.status;
+      if (typeof status === 'number') {
+        return formatToolHttpError('Wolfram|Alpha', status, WOLFRAM_STATUS_TEXT);
       }
+      return formatToolError(error, 'WolframAlphaAPI');
     }
   }
 }

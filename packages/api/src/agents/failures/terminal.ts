@@ -1,4 +1,6 @@
-import { ErrorTypes } from 'librechat-data-provider';
+import { redactMessage } from '@librechat/data-schemas';
+import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
+import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
 import {
@@ -7,7 +9,9 @@ import {
   resolveModelStreamError,
   getProviderErrorMessage,
 } from '../errors';
+import { hasModelBoundContentProtection } from '../../middleware/modelBoundContent';
 import { getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
+import { getContentFilterError } from '../../middleware/contentFilter';
 import { traceIdForMessage } from '../../langfuse/trace';
 import { createModelErrorTracker } from './tracker';
 
@@ -147,4 +151,66 @@ export function createTerminalRunErrorObserver({
       );
     },
   });
+}
+
+const TYPED_ERROR_CODES: ReadonlySet<string> = new Set<string>([
+  ...Object.values(ErrorTypes),
+  ...Object.values(ViolationTypes),
+]);
+
+/** A host-thrown `{"type": ...}` payload whose type the client maps to localized copy. */
+function isTypedErrorMessage(message: string): boolean {
+  if (!message.trimStart().startsWith('{')) {
+    return false;
+  }
+  try {
+    const parsed: unknown = JSON.parse(message);
+    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return false;
+    }
+    const type = (parsed as { type?: unknown }).type;
+    return typeof type === 'string' && TYPED_ERROR_CODES.has(type);
+  } catch {
+    return false;
+  }
+}
+
+/** The deployment config that decides whether a failure may show its own text. */
+export interface GenerationErrorConfig {
+  readonly filters?: FiltersConfig | null;
+  readonly messageFilter?: { readonly pii?: MessageFilterPiiConfig | null } | null;
+}
+
+/**
+ * The error text a failed generation publishes and persists on its error row, under the same rule
+ * the run's content error parts follow. Host-authored outcomes keep their wording: a typed
+ * `{"type": ...}` payload, a LangChain-classified provider failure, or a content policy block.
+ * Any other exception may echo submitted content, so while a content policy is active the turn
+ * carries `fallback`; otherwise it carries the message with credentials redacted. The exception
+ * itself reaches the logs only through `getSafeErrorMetadata`.
+ */
+export function getUserFacingGenerationError(
+  error: unknown,
+  appConfig: GenerationErrorConfig | null | undefined,
+  fallback: string,
+): string {
+  const policyError = getContentFilterError(error);
+  if (policyError != null) {
+    return policyError.message;
+  }
+  const message = error instanceof Error ? error.message : undefined;
+  if (message != null && isTypedErrorMessage(message)) {
+    return message;
+  }
+  const classified = safelyResolveLangChainError(error);
+  if (classified != null) {
+    return classified;
+  }
+  if (
+    message == null ||
+    hasModelBoundContentProtection(appConfig?.filters, appConfig?.messageFilter?.pii)
+  ) {
+    return fallback;
+  }
+  return redactMessage(message.trim()) || fallback;
 }
