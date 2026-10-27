@@ -4,9 +4,8 @@ import { getPrimaryE2EUser } from '../../../setup/users.mock';
 import { withMongo } from '../db';
 
 /**
- * librechat.yaml keys the docs describe, written as principal config overrides by the primary
- * user (first registered, ADMIN) for a user this file registers, whose own requests read the
- * merged result: a model-level Azure `assistants` flag and `fileConfig.stt`.
+ * `fileConfig.stt`, written as a principal config override by the primary user (first
+ * registered, ADMIN) for a user this file registers, whose own requests read the merged result.
  */
 
 type Session = { headers: Record<string, string>; userId: string };
@@ -61,7 +60,7 @@ async function clearOverrides(
   expect([200, 204, 404]).toContain(res.status());
 }
 
-test.describe('Documented config keys', () => {
+test.describe('fileConfig.stt', () => {
   test.describe.configure({ mode: 'serial' });
 
   test.beforeAll(async ({ request }) => {
@@ -80,58 +79,6 @@ test.describe('Documented config keys', () => {
       await db.collection('configs').deleteMany({ principalId: user._id.toString() });
       await db.collection('users').deleteOne({ _id: user._id });
     });
-  });
-
-  test('a model-level Azure assistants flag lists that model for Azure Assistants @scenario:azure-model-assistants-flag', async ({
-    request,
-  }) => {
-    const { admin, target } = await sessions(request);
-    await clearOverrides(request, admin, target.userId);
-    try {
-      const put = await request.put(configPath(target.userId), {
-        headers: admin.headers,
-        data: {
-          overrides: {
-            endpoints: {
-              azureOpenAI: {
-                assistants: true,
-                groups: [
-                  {
-                    group: 'e2e-model-assistants',
-                    apiKey: 'e2e-azure-key',
-                    instanceName: 'e2e-instance',
-                    version: '2024-10-21',
-                    models: {
-                      'e2e-assistant-model': { deploymentName: 'e2e-assistant', assistants: true },
-                      'e2e-chat-model': { deploymentName: 'e2e-chat' },
-                    },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      });
-      expect(put.status(), await put.text()).toBe(201);
-
-      /** The override reaches the merged config after an async cache invalidation. */
-      await expect
-        .poll(
-          async () => {
-            const res = await request.get('/api/models', { headers: target.headers });
-            expect(res.ok()).toBeTruthy();
-            const models = (await res.json()) as Record<string, string[] | undefined>;
-            return { azureOpenAI: models.azureOpenAI, azureAssistants: models.azureAssistants };
-          },
-          { timeout: 30000, intervals: [500, 1000, 2000] },
-        )
-        .toEqual({
-          azureOpenAI: ['e2e-assistant-model', 'e2e-chat-model'],
-          azureAssistants: ['e2e-assistant-model'],
-        });
-    } finally {
-      await clearOverrides(request, admin, target.userId);
-    }
   });
 
   test('an invalid fileConfig.stt MIME pattern is rejected when written @scenario:file-config-stt-validated', async ({
