@@ -437,14 +437,21 @@ describe('getUserFacingGenerationError', () => {
     );
   });
 
-  it('drops free-text fields from a typed payload under a content policy', () => {
+  it('keeps only the code and numeric fields of a typed payload under a content policy', () => {
     const typed = JSON.stringify({
-      type: ErrorTypes.NO_USER_KEY,
+      type: ViolationTypes.TOKEN_BALANCE,
+      balance: 0,
+      tokenCost: 120,
       message: 'PRIVATE-PROMPT',
-      info: 'PRIVATE-INFO',
+      prompt: 'PRIVATE-FIELD',
+      nested: { value: 'PRIVATE-NESTED' },
     });
     const text = getUserFacingGenerationError(new Error(typed), protectedConfig, 'x');
-    expect(JSON.parse(text)).toEqual({ type: ErrorTypes.NO_USER_KEY });
+    expect(JSON.parse(text)).toEqual({
+      type: ViolationTypes.TOKEN_BALANCE,
+      balance: 0,
+      tokenCost: 120,
+    });
   });
 
   it('redacts credentials in a typed payload without a content policy', () => {

@@ -158,9 +158,6 @@ const TYPED_ERROR_CODES: ReadonlySet<string> = new Set<string>([
   ...Object.values(ViolationTypes),
 ]);
 
-/** Payload fields that carry free text, which may echo provider or submitted content. */
-const TYPED_ERROR_FREE_TEXT_FIELDS = ['message', 'info'] as const;
-
 type TypedErrorPayload = Record<string, unknown> & { type: string };
 
 /** A host-thrown `{"type": ...}` payload whose type the client maps to localized copy. */
@@ -184,22 +181,24 @@ function parseTypedErrorMessage(message: string): TypedErrorPayload | undefined 
 
 /**
  * The typed payload as a reader may see it: credentials and emails are always redacted, and while
- * a content policy is active its free-text fields are dropped, keeping the code and the structured
- * fields its renderer reads.
+ * a content policy is active only the code and its numeric and boolean fields (a balance, a limit)
+ * remain, since any string field may carry provider or submitted content.
  */
 function getSafeTypedErrorText(
   message: string,
   payload: TypedErrorPayload,
   protectionEnabled: boolean,
 ): string {
-  if (!protectionEnabled || !TYPED_ERROR_FREE_TEXT_FIELDS.some((field) => field in payload)) {
+  if (!protectionEnabled) {
     return redactMessage(message);
   }
-  const safe: Record<string, unknown> = { ...payload };
-  for (const field of TYPED_ERROR_FREE_TEXT_FIELDS) {
-    delete safe[field];
+  const safe: Record<string, unknown> = { type: payload.type };
+  for (const [key, value] of Object.entries(payload)) {
+    if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') {
+      safe[key] = value;
+    }
   }
-  return redactMessage(JSON.stringify(safe));
+  return JSON.stringify(safe);
 }
 
 /** The deployment config that decides whether a failure may show its own text. */
@@ -211,7 +210,7 @@ export interface GenerationErrorConfig {
 /**
  * The error text a failed generation publishes and persists on its error row, under the same rule
  * the run's content error parts follow. Host-authored outcomes keep their wording: a typed
- * `{"type": ...}` payload (redacted, and without free-text fields under a content policy), a LangChain-classified provider failure, or a content policy block.
+ * `{"type": ...}` payload (redacted, and reduced to its code and numeric fields under a content policy), a LangChain-classified provider failure, or a content policy block.
  * Any other exception may echo submitted content, so while a content policy is active the turn
  * carries `fallback`; otherwise it carries the message with URLs, credentials (API keys, tokens, auth headers) and email
  * addresses redacted. The exception
