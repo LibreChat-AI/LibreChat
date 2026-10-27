@@ -23,6 +23,9 @@ async function pick(page: Page, level: string) {
   await expect(trigger(page)).toHaveAccessibleName(`Thinking: ${level}`);
   await page.keyboard.press('Escape');
   await expect(popover(page)).toBeHidden();
+  /* Focus returns to the trigger, whose tooltip sits over the message field on a phone. */
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('tooltip')).toBeHidden();
 }
 
 /** Sends a turn and returns the reasoning override its request carried. */
