@@ -108,7 +108,7 @@ export interface IMessage extends Document {
   /** Server-private bounded rendering projection derived once at child settlement. */
   subagentActivityProjection?: {
     taskId: string;
-    version: 1;
+    version: 1 | 2;
     activityJson: string;
     truncated: boolean;
   };

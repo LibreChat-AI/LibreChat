@@ -4,7 +4,7 @@ import type {
   AgentSubagentGraphEdge,
   AgentSubagentsConfig,
 } from 'librechat-data-provider';
-import { agentCreateSchema, agentUpdateSchema } from './validation';
+import { agentCreateSchema, agentUpdateSchema, toolOptionsSchema } from './validation';
 
 const MAX_LIST_LIMIT = 100;
 const DEFAULT_LIST_LIMIT = 20;
@@ -106,7 +106,6 @@ export type AgentManagementError = {
  */
 export const agentManagementCreateSchema: z.ZodType<
   AgentManagementCreate,
-  z.ZodTypeDef,
   AgentManagementCreateInput
 > = agentCreateSchema.omit({ instructionsPrompt: true }).extend({ model: z.string() }).strict();
 export const agentManagementUpdateSchema: z.ZodType<AgentManagementUpdate> = agentUpdateSchema
@@ -143,7 +142,7 @@ const agentManagementCursorSchema = z
     }
   });
 
-export const agentManagementListSchema: z.ZodType<AgentManagementList, z.ZodTypeDef, unknown> = z
+export const agentManagementListSchema: z.ZodType<AgentManagementList, unknown> = z
   .object({
     limit: z.coerce.number().int().min(1).max(MAX_LIST_LIMIT).default(DEFAULT_LIST_LIMIT),
     cursor: agentManagementCursorSchema.optional(),
@@ -194,6 +193,8 @@ export const agentManagementResponseSchema: z.ZodType<AgentManagementResponse> =
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
     subagents: agentManagementSubagentsResponseSchema,
+    // Legacy records remain readable; write and execution ceilings are enforced separately.
+    tool_options: z.record(z.string(), toolOptionsSchema).optional(),
   })
   .strict();
 

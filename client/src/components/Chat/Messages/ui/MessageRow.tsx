@@ -1,11 +1,16 @@
 import { Zap } from 'lucide-react';
+import { ContentTypes } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import MessageTimestamp from './MessageTimestamp';
+import { getMessageRowWidthClass } from './width';
 import HeaderLabel from './HeaderLabel';
+import Files from '../Content/Files';
 import { cn } from '~/utils';
 
 type MessageRowProps = {
   id?: string;
+  message?: TMessage;
   label: string;
   hoverLabel?: string | null;
   icon: ReactNode;
@@ -74,20 +79,9 @@ function renderAuthorHeader({
   );
 }
 
-export function getMessageRowWidthClass({
-  fullWidth = false,
-  hasParallelContent = false,
-}: {
-  fullWidth?: boolean;
-  hasParallelContent?: boolean;
-} = {}) {
-  if (fullWidth) return 'w-full max-w-full sm:px-2';
-  if (hasParallelContent) return 'w-full sm:px-2 md:max-w-[58rem] xl:max-w-[70rem]';
-  return 'w-full sm:px-2 md:max-w-3xl xl:max-w-4xl';
-}
-
 export default function MessageRow({
   id,
+  message,
   icon,
   label,
   hoverLabel,
@@ -110,6 +104,24 @@ export default function MessageRow({
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
   const isSystem = systemLabel != null && systemLabel !== '';
   const isUserSide = isCreatedByUser && !isSystem;
+  const hasFiles = isUserSide && !isEditing && (message?.files?.length ?? 0) > 0;
+  const hasBody =
+    !hasFiles ||
+    Boolean(
+      message?.text?.trim() ||
+        message?.content?.some(
+          (part) =>
+            part != null &&
+            (part.type !== ContentTypes.TEXT ||
+              (typeof part.text === 'string' ? part.text : part.text?.value)?.trim()),
+        ) ||
+        message?.privacyRevision ||
+        message?.error ||
+        message?.unfinished ||
+        message?.quotes?.length ||
+        message?.alwaysAppliedSkills?.length ||
+        message?.manualSkills?.length,
+    );
 
   return (
     <div
@@ -166,22 +178,32 @@ export default function MessageRow({
           })}
 
         <div className={cn('flex w-full flex-col gap-1', isUserSide && 'items-end')}>
-          <div
-            className={cn(
-              'flex min-h-[1.25rem] max-w-full grow flex-col gap-0',
-              isUserSide && !isEditing
-                ? cn(
-                    'rounded-theme-surface rounded-ee-theme-control px-theme-normal w-fit',
-                    isSystem || outlined
-                      ? 'border-border-medium border py-1.5'
-                      : 'bg-surface-user-message py-2.5',
-                  )
-                : 'w-full',
-            )}
-            data-testid="message-body"
-          >
-            {children}
-          </div>
+          {hasFiles && (
+            <div
+              data-testid="message-attachments"
+              className="flex max-w-full flex-col items-end gap-3 pb-2"
+            >
+              <Files message={message} />
+            </div>
+          )}
+          {hasBody && (
+            <div
+              className={cn(
+                'flex min-h-[1.25rem] max-w-full grow flex-col gap-0',
+                isUserSide && !isEditing
+                  ? cn(
+                      'rounded-theme-surface rounded-ee-theme-control px-theme-normal w-fit',
+                      isSystem || outlined
+                        ? 'border-border-medium border py-1.5'
+                        : 'bg-surface-user-message py-2.5',
+                    )
+                  : 'w-full',
+              )}
+              data-testid="message-body"
+            >
+              {children}
+            </div>
+          )}
           <div className={cn('w-full', isUserSide && 'flex justify-end')}>{footer}</div>
         </div>
       </div>

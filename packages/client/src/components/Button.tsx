@@ -237,7 +237,7 @@ const buttonVariantRecipe = cva(
         /** A small text action in the secondary ink beside a status line, such as a failed
          *  steer's Retry or a pending one's Cancel; it rises to the primary ink under the pointer. */
         'text-action':
-          'rounded text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
+          'rounded-sm text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
         /** The content of a list row whose row owns the highlight, such as a composer palette
          *  entry: it lays the row out and takes the pointer, and leaves fill and ink to the row. */
         'row-content':

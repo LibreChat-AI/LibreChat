@@ -21,6 +21,7 @@ export * from './morph';
 export * from './forms';
 export * from './roles';
 export * from './errors';
+export * from './promptErrors';
 export * from './agents';
 export * from './drafts';
 export * from './convos';

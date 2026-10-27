@@ -28,6 +28,31 @@ const EXEMPT_POSTS = new Set([
   '/api/agents/chat/abort',
 ]);
 
+/**
+ * Requests whose router opted out of the gate (`allowBeforeTermsAcceptance`), with the mount path
+ * of that router, so the opt-out holds only while the request is inside it.
+ */
+const routeOptOuts = new WeakMap<Request, string>();
+
+/**
+ * The gate's explicit opt-out, mounted ahead of authentication on a router whose requests the
+ * gate must let through: the admin config API, so an admin who has not accepted the terms can
+ * still read the config and turn off the setting that asks for them. It marks the request object
+ * itself, which no client input reaches, rather than matching a path, and only for the router it
+ * is mounted on: a request that leaves that router unhandled and reaches another is gated there.
+ * Every other route (end-user routes, and admin routes that start work such as skill sync runs or
+ * code pairings) stays gated, and the router's own authentication and capability checks still run.
+ */
+export function allowBeforeTermsAcceptance(req: Request, _res: Response, next: NextFunction): void {
+  routeOptOuts.set(req, req.baseUrl ?? '');
+  next();
+}
+
+/** Whether the request is inside the router that opted it out of the gate. */
+function isOptedOut(req: Request): boolean {
+  return routeOptOuts.has(req) && routeOptOuts.get(req) === (req.baseUrl ?? '');
+}
+
 function isExempt(method: string, pathname: string): boolean {
   if (method === 'POST') {
     return EXEMPT_POSTS.has(pathname);
@@ -59,7 +84,8 @@ export function createTermsBlockCheck(deps: TermsAcceptanceGateDependencies) {
 /**
  * Enforces `interface.termsOfService.modalAcceptance` on the server: an authenticated user who has
  * not accepted the terms may read but not write, so a client that skips the modal cannot start
- * chats, uploads or any other processing. Runs after authentication and reads `termsAccepted` from
+ * chats, uploads or any other processing. A router that mounts `allowBeforeTermsAcceptance`
+ * opts its requests out. Runs after authentication and reads `termsAccepted` from
  * the user document already on the request; the config is resolved only for a user who has not
  * accepted and is attempting a write.
  */
@@ -70,7 +96,7 @@ export function createTermsAcceptanceGate(
   const isBlocked = createTermsBlockCheck(deps);
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const user = req.user as TermsUser | undefined;
-    if (SAFE_METHODS.has(req.method) || isExempt(req.method, getPathname(req))) {
+    if (SAFE_METHODS.has(req.method) || isOptedOut(req) || isExempt(req.method, getPathname(req))) {
       next();
       return;
     }

@@ -6,14 +6,18 @@ import {
   getRequestMethod,
   getRequestPath,
   SYSTEM_TENANT_ID,
+  tenantStorage,
   logger,
 } from '@librechat/data-schemas';
-import type { Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import type { ServerRequest } from '~/types/http';
 // Import directly from source file — _resetTenantMiddlewareStrictCache is intentionally
 // excluded from the public barrel export (index.ts).
 import {
   tenantContextMiddleware,
+  requirePreAuthTenantContext,
+  createPreAuthTenantGuard,
+  TENANT_CONTEXT_REQUIRED,
   requestContextMiddleware,
   restoreTenantContextFromReq,
   resolveRequestTenantId,
@@ -501,5 +505,72 @@ describe('resolveRequestTenantId', () => {
     const req = mockReq({ tenantId: 'tenant-user', role: 'user' });
 
     expect(resolveRequestTenantId(req)).toBe('tenant-user');
+  });
+});
+
+describe('requirePreAuthTenantContext', () => {
+  const request = { headers: {} } as Request;
+  const originalStrict = process.env.TENANT_ISOLATION_STRICT;
+
+  afterEach(() => {
+    if (originalStrict === undefined) {
+      delete process.env.TENANT_ISOLATION_STRICT;
+    } else {
+      process.env.TENANT_ISOLATION_STRICT = originalStrict;
+    }
+    _resetTenantMiddlewareStrictCache();
+  });
+
+  it.each([undefined, '', '   ', SYSTEM_TENANT_ID, ` ${SYSTEM_TENANT_ID} `])(
+    'refuses strict pre-auth lookups with tenant %s',
+    (tenantId) => {
+      process.env.TENANT_ISOLATION_STRICT = 'true';
+      _resetTenantMiddlewareStrictCache();
+      const res = mockRes();
+      const next = jest.fn();
+      tenantStorage.run({ tenantId }, () => {
+        requirePreAuthTenantContext(request, res, next);
+      });
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({
+        message: 'Tenant context required in strict isolation mode',
+        code: TENANT_CONTEXT_REQUIRED,
+      });
+      expect(next).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows a strict request with a resolved tenant', () => {
+    process.env.TENANT_ISOLATION_STRICT = 'true';
+    _resetTenantMiddlewareStrictCache();
+    const next = jest.fn();
+    const res = mockRes();
+    tenantStorage.run({ tenantId: 'tenant-a' }, () => {
+      requirePreAuthTenantContext(request, res, next);
+    });
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('preserves platform sign-in in non-strict mode', () => {
+    process.env.TENANT_ISOLATION_STRICT = 'false';
+    _resetTenantMiddlewareStrictCache();
+    const next = jest.fn();
+    const res = mockRes();
+    requirePreAuthTenantContext(request, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('redirects OAuth callbacks without exposing a database error', () => {
+    process.env.TENANT_ISOLATION_STRICT = 'true';
+    _resetTenantMiddlewareStrictCache();
+    const res = mockRes();
+    res.redirect = jest.fn();
+    const next = jest.fn();
+    createPreAuthTenantGuard({ failureRedirect: '/login?error=auth_failed' })(request, res, next);
+    expect(res.redirect).toHaveBeenCalledWith('/login?error=auth_failed');
+    expect(res.status).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
   });
 });

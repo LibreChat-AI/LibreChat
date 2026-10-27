@@ -1,5 +1,11 @@
-import { createStreamState, reduceStep } from '@librechat/chat';
-import { ContentTypes, EModelEndpoint, StepEvents, StepTypes } from 'librechat-data-provider';
+import { createStreamState, reduceStep, applySteerPart } from '@librechat/chat';
+import {
+  ContentTypes,
+  EModelEndpoint,
+  StepEvents,
+  StepTypes,
+  SteerEvents,
+} from 'librechat-data-provider';
 import type {
   EventSubmission,
   SubagentTaskContentResponse,
@@ -172,7 +178,13 @@ function applyRecoveredContent(
     if (sequence <= response.afterSequence) continue;
     if (sequence <= through || sequence > response.throughSequence) return null;
     through = sequence;
-    if (frame.event === StepEvents.ON_RUN_STEP) {
+    if (frame.event === SteerEvents.ON_STEER_APPLIED) {
+      const message = stream.messages.get(response.messageId);
+      if (message == null) return null;
+      const next = applySteerPart(message, frame.data);
+      stream.messages.set(response.messageId, next);
+      messages = messages.map((value) => (value.messageId === response.messageId ? next : value));
+    } else if (frame.event === StepEvents.ON_RUN_STEP) {
       reduceStep(stream, { ...frame, data: { ...frame.data, runId: response.messageId } }, context);
     } else if (frame.event === StepEvents.ON_RUN_STEP_COMPLETED) {
       if (frame.data.result != null) {

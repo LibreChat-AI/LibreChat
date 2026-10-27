@@ -1,3 +1,4 @@
+import { v4 } from 'uuid';
 import { Constants } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 
@@ -63,7 +64,18 @@ export function getPreliminaryRegenerateResponseMessageId(
     return null;
   }
 
-  return `${responseMessageId.replace(/_+$/, '')}_`;
+  if (responseMessageId.length > Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH) {
+    return `${v4()}_`;
+  }
+
+  let end = responseMessageId.length;
+  while (end > 0 && responseMessageId.charCodeAt(end - 1) === 95) {
+    end--;
+  }
+  /** Keep the placeholder distinct without truncating an existing response identity. */
+  return end >= Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH
+    ? `${v4()}_`
+    : `${responseMessageId.slice(0, end)}_`;
 }
 
 export function getRegenerateTargetResponseMessage({

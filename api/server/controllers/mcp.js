@@ -439,7 +439,7 @@ const createMCPServerController = async (req, res) => {
     if (!validation.success) {
       return res.status(400).json({
         message: 'Invalid configuration',
-        errors: validation.error.errors,
+        errors: validation.error.issues,
       });
     }
     if (validation.data.iconPath) {
@@ -545,7 +545,7 @@ const updateMCPServerController = async (req, res) => {
     if (!validation.success) {
       return res.status(400).json({
         message: 'Invalid configuration',
-        errors: validation.error.errors,
+        errors: validation.error.issues,
       });
     }
     if (validation.data.iconPath) {

@@ -450,7 +450,18 @@ const DialogDescription: React.ForwardRefExoticComponent<
 ));
 DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
+/** `Dialog*` are the canonical names. The `OG*` names are the same components under the names the
+ *  app has always imported, kept so existing call sites need no change. */
 export {
+  Dialog,
+  DialogPortal,
+  DialogClose,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
   Dialog as OGDialog,
   DialogPortal as OGDialogPortal,
   DialogOverlay as OGDialogOverlay,
