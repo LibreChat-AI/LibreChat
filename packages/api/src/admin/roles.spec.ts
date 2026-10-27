@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { RoleMembersReassignmentError } from '@librechat/data-schemas';
 import { PrincipalType, SystemRoles, promptPermissionsSchema } from 'librechat-data-provider';
 import type { IRole, IUser } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -1632,6 +1633,39 @@ describe('createAdminRolesHandlers', () => {
       expect(status).toHaveBeenCalledWith(500);
       expect(recordAuditEntry).toHaveBeenLastCalledWith(
         expect.objectContaining({ action: 'role.deleted', outcome: 'failure' }),
+      );
+    });
+
+    it('audits the members a failed delete moved and keeps the role', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = deleteDeps({
+        recordAuditEntry,
+        deleteRoleByName: jest
+          .fn()
+          .mockRejectedValue(new RoleMembersReassignmentError('members still joining', ['u1'])),
+        restoreConfig: jest.fn(),
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({
+        params: { name: 'editor' },
+        user: { _id: new Types.ObjectId(), role: 'admin' },
+      });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(500);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'role.member_removed',
+          metadata: expect.objectContaining({ userIds: 'u1', count: 1 }),
+        }),
+      );
+      expect(recordAuditEntry).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          action: 'role.deleted',
+          outcome: 'failure',
+          metadata: { code: 'ROLE_CLEANUP_FAILED' },
+        }),
       );
     });
 

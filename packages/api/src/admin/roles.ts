@@ -3,6 +3,7 @@ import {
   logger,
   RoleConflictError,
   isConfigMoveRefused,
+  RoleMembersReassignmentError,
   isValidObjectIdString,
   BASE_CONFIG_PRINCIPAL_ID,
 } from '@librechat/data-schemas';
@@ -1034,6 +1035,24 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return cleanupFailedResponse();
       }
 
+      /** Each account the delete moved is recorded (chunked) before the outcome entry. */
+      const auditReassignedMembers = async (userIds: string[]) => {
+        for (let i = 0; i < userIds.length; i += AUDIT_MEMBER_CHUNK) {
+          const chunk = userIds.slice(i, i + AUDIT_MEMBER_CHUNK);
+          await emitRevocationAudit(req, {
+            action: 'role.member_removed',
+            severity: memberChangeSeverity(name),
+            target: roleTarget(name),
+            metadata: {
+              userIds: chunk.join(','),
+              count: chunk.length,
+              newRole: SystemRoles.USER,
+              cause: 'role_deleted',
+            },
+          });
+        }
+      };
+
       let deleted: RoleDeletion | null;
       try {
         deleted = await deleteRoleByName(name, {
@@ -1047,16 +1066,21 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         /** The delete may have committed before it threw. Restoring dependents for a
          * role that is gone would orphan them for a later role with the same name. */
         const lookup = await lookupRole();
+        /** The role was not deleted, but the members moved before the failure stay moved. */
+        const movedBeforeFailure =
+          error instanceof RoleMembersReassignmentError ? error.reassignedUserIds : [];
         if (lookup.known && isTargetedRole(lookup.role)) {
           await cascade.compensate();
           await invalidateAccess();
           await auditRemovedGrants();
+          await auditReassignedMembers(movedBeforeFailure);
           await recordOutcome('failure', 'ROLE_CLEANUP_FAILED');
           return res.status(500).json({ error: 'Failed to delete role' });
         }
         await invalidateAccess();
         if (!lookup.known || lookup.role) {
           await auditRemovedGrants();
+          await auditReassignedMembers(movedBeforeFailure);
           await recordOutcome('failure', 'ROLE_STATE_UNVERIFIABLE');
           logger.error('[adminRoles] dependents not restored, role state unverifiable:', name);
           return res.status(500).json({ error: 'Failed to delete role' });
@@ -1073,22 +1097,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
       const removedGrants = cascade.removed.grants as ISystemGrant[];
       await auditRemovedGrants();
-      /** Each account the delete moved is recorded (chunked) before the outcome entry. */
       const audited = deleted.reassignedUserIds;
-      for (let i = 0; i < audited.length; i += AUDIT_MEMBER_CHUNK) {
-        const chunk = audited.slice(i, i + AUDIT_MEMBER_CHUNK);
-        await emitRevocationAudit(req, {
-          action: 'role.member_removed',
-          severity: memberChangeSeverity(name),
-          target: roleTarget(name),
-          metadata: {
-            userIds: chunk.join(','),
-            count: chunk.length,
-            newRole: SystemRoles.USER,
-            cause: 'role_deleted',
-          },
-        });
-      }
+      await auditReassignedMembers(audited);
       await recordOutcome('success', undefined, {
         grantsRemoved: removedGrants.length,
         membersReassigned: audited.length,

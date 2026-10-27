@@ -9,9 +9,9 @@ import {
   CacheKeys,
 } from 'librechat-data-provider';
 import type { IRole, IUser, RolePermissions } from '..';
+import { createRoleMethods, RoleMembersReassignmentError } from './role';
 import { _resetStrictCache } from '../models/plugins/tenantIsolation';
 import { tenantStorage } from '~/config/tenantContext';
-import { createRoleMethods } from './role';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -941,6 +941,54 @@ describe('deleteRoleByName', () => {
     expect((await User.findById(bob._id).lean())!.role).toBe(SystemRoles.USER);
     expect((await User.findById(eveId).lean())!.role).toBe(SystemRoles.USER);
     expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
+  });
+
+  it('keeps the role and reports who it moved when members keep joining after every pass', async () => {
+    await createRoleByName({ name: 'editor' });
+    await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    let joined = 0;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          /** Another member joins after every reassignment write. */
+          joined++;
+          await User.create({
+            name: `Late ${joined}`,
+            email: `late${joined}@test.com`,
+            role: 'editor',
+            username: `late${joined}`,
+          });
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleMembersReassignmentError);
+    const moved = (caught as RoleMembersReassignmentError).reassignedUserIds;
+    expect(moved).toHaveLength(joined);
+    expect(await User.countDocuments({ _id: { $in: moved }, role: SystemRoles.USER })).toBe(
+      moved.length,
+    );
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
   });
 
   it('leaves a role recreated under the same name when the expected id no longer matches', async () => {

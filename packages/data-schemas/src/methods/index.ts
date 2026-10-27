@@ -43,7 +43,7 @@ import { createPasskeyMethods, type PasskeyMethods } from './passkey';
 import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
 import { createTokenMethods, type TokenMethods } from './token';
 import { createTokenListMethods, type TokenListMethods } from './tokenList';
-import { createRoleMethods, RoleConflictError } from './role';
+import { createRoleMethods, RoleConflictError, RoleMembersReassignmentError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
 import { createFileStorageMethods } from './fileStorage';
 import { createFileMethods } from './file';
@@ -230,6 +230,7 @@ import { createInsightsMethods, type InsightsMethods } from './insights';
 export {
   runAfterTransaction,
   RoleConflictError,
+  RoleMembersReassignmentError,
   MCPAuthorityProofError,
   MAX_MCP_AUTHORITY_TARGETS,
   DEFAULT_REFRESH_TOKEN_EXPIRY,

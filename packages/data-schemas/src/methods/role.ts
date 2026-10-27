@@ -20,6 +20,22 @@ function isSystemRoleName(name: string): boolean {
   return systemRoleValues.has(name.toUpperCase());
 }
 
+/**
+ * A role deletion could not move every member off the role, so the role was not deleted. Carries
+ * the accounts it had already moved to USER, which stay moved and must still be audited.
+ */
+export class RoleMembersReassignmentError extends Error {
+  readonly reassignedUserIds: string[];
+  /** The failure that stopped the reassignment. */
+  readonly cause: unknown;
+  constructor(message: string, reassignedUserIds: string[], cause?: unknown) {
+    super(message);
+    this.cause = cause;
+    this.name = 'RoleMembersReassignmentError';
+    this.reassignedUserIds = reassignedUserIds;
+  }
+}
+
 export class RoleConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -608,7 +624,9 @@ export function createRoleMethods(
    * holding the role, that also tags every account it changes with a nonce of its own: when it
    * changed every account it read, those are the ones it moved; when some left in between, the
    * accounts carrying the nonce are, whatever else writes to them afterwards. The tag is then
-   * removed. The next pass picks up a member who joined after the read.
+   * removed. The next pass picks up a member who joined after the read. Throws
+   * `RoleMembersReassignmentError` with the accounts already moved when a write fails or members
+   * are still joining after every pass, so the role is not deleted under a remaining member.
    */
   async function reassignMembersToUser(roleName: string): Promise<string[]> {
     const User = mongoose.models.User as Model<IUser>;
@@ -617,10 +635,13 @@ export function createRoleMethods(
     /** Every id a write targeted: a write that rejects may still have changed some of them. */
     const written: string[] = [];
     try {
-      for (let pass = 0; pass < MAX_REASSIGN_PASSES; pass++) {
+      for (let pass = 0; ; pass++) {
         const ids = (await User.find(members).select('_id').lean()).map((u) => u._id.toString());
         if (ids.length === 0) {
           return reassigned;
+        }
+        if (pass === MAX_REASSIGN_PASSES) {
+          throw new Error(`members still joining "${roleName}" after every pass`);
         }
         for (let i = 0; i < ids.length; i += REASSIGN_BATCH_SIZE) {
           const batch = ids.slice(i, i + REASSIGN_BATCH_SIZE);
@@ -628,8 +649,12 @@ export function createRoleMethods(
           reassigned.push(...(await reassignBatch(User, members, batch)));
         }
       }
-      logger.warn(`[deleteRoleByName] members still joining "${roleName}" after every pass`);
-      return reassigned;
+    } catch (error) {
+      throw new RoleMembersReassignmentError(
+        `Could not reassign the members of role "${roleName}"`,
+        reassigned,
+        error,
+      );
     } finally {
       await invalidateAuthUserDocCache(written);
     }
