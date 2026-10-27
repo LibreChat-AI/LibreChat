@@ -171,8 +171,6 @@ type OptimisticWrite = {
   committed: Map<string, TMessage>;
   /** Each row the write replaced, as it was before. */
   replaced: Map<string, TMessage>;
-  /** The ids of the rows the write added. */
-  added: Set<string>;
   /** The ids of the rows the write removed. */
   removed: Set<string>;
 };
@@ -473,15 +471,11 @@ const recordOptimisticWrite = (
     before,
     committed: new Map(),
     replaced: new Map(),
-    added: new Set(),
     removed: new Set(prior.keys()),
   };
   for (const message of written) {
     const was = prior.get(message.messageId);
     record.removed.delete(message.messageId);
-    if (was == null) {
-      record.added.add(message.messageId);
-    }
     const row = held.get(message.messageId);
     if (was === message || row == null || !isSameValue(row, message)) {
       continue;
@@ -497,8 +491,8 @@ const recordOptimisticWrite = (
 /**
  * Undoes an optimistic write on the list as it stands now: rows it added go, rows it replaced or
  * removed come back as they were, and any other row, or one of its rows someone else wrote since,
- * stays as it is. A row of the turn that stays keeps the rows it added above it, so the tree never
- * loses the parent of a row it still lists.
+ * stays as it is. A row that stays keeps the rows the write added above it, so the tree never loses
+ * the parent of a row it still lists.
  */
 const undoOptimisticWrite = (record: OptimisticWrite, current: TMessage[]): TMessage[] => {
   const dropped = new Map<string, TMessage>();
@@ -512,15 +506,12 @@ const undoOptimisticWrite = (record: OptimisticWrite, current: TMessage[]): TMes
     }
     return was;
   });
-  current.forEach((message, index) => {
-    const edited =
-      undone[index] === message &&
-      (record.added.has(message.messageId) || record.replaced.has(message.messageId));
-    let parent = edited ? dropped.get(message.parentMessageId ?? '') : undefined;
+  for (const row of undone) {
+    let parent = row != null ? dropped.get(row.parentMessageId ?? '') : undefined;
     while (parent != null && dropped.delete(parent.messageId)) {
       parent = dropped.get(parent.parentMessageId ?? '');
     }
-  });
+  }
   const next: TMessage[] = [];
   const kept = new Set<string>();
   current.forEach((message, index) => {
