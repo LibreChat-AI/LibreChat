@@ -1,6 +1,6 @@
 import React, { createRef } from 'react';
 import { ReasoningEffort } from 'librechat-data-provider';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
 import type * as ReasoningModule from '../../Reasoning';
 import { effortRank, leanFor } from '../Effort';
@@ -254,6 +254,36 @@ describe('Thinking', () => {
     expect(off).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(off);
     expect(mockSetValue).toHaveBeenCalledWith({ key: 'reasoning_effort', value: 'low' });
+  });
+
+  it('names the levels in Auto, focuses the Auto toggle and says the choice is one-shot', async () => {
+    mockSetting = {
+      key: 'reasoning_effort',
+      type: 'enum',
+      default: '',
+      options: ['', 'none', 'low', 'medium', 'xhigh'],
+    } as unknown as SettingDefinition;
+    mockConversation = { conversationId: 'convo-1' } as unknown as TConversation;
+    renderInComposer();
+
+    fireEvent.click(screen.getByTestId('composer-thinking-button'));
+    const dialog = screen.getByRole('dialog');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Auto' })).toHaveFocus());
+    expect(screen.getByRole('radiogroup')).toHaveAccessibleDescription(
+      'com_ui_composer_thinking_next_message',
+    );
+    expect(dialog).toHaveTextContent('Auto');
+    expect(dialog).toHaveTextContent('None');
+    expect(dialog).toHaveTextContent('Xhigh');
+  });
+
+  it('names the current level inside the popover', async () => {
+    renderInComposer();
+    fireEvent.click(screen.getByTestId('composer-thinking-button'));
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Low' })).toHaveFocus());
+    expect(screen.getByRole('dialog')).toHaveTextContent(/com_ui_composer_thinkingLow/);
   });
 
   it('does not carry a remembered level across model settings', () => {
