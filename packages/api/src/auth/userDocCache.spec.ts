@@ -7,6 +7,7 @@ import {
   buildAuthUserDocReverseIndexKey,
   getAuthUserDocCacheMode,
   getCachedAuthUserDoc,
+  getCurrentCachedAuthUserDoc,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
   timeAuthUserLookup,
@@ -498,5 +499,44 @@ describe('auth user document cache helpers', () => {
       '[authUserDocCache] Cache read failed; falling back to user lookup',
       { error: 'redis unavailable' },
     );
+  });
+
+  it('serves a cached document only while the stored updatedAt and fence still match', async () => {
+    const store = makeStore();
+    const updatedAt = '2026-10-20T00:00:00.000Z';
+    store.values.set('key', {
+      version: 2,
+      cachedAt: Date.now(),
+      user: { _id: 'user-1', id: 'user-1', updatedAt },
+    });
+    const readStored = jest.fn();
+
+    readStored.mockResolvedValueOnce({ _id: 'user-1', updatedAt: new Date(updatedAt) });
+    await expect(getCurrentCachedAuthUserDoc(store, 'key', readStored)).resolves.toMatchObject({
+      _id: 'user-1',
+    });
+    expect(readStored).toHaveBeenCalledWith('user-1');
+
+    /** A mutation after the cached read moved updatedAt. */
+    readStored.mockResolvedValueOnce({ _id: 'user-1', updatedAt: new Date('2026-10-27') });
+    await expect(getCurrentCachedAuthUserDoc(store, 'key', readStored)).resolves.toBeUndefined();
+
+    readStored.mockResolvedValueOnce({
+      _id: 'user-1',
+      updatedAt: new Date(updatedAt),
+      agentTriggerDeletionStartedAt: new Date(),
+    });
+    await expect(getCurrentCachedAuthUserDoc(store, 'key', readStored)).resolves.toBeUndefined();
+
+    readStored.mockResolvedValueOnce(null);
+    await expect(getCurrentCachedAuthUserDoc(store, 'key', readStored)).resolves.toBeUndefined();
+  });
+
+  it('skips the freshness read on a cache miss', async () => {
+    const readStored = jest.fn();
+    await expect(
+      getCurrentCachedAuthUserDoc(makeStore(), 'missing', readStored),
+    ).resolves.toBeUndefined();
+    expect(readStored).not.toHaveBeenCalled();
   });
 });

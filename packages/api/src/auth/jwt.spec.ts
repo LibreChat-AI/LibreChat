@@ -1,7 +1,7 @@
 import type { IUser } from '@librechat/data-schemas';
 import type { AuthUserDocCacheMode } from './userDocCache';
-import { JWT_USER_PROJECTION, JWT_USER_FRESHNESS_PROJECTION, loadJwtUser } from './jwt';
-import { buildAuthUserDocReverseIndexKey } from './userDocCache';
+import { AUTH_USER_FRESHNESS_PROJECTION, buildAuthUserDocReverseIndexKey } from './userDocCache';
+import { JWT_USER_PROJECTION, loadJwtUser } from './jwt';
 
 const UPDATED_AT = new Date('2026-10-20T00:00:00.000Z');
 
@@ -71,7 +71,7 @@ describe('loadJwtUser', () => {
     const second = await loadJwtUser('user-1', deps);
 
     expect(fullReads(deps.getUserById)).toBe(1);
-    expect(deps.getUserById).toHaveBeenLastCalledWith('user-1', JWT_USER_FRESHNESS_PROJECTION);
+    expect(deps.getUserById).toHaveBeenLastCalledWith('user-1', AUTH_USER_FRESHNESS_PROJECTION);
     expect(second.user).toMatchObject({ _id: 'user-1', role: 'USER' });
     expect(second.deleting).toBe(false);
     /** The reverse index lets every user mutation evict this entry. */

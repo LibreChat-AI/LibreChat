@@ -179,6 +179,51 @@ export async function getCachedAuthUserDoc(
   }
 }
 
+/** What a cache hit reads to prove the cached document is still the stored one. */
+export const AUTH_USER_FRESHNESS_PROJECTION = '_id updatedAt +agentTriggerDeletionStartedAt';
+
+function toTime(value: unknown): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  const time = new Date(value as string | number | Date).getTime();
+  return Number.isNaN(time) ? undefined : time;
+}
+
+/**
+ * A cached document is current only while the stored user has the same `updatedAt` and no
+ * deletion fence. Every user mutation that can change authentication or authorization bumps
+ * `updatedAt`, so a document cached from a read that raced a mutation (even one written after
+ * that mutation's eviction) is never served: the next hit sees the newer stamp.
+ */
+export function isCachedAuthUserDocCurrent(
+  cached: CachedAuthUser,
+  stored: Pick<IUser, 'updatedAt' | 'agentTriggerDeletionStartedAt'> | null | undefined,
+): boolean {
+  if (!stored || stored.agentTriggerDeletionStartedAt != null) {
+    return false;
+  }
+  return toTime(cached.updatedAt) === toTime(stored.updatedAt);
+}
+
+/**
+ * Reads a cached auth user document and returns it only when it is still current, checked by
+ * one small read of the stored user (`readStored` selects `AUTH_USER_FRESHNESS_PROJECTION`).
+ * Anything else, including a cached document without an id, is a miss.
+ */
+export async function getCurrentCachedAuthUserDoc(
+  store: AuthUserDocCacheStore,
+  cacheKey: string,
+  readStored: (userId: string) => Promise<IUser | null>,
+): Promise<CachedAuthUser | undefined> {
+  const cached = await getCachedAuthUserDoc(store, cacheKey);
+  const userId = cached ? getUserId(cached) : undefined;
+  if (!cached || !userId) {
+    return undefined;
+  }
+  return isCachedAuthUserDocCurrent(cached, await readStored(userId)) ? cached : undefined;
+}
+
 /**
  * Runs the database lookup whose result a cache write may store, and stamps when it began:
  * `setCachedAuthUserDoc` anchors the document's lifetime to that moment.

@@ -2,8 +2,9 @@ import { runAsSystem } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { AuthUserDocCacheMode, AuthUserDocCacheStore, CachedAuthUser } from './userDocCache';
 import {
-  getCachedAuthUserDoc,
   setCachedAuthUserDoc,
+  getCurrentCachedAuthUserDoc,
+  AUTH_USER_FRESHNESS_PROJECTION,
   buildAuthUserDocCacheKey,
   invalidateCachedAuthUserDoc,
 } from './userDocCache';
@@ -11,9 +12,6 @@ import {
 /** Fields the JWT bearer path reads; the deletion fence is opt-in on the schema. */
 export const JWT_USER_PROJECTION =
   '-password -__v -totpSecret -backupCodes +agentTriggerDeletionStartedAt';
-
-/** What a cache hit reads to prove the cached document is still the stored one. */
-export const JWT_USER_FRESHNESS_PROJECTION = '_id updatedAt +agentTriggerDeletionStartedAt';
 
 export interface JwtUserLookupDeps {
   /** Resolved by the caller, e.g. from `getAuthUserDocCacheMode()`. */
@@ -35,27 +33,6 @@ export interface JwtUserLookup {
 
 const noop = async (): Promise<void> => undefined;
 
-function toTime(value: unknown): number | undefined {
-  if (value == null) {
-    return undefined;
-  }
-  const time = new Date(value as string | number | Date).getTime();
-  return Number.isNaN(time) ? undefined : time;
-}
-
-/**
- * A cached document is served only while the stored user has the same `updatedAt` and no
- * deletion fence. Every user mutation that can change authentication or authorization bumps
- * `updatedAt`, so a document cached from a read that raced a mutation (even one published
- * after that mutation's eviction) is never served: the next hit sees the newer stamp.
- */
-function isCachedDocCurrent(cached: CachedAuthUser, stored: IUser | null): boolean {
-  if (!stored || stored.agentTriggerDeletionStartedAt != null) {
-    return false;
-  }
-  return toTime(cached.updatedAt) === toTime(stored.updatedAt);
-}
-
 /**
  * Loads the user for a local JWT bearer, serving request bursts from the auth user document
  * cache when the caller's cache mode is on. A cache hit still makes one small read of the
@@ -71,22 +48,19 @@ export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Prom
   const store = cacheKey ? deps.getCacheStore() : undefined;
 
   if (store && cacheKey) {
-    const cached = await getCachedAuthUserDoc(store, cacheKey);
+    const cached = await getCurrentCachedAuthUserDoc(store, cacheKey, (id) =>
+      runAsSystem(() => deps.getUserById(id, AUTH_USER_FRESHNESS_PROJECTION)),
+    );
     if (cached) {
-      const stored = await runAsSystem(() =>
-        deps.getUserById(userId, JWT_USER_FRESHNESS_PROJECTION),
-      );
-      if (isCachedDocCurrent(cached, stored)) {
-        return {
-          user: cached,
-          deleting: false,
-          remember: async (userChanged) => {
-            if (userChanged) {
-              await invalidateCachedAuthUserDoc(store, { userId, cacheKey });
-            }
-          },
-        };
-      }
+      return {
+        user: cached,
+        deleting: false,
+        remember: async (userChanged) => {
+          if (userChanged) {
+            await invalidateCachedAuthUserDoc(store, { userId, cacheKey });
+          }
+        },
+      };
     }
   }
 

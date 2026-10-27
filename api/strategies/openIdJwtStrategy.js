@@ -13,7 +13,8 @@ const {
   normalizeOpenIdIssuer,
   buildAuthUserDocCacheKey,
   getAuthUserDocCacheMode,
-  getCachedAuthUserDoc,
+  getCurrentCachedAuthUserDoc,
+  AUTH_USER_FRESHNESS_PROJECTION,
   getValidOpenIdReuseUserId,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
@@ -180,7 +181,9 @@ const openIdJwtLogin = (openIdConfig) => {
           authUserCacheMode !== 'off' && authUserCacheKey ? getAuthUserDocCacheStore() : undefined;
         const cachedUser =
           authUserCacheMode !== 'off' && authUserCacheStore && authUserCacheKey
-            ? await getCachedAuthUserDoc(authUserCacheStore, authUserCacheKey)
+            ? await getCurrentCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, (id) =>
+                findUser({ _id: id }, AUTH_USER_FRESHNESS_PROJECTION),
+              )
             : undefined;
 
         const servedCachedUser =

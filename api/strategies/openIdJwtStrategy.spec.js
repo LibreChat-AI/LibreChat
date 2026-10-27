@@ -42,7 +42,8 @@ jest.mock('@librechat/api', () => ({
   normalizeOpenIdIssuer: jest.requireActual('@librechat/api').normalizeOpenIdIssuer,
   buildAuthUserDocCacheKey: jest.fn(() => 'auth-user-doc-key'),
   getAuthUserDocCacheMode: jest.fn(() => 'off'),
-  getCachedAuthUserDoc: jest.fn(),
+  getCurrentCachedAuthUserDoc: jest.fn(),
+  AUTH_USER_FRESHNESS_PROJECTION: '_id updatedAt +agentTriggerDeletionStartedAt',
   getValidOpenIdReuseUserId: jest.fn(),
   invalidateCachedAuthUserDoc: jest.fn(),
   setCachedAuthUserDoc: jest.fn(),
@@ -70,7 +71,7 @@ const {
   buildAuthUserDocCacheKey,
   findOpenIDUser,
   getAuthUserDocCacheMode,
-  getCachedAuthUserDoc,
+  getCurrentCachedAuthUserDoc,
   getValidOpenIdReuseUserId,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
@@ -86,7 +87,7 @@ function resetAuthUserDocCacheMocks() {
   mockGetLogStores.mockReturnValue(mockAuthUserDocCacheStore);
   buildAuthUserDocCacheKey.mockReturnValue('auth-user-doc-key');
   getAuthUserDocCacheMode.mockReturnValue('off');
-  getCachedAuthUserDoc.mockResolvedValue(undefined);
+  getCurrentCachedAuthUserDoc.mockResolvedValue(undefined);
   getValidOpenIdReuseUserId.mockReturnValue(null);
   invalidateCachedAuthUserDoc.mockResolvedValue(undefined);
   setCachedAuthUserDoc.mockResolvedValue(undefined);
@@ -601,7 +602,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
 
     expect(findOpenIDUser).toHaveBeenCalled();
     expect(mockGetLogStores).not.toHaveBeenCalled();
-    expect(getCachedAuthUserDoc).not.toHaveBeenCalled();
+    expect(getCurrentCachedAuthUserDoc).not.toHaveBeenCalled();
     expect(setCachedAuthUserDoc).not.toHaveBeenCalled();
   });
 
@@ -615,7 +616,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
       tenantId: 'tenant-a',
     };
     getAuthUserDocCacheMode.mockReturnValue('on');
-    getCachedAuthUserDoc.mockResolvedValue(cachedUser);
+    getCurrentCachedAuthUserDoc.mockResolvedValue(cachedUser);
 
     const { user } = await invokeVerify(req, payload);
 
@@ -635,10 +636,29 @@ describe('openIdJwtStrategy – auth user document cache', () => {
     expect(invalidateCachedAuthUserDoc).not.toHaveBeenCalled();
   });
 
+  it('checks the cached document against the stored user and reads it fully when stale', async () => {
+    getAuthUserDocCacheMode.mockReturnValue('on');
+    findUser.mockResolvedValue({ _id: 'user-abc', updatedAt: new Date() });
+    getCurrentCachedAuthUserDoc.mockImplementation(async (_store, _key, readStored) => {
+      await readStored('user-abc');
+      return undefined;
+    });
+    findOpenIDUser.mockResolvedValue({ user: { ...baseUser }, error: null, migration: false });
+
+    const { user } = await invokeVerify(req, payload);
+
+    expect(findUser).toHaveBeenCalledWith(
+      { _id: 'user-abc' },
+      '_id updatedAt +agentTriggerDeletionStartedAt',
+    );
+    expect(findOpenIDUser).toHaveBeenCalled();
+    expect(user).toMatchObject({ id: 'user-abc' });
+  });
+
   it('rejects a cached OpenID user while account deletion is fenced', async () => {
     mockGetTenantId.mockReturnValue('tenant-a');
     getAuthUserDocCacheMode.mockReturnValue('on');
-    getCachedAuthUserDoc.mockResolvedValue({
+    getCurrentCachedAuthUserDoc.mockResolvedValue({
       _id: 'cached-user',
       role: SystemRoles.USER,
       provider: 'openid',
@@ -663,7 +683,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
 
   it('populates the cache after a miss with the fresh user document', async () => {
     getAuthUserDocCacheMode.mockReturnValue('on');
-    getCachedAuthUserDoc.mockResolvedValue(undefined);
+    getCurrentCachedAuthUserDoc.mockResolvedValue(undefined);
     let lookupAt;
     findOpenIDUser.mockImplementation(async () => {
       lookupAt = Date.now();
@@ -687,7 +707,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
   it('rejects a cached user document from another tenant', async () => {
     mockGetTenantId.mockReturnValue('tenant-b');
     getAuthUserDocCacheMode.mockReturnValue('on');
-    getCachedAuthUserDoc.mockResolvedValue({
+    getCurrentCachedAuthUserDoc.mockResolvedValue({
       _id: 'tenant-a-user',
       role: SystemRoles.ADMIN,
       provider: 'openid',
@@ -721,7 +741,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
   it('uses the signed OpenID user id as cache scope before tenant context is available', async () => {
     getAuthUserDocCacheMode.mockReturnValue('on');
     getValidOpenIdReuseUserId.mockReturnValue('tenant-a-user');
-    getCachedAuthUserDoc.mockResolvedValue({
+    getCurrentCachedAuthUserDoc.mockResolvedValue({
       _id: 'tenant-a-user',
       role: SystemRoles.USER,
       provider: 'openid',
@@ -754,7 +774,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
   it('does not cache a lookup result outside the active tenant scope', async () => {
     mockGetTenantId.mockReturnValue('tenant-b');
     getAuthUserDocCacheMode.mockReturnValue('on');
-    getCachedAuthUserDoc.mockResolvedValue(undefined);
+    getCurrentCachedAuthUserDoc.mockResolvedValue(undefined);
     findOpenIDUser.mockResolvedValue({
       user: { ...baseUser, tenantId: 'tenant-a' },
       error: null,
@@ -883,7 +903,7 @@ describe('openIdJwtStrategy: retired token cutoffs', () => {
 
   it('dates the bearer against a cached stamp that came back serialized', async () => {
     getAuthUserDocCacheMode.mockReturnValue('on');
-    getCachedAuthUserDoc.mockResolvedValue({
+    getCurrentCachedAuthUserDoc.mockResolvedValue({
       _id: 'cached-user',
       role: SystemRoles.USER,
       provider: 'openid',
