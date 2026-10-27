@@ -115,6 +115,6 @@ test.describe('approved tool error text', () => {
     );
     expect(result.status, result.output).toBe(0);
     /** Jest may color the summary, so match the count alone. */
-    expect(result.output).toMatch(/\b2 passed\b/);
+    expect(result.output).toMatch(/(?<!\d)2 passed/);
   });
 });

@@ -24,7 +24,7 @@ function runControllerTests(pattern: string): void {
   );
   expect(result.status, result.output).toBe(0);
   /** Jest may color the summary, so match the count alone. */
-  expect(result.output).toMatch(/\b1 passed\b/);
+  expect(result.output).toMatch(/(?<!\d)1 passed/);
 }
 
 test.describe('generation error text', () => {
