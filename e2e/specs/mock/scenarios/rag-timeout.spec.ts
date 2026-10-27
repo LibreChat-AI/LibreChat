@@ -8,6 +8,7 @@ import {
   requestJson,
   getAccessToken,
   getRagQueries,
+  getRagEmbedded,
   enableFileSearch,
   resetProvisioning,
   selectMockEndpoint,
@@ -82,7 +83,9 @@ test.describe('outbound timeouts on file deletion', () => {
     expect(upload.ok()).toBeTruthy();
     const uploaded = (await upload.json()) as UploadedFile & { filepath?: string };
     const fileId = uploaded.file_id ?? '';
-    expect(uploaded.embedded).toBe(true);
+    await expect
+      .poll(async () => (await getRagEmbedded(page)).some((entry) => entry.file_id === fileId))
+      .toBe(true);
 
     const stall = await request.post(`${RAG_API_BASE}/__debug/stall`, { data: { stall: true } });
     expect(stall.ok()).toBeTruthy();
