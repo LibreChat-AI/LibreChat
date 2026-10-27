@@ -58,14 +58,14 @@ export async function prepareMCPServerOAuthDeletion({
   return { tokenUserIds: tokenUserIds.map(String), aclEntries, viewerUserIds };
 }
 
-export const MCP_OAUTH_REVOCATION_REFUSED = 'MCP_OAUTH_REVOCATION_REFUSED';
+export const MCP_OAUTH_REVOCATION_REFUSED = 'MCP_OAUTH_REVOCATION_REFUSED' as const;
 
 /**
  * The provider did not revoke a grant. Local credentials are already gone when this is thrown,
  * so it reports an external grant that may stay valid rather than a teardown that failed.
  */
 export class MCPOAuthRevocationError extends Error {
-  readonly code = MCP_OAUTH_REVOCATION_REFUSED;
+  readonly code: typeof MCP_OAUTH_REVOCATION_REFUSED = MCP_OAUTH_REVOCATION_REFUSED;
   constructor(
     readonly serverName: string,
     readonly tokenTypes: string[],
