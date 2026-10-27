@@ -45,7 +45,7 @@
   "dependencies": {
     "axios": "^1.16.0",
     "dayjs": "^1.11.13",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.3.2",
     "zod": "^3.22.4"
   },
   "devDependencies": {
