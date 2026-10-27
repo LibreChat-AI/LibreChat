@@ -65,7 +65,7 @@
     "copy-to-clipboard": "^3.3.3",
     "cross-env": "^7.0.3",
     "date-fns": "^3.3.1",
-    "dompurify": "^3.4.0",
+    "dompurify": "^3.4.13",
     "downloadjs": "^1.4.7",
     "export-from-json": "^1.7.2",
     "filenamify": "^6.0.0",
