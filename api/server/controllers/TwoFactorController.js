@@ -1,5 +1,9 @@
 const { encryptV3, logger } = require('@librechat/data-schemas');
-const { clearEnrollmentNonces } = require('@librechat/api');
+const {
+  clearCloudFrontCookies,
+  clearEnrollmentNonces,
+  createOptInTwoFactorConfirmation,
+} = require('@librechat/api');
 const {
   verifyOTPOrBackupCode,
   generateBackupCodes,
@@ -8,7 +12,8 @@ const {
   getTOTPSecret,
   verifyTOTP,
 } = require('~/server/services/twoFactorService');
-const { getUserById, updateUser } = require('~/models');
+const { setAuthTokens } = require('~/server/services/AuthService');
+const { getUserById, updateUser, deleteAllUserSessions } = require('~/models');
 
 const safeAppTitle = (process.env.APP_TITLE || 'LibreChat').replace(/\s+/g, '');
 
@@ -98,40 +103,15 @@ const verify2FA = async (req, res) => {
 /**
  * Confirm and enable 2FA after a successful verification.
  */
-const confirm2FA = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { token } = req.body;
-    const user = await getUserById(
-      userId,
-      '+totpSecret +pendingTotpSecret +pendingBackupCodes _id',
-    );
-    const secretSource = user?.pendingTotpSecret ?? user?.totpSecret;
-
-    if (!user || !secretSource) {
-      return res.status(400).json({ message: '2FA not initiated' });
-    }
-
-    const secret = await getTOTPSecret(secretSource);
-    if (await verifyTOTP(secret, token)) {
-      const update = {
-        totpSecret: user.pendingTotpSecret ?? user.totpSecret,
-        twoFactorEnabled: true,
-        pendingTotpSecret: null,
-        pendingBackupCodes: [],
-      };
-      if (user.pendingBackupCodes?.length) {
-        update.backupCodes = user.pendingBackupCodes;
-      }
-      await updateUser(userId, clearEnrollmentNonces(update));
-      return res.status(200).json();
-    }
-    return res.status(400).json({ message: 'Invalid token.' });
-  } catch (err) {
-    logger.error('[confirm2FA]', err);
-    return res.status(500).json({ message: err.message });
-  }
-};
+const confirm2FA = createOptInTwoFactorConfirmation({
+  getUserById,
+  getTOTPSecret,
+  verifyTOTP,
+  updateUser,
+  deleteAllUserSessions,
+  clearCloudFrontCookies,
+  setAuthTokens,
+});
 
 /**
  * Disable 2FA by clearing the stored secret and backup codes.

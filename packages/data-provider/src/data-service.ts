@@ -1782,7 +1782,7 @@ export function verifyTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify
   return request.post(endpoints.verifyTwoFactor(), payload);
 }
 
-export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
+export function confirmTwoFactor(payload: t.TVerify2FARequest): Promise<t.TConfirm2FAResponse> {
   return request.post(endpoints.confirmTwoFactor(), payload);
 }
 

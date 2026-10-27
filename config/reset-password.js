@@ -2,7 +2,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const readline = require('readline');
 const mongoose = require('mongoose');
-const { createPasswordResetUpdate } = require('@librechat/api');
+const { createPasswordResetUpdate, restampRetirementCutoff } = require('@librechat/api');
 const { createModels, createMethods } = require('@librechat/data-schemas');
 const { User, Passkey, Session } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
@@ -66,18 +66,23 @@ const resetPassword = async () => {
      * cached document that keeps pre-reset access tokens verifying for the
      * cache TTL.
      */
-    const updated = await methods.updateUser(
-      user._id.toString(),
-      /** Stamps credentialsChangedAt and drops any staged enrollment, as the web reset does. */
-      createPasswordResetUpdate(hashedPassword),
-      {},
-      { preserveExpiresAt: true },
-    );
+    const userId = user._id.toString();
+    /** Stamps credentialsChangedAt and drops any staged enrollment, as the web reset does. */
+    const update = createPasswordResetUpdate(hashedPassword);
+    const updated = await methods.updateUser(userId, update, {}, { preserveExpiresAt: true });
 
     if (!updated) {
       console.error('User not found during update!');
       process.exit(1);
     }
+
+    await restampRetirementCutoff(
+      'credentialsChangedAt',
+      userId,
+      update.credentialsChangedAt,
+      (cutoff, expectedState) =>
+        methods.updateUser(userId, cutoff, expectedState, { preserveExpiresAt: true }),
+    );
 
     /**
      * A passkey signs in on its own, so leaving one in place would keep an attacker

@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { PasswordResetUpdate } from './passwordResetUpdate';
 import { createPasswordResetUpdate } from './passwordResetUpdate';
+import { restampRetirementCutoff } from './twoFactor';
 import { clearSessionHintCookie } from '~/oauth/csrf';
 import { EMAIL_CHANGE_TOKEN_TYPE } from './email';
 
@@ -27,7 +28,7 @@ export interface PasswordResetDeps {
   updateUser: (
     userId: string,
     update: PasswordResetUpdate,
-    expectedState: { email: string },
+    expectedState: { email: string } | { credentialsChangedAt: Date },
   ) => Promise<PasswordResetUser | null>;
   deleteTokens: (query: { userId: string; type: string }) => Promise<unknown>;
   compareToken: (candidate: string, storedHash: string) => Promise<boolean>;
@@ -160,14 +161,18 @@ export async function commitPasswordReset(
     return { ok: false };
   }
 
-  const user = await deps.updateUser(
-    input.userId,
-    createPasswordResetUpdate(await deps.hashPassword(input.password)),
-    { email: account.email },
-  );
+  const update = createPasswordResetUpdate(await deps.hashPassword(input.password));
+  const user = await deps.updateUser(input.userId, update, { email: account.email });
   if (!user) {
     return { ok: false };
   }
+
+  await restampRetirementCutoff(
+    'credentialsChangedAt',
+    input.userId,
+    update.credentialsChangedAt,
+    (cutoff, expectedState) => deps.updateUser(input.userId, cutoff, expectedState),
+  );
 
   await clearPendingEmailChanges(deps, input.userId);
 

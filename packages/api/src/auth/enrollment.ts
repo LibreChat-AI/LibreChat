@@ -6,6 +6,8 @@ import type { TwoFactorEnrollmentDependencies, StoredTwoFactorAccount } from './
 import type { UserDocumentId } from '~/auth/verification';
 import {
   TOKEN_RETIREMENT_FIELDS,
+  hasPasswordResetSince,
+  restampRetirementCutoff,
   acknowledgeTwoFactorSetup,
   confirmTwoFactorSetup,
   finalizeTwoFactorSetup,
@@ -13,11 +15,13 @@ import {
   generateTwoFactorSetupFinalizationToken,
   isCredentialLoginBlockedByTwoFactorPolicy,
   isEnrollmentSupersededByRecovery,
+  isTwoFactorSetupEligible,
   isTokenRetired,
   recheckMintedCredential,
   withdrawMintedSession,
   verifyTwoFactorLoginChallengeToken,
 } from './twoFactor';
+import { getAuthorizingCredential } from './gates';
 import { sanitizeUserForResponse } from './user';
 import { clearCloudFrontCookies } from '~/cdn';
 
@@ -39,8 +43,22 @@ export function clearEnrollmentNonces(
   };
 }
 
+/** The stored state an opt-in promotion or a cutoff re-stamp is conditioned on. */
+export interface EnrollmentWriteGuard {
+  pendingTotpSecret?: string;
+  totpSecret?: string;
+  twoFactorEnrolledAt?: Date;
+}
+
+export type EnrollmentUserWrite = (
+  userId: string,
+  update: TwoFactorEnrollmentUpdate,
+  expectedState: EnrollmentWriteGuard,
+) => Promise<StoredTwoFactorAccount | null>;
+
 export interface EnrollmentControllerDependencies
   extends Omit<TwoFactorEnrollmentDependencies, 'getUserById' | 'getTOTPSecret' | 'verifyTOTP'> {
+  updateUser: EnrollmentUserWrite;
   getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
   getTOTPSecret: (storedSecret: string | null | undefined) => Promise<string | null>;
   verifyTOTP: (secret: string | null, token: string) => Promise<boolean>;
@@ -58,6 +76,11 @@ export interface EnrollmentControllerDependencies
   ) => Promise<string>;
 }
 
+const sanitizeUser = (user: StoredTwoFactorAccount) => ({
+  ...sanitizeUserForResponse(user),
+  id: user._id.toString(),
+});
+
 interface EnrollmentControllers {
   verify2FAWithTempToken: (req: ChallengeRequest, res: Response) => Promise<Response>;
   confirm2FASetupWithTempToken: (req: SetupRequest, res: Response) => Promise<Response>;
@@ -68,11 +91,6 @@ interface EnrollmentControllers {
 export function createEnrollmentControllers(
   deps: EnrollmentControllerDependencies,
 ): EnrollmentControllers {
-  const sanitizeUser = (user: StoredTwoFactorAccount) => ({
-    ...sanitizeUserForResponse(user),
-    id: user._id.toString(),
-  });
-
   const revokeMintedSession = (
     res: Response,
     user: StoredTwoFactorAccount,
@@ -217,6 +235,14 @@ export function createEnrollmentControllers(
       }
 
       const userData = sanitizeUser(result.user);
+      if (result.user.twoFactorEnrolledAt) {
+        await restampRetirementCutoff(
+          'twoFactorEnrolledAt',
+          userId,
+          new Date(result.user.twoFactorEnrolledAt),
+          (cutoff, expectedState) => deps.updateUser(userId, cutoff, expectedState),
+        );
+      }
       await deps.deleteAllUserSessions({ userId: result.user._id.toString() });
       const authToken = await deps.setAuthTokens(result.user._id, res, null, req);
       const retirement = await recheckMintedCredential(
@@ -247,5 +273,110 @@ export function createEnrollmentControllers(
     confirm2FASetupWithTempToken,
     acknowledge2FASetup,
     finalize2FASetup,
+  };
+}
+
+export type OptInConfirmationDependencies = Pick<
+  EnrollmentControllerDependencies,
+  | 'getUserById'
+  | 'getTOTPSecret'
+  | 'verifyTOTP'
+  | 'updateUser'
+  | 'deleteAllUserSessions'
+  | 'clearCloudFrontCookies'
+  | 'setAuthTokens'
+>;
+
+type OptInRequest = Request<Record<string, string>, object, SetupBody> & { user?: { id: string } };
+
+const OPT_IN_CONFIRMATION_PROJECTION = `+totpSecret +pendingTotpSecret +pendingBackupCodes _id provider tenantId orgId storageRegion ${TOKEN_RETIREMENT_FIELDS}`;
+
+/**
+ * Confirms an opt-in enrollment from account settings and rotates the session around it.
+ *
+ * A session minted before enrollment was only ever accepted because the account had no second
+ * factor, so promotion retires it exactly as the required finalize step does: the write stamps
+ * `twoFactorEnrolledAt`, every stored session is revoked, and the caller gets the one session
+ * minted after both. The promotion is conditioned on the secret it verified, so a password reset
+ * that cleared the staged secret first leaves nothing to promote, and a reset that lands after the
+ * bearer was accepted withdraws the session minted here.
+ */
+export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependencies) {
+  const isCallerRetiredByReset = (
+    req: Request,
+    seenAt: StoredTwoFactorAccount['credentialsChangedAt'],
+    currentAt: StoredTwoFactorAccount['credentialsChangedAt'],
+  ): boolean => {
+    const bearer = getAuthorizingCredential(req);
+    if (bearer.issuedAt == null && bearer.issuedAtMs == null) {
+      return hasPasswordResetSince(seenAt, currentAt);
+    }
+    return isTokenRetired(bearer, { credentialsChangedAt: currentAt });
+  };
+
+  return async (req: OptInRequest, res: Response): Promise<Response> => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) {
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+
+      const user = await deps.getUserById(userId, OPT_IN_CONFIRMATION_PROJECTION);
+      const secretSource = user?.pendingTotpSecret ?? user?.totpSecret;
+      if (!user || !secretSource) {
+        return res.status(400).json({ message: '2FA not initiated' });
+      }
+      /** The rotated session is a LibreChat one, which a federated sign-in must not be swapped for. */
+      if (!isTwoFactorSetupEligible(user)) {
+        return res.status(400).json({ message: '2FA setup is not available for this user' });
+      }
+
+      const secret = await deps.getTOTPSecret(secretSource);
+      if (!(await deps.verifyTOTP(secret, req.body?.token ?? ''))) {
+        return res.status(400).json({ message: 'Invalid token.' });
+      }
+
+      const enrolledAt = new Date();
+      const promoted = await deps.updateUser(
+        userId,
+        clearEnrollmentNonces({
+          totpSecret: secretSource,
+          twoFactorEnabled: true,
+          twoFactorEnrolledAt: enrolledAt,
+          pendingTotpSecret: null,
+          pendingBackupCodes: [],
+          ...(user.pendingBackupCodes?.length ? { backupCodes: user.pendingBackupCodes } : {}),
+        }),
+        user.pendingTotpSecret
+          ? { pendingTotpSecret: user.pendingTotpSecret }
+          : { totpSecret: secretSource },
+      );
+      if (!promoted) {
+        return res.status(400).json({ message: '2FA not initiated' });
+      }
+
+      await restampRetirementCutoff('twoFactorEnrolledAt', userId, enrolledAt, (cutoff, expected) =>
+        deps.updateUser(userId, cutoff, expected),
+      );
+      await deps.deleteAllUserSessions({ userId });
+      const authToken = await deps.setAuthTokens(user._id, res, null, req);
+      const withdraw = () => withdrawMintedSession(res, user, userId, deps);
+      const current = await recheckMintedCredential(
+        () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
+        withdraw,
+      );
+      if (isCallerRetiredByReset(req, user.credentialsChangedAt, current?.credentialsChangedAt)) {
+        logger.warn(
+          `[confirm2FA] Password was reset while 2FA was being confirmed: userId=${userId}`,
+        );
+        await withdraw();
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+
+      return res.status(200).json({ token: authToken, user: sanitizeUser(promoted) });
+    } catch (err) {
+      logger.error('[confirm2FA]', err);
+      return res.status(500).json({ message: 'Something went wrong' });
+    }
   };
 }

@@ -14,6 +14,7 @@ const {
   OPENID_EXPIRY_BUFFER_SECONDS,
   clearCloudFrontCookies,
   createLocalRefreshHandler,
+  createRetiredOpenIDSessionRefusal,
   generateTwoFactorSetupToken,
   getValidOpenIDReuseCredential,
   isTokenRetired,
@@ -237,6 +238,11 @@ const refreshLocalSession = createLocalRefreshHandler({
   error: (message, cause) => logger.error(message, cause),
 });
 
+const refuseRetiredOpenIDSession = createRetiredOpenIDSessionRefusal({
+  clearOpenIDAuthTokens,
+  warn: (message) => logger.warn(message),
+});
+
 const refreshController = async (req, res) => {
   const parsedCookies = req.headers.cookie ? cookies.parse(req.headers.cookie) : {};
   const token_provider = parsedCookies.token_provider;
@@ -325,6 +331,10 @@ const refreshController = async (req, res) => {
       if (!refreshUser) {
         clearSessionHintCookie(res);
         return res.status(403).send('Invalid OpenID refresh token');
+      }
+      const retiredRefusal = refuseRetiredOpenIDSession(req, res, parsedCookies, refreshUser);
+      if (retiredRefusal) {
+        return retiredRefusal;
       }
 
       return await runInUserTenant(refreshUser, async () => {
@@ -463,6 +473,16 @@ const refreshController = async (req, res) => {
             if (!bridgeUser) {
               clearSessionHintCookie(res);
               return res.status(403).send('Invalid OpenID refresh token');
+            }
+            const retiredRefusal = refuseRetiredOpenIDSession(
+              req,
+              res,
+              parsedCookies,
+              bridgeUser,
+              bridgeSourceToken,
+            );
+            if (retiredRefusal) {
+              return retiredRefusal;
             }
 
             const bridgeResponse = await runInUserTenant(bridgeUser, async () => {

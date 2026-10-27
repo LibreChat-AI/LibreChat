@@ -244,6 +244,36 @@ export function isTokenRetired(
   );
 }
 
+/** The two cutoffs `isTokenRetired` compares against. */
+export type RetirementCutoffField = 'twoFactorEnrolledAt' | 'credentialsChangedAt';
+
+/**
+ * Re-dates a retirement cutoff to an instant read after the write that set it has committed.
+ *
+ * The first stamp comes off the application clock before MongoDB applies the write, so a
+ * credential minted while that write is in flight is dated after the cutoff it should fall to,
+ * and its own post-mint recheck can still read the document from before the commit. Every such
+ * credential was minted before the commit returned, so a stamp read afterwards retires it. The
+ * caller guards the write on the first stamp, so a later change to the same cutoff is never moved
+ * back. The change this follows has already committed and its first stamp stands, so a failure
+ * here leaves only that in-flight window open: it is logged rather than failing the change.
+ */
+export async function restampRetirementCutoff<F extends RetirementCutoffField>(
+  field: F,
+  userId: string,
+  stampedAt: Date,
+  write: (update: Record<F, Date>, expectedState: Record<F, Date>) => Promise<unknown>,
+): Promise<void> {
+  try {
+    await write(
+      { [field]: new Date() } as Record<F, Date>,
+      { [field]: stampedAt } as Record<F, Date>,
+    );
+  } catch (error) {
+    logger.error(`[restampRetirementCutoff] Failed to re-date ${field} for user ${userId}`, error);
+  }
+}
+
 export interface MintedSessionWithdrawal {
   deleteAllUserSessions: (query: { userId: string }) => Promise<unknown>;
   clearCloudFrontCookies: (

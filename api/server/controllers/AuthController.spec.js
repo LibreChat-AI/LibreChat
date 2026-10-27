@@ -1324,25 +1324,92 @@ describe('refreshController – OpenID path', () => {
     };
   };
 
-  it('declines the reuse shortcut for a cookie minted before enrollment', async () => {
+  /** A retired session is ended outright: the IdP grant would mint a bearer the strategy refuses. */
+  const expectRetiredOpenIDSessionRefused = () => {
+    expect(setCloudFrontAuthCookies).not.toHaveBeenCalled();
+    expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
+    expect(setOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', 'tenant-1');
+    expect(res.send).toHaveBeenCalledWith('Invalid OpenID refresh token');
+  };
+
+  it('ends a session whose identity cookie was minted before enrollment', async () => {
     const twoFactorEnrolledAt = new Date();
     armOpenIDReuse(twoFactorEnrolledAt.getTime() - 1);
     getUserById.mockResolvedValue({ ...defaultUser, twoFactorEnrolledAt });
 
     await refreshController(req, res);
 
-    expect(setCloudFrontAuthCookies).not.toHaveBeenCalled();
-    expectOpenIDRefreshGrant();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expectRetiredOpenIDSessionRefused();
   });
 
-  it('declines the reuse shortcut for a cookie minted in the resetting millisecond', async () => {
+  it('ends a session whose identity cookie was minted in the resetting millisecond', async () => {
     const credentialsChangedAt = new Date();
     armOpenIDReuse(credentialsChangedAt.getTime());
     getUserById.mockResolvedValue({ ...defaultUser, credentialsChangedAt });
 
     await refreshController(req, res);
 
-    expect(setCloudFrontAuthCookies).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expectRetiredOpenIDSessionRefused();
+  });
+
+  it('ends a stale session minted before a password reset instead of spending its grant', async () => {
+    const credentialsChangedAt = new Date();
+    setOpenIDReuseCookies(makeSignedReuseCookie(credentialsChangedAt.getTime() - 60_000));
+    req.session = {
+      openidTokens: {
+        accessToken: 'session-access-token',
+        idToken: makeSessionToken(),
+        refreshToken: 'stored-refresh',
+        lastRefreshedAt: Date.now() - 16 * 60 * 1000,
+        appUserId: defaultUser._id,
+      },
+    };
+    getUserById.mockResolvedValue({ ...defaultUser, credentialsChangedAt });
+
+    await refreshController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expectRetiredOpenIDSessionRefused();
+  });
+
+  it('dates a session without an identity cookie by its last server-side rotation', async () => {
+    const credentialsChangedAt = new Date();
+    req.headers.cookie = ['token_provider=openid', 'refreshToken=stored-refresh'].join('; ');
+    req.session = {
+      openidTokens: {
+        refreshToken: 'stored-refresh',
+        lastRefreshedAt: credentialsChangedAt.getTime() - 60_000,
+        appUserId: defaultUser._id,
+      },
+    };
+    getUserById.mockResolvedValue({ ...defaultUser, credentialsChangedAt });
+
+    await refreshController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expectRetiredOpenIDSessionRefused();
+  });
+
+  it('refreshes a session without an identity cookie rotated after the reset', async () => {
+    req.headers.cookie = ['token_provider=openid', 'refreshToken=stored-refresh'].join('; ');
+    req.session = {
+      openidTokens: {
+        refreshToken: 'stored-refresh',
+        lastRefreshedAt: Date.now(),
+        appUserId: defaultUser._id,
+      },
+    };
+    getUserById.mockResolvedValue({
+      ...defaultUser,
+      credentialsChangedAt: new Date(Date.now() - 60_000),
+    });
+
+    await refreshController(req, res);
+
+    expect(clearOpenIDAuthTokens).not.toHaveBeenCalled();
     expectOpenIDRefreshGrant();
   });
 
@@ -1720,6 +1787,30 @@ describe('refreshController – OpenID path', () => {
     expect(getUserById).toHaveBeenCalled();
     expect(getRefreshTokenBridge).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('ends the session instead of recovering through a bridge when a reset lands during the grant', async () => {
+    setOpenIDReuseCookies(makeSignedReuseCookie(Date.now() - 1_000));
+    req.session = {};
+    const bridgeUser = {
+      _id: 'user-db-id',
+      email: baseClaims.email,
+      openidId: baseClaims.sub,
+      tenantId: 'tenant-1',
+      openidIssuer: 'https://issuer.example.com',
+    };
+    getUserById
+      .mockResolvedValueOnce(bridgeUser)
+      .mockResolvedValueOnce({ ...bridgeUser, credentialsChangedAt: new Date() });
+    openIdClient.refreshTokenGrant.mockRejectedValueOnce(new Error('invalid_grant'));
+
+    await refreshController(req, res);
+
+    expect(getRefreshTokenBridge).not.toHaveBeenCalled();
+    expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
+    expect(clearOpenIDAuthTokens).toHaveBeenCalledWith(req, res, 'user-db-id', 'tenant-1');
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.send).toHaveBeenCalledWith('Invalid OpenID refresh token');
   });
 
   /** The recovery grant need not rotate. When it does not, the browser must still be moved onto
