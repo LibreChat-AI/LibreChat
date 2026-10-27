@@ -1322,6 +1322,50 @@ describe('Chat attachments and reported conversations', () => {
       },
     );
 
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'keeps the edits a store subscriber made to the turn rows inside the write when a replaced start rolls back, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        state.subscribe?.(() => {
+          const current = state.messages;
+          if (current.some((m) => m.messageId === placeholder.messageId && m.text === '')) {
+            state.replaceMessages(
+              current.map((m) =>
+                m.messageId === placeholder.messageId || m.messageId === 'earlier-2'
+                  ? { ...m, text: 'Edited' }
+                  : m,
+              ),
+            );
+          }
+        });
+        const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
+        let attachedWith: string[] = [];
+        const { chat } = setup(
+          { state, prepareRequest: jest.fn(() => ({ payload, messages: optimistic })) },
+          {
+            sendMessages: jest.fn(async () => replaced),
+            reconnectToStream: jest.fn(async () => {
+              attachedWith = rows(chat.messages);
+              return stream;
+            }),
+          },
+        );
+        const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        await flush();
+        stream.push(finalEvent({ requestMessage: null, responseMessage: null }));
+        await sent;
+
+        expect(attachedWith).toEqual([
+          'earlier-1:Earlier',
+          'earlier-2:Edited',
+          'response-1:Edited',
+        ]);
+      },
+    );
+
     it('keeps a later write to a row the turn added when a structurally shared store rolls back', async () => {
       const state = createStore(true);
       const stream = createStream({ streamId: 'stream-2', generationCreatedAt: 200 });
