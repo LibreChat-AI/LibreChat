@@ -148,7 +148,7 @@
     "tslib": "^2.8.1",
     "@anthropic-ai/sdk": "^0.92.0",
     "fast-xml-parser": "5.7.2",
-    "serialize-javascript": "7.0.5",
+    "serialize-javascript": "7.1.4",
     "mdast-util-gfm-autolink-literal": "2.0.0",
     "remark-gfm": {
       "mdast-util-gfm-autolink-literal": "2.0.0"
