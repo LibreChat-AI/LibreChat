@@ -23,12 +23,35 @@ export const DEFAULT_CLIENT_LIMITS: Required<TClientLimits> = {
   uploadConcurrency: 3,
 };
 
-let resolved: TClientLimits = {};
+const STORAGE_KEY = 'librechat:clientLimits';
+
+const parseLimits = (raw: unknown): TClientLimits => {
+  const parsed = clientLimitsSchema.safeParse(raw ?? {});
+  return parsed.success ? parsed.data : {};
+};
+
+/** The first token refresh starts before the startup config arrives, so the last published
+ * values are kept from the previous visit; a first visit uses the defaults. */
+const readStored = (): TClientLimits => {
+  if (typeof window === 'undefined') return {};
+  try {
+    return parseLimits(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null'));
+  } catch {
+    return {};
+  }
+};
+
+let resolved: TClientLimits = readStored();
 
 /** Applies the limits published in the startup config; invalid values keep the defaults. */
 export function setClientLimits(limits?: TClientLimits | null): void {
-  const parsed = clientLimitsSchema.safeParse(limits ?? {});
-  resolved = parsed.success ? parsed.data : {};
+  resolved = parseLimits(limits);
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(resolved));
+  } catch {
+    /* storage unavailable: the values apply for this page load only */
+  }
 }
 
 export function getClientLimit(key: keyof TClientLimits): number {
