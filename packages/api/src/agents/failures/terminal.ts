@@ -158,21 +158,48 @@ const TYPED_ERROR_CODES: ReadonlySet<string> = new Set<string>([
   ...Object.values(ViolationTypes),
 ]);
 
+/** Payload fields that carry free text, which may echo provider or submitted content. */
+const TYPED_ERROR_FREE_TEXT_FIELDS = ['message', 'info'] as const;
+
+type TypedErrorPayload = Record<string, unknown> & { type: string };
+
 /** A host-thrown `{"type": ...}` payload whose type the client maps to localized copy. */
-function isTypedErrorMessage(message: string): boolean {
+function parseTypedErrorMessage(message: string): TypedErrorPayload | undefined {
   if (!message.trimStart().startsWith('{')) {
-    return false;
+    return undefined;
   }
   try {
     const parsed: unknown = JSON.parse(message);
     if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return false;
+      return undefined;
     }
     const type = (parsed as { type?: unknown }).type;
-    return typeof type === 'string' && TYPED_ERROR_CODES.has(type);
+    return typeof type === 'string' && TYPED_ERROR_CODES.has(type)
+      ? (parsed as TypedErrorPayload)
+      : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * The typed payload as a reader may see it: credentials and emails are always redacted, and while
+ * a content policy is active its free-text fields are dropped, keeping the code and the structured
+ * fields its renderer reads.
+ */
+function getSafeTypedErrorText(
+  message: string,
+  payload: TypedErrorPayload,
+  protectionEnabled: boolean,
+): string {
+  if (!protectionEnabled || !TYPED_ERROR_FREE_TEXT_FIELDS.some((field) => field in payload)) {
+    return redactMessage(message);
+  }
+  const safe: Record<string, unknown> = { ...payload };
+  for (const field of TYPED_ERROR_FREE_TEXT_FIELDS) {
+    delete safe[field];
+  }
+  return redactMessage(JSON.stringify(safe));
 }
 
 /** The deployment config that decides whether a failure may show its own text. */
@@ -184,7 +211,7 @@ export interface GenerationErrorConfig {
 /**
  * The error text a failed generation publishes and persists on its error row, under the same rule
  * the run's content error parts follow. Host-authored outcomes keep their wording: a typed
- * `{"type": ...}` payload, a LangChain-classified provider failure, or a content policy block.
+ * `{"type": ...}` payload (redacted, and without free-text fields under a content policy), a LangChain-classified provider failure, or a content policy block.
  * Any other exception may echo submitted content, so while a content policy is active the turn
  * carries `fallback`; otherwise it carries the message with URLs, credentials (API keys, tokens, auth headers) and email
  * addresses redacted. The exception
@@ -200,17 +227,19 @@ export function getUserFacingGenerationError(
     return policyError.message;
   }
   const message = error instanceof Error ? error.message : undefined;
-  if (message != null && isTypedErrorMessage(message)) {
-    return message;
+  const protectionEnabled = hasModelBoundContentProtection(
+    appConfig?.filters,
+    appConfig?.messageFilter?.pii,
+  );
+  const typed = message != null ? parseTypedErrorMessage(message) : undefined;
+  if (message != null && typed != null) {
+    return getSafeTypedErrorText(message, typed, protectionEnabled);
   }
   const classified = safelyResolveLangChainError(error);
   if (classified != null) {
     return classified;
   }
-  if (
-    message == null ||
-    hasModelBoundContentProtection(appConfig?.filters, appConfig?.messageFilter?.pii)
-  ) {
+  if (message == null || protectionEnabled) {
     return fallback;
   }
   const trimmed = message.trim();

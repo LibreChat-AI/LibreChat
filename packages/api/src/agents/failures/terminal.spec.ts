@@ -437,6 +437,23 @@ describe('getUserFacingGenerationError', () => {
     );
   });
 
+  it('drops free-text fields from a typed payload under a content policy', () => {
+    const typed = JSON.stringify({
+      type: ErrorTypes.NO_USER_KEY,
+      message: 'PRIVATE-PROMPT',
+      info: 'PRIVATE-INFO',
+    });
+    const text = getUserFacingGenerationError(new Error(typed), protectedConfig, 'x');
+    expect(JSON.parse(text)).toEqual({ type: ErrorTypes.NO_USER_KEY });
+  });
+
+  it('redacts credentials in a typed payload without a content policy', () => {
+    const typed = JSON.stringify({ type: ErrorTypes.INVALID_REQUEST, info: 'key sk-PRIVATEKEY99' });
+    const text = getUserFacingGenerationError(new Error(typed), {}, 'x');
+    expect(JSON.parse(text).type).toBe(ErrorTypes.INVALID_REQUEST);
+    expect(text).not.toContain('PRIVATEKEY99');
+  });
+
   it('treats JSON with an unknown type as an ordinary message', () => {
     const untyped = JSON.stringify({ type: 'PRIVATE-TYPE', prompt: 'PRIVATE-PROMPT' });
     expect(getUserFacingGenerationError(new Error(untyped), protectedConfig, 'fallback')).toBe(
