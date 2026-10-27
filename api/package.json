@@ -82,7 +82,7 @@
     "file-type": "^21.3.2",
     "firebase": "^11.0.2",
     "form-data": "^4.0.4",
-    "handlebars": "^4.7.9",
+    "handlebars": "^4.7.10",
     "https-proxy-agent": "^7.0.6",
     "ioredis": "^5.3.2",
     "js-yaml": "^4.3.2",
