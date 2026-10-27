@@ -6,6 +6,7 @@ describe('OpenID authentication publication settlement', () => {
     const deps = {
       jwt: { decode: jest.fn() },
       cookies: { parse: jest.fn(() => ({})) },
+      getJwtRefreshSecret: () => 'refresh-secret',
       findOpenIDUser: jest.fn(),
       findUser: jest.fn(),
       getOpenIdConfig: jest.fn(),

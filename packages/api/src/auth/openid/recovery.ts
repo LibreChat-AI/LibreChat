@@ -130,6 +130,8 @@ export interface OpenIDRefreshRecoveryService {
 export interface OpenIDRefreshRecoveryDeps {
   jwt: { decode: (token: string) => OpenIDClaims | string | null };
   cookies: { parse: (header: string) => Record<string, string> };
+  /** Verifies the signed identity cookie that dates a session. */
+  getJwtRefreshSecret: () => string | undefined;
   logger: Pick<OpenIDLogger, 'debug' | 'warn'>;
   findOpenIDUser: (args: FindOpenIDUserArgs) => Promise<{
     user?: OpenIDUser | null;
@@ -235,6 +237,7 @@ export function createOpenIDRefreshRecoveryService(
   const {
     jwt,
     cookies,
+    getJwtRefreshSecret,
     logger,
     findOpenIDUser,
     findUser,
@@ -436,7 +439,7 @@ export function createOpenIDRefreshRecoveryService(
       parsedCookies: req.headers?.cookie ? cookies.parse(req.headers.cookie) : {},
       sessionTokens: req.session?.openidTokens,
       user: { ...user, _id: userId },
-      jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
+      jwtRefreshSecret: getJwtRefreshSecret(),
       refreshToken,
     });
     if (!retired) {

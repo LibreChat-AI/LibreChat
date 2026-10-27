@@ -17,6 +17,7 @@ const { refreshOpenIDSession } = require('./OpenIDSessionRefresh');
 module.exports = api.createOpenIDRefreshRecoveryService({
   jwt,
   cookies,
+  getJwtRefreshSecret: () => process.env.JWT_REFRESH_SECRET,
   logger,
   findOpenIDUser: api.findOpenIDUser,
   findUser,
