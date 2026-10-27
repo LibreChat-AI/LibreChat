@@ -438,9 +438,6 @@ export function useComposerReasoning({
         ? agent.model_parameters?.[setting.key]
         : conversation?.[setting.key];
   }
-  /* The configured value changing while the conversation and target stay put is the user setting
-     the level elsewhere (the Parameters panel). It replaces the branch level the way a composer
-     pick does; otherwise the inherited level would silently outrank the edit. */
   const configuredScope = `${reasoningStateKey}\u0000${targetFingerprint ?? ''}`;
   const thinkingKey: string = 'thinking';
   const thinkingOff =
@@ -448,14 +445,23 @@ export function useComposerReasoning({
     false;
   /* Switching thinking off withdraws a staged level that would turn it back on; a level picked
      after the switch is off is the user turning it on for that turn, so it stays. */
-  const previousThinkingOff = useRef(thinkingOff);
+  const previousThinking = useRef({ scope: configuredScope, off: thinkingOff });
   useEffect(() => {
-    const wasOff = previousThinkingOff.current;
-    previousThinkingOff.current = thinkingOff;
-    if (thinkingOff && !wasOff && value != null && THINKING_LEVEL_KEYS.has(value.key)) {
+    const previous = previousThinking.current;
+    previousThinking.current = { scope: configuredScope, off: thinkingOff };
+    if (
+      previous.scope === configuredScope &&
+      thinkingOff &&
+      !previous.off &&
+      value != null &&
+      THINKING_LEVEL_KEYS.has(value.key)
+    ) {
       setValue(undefined);
     }
-  }, [setValue, thinkingOff, value]);
+  }, [configuredScope, setValue, thinkingOff, value]);
+  /* The configured value changing while the conversation and target stay put is the user setting
+     the level elsewhere (the Parameters panel). It replaces the branch level the way a composer
+     pick does; otherwise the inherited level would silently outrank the edit. */
   const previousConfigured = useRef<{ scope: string; value: unknown } | null>(null);
   useEffect(() => {
     /* While the capabilities load the setting is hidden, which says nothing about the configured

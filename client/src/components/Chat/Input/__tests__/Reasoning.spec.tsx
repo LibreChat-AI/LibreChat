@@ -635,6 +635,45 @@ describe('useComposerReasoning', () => {
     expect(reasoningStore.get(pendingReasoningOverrideFamily(key))).toEqual(high);
   });
 
+  it('does not withdraw a level when moving to a conversation with thinking off', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const high = { key: 'effort', value: 'high' } as TReasoningOverride;
+    const otherKey = getReasoningStateKey('thinking-off-other', 0);
+    reasoningStore.set(pendingReasoningOverrideFamily(otherKey), high);
+    const model = { endpoint: 'anthropic', model: 'claude-sonnet-4-6' };
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true }),
+      {
+        initialProps: {
+          conversation: {
+            conversationId: 'thinking-on',
+            thinking: true,
+            ...model,
+          } as TConversation,
+        },
+        wrapper,
+      },
+    );
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('effort'));
+
+    rendered.rerender({
+      conversation: {
+        conversationId: 'thinking-off-other',
+        thinking: false,
+        ...model,
+      } as TConversation,
+    });
+
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+    expect(reasoningStore.get(pendingReasoningOverrideFamily(otherKey))).toEqual(high);
+  });
+
   it('does not show a branch level the current model does not take', async () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <RecoilRoot>
