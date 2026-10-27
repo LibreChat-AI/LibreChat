@@ -879,7 +879,7 @@ describe('deleteRoleByName', () => {
     const deleted = await deleteRoleByName('editor');
 
     expect(deleted).toBeTruthy();
-    expect(deleted!.name).toBe('editor');
+    expect(deleted!.role.name).toBe('editor');
 
     const alice = await User.findOne({ email: 'alice@test.com' }).lean();
     const bob = await User.findOne({ email: 'bob@test.com' }).lean();
@@ -887,6 +887,42 @@ describe('deleteRoleByName', () => {
     expect(alice!.role).toBe(SystemRoles.USER);
     expect(bob!.role).toBe(SystemRoles.USER);
     expect(carol!.role).toBe(SystemRoles.USER);
+    expect([...deleted!.reassignedUserIds].sort()).toEqual(
+      [alice!._id.toString(), bob!._id.toString()].sort(),
+    );
+  });
+
+  it('reports only the members its write moved when membership changes mid-delete', async () => {
+    await createRoleByName({ name: 'editor' });
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
+    ]);
+    let eveId = '';
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementationOnce(((
+      filter: Parameters<typeof User.updateMany>[0],
+      update: Parameters<typeof User.updateMany>[1],
+    ) =>
+      (async () => {
+        /** Between the member read and the write: Bob moves away and Eve joins. */
+        await User.updateOne({ _id: bob._id }, { $set: { role: 'reviewer' } });
+        const eve = await User.create({
+          name: 'Eve',
+          email: 'eve@test.com',
+          role: 'editor',
+          username: 'eve',
+        });
+        eveId = eve._id.toString();
+        return realUpdateMany(filter, update);
+      })()) as unknown as typeof User.updateMany);
+
+    const deleted = await deleteRoleByName('editor');
+    spy.mockRestore();
+
+    expect([...deleted!.reassignedUserIds].sort()).toEqual([alice._id.toString(), eveId].sort());
+    expect((await User.findById(bob._id).lean())!.role).toBe('reviewer');
+    expect((await User.findById(eveId).lean())!.role).toBe(SystemRoles.USER);
   });
 
   it('leaves a role recreated under the same name when the expected id no longer matches', async () => {
@@ -908,7 +944,7 @@ describe('deleteRoleByName', () => {
 
     const result = await deleteRoleByName('editor', { id: String(created._id) });
 
-    expect(result?.name).toBe('editor');
+    expect(result?.role.name).toBe('editor');
     expect(await Role.exists({ name: 'editor' })).toBeNull();
   });
 
@@ -1500,7 +1536,7 @@ describe('role-name-keyed operations stay in the caller tenant partition', () =>
     const deleted = await deleteRoleByName('editor');
     const refused = await deleteRoleByName('editor', { id: ids.tenantRoleId });
 
-    expect(String(deleted?._id)).toBe(ids.platformRoleId);
+    expect(String(deleted?.role._id)).toBe(ids.platformRoleId);
     expect(refused).toBeNull();
     expect(await userRole(ids.platformUserId)).toBe(SystemRoles.USER);
     expect(await userRole(ids.tenantUserId)).toBe('editor');

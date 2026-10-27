@@ -27,6 +27,16 @@ export class RoleConflictError extends Error {
   }
 }
 
+/** A committed role deletion: the deleted role and the accounts it moved to USER. */
+export interface RoleDeletion {
+  role: IRole;
+  /** The members whose role this deletion changed, read from the write rather than before it. */
+  reassignedUserIds: string[];
+}
+
+/** Bounds the passes that pick up members assigned to the role while it is being deleted. */
+const MAX_REASSIGN_PASSES = 5;
+
 export interface RoleDeps {
   /** Returns a cache store for the given key. Injected from getLogStores. */
   getCache?: (key: string) => CacheStore | undefined;
@@ -59,7 +69,7 @@ export function createRoleMethods(
     roleData?: IRole,
   ) => Promise<void>;
   createRoleByName: (roleData: Partial<IRole>) => Promise<IRole>;
-  deleteRoleByName: (roleName: string, options?: { id?: string }) => Promise<IRole | null>;
+  deleteRoleByName: (roleName: string, options?: { id?: string }) => Promise<RoleDeletion | null>;
   updateUsersByRole: (oldRole: string, newRole: string) => Promise<void>;
   findUserIdsByRole: (roleName: string) => Promise<string[]>;
   updateUsersRoleByIds: (
@@ -586,10 +596,50 @@ export function createRoleMethods(
    * the delete call, which will succeed since the `updateMany` is a no-op on
    * the second pass.
    */
+  /**
+   * Moves the members of `roleName` in the caller's partition to USER and returns the ids of
+   * exactly the accounts it changed. Each pass writes only the ids it read that still hold the
+   * role, so a member who left in between is not counted, and the next pass picks up a member
+   * who joined. When fewer were changed than read, the changed ones are those now holding USER
+   * (a member another request also moved to USER in that window is counted with them).
+   */
+  async function reassignMembersToUser(roleName: string): Promise<string[]> {
+    const User = mongoose.models.User as Model<IUser>;
+    const members = roleMembersFilter(roleName, 'deleteRoleByName');
+    const reassigned: string[] = [];
+    /** Every id a write targeted: a write that rejects may still have changed some of them. */
+    const written: string[] = [];
+    try {
+      for (let pass = 0; pass < MAX_REASSIGN_PASSES; pass++) {
+        const ids = (await User.find(members).select('_id').lean()).map((u) => u._id.toString());
+        if (ids.length === 0) {
+          return reassigned;
+        }
+        written.push(...ids);
+        const { modifiedCount } = await User.updateMany(
+          { ...members, _id: { $in: ids } },
+          { $set: { role: SystemRoles.USER } },
+        );
+        if (modifiedCount === ids.length) {
+          reassigned.push(...ids);
+          continue;
+        }
+        const changed = await User.find({ _id: { $in: ids }, role: SystemRoles.USER })
+          .select('_id')
+          .lean();
+        reassigned.push(...changed.map((u) => u._id.toString()));
+      }
+      logger.warn(`[deleteRoleByName] members still joining "${roleName}" after every pass`);
+      return reassigned;
+    } finally {
+      await invalidateAuthUserDocCache(written);
+    }
+  }
+
   async function deleteRoleByName(
     roleName: string,
     options?: { id?: string },
-  ): Promise<IRole | null> {
+  ): Promise<RoleDeletion | null> {
     if (isSystemRoleName(roleName)) {
       throw new Error(`Cannot delete system role: ${roleName}`);
     }
@@ -599,28 +649,23 @@ export function createRoleMethods(
     if (options?.id && !(await Role.exists({ ...role, _id: options.id }))) {
       return null;
     }
-    const User = mongoose.models.User as Model<IUser>;
-    const affectedUserIds = await findUserIdsByRole(roleName);
-    await User.updateMany(roleMembersFilter(roleName, 'deleteRoleByName'), {
-      $set: { role: SystemRoles.USER },
-    });
-    await invalidateAuthUserDocCache(affectedUserIds);
+    const reassignedUserIds = await reassignMembersToUser(roleName);
     const deleted = await Role.findOneAndDelete({
       ...role,
       ...(options?.id ? { _id: options.id } : {}),
-    }).lean();
+    }).lean<IRole>();
     try {
       const cache = deps.getCache?.(CacheKeys.ROLES);
       if (cache) {
         // Setting null evicts the stale document. getRoleByName treats falsy cached
         // values as a miss and falls through to the DB, so this does not provide
-        // negative caching — it only prevents serving the pre-deletion document.
+        // negative caching; it only prevents serving the pre-deletion document.
         await cache.set(scopedCacheKey(roleName), null);
       }
     } catch (cacheError) {
       logger.error(`[deleteRoleByName] cache invalidation failed for "${roleName}":`, cacheError);
     }
-    return deleted as IRole | null;
+    return deleted ? { role: deleted, reassignedUserIds } : null;
   }
 
   /** Moves the members of `oldRole` in the caller's tenant partition to `newRole` (a rename). */

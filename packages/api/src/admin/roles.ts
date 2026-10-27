@@ -14,6 +14,7 @@ import type {
   ISystemGrant,
   AuditSeverity,
   SystemGrantMove,
+  RoleDeletion,
   ConfigMoveOptions,
 } from '@librechat/data-schemas';
 import type { FilterQuery, Types } from 'mongoose';
@@ -151,8 +152,9 @@ export interface AdminRolesDeps {
   ) => Promise<void>;
   /** With `options.id`, deletes only the role that still has that `_id`, so a role recreated
    * under the same name is never removed by a request that targeted the original. Reassigns the
-   * role's members in the caller's partition to USER. */
-  deleteRoleByName: (name: string, options?: { id?: string }) => Promise<IRole | null>;
+   * role's members in the caller's partition to USER, and resolves to the deleted role with the
+   * ids of the accounts its write moved; `null` when it deleted nothing. */
+  deleteRoleByName: (name: string, options?: { id?: string }) => Promise<RoleDeletion | null>;
   findUser: (
     criteria: FilterQuery<IUser>,
     fields?: string | string[] | null,
@@ -916,12 +918,25 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
        * inheriting the leftovers. Every removal is idempotent.
        */
       const tenantId = req.user?.tenantId;
-      /** deleteRoleByName reassigns members to USER, so who held the role is read first. */
+      /** Who held the role before the delete: the audit record of a delete whose response is
+       * lost. A delete that responds reports the accounts it actually moved. */
       const memberIds = await findUserIdsByRole(name);
       /** The grants as they were, so removals are audited even when a removal rejects after committing. */
       const grantSnapshot = findGrantsForPrincipal
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
         : null;
+      /** Reads the role again to learn whether it still is the one this request targeted. */
+      const lookupRole = () =>
+        getRoleByName(name).then(
+          (role) => ({ known: true, role }),
+          () => ({ known: false, role: null }),
+        );
+      /** A role recreated under the same name is a different role and must not inherit the
+       * old one's dependents. */
+      const isTargetedRole = (role: IRole | null) =>
+        role != null &&
+        (existing._id == null || role._id == null || String(existing._id) === String(role._id));
+
       const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
         invalidatingConfigStore(
           { deleteConfig, restoreConfig },
@@ -933,6 +948,14 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         restoreProfile
           ? async (config) => {
               if (!config) {
+                return;
+              }
+              /** The profile is keyed by name: put it back only while the name still holds the
+               * targeted role, never onto a role recreated under it (or when that is unknown).
+               * This covers the restore of a removal that rejected as well as `compensate`. */
+              const lookup = await lookupRole();
+              if (!lookup.known || !isTargetedRole(lookup.role)) {
+                logger.warn('[adminRoles] config restore skipped, role changed or unknown:', name);
                 return;
               }
               /** Insert-only: an override written after the snapshot is kept. */
@@ -999,18 +1022,6 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         await emitGrantRemovals(req, name, removed ?? []);
       };
 
-      /** Reads the role again to learn whether it still is the one this request targeted. */
-      const lookupRole = () =>
-        getRoleByName(name).then(
-          (role) => ({ known: true, role }),
-          () => ({ known: false, role: null }),
-        );
-      /** A role recreated under the same name is a different role and must not inherit the
-       * old one's dependents. */
-      const isTargetedRole = (role: IRole | null) =>
-        role != null &&
-        (existing._id == null || role._id == null || String(existing._id) === String(role._id));
-
       if (cascade.failed.length > 0) {
         const lookup = await lookupRole();
         if (lookup.known && isTargetedRole(lookup.role)) {
@@ -1023,7 +1034,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         return cleanupFailedResponse();
       }
 
-      let deleted: IRole | null;
+      let deleted: RoleDeletion | null;
       try {
         deleted = await deleteRoleByName(name, {
           id: existing._id != null ? String(existing._id) : undefined,
@@ -1050,8 +1061,9 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
           logger.error('[adminRoles] dependents not restored, role state unverifiable:', name);
           return res.status(500).json({ error: 'Failed to delete role' });
         }
-        /** Confirmed absent: the deletion did commit, so it is audited and reported as one. */
-        deleted = existing;
+        /** Confirmed absent: the deletion did commit, so it is audited and reported as one. Its
+         * response is lost, so the members read before it are the best record of who it moved. */
+        deleted = { role: existing, reassignedUserIds: memberIds };
       }
       await invalidateAccess();
       if (!deleted) {
@@ -1061,8 +1073,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
       const removedGrants = cascade.removed.grants as ISystemGrant[];
       await auditRemovedGrants();
-      /** Each reassigned account is recorded (chunked) before the outcome entry. */
-      const audited = memberIds;
+      /** Each account the delete moved is recorded (chunked) before the outcome entry. */
+      const audited = deleted.reassignedUserIds;
       for (let i = 0; i < audited.length; i += AUDIT_MEMBER_CHUNK) {
         const chunk = audited.slice(i, i + AUDIT_MEMBER_CHUNK);
         await emitRevocationAudit(req, {
@@ -1079,7 +1091,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
       await recordOutcome('success', undefined, {
         grantsRemoved: removedGrants.length,
-        membersReassigned: memberIds.length,
+        membersReassigned: audited.length,
       });
 
       return res.status(200).json({ success: true });

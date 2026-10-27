@@ -260,6 +260,7 @@ export { AUDIT_SCHEMA_VERSION, MAX_AUDIT_EXPORT_ROWS, MAX_AUDIT_LOG_LIMIT, MAX_A
 export { MAX_TOOL_FAVORITES };
 export { AgentTriggerDeliveryConflictError };
 export type { PromptGroupListParams };
+export type { RoleDeletion } from './role';
 export { AGENT_OWNER_CONTACT_RESOLVED_FIELD, AgentSortCursorError } from './agent';
 export { createSkillDeletionPersistenceAdapter } from './skillDeletionAdapter';
 export type {

@@ -66,7 +66,10 @@ function createDeps(overrides: Partial<AdminRolesDeps> = {}): AdminRolesDeps {
     createRoleByName: jest.fn().mockResolvedValue(mockRole()),
     updateRoleByName: jest.fn().mockResolvedValue(mockRole()),
     updateAccessPermissions: jest.fn().mockResolvedValue(undefined),
-    deleteRoleByName: jest.fn().mockResolvedValue(mockRole()),
+    deleteRoleByName: jest.fn().mockResolvedValue({
+      role: mockRole(),
+      reassignedUserIds: ['uid-1', 'uid-2'],
+    }),
     findUser: jest.fn().mockResolvedValue(null),
     updateUser: jest.fn().mockResolvedValue(mockUser()),
     updateUsersByRole: jest.fn().mockResolvedValue(undefined),
@@ -1042,7 +1045,7 @@ describe('createAdminRolesHandlers', () => {
         deleteConfig: track('config', null),
         deleteAclEntries: track('acl', undefined),
         deleteGrantsForPrincipal: track('grants', []),
-        deleteRoleByName: track('role', mockRole()),
+        deleteRoleByName: track('role', { role: mockRole(), reassignedUserIds: [] }),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status } = createReqRes({ params: { name: 'editor' } });
@@ -1331,6 +1334,47 @@ describe('createAdminRolesHandlers', () => {
       expect(deps.deleteRoleByName).not.toHaveBeenCalled();
     });
 
+    it('does not restore a rejected config removal onto a role recreated under the same name', async () => {
+      const config = { principalModel: 'Role', overrides: { a: 1 }, priority: 4 };
+      const original = mockRole({ _id: new Types.ObjectId() } as Partial<IRole>);
+      const replacement = mockRole({ _id: new Types.ObjectId() } as Partial<IRole>);
+      const deps = deleteDeps({
+        getRoleByName: jest.fn().mockResolvedValueOnce(original).mockResolvedValue(replacement),
+        findConfigByPrincipal: jest.fn().mockResolvedValue(config),
+        /** The removal committed, then the original was deleted and its name reused. */
+        deleteConfig: jest.fn().mockRejectedValue(new Error('response lost')),
+        restoreConfig: jest.fn().mockResolvedValue(true),
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({ params: { name: 'editor' } });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(500);
+      expect(deps.restoreConfig).not.toHaveBeenCalled();
+      expect(deps.deleteRoleByName).not.toHaveBeenCalled();
+    });
+
+    it('does not restore a rejected config removal when the role cannot be read', async () => {
+      const config = { principalModel: 'Role', overrides: { a: 1 }, priority: 4 };
+      const deps = deleteDeps({
+        getRoleByName: jest
+          .fn()
+          .mockResolvedValueOnce(mockRole())
+          .mockRejectedValue(new Error('mongo down')),
+        findConfigByPrincipal: jest.fn().mockResolvedValue(config),
+        deleteConfig: jest.fn().mockRejectedValue(new Error('response lost')),
+        restoreConfig: jest.fn().mockResolvedValue(true),
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({ params: { name: 'editor' } });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(500);
+      expect(deps.restoreConfig).not.toHaveBeenCalled();
+    });
+
     it('still audits a committed deletion when the access cache invalidation fails', async () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({
@@ -1435,11 +1479,15 @@ describe('createAdminRolesHandlers', () => {
       );
     });
 
-    it('records each account reassigned by the deletion before the outcome', async () => {
+    it('records each account the deletion actually reassigned before the outcome', async () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({
         recordAuditEntry,
-        findUserIdsByRole: jest.fn().mockResolvedValue(['u1', 'u2']),
+        /** u3 left the role and u2 joined it between the member read and the delete. */
+        findUserIdsByRole: jest.fn().mockResolvedValue(['u1', 'u3']),
+        deleteRoleByName: jest
+          .fn()
+          .mockResolvedValue({ role: mockRole(), reassignedUserIds: ['u1', 'u2'] }),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res } = createReqRes({
@@ -1603,6 +1651,13 @@ describe('createAdminRolesHandlers', () => {
       await handlers.deleteRole(req, res);
 
       expect(status).toHaveBeenCalledWith(200);
+      /** The delete's own report is lost, so the members read before it are audited. */
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'role.member_removed',
+          metadata: expect.objectContaining({ userIds: 'uid-1,uid-2', count: 2 }),
+        }),
+      );
       expect(recordAuditEntry).toHaveBeenLastCalledWith(
         expect.objectContaining({ action: 'role.deleted', outcome: 'success' }),
       );
