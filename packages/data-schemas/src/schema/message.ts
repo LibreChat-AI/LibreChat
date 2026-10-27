@@ -338,7 +338,7 @@ messageSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 messageSchema.index({ createdAt: 1 });
 messageSchema.index({ messageId: 1, user: 1, tenantId: 1 }, { unique: true });
 messageSchema.index({ tenantId: 1, isTemporary: 1, createdAt: -1, _id: -1 });
-/** Insights attributes assistant activity from the persisted top-level agent model. */
+/** Retained index for model-filtered message queries. Insights now follows the conversation root. */
 messageSchema.index({
   tenantId: 1,
   isTemporary: 1,

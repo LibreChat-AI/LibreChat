@@ -438,8 +438,8 @@ describe('Insights methods', () => {
     expect(Object.keys(aggregate).sort()).toEqual(['agents', 'daily', 'summary']);
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
     expect(userFind).not.toHaveBeenCalled();
-    expect(conversationAggregate).toHaveBeenCalledTimes(2);
-    expect(messageAggregate).toHaveBeenCalledTimes(3);
+    expect(conversationAggregate).toHaveBeenCalledTimes(5);
+    expect(messageAggregate).not.toHaveBeenCalled();
     const pipelines = [...conversationAggregate.mock.calls, ...messageAggregate.mock.calls];
     const serialized = JSON.stringify(pipelines);
     expect(serialized).not.toContain('matchedIdentity');
@@ -2342,6 +2342,13 @@ describe('Insights methods', () => {
       expect(JSON.stringify(allStages)).not.toContain('"$expr"');
       expect(JSON.stringify(allStages)).not.toContain('"$type"');
       expect(
+        allStages.every(
+          (stage) =>
+            stage.$lookup == null || (!('let' in stage.$lookup) && !('pipeline' in stage.$lookup)),
+        ),
+      ).toBe(true);
+      expect(messageAggregateSpy).not.toHaveBeenCalled();
+      expect(
         conversationPipelines.every((pipeline) => {
           const firstMatch = pipeline.find((stage) => stage.$match)?.$match;
           return Array.isArray(firstMatch?.$or);
@@ -2377,7 +2384,7 @@ describe('Insights methods', () => {
       };
       const searchedPipeline = aggregateSpy.mock.calls
         .map(([pipeline]) => pipeline as SearchStage[])
-        .find((pipeline) => pipeline.some((stage) => stage.$lookup));
+        .find((pipeline) => pipeline.some((stage) => stage.$lookup?.from === 'users'));
       const identityLookup = searchedPipeline?.find((stage) => stage.$lookup)?.$lookup;
       const ownerConversion = searchedPipeline?.find(
         (stage) => stage.$addFields?.insightsUserId,
