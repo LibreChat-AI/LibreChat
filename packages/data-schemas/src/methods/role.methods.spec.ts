@@ -899,29 +899,34 @@ describe('deleteRoleByName', () => {
       { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
     ]);
     let eveId = '';
-    const realUpdateMany = User.updateMany.bind(User);
-    const spy = jest.spyOn(User, 'updateMany').mockImplementationOnce(((
-      filter: Parameters<typeof User.updateMany>[0],
-      update: Parameters<typeof User.updateMany>[1],
+    let membershipChange: Promise<void> | undefined;
+    const realUpdateOne = User.updateOne.bind(User);
+    const spy = jest.spyOn(User, 'updateOne').mockImplementation(((
+      filter: Parameters<typeof User.updateOne>[0],
+      update: Parameters<typeof User.updateOne>[1],
     ) =>
       (async () => {
-        /** Between the member read and the write: Bob moves away and Eve joins. */
-        await User.updateOne({ _id: bob._id }, { $set: { role: 'reviewer' } });
-        const eve = await User.create({
-          name: 'Eve',
-          email: 'eve@test.com',
-          role: 'editor',
-          username: 'eve',
-        });
-        eveId = eve._id.toString();
-        return realUpdateMany(filter, update);
-      })()) as unknown as typeof User.updateMany);
+        /** Between the member read and the writes: another request moves Bob to USER, and Eve
+         * joins. Bob's move is not this deletion's, so it is not reported. */
+        membershipChange ??= (async () => {
+          await User.findByIdAndUpdate(bob._id, { $set: { role: SystemRoles.USER } });
+          const eve = await User.create({
+            name: 'Eve',
+            email: 'eve@test.com',
+            role: 'editor',
+            username: 'eve',
+          });
+          eveId = eve._id.toString();
+        })();
+        await membershipChange;
+        return realUpdateOne(filter, update);
+      })()) as unknown as typeof User.updateOne);
 
     const deleted = await deleteRoleByName('editor');
     spy.mockRestore();
 
     expect([...deleted!.reassignedUserIds].sort()).toEqual([alice._id.toString(), eveId].sort());
-    expect((await User.findById(bob._id).lean())!.role).toBe('reviewer');
+    expect((await User.findById(bob._id).lean())!.role).toBe(SystemRoles.USER);
     expect((await User.findById(eveId).lean())!.role).toBe(SystemRoles.USER);
   });
 
