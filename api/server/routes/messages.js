@@ -34,7 +34,7 @@ const {
   createToolCallPartHandler,
   createSubagentAttachmentCallsHandler,
   rejectToolCallPreviewWrites,
-  parseMessagesPageSize,
+  resolveMessagesPageSize,
   withMessageToolCallPreviews,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
@@ -121,7 +121,7 @@ async function rejectSubagentThreadWrite(req, res, conversationId) {
   return true;
 }
 
-router.get('/', configMiddleware, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const user = req.user.id ?? '';
     const {
@@ -133,7 +133,8 @@ router.get('/', configMiddleware, async (req, res) => {
       messageId,
       search,
     } = req.query;
-    const pageSize = parseMessagesPageSize(pageSizeRaw, req.config?.messages?.maxPageSize);
+    /** Starts beside the ownership read; it never rejects and falls back to the default ceiling. */
+    const pageSizeRead = resolveMessagesPageSize(req.user, pageSizeRaw, toolCallPreviewDeps);
 
     let response;
     const sortField = ['endpoint', 'createdAt', 'updatedAt'].includes(sortBy)
@@ -145,6 +146,7 @@ router.get('/', configMiddleware, async (req, res) => {
     const previewToolCalls = prepareToolCallPreviews(req, toolCallPreviewDeps);
     if (typeof conversationId === 'string') {
       const ownershipRead = db.getConvoOwnership(user, conversationId);
+      const pageSize = await pageSizeRead;
       /** Client-facing reads never expose server-private fields such as `contextMeta`. */
       const messageRead = messageId
         ? db.getMessages({ conversationId, messageId, user }, CLIENT_MESSAGE_SELECT)
@@ -189,6 +191,7 @@ router.get('/', configMiddleware, async (req, res) => {
         messages: await previewToolCalls(messageResult.value.messages),
       };
     } else if (search) {
+      const pageSize = await pageSizeRead;
       const searchResults = await db.searchMessages(
         search,
         {
