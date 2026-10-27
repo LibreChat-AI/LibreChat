@@ -3,6 +3,8 @@ import type { ParsedServerConfig } from '~/mcp/types';
 import {
   cleanupMCPServerOAuth,
   getMCPServerGeneration,
+  MCPOAuthRevocationError,
+  MCP_OAUTH_REVOCATION_REFUSED,
   cleanupDeletedMCPServerOAuthUsers,
 } from './cleanup';
 
@@ -373,12 +375,16 @@ describe('cleanupMCPServerOAuth', () => {
 
       await expect(
         cleanupMCPServerOAuth({ ...params, dependencies, teardown: { strictRevocation: true } }),
-      ).rejects.toThrow('OAuth provider did not revoke the refresh token for test-server');
+      ).rejects.toMatchObject({
+        code: MCP_OAUTH_REVOCATION_REFUSED,
+        tokenTypes: ['refresh'],
+        message: 'OAuth provider did not revoke the refresh token for test-server',
+      });
       expect(revokeOAuthToken).toHaveBeenCalledTimes(2);
       expect(deleteTokens).toHaveBeenCalled();
     });
 
-    it('does not hand over a fence when the strict teardown fails', async () => {
+    it('hands over the fence before reporting a refused revocation', async () => {
       const { dependencies } = createRevocationDependencies(
         jest.fn().mockRejectedValue(new Error('503')),
       );
@@ -390,7 +396,29 @@ describe('cleanupMCPServerOAuth', () => {
           dependencies,
           teardown: { strictRevocation: true, retainFence },
         }),
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({ code: MCP_OAUTH_REVOCATION_REFUSED });
+      expect(retainFence).toHaveBeenCalledTimes(1);
+      const lease = await (dependencies.flowManager as ReturnType<typeof createFlowManager>)
+        .acquireLease.mock.results[0].value;
+      expect(lease.release).not.toHaveBeenCalled();
+      await retainFence.mock.calls[0][0].release();
+      expect(lease.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not hand over a fence when a local token delete fails', async () => {
+      const { dependencies } = createRevocationDependencies(jest.fn());
+      dependencies.tokenStorage.deleteUserTokens = jest.fn(async () => {
+        throw new Error('mongo down');
+      });
+      const retainFence = jest.fn();
+
+      await expect(
+        cleanupMCPServerOAuth({
+          ...params,
+          dependencies,
+          teardown: { strictRevocation: true, retainFence },
+        }),
+      ).rejects.toThrow('Failed to delete stored MCP OAuth tokens for test-server');
       expect(retainFence).not.toHaveBeenCalled();
       const lease = await (dependencies.flowManager as ReturnType<typeof createFlowManager>)
         .acquireLease.mock.results[0].value;
@@ -431,5 +459,43 @@ describe('cleanupDeletedMCPServerOAuthUsers', () => {
       undefined,
       { strictRevocation: true, retainFence },
     );
+  });
+
+  it('returns refused revocations instead of failing the cleanup', async () => {
+    const uninstallOAuthMCP = jest.fn(async (userId: string) => {
+      if (userId === 'viewer') {
+        throw new MCPOAuthRevocationError('shared', ['access']);
+      }
+    });
+
+    const refusals = await cleanupDeletedMCPServerOAuthUsers({
+      ownerUserId: 'owner',
+      serverName: 'shared',
+      snapshot: { tokenUserIds: [], aclEntries: [], viewerUserIds: ['viewer'] },
+      getTokenUserIds: async () => [],
+      getUserPrincipals: async () => [],
+      resolveAllowlists: async () => ({}),
+      uninstallOAuthMCP,
+      strictRevocation: true,
+    });
+
+    expect(refusals).toEqual([{ userId: 'viewer', tokenTypes: ['access'] }]);
+  });
+
+  it('still fails the cleanup on a local teardown failure', async () => {
+    await expect(
+      cleanupDeletedMCPServerOAuthUsers({
+        ownerUserId: 'owner',
+        serverName: 'shared',
+        snapshot: { tokenUserIds: [], aclEntries: [], viewerUserIds: ['viewer'] },
+        getTokenUserIds: async () => [],
+        getUserPrincipals: async () => [],
+        resolveAllowlists: async () => ({}),
+        uninstallOAuthMCP: async () => {
+          throw new Error('mongo down');
+        },
+        strictRevocation: true,
+      }),
+    ).rejects.toThrow('OAuth cleanup failed for shared');
   });
 });

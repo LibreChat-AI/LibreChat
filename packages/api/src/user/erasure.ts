@@ -194,11 +194,21 @@ export async function deleteUserMCPServers(
         }),
       ),
     );
-    const failures = results.filter((result) => result.status === 'rejected');
-    for (const failure of failures) {
-      logger.error(`[eraseUserData] MCP OAuth cleanup failed for user ${userId}`, failure.reason);
-    }
-    return failures.length;
+    let failures = 0;
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        failures++;
+        logger.error(`[eraseUserData] MCP OAuth cleanup failed for user ${userId}`, result.reason);
+        return;
+      }
+      /** Local state is gone; the operator needs to know which provider grants may remain. */
+      for (const refusal of result.value) {
+        logger.error(
+          `[eraseUserData] OAuth provider for MCP server ${removed[index].serverName} did not revoke the ${refusal.tokenTypes.join(' and ')} token of user ${refusal.userId}; the external grant may remain valid`,
+        );
+      }
+    });
+    return failures;
   };
 
   try {

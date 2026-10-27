@@ -7,6 +7,7 @@ import {
   createMethods,
   tenantStorage,
   createSkillDeletionPersistenceAdapter,
+  logger,
 } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { CheckpointDeletion } from '~/agents/checkpoints/deletion';
@@ -548,7 +549,10 @@ describe('removing a shared MCP server with its owner', () => {
   const serverConfig = { type: 'streamable-http' as const, url: SERVER_URL, oauth: {} };
 
   /** The host teardown the CLI wires, with only the provider's revocation endpoint replaced. */
-  function createOAuthHost(revokeOAuthToken: jest.Mock) {
+  function createOAuthHost(
+    revokeOAuthToken: jest.Mock,
+    deleteTokens: typeof methods.deleteTokens = methods.deleteTokens,
+  ) {
     const flowManager = new FlowStateManager<MCPOAuthTokens | null>(new Keyv(), { ttl: 60_000 });
     const uninstallOAuthMCP: MCPOAuthErasureHooks['uninstallOAuthMCP'] = (
       userId,
@@ -574,7 +578,7 @@ describe('removing a shared MCP server with its owner', () => {
           },
           tokenStorage: MCPTokenStorage,
           findToken: methods.findToken,
-          deleteTokens: methods.deleteTokens,
+          deleteTokens,
           getServerConfig: async () => undefined,
           isRegisteredOAuthServer: async () => false,
         },
@@ -684,7 +688,7 @@ describe('removing a shared MCP server with its owner', () => {
     expect(await count('MCPServer', { _id: mcpServerId })).toBe(0);
   });
 
-  it('keeps the server when the provider refuses a revocation, after clearing local credentials', async () => {
+  it('removes the server and reports the grant when the provider refuses a revocation', async () => {
     const ownerId = new mongoose.Types.ObjectId();
     const viewerId = new mongoose.Types.ObjectId();
     const { mcpServerId } = await seedUser(ownerId);
@@ -699,21 +703,58 @@ describe('removing a shared MCP server with its owner', () => {
       resolveAllowlists: async () => ({}),
       uninstallOAuthMCP,
     });
+    const reported = jest.spyOn(logger, 'error');
 
-    await expect(deleteUserMCPServers(ownerId.toString(), deps)).rejects.toThrow(
-      'MCP OAuth cleanup failed',
-    );
+    await deleteUserMCPServers(ownerId.toString(), deps);
 
     expect(revokeOAuthToken.mock.calls.map(([, token, type]) => [token, type])).toEqual([
       [`access-${viewerId}`, 'access'],
       [`refresh-${viewerId}`, 'refresh'],
     ]);
     expect(await count('Token', { userId: viewerId })).toBe(0);
+    expect(await count('MCPServer', { _id: mcpServerId })).toBe(0);
+    expect(reported).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `${serverName} did not revoke the access and refresh token of user ${viewerId}`,
+      ),
+    );
+  });
+
+  it('fails closed, keeping the server, when a local token delete fails', async () => {
+    const ownerId = new mongoose.Types.ObjectId();
+    const viewerId = new mongoose.Types.ObjectId();
+    const { mcpServerId } = await seedUser(ownerId);
+    const serverName = `acl-${ownerId}`;
+    await share(mcpServerId, ownerId, PrincipalType.USER, viewerId);
+    await authorize(viewerId, serverName);
+    let outage = true;
+    const { uninstallOAuthMCP } = createOAuthHost(
+      jest.fn().mockResolvedValue(undefined),
+      async (query) => {
+        if (outage) {
+          throw new Error('mongo down');
+        }
+        return methods.deleteTokens(query);
+      },
+    );
+    const deps = createServerDeps({
+      getServerConfig: async () => serverConfig,
+      getUserPrincipals: (candidate) => methods.getUserPrincipals({ userId: candidate }),
+      resolveAllowlists: async () => ({}),
+      uninstallOAuthMCP,
+    });
+
+    await expect(deleteUserMCPServers(ownerId.toString(), deps)).rejects.toThrow(
+      'MCP OAuth cleanup failed',
+    );
     expect(await count('MCPServer', { _id: mcpServerId })).toBe(1);
     expect(await count('AclEntry', { resourceId: mcpServerId })).toBe(2);
+    expect(await count('Token', { userId: viewerId })).toBeGreaterThan(0);
 
+    outage = false;
     await deleteUserMCPServers(ownerId.toString(), deps);
     expect(await count('MCPServer', { _id: mcpServerId })).toBe(0);
+    expect(await count('Token', { userId: viewerId })).toBe(0);
   });
 
   it('holds every OAuth teardown fence until the server delete commits', async () => {
@@ -810,7 +851,7 @@ describe('removing a shared MCP server with its owner', () => {
     expect(MCPTokenStorage.isRefreshTeardownActive(viewerId.toString(), serverName)).toBe(false);
   });
 
-  it('releases every held fence when a later teardown fails', async () => {
+  it('releases every held fence when a teardown fails locally', async () => {
     const ownerId = new mongoose.Types.ObjectId();
     const viewerId = new mongoose.Types.ObjectId();
     const { mcpServerId } = await seedUser(ownerId);
@@ -818,7 +859,10 @@ describe('removing a shared MCP server with its owner', () => {
     await share(mcpServerId, ownerId, PrincipalType.USER, viewerId);
     await authorize(viewerId, serverName);
     const { flowManager, uninstallOAuthMCP } = createOAuthHost(
-      jest.fn().mockRejectedValue(new Error('provider returned 503')),
+      jest.fn().mockResolvedValue(undefined),
+      async () => {
+        throw new Error('mongo down');
+      },
     );
     const deps = createServerDeps({
       getServerConfig: async () => serverConfig,

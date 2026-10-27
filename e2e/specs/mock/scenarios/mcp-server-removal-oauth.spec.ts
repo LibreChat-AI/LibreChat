@@ -79,17 +79,23 @@ test.describe('removing a shared MCP server', () => {
     expectPassed('route', 'fences a viewer who holds no OAuth token when the server is deleted');
   });
 
-  test('a refused provider revocation fails erasure after local credentials are cleared, and a retry finishes it @scenario:erasure-surfaces-provider-revocation-failure', () => {
+  test('a refused provider revocation does not block erasure: local credentials are cleared, the server is removed and the grant is reported @scenario:erasure-surfaces-provider-revocation-failure', () => {
     expectPassed(
       'erasure',
-      'keeps the server when the provider refuses a revocation, after clearing local credentials',
+      'removes the server and reports the grant when the provider refuses a revocation',
     );
     expectPassed('cleanup', 'clears local credentials and then rejects in strict mode');
+    expectPassed('cleanup', 'returns refused revocations instead of failing the cleanup');
+  });
+
+  test('a local token delete failure fails erasure closed and a retry finishes it @scenario:erasure-fails-closed-on-local-teardown-failure', () => {
+    expectPassed('erasure', 'fails closed, keeping the server, when a local token delete fails');
+    expectPassed('cleanup', 'still fails the cleanup on a local teardown failure');
   });
 
   test('no authorization or refresh can take the OAuth fence until the server delete commits @scenario:erasure-holds-oauth-fence-through-delete', () => {
     expectPassed('erasure', 'holds every OAuth teardown fence until the server delete commits');
-    expectPassed('erasure', 'releases every held fence when a later teardown fails');
+    expectPassed('erasure', 'releases every held fence when a teardown fails locally');
     expectPassed(
       'erasure',
       'keeps the server when a held fence lapsed and another writer took it before the delete',
