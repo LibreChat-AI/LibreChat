@@ -178,13 +178,13 @@ describe('GET /api/config', () => {
 
     it('publishes configured client timeouts before login and omits invalid ones', async () => {
       mockGetTenantId.mockReturnValue(undefined);
-      mockGetAppConfig.mockResolvedValue({ config: { clientTimeouts: { refreshMs: 90000 } } });
+      mockGetAppConfig.mockResolvedValue({ config: { clientLimits: { refreshMs: 90000 } } });
       const configured = await request(createApp(null)).get('/api/config');
-      expect(configured.body.clientTimeouts).toEqual({ refreshMs: 90000 });
+      expect(configured.body.clientLimits).toEqual({ refreshMs: 90000 });
 
-      mockGetAppConfig.mockResolvedValue({ config: { clientTimeouts: { refreshMs: -1 } } });
+      mockGetAppConfig.mockResolvedValue({ config: { clientLimits: { refreshMs: -1 } } });
       const invalid = await request(createApp(null)).get('/api/config');
-      expect(invalid.body).not.toHaveProperty('clientTimeouts');
+      expect(invalid.body).not.toHaveProperty('clientLimits');
     });
 
     it('should never serve a signed-out visitor a policy link that would run script', async () => {

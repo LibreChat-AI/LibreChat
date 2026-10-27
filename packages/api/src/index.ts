@@ -141,7 +141,7 @@ export * from './rum/proxy';
 export * from './rum/policy';
 export * from './rum/config';
 export * from './rum/limiter';
-export * from './timeouts/client';
+export * from './clientlimits/client';
 /* OpenAPI */
 export { createOpenApiRouter } from './openapi/router';
 export type { OpenApiRouterDeps } from './openapi/router';

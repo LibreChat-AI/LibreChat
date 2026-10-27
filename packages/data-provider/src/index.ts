@@ -3,7 +3,7 @@ export * from './azure';
 export * from './bedrock';
 export * from './balance';
 export * from './config';
-export * from './timeouts';
+export * from './clientLimits';
 export * from './footer';
 export * from './theme';
 export * from './themes';

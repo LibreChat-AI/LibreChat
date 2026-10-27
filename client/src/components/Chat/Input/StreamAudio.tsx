@@ -2,7 +2,7 @@ import { useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
-import { QueryKeys, getSpeechText, getClientTimeout } from 'librechat-data-provider';
+import { QueryKeys, getSpeechText, getClientLimit } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import {
   useCustomAudioRef,
@@ -91,7 +91,7 @@ export default function StreamAudio({ index = 0 }) {
 
         logger.log('Fetching audio...', navigator.userAgent);
         const controller = new AbortController();
-        const abortTimer = setTimeout(() => controller.abort(), getClientTimeout('ttsMs'));
+        const abortTimer = setTimeout(() => controller.abort(), getClientLimit('ttsMs'));
         let response: Response;
         try {
           response = await fetch('/api/files/speech/tts', {

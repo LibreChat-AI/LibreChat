@@ -15,7 +15,7 @@ import type * as t from './types';
 import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
-import { setClientTimeouts } from './timeouts';
+import { setClientLimits } from './clientLimits';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
 import * as mcp from './types/mcpServers';
@@ -449,7 +449,7 @@ export const getStartupConfig = (
   return request
     .get<config.TStartupConfig>(endpoints.config(options?.context))
     .then((startupConfig) => {
-      setClientTimeouts(startupConfig?.clientTimeouts);
+      setClientLimits(startupConfig?.clientLimits);
       return startupConfig;
     });
 };

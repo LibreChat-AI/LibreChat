@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query';
-import { getClientTimeout } from 'librechat-data-provider';
+import { getClientLimit } from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
 
 export interface SharePointFile {
@@ -50,10 +50,7 @@ export const useSharePointBatchDownload = (): UseMutationResult<
               `https://graph.microsoft.com/v1.0/drives/${file.driveId}/items/${file.itemId}/content`;
 
             const controller = new AbortController();
-            const abortTimer = setTimeout(
-              () => controller.abort(),
-              getClientTimeout('sharepointMs'),
-            );
+            const abortTimer = setTimeout(() => controller.abort(), getClientLimit('sharepointMs'));
             let response: Response;
             let blob: Blob;
             try {

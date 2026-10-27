@@ -29,6 +29,7 @@ import {
   defaultAgentCapabilities,
   EToolResources,
   FileContext,
+  getClientLimit,
   MAX_CHAT_PROJECT_FILES,
   PermissionTypes,
   Permissions,
@@ -59,9 +60,6 @@ type UploadState = {
   errorMessage?: string;
   status: 'processing' | 'failed';
 };
-
-/** Files uploaded and attached at once; each keeps its own error state. */
-const UPLOAD_CONCURRENCY = 3;
 
 const getUploadErrorMessage = (error: unknown, localize: LocalizeFunction): string => {
   const uploadError = error as TError | undefined;
@@ -306,7 +304,9 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
       }
     };
     await Promise.all(
-      Array.from({ length: Math.min(UPLOAD_CONCURRENCY, items.length) }, () => worker()),
+      Array.from({ length: Math.min(getClientLimit('uploadConcurrency'), items.length) }, () =>
+        worker(),
+      ),
     );
   };
 
