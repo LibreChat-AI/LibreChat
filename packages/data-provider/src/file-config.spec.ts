@@ -1785,6 +1785,36 @@ describe('mergeFileConfig clientImageResize', () => {
   });
 });
 
+describe('fileConfig stt', () => {
+  it('keeps stt.supportedMimeTypes when librechat.yaml is validated', () => {
+    const result = fileConfigSchema.safeParse({
+      stt: { supportedMimeTypes: ['^audio/(ogg|webm)$'] },
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.stt).toEqual({
+      supportedMimeTypes: ['^audio/(ogg|webm)$'],
+    });
+  });
+
+  it('rejects an stt MIME pattern that is not a valid regex', () => {
+    const result = fileConfigSchema.safeParse({ stt: { supportedMimeTypes: ['('] } });
+    expect(result.success).toBe(false);
+  });
+
+  it('replaces the default stt MIME types with the configured ones', () => {
+    const merged = mergeFileConfig({ stt: { supportedMimeTypes: ['^audio/ogg$'] } });
+    const types = merged.stt?.supportedMimeTypes ?? [];
+    expect(merged.checkType?.('audio/ogg', types)).toBe(true);
+    expect(merged.checkType?.('audio/mpeg', types)).toBe(false);
+  });
+
+  it('keeps the default stt MIME types when stt is not configured', () => {
+    const merged = mergeFileConfig({ serverFileSizeLimit: 100 });
+    const types = merged.stt?.supportedMimeTypes ?? [];
+    expect(merged.checkType?.('audio/mpeg', types)).toBe(true);
+  });
+});
+
 describe('fileConfigSchema clientImageResize', () => {
   it.each(['maxWidth', 'maxHeight'] as const)('rejects a non-positive %s', (dimension) => {
     const result = fileConfigSchema.safeParse({

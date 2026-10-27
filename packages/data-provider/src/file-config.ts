@@ -699,6 +699,11 @@ export const fileConfigSchema = z.object({
       supportedMimeTypes: supportedMimeTypesSchema.optional(),
     })
     .optional(),
+  stt: z
+    .object({
+      supportedMimeTypes: supportedMimeTypesSchema.optional(),
+    })
+    .optional(),
   defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
   legacyFileUploadUX: z.boolean().optional(),
   textFallbackWithoutTools: z.boolean().optional(),
@@ -1370,6 +1375,17 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
     };
     if (textMimeTypes) {
       mergedConfig.text.supportedMimeTypes = convertStringsToRegex(textMimeTypes);
+    }
+  }
+
+  if (dynamic.stt !== undefined) {
+    const { supportedMimeTypes: sttMimeTypes, ...sttRest } = dynamic.stt;
+    mergedConfig.stt = {
+      ...mergedConfig.stt,
+      ...sttRest,
+    };
+    if (sttMimeTypes) {
+      mergedConfig.stt.supportedMimeTypes = convertStringsToRegex(sttMimeTypes);
     }
   }
 
