@@ -244,6 +244,8 @@ export function isTokenRetired(
   );
 }
 
+export const RETIREMENT_RESTAMP_FAILED = 'RETIREMENT_RESTAMP_FAILED';
+
 /** The two cutoffs `isTokenRetired` compares against. */
 export type RetirementCutoffField = 'twoFactorEnrolledAt' | 'credentialsChangedAt';
 
@@ -255,8 +257,9 @@ export type RetirementCutoffField = 'twoFactorEnrolledAt' | 'credentialsChangedA
  * and its own post-mint recheck can still read the document from before the commit. Every such
  * credential was minted before the commit returned, so a stamp read afterwards retires it. The
  * caller guards the write on the first stamp, so a later change to the same cutoff is never moved
- * back. The change this follows has already committed and its first stamp stands, so a failure
- * here leaves only that in-flight window open: it is logged rather than failing the change.
+ * back. The change this follows has already committed, so a failure is thrown as
+ * `RETIREMENT_RESTAMP_FAILED` for the owning boundary to finish its revocations and report the
+ * retirement as incomplete rather than confirm it.
  */
 export async function restampRetirementCutoff<F extends RetirementCutoffField>(
   field: F,
@@ -269,9 +272,21 @@ export async function restampRetirementCutoff<F extends RetirementCutoffField>(
       { [field]: new Date() } as Record<F, Date>,
       { [field]: stampedAt } as Record<F, Date>,
     );
-  } catch (error) {
-    logger.error(`[restampRetirementCutoff] Failed to re-date ${field} for user ${userId}`, error);
+  } catch (cause) {
+    logger.error(`[restampRetirementCutoff] Failed to re-date ${field} for user ${userId}`, cause);
+    throw Object.assign(new Error(`Failed to re-date ${field} after its committing write`), {
+      code: RETIREMENT_RESTAMP_FAILED,
+      cause,
+    });
   }
+}
+
+/** The account change committed but credentials minted while it was in flight may survive it. */
+export function isRetirementRestampError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as Error & { code?: string }).code === RETIREMENT_RESTAMP_FAILED
+  );
 }
 
 export interface MintedSessionWithdrawal {

@@ -235,6 +235,7 @@ export function createEnrollmentControllers(
       }
 
       const userData = sanitizeUser(result.user);
+      await deps.deleteAllUserSessions({ userId: result.user._id.toString() });
       if (result.user.twoFactorEnrolledAt) {
         await restampRetirementCutoff(
           'twoFactorEnrolledAt',
@@ -243,7 +244,6 @@ export function createEnrollmentControllers(
           (cutoff, expectedState) => deps.updateUser(userId, cutoff, expectedState),
         );
       }
-      await deps.deleteAllUserSessions({ userId: result.user._id.toString() });
       const authToken = await deps.setAuthTokens(result.user._id, res, null, req);
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
@@ -386,12 +386,12 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
         return res.status(400).json({ message: '2FA not initiated' });
       }
 
-      await restampRetirementCutoff('twoFactorEnrolledAt', userId, enrolledAt, (cutoff, expected) =>
-        deps.updateUser(userId, cutoff, expected),
-      );
       await deps.deleteAllUserSessions(
         { userId },
         { excludeCurrentSession: true, currentSessionId: session._id.toString() },
+      );
+      await restampRetirementCutoff('twoFactorEnrolledAt', userId, enrolledAt, (cutoff, expected) =>
+        deps.updateUser(userId, cutoff, expected),
       );
       const authToken = await deps.setAuthTokens(user._id, res, session, req);
       const withdraw = () => withdrawMintedSession(res, user, userId, deps);

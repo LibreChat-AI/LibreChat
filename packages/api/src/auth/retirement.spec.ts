@@ -7,9 +7,13 @@ import type { Request, Response } from 'express';
 import type { OptInConfirmationDependencies } from './enrollment';
 import type { StoredTwoFactorAccount } from './twoFactor';
 import type { PasswordResetDeps } from './passwordReset';
-import { isTokenRetired, restampRetirementCutoff } from './twoFactor';
+import {
+  commitPasswordReset,
+  createResetPasswordController,
+  CREDENTIAL_RETIREMENT_INCOMPLETE,
+} from './passwordReset';
+import { isTokenRetired, restampRetirementCutoff, RETIREMENT_RESTAMP_FAILED } from './twoFactor';
 import { createOptInTwoFactorConfirmation } from './enrollment';
-import { commitPasswordReset } from './passwordReset';
 
 type Methods = ReturnType<typeof createMethods>;
 
@@ -111,14 +115,59 @@ describe('password reset ordering', () => {
     expect((await readCutoffs(userId))?.credentialsChangedAt?.getTime()).toBe(later.getTime());
   });
 
-  it('keeps the committed reset when the re-stamp fails', async () => {
-    const userId = await createUser({ credentialsChangedAt: new Date() });
+  it('reports a re-stamp failure after the reset committed', async () => {
+    const userId = await createUser();
+    let writes = 0;
+    const deps: PasswordResetDeps = {
+      findResetToken: async () => ({ token: 'hash', email: null, type: null }),
+      getUserById: async () => ({ _id: userId, email: 'user@example.com' }),
+      compareToken: async () => true,
+      hashPassword: async () => 'new-hash',
+      deleteTokens: async () => ({}),
+      updateUser: async (id, update) => {
+        writes += 1;
+        if (writes > 1) {
+          throw new Error('write failed');
+        }
+        return writeUser(id, update) as Promise<{ email: string } | null>;
+      },
+    };
 
-    await expect(
-      restampRetirementCutoff('credentialsChangedAt', userId, new Date(), async () => {
-        throw new Error('write failed');
+    const reset = commitPasswordReset(deps, { userId, token: 't', password: 'p' });
+
+    await expect(reset).rejects.toMatchObject({ code: RETIREMENT_RESTAMP_FAILED });
+    const stored = await mongoose.models.User.findById(userId).select('+password').lean<IUser>();
+    expect(stored?.password).toBe('new-hash');
+    expect(stored?.credentialsChangedAt).toBeInstanceOf(Date);
+  });
+
+  it('revokes sessions and passkeys and reports an incomplete reset when the re-stamp fails', async () => {
+    const deps = {
+      resetPassword: jest.fn(async () => {
+        throw Object.assign(new Error('restamp'), { code: 'RETIREMENT_RESTAMP_FAILED' });
       }),
-    ).resolves.toBeUndefined();
+      deleteAllUserSessions: jest.fn(async () => ({ deletedCount: 1 })),
+      deletePasskeysByUser: jest.fn(async () => ({ deletedCount: 1 })),
+      awaitAuthUserDocEviction: jest.fn(async () => undefined),
+    };
+    const res = createRes();
+
+    await createResetPasswordController(deps)(
+      { body: { userId: 'user-1', token: 't', password: 'p' } } as Request<
+        Record<string, string>,
+        object,
+        { userId: string; token: string; password: string }
+      >,
+      res as unknown as Response,
+    );
+
+    expect(deps.deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-1' });
+    expect(deps.deletePasskeysByUser).toHaveBeenCalledWith('user-1');
+    expect(deps.awaitAuthUserDocEviction).toHaveBeenCalledWith('user-1');
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: CREDENTIAL_RETIREMENT_INCOMPLETE }),
+    );
   });
 });
 

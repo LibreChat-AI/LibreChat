@@ -1,8 +1,8 @@
 import { logger } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { PasswordResetUpdate } from './passwordResetUpdate';
+import { isRetirementRestampError, restampRetirementCutoff } from './twoFactor';
 import { createPasswordResetUpdate } from './passwordResetUpdate';
-import { restampRetirementCutoff } from './twoFactor';
 import { clearSessionHintCookie } from '~/oauth/csrf';
 import { EMAIL_CHANGE_TOKEN_TYPE } from './email';
 
@@ -59,44 +59,83 @@ export type PasswordResetOutcome =
 
 export const PASSWORD_RESET_USER_FIELDS: string = 'email _id name username emailChangedAt';
 
+/** The password changed but a credential minted during the change may still be accepted. */
+export const CREDENTIAL_RETIREMENT_INCOMPLETE = 'CREDENTIAL_RETIREMENT_INCOMPLETE';
+
 export function createResetPasswordController(deps: PasswordResetControllerDeps) {
+  /** Runs whether or not the reset could re-date its cutoff: the password has changed either way. */
+  const revokeCredentials = async (userId: string) => {
+    const [sessions, passkeys] = await Promise.allSettled([
+      Promise.resolve().then(() => deps.deleteAllUserSessions({ userId })),
+      Promise.resolve().then(() => deps.deletePasskeysByUser(userId)),
+    ]);
+    if (sessions.status === 'rejected') {
+      logger.error(
+        `[resetPasswordController] Failed to revoke sessions for user ${userId}`,
+        sessions.reason,
+      );
+    }
+    if (passkeys.status === 'rejected') {
+      logger.error(
+        `[resetPasswordController] Failed to revoke passkeys for user ${userId}`,
+        passkeys.reason,
+      );
+    }
+    /** After the revocations, so nothing can mint a post-stamp token while it waits. */
+    await deps.awaitAuthUserDocEviction(userId);
+  };
+
   return async (
     req: Request<Record<string, string>, object, PasswordResetInput>,
     res: Response,
   ): Promise<Response> => {
+    const { userId, token, password } = req.body;
     try {
-      const { userId, token, password } = req.body;
       const result = await deps.resetPassword(userId, token, password);
       if (result instanceof Error) {
         return res.status(400).json(result);
       }
 
-      const [sessions, passkeys] = await Promise.allSettled([
-        Promise.resolve().then(() => deps.deleteAllUserSessions({ userId })),
-        Promise.resolve().then(() => deps.deletePasskeysByUser(userId)),
-      ]);
-      if (sessions.status === 'rejected') {
-        logger.error(
-          `[resetPasswordController] Failed to revoke sessions for user ${userId}`,
-          sessions.reason,
-        );
-      }
-      if (passkeys.status === 'rejected') {
-        logger.error(
-          `[resetPasswordController] Failed to revoke passkeys for user ${userId}`,
-          passkeys.reason,
-        );
-      }
-      /** After the revocations, so nothing can mint a post-stamp token while it waits. */
-      await deps.awaitAuthUserDocEviction(userId);
+      await revokeCredentials(userId);
       clearSessionHintCookie(res);
 
       return res.status(200).json(result);
     } catch (error) {
+      if (isRetirementRestampError(error)) {
+        return finishIncompleteRetirement(res, userId, error);
+      }
       logger.error('[resetPasswordController]', error);
       return res.status(400).json({ message: 'Password reset failed' });
     }
   };
+
+  /**
+   * The password changed, but a credential minted while that write was in flight may outlive it.
+   * Revoke everything else the reset revokes, then report the reset as incomplete instead of done.
+   */
+  async function finishIncompleteRetirement(
+    res: Response,
+    userId: string,
+    error: unknown,
+  ): Promise<Response> {
+    logger.error(
+      '[resetPasswordController] Password changed but its cutoff was not re-dated',
+      error,
+    );
+    try {
+      await revokeCredentials(userId);
+    } catch (revocationError) {
+      logger.error(
+        '[resetPasswordController] Revocation after an incomplete reset failed',
+        revocationError,
+      );
+    }
+    clearSessionHintCookie(res);
+    return res.status(500).json({
+      code: CREDENTIAL_RETIREMENT_INCOMPLETE,
+      message: 'Your password was changed, but other sessions may stay signed in. Reset it again.',
+    });
+  }
 }
 
 /**
@@ -167,14 +206,13 @@ export async function commitPasswordReset(
     return { ok: false };
   }
 
+  await clearPendingEmailChanges(deps, input.userId);
   await restampRetirementCutoff(
     'credentialsChangedAt',
     input.userId,
     update.credentialsChangedAt,
     (cutoff, expectedState) => deps.updateUser(input.userId, cutoff, expectedState),
   );
-
-  await clearPendingEmailChanges(deps, input.userId);
 
   return { ok: true, user, resetToken };
 }

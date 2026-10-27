@@ -76,14 +76,6 @@ const resetPassword = async () => {
       process.exit(1);
     }
 
-    await restampRetirementCutoff(
-      'credentialsChangedAt',
-      userId,
-      update.credentialsChangedAt,
-      (cutoff, expectedState) =>
-        methods.updateUser(userId, cutoff, expectedState, { preserveExpiresAt: true }),
-    );
-
     /**
      * A passkey signs in on its own, so leaving one in place would keep an attacker
      * logged in after an administrator believes the account has been recovered.
@@ -97,6 +89,15 @@ const resetPassword = async () => {
       /** The password is already changed, so the cache settles even when a revocation fails. */
       await methods.awaitAuthUserDocEviction(user._id.toString());
     }
+
+    /** After the revocations, so a failure here still leaves them done and exits non-zero. */
+    await restampRetirementCutoff(
+      'credentialsChangedAt',
+      userId,
+      update.credentialsChangedAt,
+      (cutoff, expectedState) =>
+        methods.updateUser(userId, cutoff, expectedState, { preserveExpiresAt: true }),
+    );
 
     console.log('Password successfully reset!');
     if (deletedCount > 0) {
