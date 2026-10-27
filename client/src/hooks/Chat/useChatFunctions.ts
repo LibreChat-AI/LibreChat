@@ -41,9 +41,13 @@ import {
   withSubmittedCodeDecision,
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
+import {
+  getBranchReasoning,
+  isReasoningKeyEnforced,
+  resolveSubmittedReasoning,
+} from './ask/reasoning';
 import { activeUsageResponseIdFamily } from '~/components/Chat/Input/TokenUsage/store';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
-import { getBranchReasoning, resolveSubmittedReasoning } from './ask/reasoning';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -355,11 +359,21 @@ export default function useChatFunctions({
        choice holds for the rest of the conversation until the user picks another. */
     if (drainedReasoning && reasoningOverride == null) {
       const branchMessages = overrideMessages ?? cachedMessages;
-      reasoningOverride = getBranchReasoning(
+      const inherited = getBranchReasoning(
         branchMessages,
         parentMessageId ??
           getAppendParentMessageId({ latestMessage, currentMessages: branchMessages ?? [] }),
       );
+      reasoningOverride =
+        inherited != null &&
+        !isReasoningKeyEnforced({
+          modelSpecs: config.modelSpecs,
+          enforced: config.modelSpecsEnforced,
+          specName: conversation?.spec,
+          key: inherited.key,
+        })
+          ? inherited
+          : undefined;
     }
     if (reasoningOverride != null) {
       const resolved = resolveSubmittedReasoning({

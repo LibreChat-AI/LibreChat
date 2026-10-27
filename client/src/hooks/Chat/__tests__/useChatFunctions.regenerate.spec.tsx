@@ -20,10 +20,12 @@ import type {
   TConversation,
   TMessage,
   TSubmission,
+  TModelSpec,
   TReasoningOverride,
   TEphemeralAgent,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { ChatSettings } from '~/hooks/Chat/contract';
 import type { ExtendedFile } from '~/common';
 import {
   activeUsageResponseIdFamily,
@@ -189,6 +191,8 @@ function renderAsk(
     reasoningOverride?: TReasoningOverride;
     agentId?: string;
     files?: Map<string, ExtendedFile>;
+    spec?: string;
+    config?: Partial<ChatSettings['config']>;
   } = {},
 ) {
   const setMessages = jest.fn();
@@ -205,11 +209,18 @@ function renderAsk(
   if (options.agentId != null) {
     immutableConversation.agent_id = options.agentId;
   }
+  if (options.spec != null) {
+    immutableConversation.spec = options.spec;
+  }
   const reasoningStore = createStore();
   reasoningStore.set(pendingReasoningOverrideFamily(conversationId), options.reasoningOverride);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <ChatSettingsContext.Provider
-      value={{ ...defaultChatSettings, getEphemeralAgent: mockGetEphemeralAgent }}
+      value={{
+        ...defaultChatSettings,
+        config: { ...defaultChatSettings.config, ...options.config },
+        getEphemeralAgent: mockGetEphemeralAgent,
+      }}
     >
       <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
     </ChatSettingsContext.Provider>
@@ -718,6 +729,28 @@ describe('useChatFunctions ask', () => {
       });
 
       expect(submitted(setSubmission)).toEqual(low);
+    });
+
+    it('does not inherit a level for a field an enforced model spec now fixes', () => {
+      const { result, setSubmission } = renderAsk(ranHigh(), 'conversation-1', {
+        spec: 'locked-effort',
+        config: {
+          modelSpecsEnforced: true,
+          modelSpecs: [
+            {
+              name: 'locked-effort',
+              label: 'Locked effort',
+              preset: { endpoint: 'openAI', reasoning_effort: 'low' },
+            } as TModelSpec,
+          ],
+        },
+      });
+
+      act(() => {
+        result.current.ask({ text: 'Under the enforced spec' });
+      });
+
+      expect(submitted(setSubmission)).toBeUndefined();
     });
 
     it('leaves a branch whose last user turn picked nothing on the default', () => {

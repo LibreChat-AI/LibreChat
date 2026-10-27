@@ -63,6 +63,8 @@ export type ChatConfig = {
   canRenameRunningChat: boolean;
   /** Model specs the deployment offers, for presets and token limits a spec carries. */
   modelSpecs?: TModelSpec[];
+  /** Whether those specs are enforced, which fixes every field a conversation's spec presets. */
+  modelSpecsEnforced?: boolean;
   queuedSendLockTimeoutMs?: number;
   queuedTurnReconciliationTimeoutMs?: number;
   steerArmConfirmationTimeoutMs?: number;

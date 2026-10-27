@@ -447,6 +447,61 @@ describe('useComposerReasoning', () => {
     });
   });
 
+  it('lets a Parameters edit replace the branch level, but not a conversation switch', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const high = { key: 'reasoning_effort', value: ReasoningEffort.high } as TReasoningOverride;
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true, branchReasoning: high }),
+      {
+        initialProps: {
+          conversation: {
+            conversationId: 'edited-conversation',
+            endpoint: 'openAI',
+            model: 'gpt-5',
+          } as TConversation,
+        },
+        wrapper,
+      },
+    );
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+
+    rendered.rerender({
+      conversation: {
+        conversationId: 'other-conversation',
+        endpoint: 'openAI',
+        model: 'gpt-5',
+        reasoning_effort: ReasoningEffort.low,
+      } as TConversation,
+    });
+    expect(rendered.result.current?.value).toEqual(high);
+
+    rendered.rerender({
+      conversation: {
+        conversationId: 'other-conversation',
+        endpoint: 'openAI',
+        model: 'gpt-5',
+        reasoning_effort: ReasoningEffort.medium,
+      } as TConversation,
+    });
+    await waitFor(() =>
+      expect(rendered.result.current?.value).toEqual({
+        key: 'reasoning_effort',
+        value: ReasoningEffort.medium,
+      }),
+    );
+    expect(
+      reasoningStore.get(
+        pendingReasoningOverrideFamily(getReasoningStateKey('other-conversation', 0)),
+      ),
+    ).toEqual({ key: 'reasoning_effort', value: ReasoningEffort.medium });
+  });
+
   it('does not show a branch level the current model does not take', async () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <RecoilRoot>

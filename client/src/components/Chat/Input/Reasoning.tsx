@@ -424,12 +424,39 @@ export function useComposerReasoning({
     value,
   ]);
 
+  let configuredValue: unknown;
+  if (setting != null) {
+    configuredValue =
+      isAgent && agent != null
+        ? agent.model_parameters?.[setting.key]
+        : conversation?.[setting.key];
+  }
+  /* The configured value changing while the conversation and target stay put is the user setting
+     the level elsewhere (the Parameters panel). It replaces the branch level the way a composer
+     pick does; otherwise the inherited level would silently outrank the edit. */
+  const configuredScope = `${reasoningStateKey}\u0000${targetFingerprint ?? ''}`;
+  const previousConfigured = useRef({ scope: configuredScope, value: configuredValue });
+  useEffect(() => {
+    const previous = previousConfigured.current;
+    previousConfigured.current = { scope: configuredScope, value: configuredValue };
+    if (
+      setting == null ||
+      configuredValue == null ||
+      previous.scope !== configuredScope ||
+      Object.is(previous.value, configuredValue)
+    ) {
+      return;
+    }
+    const edited = reasoningOverrideSchema.safeParse({ key: setting.key, value: configuredValue });
+    if (edited.success && isReasoningOverrideSupported(edited.data, setting)) {
+      setValue(edited.data);
+    }
+  }, [configuredScope, configuredValue, setValue, setting]);
+
   if (!available || setting == null) {
     return null;
   }
 
-  const configuredValue =
-    isAgent && agent != null ? agent.model_parameters?.[setting.key] : conversation?.[setting.key];
   const inherited =
     branchReasoning != null && isReasoningOverrideSupported(branchReasoning, setting)
       ? branchReasoning

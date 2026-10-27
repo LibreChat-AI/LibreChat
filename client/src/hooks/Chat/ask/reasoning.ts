@@ -10,6 +10,7 @@ import {
 import type {
   Agent,
   TMessage,
+  TModelSpec,
   TConversation,
   TEndpointsConfig,
   TReasoningCapabilitiesResponse,
@@ -146,4 +147,26 @@ export function getBranchReasoning(
     current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
   }
   return undefined;
+}
+
+/**
+ * Whether an enforced model spec fixes `key` for this conversation. The server refuses an override
+ * for such a field, so a level inherited from before the spec was enforced must not be sent.
+ */
+export function isReasoningKeyEnforced({
+  modelSpecs,
+  enforced,
+  specName,
+  key,
+}: {
+  modelSpecs?: TModelSpec[];
+  enforced?: boolean;
+  specName?: string | null;
+  key: string;
+}): boolean {
+  if (enforced !== true || specName == null || specName === '') {
+    return false;
+  }
+  const preset = modelSpecs?.find((spec) => spec.name === specName)?.preset;
+  return preset != null && Object.prototype.hasOwnProperty.call(preset, key);
 }
