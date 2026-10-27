@@ -892,14 +892,17 @@ describe('deleteRoleByName', () => {
     );
   });
 
-  it('reports only the members its write moved when membership changes mid-delete', async () => {
+  it('reports exactly the members its write moved when other writes land mid-delete', async () => {
+    /** The app filters strictly; the reassignment tag must still be matched. */
+    const strictQuery = mongoose.get('strictQuery');
+    mongoose.set('strictQuery', true);
     await createRoleByName({ name: 'editor' });
     const [alice, bob] = await User.create([
       { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
       { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
     ]);
     let eveId = '';
-    let membershipChange: Promise<void> | undefined;
+    let first = true;
     const realUpdateMany = User.updateMany.bind(User);
     const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
       filter: mongoose.FilterQuery<IUser>,
@@ -907,32 +910,37 @@ describe('deleteRoleByName', () => {
       options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
     ) =>
       (async () => {
-        /** Between the member read and the writes: another request moves Bob to USER, and Eve
-         * joins. Bob's move is not this deletion's, so it is not reported. */
-        membershipChange ??= (async () => {
-          await User.updateOne(
-            { _id: bob._id },
-            { $set: { role: SystemRoles.USER, updatedAt: new Date(0) } },
-            { timestamps: false },
-          );
-          const eve = await User.create({
-            name: 'Eve',
-            email: 'eve@test.com',
-            role: 'editor',
-            username: 'eve',
-          });
-          eveId = eve._id.toString();
-        })();
-        await membershipChange;
-        return realUpdateMany(filter, update, options);
+        if (!first) {
+          return realUpdateMany(filter, update, options);
+        }
+        first = false;
+        /** Between the member read and the write: another request moves Bob to USER (not this
+         * deletion's move) and Eve joins (picked up by the next pass). */
+        await User.updateOne({ _id: bob._id }, { $set: { role: SystemRoles.USER } });
+        const eve = await User.create({
+          name: 'Eve',
+          email: 'eve@test.com',
+          role: 'editor',
+          username: 'eve',
+        });
+        eveId = eve._id.toString();
+        const result = await realUpdateMany(filter, update, options);
+        /** After the write and before its read-back: an unrelated update lands on Alice. */
+        await User.updateOne({ _id: alice._id }, { $set: { name: 'Alice Renamed' } });
+        return result;
       })()) as unknown as typeof User.updateMany);
 
-    const deleted = await deleteRoleByName('editor');
-    spy.mockRestore();
+    try {
+      const deleted = await deleteRoleByName('editor');
 
-    expect([...deleted!.reassignedUserIds].sort()).toEqual([alice._id.toString(), eveId].sort());
+      expect([...deleted!.reassignedUserIds].sort()).toEqual([alice._id.toString(), eveId].sort());
+    } finally {
+      spy.mockRestore();
+      mongoose.set('strictQuery', strictQuery);
+    }
     expect((await User.findById(bob._id).lean())!.role).toBe(SystemRoles.USER);
     expect((await User.findById(eveId).lean())!.role).toBe(SystemRoles.USER);
+    expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
   });
 
   it('leaves a role recreated under the same name when the expected id no longer matches', async () => {

@@ -40,6 +40,9 @@ const MAX_REASSIGN_PASSES = 5;
 /** How many members of a role deletion one write reassigns. */
 const REASSIGN_BATCH_SIZE = 1000;
 
+/** The off-schema path a role deletion's write tags the accounts it changed with, briefly. */
+const REASSIGN_NONCE_PATH = '_roleReassignment';
+
 export interface RoleDeps {
   /** Returns a cache store for the given key. Injected from getLogStores. */
   getCache?: (key: string) => CacheStore | undefined;
@@ -602,9 +605,10 @@ export function createRoleMethods(
   /**
    * Moves the members of `roleName` in the caller's partition to USER and returns the ids of
    * exactly the accounts it changed. Each batch is one write, conditional on the account still
-   * holding the role, that also stamps `updatedAt` with the batch's own time: when it changed
-   * every account it read, those are the ones it moved; when some left in between, the accounts
-   * carrying the stamp are. The next pass picks up a member who joined after the read.
+   * holding the role, that also tags every account it changes with a nonce of its own: when it
+   * changed every account it read, those are the ones it moved; when some left in between, the
+   * accounts carrying the nonce are, whatever else writes to them afterwards. The tag is then
+   * removed. The next pass picks up a member who joined after the read.
    */
   async function reassignMembersToUser(roleName: string): Promise<string[]> {
     const User = mongoose.models.User as Model<IUser>;
@@ -621,24 +625,7 @@ export function createRoleMethods(
         for (let i = 0; i < ids.length; i += REASSIGN_BATCH_SIZE) {
           const batch = ids.slice(i, i + REASSIGN_BATCH_SIZE);
           written.push(...batch);
-          const stamp = new Date();
-          const { modifiedCount } = await User.updateMany(
-            { ...members, _id: { $in: batch } },
-            { $set: { role: SystemRoles.USER, updatedAt: stamp } },
-            { timestamps: false },
-          );
-          if (modifiedCount === batch.length) {
-            reassigned.push(...batch);
-          } else if (modifiedCount > 0) {
-            const changed = await User.find({
-              _id: { $in: batch },
-              role: SystemRoles.USER,
-              updatedAt: stamp,
-            })
-              .select('_id')
-              .lean();
-            reassigned.push(...changed.map((u) => u._id.toString()));
-          }
+          reassigned.push(...(await reassignBatch(User, members, batch)));
         }
       }
       logger.warn(`[deleteRoleByName] members still joining "${roleName}" after every pass`);
@@ -646,6 +633,42 @@ export function createRoleMethods(
     } finally {
       await invalidateAuthUserDocCache(written);
     }
+  }
+
+  /** One batch of `reassignMembersToUser`: the ids of the accounts its write changed. */
+  async function reassignBatch(
+    User: Model<IUser>,
+    members: FilterQuery<IUser>,
+    batch: string[],
+  ): Promise<string[]> {
+    /** The tag is not a schema path, so every query naming it opts out of strict filtering. */
+    const nonce = new mongoose.Types.ObjectId();
+    const { modifiedCount } = await User.updateMany(
+      { ...members, _id: { $in: batch } },
+      { $set: { role: SystemRoles.USER, [REASSIGN_NONCE_PATH]: nonce } },
+      { strict: false },
+    );
+    if (modifiedCount === 0) {
+      return [];
+    }
+    const tagged = { _id: { $in: batch }, [REASSIGN_NONCE_PATH]: nonce };
+    const changed =
+      modifiedCount === batch.length
+        ? batch
+        : (await User.find(tagged, { _id: 1 }, { strictQuery: false }).lean()).map((u) =>
+            u._id.toString(),
+          );
+    try {
+      await User.updateMany(
+        tagged,
+        { $unset: { [REASSIGN_NONCE_PATH]: '' } },
+        { strict: false, strictQuery: false, timestamps: false },
+      );
+    } catch (error) {
+      /** The reassignment committed; a leftover tag is inert, so its removal does not fail it. */
+      logger.error('[deleteRoleByName] reassignment tag cleanup failed:', error);
+    }
+    return changed;
   }
 
   async function deleteRoleByName(
