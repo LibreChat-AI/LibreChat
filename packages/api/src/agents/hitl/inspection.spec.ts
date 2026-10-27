@@ -182,4 +182,26 @@ describe('getResumeAgentSnapshot', () => {
     ).rejects.toThrow();
     expect(getAgent.mock.calls.length).toBeLessThan(MAX_SUBAGENT_GRAPH_NODES + 10);
   });
+
+  it('rejects on a failed lookup without waiting for a stalled sibling', async () => {
+    const edges = ['slow', 'fails'].map((to) => ({
+      from: 'primary',
+      to,
+      edgeType: 'handoff' as const,
+    }));
+    const getAgent = jest.fn(async ({ id }: { id: string }) => {
+      if (id === 'slow') {
+        return new Promise<never>(() => undefined);
+      }
+      throw new Error('lookup failed');
+    });
+
+    await expect(
+      getResumeAgentSnapshot({
+        primaryAgent: { id: 'primary', edges } as never,
+        subagentsEnabled: false,
+        getAgent,
+      }),
+    ).rejects.toThrow();
+  });
 });
