@@ -491,13 +491,21 @@ export async function discoverConnectedAgents(
      *  and fold results back in queue order. Edges they expose form the next level. */
     const level = [...agentsToProcess];
     agentsToProcess.clear();
-    /** Outcomes never reject, so consuming them in queue order leaves no unhandled
-     *  rejection and lets a fatal error surface before later siblings finish. */
+    /** Outcomes never reject; a fatal error also rejects `fatal`, so it surfaces as soon
+     *  as it happens instead of after earlier, slower siblings finish. */
+    let rejectFatal: (error: unknown) => void = () => undefined;
+    const fatal = new Promise<never>((_, reject) => {
+      rejectFatal = reject;
+    });
+    fatal.catch(() => undefined);
     const outcomes = level.map((agentId) =>
       loadDiscovered(async () => {
         try {
           return { loaded: await loadAgent(agentId) };
         } catch (error) {
+          if (isFatalAgentInitializationError(error, { signal: params.signal })) {
+            rejectFatal(error);
+          }
           return { error };
         }
       }),
@@ -507,7 +515,7 @@ export async function discoverConnectedAgents(
     const loadedAgents: Array<Agent | null> = [];
     for (let index = 0; index < level.length; index++) {
       const agentId = level[index];
-      const outcome = await outcomes[index];
+      const outcome = await Promise.race([outcomes[index], fatal]);
       if ('error' in outcome) {
         if (isFatalAgentInitializationError(outcome.error, { signal: params.signal })) {
           throw outcome.error;
