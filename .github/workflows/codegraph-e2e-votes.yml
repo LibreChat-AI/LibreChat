@@ -1,9 +1,17 @@
 # Codegraph e2e VOTES — observe-only, post-merge, time-boxed.
 #
 # Playwright never runs on pushes to dev, so evidence for the e2e skip election would
-# otherwise wait on rare organic PR spec failures. This workflow runs the FULL mock suite on
-# every merge: each run is one graduation trial for every spec it executes, and doubles as
-# the post-merge safety net the jest workflows already have via their dev-push triggers.
+# otherwise wait on rare organic PR spec failures. This workflow runs the FULL mock suite after
+# merges: each run is one graduation trial for every spec it executes, and doubles as the
+# post-merge safety net the jest workflows already have via their dev-push triggers.
+#
+# By default every merge votes (the push trigger). Each run costs about 154 job-minutes on ten
+# runners, so with repo variable CODEGRAPH_E2E_VOTE_MIN_HOURS set to N > 0 a push run votes
+# nothing: its job is skipped and codegraph-e2e-vote-gate.yml starts this workflow on dev
+# (workflow_dispatch) at most once per N hours, catching up hourly on the newest merge once the
+# window opens (rules in .github/scripts/vote-gate.mjs). A handed-off push run takes a
+# concurrency group of its own, so it neither waits behind a vote nor replaces the pending one.
+# Leave run-name unset: the codegraph shadow matches vote runs by this workflow's name.
 #
 # It previously ran only the merged PR's skippable tier, passing the tier as CLI path
 # filters. playwright.config.mock.ts scopes discovery to testDir specs/mock/, so tier
@@ -48,12 +56,14 @@ on:
       - '!**.md'
       - '!.github/workflows/**'
       - '.github/workflows/codegraph-e2e-votes.yml'
+      - '.github/workflows/codegraph-e2e-vote-gate.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: codegraph-e2e-votes
+  group: ${{ github.event_name == 'push' && vars.CODEGRAPH_E2E_VOTE_MIN_HOURS != '' && vars.CODEGRAPH_E2E_VOTE_MIN_HOURS != '0' && format('codegraph-e2e-votes-handoff-{0}', github.run_id) || 'codegraph-e2e-votes' }}
   cancel-in-progress: false
 
 env:
@@ -63,7 +73,11 @@ env:
 jobs:
   vote:
     name: vote (shard ${{ matrix.shard }}/10)
-    if: vars.CODEGRAPH_E2E_VOTES != 'off'
+    # A push run votes only while the throttle is off; with it on, the gate starts the votes.
+    if: >-
+      vars.CODEGRAPH_E2E_VOTES != 'off' &&
+      github.ref == 'refs/heads/dev' &&
+      (github.event_name != 'push' || vars.CODEGRAPH_E2E_VOTE_MIN_HOURS == '' || vars.CODEGRAPH_E2E_VOTE_MIN_HOURS == '0')
     runs-on: ubuntu-latest
     # Sized from e2e/timings.mock.json: 6,151 recorded seconds over 10 shards plans ~10.3 min
     # of tests per shard. PR CI's memory shards (same plan, same workers: 1) ran their test

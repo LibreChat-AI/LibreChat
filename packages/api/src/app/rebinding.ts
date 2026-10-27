@@ -187,12 +187,6 @@ const DESTINATION_BINDINGS: readonly DestinationBinding[] = [
     secret: { key: 'apiKey', client: getSummarizationProvider, isUsed: summarizationUsesKey },
     fallback: getSummarizationFallback,
   },
-  /**
-   * `vertexConfig` is what librechat.yaml's `endpoints.anthropic.vertex` resolves to, and an
-   * override can write it directly. Its region is part of the API host, and the credential is
-   * always the deployment's service account.
-   */
-  { path: ['endpoints', 'anthropic', 'vertexConfig'], isDestination: (key) => key === 'region' },
 ];
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -1348,15 +1342,21 @@ function collectBoundSecretLocations(
       add([...CUSTOM_ENDPOINTS, String(index)], 'apiKey', [...CUSTOM_ENDPOINTS, name, 'apiKey']);
     }
   });
+  /**
+   * A group's key is served, and its rebinding reported, from the `groupMap` entry the group
+   * resolves to, so an item is named by that entry; one without a `group` name by its position.
+   */
   const groups = getAt(root, AZURE_GROUPS_PATH);
   (Array.isArray(groups) ? groups : []).forEach((item, index) => {
-    if (asRecord(item) != null) {
-      add([...AZURE_GROUPS_PATH, String(index)], 'apiKey', [
-        ...AZURE_GROUPS_PATH,
-        String(index),
-        'apiKey',
-      ]);
+    const record = asRecord(item);
+    if (record == null) {
+      return;
     }
+    const reported =
+      typeof record.group === 'string'
+        ? [...AZURE_GROUP_MAP_PATH, record.group, 'apiKey']
+        : [...AZURE_GROUPS_PATH, String(index), 'apiKey'];
+    add([...AZURE_GROUPS_PATH, String(index)], 'apiKey', reported);
   });
   for (const [group, value] of Object.entries(asRecord(getAt(root, AZURE_GROUP_MAP_PATH)) ?? {})) {
     if (asRecord(value) != null) {
@@ -1422,7 +1422,7 @@ export function withoutStoredSecretBindings<T>(overrides: T): T {
  * - a secret a layer supplies is bound to the destination librechat.yaml and that layer define;
  *   when another layer below it changed that destination, the layer's secret is dropped;
  * - where a reader falls back to a deployment credential when the config holds no key it uses
- *   (summarization, Vertex AI), the destination is set back instead: it may differ from
+ *   (summarization), the destination is set back instead: it may differ from
  *   librechat.yaml's only together with a key the layer enters and the reader authenticates
  *   with, and stays librechat.yaml's only while it receives the credential librechat.yaml sends
  *   there. A key that another client would read than the one it was entered for is removed.
@@ -1431,8 +1431,10 @@ export function withoutStoredSecretBindings<T>(overrides: T): T {
  * search: MCP servers (URL, transport, proxy, auth header, OAuth endpoints), custom endpoints
  * (base URL, `provider`, and the destination options of `addParams` and `dropParams`, matched by
  * the name the merge folds), OCR, speech, summarization parameters, the resolved Azure groups
- * (`groupMap`, which a layer's `groups` resolve to, or which it writes directly) and the Vertex AI
- * settings (`vertexConfig`) an override can write directly. Web
+ * (`groupMap`, which a layer's `groups` resolve to, or which it writes directly). Vertex AI,
+ * which sends the deployment's service account, is not among them: the merge derives its
+ * `vertexConfig` from a layer's `vertex` on librechat.yaml's region and key file (base-only), and
+ * never applies a layer's own `vertexConfig`, so no layer moves where that credential goes. Web
  * search keys follow the merge's own rule (`unbindWebSearchKeys`, which keeps a key over an
  * inherited `${VAR}` or default URL), and its drops are reported like these
  * (`mergeOverrideLayers`); a web search URL a layer points at another `${VAR}` without entering

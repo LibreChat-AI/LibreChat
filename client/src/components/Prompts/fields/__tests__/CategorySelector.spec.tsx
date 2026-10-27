@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import '@testing-library/jest-dom/extend-expect';
 import { FormProvider, useForm } from 'react-hook-form';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import userEvent from '@testing-library/user-event';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { TCategory } from 'librechat-data-provider';
 import { useGetCategories, useUpdatePromptGroup } from '~/data-provider';
@@ -194,5 +195,61 @@ describe('categories invalidation after saving a group', () => {
     fireEvent.click(screen.getByTestId('save'));
 
     await waitFor(() => expect(mockGetCategories).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('CategorySelector disabled', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockGetCategories.mockResolvedValue(categories);
+    mockGetStartupConfig.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    mockGetCategories.mockReset();
+    mockGetStartupConfig.mockReset();
+    localStorage.clear();
+  });
+
+  const renderStandalone = (props: React.ComponentProps<typeof CategorySelector>) =>
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot>
+          <CategorySelector portal={false} currentCategory="" {...props} />
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+
+  it('disables the trigger so it cannot be opened', async () => {
+    const onValueChange = jest.fn();
+
+    renderStandalone({ disabled: true, onValueChange });
+    await waitFor(() => expect(mockGetCategories).toHaveBeenCalled());
+
+    const trigger = screen.getByRole('button', { name: /category/i });
+    // A real `disabled` button rejects pointer interaction entirely (userEvent
+    // throws rather than opening the menu), so the trigger truly can't be used.
+    expect(trigger).toBeDisabled();
+
+    expect(screen.queryByRole('menuitem', { name: /Human Resources/ })).not.toBeInTheDocument();
+    expect(onValueChange).not.toHaveBeenCalled();
+    expect(localStorage.getItem('lastPromptCategory')).toBeNull();
+  });
+
+  it('opens the menu and writes to localStorage when not disabled', async () => {
+    const user = userEvent.setup();
+    const onValueChange = jest.fn();
+
+    renderStandalone({ onValueChange });
+    await waitFor(() => expect(mockGetCategories).toHaveBeenCalled());
+
+    const trigger = screen.getByRole('button', { name: /category/i });
+    expect(trigger).not.toBeDisabled();
+
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: /Human Resources/ }));
+
+    expect(onValueChange).toHaveBeenCalledWith('hr');
+    expect(localStorage.getItem('lastPromptCategory')).toBe('hr');
   });
 });

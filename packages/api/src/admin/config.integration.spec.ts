@@ -207,6 +207,80 @@ describe('admin config writes against a real Config collection', () => {
     });
   });
 
+  describe('fields the server derives', () => {
+    const stale = { projectId: 'x', serviceKeyFile: 'http://169.254.169.254/latest' };
+    const params = { principalType: ROLE, principalId: 'derived' };
+
+    it('leaves them out of a whole-document write, a field write and a tombstone', async () => {
+      const handlers = handlersFor(async () => true);
+      const put = mockRes();
+      await handlers.upsertConfigOverrides(
+        mockReq({
+          params,
+          body: {
+            overrides: {
+              endpoints: { anthropic: { titleModel: 'claude-haiku-4-5', vertexConfig: stale } },
+            },
+          },
+        }),
+        put,
+      );
+      expect(put.statusCode).toBe(201);
+      expect((await readStored('derived'))?.overrides).toEqual({
+        endpoints: { anthropic: { titleModel: 'claude-haiku-4-5' } },
+      });
+
+      const patched = mockRes();
+      await handlers.patchConfigField(
+        mockReq({
+          params,
+          body: {
+            entries: [
+              { fieldPath: 'endpoints.anthropic.vertexConfig', value: stale },
+              {
+                fieldPath: 'endpoints.anthropic',
+                value: { titleModel: 'claude-sonnet-4-6', vertexConfig: stale },
+              },
+              { fieldPath: 'endpoints.google', value: { vertexConfig: stale } },
+            ],
+          },
+        }),
+        patched,
+      );
+      expect(patched.statusCode).toBe(200);
+      expect((await readStored('derived'))?.overrides).toEqual({
+        endpoints: {
+          anthropic: { titleModel: 'claude-sonnet-4-6' },
+          google: { vertexConfig: stale },
+        },
+      });
+
+      const tombstoned = mockRes();
+      await handlers.tombstoneConfigField(
+        mockReq({ params, body: { fieldPath: 'endpoints.anthropic.vertexConfig' } }),
+        tombstoned,
+      );
+      expect(tombstoned.statusCode).toBe(200);
+      expect((await readStored('derived'))?.tombstones ?? []).toEqual([]);
+    });
+
+    it('stores nothing from a whole-document write that holds only a derived field', async () => {
+      const handlers = handlersFor(async () => true);
+      const put = mockRes();
+      await handlers.upsertConfigOverrides(
+        mockReq({
+          params,
+          body: { overrides: { endpoints: { anthropic: { vertexConfig: stale } } } },
+        }),
+        put,
+      );
+
+      expect(put.statusCode).toBe(200);
+      expect(put.body?.message).toBe('No actionable override sections provided');
+      expect(await readStored('derived')).toBeNull();
+    });
+  });
+
   describe('write responses', () => {
     const params = { principalType: ROLE, principalId: 'editors' };
 

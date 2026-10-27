@@ -2538,7 +2538,7 @@ describe('ContentParts — live activity fold', () => {
 });
 
 describe('fold paths in parallel columns', () => {
-  it('marks real lane boundaries and selects the header owning each output', () => {
+  it('marks real lane boundaries and keeps lane rows off the fold trunk', () => {
     const { container } = render(
       <div data-fold-root="">
         <div data-fold-panel="">
@@ -2576,12 +2576,9 @@ describe('fold paths in parallel columns', () => {
       ({ top: 300, height: 20 }) as DOMRect;
     screen.getByTestId('lane-glyph-1').getBoundingClientRect = () =>
       ({ top: 50, height: 20 }) as DOMRect;
+    /** Lane rows are not branches of the fold, which keeps its trunk dark over them. */
     const cache = new WeakMap<Element, Element[]>();
-    expect(litFoldPath(root, screen.getByTestId('lane-output-0'), 350, cache)).toEqual([
-      { rail, length: 268, end: true },
-    ]);
-    expect(litFoldPath(root, screen.getByTestId('lane-output-1'), 350, cache)).toEqual([
-      { rail, length: 18, end: true },
-    ]);
+    expect(litFoldPath(root, screen.getByTestId('lane-output-0'), 350, cache)).toEqual([]);
+    expect(litFoldPath(root, screen.getByTestId('lane-output-1'), 350, cache)).toEqual([]);
   });
 });
