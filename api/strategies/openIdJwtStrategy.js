@@ -219,7 +219,11 @@ const openIdJwtLogin = (openIdConfig) => {
             (message) => logger.warn(message),
             async () => {
               user.id = user._id.toString();
-              if (!(await runAsSystem(() => isAgentTriggerPrincipalActive(user.id)))) {
+              /** A cache hit already read the deletion fence in its freshness check. */
+              if (
+                !servedCachedUser &&
+                !(await runAsSystem(() => isAgentTriggerPrincipalActive(user.id)))
+              ) {
                 done(null, false, {
                   message: 'Account deletion is in progress',
                   code: 'ACCOUNT_DELETION_IN_PROGRESS',

@@ -652,7 +652,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
     expect(user).toMatchObject({ id: 'user-abc' });
   });
 
-  it('rejects a cached OpenID user while account deletion is fenced', async () => {
+  it('serves a cache hit without a second deletion fence read', async () => {
     mockGetTenantId.mockReturnValue('tenant-a');
     getAuthUserDocCacheMode.mockReturnValue('on');
     getCurrentCachedAuthUserDoc.mockResolvedValue({
@@ -661,6 +661,20 @@ describe('openIdJwtStrategy – auth user document cache', () => {
       provider: 'openid',
       tenantId: 'tenant-a',
     });
+
+    const { user } = await invokeVerify(req, payload);
+
+    expect(user).toMatchObject({ id: 'cached-user' });
+    expect(findOpenIDUser).not.toHaveBeenCalled();
+    expect(isAgentTriggerPrincipalActive).not.toHaveBeenCalled();
+  });
+
+  it('rejects an OpenID user read from the database while account deletion is fenced', async () => {
+    mockGetTenantId.mockReturnValue('tenant-a');
+    getAuthUserDocCacheMode.mockReturnValue('on');
+    /** A fenced user fails the freshness check, so the hit falls back to the database. */
+    getCurrentCachedAuthUserDoc.mockResolvedValue(undefined);
+    findOpenIDUser.mockResolvedValue({ user: { ...baseUser }, error: null, migration: false });
     isAgentTriggerPrincipalActive.mockResolvedValue(false);
 
     const result = await invokeVerify(req, payload);
@@ -672,9 +686,8 @@ describe('openIdJwtStrategy – auth user document cache', () => {
         code: 'ACCOUNT_DELETION_IN_PROGRESS',
       },
     });
-    expect(findOpenIDUser).not.toHaveBeenCalled();
     expect(mockRunAsSystem).toHaveBeenCalledWith(expect.any(Function));
-    expect(isAgentTriggerPrincipalActive).toHaveBeenCalledWith('cached-user');
+    expect(isAgentTriggerPrincipalActive).toHaveBeenCalledWith('user-abc');
     expect(setCachedAuthUserDoc).not.toHaveBeenCalled();
   });
 
