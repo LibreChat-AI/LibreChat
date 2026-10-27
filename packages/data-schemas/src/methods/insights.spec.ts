@@ -96,7 +96,7 @@ describe('Insights methods', () => {
     ['null legacy agent', { agent_id: null }, null],
     ['empty legacy agent', { agent_id: '' }, null],
   ] as const)(
-    'preserves conversation and prompt root selection: %s',
+    'attributes conversations, prompts and responses to the root: %s',
     async (_name, attribution, root) => {
       const now = new Date();
       const user = new mongoose.Types.ObjectId().toString();
@@ -122,6 +122,17 @@ describe('Insights methods', () => {
         isTemporary: false,
         tokenCount: 5,
       });
+      await fixtures.messages.insertOne({
+        messageId: 'root-response',
+        conversationId: conversation.conversationId,
+        tenantId: 'tenant-a',
+        user,
+        createdAt: now,
+        isCreatedByUser: false,
+        isTemporary: false,
+        model: 'agent-unrelated',
+        tokenCount: 7,
+      });
       const methods = createInsightsMethods(mongoose);
       for (const agentId of ['agent-a', 'agent-b']) {
         const result = await methods.getInsights({
@@ -134,9 +145,9 @@ describe('Insights methods', () => {
         const count = root === agentId ? 1 : 0;
         expect(result.summary).toEqual({
           totalConversations: count,
-          totalMessages: count,
+          totalMessages: count * 2,
           totalUsers: count,
-          totalTokens: count * 5,
+          totalTokens: count * 12,
         });
       }
       expect(
@@ -178,7 +189,7 @@ describe('Insights methods', () => {
       },
       {
         messageId: 'response',
-        model: 'agent-a',
+        model: 'agent-b',
         conversationId: privateValue,
         user: userId.toString(),
         tenantId: 'tenant-a',
@@ -672,7 +683,7 @@ describe('Insights methods', () => {
     ]);
   });
 
-  it('attributes conversations to their immutable primary agent and messages to their source', async () => {
+  it('attributes conversations, prompts, responses and tokens to the immutable root agent', async () => {
     const now = new Date();
     const userId = new mongoose.Types.ObjectId();
     await mongoose.models.User.collection.insertOne({
@@ -790,12 +801,282 @@ describe('Insights methods', () => {
     });
 
     expect(agentAInsights.summary).toEqual(
-      expect.objectContaining({ totalConversations: 2, totalMessages: 1, totalTokens: 5 }),
+      expect.objectContaining({
+        totalConversations: 2,
+        totalMessages: 2,
+        totalTokens: 12,
+        totalUsers: 1,
+      }),
     );
     expect(agentAInsights.agents).toEqual(selectedAgents);
     expect(agentBInsights.summary).toEqual(
-      expect.objectContaining({ totalConversations: 0, totalMessages: 1, totalTokens: 7 }),
+      expect.objectContaining({
+        totalConversations: 0,
+        totalMessages: 0,
+        totalTokens: 0,
+        totalUsers: 0,
+      }),
     );
+    expect(
+      agentAInsights.daily.find((point) => point.date === now.toISOString().slice(0, 10)),
+    ).toEqual({
+      date: now.toISOString().slice(0, 10),
+      conversations: 2,
+      messages: 2,
+      users: 1,
+      totalTokens: 12,
+    });
+    expect(agentAInsights.topUsers).toEqual([
+      expect.objectContaining({
+        userId: userId.toString(),
+        conversations: 1,
+        messages: 2,
+      }),
+    ]);
+    expect(agentAInsights.latest.conversations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          conversationId: 'primary-agent-a',
+          agentId: 'agent-a',
+          messages: 2,
+          totalTokens: 12,
+        }),
+      ]),
+    );
+    expect(agentBInsights.latest.conversations).toEqual([]);
+    const combined = await methods.getInsights({
+      tenantId: 'tenant-a',
+      range: '7d',
+      agentIds: ['agent-a', 'agent-b'],
+    });
+    expect(combined.summary).toEqual(agentAInsights.summary);
+  });
+
+  it('counts response-only activity in an older conversation by root and message date', async () => {
+    const user = new mongoose.Types.ObjectId().toString();
+    const created = new Date('2026-09-01T12:00:00Z');
+    const active = new Date('2026-10-03T12:00:00Z');
+    const later = new Date('2026-10-15T12:00:00Z');
+    await fixtures.conversations.insertOne({
+      conversationId: 'old-root-a',
+      user,
+      tenantId: 'tenant-a',
+      initial_agent_id: 'agent-a',
+      agent_id: 'agent-b',
+      createdAt: created,
+      updatedAt: later,
+    });
+    // Use the native collection so the missing response model is not filled by the fixture.
+    await mongoose.models.Message.collection.insertMany([
+      {
+        messageId: 'old-prompt',
+        conversationId: 'old-root-a',
+        user,
+        tenantId: 'tenant-a',
+        createdAt: created,
+        isCreatedByUser: true,
+        tokenCount: 100,
+      },
+      {
+        messageId: 'switched-response',
+        conversationId: 'old-root-a',
+        user,
+        tenantId: 'tenant-a',
+        createdAt: active,
+        isCreatedByUser: false,
+        model: 'agent-b',
+        tokenCount: 7,
+      },
+      {
+        messageId: 'model-less-response',
+        conversationId: 'old-root-a',
+        user,
+        tenantId: 'tenant-a',
+        createdAt: active,
+        isCreatedByUser: false,
+        tokenCount: 11,
+      },
+      {
+        messageId: 'later-response',
+        conversationId: 'old-root-a',
+        user,
+        tenantId: 'tenant-a',
+        createdAt: later,
+        isCreatedByUser: false,
+        model: 'agent-a',
+        tokenCount: 100,
+      },
+    ]);
+    const methods = createInsightsMethods(mongoose);
+    const options = {
+      showDetails: false as const,
+      tenantId: 'tenant-a',
+      range: 'custom' as const,
+      fromTimestamp: '2026-10-01T00:00:00Z',
+      toTimestamp: '2026-10-07T23:59:59Z',
+    };
+    const root = await methods.getInsights({ ...options, agentIds: ['agent-a'] });
+    const answeringAgent = await methods.getInsights({ ...options, agentIds: ['agent-b'] });
+    const combined = await methods.getInsights({ ...options, agentIds: ['agent-a', 'agent-b'] });
+
+    expect(root.summary).toEqual({
+      totalConversations: 0,
+      totalMessages: 2,
+      totalTokens: 18,
+      totalUsers: 1,
+    });
+    expect(root.daily.find((point) => point.date === '2026-10-03')).toEqual({
+      date: '2026-10-03',
+      conversations: 0,
+      messages: 2,
+      totalTokens: 18,
+      users: 1,
+    });
+    expect(answeringAgent.summary).toEqual({
+      totalConversations: 0,
+      totalMessages: 0,
+      totalTokens: 0,
+      totalUsers: 0,
+    });
+    expect(combined.summary).toEqual(root.summary);
+    expect(Object.keys(root).sort()).toEqual(['agents', 'daily', 'summary']);
+  });
+
+  it('keeps switched responses isolated by root, conversation owner, tenant and visibility', async () => {
+    const now = new Date();
+    const firstOwner = new mongoose.Types.ObjectId().toString();
+    const secondOwner = new mongoose.Types.ObjectId().toString();
+    const outsider = new mongoose.Types.ObjectId().toString();
+    const base = { tenantId: 'tenant-a', user: firstOwner, createdAt: now, updatedAt: now };
+    await fixtures.conversations.insertMany([
+      {
+        ...base,
+        conversationId: 'shared-root-id',
+        initial_agent_id: 'agent-a',
+        agent_id: 'agent-b',
+      },
+      {
+        ...base,
+        conversationId: 'shared-root-id',
+        user: secondOwner,
+        initial_agent_id: 'agent-b',
+        agent_id: 'agent-a',
+      },
+      {
+        ...base,
+        conversationId: 'foreign-only',
+        tenantId: 'tenant-b',
+        initial_agent_id: 'agent-a',
+      },
+      { ...base, conversationId: 'temporary-root', initial_agent_id: 'agent-a', isTemporary: true },
+      {
+        ...base,
+        conversationId: 'thread-root',
+        initial_agent_id: 'agent-a',
+        subagentThread: { parentConversationId: 'shared-root-id' },
+      },
+      { ...base, conversationId: 'null-root', initial_agent_id: null },
+      { ...base, conversationId: 'empty-root', initial_agent_id: '' },
+    ]);
+    const response = { ...base, isCreatedByUser: false, isTemporary: false, model: 'agent-b' };
+    await fixtures.messages.insertMany([
+      { ...response, messageId: 'belongs-to-a', conversationId: 'shared-root-id', tokenCount: 3 },
+      {
+        ...response,
+        messageId: 'belongs-to-b',
+        conversationId: 'shared-root-id',
+        user: secondOwner,
+        model: 'agent-a',
+        tokenCount: 5,
+      },
+      {
+        ...response,
+        messageId: 'wrong-owner',
+        conversationId: 'shared-root-id',
+        user: outsider,
+        tokenCount: 1000,
+      },
+      {
+        ...response,
+        messageId: 'wrong-conversation-tenant',
+        conversationId: 'foreign-only',
+        tokenCount: 1000,
+      },
+      {
+        ...response,
+        messageId: 'wrong-message-tenant',
+        conversationId: 'shared-root-id',
+        tenantId: 'tenant-b',
+        tokenCount: 1000,
+      },
+      {
+        ...response,
+        messageId: 'temporary-conversation',
+        conversationId: 'temporary-root',
+        tokenCount: 1000,
+      },
+      {
+        ...response,
+        messageId: 'temporary-message',
+        conversationId: 'shared-root-id',
+        isTemporary: true,
+        tokenCount: 1000,
+      },
+      {
+        ...response,
+        messageId: 'thread-response',
+        conversationId: 'thread-root',
+        tokenCount: 1000,
+      },
+      { ...response, messageId: 'null-response', conversationId: 'null-root', tokenCount: 1000 },
+      { ...response, messageId: 'empty-response', conversationId: 'empty-root', tokenCount: 1000 },
+      {
+        ...response,
+        messageId: 'orphan-response',
+        conversationId: 'missing-conversation',
+        tokenCount: 1000,
+      },
+    ]);
+    const methods = createInsightsMethods(mongoose);
+    for (const [agentId, owner, tokens] of [
+      ['agent-a', firstOwner, 3],
+      ['agent-b', secondOwner, 5],
+    ] as const) {
+      const result = await methods.getInsights({
+        tenantId: 'tenant-a',
+        range: '7d',
+        agentIds: [agentId],
+        showDetails: true,
+      });
+      expect(result.summary).toEqual({
+        totalConversations: 1,
+        totalMessages: 1,
+        totalUsers: 1,
+        totalTokens: tokens,
+      });
+      expect(result.latest.conversations).toEqual([
+        expect.objectContaining({
+          conversationId: 'shared-root-id',
+          userId: owner,
+          agentId,
+          messages: 1,
+          totalTokens: tokens,
+        }),
+      ]);
+    }
+    const combined = await methods.getInsights({
+      tenantId: 'tenant-a',
+      range: '7d',
+      agentIds: ['agent-a', 'agent-b'],
+      showDetails: true,
+    });
+    expect(combined.summary).toEqual({
+      totalConversations: 2,
+      totalMessages: 2,
+      totalUsers: 2,
+      totalTokens: 8,
+    });
+    expect(combined.latest.conversations).toHaveLength(2);
   });
 
   it('bounds latest conversation message totals to a custom range', async () => {

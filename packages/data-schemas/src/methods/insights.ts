@@ -208,22 +208,8 @@ function messageScope(
   agentIds: string[],
   tenantId?: string,
 ): PipelineStage[] {
-  const attributedMatch =
-    match.isCreatedByUser === true
-      ? match
-      : {
-          $and: [
-            match,
-            {
-              $or: [
-                { isCreatedByUser: true },
-                { isCreatedByUser: { $ne: true }, model: { $in: agentIds } },
-              ],
-            },
-          ],
-        };
   return [
-    { $match: attributedMatch },
+    { $match: match },
     {
       $lookup: {
         from: 'conversations',
@@ -245,28 +231,7 @@ function messageScope(
         'insightsConversation.subagentThread': { $exists: false },
         'insightsConversation.user': { $nin: [null, ''] },
         insightsOwnerMatches: true,
-        $or: [
-          {
-            isCreatedByUser: true,
-            ...rootAgentMatch(agentIds, 'insightsConversation.'),
-          },
-          {
-            isCreatedByUser: { $ne: true },
-            model: { $in: agentIds },
-            $or: [
-              {
-                'insightsConversation.initial_agent_id': {
-                  $exists: true,
-                  $nin: [null, ''],
-                },
-              },
-              {
-                'insightsConversation.initial_agent_id': { $exists: false },
-                'insightsConversation.agent_id': { $exists: true, $nin: [null, ''] },
-              },
-            ],
-          },
-        ],
+        ...rootAgentMatch(agentIds, 'insightsConversation.'),
       },
     },
   ];
