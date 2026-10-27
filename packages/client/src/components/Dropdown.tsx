@@ -252,6 +252,12 @@ const Dropdown: React.FC<DropdownProps> = ({
         portal={portal ?? (portalElement != null || !inDialog)}
         portalElement={portalElement}
         store={selectProps}
+        /* Escape here belongs to the list. Marking it handled is how a container that also
+           closes on Escape, such as a Headless UI dialog, knows to stay open. */
+        hideOnEscape={(event) => {
+          event.preventDefault();
+          return true;
+        }}
         /* Inside a dialog the list layers over it; elsewhere `z-40` applies. Pointer
            events are already re-enabled by the class below. */
         style={{
