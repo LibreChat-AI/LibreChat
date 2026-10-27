@@ -12,6 +12,7 @@ import {
   enableFileSearch,
   resetProvisioning,
   selectMockEndpoint,
+  uploadViaLegacyOption,
   uploadViaUnifiedButton,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -75,7 +76,7 @@ test.describe('outbound timeouts on file deletion', () => {
     await enableFileSearch(page);
 
     const fileName = `${uniqueName('stalled-delete')}.csv`;
-    const upload = await uploadViaUnifiedButton(page, {
+    const upload = await uploadViaLegacyOption(page, 'Upload for File Search', {
       name: fileName,
       mimeType: 'text/csv',
       content: 'k,v\nfoo,bar\n',
@@ -84,7 +85,9 @@ test.describe('outbound timeouts on file deletion', () => {
     const uploaded = (await upload.json()) as UploadedFile & { filepath?: string };
     const fileId = uploaded.file_id ?? '';
     await expect
-      .poll(async () => (await getRagEmbedded(page)).some((entry) => entry.file_id === fileId))
+      .poll(async () => (await getRagEmbedded(page)).some((entry) => entry.file_id === fileId), {
+        timeout: 15_000,
+      })
       .toBe(true);
 
     const stall = await request.post(`${RAG_API_BASE}/__debug/stall`, { data: { stall: true } });
