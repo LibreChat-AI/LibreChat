@@ -202,17 +202,55 @@ export async function resetPasswordWithToken(
   return { ok: true, tokenConsumed };
 }
 
-/** Whether the link was issued before the account's last credential change, which spent it. */
+/**
+ * Whether the link was issued before the account's last credential change, which spent it. Every
+ * stored token carries `createdAt`; one that cannot be dated is treated as spent once the account
+ * has changed credentials at all, so a link whose deletion failed is never redeemable twice.
+ */
 export function isResetTokenSpent(
   resetToken: PasswordResetToken,
   user: PasswordResetUser | null,
 ): boolean {
-  if (resetToken.createdAt == null || user?.credentialsChangedAt == null) {
+  if (user?.credentialsChangedAt == null) {
     return false;
   }
-  const issuedMs = new Date(resetToken.createdAt).getTime();
   const changedMs = new Date(user.credentialsChangedAt).getTime();
-  return !Number.isNaN(issuedMs) && !Number.isNaN(changedMs) && issuedMs <= changedMs;
+  const issuedMs = resetToken.createdAt == null ? NaN : new Date(resetToken.createdAt).getTime();
+  if (Number.isNaN(issuedMs)) {
+    return !Number.isNaN(changedMs);
+  }
+  return !Number.isNaN(changedMs) && issuedMs <= changedMs;
+}
+
+export interface PasswordResetNoticeDeps {
+  isEmailConfigured: () => boolean;
+  sendEmail: (params: {
+    email: string;
+    subject: string;
+    payload: Record<string, string | number>;
+    template: string;
+  }) => Promise<unknown>;
+  appTitle?: string;
+}
+
+/** Tells the account owner their password changed, when this deployment can send email. */
+export async function sendPasswordResetNotice(
+  user: PasswordResetUser,
+  deps: PasswordResetNoticeDeps,
+): Promise<void> {
+  if (!deps.isEmailConfigured()) {
+    return;
+  }
+  await deps.sendEmail({
+    email: user.email,
+    subject: 'Password Reset Successfully',
+    payload: {
+      appName: deps.appTitle || 'LibreChat',
+      name: user.name || user.username || user.email,
+      year: new Date().getFullYear(),
+    },
+    template: 'passwordReset.handlebars',
+  });
 }
 
 /**

@@ -1,5 +1,10 @@
 import type { PasswordResetDeps, PasswordResetToken, PasswordResetUser } from './passwordReset';
-import { commitPasswordReset, resetTokenBindsToAccount } from './passwordReset';
+import {
+  isResetTokenSpent,
+  commitPasswordReset,
+  sendPasswordResetNotice,
+  resetTokenBindsToAccount,
+} from './passwordReset';
 
 const RESET_HASH = 'hashed-reset-token';
 
@@ -206,5 +211,56 @@ describe('resetTokenBindsToAccount', () => {
 
   it('refuses when there is no account', () => {
     expect(resetTokenBindsToAccount(typedToken(), null)).toBe(false);
+  });
+});
+
+describe('isResetTokenSpent', () => {
+  const changedAt = new Date('2026-01-01T00:00:00.000Z');
+
+  it('spends a link issued at or before the last credential change', () => {
+    expect(
+      isResetTokenSpent(
+        typedToken({ createdAt: changedAt }),
+        account({ credentialsChangedAt: changedAt }),
+      ),
+    ).toBe(true);
+    expect(
+      isResetTokenSpent(
+        typedToken({ createdAt: new Date(changedAt.getTime() + 1) }),
+        account({ credentialsChangedAt: changedAt }),
+      ),
+    ).toBe(false);
+  });
+
+  it('spends an undated link once the account has changed credentials, and only then', () => {
+    expect(isResetTokenSpent(typedToken(), account({ credentialsChangedAt: changedAt }))).toBe(
+      true,
+    );
+    expect(isResetTokenSpent(typedToken(), account())).toBe(false);
+  });
+});
+
+describe('sendPasswordResetNotice', () => {
+  it('sends the notice only when email is configured', async () => {
+    const sendEmail = jest.fn().mockResolvedValue(undefined);
+
+    await sendPasswordResetNotice(account({ name: 'Ada' }), {
+      isEmailConfigured: () => false,
+      sendEmail,
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+
+    await sendPasswordResetNotice(account({ name: 'Ada' }), {
+      isEmailConfigured: () => true,
+      sendEmail,
+      appTitle: 'Chat',
+    });
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'user@example.com',
+        template: 'passwordReset.handlebars',
+        payload: expect.objectContaining({ appName: 'Chat', name: 'Ada' }),
+      }),
+    );
   });
 });

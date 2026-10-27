@@ -72,6 +72,12 @@ jest.mock(
         getAppConfig({ skipRuntimeAugmentation: true, failClosed: true }),
       ),
       resetPasswordWithToken: jest.fn(),
+      /** The notice policy is covered by passwordReset.spec.ts; this double keeps the wiring. */
+      sendPasswordResetNotice: jest.fn(async (user, deps) => {
+        if (deps.isEmailConfigured()) {
+          await deps.sendEmail({ email: user.email, template: 'passwordReset.handlebars' });
+        }
+      }),
       createOpenIDSessionIdentity: jest.fn(
         ({ user, userId, openidSubject, tenantId, openidIssuer }) => {
           const normalize = (value) => {

@@ -32,6 +32,7 @@ const {
   resolveAppConfigForUser,
   resolvePreAuthAppConfig,
   resetPasswordWithToken,
+  sendPasswordResetNotice,
   getSafeErrorMetadata,
   hashSecret,
   compareSecret,
@@ -583,22 +584,6 @@ const requestPasswordReset = async (req) => {
   return { message: genericResetMessage };
 };
 
-const sendPasswordResetNotice = async (user) => {
-  if (!checkEmailConfig()) {
-    return;
-  }
-  await sendEmail({
-    email: user.email,
-    subject: 'Password Reset Successfully',
-    payload: {
-      appName: process.env.APP_TITLE || 'LibreChat',
-      name: user.name || user.username || user.email,
-      year: new Date().getFullYear(),
-    },
-    template: 'passwordReset.handlebars',
-  });
-};
-
 /**
  * Reset Password
  *
@@ -617,7 +602,12 @@ const resetPassword = (userId, token, password) =>
       compareToken: compareSecret,
       hashPassword: hashSecret,
       consumeResetToken: (resetToken) => deleteTokens(getPasswordResetTokenDeleteQuery(resetToken)),
-      sendResetNotice: sendPasswordResetNotice,
+      sendResetNotice: (user) =>
+        sendPasswordResetNotice(user, {
+          isEmailConfigured: checkEmailConfig,
+          sendEmail,
+          appTitle: process.env.APP_TITLE,
+        }),
     },
     { userId, token, password },
   );
