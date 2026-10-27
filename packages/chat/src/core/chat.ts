@@ -874,6 +874,10 @@ export class Chat {
       if (this.markStreaming()) {
         this.notify();
       }
+      /** A listener told of that status may have disposed the chat too. */
+      if (this.disposed) {
+        return undefined;
+      }
     } else if (event.type === 'final') {
       outcome = getFinalOutcome(event.data);
     } else if (event.type === 'abort') {

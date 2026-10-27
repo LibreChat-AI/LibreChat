@@ -913,6 +913,44 @@ describe('Chat', () => {
       expect(onEvent).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['a content frame', stepEvent],
+      [
+        'a pause',
+        {
+          type: 'pending_action',
+          data: {
+            actionId: 'action-1',
+            streamId: 'convo-1',
+            conversationId: 'convo-1',
+            createdAt: 1,
+            expiresAt: Date.now() + 60_000,
+            payload: {
+              type: 'ask_user_question',
+              question: { question: 'Which?' },
+              tool_call_id: 'a',
+            },
+          } as Agents.PendingAction,
+        } as ChatEvent,
+      ],
+    ])(
+      'stops %s when a listener disposes the chat on the streaming status',
+      async (_label, event) => {
+        const { chat, stream, onEvent } = setup();
+        chat.subscribe(() => {
+          if (chat.status === 'streaming') {
+            chat.dispose();
+          }
+        });
+        const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        await flush();
+        stream.push(event);
+        await sent;
+
+        expect(onEvent).not.toHaveBeenCalled();
+      },
+    );
+
     it('reports no response for a turn whose optimistic write failed', async () => {
       const earlier: TMessage = {
         ...placeholder,
