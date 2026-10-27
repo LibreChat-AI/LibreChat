@@ -184,5 +184,13 @@
       "admin/",
       "packages/"
     ]
+  },
+  "allowScripts": {
+    "@google/genai@2.0.1": true,
+    "@scarf/scarf@1.4.0": true,
+    "es5-ext@0.10.64": true,
+    "mongodb-memory-server@11.0.1": true,
+    "protobufjs@7.6.6": true,
+    "unrs-resolver@1.11.1": true
   }
 }
