@@ -50,10 +50,14 @@ export interface RoleDeletion {
   reassignedUserIds: string[];
 }
 
-/** Bounds the passes that pick up members assigned to the role while it is being deleted. */
+/**
+ * Bounds the passes that pick up members assigned to the role while it is being deleted. Not a
+ * deployment setting: a pass only repeats when an administrator assigns the role mid-delete, and
+ * running out refuses the delete (the admin retries) rather than changing what any user can do.
+ */
 const MAX_REASSIGN_PASSES = 5;
 
-/** How many members of a role deletion one write reassigns. */
+/** How many members of a role deletion one write reassigns; bounds one `$in` list, not behavior. */
 const REASSIGN_BATCH_SIZE = 1000;
 
 /** The off-schema path a role deletion's write tags the accounts it changed with, briefly. */
@@ -741,6 +745,13 @@ export function createRoleMethods(
       }
     } catch (cacheError) {
       logger.error(`[deleteRoleByName] cache invalidation failed for "${roleName}":`, cacheError);
+    }
+    if (!deleted && reassignedUserIds.length > 0) {
+      /** Another deletion removed the role after this one moved members: they are still moved. */
+      throw new RoleMembersReassignmentError(
+        `Role "${roleName}" was deleted by another request`,
+        reassignedUserIds,
+      );
     }
     return deleted ? { role: deleted, reassignedUserIds } : null;
   }

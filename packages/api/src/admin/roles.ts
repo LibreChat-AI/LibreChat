@@ -1085,6 +1085,13 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
           logger.error('[adminRoles] dependents not restored, role state unverifiable:', name);
           return res.status(500).json({ error: 'Failed to delete role' });
         }
+        if (error instanceof RoleMembersReassignmentError) {
+          /** Another request deleted the role; the members this one moved first are audited. */
+          await auditRemovedGrants();
+          await auditReassignedMembers(movedBeforeFailure);
+          await recordOutcome('failure', 'not_found');
+          return res.status(404).json({ error: 'Role not found' });
+        }
         /** Confirmed absent: the deletion did commit, so it is audited and reported as one. Its
          * response is lost, so the members read before it are the best record of who it moved. */
         deleted = { role: existing, reassignedUserIds: memberIds };

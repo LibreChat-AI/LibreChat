@@ -1669,6 +1669,35 @@ describe('createAdminRolesHandlers', () => {
       );
     });
 
+    it('audits the members it moved and returns 404 when another request deleted the role', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = deleteDeps({
+        recordAuditEntry,
+        getRoleByName: jest.fn().mockResolvedValueOnce(mockRole()).mockResolvedValue(null),
+        deleteRoleByName: jest
+          .fn()
+          .mockRejectedValue(new RoleMembersReassignmentError('deleted elsewhere', ['u7'])),
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({
+        params: { name: 'editor' },
+        user: { _id: new Types.ObjectId(), role: 'admin' },
+      });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(404);
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'role.member_removed',
+          metadata: expect.objectContaining({ userIds: 'u7', count: 1 }),
+        }),
+      );
+      expect(recordAuditEntry).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: 'role.deleted', outcome: 'failure' }),
+      );
+    });
+
     it('records role.deleted success when the delete committed before it threw', async () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({
