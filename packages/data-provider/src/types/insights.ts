@@ -43,6 +43,8 @@ export type TInsightsDailyPoint = TInsightsResponseOutcomes & {
   totalTokens: number;
   responses: number;
   feedback: TInsightsFeedback;
+  /** Recorded usage spend; null when no eligible usage transactions exist. */
+  spendUSD: number | null;
 };
 
 export type TInsightsUser = {
@@ -80,6 +82,8 @@ export type TInsightsSummary = TInsightsResponseOutcomes & {
   /** Latest eligible message creation timestamp in the selected reporting period. */
   lastUsed: string | null;
   feedback: TInsightsFeedback;
+  /** Recorded usage spend; null when no eligible usage transactions exist. */
+  spendUSD: number | null;
 };
 
 export type TInsightsAggregateResponse = {

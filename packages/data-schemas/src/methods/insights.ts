@@ -1,5 +1,6 @@
 import {
   FEEDBACK_TAGS,
+  CREDITS_PER_USD,
   INSIGHTS_MAX_RANGE_DAYS,
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
@@ -41,6 +42,7 @@ export type InsightsMethods = {
 
 type CountResult = { total: number };
 type ConversationDay = { date: string; conversations: number };
+type SpendDay = { date: string; spendUSD: number };
 type DailyUsers = { date: string; users: number };
 type UserMessageTotals = { messages: number };
 type RecentConversation = { conversationId: string; agentId: string; date: Date; userId: string };
@@ -79,8 +81,9 @@ const churnedUserWindowDays = 28;
 const churnedUserLimit = 8;
 const dayMs = 24 * 60 * 60 * 1000;
 
-function tenantMatch(tenantId?: string) {
-  return tenantId ? { tenantId } : { tenantId: { $exists: false } };
+function tenantMatch(tenantId?: string, prefix = '') {
+  const field = `${prefix}tenantId`;
+  return tenantId ? { [field]: tenantId } : { [field]: { $exists: false } };
 }
 
 function joinedTenantMatch(tenantId?: string) {
@@ -266,6 +269,7 @@ const addDay = (days: Map<string, TInsightsDailyPoint>, date: string): TInsights
     failedResponses: 0,
     interruptedResponses: 0,
     feedback: emptyFeedback(),
+    spendUSD: null,
   };
   days.set(date, current);
   return current;
@@ -308,11 +312,14 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const churnedCutoff = new Date(to.getTime() - churnedUserWindowDays * dayMs);
     const churnedActivityFrom = new Date(from.getTime() - churnedUserWindowDays * dayMs);
     const tenant = tenantMatch(options.tenantId);
-    const conversationMatch = {
+    const eligibleConversationMatch = {
       ...tenant,
       isTemporary: { $ne: true },
       subagentThread: { $exists: false },
       user: { $nin: [null, ''] },
+    };
+    const conversationMatch = {
+      ...eligibleConversationMatch,
       createdAt: { $gte: from, $lte: to },
     };
     const messageMatch = {
@@ -378,6 +385,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       dailyUsers,
       topMessageUsers,
       churnedUserRows,
+      spendDays,
     ] = await Promise.all([
       Conversation.aggregate<ConversationDay>([
         ...conversationPipeline,
@@ -549,6 +557,76 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             { $limit: churnedUserLimit },
           ])
         : Promise.resolve([] as ChurnedUserActivity[]),
+      Conversation.aggregate<SpendDay>([
+        ...conversationScope(
+          { ...eligibleConversationMatch, conversationId: { $nin: [null, ''] } },
+          agentIds,
+        ),
+        {
+          $lookup: {
+            from: 'transactions',
+            localField: 'conversationId',
+            foreignField: 'conversationId',
+            as: 'insightsTransaction',
+          },
+        },
+        { $unwind: '$insightsTransaction' },
+        {
+          $addFields: {
+            insightsTransactionOwnerMatches: {
+              $eq: [
+                '$user',
+                {
+                  $convert: {
+                    input: '$insightsTransaction.user',
+                    to: 'string',
+                    onError: null,
+                    onNull: null,
+                  },
+                },
+              ],
+            },
+            insightsTransactionIsUsage: {
+              $and: [
+                {
+                  $or: [
+                    { $eq: ['$insightsTransaction.tokenType', 'prompt'] },
+                    { $eq: ['$insightsTransaction.tokenType', 'completion'] },
+                  ],
+                },
+                { $gte: ['$insightsTransaction.tokenValue', -Number.MAX_VALUE] },
+                { $lte: ['$insightsTransaction.tokenValue', 0] },
+              ],
+            },
+          },
+        },
+        {
+          $match: {
+            ...tenantMatch(options.tenantId, 'insightsTransaction.'),
+            insightsTransactionOwnerMatches: true,
+            insightsTransactionIsUsage: true,
+            'insightsTransaction.createdAt': { $gte: from, $lte: to },
+          },
+        },
+        // Deduplicate ledger rows before daily totals, independently of conversation joins.
+        {
+          $group: {
+            _id: '$insightsTransaction._id',
+            createdAt: { $max: '$insightsTransaction.createdAt' },
+            tokenValue: { $min: '$insightsTransaction.tokenValue' },
+          },
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone } },
+            credits: { $sum: { $multiply: ['$tokenValue', -1] } },
+          },
+        },
+        {
+          $project: { _id: 0, date: '$_id', spendUSD: { $divide: ['$credits', CREDITS_PER_USD] } },
+        },
+        { $sort: { date: 1 } },
+      ]),
     ]);
 
     const days = new Map<string, TInsightsDailyPoint>();
@@ -569,6 +647,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       interruptedResponses: 0,
       lastUsed: null,
       feedback: emptyFeedback(),
+      spendUSD: null,
     };
     let lastUsed: Date | null = null;
     for (const row of messageDays) {
@@ -594,6 +673,10 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       if (lastUsed == null || row.lastUsed > lastUsed) lastUsed = row.lastUsed;
     }
     summary.lastUsed = lastUsed?.toISOString() ?? null;
+    for (const row of spendDays) {
+      addDay(days, row.date).spendUSD = row.spendUSD;
+      summary.spendUSD = (summary.spendUSD ?? 0) + row.spendUSD;
+    }
     for (const row of dailyUsers) addDay(days, row.date).users = row.users;
     const totalConversations = summary.totalConversations;
     const aggregate: TInsightsAggregateResponse = {

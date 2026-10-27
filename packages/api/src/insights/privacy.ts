@@ -31,6 +31,7 @@ export function toAggregateInsightsResponse(
       interruptedResponses: insights.summary.interruptedResponses,
       lastUsed: insights.summary.lastUsed,
       feedback: toAggregateFeedback(insights.summary.feedback),
+      spendUSD: insights.summary.spendUSD,
     },
     daily: insights.daily.map((day) => ({
       date: day.date,
@@ -43,6 +44,7 @@ export function toAggregateInsightsResponse(
       failedResponses: day.failedResponses,
       interruptedResponses: day.interruptedResponses,
       feedback: toAggregateFeedback(day.feedback),
+      spendUSD: day.spendUSD,
     })),
   };
 }

@@ -22,6 +22,7 @@ const insightsData: TInsightsResponse = {
     failedResponses: 1,
     interruptedResponses: 0,
     lastUsed: '2026-10-01T12:00:00.000Z',
+    spendUSD: null,
     feedback: {
       thumbsUp: 0,
       thumbsDown: 0,

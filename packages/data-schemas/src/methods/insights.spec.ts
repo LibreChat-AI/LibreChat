@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { FEEDBACK_TAGS } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { TFeedbackTagKey } from 'librechat-data-provider';
+import { createTransactionModel } from '../models/transaction';
 import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
 import { createInsightsMethods } from './insights';
@@ -24,6 +25,7 @@ const noResponses = {
   failedResponses: 0,
   interruptedResponses: 0,
   feedback: feedbackCounts(),
+  spendUSD: null,
 };
 
 const fixtures = {
@@ -71,6 +73,7 @@ beforeAll(async () => {
     createConversationModel(mongoose),
     createMessageModel(mongoose),
     createUserModel(mongoose),
+    createTransactionModel(mongoose),
   ];
   await Promise.all(models.map((model) => model.init()));
 });
@@ -85,6 +88,7 @@ beforeEach(async () => {
     mongoose.models.Conversation.deleteMany({}),
     mongoose.models.Message.deleteMany({}),
     mongoose.models.User.deleteMany({}),
+    mongoose.models.Transaction.deleteMany({}),
   ]);
 });
 
@@ -152,6 +156,14 @@ describe('Insights methods', () => {
         tokenCount: 7,
         feedback: { rating: 'thumbsUp', tag: 'accurate_reliable' },
       });
+      await mongoose.models.Transaction.collection.insertOne({
+        conversationId: conversation.conversationId,
+        tenantId: 'tenant-a',
+        user: new mongoose.Types.ObjectId(user),
+        tokenType: 'completion',
+        tokenValue: -250_000,
+        createdAt: now,
+      });
       const methods = createInsightsMethods(mongoose);
       for (const agentId of ['agent-a', 'agent-b']) {
         const result = await methods.getInsights({
@@ -173,6 +185,7 @@ describe('Insights methods', () => {
           interruptedResponses: 0,
           lastUsed: count ? now.toISOString() : null,
           feedback: feedbackCounts(count, 0, { accurate_reliable: count }),
+          spendUSD: count ? 0.25 : null,
         });
       }
       expect(
@@ -237,6 +250,16 @@ describe('Insights methods', () => {
       agents: selectedAgents,
       agentIds: ['agent-a'],
     };
+    await mongoose.models.Transaction.collection.insertOne({
+      conversationId: privateValue,
+      user: userId,
+      tenantId: 'tenant-a',
+      messageId: privateValue,
+      model: privateValue,
+      tokenType: 'prompt',
+      tokenValue: -1_250_000,
+      createdAt: now,
+    });
     const detailed = await methods.getInsights({ ...options, showDetails: true });
     const userFind = jest.spyOn(mongoose.models.User, 'find');
     const conversationAggregate = jest.spyOn(mongoose.models.Conversation, 'aggregate');
@@ -264,11 +287,12 @@ describe('Insights methods', () => {
       interruptedResponses: 0,
       lastUsed: now.toISOString(),
       feedback: feedbackCounts(0, 1, { inaccurate: 1 }),
+      spendUSD: 1.25,
     });
     expect(Object.keys(aggregate).sort()).toEqual(['agents', 'daily', 'summary']);
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
     expect(userFind).not.toHaveBeenCalled();
-    expect(conversationAggregate).toHaveBeenCalledTimes(1);
+    expect(conversationAggregate).toHaveBeenCalledTimes(2);
     expect(messageAggregate).toHaveBeenCalledTimes(3);
     const pipelines = [...conversationAggregate.mock.calls, ...messageAggregate.mock.calls];
     const serialized = JSON.stringify(pipelines);
@@ -295,6 +319,7 @@ describe('Insights methods', () => {
       interruptedResponses: 0,
       lastUsed: null,
       feedback: feedbackCounts(),
+      spendUSD: null,
     });
     expect(result).not.toHaveProperty('topUsers');
     expect(result).not.toHaveProperty('churnedUsers');
@@ -387,6 +412,7 @@ describe('Insights methods', () => {
         interruptedResponses: 3,
         lastUsed: latestPrompt.toISOString(),
         feedback: feedbackCounts(),
+        spendUSD: null,
       });
       expect(combined.summary).toEqual(root.summary);
       expect(combined.daily).toEqual(root.daily);
@@ -401,6 +427,7 @@ describe('Insights methods', () => {
         failedResponses: 1,
         interruptedResponses: 0,
         feedback: feedbackCounts(),
+        spendUSD: null,
       });
       expect(root.daily.find((day) => day.date === '2026-10-03')).toEqual({
         date: '2026-10-03',
@@ -413,6 +440,7 @@ describe('Insights methods', () => {
         failedResponses: 1,
         interruptedResponses: 3,
         feedback: feedbackCounts(),
+        spendUSD: null,
       });
       expect(root.daily.find((day) => day.date === '2026-10-04')).toEqual(
         expect.objectContaining({ messages: 1, responses: 0 }),
@@ -639,6 +667,258 @@ describe('Insights methods', () => {
       { $set: { feedback: null } },
     );
     expect((await methods.getInsights(options)).summary.feedback).toEqual(feedbackCounts());
+  });
+
+  it.each([false, true])(
+    'counts recorded spend by root and transaction date without requiring recent messages (showDetails=%s)',
+    async (showDetails) => {
+      const user = new mongoose.Types.ObjectId();
+      const privateValue = 'private-transaction-sentinel';
+      await fixtures.conversations.insertOne({
+        conversationId: 'historical-spend',
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        initial_agent_id: 'agent-a',
+        agent_id: 'agent-b',
+        createdAt: new Date('2026-09-01T12:00:00Z'),
+        updatedAt: new Date('2026-10-15T12:00:00Z'),
+      });
+      await fixtures.messages.insertOne({
+        messageId: 'old-response',
+        conversationId: 'historical-spend',
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        isCreatedByUser: false,
+        model: 'agent-b',
+        tokenCount: 1_000,
+        createdAt: new Date('2026-09-30T12:00:00Z'),
+      });
+      const base = {
+        conversationId: 'historical-spend',
+        user,
+        tenantId: 'tenant-a',
+        messageId: 'old-response',
+        model: privateValue,
+        context: privateValue,
+        tokenType: 'completion',
+        tokenValue: -100_000_000,
+        createdAt: new Date('2026-10-03T07:30:00Z'),
+      };
+      await mongoose.models.Transaction.collection.insertMany([
+        { ...base, tokenValue: -500_000, createdAt: new Date('2026-10-01T07:00:00Z') },
+        {
+          ...base,
+          tokenType: 'prompt',
+          tokenValue: -1_250_000,
+          rawAmount: -1,
+          rate: 999,
+          createdAt: new Date('2026-10-03T06:30:00Z'),
+        },
+        {
+          ...base,
+          tokenType: 'prompt',
+          tokenValue: -2_750_000,
+          inputTokens: -100,
+          writeTokens: -50,
+          readTokens: -50,
+        },
+        { ...base, tokenValue: -250_000, context: 'incomplete', rawAmount: -1_000, rate: 200 },
+        {
+          ...base,
+          tokenValue: 0,
+          messageId: 'deleted-message',
+          createdAt: new Date('2026-10-04T12:00:00Z'),
+        },
+        { ...base, tokenValue: -125_000, createdAt: new Date('2026-10-08T06:59:59Z') },
+        { ...base, createdAt: new Date('2026-10-01T06:59:59Z') },
+        { ...base, createdAt: new Date('2026-10-08T07:00:00Z') },
+        { ...base, tokenType: 'credits', tokenValue: 100_000_000 },
+        { ...base, tokenType: 'credits', context: 'balanceReset' },
+        { ...base, tokenValue: 100_000_000 },
+        { ...base, tokenType: 'unknown' },
+        { ...base, tokenType: ['prompt', 'credits'] },
+        { ...base, tokenType: null },
+        { ...base, tokenValue: privateValue },
+        { ...base, tokenValue: '-100000000' },
+        { ...base, tokenValue: [-100_000_000] },
+        { ...base, tokenValue: { amount: -100_000_000 } },
+        { ...base, tokenValue: null },
+        { ...base, tokenValue: Number.NaN },
+        { ...base, tokenValue: Number.NEGATIVE_INFINITY },
+        { ...base, tokenValue: Number.POSITIVE_INFINITY },
+      ]);
+      const methods = createInsightsMethods(mongoose);
+      const options = {
+        showDetails,
+        tenantId: 'tenant-a',
+        range: 'custom' as const,
+        fromTimestamp: '2026-10-01T07:00:00Z',
+        toTimestamp: '2026-10-08T06:59:59Z',
+        timeZone: 'America/Los_Angeles',
+      };
+      const root = await methods.getInsights({ ...options, agentIds: ['agent-a'] });
+      expect(root.summary).toEqual(
+        expect.objectContaining({
+          totalConversations: 0,
+          totalMessages: 0,
+          totalTokens: 0,
+          lastUsed: null,
+          spendUSD: 4.875,
+        }),
+      );
+      expect(root.daily.map(({ date, spendUSD }) => ({ date, spendUSD }))).toEqual([
+        { date: '2026-10-01', spendUSD: 0.5 },
+        { date: '2026-10-02', spendUSD: 1.25 },
+        { date: '2026-10-03', spendUSD: 3 },
+        { date: '2026-10-04', spendUSD: 0 },
+        { date: '2026-10-05', spendUSD: null },
+        { date: '2026-10-06', spendUSD: null },
+        { date: '2026-10-07', spendUSD: 0.125 },
+      ]);
+      const answeringAgent = await methods.getInsights({ ...options, agentIds: ['agent-b'] });
+      expect(answeringAgent.summary.spendUSD).toBeNull();
+      const combined = await methods.getInsights({
+        ...options,
+        agentIds: ['agent-a', 'agent-b', 'agent-a'],
+      });
+      expect(combined.summary.spendUSD).toBe(root.summary.spendUSD);
+      expect(combined.daily).toEqual(root.daily);
+      expect(JSON.stringify(root)).not.toContain(privateValue);
+      if (!showDetails) expect(Object.keys(root).sort()).toEqual(['agents', 'daily', 'summary']);
+    },
+  );
+
+  it.each([
+    ['absent', [], null],
+    ['credits only', [{ tokenType: 'credits', tokenValue: -100_000 }], null],
+    ['unpriced', [{ tokenType: 'prompt' }, { tokenType: 'completion', tokenValue: null }], null],
+    ['free', [{ tokenType: 'prompt', tokenValue: 0 }], 0],
+  ] as const)(
+    'distinguishes unavailable from recorded zero spend: %s',
+    async (_name, rows, expected) => {
+      const now = new Date();
+      const user = new mongoose.Types.ObjectId();
+      await fixtures.conversations.insertOne({
+        conversationId: 'spend-availability',
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        createdAt: now,
+      });
+      if (rows.length)
+        await mongoose.models.Transaction.collection.insertMany(
+          rows.map((row) => ({
+            conversationId: 'spend-availability',
+            user,
+            tenantId: 'tenant-a',
+            createdAt: now,
+            ...row,
+          })),
+        );
+      const result = await createInsightsMethods(mongoose).getInsights({
+        tenantId: 'tenant-a',
+        agentIds: ['agent-a'],
+        showDetails: false,
+      });
+      expect(result.summary.spendUSD).toBe(expected);
+      expect(
+        result.daily.find((day) => day.date === now.toISOString().slice(0, 10))?.spendUSD,
+      ).toBe(expected);
+    },
+  );
+
+  it('isolates spend by conversation owner, tenant and eligibility before combining agents', async () => {
+    const now = new Date();
+    const first = new mongoose.Types.ObjectId();
+    const second = new mongoose.Types.ObjectId();
+    const outsider = new mongoose.Types.ObjectId();
+    const base = {
+      user: first.toString(),
+      tenantId: 'tenant-a',
+      createdAt: now,
+      initial_agent_id: 'agent-a',
+    };
+    await fixtures.conversations.insertMany([
+      { ...base, conversationId: 'shared-spend', agent_id: 'agent-b' },
+      {
+        ...base,
+        conversationId: 'shared-spend',
+        user: second.toString(),
+        initial_agent_id: 'agent-b',
+      },
+      { ...base, conversationId: 'shared-spend', tenantId: 'tenant-b' },
+      { ...base, conversationId: 'foreign-spend', tenantId: 'tenant-b' },
+      { ...base, conversationId: 'temporary-spend', isTemporary: true },
+      {
+        ...base,
+        conversationId: 'thread-spend',
+        subagentThread: { parentConversationId: 'shared-spend' },
+      },
+      { ...base, conversationId: 'null-spend', initial_agent_id: null },
+      { ...base, conversationId: 'empty-spend', initial_agent_id: '' },
+      { ...base, conversationId: 'other-root-spend', initial_agent_id: 'agent-c' },
+    ]);
+    await fixtures.conversations.insertOne({
+      conversationId: 'legacy-spend',
+      user: first.toString(),
+      createdAt: now,
+      initial_agent_id: 'agent-a',
+    });
+    const usage = {
+      conversationId: 'shared-spend',
+      user: first,
+      tenantId: 'tenant-a',
+      createdAt: now,
+      tokenType: 'completion',
+      tokenValue: -100_000_000,
+    };
+    await mongoose.models.Transaction.collection.insertMany([
+      { ...usage, tokenValue: -1_000_000 },
+      { ...usage, user: second, tokenValue: -2_000_000 },
+      { ...usage, user: outsider },
+      { ...usage, user: null },
+      { ...usage, user: { invalid: true } },
+      { ...usage, tenantId: 'tenant-b', tokenValue: -50_000_000 },
+      { ...usage, tenantId: null },
+      { ...usage, conversationId: 'foreign-spend' },
+      { ...usage, conversationId: 'temporary-spend' },
+      { ...usage, conversationId: 'thread-spend' },
+      { ...usage, conversationId: 'null-spend' },
+      { ...usage, conversationId: 'empty-spend' },
+      { ...usage, conversationId: 'other-root-spend' },
+      { ...usage, conversationId: 'missing-spend' },
+      { ...usage, conversationId: 'legacy-spend' },
+      {
+        conversationId: 'legacy-spend',
+        user: first,
+        createdAt: now,
+        tokenType: 'prompt',
+        tokenValue: -500_000,
+      },
+    ]);
+    const methods = createInsightsMethods(mongoose);
+    const options = { tenantId: 'tenant-a', showDetails: false as const };
+    expect(
+      (await methods.getInsights({ ...options, agentIds: ['agent-a'] })).summary.spendUSD,
+    ).toBe(1);
+    expect(
+      (await methods.getInsights({ ...options, agentIds: ['agent-b'] })).summary.spendUSD,
+    ).toBe(2);
+    expect(
+      (await methods.getInsights({ ...options, agentIds: ['agent-a', 'agent-b'] })).summary
+        .spendUSD,
+    ).toBe(3);
+    expect(
+      (
+        await methods.getInsights({
+          tenantId: 'tenant-b',
+          agentIds: ['agent-a'],
+          showDetails: false,
+        })
+      ).summary.spendUSD,
+    ).toBe(50);
+    expect(
+      (await methods.getInsights({ agentIds: ['agent-a'], showDetails: false })).summary.spendUSD,
+    ).toBe(0.5);
   });
 
   it('counts active users from prompts and all messages for top users within the tenant', async () => {
@@ -1212,6 +1492,7 @@ describe('Insights methods', () => {
       failedResponses: 0,
       interruptedResponses: 0,
       feedback: feedbackCounts(),
+      spendUSD: null,
     });
     expect(agentAInsights.topUsers).toEqual([
       expect.objectContaining({
@@ -1317,6 +1598,7 @@ describe('Insights methods', () => {
       interruptedResponses: 0,
       lastUsed: active.toISOString(),
       feedback: feedbackCounts(),
+      spendUSD: null,
     });
     expect(root.daily.find((point) => point.date === '2026-10-03')).toEqual({
       date: '2026-10-03',
@@ -1329,6 +1611,7 @@ describe('Insights methods', () => {
       failedResponses: 0,
       interruptedResponses: 0,
       feedback: feedbackCounts(),
+      spendUSD: null,
     });
     expect(answeringAgent.summary).toEqual({
       totalConversations: 0,
@@ -1341,6 +1624,7 @@ describe('Insights methods', () => {
       interruptedResponses: 0,
       lastUsed: null,
       feedback: feedbackCounts(),
+      spendUSD: null,
     });
     expect(combined.summary).toEqual(root.summary);
     expect(Object.keys(root).sort()).toEqual(['agents', 'daily', 'summary']);
@@ -1469,6 +1753,7 @@ describe('Insights methods', () => {
         interruptedResponses: 0,
         lastUsed: now.toISOString(),
         feedback: feedbackCounts(0, 1, { inaccurate: 1 }),
+        spendUSD: null,
       });
       expect(result.latest.conversations).toEqual([
         expect.objectContaining({
@@ -1497,6 +1782,7 @@ describe('Insights methods', () => {
       interruptedResponses: 0,
       lastUsed: now.toISOString(),
       feedback: feedbackCounts(0, 2, { inaccurate: 2 }),
+      spendUSD: null,
     });
     expect(combined.latest.conversations).toHaveLength(2);
   });
@@ -1894,7 +2180,7 @@ describe('Insights methods', () => {
         ...messageAggregateSpy.mock.calls.flatMap(([pipeline]) => pipeline as AggregationStage[]),
       ];
       const searchedPipelines = conversationPipelines.filter((pipeline) =>
-        pipeline.some((stage) => stage.$lookup),
+        pipeline.some((stage) => stage.$lookup?.from === 'users'),
       );
       const unfilteredRecentPipelines = conversationPipelines.filter(
         (pipeline) =>

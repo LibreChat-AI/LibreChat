@@ -63,6 +63,7 @@ const detailed = {
     failedResponses: 1,
     interruptedResponses: 1,
     lastUsed: '2026-10-01T12:00:00.000Z',
+    spendUSD: 0.25,
     feedback: aggregateFeedback,
   },
   daily: [
@@ -77,6 +78,7 @@ const detailed = {
       failedResponses: 1,
       interruptedResponses: 1,
       feedback: aggregateFeedback,
+      spendUSD: 0.25,
     },
   ],
   topUsers: [{ userId: privateValue, name: privateValue, email: privateValue }],

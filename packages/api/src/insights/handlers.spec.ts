@@ -24,6 +24,7 @@ const emptyInsights: TInsightsResponse = {
     failedResponses: 0,
     interruptedResponses: 0,
     lastUsed: null,
+    spendUSD: null,
     feedback: {
       thumbsUp: 0,
       thumbsDown: 0,
@@ -268,12 +269,18 @@ describe('Insights handlers', () => {
         failedResponses: 1,
         interruptedResponses: 1,
         lastUsed: '2026-10-01T12:00:00.000Z',
+        spendUSD: 1.25,
         feedback,
       };
       const getInsights = jest.fn().mockResolvedValue({
         ...emptyInsights,
         agents: [{ id: 'agent-a', name: 'Alpha', email: privateValue }],
-        summary: { ...summary, userId: privateValue, feedback: unsafeFeedback },
+        summary: {
+          ...summary,
+          userId: privateValue,
+          feedback: unsafeFeedback,
+          transactions: [{ user: privateValue }],
+        },
         daily: [
           {
             date: '2026-10-01',
@@ -287,6 +294,8 @@ describe('Insights handlers', () => {
             interruptedResponses: 1,
             text: privateValue,
             feedback: unsafeFeedback,
+            spendUSD: 1.25,
+            transactions: [{ conversationId: privateValue, messageId: privateValue }],
           },
         ],
         topUsers: [{ name: privateValue }],
@@ -327,6 +336,7 @@ describe('Insights handlers', () => {
             failedResponses: 1,
             interruptedResponses: 1,
             feedback,
+            spendUSD: 1.25,
           },
         ],
       });
