@@ -173,6 +173,29 @@ describe('createRedisConfigInvalidationPubSub', () => {
     server = await startRespServer();
   });
 
+  it('reports a reload whose broadcast Redis did not take, and one it did', async () => {
+    jest.spyOn(logger, 'error').mockReturnValue(logger);
+    const instance = await startInstance('deploy-a');
+    await waitFor(() => (instance.pubsub.publisher as Redis).status === 'ready');
+
+    await expect(instance.invalidation.reload('tenant-a')).resolves.toEqual({
+      cleared: true,
+      broadcast: 'sent',
+    });
+
+    await server.close();
+    await waitFor(() => (instance.pubsub.publisher as Redis).status !== 'ready');
+    const started = Date.now();
+    await expect(instance.invalidation.reload('tenant-a')).resolves.toEqual({
+      cleared: true,
+      broadcast: 'failed',
+    });
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(instance.clearOverrides).toHaveBeenCalledTimes(2);
+    server = await startRespServer();
+  });
+
   it('subscribes once Redis comes back when the first SUBSCRIBE failed during an outage', async () => {
     const error = jest.spyOn(logger, 'error').mockReturnValue(logger);
     const channel = 'librechat:config:invalidate:deploy-a';

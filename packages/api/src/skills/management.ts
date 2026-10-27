@@ -40,7 +40,7 @@ export const skillFrontmatterValueSchema: z.ZodType<SkillFrontmatterValue> = z.l
     z.boolean(),
     z.null(),
     z.array(skillFrontmatterValueSchema),
-    z.record(skillFrontmatterValueSchema),
+    z.record(z.string(), skillFrontmatterValueSchema),
   ]),
 );
 export type SkillManagementUpdate = TUpdateSkillPayload & { expectedVersion: number };
@@ -51,7 +51,7 @@ export const skillManagementCreateSchema: z.ZodType<TCreateSkill> = z
     displayTitle: fields.displayTitle,
     description: fields.description,
     body: z.string(),
-    frontmatter: z.record(skillFrontmatterValueSchema).optional(),
+    frontmatter: z.record(z.string(), skillFrontmatterValueSchema).optional(),
     category: fields.category,
     alwaysApply: fields.alwaysApply,
   })
@@ -65,13 +65,13 @@ export const skillManagementUpdateSchema: z.ZodType<SkillManagementUpdate> = z
     category: fields.category,
     alwaysApply: fields.alwaysApply,
     body: z.string().optional(),
-    frontmatter: z.record(skillFrontmatterValueSchema).optional(),
+    frontmatter: z.record(z.string(), skillFrontmatterValueSchema).optional(),
     expectedVersion: z.number().int().positive(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 1, 'At least one update field is required');
 
-export const skillSummarySchema: z.AnyZodObject = z.object({
+export const skillSummarySchema: z.ZodObject = z.object({
   ...fields,
   id: idSchema,
   version: z.number().int().positive(),
@@ -111,19 +111,19 @@ export const skillManagementResponseSchema: z.ZodType<SkillManagementResponse> =
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   body: z.string(),
-  frontmatter: z.record(skillFrontmatterValueSchema).optional(),
+  frontmatter: z.record(z.string(), skillFrontmatterValueSchema).optional(),
 });
-export const skillFileSchema: z.AnyZodObject = z.object({
+export const skillFileSchema: z.ZodObject = z.object({
   relativePath: z.string(),
   filename: z.string(),
   mimeType: z.string(),
   bytes: z.number().int().nonnegative(),
 });
-export const skillFileContentSchema: z.AnyZodObject = skillFileSchema.extend({
+export const skillFileContentSchema: z.ZodObject = skillFileSchema.extend({
   content: z.string().optional(),
   isBinary: z.boolean(),
 });
-export const skillFileUpdateSchema: z.AnyZodObject = z
+export const skillFileUpdateSchema: z.ZodObject<{ content: z.ZodString }, z.core.$strict> = z
   .object({ content: z.string().max(1024 * 1024) })
   .strict();
 export const skillFileDeleteResponseSchema: z.ZodType<TDeleteSkillFileResponse> = z.object({

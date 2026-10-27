@@ -57,6 +57,7 @@ import {
 import useSubagentActivityStream from '~/data-provider/Subagents/useSubagentActivityStream';
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
+import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
@@ -176,6 +177,13 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';
+  const receiptScope = useMemo(
+    () =>
+      selection.host === 'conversation' && threadId !== '' && taskId !== ''
+        ? { parentConversationId: selection.parentConversationId, threadId, taskId }
+        : null,
+    [selection.host, selection.parentConversationId, threadId, taskId],
+  );
   const controlIdentity = subagentControlStateKey(selection.parentConversationId, threadId, taskId);
   const [controlState, setControlState] = useAtom(subagentControlStateByTask(controlIdentity));
   const setControlStateForIdentity = useCallback(
@@ -1680,7 +1688,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       <ApprovalProvider
         key={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`}
       >
-        {activityPanel}
+        <TaskContentScopeContext.Provider value={receiptScope}>
+          {activityPanel}
+        </TaskContentScopeContext.Provider>
       </ApprovalProvider>
       {(showControlFooter || composerMode != null) && (
         /* The main chat form's own bottom rhythm, read from the same answer it
@@ -1770,6 +1780,13 @@ function HistoricalEventTaskActivity({
   title: string;
 }) {
   const threadId = selection.durable?.threadId ?? '';
+  const receiptScope = useMemo(
+    () =>
+      selection.host === 'conversation' && threadId !== ''
+        ? { parentConversationId: selection.parentConversationId, threadId, taskId: task.taskId }
+        : null,
+    [selection.host, selection.parentConversationId, threadId, task.taskId],
+  );
   const { data, isLoading, isError, isReadinessPending } = useSubagentThreadQuery(
     selection.parentConversationId,
     threadId,
@@ -1790,12 +1807,14 @@ function HistoricalEventTaskActivity({
   }
 
   return (
-    <SubagentActivity
-      activityId={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${task.taskId}`}
-      activity={activity}
-      state={state}
-      showPrompt={false}
-      embedded
-    />
+    <TaskContentScopeContext.Provider value={receiptScope}>
+      <SubagentActivity
+        activityId={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${task.taskId}`}
+        activity={activity}
+        state={state}
+        showPrompt={false}
+        embedded
+      />
+    </TaskContentScopeContext.Provider>
   );
 }

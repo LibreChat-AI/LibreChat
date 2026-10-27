@@ -141,6 +141,7 @@ jest.mock('../../middleware/modelBoundContent', () => {
 import { initializeAgent } from '../initialize';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
+import { canAgentGraphPause } from '../hitl/admission';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 
@@ -4207,6 +4208,42 @@ describe('initializeAgent — execute_code capability expansion', () => {
     },
   );
 
+  it.each([
+    { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' as const } },
+    Object.fromEntries(
+      Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' as const }]),
+    ),
+    Object.fromEntries(
+      Array.from({ length: 129 }, (_, i) => [
+        `${i}`.padEnd(256, 'é'),
+        { approval_mode: 'ask' as const },
+      ]),
+    ),
+  ])(
+    'rejects legacy option-limit violations before loading tools or priming resources',
+    async (tool_options) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.tool_options = tool_options;
+      const primeCalls = jest.mocked(primeResources).mock.calls.length;
+      await expect(
+        initializeAgent(
+          {
+            req,
+            res,
+            agent,
+            loadTools,
+            endpointOption: { endpoint: EModelEndpoint.agents },
+            allowedProviders: new Set([Providers.OPENAI]),
+            isInitialAgent: true,
+          },
+          db,
+        ),
+      ).rejects.toMatchObject({ code: 'AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED' });
+      expect(loadTools).not.toHaveBeenCalled();
+      expect(primeResources).toHaveBeenCalledTimes(primeCalls);
+    },
+  );
+
   it('rejects a stateful environment excluded by deployment policy', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = ['execute_code'];
@@ -5282,6 +5319,43 @@ describe('initializeAgent — run-scoped MCP tool definitions', () => {
     expect(loadTools).toHaveBeenCalledWith(
       expect.objectContaining({ accessibleMcpServerNames: accessibleNames }),
     );
+  });
+
+  it('keeps valid authored limits through symbol-only server normalization and chat admission', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      structuredTools: [{ name: 'web_search' }],
+      loadedToolDefinitions: [{ name: 'web_search' }],
+    });
+    const names = Array.from({ length: 1023 }, (_, i) => `${`${i}`.padEnd(58, 'q')}_mcp_!`);
+    agent.tools = ['web_search'];
+    agent.tool_options = Object.fromEntries([
+      ...names.map((name) => [name, { approval_mode: 'ask' as const }]),
+      ['web_search', { approval_mode: 'ask' as const }],
+    ]);
+    req.config!.mcpConfig = { '!': { type: 'stdio', command: 'node', args: [] } };
+    db.getAccessibleMcpServerNames = jest.fn().mockResolvedValue(['!']);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    expect(loadTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool_options: expect.objectContaining({
+          [names[0].replace(/!$/, 'server_33')]: { approval_mode: 'ask' },
+        }),
+      }),
+    );
+    expect(
+      canAgentGraphPause({ policy: { enabled: true, mode: 'bypass' }, agents: [result] }),
+    ).toBe(true);
   });
 
   it('threads the normalized MCP request body into tool discovery', async () => {

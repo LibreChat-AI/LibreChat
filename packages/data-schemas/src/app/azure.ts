@@ -38,6 +38,41 @@ export const AZURE_RESOLVED_GROUP_FIELDS: readonly AzureResolvedGroupField[] = [
   'assistantGroups',
 ];
 
+/** The fields of a resolved Azure config its `groups` decide ({@link AZURE_RESOLVED_GROUP_FIELDS}). */
+export type AzureGroupResolution = Pick<ResolvedAzureGroups, AzureResolvedGroupField>;
+
+/** What Azure `groups` resolve to where none are left: no group, and no model or assistant. */
+export function getEmptyAzureResolution(): AzureGroupResolution {
+  return {
+    groupMap: {},
+    modelGroupMap: {},
+    modelNames: [],
+    assistantModels: [],
+    assistantGroups: [],
+  };
+}
+
+/**
+ * An Azure config with each field its groups resolve to that it lacks resolved to none
+ * ({@link getEmptyAzureResolution}), and the fields it lacked. An Azure endpoint is served without
+ * them where a layer recreates it after a tombstone removed it with everything its groups resolved
+ * to (a tombstone of the endpoint or of `endpoints`), or where only a layer defines it, without
+ * groups that resolve: no groups are left for it. Their absence would read differently: the model
+ * lists fall back to the environment's default Azure models, which the Azure client cannot map to
+ * a group. `config` is returned itself when it lacks none.
+ */
+export function completeAzureResolution<T extends Partial<AzureGroupResolution>>(
+  config: T,
+): { config: T; completed: AzureResolvedGroupField[] } {
+  const completed = AZURE_RESOLVED_GROUP_FIELDS.filter((field) => config[field] == null);
+  if (completed.length === 0) {
+    return { config, completed };
+  }
+  const empty = getEmptyAzureResolution();
+  const filled = Object.fromEntries(completed.map((field) => [field, empty[field]]));
+  return { config: { ...config, ...filled }, completed };
+}
+
 /**
  * Whether an Azure config turns `assistants` on without a model that supports them, which
  * `azureConfigSetup` refuses: the Azure Assistants client would have no model to default to.
@@ -112,6 +147,56 @@ export function resolveAzureGroups(groups: unknown): ResolvedAzureGroups {
     }
   }
   return { ...validation, assistantModels, assistantGroups: Array.from(assistantGroups) };
+}
+
+/**
+ * {@link resolveAzureGroups}, also refusing groups a request could not be built from, as
+ * `azureConfigSetup` refuses them in librechat.yaml at startup: a model whose group lacks the
+ * instance, deployment name or version it needs, or a `${VAR}` reference no environment variable
+ * answers. Only the models of `checked` groups are tried (every group's without it): groups
+ * librechat.yaml alone defines passed at startup. The first such problem is added to `errors`,
+ * with `isValid: false`.
+ */
+export function resolveServedAzureGroups(
+  groups: unknown,
+  checked?: ReadonlySet<string>,
+): ResolvedAzureGroups {
+  const resolved = resolveAzureGroups(groups);
+  if (!resolved.isValid) {
+    return resolved;
+  }
+  const { modelGroupMap, groupMap } = resolved;
+  for (const modelName of resolved.modelNames) {
+    const group = modelGroupMap[modelName]?.group;
+    if (checked != null && (group == null || !checked.has(group))) {
+      continue;
+    }
+    try {
+      mapModelToAzureConfig({ modelName, modelGroupMap, groupMap });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ...resolved, isValid: false, errors: [...resolved.errors, message] };
+    }
+  }
+  return resolved;
+}
+
+/**
+ * A `groups` item as the Azure clients read it once resolved (a `groupMap` entry): its fields
+ * with the defaults `validateAzureGroups` gives them, without its `group` name. Unknown fields
+ * stay, so a key's companions (`apiKeyPreview`, `apiKeyBinding`) travel with it.
+ */
+export function toAzureGroupMapEntry(item: Record<string, unknown>): Record<string, unknown> {
+  const {
+    group: _group,
+    instanceName = '',
+    deploymentName = '',
+    version = '',
+    baseURL = '',
+    serverless = false,
+    ...rest
+  } = item;
+  return { ...rest, instanceName, deploymentName, version, baseURL, serverless };
 }
 
 /** The lists of a resolved Azure config that name models or groups its maps must serve. */
