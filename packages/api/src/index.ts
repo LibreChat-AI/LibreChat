@@ -64,6 +64,7 @@ export * from './html';
 /* OAuth */
 export * from './oauth';
 export * from './mcp/oauth/OAuthReconnectionManager';
+export * from './mcp/oauth/OAuthReconnectionTracker';
 /* Crypto */
 export * from './crypto';
 /* Flow */

@@ -181,6 +181,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
   'endpoints.agents.toolApproval.hooks': 'operator',
+  'mcpSettings.oauthFailureRetentionMs': 'startup',
   'mcpSettings.catalogRecovery.maxStateEntries': 'startup',
   'mcpSettings.catalogRecovery.maxDetachedDiscoveries': 'startup',
   'mcpSettings.catalogRecovery.authorizationFenceRetryIntervalMs': 'startup',
@@ -4531,6 +4532,14 @@ export const configSchema = z.object({
     .object({
       allowedDomains: z.array(z.string()).optional(),
       allowedAddresses: allowedAddressesSchema,
+      /** How long a failed OAuth reconnection is remembered before its attempt count resets.
+       * Defaults to 24 hours. */
+      oauthFailureRetentionMs: z
+        .number()
+        .int()
+        .positive()
+        .max(30 * 24 * 60 * 60_000)
+        .optional(),
       catalogRecovery: z
         .object({
           discoveryBackoffMs: z

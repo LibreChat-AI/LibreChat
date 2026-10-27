@@ -1,4 +1,7 @@
-import { OAuthReconnectionTracker } from './OAuthReconnectionTracker';
+import {
+  OAuthReconnectionTracker,
+  createOAuthReconnectionTracker,
+} from './OAuthReconnectionTracker';
 
 describe('OAuthReconnectTracker', () => {
   let tracker: OAuthReconnectionTracker;
@@ -563,6 +566,23 @@ describe('OAuthReconnectTracker', () => {
 
       expect(tracker.isFailed(userId, serverName)).toBe(false);
       expect(tracker.getStats().usersWithFailedServers).toBe(1);
+    });
+
+    it('honors mcpSettings.oauthFailureRetentionMs', () => {
+      jest.useFakeTimers();
+      const short = createOAuthReconnectionTracker({
+        mcpSettings: { oauthFailureRetentionMs: 60_000 },
+      });
+      short.setFailed(userId, serverName);
+      jest.advanceTimersByTime(2 * 60_000);
+      short.setFailed('other-user', serverName);
+      expect(short.getStats().usersWithFailedServers).toBe(1);
+
+      const dflt = createOAuthReconnectionTracker(undefined);
+      dflt.setFailed(userId, serverName);
+      jest.advanceTimersByTime(2 * 60_000);
+      dflt.setFailed('other-user', serverName);
+      expect(dflt.getStats().usersWithFailedServers).toBe(2);
     });
   });
 });

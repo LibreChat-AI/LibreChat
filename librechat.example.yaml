@@ -657,6 +657,7 @@ actions:
 #   # New MCP Apps require explicit opt-in. If omitted, legacy inline HTML remains enabled;
 #   # false disables both MCP Apps and legacy inline HTML.
 #   apps: true
+#   oauthFailureRetentionMs: 86400000 # how long a failed OAuth reconnection is remembered
 #   allowedDomains:
 #     - 'host.docker.internal'    # Docker host access (required for Docker setups)
 #     - 'localhost'               # Local development
