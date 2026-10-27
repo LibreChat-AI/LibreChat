@@ -900,16 +900,21 @@ describe('deleteRoleByName', () => {
     ]);
     let eveId = '';
     let membershipChange: Promise<void> | undefined;
-    const realUpdateOne = User.updateOne.bind(User);
-    const spy = jest.spyOn(User, 'updateOne').mockImplementation(((
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
       filter: mongoose.FilterQuery<IUser>,
       update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.QueryOptions<IUser>,
     ) =>
       (async () => {
         /** Between the member read and the writes: another request moves Bob to USER, and Eve
          * joins. Bob's move is not this deletion's, so it is not reported. */
         membershipChange ??= (async () => {
-          await User.findByIdAndUpdate(bob._id, { $set: { role: SystemRoles.USER } });
+          await User.updateOne(
+            { _id: bob._id },
+            { $set: { role: SystemRoles.USER, updatedAt: new Date(0) } },
+            { timestamps: false },
+          );
           const eve = await User.create({
             name: 'Eve',
             email: 'eve@test.com',
@@ -919,8 +924,8 @@ describe('deleteRoleByName', () => {
           eveId = eve._id.toString();
         })();
         await membershipChange;
-        return realUpdateOne(filter, update);
-      })()) as unknown as typeof User.updateOne);
+        return realUpdateMany(filter, update, options);
+      })()) as unknown as typeof User.updateMany);
 
     const deleted = await deleteRoleByName('editor');
     spy.mockRestore();

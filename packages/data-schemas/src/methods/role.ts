@@ -37,8 +37,8 @@ export interface RoleDeletion {
 /** Bounds the passes that pick up members assigned to the role while it is being deleted. */
 const MAX_REASSIGN_PASSES = 5;
 
-/** How many member writes of a role deletion run at once. */
-const REASSIGN_BATCH_SIZE = 50;
+/** How many members of a role deletion one write reassigns. */
+const REASSIGN_BATCH_SIZE = 1000;
 
 export interface RoleDeps {
   /** Returns a cache store for the given key. Injected from getLogStores. */
@@ -601,9 +601,10 @@ export function createRoleMethods(
    */
   /**
    * Moves the members of `roleName` in the caller's partition to USER and returns the ids of
-   * exactly the accounts it changed. Each account is written on its own, conditional on still
-   * holding the role, so its write reports whether this deletion changed it: a member who left
-   * after the read is not counted, and the next pass picks up a member who joined.
+   * exactly the accounts it changed. Each batch is one write, conditional on the account still
+   * holding the role, that also stamps `updatedAt` with the batch's own time: when it changed
+   * every account it read, those are the ones it moved; when some left in between, the accounts
+   * carrying the stamp are. The next pass picks up a member who joined after the read.
    */
   async function reassignMembersToUser(roleName: string): Promise<string[]> {
     const User = mongoose.models.User as Model<IUser>;
@@ -620,16 +621,24 @@ export function createRoleMethods(
         for (let i = 0; i < ids.length; i += REASSIGN_BATCH_SIZE) {
           const batch = ids.slice(i, i + REASSIGN_BATCH_SIZE);
           written.push(...batch);
-          const results = await Promise.all(
-            batch.map((id) =>
-              User.updateOne({ ...members, _id: id }, { $set: { role: SystemRoles.USER } }),
-            ),
+          const stamp = new Date();
+          const { modifiedCount } = await User.updateMany(
+            { ...members, _id: { $in: batch } },
+            { $set: { role: SystemRoles.USER, updatedAt: stamp } },
+            { timestamps: false },
           );
-          results.forEach(({ modifiedCount }, index) => {
-            if (modifiedCount > 0) {
-              reassigned.push(batch[index]);
-            }
-          });
+          if (modifiedCount === batch.length) {
+            reassigned.push(...batch);
+          } else if (modifiedCount > 0) {
+            const changed = await User.find({
+              _id: { $in: batch },
+              role: SystemRoles.USER,
+              updatedAt: stamp,
+            })
+              .select('_id')
+              .lean();
+            reassigned.push(...changed.map((u) => u._id.toString()));
+          }
         }
       }
       logger.warn(`[deleteRoleByName] members still joining "${roleName}" after every pass`);
