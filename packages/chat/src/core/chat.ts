@@ -970,13 +970,19 @@ export class Chat {
   ): void {
     const { state } = this.init;
     const status: ChatStatus = outcome.kind === 'error' ? 'error' : 'ready';
-    if (state.connection !== 'idle') {
-      state.connection = 'idle';
+    /** One terminal state: a store that reports each field hears listeners told once, after all. */
+    this.writing = true;
+    try {
+      if (state.connection !== 'idle') {
+        state.connection = 'idle';
+      }
+      if (state.status !== status) {
+        state.status = status;
+      }
+      state.error = outcome.kind === 'error' ? outcome.error : undefined;
+    } finally {
+      this.writing = false;
     }
-    if (state.status !== status) {
-      state.status = status;
-    }
-    state.error = outcome.kind === 'error' ? outcome.error : undefined;
     const messages = this.messages;
     let message: TMessage | undefined;
     if (responseId !== undefined) {

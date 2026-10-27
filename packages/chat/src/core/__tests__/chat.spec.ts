@@ -601,6 +601,42 @@ describe('Chat', () => {
     unsubscribe();
   });
 
+  it('keeps the next turn submitted when a store that reports its status writes starts it as the connection goes idle', async () => {
+    const state = createState([]);
+    const listeners = new Set<() => void>();
+    let connection: ChatConnection = 'idle';
+    Object.defineProperty(state, 'connection', {
+      get: () => connection,
+      set: (next: ChatConnection) => {
+        connection = next;
+        [...listeners].forEach((listener) => listener());
+      },
+    });
+    state.subscribe = (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    };
+    let next: Promise<void> | undefined;
+    const { chat, stream } = setup({ state });
+    const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    let started = false;
+    chat.subscribe(() => {
+      if (chat.connection === 'idle' && !started) {
+        started = true;
+        next = chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+      }
+    });
+    stream.push(finalEvent());
+    await sent;
+
+    expect(next).toBeDefined();
+    expect(chat.status).toBe('submitted');
+    expect(chat.error).toBeUndefined();
+  });
+
   it.each(['final', 'abort'] as const)(
     'finishes on %s with the response the turn produced, not the tail of another branch',
     async (end) => {
