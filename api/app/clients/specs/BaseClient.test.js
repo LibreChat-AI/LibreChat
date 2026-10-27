@@ -1,4 +1,5 @@
 const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
+const { ATTACHMENT_ONLY_TEXT } = require('@librechat/api');
 const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
@@ -1526,6 +1527,38 @@ describe('BaseClient', () => {
       expect(modelMessages[0]).not.toHaveProperty('files');
       expect(modelMessages[0].content[0]).toEqual({ type: 'input_file' });
       expect(TestClient.sendCompletion).toHaveBeenCalled();
+    });
+
+    test('keeps stand-in text for attachment-only history when resendFiles is false (#17479)', async () => {
+      getFiles.mockReset();
+      TestClient = initializeFakeClient(
+        apiKey,
+        {
+          ...options,
+          resendFiles: false,
+        },
+        [
+          {
+            role: 'user',
+            isCreatedByUser: true,
+            text: '',
+            files: [{ file_id: 'attachment-only-file' }],
+            messageId: 'attachment-only-message',
+            parentMessageId: Constants.NO_PARENT,
+          },
+        ],
+      );
+
+      await expect(
+        TestClient.sendMessage('Follow-up after attachment-only turn', {
+          conversationId: 'attachment-only-conversation',
+          parentMessageId: 'attachment-only-message',
+        }),
+      ).resolves.toBeDefined();
+
+      const [modelMessages] = TestClient.buildMessages.mock.calls[0];
+      expect(modelMessages[0]).not.toHaveProperty('files');
+      expect(modelMessages[0].text).toBe(ATTACHMENT_ONLY_TEXT);
     });
 
     test('keeps a materialized current attachment inspectable when historical replay is disabled', () => {

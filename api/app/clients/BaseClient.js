@@ -58,13 +58,24 @@ const {
   resolveTurnLLMDeliveryPath,
   resolveUseResponsesApi,
 } = require('librechat-data-provider');
+const { ATTACHMENT_ONLY_TEXT } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
 
+const isAttachmentOnlyTurn = (message, files, attachments) =>
+  message.isCreatedByUser === true &&
+  !message.text &&
+  !Array.isArray(message.content) &&
+  ((Array.isArray(files) && files.length > 0) ||
+    (Array.isArray(attachments) && attachments.length > 0));
+
 const omitUnreplayedHistoricalFiles = (messages) =>
-  messages.map(({ files: _files, attachments: _attachments, ...message }) => ({
+  messages.map(({ files, attachments, ...message }) => ({
     ...message,
+    ...(isAttachmentOnlyTurn(message, files, attachments)
+      ? { text: ATTACHMENT_ONLY_TEXT }
+      : {}),
     ...(Array.isArray(message.content)
       ? {
           content: message.content.map((part) => {
