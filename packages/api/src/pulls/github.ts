@@ -20,6 +20,7 @@ import {
   DEFAULT_MAX_HEAD_COMPARISONS,
   DEFAULT_MAX_CANDIDATE_PULL_REQUESTS,
 } from './shared';
+import { logDiscoveryDiagnostic } from './diagnostics';
 import { isAllowedRepository } from './repository';
 import { PullRequestSourceError } from './types';
 
@@ -395,10 +396,16 @@ export function createGitHubPullRequestSource({
        *  same configured budget. */
       const contains = async (headSha: string): Promise<boolean> => {
         if (recorded == null || headSha === recorded) return true;
-        if (comparisons >= lookup.maxHeadComparisons) return false;
+        if (comparisons >= lookup.maxHeadComparisons) {
+          logDiscoveryDiagnostic('github', 'COMPARISON_LIMIT');
+          return false;
+        }
         comparisons += 1;
         const comparison = await getJson(`${base}/compare/${recorded}...${headSha}`, lookup);
-        if (comparison == null) return false;
+        if (comparison == null) {
+          logDiscoveryDiagnostic('github', 'COMPARISON_UNAVAILABLE');
+          return false;
+        }
         if (!isRecord(comparison) || typeof comparison.status !== 'string') {
           throw new PullRequestSourceError('UPSTREAM_ERROR');
         }

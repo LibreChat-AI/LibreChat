@@ -1,5 +1,6 @@
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
+import type * as t from './types';
 import { ResourceType } from './accessPermissions';
 import * as q from './types/queries';
 
@@ -185,6 +186,14 @@ export const subagentTaskContent = (
 
 export const subagentControl = (parentConversationId: string, threadId: string) =>
   `${conversationsRoot}/${encodeURIComponent(parentConversationId)}/subagents/${encodeURIComponent(threadId)}/control`;
+
+export const subagentControlReceipt = (
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  invocationId: string,
+) =>
+  `${parentSubagents(parentConversationId)}/${encodeURIComponent(threadId)}/tasks/${encodeURIComponent(taskId)}/controls/${encodeURIComponent(invocationId)}`;
 
 export const backgroundTasks = (conversationId: string) =>
   `${conversationsRoot}/${encodeURIComponent(conversationId)}/background-tasks`;
@@ -452,6 +461,9 @@ export const getCustomConfigSpeech = () => `${speech()}/config/get`;
 
 export const getPromptGroup = (_id: string) => `${prompts()}/groups/${_id}`;
 
+export const resolvePromptGroup = (_id: string, version?: number) =>
+  `${getPromptGroup(_id)}/resolve${buildQuery({ version })}`;
+
 export const getPromptGroupsWithFilters = (filter: object) => {
   let url = `${prompts()}/groups`;
   // Filter out undefined/null values
@@ -589,6 +601,12 @@ export const adminLangfuseConnection = () => `${BASE_URL}/api/admin/langfuse/con
 export const adminLangfuseConnectionTest = () => `${adminLangfuseConnection()}/test`;
 export const adminLangfuseSessionLink = (conversationId: string) =>
   `${adminLangfuseConnection()}/session/${encodeURIComponent(conversationId)}`;
+export const adminLangfusePromptSync = () => `${BASE_URL}/api/admin/langfuse/prompt-sync`;
+export const adminLangfusePrompts = (params: t.TLangfusePromptListParams = {}) =>
+  `${BASE_URL}/api/admin/langfuse/prompts${buildQuery(params)}`;
+export const adminLangfuseSyncPrompts = () => `${BASE_URL}/api/admin/langfuse/prompts/sync`;
+export const adminLangfusePrompt = (name: string, version?: number) =>
+  `${BASE_URL}/api/admin/langfuse/prompts/${encodeURIComponent(name)}${buildQuery({ version })}`;
 
 /* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
 export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;

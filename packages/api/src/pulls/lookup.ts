@@ -14,6 +14,7 @@ import type {
   PullRequestLookupStore,
   PullRequestLookupResult,
 } from './types';
+import { logDiscoveryDiagnostic } from './diagnostics';
 import { PullRequestSourceError } from './types';
 import { getSafeErrorMetadata } from '~/utils';
 
@@ -319,6 +320,7 @@ export function createPullRequestLookup({
           logger.warn('[PullRequests] Lookup failed', getSafeErrorMetadata(error));
         }
         const code = error instanceof PullRequestSourceError ? error.code : 'UPSTREAM_ERROR';
+        logDiscoveryDiagnostic(provider ?? 'github', code);
         if (error instanceof PullRequestSourceError && error.code === 'RATE_LIMITED') {
           const wait = Math.min(
             MAX_COOLDOWN_MS,

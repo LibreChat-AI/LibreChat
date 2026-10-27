@@ -1,6 +1,6 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useId, useState, useMemo, useEffect } from 'react';
+import { Spinner, Dropdown, useToastContext } from '@librechat/client';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
-import { Spinner, useToastContext, SelectDropDown } from '@librechat/client';
 import { useForm, FormProvider, Controller, useWatch } from 'react-hook-form';
 import {
   Tools,
@@ -17,13 +17,7 @@ import {
   useUpdateAssistantMutation,
   useAvailableAgentToolsQuery,
 } from '~/data-provider';
-import {
-  cn,
-  cardStyle,
-  defaultTextProps,
-  getAvailableModelSelection,
-  removeFocusOutlines,
-} from '~/utils';
+import { cn, defaultTextProps, getAvailableModelSelection, removeFocusOutlines } from '~/utils';
 import AssistantConversationStarters from './AssistantConversationStarters';
 import AssistantToolsDialog from '~/components/Tools/AssistantToolsDialog';
 import { useSelectAssistant, useLocalize, useLocalStorage } from '~/hooks';
@@ -69,6 +63,7 @@ export default function AssistantPanel({
   const { data: allTools = [] } = useAvailableAgentToolsQuery();
   const { onSelect: onSelectAssistant } = useSelectAssistant(endpoint);
   const { showToast } = useToastContext();
+  const modelFieldId = useId();
   const localize = useLocalize();
 
   const methods = useForm<AssistantForm>({
@@ -394,34 +389,34 @@ export default function AssistantPanel({
           </div>
           {/* Model */}
           <div className="mb-6">
-            <label className={labelClass} htmlFor="model">
+            <span id={`${modelFieldId}-label`} className={labelClass}>
               {localize('com_ui_model')}
-            </label>
+            </span>
             <Controller
               name="model"
               control={control}
               rules={{ required: true, minLength: 1 }}
               render={({ field, fieldState: { error } }) => (
                 <>
-                  <SelectDropDown
-                    emptyTitle={true}
-                    value={field.value}
-                    setValue={field.onChange}
-                    availableValues={models}
+                  <Dropdown
+                    variant="field"
+                    testId="select-dropdown-button"
+                    aria-labelledby={`${modelFieldId}-label`}
+                    aria-describedby={error ? `${modelFieldId}-error` : undefined}
+                    value={field.value ?? ''}
+                    onChange={field.onChange}
+                    options={models}
                     disabled={!modelsReady}
-                    showAbove={false}
-                    showLabel={false}
-                    className={cn(
-                      cardStyle,
-                      'flex h-[2.5rem] w-full flex-none items-center justify-center px-4 hover:cursor-pointer',
-                    )}
-                    containerClassName={cn(
-                      'rounded-md',
-                      error ? 'border-border-destructive border-2' : '',
-                    )}
+                    searchable={models.length > 10}
+                    searchPlaceholder={localize('com_ui_search')}
+                    searchEmptyText={localize('com_ui_no_results_found')}
+                    aria-invalid={error != null}
                   />
                   {error && (
-                    <span className="text-text-destructive text-sm transition duration-300 ease-in-out">
+                    <span
+                      id={`${modelFieldId}-error`}
+                      className="text-text-destructive text-sm transition duration-300 ease-in-out"
+                    >
                       {localize('com_ui_field_required')}
                     </span>
                   )}

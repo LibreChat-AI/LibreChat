@@ -175,7 +175,7 @@ const messageSchema: Schema<IMessage> = new Schema(
     subagentActivityProjection: {
       type: {
         taskId: { type: String, required: true },
-        version: { type: Number, enum: [1], required: true },
+        version: { type: Number, enum: [1, 2], required: true },
         activityJson: { type: String, required: true },
         truncated: { type: Boolean, required: true },
       },

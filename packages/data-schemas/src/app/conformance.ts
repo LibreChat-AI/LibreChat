@@ -232,6 +232,18 @@ export function describeConfigStoreConformance(harness: ConfigStoreHarness): voi
         expect((await store.read(role('hidden')))?.tombstones).toEqual(tombstones);
       });
 
+      it('keeps keyed tombstones as written, whatever the entry key holds', async () => {
+        const tombstones = [
+          'endpoints.custom["api.example.com"]',
+          'endpoints.custom["$cost ~ \\"quoted\\" [x]"].headers.X-Key',
+          'endpoints.custom["名前 🚀"].addParams.anthropicApiUrl',
+        ];
+
+        await store.write(role('keyed'), draft({}, { tombstones }), ABSENT_CONFIG_REVISION);
+
+        expect((await store.read(role('keyed')))?.tombstones).toEqual(tombstones);
+      });
+
       it('reads inactive documents', async () => {
         await store.write(role('off'), draft({}, { isActive: false }), ABSENT_CONFIG_REVISION);
 
@@ -496,6 +508,34 @@ export function describeConfigStoreConformance(harness: ConfigStoreHarness): voi
         });
         expect(shown.tombstones).toEqual(['memory.agent']);
         expect(shown.configVersion).toBe(4);
+      });
+
+      it('keyed tombstones hide an entry by its key, and an entry write or a reset clears them', async () => {
+        const operations = createConfigOperations(store);
+        await operations.setFields(role('keyed-ops'), PrincipalModel.ROLE, {
+          'endpoints.custom': [{ name: 'a.b', baseURL: 'https://a', headers: { X: 'x', Y: 'y' } }],
+        });
+
+        const hidden = await operations.tombstoneFields(role('keyed-ops'), PrincipalModel.ROLE, [
+          'endpoints.custom["a.b"].headers.X',
+          'endpoints.custom["yaml one"]',
+        ]);
+        expect(hidden.overrides).toEqual({
+          endpoints: { custom: [{ name: 'a.b', baseURL: 'https://a', headers: { Y: 'y' } }] },
+        });
+        expect(hidden.tombstones).toEqual([
+          'endpoints.custom["a.b"].headers.X',
+          'endpoints.custom["yaml one"]',
+        ]);
+
+        const shown = await operations.setFields(role('keyed-ops'), PrincipalModel.ROLE, {
+          'endpoints.custom': [{ name: 'yaml one', titleModel: 't' }],
+        });
+        expect(shown.tombstones).toEqual(['endpoints.custom["a.b"].headers.X']);
+
+        const reset = await operations.unsetFields(role('keyed-ops'), 'endpoints.custom');
+        expect(reset?.overrides).toEqual({});
+        expect(reset?.tombstones).toEqual([]);
       });
 
       it('lists the active documents tombstoned at or below a path, in store order, without overrides', async () => {

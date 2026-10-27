@@ -32,17 +32,20 @@ jest.mock('~/data-provider', () => ({
  */
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
+  useChatHelpers: () => ({ conversation: mockConversation() }),
   useQueueDrain: jest.fn(),
   useQueuedTurnReveal: jest.fn(),
 }));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => (key === 'com_ui_new_chat' ? 'New chat' : key),
-  useChatHelpers: () => ({ conversation: mockConversation() }),
   useAddedResponse: () => ({}),
+  useScrollbarGutterSeed: jest.fn(),
+}));
+
+jest.mock('~/hooks/SSE', () => ({
   useAdaptiveSSE: jest.fn(),
   useResumeOnLoad: jest.fn(),
-  useScrollbarGutterSeed: jest.fn(),
 }));
 
 jest.mock('../Presentation', () => ({
