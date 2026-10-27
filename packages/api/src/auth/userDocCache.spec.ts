@@ -530,6 +530,21 @@ describe('auth user document cache helpers', () => {
 
     readStored.mockResolvedValueOnce(null);
     await expect(getCurrentCachedAuthUserDoc(store, 'key', readStored)).resolves.toBeUndefined();
+
+    /** A password reset stamped in the same millisecond as the write before it. */
+    readStored.mockResolvedValueOnce({
+      _id: 'user-1',
+      updatedAt: new Date(updatedAt),
+      credentialsChangedAt: new Date(updatedAt),
+    });
+    await expect(getCurrentCachedAuthUserDoc(store, 'key', readStored)).resolves.toBeUndefined();
+
+    readStored.mockResolvedValueOnce({
+      _id: 'user-1',
+      updatedAt: new Date(updatedAt),
+      role: 'ADMIN',
+    });
+    await expect(getCurrentCachedAuthUserDoc(store, 'key', readStored)).resolves.toBeUndefined();
   });
 
   it('skips the freshness read on a cache miss', async () => {

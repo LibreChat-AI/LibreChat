@@ -179,8 +179,25 @@ export async function getCachedAuthUserDoc(
   }
 }
 
+/** Date fields that retire tokens or record authorization changes. */
+const FRESHNESS_DATE_FIELDS = ['updatedAt', 'credentialsChangedAt', 'twoFactorEnrolledAt'] as const;
+/** Scalar fields `req.user` authorization reads. */
+const FRESHNESS_VALUE_FIELDS = ['role', 'tenantId', 'twoFactorEnabled'] as const;
+
 /** What a cache hit reads to prove the cached document is still the stored one. */
-export const AUTH_USER_FRESHNESS_PROJECTION = '_id updatedAt +agentTriggerDeletionStartedAt';
+export const AUTH_USER_FRESHNESS_PROJECTION = [
+  '_id',
+  ...FRESHNESS_DATE_FIELDS,
+  ...FRESHNESS_VALUE_FIELDS,
+  '+agentTriggerDeletionStartedAt',
+].join(' ');
+
+type FreshnessFields = Pick<
+  IUser,
+  | 'agentTriggerDeletionStartedAt'
+  | (typeof FRESHNESS_DATE_FIELDS)[number]
+  | (typeof FRESHNESS_VALUE_FIELDS)[number]
+>;
 
 function toTime(value: unknown): number | undefined {
   if (value == null) {
@@ -191,19 +208,24 @@ function toTime(value: unknown): number | undefined {
 }
 
 /**
- * A cached document is current only while the stored user has the same `updatedAt` and no
- * deletion fence. Every user mutation that can change authentication or authorization bumps
- * `updatedAt`, so a document cached from a read that raced a mutation (even one written after
- * that mutation's eviction) is never served: the next hit sees the newer stamp.
+ * A cached document is current only while the stored user has no deletion fence and the same
+ * `updatedAt` and authorization fields. Every user mutation bumps `updatedAt`, so a document
+ * cached from a read that raced a mutation (even one written after that mutation's eviction)
+ * is not served on the next hit; the token retirement stamps, role, tenant and two-factor
+ * state are compared as well, so a mutation stamped in the same millisecond as the write
+ * before it still cannot leave stale authorization in the cache.
  */
 export function isCachedAuthUserDocCurrent(
   cached: CachedAuthUser,
-  stored: Pick<IUser, 'updatedAt' | 'agentTriggerDeletionStartedAt'> | null | undefined,
+  stored: Partial<FreshnessFields> | null | undefined,
 ): boolean {
   if (!stored || stored.agentTriggerDeletionStartedAt != null) {
     return false;
   }
-  return toTime(cached.updatedAt) === toTime(stored.updatedAt);
+  return (
+    FRESHNESS_DATE_FIELDS.every((field) => toTime(cached[field]) === toTime(stored[field])) &&
+    FRESHNESS_VALUE_FIELDS.every((field) => (cached[field] ?? null) === (stored[field] ?? null))
+  );
 }
 
 /**

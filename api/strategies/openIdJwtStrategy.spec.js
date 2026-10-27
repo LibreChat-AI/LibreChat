@@ -43,7 +43,7 @@ jest.mock('@librechat/api', () => ({
   buildAuthUserDocCacheKey: jest.fn(() => 'auth-user-doc-key'),
   getAuthUserDocCacheMode: jest.fn(() => 'off'),
   getCurrentCachedAuthUserDoc: jest.fn(),
-  AUTH_USER_FRESHNESS_PROJECTION: '_id updatedAt +agentTriggerDeletionStartedAt',
+  AUTH_USER_FRESHNESS_PROJECTION: 'freshness-projection',
   getValidOpenIdReuseUserId: jest.fn(),
   invalidateCachedAuthUserDoc: jest.fn(),
   setCachedAuthUserDoc: jest.fn(),
@@ -647,10 +647,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
 
     const { user } = await invokeVerify(req, payload);
 
-    expect(findUser).toHaveBeenCalledWith(
-      { _id: 'user-abc' },
-      '_id updatedAt +agentTriggerDeletionStartedAt',
-    );
+    expect(findUser).toHaveBeenCalledWith({ _id: 'user-abc' }, 'freshness-projection');
     expect(findOpenIDUser).toHaveBeenCalled();
     expect(user).toMatchObject({ id: 'user-abc' });
   });
